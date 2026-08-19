@@ -1,10 +1,13 @@
 # Silo Apple streamlining program — session handoff
 
 **Read this first when picking the program up in a new session.** It is the single entry point; every other
-document it names is supporting evidence. Last updated 2026-08-18 (evening): owner answered P1/P2/P5 and P11
-(§7 — loopback stays; Stage 3/Option B and Stage 5/Option C are off the table; Stage 2 ships as a **hard
-cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suite is genuinely green
-(1520 / 0 failures — the 14-failure era is over, §2); the round-5 deferred tail landed (`e893967`).
+document it names is supporting evidence. Last updated 2026-08-19 (early): **round 6** (second DRY/KISS/YAGNI
+sweep, 8 packages, all approved) merged @ `9b3e9f1` after a provider session limit cut the fix run in half (§3
+notes how it was resumed); PR #172 review comments addressed (`034b4df`); playback telemetry/runway unification
+landed (`c0026d1`, PR body section). Earlier on 08-18: owner answered P1/P2/P5 and P11 (§7 — loopback stays;
+Stage 3/Option B and Stage 5/Option C are off the table; Stage 2 ships as a **hard cutover**, no remote
+kill-switch, silo-server PR #673 closed unmerged); the suite is genuinely green (0 failures — the 14-failure era
+is over, §2).
 
 ---
 
@@ -28,9 +31,9 @@ cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suit
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `96cbb3d`, pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN`, CodeRabbit green |
-| Size vs `main` | ~120 commits, ~510 files, roughly +23k / −29k raw |
-| Suite (iOS `SiloTests`, only test target) | `Executed 1520 tests, with 3 tests skipped and 0 failures (0 unexpected)` — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
+| Branch / PR | `player/architecture-remediation` @ `9b3e9f1` (round 6 merged), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
+| Size vs `main` | ~150 commits, ~530 files, roughly +20k / −32k raw |
+| Suite (iOS `SiloTests`, only test target) | `Executed 1538 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `9b3e9f1` (1520 + 18 tests added by the PR-review and telemetry layers) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
 | Hardware | HDR10 loopback + display criteria validated (bedroom gen-3 08-17, Living Room gen-2 08-18); DV rows validated 08-18 on Living Room (P8.1 passthrough, P7→8.1 + TrueHD→FLAC); §8 anomaly **closed as environmental** |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
@@ -72,6 +75,18 @@ cutover**, no remote kill-switch, silo-server PR #673 closed unmerged); the suit
    survives Up Next like Android's chip, suppressed only for error UI). Residual, owner-accepted: DV starts
    still *read* as two steps — working explanation is the DV HDMI transition blacking out the panel (capsule
    included) mid-start; not app-addressable. Suite green at the capsule commit; later commits view/doc-only.
+9. **Playback telemetry + runway unification** (`c0026d1`, 2026-08-18, separate thread): `PlaybackStatsComposer`
+   as the one place user-visible `PlaybackStats` is assembled, `PlaybackRunwayPolicy` / `playbackRunwaySeconds`
+   as the user-facing "Buffer" (local runway, shared `bufferedFraction` across the four scrubbers), honest cache
+   counters, `RowID`-keyed stats rows, unified loopback item buffer policy. Details: PR #172 body section.
+   Then `034b4df` addressed the PR review comments (rollback-safe brand migration — legacy Keychain items and
+   registry keys are now *kept* after the copy forward; collection reset refresh; progressive publish ceiling
+   clamp; three EVENT-fallback comments recorded in backlog §2.5 as pre-existing on `main`).
+10. **Round 6 — second DRY/KISS/YAGNI sweep** (2026-08-18/19; owner: "one more pass before we merge"): same
+   survey-v2 → fix machinery, 25 + 16 agents, 66→63 findings, 8 file-disjoint packages, **all approved by
+   independent Opus review, no repair round**; 105 files, +1,604 / −3,157 (net −1,553). Full item list in the
+   backlog §0 round-6 row; deferred/refuted paragraph right below it. The fix run was interrupted by a provider
+   session limit and finished from a second session (§3, "interrupted runs").
 
 ## 3. How the cleanup loop runs (the machinery)
 
@@ -81,8 +96,8 @@ there. `docs/cleanup/workflows/README.md` documents args and lessons in detail.
 
 | Stage | Script | What it does | Cost last run |
 |---|---|---|---|
-| Survey (read-only) | `app-cleanup-survey-v2.js` | 8 slices (player-core, player-avroute, player-subtitles, player-ui, screens-shared-ui, tvos-topshelf, infra, tests). Per slice: **Sonnet** mechanical inventory (duplicate symbols, platform twins, giant functions, orphans, repeated idioms, debug forks, stale comments) → **Opus** finder (high effort, ≤15 evidenced findings with a surviving implementation + behaviour argument) → **Opus** skeptic (default drop). One **Opus** packager → ≤8 file-disjoint packages ≤~800 LOC with self-contained briefs; disjointness re-enforced in code. Guardrails baked in: no Stage 2/3, no P1–P13, no tvOS focus changes, no wire changes, no new manager/protocol layers, backlog §3 respected, "push back on a wrong premise". | 25 agents, ~63 min, ~3.9M tokens |
-| Fix (mutating, worktrees only) | `app-cleanup-fix.js` | Per package: Opus implementer in an isolated worktree (`git reset --hard <baseRef>` first — harness worktrees start from `main`), applies the brief, `xcodegen generate`, builds the schemes in `build_scopes`, runs the iOS suite on an **isolated simulator**, commits to `cleanup/<id>`; independent Opus reviewer reads the diff from the main checkout; one repair round. Never pushes/merges. | 18 agents, ~52 min, ~2.1M tokens |
+| Survey (read-only) | `app-cleanup-survey-v2.js` | 8 slices (player-core, player-avroute, player-subtitles, player-ui, screens-shared-ui, tvos-topshelf, infra, tests). Per slice: **Sonnet** mechanical inventory (duplicate symbols, platform twins, giant functions, orphans, repeated idioms, debug forks, stale comments) → **Opus** finder (high effort, ≤15 evidenced findings with a surviving implementation + behaviour argument) → **Opus** skeptic (default drop). One **Opus** packager → ≤8 file-disjoint packages ≤~800 LOC with self-contained briefs; disjointness re-enforced in code. Guardrails baked in: no Stage 2/3, no P1–P13, no tvOS focus changes, no wire changes, no new manager/protocol layers, backlog §3 respected, "push back on a wrong premise". | 25 agents, ~63 min, ~3.9M tokens (round 5); 25 agents, ~38 min, ~3.4M (round 6) |
+| Fix (mutating, worktrees only) | `app-cleanup-fix.js` | Per package: Opus implementer in an isolated worktree (`git reset --hard <baseRef>` first — harness worktrees start from `main`), applies the brief, `xcodegen generate`, builds the schemes in `build_scopes`, runs the iOS suite on an **isolated simulator**, commits to `cleanup/<id>`; independent Opus reviewer reads the diff from the main checkout; one repair round. Never pushes/merges. | 18 agents, ~52 min, ~2.1M tokens (round 5); round 6: 15 agents / 15 min / 1.3M before the cut-off + 6 reviewers / 31 min / 0.55M in the continuation |
 | Remediation fix (for review-driven rounds) | `player-remediation-fix.js` | Same shape as the fix stage but takes `spec_path` JSONs with `brief` + `findings` from `docs/cleanup/player-review`; branches `remediation/<id>`. Used for R1/R2/R2b. | — |
 | v1 survey | `app-cleanup-survey.js` | Deletion-oriented predecessor (Fable finders). Superseded by v2; kept for reference. | — |
 
@@ -110,6 +125,16 @@ file lists are pairwise disjoint (do it in code, not by eye), check each finding
 `files` and make sure the brief fences off anything owned by a parallel package, split mechanical deletions from
 refactor-shaped work if they only share a file incidentally, drop anything you don't trust. In round 5 the packager
 had already fenced every collision I found; verify anyway.
+
+**Interrupted runs (learned in round 6).** A provider session limit ("You've hit your session limit · resets 1am")
+kills every in-flight agent; the Workflow record (`<config-dir>/projects/<cwd>/<session>/workflows/wf_*.json`)
+still holds the finished agents' results, `journal.jsonl` beside it holds every raw return value, and the fixers'
+work is safe on their `cleanup/*` branches / `.claude/worktrees/wf_*-N` worktrees. Workflow *resume* is same-session
+only, so the next session (possibly under a different `~/.claude*` config dir — T3 threads record which one in
+`~/.t3/userdata/state.sqlite`) does three things: commit any fixer worktree that finished building/testing but
+died before its commit (check its transcript first); write per-package `spec-<id>.json` + the raw fix reports to a
+scratch dir; run a **review-only continuation** (`docs/cleanup/workflows/app-cleanup-review-continue.js` — the
+fix script's Review → Repair → re-review tail with `fixes` passed in) and carry on with the merge recipe.
 
 **Slice notes are pre-seeded** with the review's §5 "accidental complexity" list that is *not* gated; refresh
 them before the next run to remove items round 5 already fixed (bridge residue, `PlayerTrack` rebuild, probe
@@ -166,6 +191,14 @@ The whole round-5 deferred list **and** the 14 environment failures landed on 20
 - Re-cover the temporary-scope refresh guard with a direct unit test against the live
   `TokenStore.saveRefreshedTokens(_:_:replacing:)` funnel — the only direct assertion was deleted with the
   dead overload; end-to-end coverage remains (`testOrdinaryUnauthorizedResponseCannotCrossFromPersistentIntoTemporaryCredentials`).
+  **In progress:** an owner-authored `testTemporaryScopedRefreshCommitNeverReachesPersistentKeychainStorage` sits
+  uncommitted in `iosApp/Tests/SettingValuesAPITests.swift` in the main checkout (it passes; commit it when the owner is done).
+- Round-6 deferred tail (backlog §0 "Round-6 deferred"): audiobook V3 start-response copy; player-side
+  `mutateSubtitleAppearance(_:)` collapse (~10 lines); library display-order comparator (×4, −6); planner-input
+  test fixture maker (×7). One small hand-briefed package, like the round-5 tail.
+- Backlog §2.5 follow-up from the PR review: the backend cannot tell when the writer degraded to the plan-less
+  EVENT fallback (seek reanchor / VOD retention / buffer floor run under VOD wiring) — needs a mode-aware signal
+  plus a device pass; pre-existing on `main`, not a regression.
 - Backlog 1.21 (historical "Continuum" prose) — intentionally left; rewriting would make it factually wrong.
 - `VideoTrack.bitDepth` is write-only but deliberately kept (HDR10-adjacent; see backlog §0 premise notes).
 
@@ -222,7 +255,7 @@ not reach the player.
 | This handoff | `docs/cleanup/HANDOFF.md` |
 | Round table, intentionally-kept list, deferred/refuted, areas worth a look | `docs/cleanup/app-cleanup-backlog.md` (§0, §3, §4) |
 | Architecture review (defects, target architecture, staged plan, product decisions) | `docs/cleanup/player-review/2026-08-17-architecture-review.md` + `slices/` |
-| Workflow scripts (mirror) + README | `docs/cleanup/workflows/` (source of truth when present: `.claude/workflows/`) |
+| Workflow scripts (mirror) + README | `docs/cleanup/workflows/` (source of truth when present: `.claude/workflows/`); round-6 continuation script `app-cleanup-review-continue.js` lives only in the mirror |
 | Player docs | `docs/tvos-player/` (README, 01–09, `validations/`) |
 | tvOS focus rules | `docs/tvos-focus.md` |
 | PR | https://github.com/Silo-Server/silo-apple/pull/172 (body carries the layer summary, behaviour changes, validation) |
@@ -239,4 +272,7 @@ not reach the player.
    the specs so the legacy VM core + ladders are deleted in the same effort, with the characterization suite as
    the safety net. Run via `player-remediation-fix.js` with spec JSONs (roughly 5–7 implementers + reviewers;
    workflows still need an explicit per-request opt-in).
-3. Small items: the temporary-scope guard unit test (§6a — may already be done by the spun-off task).
+3. Small items: commit the owner's temporary-scope guard test once it is final (§6a); the round-6 deferred tail
+   as one hand-briefed package (§6a).
+4. Another full DRY survey is unlikely to pay: rounds 5 and 6 back-to-back found zero orphan types and the
+   round-6 yield was already mostly repetition; Stage 2 is the lever now.
