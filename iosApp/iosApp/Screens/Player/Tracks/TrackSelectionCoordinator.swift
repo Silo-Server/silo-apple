@@ -208,8 +208,11 @@ final class TrackSelectionCoordinator {
         orderedSubtitles(subtitleTracks)
     }
 
+    /// Reads the narrow capability port rather than the whole context: this is
+    /// a display member, so its reads are the enclosing SwiftUI body's
+    /// invalidation set (see `TrackSelectionPorts`).
     var availableSecondarySubtitleTracks: [PlayerTrack] {
-        guard context.backendCapabilities.supportsSecondarySubtitles else { return [] }
+        guard ports.backendCapabilities().supportsSecondarySubtitles else { return [] }
         guard ports.backend() != nil else { return [] }
         return orderedSubtitles(subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) })
     }
@@ -429,12 +432,16 @@ final class TrackSelectionCoordinator {
     /// This is the client-side half of the gate — it says nothing about
     /// whether the *server* can actually service a search. See
     /// ``subtitleSearchEnabled``.
+    ///
+    /// Reads the three narrow ports rather than the whole context, and in the
+    /// original order so `&&` still short-circuits: this member and the two
+    /// derived from it are evaluated inside view bodies, where every property
+    /// touched joins the body's invalidation set (see `TrackSelectionPorts`).
     @MainActor
     var subtitleSearchVisible: Bool {
-        let context = self.context
-        return context.activePlaybackSessionId != nil
-            && context.currentSelectedVersion?.fileId != nil
-            && context.backendCapabilities.supportsExternalPrimarySubtitles
+        ports.activePlaybackSessionId() != nil
+            && ports.currentSelectedVersion()?.fileId != nil
+            && ports.backendCapabilities().supportsExternalPrimarySubtitles
     }
 
     /// **Enablement** predicate: visible *and* the server actually has

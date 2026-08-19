@@ -5224,6 +5224,20 @@ class PlayerViewModel {
                     isPlaying: self.isPlaying
                 )
             },
+            // Narrow reads for the coordinator's display members. Kept separate
+            // from `context` so a SwiftUI body that evaluates them registers
+            // only these properties — the whole context would drag in
+            // `currentTime`, which the periodic time observer writes 10x/s.
+            backendCapabilities: { [weak self] in
+                self?.backendCapabilities ?? TrackSelectionContext.unavailable.backendCapabilities
+            },
+            activePlaybackSessionId: { [weak self] in self?.activePlaybackSessionId ?? nil },
+            currentSelectedVersion: { [weak self] in self?.currentSelectedVersion ?? nil },
+            // The subtitle index the third parameter carries is diagnostic
+            // only: the durable write already happened through
+            // `setLastLoadRequestProtocolV3SubtitleIndex` at the one site that
+            // has a value, and `attemptProtocolV3Replan` takes no such
+            // argument.
             requestReplan: { [weak self] classification, message, _ in
                 guard let self else { return }
                 self.attemptProtocolV3Replan(

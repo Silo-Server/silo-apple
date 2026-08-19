@@ -317,6 +317,44 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.pendingAudioFfIndex)
     }
 
+    // MARK: - Display members: observation scope
+
+    /// The members a SwiftUI body evaluates must read the narrow ports, never
+    /// the whole-context port.
+    ///
+    /// `PlayerViewModel` is `@Observable`, so a body's invalidation set is
+    /// whatever the members it reads happen to touch. Building the whole
+    /// context here would add `currentTime` — written ten times a second by the
+    /// 0.1 s periodic time observer — to that set, and on tvOS the info HUD and
+    /// its subtitle pane (which read `subtitleSearchEnabled`,
+    /// `availableSecondarySubtitleTracks` and `subtitleSearchUnavailableReason`
+    /// and hold the focusable track rows) would re-evaluate at that rate
+    /// instead of only on real track/session changes.
+    func testDisplayMembersReadOnlyTheNarrowPorts() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.applyTrackList([subtitleTrack(trackId: 20, ffIndex: 0)])
+        recorder.contextCount = 0
+        recorder.narrowReadCount = 0
+
+        _ = coordinator.subtitleSearchVisible
+        _ = coordinator.subtitleSearchEnabled
+        _ = coordinator.subtitleSearchUnavailableReason
+        _ = coordinator.availableSecondarySubtitleTracks
+        _ = coordinator.orderedSubtitleTracks
+
+        XCTAssertEqual(
+            recorder.contextCount,
+            0,
+            "a display member that builds the whole context makes every view body reading it depend on currentTime"
+        )
+        XCTAssertGreaterThan(
+            recorder.narrowReadCount,
+            0,
+            "the display members still read the session facts they gate on"
+        )
+    }
+
     // MARK: - Doubles / builders
 
     /// Records the port calls the assertions read back.
@@ -324,6 +362,10 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         var replans: [(classification: String, message: String, subtitleIndex: Int?)] = []
         var hideControlsCount = 0
         var lastLoadRequestSubtitleIndexWrites: [Int?] = []
+        /// How often the whole-context port was built. The display members must
+        /// never build it (see `testDisplayMembersReadOnlyTheNarrowPorts`).
+        var contextCount = 0
+        var narrowReadCount = 0
     }
 
     private func makeCoordinator(
@@ -333,7 +375,8 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         var ports = TrackSelectionPorts(
             backend: { nil },
             context: {
-                TrackSelectionContext(
+                recorder.contextCount += 1
+                return TrackSelectionContext(
                     activePreparedProtocolV3: nil,
                     currentSelectedVersion: nil,
                     currentWatchDetail: nil,
@@ -346,6 +389,18 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                     isBackgroundSuspended: isBackgroundSuspended,
                     isPlaying: false
                 )
+            },
+            backendCapabilities: {
+                recorder.narrowReadCount += 1
+                return .avFoundation
+            },
+            activePlaybackSessionId: {
+                recorder.narrowReadCount += 1
+                return "session-1"
+            },
+            currentSelectedVersion: {
+                recorder.narrowReadCount += 1
+                return nil
             },
             requestReplan: { _, _, _ in },
             isReplanInFlight: { false },

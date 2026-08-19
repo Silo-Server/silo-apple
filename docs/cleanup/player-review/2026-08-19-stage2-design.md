@@ -294,6 +294,34 @@ inv-2 §7 are handled as: (a) `resetPublishedLoadState` calls `coordinator.reset
 `reapplySystemSubtitlePolicy`). The `TrackSelection` enum model of review §8 is **wave 4** (collapsing the
 `pending*` fields) — only once the coordinator is stable.
 
+**As built (wave 1C), four bindings differ from the sketch above — wave 3 must plan around these, not around
+the sketch:**
+
+1. **The class is `@Observable final class`, not `@MainActor @Observable`.** `PlayerViewModel` is a
+   nonisolated `@Observable class` and the targets set only `SWIFT_VERSION 5`; annotating the coordinator
+   would have changed the isolation of members that were nonisolated before the move. `@MainActor` sits on
+   exactly the members that carried it in `PlayerViewModel` (the AI/search surface and the live-subtitle
+   notice seam). Wave 3 cannot assume it may hand the ports to a `MainActor`-isolated coordinator: the
+   coordinator is not actor-isolated, so a `MainActor` engine session must keep calling it the way the view
+   model does today.
+2. **`resetForLoad` has no `keepingTrackPrefs:` parameter.** No such flag exists on the base
+   `resetPublishedLoadState`; its parameters are the four `preferred*` values (audio index, subtitle index,
+   sidecar track id, V3 subtitle index) plus `resetRouteRecoveryFlags`, which is not a track concern and
+   stays in the view model. The realised signature is
+   `resetForLoad(preferredAudioTrackIndex:preferredSubtitleTrackIndex:preferredSidecarSubtitleTrackId:preferredProtocolV3SubtitleIndex:)`.
+3. **The display members do not use `context()`.** `subtitleSearchVisible` / `Enabled` /
+   `UnavailableReason` and `availableSecondarySubtitleTracks` are evaluated inside SwiftUI bodies (tvOS info
+   HUD, both subtitle panes, `SubtitleSearchMenu`), and `@Observable` makes a body's invalidation set equal to
+   whatever those members touch. They therefore read three **narrow** ports — `backendCapabilities()`,
+   `activePlaybackSessionId()`, `currentSelectedVersion()` — in the original short-circuit order, instead of
+   the whole context, which carries `currentTime` (written 10×/s by the 0.1 s periodic time observer) and
+   would have re-run those bodies at that rate. Whatever produces the ports in wave 3 must keep these three
+   narrow; `TrackSelectionCoordinatorTests.testDisplayMembersReadOnlyTheNarrowPorts` pins it.
+4. **`requestReplan`'s `subtitleIndex` is descriptive only.** `attemptProtocolV3Replan` takes no such
+   argument and the view model's producer discards it; the durable write happens through
+   `setLastLoadRequestProtocolV3SubtitleIndex`, called immediately before at the single site that has a value.
+   A wave-3 producer may start consuming it, but nothing depends on it today.
+
 ### 2.8 Engine session + local host — `Engine/PlaybackEngineSession.swift`, `Engine/LocalHLSHost.swift` (wave 2)
 ```swift
 @MainActor final class PlaybackEngineSession {

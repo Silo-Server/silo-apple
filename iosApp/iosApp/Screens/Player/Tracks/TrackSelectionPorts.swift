@@ -37,13 +37,31 @@ struct TrackSelectionPorts {
     /// intent to the next track list instead).
     var backend: () -> AVPlayerBackend?
     var context: () -> TrackSelectionContext
+    // The three narrow reads below duplicate fields of `context` on purpose.
+    // `PlayerViewModel` is `@Observable`, so whatever a member touches while a
+    // SwiftUI body evaluates it becomes that body's invalidation set. The
+    // display members (`subtitleSearchVisible` and friends,
+    // `availableSecondarySubtitleTracks`) are evaluated inside the tvOS info
+    // HUD and the subtitle panes; taking the whole context there would add
+    // `currentTime` — which the 0.1 s periodic time observer writes ten times a
+    // second — to that set and re-run those bodies at that rate. They read
+    // exactly the properties they read before the extraction, one closure per
+    // property so the `&&` short-circuit still decides which ones are touched.
+    // Everything else in the coordinator runs from a command or a callback,
+    // never inside a body, and keeps using the whole-context snapshot.
+    var backendCapabilities: () -> PlayerBackendCapabilities
+    var activePlaybackSessionId: () -> String?
+    var currentSelectedVersion: () -> FileVersion?
     /// Ask the server for a replacement V3 plan. Maps onto
     /// `PlayerViewModel.attemptProtocolV3Replan(position:classification:message:)`
     /// with `position` taken from the same `currentTime` the four legacy call
     /// sites passed. `protocolV3SubtitleIndex` names the subtitle the replan is
-    /// about (nil at the three user-command sites); the durable write of that
-    /// index goes through `setLastLoadRequestProtocolV3SubtitleIndex`, which —
-    /// unlike this parameter — can distinguish "write nil" from "no write".
+    /// about (nil at the three user-command sites); it is **descriptive only**
+    /// and the view model's producer ignores it, because the durable write of
+    /// that index has already gone through
+    /// `setLastLoadRequestProtocolV3SubtitleIndex` — the one channel that can
+    /// distinguish "write nil" from "no write" — at the single site that has a
+    /// value. A later producer may consume it; none has to.
     var requestReplan: (_ classification: String, _ message: String, _ protocolV3SubtitleIndex: Int?) -> Void
     /// True while a V3 replan round trip is outstanding (`protocolV3ReplanTask != nil`).
     var isReplanInFlight: () -> Bool
