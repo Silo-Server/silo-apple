@@ -822,14 +822,25 @@ final class AVPlayerBackend {
     /// reanchor or dispose can't race a late attach.
     private var displayModeSettleTask: Task<Void, Never>?
 
-    private var segmentWriter: LoopbackSegmentWriter?
-    private var segmentServer: LoopbackSegmentServer?
-    private var segmentStore: LoopbackSegmentStore?
+    /// The local HLS pipeline for the running `.siloLoopback` session: store,
+    /// server, producer and session directory (`LocalHLSHost`). Non-nil
+    /// exactly while such a session is live — `startSiloLoopback` builds one
+    /// and `teardownMediaPipeline` tears it down and clears it. The host IS
+    /// the session identity the retired session-id string used to carry:
+    /// every closure installed on it re-checks `loopbackHost === host`.
+    private var loopbackHost: LocalHLSHost?
+    /// The VOD plan resolved for the current source. It outlives the host
+    /// that resolved it deliberately: a reanchor tears the session down, and
+    /// the next producer must be handed the same segment grid instead of
+    /// re-harvesting one.
+    private var carriedVODPlan: LocalHLSHost.ResolvedVODPlan?
+    /// Read-only views onto the host's pipeline for the stats, ladder, AirPlay
+    /// and subtitle readers that stayed in this adapter.
+    private var segmentWriter: LoopbackSegmentWriter? { loopbackHost?.segmentWriter }
+    private var segmentServer: LoopbackSegmentServer? { loopbackHost?.segmentServer }
+    private var segmentStore: LoopbackSegmentStore? { loopbackHost?.segmentStore }
     private var loopbackPlaylistName: String?
     private var loopbackPlaybackUsesExternalURL = false
-    private var sessionDirectory: URL?
-    private var activeLoopbackSessionID: String?
-    private var loopbackGeneration: UInt64 = 0
     private let loopbackPlaybackClockLock = NSLock()
     private var loopbackPlaybackClockSecondsValue: Double = 0
     private var pendingLocalLoopbackRecoveryMediaTime: Double?
@@ -1792,37 +1803,21 @@ final class AVPlayerBackend {
 
     // MARK: - VOD serving-mode plan continuity (loopback-primary plan, 1c)
 
-    /// The segment plan resolved by the first producer session for the
-    /// current source. Restarted producers receive it so every session
-    /// reproduces the same segment grid the static playlist advertises.
-    private var loopbackVODPlan: LoopbackSegmentPlan?
-    private var loopbackVODPlanSourceURL: URL?
+    /// The segment plan the live session has resolved, if any. `LocalHLSHost`
+    /// owns it while the session runs; `carriedVODPlan` is what a teardown
+    /// leaves behind for the next one.
+    private var loopbackVODPlan: LoopbackSegmentPlan? { loopbackHost?.vodPlan }
 
+    /// The plan carried out of the retired session, when it was resolved for
+    /// this source. Read by `load(strategy:)` after `teardownMediaPipeline`
+    /// has already cleared the host, which is the only place the value has to
+    /// outlive a session.
     private func vodPlanForCurrentSource(spec: LoopbackSessionSpec) -> LoopbackSegmentPlan? {
-        guard loopbackVODPlanSourceURL == spec.sourceURL else { return nil }
-        return loopbackVODPlan
+        carriedVODPlan?.matching(spec.sourceURL)
     }
 
     // MARK: - VOD demand-driven producer restarts (loopback-primary plan, 1e)
 
-    private static let vodSegmentMissWaitSeconds: Double = 8.0
-    /// How far past a running producer's base a fetch counts as "covered" —
-    /// the producer's forward march will deliver it without a restart.
-    private static let vodProducerCoverageWindow = 8
-
-    private var vodRestartCoalescer = LoopbackRestartCoalescer()
-    private var activeVODWriterBaseIndex: Int?
-    /// Highest segment index the running producer has actually finalized.
-    /// Coverage decisions ride the march only when the target is within
-    /// `vodProducerMarchAllowance` of THIS, not of the static base — with
-    /// 30–70 MB long-GOP segments the march moves at 3–6 s per segment, and
-    /// "within 8 of base" left a seek's fetch waiting out the full miss
-    /// deadline into a 404 (living-room frozen-video seeks).
-    private var activeVODWriterHeadIndex: Int?
-    /// How far past the produced head a fetch may ride the running
-    /// producer's march. One segment for the natural next-in-line fetch,
-    /// plus one for AVPlayer's concurrent lookahead.
-    private static let vodProducerMarchAllowance = 2
     /// The unlanded in-item seek target (media seconds). Cleared when the
     /// seek completion fires; while it survives, stall recovery aims here
     /// instead of at the frozen clock (M7).
@@ -1845,64 +1840,6 @@ final class AVPlayerBackend {
         PlaybackDiskBudget.retentionBudget(availableBytes: availableBytes)
     }
 
-    /// Swaps the producer (writer only — the store, server, and player item
-    /// all survive) to anchor at the requested plan segment. Coalesced: one
-    /// in-flight swap, newest pending target wins, self-target guarded.
-    @MainActor
-    private func requestVODProducerRestart(at index: Int, authoritative: Bool = false) {
-        guard !isDisposed,
-              case .some(.siloLoopback(let spec)) = currentSourceStrategy,
-              let plan = vodPlanForCurrentSource(spec: spec),
-              plan.segmentCount > 0,
-              let store = segmentStore,
-              let sessionID = activeLoopbackSessionID,
-              let sessionDir = sessionDirectory else { return }
-        let target = max(0, min(index, plan.segmentCount - 1))
-        if let base = activeVODWriterBaseIndex,
-           segmentWriter != nil,
-           target >= base,
-           target <= base + Self.vodProducerCoverageWindow,
-           target <= max(activeVODWriterHeadIndex ?? (base - 1), base - 1)
-                        + Self.vodProducerMarchAllowance {
-            // The running producer covers it AND is close enough that its
-            // forward march delivers before the fetch's miss deadline. The
-            // head-proximity bound matters on long-GOP sources: a seek
-            // landing 3+ heavy segments past the produced head used to ride
-            // "covered by base+8" into an 8 s wait and a 404. This applies
-            // to recovery re-bases too: restarting a covering producer
-            // discards its march and re-produces the same span — the
-            // recovery ladder's player-side nudge/reload is the tool for a
-            // consumer wedge, not producer churn. A genuinely wedged
-            // producer surfaces separately (source stall → premature EOF /
-            // mux failures) and escalates through the watchdog budget.
-            return
-        }
-        var next: Int? = target
-        while let current = next {
-            guard vodRestartCoalescer.begin(current, authoritative: authoritative) else { return }
-            cmpLog("[CMP-AVP] vod producer restart segment=\(current) authoritative=\(authoritative)")
-            // Recycle the retiring producer's demuxer: same source URL
-            // (reanchored spec only moves the start time), and the open
-            // input + warm cue index are the dominant fixed cost of a
-            // seek-triggered restart.
-            var handoff: LoopbackInputHandoff?
-            if let retiring = segmentWriter {
-                let h = LoopbackInputHandoff()
-                handoff = h
-                retiring.stop(recyclingInputInto: h)
-            }
-            startSiloLoopbackWriter(
-                sessionID: sessionID,
-                sessionSpec: spec.reanchored(at: plan.sourceStartSeconds(ofSegment: current)),
-                sessionDir: sessionDir,
-                segmentStore: store,
-                vodBaseIndex: current,
-                recycledInput: handoff
-            )
-            next = vodRestartCoalescer.next(justRan: current)
-        }
-    }
-
     /// VOD stall-recovery ladder (M7) — never tears the session down. The
     /// anchor is the unlanded seek target when one exists (a wedged
     /// zero-tolerance seek leaves the frozen clock at the PRE-seek
@@ -1918,8 +1855,8 @@ final class AVPlayerBackend {
         let anchorPlayer = vodPendingSeekMediaTarget.map(playerTime(forMediaTime:))
             ?? frozenPosition
         if let plan = loopbackVODPlan {
-            requestVODProducerRestart(
-                at: plan.segmentIndex(forPlaylistSeconds: anchorPlayer),
+            loopbackHost?.requestProducerRestart(
+                atSegmentIndex: plan.segmentIndex(forPlaylistSeconds: anchorPlayer),
                 authoritative: true
             )
         }
@@ -1980,310 +1917,178 @@ final class AVPlayerBackend {
         sessionSpec: LoopbackSessionSpec
     ) {
         let sessionID = UUID().uuidString
-        activeLoopbackSessionID = sessionID
-        installLoopbackPlayheadWatchdog()
-        loopbackGeneration &+= 1
-        let generation = loopbackGeneration
         let debugBaseDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("silo-dv-hls-debug", isDirectory: true)
         let sessionDir = debugBaseDir.appendingPathComponent(sessionID, isDirectory: true)
-        sessionDirectory = sessionDir
-
-        let debugDirectory = Self.keepLoopbackArtifacts ? sessionDir : nil
-        let store = LoopbackSegmentStore(
-            generation: generation,
-            memoryBudgetBytes: Self.loopbackSegmentStoreMemoryBudgetBytes,
-            spillPolicy: Self.generatedHLSSpillPolicy(for: sessionSpec),
-            debugDirectory: debugDirectory
-        )
-        let retentionBudget = Self.vodRetentionBudgetBytes()
-        cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
-        store.configureVODRetention(budgetBytes: retentionBudget)
-        segmentStore = store
-        if Self.keepLoopbackArtifacts {
-            cmpLog("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
-        }
-
         #if os(iOS)
-        let server = LoopbackSegmentServer(segmentStore: store, exposure: .localNetwork)
+        let exposure = LoopbackSegmentServer.Exposure.localNetwork
         #else
-        let server = LoopbackSegmentServer(segmentStore: store)
+        let exposure = LoopbackSegmentServer.Exposure.loopbackOnly
         #endif
-        // A miss under the static VOD playlist means "not produced (yet) or
-        // pruned": request a coalesced producer restart on main, then wait —
-        // bounded — for the bytes. Runs on the server's resolver queue; the
-        // store is thread-safe.
-        server.vodSegmentMissResolver = { [weak self, weak store] index in
-            guard let store else { return .missing }
-            Task { @MainActor [weak self] in
-                self?.requestVODProducerRestart(at: index)
+        let host = LocalHLSHost(
+            sessionSpec: sessionSpec,
+            sessionDirectory: sessionDir,
+            keepArtifacts: LocalHLSHost.keepArtifactsFromEnvironment,
+            storeMemoryBudgetBytes: Self.loopbackSegmentStoreMemoryBudgetBytes,
+            storeSpillPolicy: Self.generatedHLSSpillPolicy(for: sessionSpec),
+            vodRetentionBudgetBytes: Self.vodRetentionBudgetBytes(),
+            serverExposure: exposure,
+            carriedVODPlan: carriedVODPlan,
+            playbackPositionProvider: { [weak self] in
+                self?.loopbackPlaybackClockSeconds()
+            },
+            isSourceOutageActive: { [weak self] in
+                self?.sourceOutageStateProvider?() ?? false
+            },
+            // The cue tap stays with the adapter: its store is keyed to the
+            // SOURCE and outlives the session, so a reanchor of the same
+            // title re-enables subtitles instantly.
+            subtitleTap: { [weak self] sourceURL in
+                self?.ensureLoopbackSubtitleTap(for: sourceURL)
             }
-            return store.waitForSegment(
-                named: String(format: "seg_%06d.m4s", index),
-                deadline: Date().addingTimeInterval(Self.vodSegmentMissWaitSeconds)
-            )
-        }
-        // Stash the server immediately so a synchronous teardown (e.g. fast
-        // user dismiss) can find and cancel the still-binding listener.
-        segmentServer = server
-
-        // Server bind goes through `withCheckedThrowingContinuation` rather
-        // than blocking the main actor on a 2 s semaphore. Defer writer setup
-        // until bind completes; if the user disposes the backend or switches
-        // sessions in the meantime, bail before touching state.
-        Task { @MainActor [weak self] in
-            do {
-                try await server.start()
-            } catch {
-                guard let self else { return }
-                // The server's catch arm already cancelled the listener; null
-                // out our reference so callers don't trip on a cancelled
-                // server still hanging off `segmentServer`.
-                if self.segmentServer === server {
-                    self.segmentServer = nil
-                }
-                guard !self.isDisposed,
-                      self.activeLoopbackSessionID == sessionID else {
-                    return
-                }
-                self.reportFailure(
-                    .loopbackServerBindFailed(detail: String(describing: error))
-                )
-                return
-            }
-            guard let self, !self.isDisposed else {
-                server.stop()
-                return
-            }
-            guard self.activeLoopbackSessionID == sessionID else {
-                server.stop()
-                return
-            }
-            self.startSiloLoopbackWriter(sessionID: sessionID,
-                                             sessionSpec: sessionSpec,
-                                             sessionDir: sessionDir,
-                                             segmentStore: store)
-        }
+        )
+        loopbackHost = host
+        // Armed before any component of the session exists, exactly as it was
+        // when this function built the store and server itself.
+        installLoopbackPlayheadWatchdog()
+        installLoopbackHostCallbacks(host)
+        host.start()
     }
 
-    @MainActor
-    private func startSiloLoopbackWriter(
-        sessionID: String,
-        sessionSpec: LoopbackSessionSpec,
-        sessionDir: URL,
-        segmentStore: LoopbackSegmentStore,
-        vodBaseIndex: Int = 0,
-        recycledInput: LoopbackInputHandoff? = nil
-    ) {
-        let writer = LoopbackSegmentWriter(
-            sessionSpec: sessionSpec,
-            outputDirectory: sessionDir,
-            segmentStore: segmentStore,
-            vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
-            vodBaseIndex: vodBaseIndex,
-            recycledInputHandoff: recycledInput
-        )
-        let tap = ensureLoopbackSubtitleTap(for: sessionSpec.sourceURL)
-        writer.isSourceOutageActive = { [weak self] in
-            self?.sourceOutageStateProvider?() ?? false
+    /// Wires a freshly built `LocalHLSHost` back into the adapter. Every
+    /// callback re-checks `loopbackHost === host`: a host the backend has
+    /// dropped is no longer the session, which is exactly what the retired
+    /// session-id string compare used to mean.
+    private func installLoopbackHostCallbacks(_ host: LocalHLSHost) {
+        host.isExternalPlaybackActive = { [weak self] in
+            self?.avPlayer.isExternalPlaybackActive ?? false
         }
-        writer.onSubtitleTapTracks = { [weak tap] infos in
-            tap?.registerTracks(infos)
+        host.canAttachFirstSegment = { [weak self, weak host] in
+            guard let self, let host, self.loopbackHost === host else { return false }
+            return !self.isDisposed && self.currentItem == nil
         }
-        writer.onSubtitleTapCue = { [weak tap] cue in
-            tap?.ingest(cue)
+        host.selectedBitmapSubtitleTapStream = { [weak self] in
+            self?.selectedBitmapTapStreamIndex ?? nil
         }
-        writer.onBitmapSubtitleTapTracks = { [weak self] indices in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed,
-                      self.activeLoopbackSessionID == sessionID else { return }
-                self.bitmapTapAvailableStreams = Set(indices)
-                // A selection that landed before availability fell through
-                // to the extractor (which can't keep up at Blu-ray
-                // bitrates); re-route it to the tap now that the writer
-                // has declared its bitmap streams.
-                if let trackId = self.selectedControlledSubtitleTrackId,
-                   self.selectedBitmapTapStreamIndex == nil,
-                   self.bitmapTapServesEmbeddedTrack(trackId) {
-                    self.embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
-                    self.activateBitmapTapSubtitleTrack(trackId: trackId)
-                }
+        host.hasDetectedHDR10Plus = { [weak self] in
+            self?.loopbackHDR10PlusDetected ?? false
+        }
+        host.onFirstSegmentReady = { [weak self, weak host] ready in
+            guard let self, let host, self.loopbackHost === host else { return }
+            self.handleFirstSegmentReady(ready, host: host)
+        }
+        host.onSegmentPlanResolved = { [weak self, weak host] plan in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            // The item timeline's origin is the plan anchor; the initial
+            // media-time seek (pendingStartTime) converts through this
+            // offset, and plan resolution always precedes item creation.
+            self.setMediaTimelineOffset(plan.anchorSourceSeconds)
+        }
+        host.onBitmapSubtitleTapTracks = { [weak self, weak host] indices in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            self.bitmapTapAvailableStreams = Set(indices)
+            // A selection that landed before availability fell through
+            // to the extractor (which can't keep up at Blu-ray
+            // bitrates); re-route it to the tap now that the writer
+            // has declared its bitmap streams.
+            if let trackId = self.selectedControlledSubtitleTrackId,
+               self.selectedBitmapTapStreamIndex == nil,
+               self.bitmapTapServesEmbeddedTrack(trackId) {
+                self.embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
+                self.activateBitmapTapSubtitleTrack(trackId: trackId)
             }
         }
         // Mux thread; the writer only decodes (and therefore only emits)
         // while a stream is selected, and SubtitleSession serialises feeds
         // on its own queue — same pattern as the extractor's decode thread.
-        writer.onBitmapSubtitleTapCue = { [weak self] _, cues, trimActiveAt in
+        host.onBitmapSubtitleTapCue = { [weak self] _, cues, trimActiveAt in
             self?.subtitleSession?.feedBitmapCues(
                 slot: .primary,
                 cues: cues,
                 trimActiveAt: trimActiveAt
             )
         }
-        // Selection survives producer restarts: every new writer inherits it.
-        writer.setBitmapSubtitleTapStream(selectedBitmapTapStreamIndex)
-        activeVODWriterBaseIndex = vodBaseIndex
-        activeVODWriterHeadIndex = vodBaseIndex - 1
-        // Seed the consumer window at the producer's base so a resumed
-        // or restarted session isn't parked by backpressure before the
-        // player's first fetch declares a real target.
-        segmentStore.declareVODTarget(vodBaseIndex)
-        // A resume-first session anchors itself once the plan resolves;
-        // re-seed from the writer's TRUE base or the producer parks
-        // against a window still sitting at 0 while AVPlayer's resume
-        // fetches strand (the living-room resume startup timeout).
-        writer.onVODProducerAnchored = { [weak self, weak segmentStore] base in
-            segmentStore?.declareVODTarget(base)
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed,
-                      self.activeLoopbackSessionID == sessionID else { return }
-                self.activeVODWriterBaseIndex = base
-                self.activeVODWriterHeadIndex = base - 1
+        host.onFinished = { [weak self, weak host] error in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            if let error {
+                self.reportFailure(.writerFailed(
+                    kind: Self.writerFailureKind(for: error),
+                    detail: String(describing: error)
+                ))
             }
         }
-        // Produced-head tracking for the restart coverage decision:
-        // a fetch may only ride the running march when it's within
-        // vodProducerMarchAllowance of what has actually been written.
-        writer.onSegmentAppended = { [weak self] segmentIndex, _ in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed,
-                      self.activeLoopbackSessionID == sessionID else { return }
-                self.activeVODWriterHeadIndex = max(
-                    self.activeVODWriterHeadIndex ?? segmentIndex,
-                    segmentIndex
+        host.onSourceDownloadStats = { [weak self, weak host] bitsPerSecond, totalBytesRead in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            let previousBitrate = self.loopbackDemuxReadBitrateBps
+            self.loopbackDemuxReadBitrateBps = bitsPerSecond
+            self.loopbackSourceBytesRead = totalBytesRead
+            self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
+            if let bitsPerSecond {
+                let mbps = bitsPerSecond / 1_000_000
+                let mib = totalBytesRead.map { Double($0) / 1_048_576 } ?? 0
+                Self.logger.info(
+                    "[CMP-AVP] loopback source rate=\(String(format: "%.1f", mbps), privacy: .public)Mbps totalRead=\(String(format: "%.1f", mib), privacy: .public)MiB"
                 )
             }
-        }
-        writer.onSegmentPlanResolved = { [weak self] plan in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
-                guard self.activeLoopbackSessionID == sessionID else { return }
-                self.loopbackVODPlan = plan
-                self.loopbackVODPlanSourceURL = sessionSpec.sourceURL
-                self.segmentServer?.setVODSegmentCount(plan.segmentCount)
-                // The item timeline's origin is the plan anchor; the initial
-                // media-time seek (pendingStartTime) converts through this
-                // offset, and plan resolution always precedes item creation.
-                self.setMediaTimelineOffset(plan.anchorSourceSeconds)
+            // First measurable source bitrate — re-evaluate the
+            // steady-state forward buffer, since the gate may already
+            // have released before any rate was known.
+            if previousBitrate == nil, bitsPerSecond != nil,
+               let item = self.currentItem,
+               self.canRampLoopbackBufferToSteadyState {
+                self.rampLoopbackBufferToSteadyStateIfNeeded(for: item)
             }
         }
-        writer.onFirstSegmentReady = { [weak self] playlistName in
-            DispatchQueue.main.async {
-                self?.handleFirstSegmentReady(playlistName: playlistName, sessionID: sessionID)
+        host.onGeneratedMediaStats = { [weak self, weak host] generatedStats in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            self.latestLoopbackGeneratedStats = generatedStats
+            self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
+            if let item = self.currentItem,
+               self.canRampLoopbackBufferToSteadyState {
+                self.rampLoopbackBufferToSteadyStateIfNeeded(for: item)
+                self.sampleLocalLoopbackEdge(item: item, referenceTime: self.currentTime(), trigger: "generated_stats")
             }
         }
-        writer.onFinished = { [weak self] error in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
-                guard self.activeLoopbackSessionID == sessionID else { return }
-                if let error {
-                    self.reportFailure(.writerFailed(
-                        kind: Self.writerFailureKind(for: error),
-                        detail: String(describing: error)
-                    ))
-                }
-            }
+        host.onBridgedAudioAnchored = { [weak self, weak host] seconds in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            guard seconds.isFinite else { return }
+            // The encoder anchors while segment 0 is written, so this
+            // lands before the gate is even prepared — scope it to the
+            // load rather than to the gate's own window. A producer that
+            // restarts before the load finishes re-anchors later, and the
+            // gate wants that newer value.
+            guard !self.didFireFileLoaded else { return }
+            self.loopbackBridgedAudioAnchorSeconds = seconds
+            cmpLog("[CMP-AVP] initial video display gate audio anchor=\(seconds)")
+            self.evaluateInitialVideoDisplayGate(trigger: "audio_anchor")
         }
-        writer.playbackPositionProvider = { [weak self] in
-            self?.loopbackPlaybackClockSeconds()
+        // HDR10+ badge: the host installs the one-shot SEI scan only for
+        // plain HEVC PQ sessions whose label currently reads "HDR10" and has
+        // not flipped. DV Profile 8 sources keep their validated labels.
+        host.onHDR10PlusMetadataDetected = { [weak self, weak host] in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            self.loopbackHDR10PlusDetected = true
+            cmpLog("[CMP-AVP] hdr10+ dynamic metadata detected — badge flips HDR10 → HDR10+")
+            self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
         }
-        writer.onSourceDownloadStats = { [weak self] bitsPerSecond, totalBytesRead in
-            DispatchQueue.main.async {
-                guard let self, !self.isDisposed else { return }
-                guard self.activeLoopbackSessionID == sessionID else { return }
-                let previousBitrate = self.loopbackDemuxReadBitrateBps
-                self.loopbackDemuxReadBitrateBps = bitsPerSecond
-                self.loopbackSourceBytesRead = totalBytesRead
-                self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
-                if let bitsPerSecond {
-                    let mbps = bitsPerSecond / 1_000_000
-                    let mib = totalBytesRead.map { Double($0) / 1_048_576 } ?? 0
-                    Self.logger.info(
-                        "[CMP-AVP] loopback source rate=\(String(format: "%.1f", mbps), privacy: .public)Mbps totalRead=\(String(format: "%.1f", mib), privacy: .public)MiB"
-                    )
-                }
-                // First measurable source bitrate — re-evaluate the
-                // steady-state forward buffer, since the gate may already
-                // have released before any rate was known.
-                if previousBitrate == nil, bitsPerSecond != nil,
-                   let item = self.currentItem,
-                   self.canRampLoopbackBufferToSteadyState {
-                    self.rampLoopbackBufferToSteadyStateIfNeeded(for: item)
-                }
-            }
+        host.onExternalPlaybackHandoffAbandoned = { [weak self] in
+            self?.abandonExternalPlaybackHandoff()
         }
-        writer.onGeneratedMediaStats = { [weak self] generatedStats in
-            DispatchQueue.main.async {
-                guard let self, !self.isDisposed else { return }
-                guard self.activeLoopbackSessionID == sessionID else { return }
-                self.latestLoopbackGeneratedStats = generatedStats
-                self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
-                if let item = self.currentItem,
-                   self.canRampLoopbackBufferToSteadyState {
-                    self.rampLoopbackBufferToSteadyStateIfNeeded(for: item)
-                    self.sampleLocalLoopbackEdge(item: item, referenceTime: self.currentTime(), trigger: "generated_stats")
-                }
-            }
+        host.onFailure = { [weak self, weak host] failure in
+            guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
+            self.reportFailure(failure)
         }
-        writer.onBridgedAudioAnchored = { [weak self] seconds in
-            DispatchQueue.main.async {
-                guard let self, !self.isDisposed else { return }
-                guard self.activeLoopbackSessionID == sessionID else { return }
-                guard seconds.isFinite else { return }
-                // The encoder anchors while segment 0 is written, so this
-                // lands before the gate is even prepared — scope it to the
-                // load rather than to the gate's own window. A producer that
-                // restarts before the load finishes re-anchors later, and the
-                // gate wants that newer value.
-                guard !self.didFireFileLoaded else { return }
-                self.loopbackBridgedAudioAnchorSeconds = seconds
-                cmpLog("[CMP-AVP] initial video display gate audio anchor=\(seconds)")
-                self.evaluateInitialVideoDisplayGate(trigger: "audio_anchor")
-            }
-        }
-        // HDR10+ badge: install the one-shot SEI scan only for plain HEVC PQ
-        // sessions whose label currently reads "HDR10" and has not flipped.
-        // DV Profile 8 sources keep their validated labels (scan not installed).
-        if sessionSpec.videoMode == .passthroughHEVC,
-           sessionSpec.manifestMetadata.videoRange != "HLG",
-           sessionSpec.manifestMetadata.videoRange != "SDR",
-           !loopbackHDR10PlusDetected {
-            writer.onHDR10PlusMetadataDetected = { [weak self] in
-                DispatchQueue.main.async {
-                    guard let self, !self.isDisposed else { return }
-                    guard self.activeLoopbackSessionID == sessionID else { return }
-                    self.loopbackHDR10PlusDetected = true
-                    cmpLog("[CMP-AVP] hdr10+ dynamic metadata detected — badge flips HDR10 → HDR10+")
-                    self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
-                }
-            }
-        }
-        segmentWriter = writer
-        writer.start()
     }
 
-    private func handleFirstSegmentReady(playlistName: String, sessionID: String) {
-        guard activeLoopbackSessionID == sessionID else { return }
-        guard !isDisposed, currentItem == nil, let server = segmentServer else { return }
-        // Starting up with AirPlay already engaged: prefer the LAN address, but
-        // a session that cannot reach one still plays here rather than failing.
-        var useExternalURL = avPlayer.isExternalPlaybackActive
-        var externalURL: URL?
-        if useExternalURL {
-            externalURL = server.resourceURL(for: playlistName, reachableFromExternalDevice: true)
-            if externalURL == nil {
-                useExternalURL = false
-                abandonExternalPlaybackHandoff()
-            }
-        }
-        guard let url = externalURL ?? server.resourceURL(for: playlistName) else {
-            reportFailure(.loopbackPlaylistURLUnavailable)
-            return
-        }
+    private func handleFirstSegmentReady(
+        _ ready: (url: URL, playlistName: String, usesExternalURL: Bool),
+        host: LocalHLSHost
+    ) {
+        let url = ready.url
+        let playlistName = ready.playlistName
         loopbackPlaylistName = playlistName
-        loopbackPlaybackUsesExternalURL = useExternalURL
-        server.setAcceptsExternalClients(useExternalURL)
-        cmpLog("[CMP-AVP] local playlist ready host=\(url.host ?? "unknown") external=\(useExternalURL ? 1 : 0)")
+        loopbackPlaybackUsesExternalURL = ready.usesExternalURL
+        cmpLog("[CMP-AVP] local playlist ready host=\(url.host ?? "unknown") external=\(ready.usesExternalURL ? 1 : 0)")
         if ttffFirstSegmentMs == nil { ttffFirstSegmentMs = ttffElapsedMs() }
         logTVDisplayManagerState(context: "before_prepare_\(playlistName)")
         // The criteria write always happens synchronously before the item is
@@ -2305,10 +2110,10 @@ final class AVPlayerBackend {
         }
         #if os(tvOS)
         displayModeSettleTask?.cancel()
-        displayModeSettleTask = Task { @MainActor [weak self] in
+        displayModeSettleTask = Task { @MainActor [weak self, weak host] in
             let hosted = await TVDisplayCriteria.waitForModeSwitchSettle()
-            guard let self, !self.isDisposed, !Task.isCancelled,
-                  self.activeLoopbackSessionID == sessionID,
+            guard let self, let host, !self.isDisposed, !Task.isCancelled,
+                  self.loopbackHost === host,
                   self.currentItem == nil else { return }
             // Panel-readiness snapshot. The loopback route now serves the
             // VIDEO-RANGE-claiming master playlist (Atmos claims are
@@ -4581,7 +4386,6 @@ final class AVPlayerBackend {
         // resets it when the source changes).
         loopbackSubtitleTap?.deactivate()
         embeddedSubtitleExtractor?.teardown()
-        activeLoopbackSessionID = nil
         loopbackPlaylistName = nil
         loopbackPlaybackUsesExternalURL = false
         isInitialSeekInFlight = false
@@ -4615,39 +4419,18 @@ final class AVPlayerBackend {
             self?.subtitleOverlay?.clear()
         }
 
-        let writer = segmentWriter
-        segmentWriter = nil
-        writer?.onFirstSegmentReady = nil
-        writer?.onSegmentAppended = nil
-        writer?.onSourceDownloadStats = nil
-        writer?.onGeneratedMediaStats = nil
-        writer?.onHDR10PlusMetadataDetected = nil
-        writer?.onBridgedAudioAnchored = nil
-        writer?.onFinished = nil
-        segmentServer?.stop()
-        segmentServer = nil
-        segmentStore = nil
         latestLoopbackGeneratedStats = nil
         loopbackEdgeWatch = nil
-
-        let dir = sessionDirectory
-        let preserveDir = Self.keepLoopbackArtifacts
-        sessionDirectory = nil
-        // Deferred to `stop`'s completion when a writer exists so the mux
-        // thread has finished before the directory goes away; synchronous
-        // otherwise, because the optional-chained completion never runs.
-        let disposeSessionDirectory: () -> Void = {
-            guard let dir else { return }
-            if preserveDir {
-                cmpLog("[CMP-AVP] retained local DV artifacts dir=\(dir.path)")
-            } else {
-                try? FileManager.default.removeItem(at: dir)
-            }
-        }
-        if let writer {
-            writer.stop(completion: disposeSessionDirectory)
-        } else {
-            disposeSessionDirectory()
+        // The producer, the server, the store and the session directory go
+        // with the host. Its plan is source-keyed and outlives it: the next
+        // session's writer has to be handed the same segment grid. Only a
+        // teardown that actually retires a host refreshes the carry — a
+        // native-route load must leave the last loopback plan where it was,
+        // exactly as the plan fields did when they lived here.
+        if let host = loopbackHost {
+            carriedVODPlan = host.resolvedVODPlan
+            host.teardown()
+            loopbackHost = nil
         }
     }
 
@@ -4817,13 +4600,6 @@ final class AVPlayerBackend {
             underlying: underlying,
             errorLog: latestErrorLog
         )))
-    }
-
-    private static var keepLoopbackArtifacts: Bool {
-        let raw = ProcessInfo.processInfo.environment["SILO_KEEP_DV_HLS"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return raw == "1" || raw == "true" || raw == "yes"
     }
 
     private static func describe(_ strategy: SourceStrategy) -> String {

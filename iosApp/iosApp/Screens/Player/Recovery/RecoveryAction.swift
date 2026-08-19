@@ -60,7 +60,8 @@ enum RecoveryAction: Equatable {
     ///   `recoverLocalLoopbackStallIfNeeded`: flush the subtitle session, seek
     ///   the extractor, then `load(.siloLoopback(spec.reanchored(at:)))`.
     /// * `"vod_stall_nudge"` — `performVODStallRecovery(attempt: 1, …)`:
-    ///   `requestVODProducerRestart(at:authoritative: true)` **first**, then
+    ///   `LocalHLSHost.requestProducerRestart(atSegmentIndex:authoritative:)`
+    ///   with `authoritative: true` **first**, then
     ///   `cancelPendingSeeks()`, a recovery seek to the anchor, and `play()`.
     ///   The producer restart is part of executing this action, not a separate
     ///   action: the policy issues one decision per observation and the engine
@@ -77,7 +78,8 @@ enum RecoveryAction: Equatable {
     /// B:1917 restarts on every attempt), or
     /// `"item_death_<trigger>_<attempt>"` from the item-death rung.
     case reloadItem(atMediaSeconds: Double, reason: String)
-    /// `requestVODProducerRestart(at:authoritative:)` on its own.
+    /// `LocalHLSHost.requestProducerRestart(atSegmentIndex:authoritative:)` on
+    /// its own.
     case restartProducer(atSegmentIndex: Int, authoritative: Bool)
     /// `rebuildSiloLoopbackSession(at:reason:)` — recreate the whole local
     /// pipeline at the rendered clock. Budgeted: the policy only emits this
