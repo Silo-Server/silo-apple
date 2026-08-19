@@ -14,9 +14,10 @@ import SwiftUI
 /// Mounted by the player shells (`Screens/Player/PlayerView` for iOS/tvOS,
 /// `macOS/PlayerView`) rather than by the transport overlays, so it covers a
 /// start with no controls on screen, a mid-play rebuffer with the controls
-/// hidden, and a quality switch with the tvOS HUD open. The shells mount it
-/// only on the live-video branch, which is what keeps a stale capsule from
-/// floating over the Up Next panel or the error view.
+/// hidden, and a quality switch with the tvOS HUD open. The shells suppress
+/// it only for the error view; it deliberately survives the Up Next panel,
+/// where video keeps playing in the mini-player and the panel has no loading
+/// state of its own (the Android chip makes the same call).
 ///
 /// The view positions itself (top-trailing, inside the safe area, clear of
 /// whatever each platform parks in that corner) so every shell agrees on
