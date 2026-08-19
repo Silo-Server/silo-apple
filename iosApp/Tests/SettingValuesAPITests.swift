@@ -1125,6 +1125,134 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
+    func testTemporaryScopedRefreshCommitNeverReachesPersistentKeychainStorage() async throws {
+        let suiteName = "settings-refresh-TemporaryOwnerBoundary-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+        }
+        // Held directly (rather than going through makeRefreshHarness) so the
+        // raw stored slots can be asserted on below.
+        let backend = InMemoryKeychainBackend()
+        let service = "SettingValuesTemporaryOwnerBoundaryTests.\(UUID().uuidString)"
+        let keychain = SharedKeychain(service: service, accessGroup: nil, backend: backend)
+        let tokenStore = TokenStore(
+            keychain: keychain,
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokenStore.switchActiveServer(serverId: "server-a")
+        await tokenStore.setServerUrl("http://settings-test.invalid")
+        await tokenStore.setProfileId("profile-a")
+        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
+
+        XCTAssertEqual(
+            backend.value(service: service, accessGroup: nil, account: TokenStore.accessTokenKey(for: "server-a")),
+            "fake"
+        )
+        XCTAssertEqual(
+            backend.value(service: service, accessGroup: nil, account: TokenStore.refreshTokenKey(for: "server-a")),
+            "dummy"
+        )
+
+        // Scenario A: scope active — a temporary-owner commit mutates only
+        // the scope, never the persistent keychain slots.
+        let temporary = TemporaryAuthScope(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            accessToken: "example",
+            // Match the persistent value so credential provenance, rather
+            // than value inequality, is what prevents the write.
+            refreshToken: "dummy",
+            profileId: "temporary-profile",
+            profileToken: "secret-token",
+            controllerDeviceId: "controller",
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        await tokenStore.beginTemporaryScope(temporary)
+
+        let expectedIdentity = await tokenStore.refreshAccountIdentity()
+        let expected = try XCTUnwrap(expectedIdentity)
+        let capturedCredential = await tokenStore.captureRefreshCredential(expected: expected)
+        let captured = try XCTUnwrap(capturedCredential)
+        XCTAssertEqual(captured.owner, .temporary)
+
+        let stored = await tokenStore.saveRefreshedTokens(
+            "rotated-access",
+            "rotated-refresh",
+            replacing: captured
+        )
+        XCTAssertTrue(stored)
+
+        let scopeAfterCommit = await tokenStore.getTemporaryScope()
+        XCTAssertEqual(scopeAfterCommit?.accessToken, "rotated-access")
+        XCTAssertEqual(scopeAfterCommit?.refreshToken, "rotated-refresh")
+
+        XCTAssertEqual(
+            backend.value(service: service, accessGroup: nil, account: TokenStore.accessTokenKey(for: "server-a")),
+            "fake"
+        )
+        XCTAssertEqual(
+            backend.value(service: service, accessGroup: nil, account: TokenStore.refreshTokenKey(for: "server-a")),
+            "dummy"
+        )
+
+        _ = await tokenStore.endTemporaryScope()
+        let accessAfterEnd = await tokenStore.getAccessToken()
+        let refreshAfterEnd = await tokenStore.getRefreshToken()
+        XCTAssertEqual(accessAfterEnd, "fake")
+        XCTAssertEqual(refreshAfterEnd, "dummy")
+
+        // Scenario B: the scope ends between capture and save, so the commit
+        // must be refused outright rather than falling through to the
+        // persistent account.
+        let temporary2 = TemporaryAuthScope(
+            serverId: "server-a",
+            serverURL: "http://settings-test.invalid",
+            accessToken: "example",
+            // Same value-collision trap as above.
+            refreshToken: "dummy",
+            profileId: "temporary-profile",
+            profileToken: "secret-token",
+            controllerDeviceId: "controller",
+            expiresAt: Date().addingTimeInterval(60)
+        )
+        await tokenStore.beginTemporaryScope(temporary2)
+
+        let expectedIdentity2 = await tokenStore.refreshAccountIdentity()
+        let expected2 = try XCTUnwrap(expectedIdentity2)
+        let capturedCredential2 = await tokenStore.captureRefreshCredential(expected: expected2)
+        let captured2 = try XCTUnwrap(capturedCredential2)
+        XCTAssertEqual(captured2.owner, .temporary)
+
+        _ = await tokenStore.endTemporaryScope()
+
+        // With the captured refresh token equal to the persistent one, only
+        // the captured owner/generation — not value inequality — prevents
+        // this from redirecting into the persistent slot.
+        let storedLate = await tokenStore.saveRefreshedTokens(
+            "intruder-access",
+            "intruder-refresh",
+            replacing: captured2
+        )
+        XCTAssertFalse(storedLate)
+
+        let accessAfterLate = await tokenStore.getAccessToken()
+        let refreshAfterLate = await tokenStore.getRefreshToken()
+        XCTAssertEqual(accessAfterLate, "fake")
+        XCTAssertEqual(refreshAfterLate, "dummy")
+        let scopeAfterLate = await tokenStore.getTemporaryScope()
+        XCTAssertNil(scopeAfterLate)
+        XCTAssertEqual(
+            backend.value(service: service, accessGroup: nil, account: TokenStore.accessTokenKey(for: "server-a")),
+            "fake"
+        )
+        XCTAssertEqual(
+            backend.value(service: service, accessGroup: nil, account: TokenStore.refreshTokenKey(for: "server-a")),
+            "dummy",
+            "credentials captured from a temporary scope must never redirect into persistent storage"
+        )
+    }
+
     func testRejectedTemporaryGenerationRefreshesAndExpiresOnlyOnce() async throws {
         SettingsStubProtocol.reset(mode: .temporaryRefreshRejected)
         let harness = try await makeRefreshHarness(testName: "RejectedTemporaryGeneration")
