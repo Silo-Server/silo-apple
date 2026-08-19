@@ -389,8 +389,7 @@ struct TVSubtitleSettingsPane: View {
             get: { viewModel.subtitleAppearance.textOutlineColor.lowercased() },
             set: { value in
                 var next = viewModel.subtitleAppearance
-                next.textOutlineColor = value
-                next.textOutline = true
+                next.applyTextOutlineColor(value)
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
@@ -402,10 +401,7 @@ struct TVSubtitleSettingsPane: View {
             set: { rawValue in
                 guard let style = SubtitleBackgroundStylePreset(rawValue: rawValue) else { return }
                 var next = viewModel.subtitleAppearance
-                next.backgroundStyle = style
-                if style == .box && next.backgroundOpacity == 0 {
-                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
-                }
+                next.applyBackgroundStyle(style)
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
@@ -417,10 +413,7 @@ struct TVSubtitleSettingsPane: View {
             set: { value in
                 guard let opacity = Int(value) else { return }
                 var next = viewModel.subtitleAppearance
-                next.backgroundOpacity = opacity
-                if opacity > 0 {
-                    next.backgroundStyle = .box
-                }
+                next.applyBackgroundOpacity(opacity)
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
@@ -431,11 +424,7 @@ struct TVSubtitleSettingsPane: View {
             get: { viewModel.subtitleAppearance.backgroundColor.lowercased() },
             set: { value in
                 var next = viewModel.subtitleAppearance
-                next.backgroundColor = value
-                next.backgroundStyle = .box
-                if next.backgroundOpacity == 0 {
-                    next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
-                }
+                next.applyBackgroundColor(value)
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )

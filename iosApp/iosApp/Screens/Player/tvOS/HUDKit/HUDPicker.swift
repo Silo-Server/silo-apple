@@ -17,8 +17,7 @@ enum HUDPickerOptions {
     }
 
     static func delayLabel(_ milliseconds: Int) -> String {
-        if milliseconds == 0 { return "0 ms" }
-        return (milliseconds > 0 ? "+" : "") + "\(milliseconds) ms"
+        PlayerTimeFormatter.formatSubtitleDelay(milliseconds)
     }
 
     static func delayOptions(

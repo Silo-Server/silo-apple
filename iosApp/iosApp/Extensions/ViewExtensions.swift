@@ -130,6 +130,21 @@ extension View {
         #endif
     }
 
+    #if !os(tvOS)
+    /// Standard chrome for a settings-list `Picker`: on-surface label color,
+    /// then a menu on macOS and a navigation-link row on iOS. tvOS drives its
+    /// own `TVSettings*` screens and never calls this.
+    func siloSettingsPicker() -> some View {
+        self
+            .foregroundStyle(Color.siloOnSurface)
+            #if os(macOS)
+            .pickerStyle(.menu)
+            #else
+            .pickerStyle(.navigationLink)
+            #endif
+    }
+    #endif
+
     func siloInputChrome(isFocused: Bool) -> some View {
         self
             .background(SiloInputBackground(isFocused: isFocused))
@@ -196,11 +211,13 @@ extension View {
 
 // MARK: - Silo Button Styles
 
-// NOTE: On the migrated paths these styles now serve tvOS only — iOS/macOS
-// route to native `.glass`/`.glassProminent` via the `silo*Button()` view
-// extensions below. They stay defined because tvOS focus appearance (scale,
-// glow, focus stroke, `.focusEffectDisabled()`) depends on them. If tvOS later
-// adopts glass too, they can be retired.
+// NOTE: These three styles are tvOS-only, and the guard below enforces it:
+// every use site — the `silo*Button()` extensions, CalendarView,
+// CreateProfileView — names them inside an `#if os(tvOS)` branch, while
+// iOS/macOS route to native `.glass`/`.glassProminent`. They exist because
+// tvOS focus appearance (scale, glow, focus stroke, `.focusEffectDisabled()`)
+// depends on them. If tvOS later adopts glass too, they can be retired.
+#if os(tvOS)
 
 /// Primary action button — filled pill with dark text. At rest the pill is
 /// a dimmed white so focus can brighten it to solid white; on tvOS focus
@@ -248,14 +265,12 @@ private struct PrimaryButtonBody: View {
             )
         )
         .overlay {
-            #if os(tvOS)
             if isFocused {
                 Capsule()
                     .stroke(Color.white.opacity(0.36), lineWidth: 7)
                     .padding(-6)
                     .blur(radius: 6)
             }
-            #endif
         }
         .scaleEffect(isFocused && !reduceMotion ? 1.055 : 1.0)
         .shadow(
@@ -264,9 +279,7 @@ private struct PrimaryButtonBody: View {
             y: isFocused ? 8 : 0
         )
         .opacity(configuration.isPressed ? 0.8 : 1.0)
-        #if os(tvOS)
         .focusEffectDisabled()
-        #endif
         .animation(.easeInOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
         .animation(SiloTheme.springAnimation, value: isFocused)
     }
@@ -308,9 +321,7 @@ private struct SecondaryButtonBody: View {
                 y: isFocused ? 6 : 0
             )
             .opacity(configuration.isPressed ? 0.7 : 1.0)
-            #if os(tvOS)
             .focusEffectDisabled()
-            #endif
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
             .animation(SiloTheme.springAnimation, value: isFocused)
     }
@@ -353,13 +364,13 @@ private struct TextButtonBody: View {
                 y: isFocused ? 4 : 0
             )
             .opacity(configuration.isPressed ? 0.6 : 1.0)
-            #if os(tvOS)
             .focusEffectDisabled()
-            #endif
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
             .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
+
+#endif
 
 // MARK: - Silo button style routing (glass on iOS/macOS, Silo styles on tvOS)
 

@@ -45,13 +45,8 @@ enum TVSettingsOptions {
         )
     }
 
-    static let nextUpPrompt: [TVSettingsOption] = [
-        .init(id: "0", label: "At end"),
-        .init(id: "10", label: "10 seconds before end"),
-        .init(id: "30", label: "30 seconds before end"),
-        .init(id: "60", label: "1 minute before end"),
-        .init(id: "120", label: "2 minutes before end"),
-    ]
+    static let nextUpPrompt: [TVSettingsOption] =
+        PlayerSettings.nextUpPromptOptions.map { .init(id: String($0.seconds), label: $0.label) }
 
     static func subtitleLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
         languageOptions(
@@ -86,13 +81,8 @@ enum TVSettingsOptions {
     static let subtitleMode: [TVSettingsOption] =
         SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }
 
-    static let subtitleSize: [TVSettingsOption] = [
-        .init(id: "small",   label: "Small"),
-        .init(id: "medium",  label: "Medium"),
-        .init(id: "large",   label: "Large"),
-        .init(id: "xlarge",  label: "X-Large"),
-        .init(id: "xxlarge", label: "XX-Large"),
-    ]
+    static let subtitleSize: [TVSettingsOption] =
+        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
     static let fontFamily: [TVSettingsOption] =
         SubtitleFontFamilyPreset.allCases.map {

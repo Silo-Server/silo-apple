@@ -68,12 +68,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.backgroundStyle.rawValue,
                                     onSelect: { value in
                                         if let style = SubtitleBackgroundStylePreset(rawValue: value) {
-                                            updateAppearance {
-                                                $0.backgroundStyle = style
-                                                if style == .box && $0.backgroundOpacity == 0 {
-                                                    $0.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
-                                                }
-                                            }
+                                            updateAppearance { $0.applyBackgroundStyle(style) }
                                         }
                                     }
                                 )
@@ -170,10 +165,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.textOutlineColor,
                                     onSelect: { value in
                                         // Picking a color turns the outline on.
-                                        updateAppearance {
-                                            $0.textOutlineColor = value
-                                            $0.textOutline = true
-                                        }
+                                        updateAppearance { $0.applyTextOutlineColor(value) }
                                     }
                                 )
                             )
@@ -198,13 +190,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: viewModel.settings.subtitleAppearance.backgroundColor,
                                     onSelect: { value in
                                         // Picking a color switches the style to Box.
-                                        updateAppearance {
-                                            $0.backgroundColor = value
-                                            $0.backgroundStyle = .box
-                                            if $0.backgroundOpacity == 0 {
-                                                $0.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
-                                            }
-                                        }
+                                        updateAppearance { $0.applyBackgroundColor(value) }
                                     }
                                 )
                             )
@@ -221,12 +207,7 @@ struct SubtitleAppearanceDialog: View {
                                     selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
                                     onSelect: { value in
                                         if let opacity = Int(value) {
-                                            updateAppearance {
-                                                $0.backgroundOpacity = opacity
-                                                if opacity > 0 {
-                                                    $0.backgroundStyle = .box
-                                                }
-                                            }
+                                            updateAppearance { $0.applyBackgroundOpacity(opacity) }
                                         }
                                     }
                                 )

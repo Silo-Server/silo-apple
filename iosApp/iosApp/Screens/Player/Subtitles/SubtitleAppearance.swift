@@ -58,10 +58,6 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         }
         #endif
     }
-
-    static func nearest(to points: Double) -> SubtitleFontSizePreset {
-        allCases.min(by: { abs($0.pointSize - points) < abs($1.pointSize - points) }) ?? .large
-    }
 }
 
 // Future: add a "system" appearance source that maps Apple's Media
@@ -379,6 +375,47 @@ struct SubtitleAppearance: Codable, Equatable {
             copy.textOutline = true
         }
         return copy
+    }
+
+    // MARK: - Edit rules
+
+    /// "Touch it and it applies": editing a setting the current style ignores
+    /// makes it take effect. These four helpers are the single copy of those
+    /// rules for the player sheet, the tvOS player dialog and both settings
+    /// screens. Call sites keep their own early-out guards, so which edits
+    /// result in a save is unchanged.
+
+    /// Picking a background color switches the style to Box, and gives a
+    /// fully transparent background the default opacity so it renders.
+    mutating func applyBackgroundColor(_ value: String) {
+        backgroundColor = value
+        backgroundStyle = .box
+        if backgroundOpacity == 0 {
+            backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
+        }
+    }
+
+    /// Raising the opacity above zero switches the style to Box.
+    mutating func applyBackgroundOpacity(_ opacity: Int) {
+        backgroundOpacity = opacity
+        if opacity > 0 {
+            backgroundStyle = .box
+        }
+    }
+
+    /// Choosing Box with a fully transparent background would render
+    /// nothing; give it the default opacity so the choice takes effect.
+    mutating func applyBackgroundStyle(_ style: SubtitleBackgroundStylePreset) {
+        backgroundStyle = style
+        if style == .box && backgroundOpacity == 0 {
+            backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
+        }
+    }
+
+    /// Picking an outline color turns the outline on.
+    mutating func applyTextOutlineColor(_ value: String) {
+        textOutlineColor = value
+        textOutline = true
     }
 
     /// One-word style descriptor for summary rows ("Large · Box · Bottom").
