@@ -103,9 +103,15 @@ enum RecoveryAction: Equatable {
     /// `attemptStaleSessionRenewal` — the visible renewal that re-runs the load.
     case renewSessionFresh(reason: String)
     /// `handleOriginOutageChanged(true)` — start (or continue) riding the
-    /// buffered runway. `probeAfter` is the interval the ride-through loop
-    /// sleeps *after* the health probe it issues now, i.e. the loop's `delay`
-    /// local at that moment (1 s on entry, doubling per probe, capped at 8 s).
+    /// buffered runway.
+    ///
+    /// One contract, both on entry and on every continuation: **sleep
+    /// `probeAfter`, then issue one `/api/v1/health` probe and report it back
+    /// as `.serverHealthProbe(ok:)`**. Entry emits `probeAfter: 0` because the
+    /// legacy loop probes before its first sleep (PVM:4299-4310); the delays
+    /// that come back from each probe are 1, 2, 4, 8, 8, …, so the full emitted
+    /// sequence 0, 1, 2, 4, 8, 8 reproduces the legacy probe times
+    /// t = 0, 1, 3, 7, 15, 23, ….
     case rideThroughOutage(probeAfter: Duration)
     /// `handleOriginOutageChanged(false)` — `clearSourceOutageRideThroughState()`
     /// and, when `kick` is set, `kickPlaybackAfterExternalStallCleared()`.
@@ -119,7 +125,12 @@ enum RecoveryAction: Equatable {
     /// needs (`discardSourceCacheHandoff()` instead of
     /// `stashSourceCacheHandoff()`).
     case recoverFromServerOutage(reason: String)
-    /// `waitForServerReady`'s next iteration: probe again after `probeAfter`.
+    /// `waitForServerReady`'s next iteration, on the same contract as
+    /// `.rideThroughOutage`: sleep `probeAfter`, then probe and report
+    /// `.serverHealthProbe(ok:)`. There is no `probeAfter: 0` entry here
+    /// because `waitForServerReady`'s first probe is issued by the tail of
+    /// `.recoverFromServerOutage` (PVM:4494-4504), so the first delay this case
+    /// carries is already the legacy loop's first sleep.
     case waitForServerReady(probeAfter: Duration)
     /// `triggerAutomaticInterruptionRecovery()`.
     case autoRecoverInterruption

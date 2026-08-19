@@ -890,8 +890,18 @@ enum RecoveryPolicy {
             )
         }
 
-        // Rung 7 (PVM:1578, `progressTask?.cancel()`) is an effect the engine
-        // performs alongside whatever this ladder returns, not a decision.
+        // Rung 7 (PVM:1578, `progressTask?.cancel()`) is an effect, not a
+        // decision — but it is NOT unconditional. It sits *below* the rungs
+        // above, so it runs only when the ladder reaches rung 8 or lower: it is
+        // part of executing `.autoRecoverInterruption`, `.switchRoute` and
+        // `.fail`, and it must NOT be performed when this ladder returns
+        // `.renewSourceInBackground`. A silent renewal that failed transiently
+        // deliberately re-arms nothing (PVM:4186-4192, "so the next trigger
+        // (progress heartbeat or stream 404) retries"), so cancelling the 10 s
+        // progress loop here would kill the only thing that retries it. The
+        // rungs above that do want the loop stopped stop it themselves inside
+        // their own execution — PVM:1615 (replan), PVM:4259 (visible renewal)
+        // and PVM:4426 (server-outage recovery).
 
         // Rung 8 — PVM:1579 `shouldAutoRecoverFromInterruption`.
         if context.canAutoRecoverInterruption {
@@ -956,6 +966,20 @@ enum RecoveryPolicy {
         source: SessionMissingSource,
         context: inout RecoveryContext
     ) -> (RecoveryAction?, RecoveryContext) {
+        // PVM:1663-1670: three of the four sources try the silent renewal
+        // first; the V3 replan's `catch` does not. It calls
+        // `attemptStaleSessionRenewal` directly and deliberately: PVM:4165
+        // states that once the server has re-planned "only a full visible
+        // renewal can pick up the new plan", while the silent path keeps the
+        // existing plan, session and backend alive and merely retargets the
+        // proxy's origin (PVM:4138). The silent path's preconditions are all
+        // satisfiable where this fires (a V3 session on `.direct` delivery with
+        // a live proxy and a loaded watch detail), so without this
+        // short-circuit the rung would divert a replan failure into a retarget
+        // of the stale plan.
+        if case .replanCatch = source {
+            return renewSessionFresh(reason: source.reason, context: &context)
+        }
         // PVM:4086-4092: a silent renewal only exists on a proxied direct
         // source that is online and has a watch detail loaded.
         if context.canRenewSourceInBackground {
@@ -1025,12 +1049,14 @@ enum RecoveryPolicy {
                 nextProbeDelay: serverOutageRecoveryInitialDelay,
                 noticeShown: false
             )
-            // PVM:4299-4310: the loop probes immediately and then sleeps
-            // `delay`, which starts at `serverOutageRecoveryInitialDelay`.
-            return (
-                .rideThroughOutage(probeAfter: .seconds(serverOutageRecoveryInitialDelay)),
-                context
-            )
+            // PVM:4299-4310: the loop probes *immediately* and only then sleeps
+            // `delay` (primed at `serverOutageRecoveryInitialDelay`), so its
+            // probes land at t = 0, 1, 3, 7, 15, 23, … Under this action's one
+            // contract — "sleep `probeAfter`, then probe" — the entry probe is
+            // `probeAfter: 0`; every later sleep comes back from
+            // `decideServerHealthProbe`, which emits the delay in force at that
+            // probe before doubling it.
+            return (.rideThroughOutage(probeAfter: .zero), context)
         }
         // PVM:4323-4331: exit — clear the state, then kick the item whose
         // segment fetches died during the outage. (The caller reads
@@ -1072,10 +1098,14 @@ enum RecoveryPolicy {
         }
 
         guard var outage = context.outage else { return (nil, context) }
-        // PVM:4301-4304: the loop re-checks its 90 s deadline before every
-        // probe; when it has expired the ride-through escalates to the visible
-        // recovery. (`ok: true` nudges `sourceProxy.reprobeOrigin()` — the
-        // engine's job at probe time — and does not shorten the backoff: the
+        // PVM:4301-4304: the loop re-checks its 90 s deadline once per probe;
+        // when it has expired the ride-through escalates to the visible
+        // recovery. The legacy check is at the top of the loop body, i.e. at the
+        // same clock instant as this one (a probe time) but just *before* the
+        // probe rather than just after it — so the escalation happens at the
+        // same instant, at the cost of one extra `/api/v1/health` GET on the
+        // boundary iteration. (`ok: true` nudges `sourceProxy.reprobeOrigin()` —
+        // the engine's job at probe time — and does not shorten the backoff: the
         // legacy loop doubles `delay` on every iteration regardless of the
         // result.)
         guard now.timeIntervalSince(outage.rideThroughStart) < serverOutageRecoveryTimeout else {
@@ -1086,9 +1116,13 @@ enum RecoveryPolicy {
                 now: now
             )
         }
+        // PVM:4308-4310: sleep the delay in force at *this* probe, then double
+        // it. With the entry action's `probeAfter: 0` the emitted sequence is
+        // 0, 1, 2, 4, 8, 8, … — probes at t = 0, 1, 3, 7, 15, 23, ….
+        let sleepFor = outage.nextProbeDelay
         outage.nextProbeDelay = min(outage.nextProbeDelay * 2, serverOutageRecoveryMaxDelay)
         context.outage = outage
-        return (.rideThroughOutage(probeAfter: .seconds(outage.nextProbeDelay)), context)
+        return (.rideThroughOutage(probeAfter: .seconds(sleepFor)), context)
     }
 
     // MARK: - Visible server-outage recovery (PVM:4385)
@@ -1098,6 +1132,16 @@ enum RecoveryPolicy {
         context: inout RecoveryContext,
         now: Date
     ) -> (RecoveryAction?, RecoveryContext) {
+        // PVM:4390 `!hasReachedEndOfFile` is a load-state gate, not a recovery
+        // decision — the same gate `decideEngineFailed`'s rung 1 delegates: after
+        // end-of-file the load is terminal and the engine reports nothing into
+        // recovery, so none of this function's three entries (the failure
+        // ladder's premature-source-end rung, `.sourceInterrupted`, and the
+        // ride-through's budget expiry) can reach it. Wave 1E's `PlaybackState`
+        // carries that `.ended` sub-state; a proxy interruption arriving after
+        // EOF must be dropped there, not answered with
+        // `.recoverFromServerOutage`.
+        //
         // PVM:4396-4398: single-flight.
         guard context.serverOutageRecovery == nil else { return (nil, context) }
         context.serverOutageRecovery = RecoveryContext.ServerOutageRecoveryState(

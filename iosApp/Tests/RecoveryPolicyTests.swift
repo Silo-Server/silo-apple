@@ -1622,7 +1622,10 @@ final class RecoveryPolicyTests: XCTestCase {
             context: context,
             now: t0
         )
-        XCTAssertEqual(action, .renewSessionFresh(reason: "replan"))
+        XCTAssertEqual(
+            action,
+            .renewSessionFresh(reason: "protocol_v3_replan_missing_session")
+        )
         (action, _) = RecoveryPolicy.decide(
             .sessionMissing(source: .replanCatch),
             context: context,
@@ -1631,17 +1634,59 @@ final class RecoveryPolicyTests: XCTestCase {
         XCTAssertNil(action)
     }
 
+    func testSessionMissing_ReplanCatch_SkipsTheBackgroundRenewal() {
+        // PVM:1663-1670 — the V3 replan's `catch` calls
+        // `attemptStaleSessionRenewal` directly, never
+        // `attemptBackgroundSessionRenewal`: PVM:4165 records that once the
+        // server has re-planned "only a full visible renewal can pick up the new
+        // plan", while the silent path (PVM:4138) only retargets the proxy at
+        // the *existing* plan. The silent path's preconditions are satisfiable
+        // here, so the short-circuit has to be explicit.
+        var context = offlineContext(route: .avPlayerNativeDirect)
+        context.canRenewSourceInBackground = true
+        var action: RecoveryAction?
+        (action, context) = RecoveryPolicy.decide(
+            .sessionMissing(source: .replanCatch),
+            context: context,
+            now: t0
+        )
+        XCTAssertEqual(
+            action,
+            .renewSessionFresh(reason: "protocol_v3_replan_missing_session")
+        )
+        XCTAssertFalse(context.backgroundRenewalInFlight)
+        XCTAssertTrue(context.freshRenewalInFlight)
+
+        // The other three sources still take the silent rung first on exactly
+        // the same context (PVM:1558 / PVM:2945 / PVM:7482).
+        for source in [SessionMissingSource.playerError, .proxy404, .progressHeartbeat] {
+            var siblingContext = offlineContext(route: .avPlayerNativeDirect)
+            siblingContext.canRenewSourceInBackground = true
+            let (siblingAction, next) = RecoveryPolicy.decide(
+                .sessionMissing(source: source),
+                context: siblingContext,
+                now: t0
+            )
+            XCTAssertEqual(siblingAction, .renewSourceInBackground(reason: source.reason))
+            XCTAssertTrue(next.backgroundRenewalInFlight)
+            XCTAssertFalse(next.freshRenewalInFlight)
+        }
+    }
+
     // MARK: - Origin-outage ride-through (PVM:4280)
 
-    func testOutage_RideThrough_StartsWithTheInitialProbeDelay() {
-        // PVM:4299-4300 — the loop probes at once with `delay` primed at 1 s.
+    func testOutage_RideThrough_ProbesImmediatelyOnEntry() {
+        // PVM:4299-4300 — the loop probes at once, with `delay` primed at 1 s
+        // for the sleep that follows. Under the action's "sleep `probeAfter`,
+        // then probe" contract that entry probe is `probeAfter: 0`; the 1 s
+        // lives in the context until the first probe result asks for it.
         let context = offlineContext(route: .avPlayerNativeDirect)
         let (action, next) = RecoveryPolicy.decide(
             .originOutage(active: true),
             context: context,
             now: t0
         )
-        XCTAssertEqual(action, .rideThroughOutage(probeAfter: .seconds(1)))
+        XCTAssertEqual(action, .rideThroughOutage(probeAfter: .zero))
         XCTAssertEqual(next.outage?.rideThroughStart, t0)
         XCTAssertEqual(next.outage?.nextProbeDelay, 1)
         XCTAssertEqual(next.outage?.noticeShown, false)
@@ -1678,8 +1723,10 @@ final class RecoveryPolicyTests: XCTestCase {
     }
 
     func testOutage_Backoff_DoublesToTheEightSecondCap() {
-        // PVM:4310 — `delay = min(delay * 2, 8)` on every iteration, whatever
-        // the probe said.
+        // PVM:4308-4310 — the loop sleeps the delay in force at this probe and
+        // only then runs `delay = min(delay * 2, 8)`, whatever the probe said.
+        // Replayed against the wall clock the emitted sleeps 0, 1, 2, 4, 8, 8
+        // put the probes exactly where PVM:4299-4310 puts them.
         var context = offlineContext(route: .avPlayerNativeDirect)
         var action: RecoveryAction?
         (action, context) = RecoveryPolicy.decide(
@@ -1687,18 +1734,24 @@ final class RecoveryPolicyTests: XCTestCase {
             context: context,
             now: t0
         )
+        XCTAssertEqual(action, .rideThroughOutage(probeAfter: .zero))
+
         var expected: TimeInterval = 1
-        var elapsed: TimeInterval = 0
+        var probeAt: TimeInterval = 0
+        var probeTimes: [TimeInterval] = []
         for probe in 0..<5 {
-            expected = oracleNextBackoff(expected)
-            elapsed += expected
+            probeTimes.append(probeAt)
             (action, context) = RecoveryPolicy.decide(
                 .serverHealthProbe(ok: probe.isMultiple(of: 2)),
                 context: context,
-                now: at(elapsed)
+                now: at(probeAt)
             )
             XCTAssertEqual(action, .rideThroughOutage(probeAfter: .seconds(expected)))
+            probeAt += expected
+            expected = oracleNextBackoff(expected)
         }
+        XCTAssertEqual(probeTimes, [0, 1, 3, 7, 15], "the legacy probe schedule")
+        XCTAssertEqual(probeAt, 23)
         XCTAssertEqual(expected, 8, "1 → 2 → 4 → 8 → 8 → 8")
     }
 
@@ -1717,7 +1770,7 @@ final class RecoveryPolicyTests: XCTestCase {
             context: context,
             now: at(89.9)
         )
-        XCTAssertEqual(action, .rideThroughOutage(probeAfter: .seconds(2)))
+        XCTAssertEqual(action, .rideThroughOutage(probeAfter: .seconds(1)))
 
         (action, context) = RecoveryPolicy.decide(
             .serverHealthProbe(ok: false),

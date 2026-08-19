@@ -151,7 +151,13 @@ enum SessionMissingSource: Equatable {
     /// (`reason: "progress"`).
     case progressHeartbeat
     /// The Protocol V3 replan's `catch` fell through to a visible renewal
-    /// (`reason: "replan"`).
+    /// (`reason: "protocol_v3_replan_missing_session"`, PVM:1663-1670).
+    ///
+    /// This is the one source that never tries the silent renewal first: the
+    /// legacy `catch` calls `attemptStaleSessionRenewal` directly, because once
+    /// the server has re-planned "only a full visible renewal can pick up the
+    /// new plan" (PVM:4165). `RecoveryPolicy.decideSessionMissing` short-
+    /// circuits on it for that reason.
     case replanCatch
 
     /// The `reason` token the legacy call sites pass, reproduced verbatim so
@@ -162,7 +168,7 @@ enum SessionMissingSource: Equatable {
         case .playerError: return "player_error"
         case .proxy404: return "source_404"
         case .progressHeartbeat: return "progress"
-        case .replanCatch: return "replan"
+        case .replanCatch: return "protocol_v3_replan_missing_session"
         }
     }
 }
