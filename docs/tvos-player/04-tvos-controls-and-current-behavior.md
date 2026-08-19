@@ -201,6 +201,10 @@ Current truth:
 - secondary subtitles are sidecar-only on all three routes
 - subtitle delay and styling apply to Silo-rendered tracks only
 
+Current truth: `bufferedAheadSeconds` is published on **every** route now, so
+the buffered fill is always live. The old "empty on the default path" caveat
+was a `PlayerCore` limitation.
+
 ### Chapters
 
 Chapter numbers, titles, timestamps, with the current chapter highlighted.
