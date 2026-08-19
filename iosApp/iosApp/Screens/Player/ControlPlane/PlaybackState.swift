@@ -33,7 +33,21 @@ enum PlaybackState: Equatable {
     /// `progressPosition: currentTime` / `resumePositionOverride: currentTime`
     /// and resume where playback died; without it here, Retry would restart
     /// the title from the beginning.
-    case failed(PlaybackFailure, LoadID?, request: PlayerViewModel.LoadRequest?, position: Double)
+    ///
+    /// Only the playhead is carried, not the whole `TransportState`: the
+    /// error screen and the tvOS suspend that can follow it read the position
+    /// (Retry, `SuspendedContext.resumePosition`) and the message, and the
+    /// duration the view model keeps across a failure is re-established by the
+    /// next load's adopt before the transport UI comes back. `selections` is
+    /// carried because the suspend that can follow *does* consume it (see
+    /// `TrackResumeSelections`).
+    case failed(
+        PlaybackFailure,
+        LoadID?,
+        request: PlayerViewModel.LoadRequest?,
+        position: Double,
+        selections: TrackResumeSelections
+    )
     /// The player was dismissed; nothing may be scheduled any more.
     case disposed
 
@@ -43,7 +57,7 @@ enum PlaybackState: Equatable {
         case .idle, .suspended, .disposed: return nil
         case .preparing(let preparing): return preparing.loadID
         case .playing(let playing): return playing.loadID
-        case .failed(_, let loadID, _, _): return loadID
+        case .failed(_, let loadID, _, _, _): return loadID
         }
     }
 
@@ -63,6 +77,16 @@ struct Preparing: Equatable {
         /// `runStartSession` / `OfflinePlaybackBuilder.loadPreparedPlayback`.
         case resolvingSession
         /// The prepared session is being turned into an `ExecutablePlan`.
+        ///
+        /// RESERVED — the reducer never rests here, and wave 3 must not write
+        /// a guard that assumes it can: resolving a plan runs the route
+        /// planner and the V3 adapter, which is actor work, so the plan
+        /// arrives *with* `SessionEvent.prepared` / `.replanned` and
+        /// `.resolvingSession` moves straight to `.startingEngine`. The case
+        /// is kept because it is a binding name in design §2.3 and because
+        /// wave 2/3 may split planning off the prepare (an offline plan
+        /// rebuild, a route re-plan after a capability change) — at which
+        /// point this is the phase that load rests in.
         case planning
         /// `loadBackend` was issued; waiting for `fileLoaded`.
         case startingEngine
@@ -75,19 +99,34 @@ struct Preparing: Equatable {
     let request: PlayerViewModel.LoadRequest
     let options: LoadOptions
     let adoption: PlaybackAdoption
-    /// Known from `.planning` onwards.
+    /// Known from `.startingEngine` onwards: the plan arrives *with* the
+    /// prepared session (see `Phase.planning`).
     var plan: ExecutablePlan?
-    /// The last known playhead, carried across the load.
+    /// The transport projections carried across the load.
     ///
     /// `resetPublishedLoadState` (PVM:3475-3546) deliberately does **not**
-    /// clear `currentTime` — it only mirrors it into `scrubPreviewTime` — so a
-    /// load in flight still has a playhead, and `makeSuspendedPlaybackContext`
-    /// (PVM:3643-3657) snapshots exactly that when tvOS backgrounds mid-load.
-    /// The tvOS suspend rule reads `options.resumePosition ?? carriedPosition`:
-    /// once the session resolves, `adoptPreparedPlayback` (PVM:2614) has set
-    /// `currentTime` to the new session's position, which is the resume
-    /// override when the caller pinned one.
-    let carriedPosition: Double
+    /// clear `currentTime`, `duration` or the buffering flag — it only mirrors
+    /// `currentTime` into `scrubPreviewTime` and zeroes
+    /// `bufferedAheadSeconds`/`playbackRunwaySeconds` — so a load in flight
+    /// still has a playhead and a duration, which is what
+    /// `makeSuspendedPlaybackContext` (PVM:3643-3657) snapshots when tvOS
+    /// backgrounds mid-load.
+    ///
+    /// When the session resolves, `adoptPreparedPlayback` overwrites
+    /// `positionSeconds` with `movieTime(for: session)` (PVM:2613 / PVM:3130-3134)
+    /// and `durationSeconds` with
+    /// `session.durationSeconds ?? selectedVersion.duration ?? fallback`
+    /// (PVM:2612) — *before* the engine load — so `fileLoaded` starts the
+    /// `Playing` state from the adopted values rather than from zero.
+    var transport: TransportState
+    /// `activeQualityId`. `resetPublishedLoadState` sets it to
+    /// `ApplePlaybackQuality.autoId`; the adopt sets it to
+    /// `prepared.activeQualityId` (PVM:2619) and it then persists for the
+    /// whole load.
+    var activeQualityId: String?
+    /// The inputs `copyForRecovery` needs when this load is suspended or
+    /// renewed (see `TrackResumeSelections`).
+    var resumeSelections: TrackResumeSelections
     /// A `preserveInterruptionState` load keeps the pending tvOS interruption
     /// alive across the reload (PVM:3691-3693), so
     /// `completeInterruptionRecoveryIfNeeded` (PVM:3976-3996) can still clear
@@ -118,20 +157,94 @@ struct Playing: Equatable {
     let adoption: PlaybackAdoption
     var transport: TransportState
     var sub: Sub
+    /// The outstanding seek, if any.
+    ///
+    /// Deliberately a field rather than a `Sub` case (design §2.3 sketched it
+    /// as `Sub.seeking`): in the view model `seekOriginTime`/`seekTargetTime`
+    /// (PVM:5020-5045) are independent of `protocolV3ReplanTask`,
+    /// `backgroundRenewalSessionId` and `hasReachedEndOfFile`, so a seek that
+    /// arrives while a replan owns the load is performed *and* the replan
+    /// still lands. Modelling it as a `Sub` case made the two mutually
+    /// exclusive, which dropped whichever arrived second — a user seek during
+    /// a quality switch stranded the load behind the loading overlay because
+    /// the server's `.replanned` answer no longer matched `.replanning`.
+    /// A new `LoadID` still drops it structurally (design §4 I5): the field
+    /// lives on `Playing`, and every engine load builds a new one.
+    var seek: SeekRequest?
+    /// `activeQualityId` — set by the adopt from `prepared.activeQualityId`
+    /// (PVM:2619) and *not* re-derived per publish: a replan that is not a
+    /// quality switch must not clear the label the user sees.
+    var activeQualityId: String?
+    /// The live inputs `copyForRecovery` needs (see `TrackResumeSelections`).
+    var resumeSelections: TrackResumeSelections
     var interruption: Interruption?
+}
+
+/// What `LoadRequest.copyForRecovery` (PVM:860-880) is given when a load is
+/// suspended for tvOS background (`makeSuspendedPlaybackContext`,
+/// PVM:3643-3657) or renewed from scratch (`attemptStaleSessionRenewal`,
+/// PVM:4236-4242). Both sites rebuild the request from the **live** selection,
+/// not from the request that started the load, so backgrounding the Apple TV
+/// after changing the audio track resumes on that track and a recovery never
+/// re-honours a `startFromBeginning: true` against a resume override.
+///
+/// The reducer cannot compute these — `resolvedAudioTrackIndexForResume()` and
+/// friends (PVM:3549-3594) read the player's live track lists, which the track
+/// coordinator owns — so they are carried. They are seeded from the request at
+/// `beginLoad` (which is what `resetPublishedLoadState` + those resolvers
+/// produce while a load is in flight: the lists are empty, so each resolver
+/// falls back to `lastLoadRequest`'s preferred value) and from
+/// `prepared.selectedVersion.fileId` at the adopt. **Wave 3 contract:** the
+/// shell/track coordinator must keep `audioTrackIndex`, `subtitleTrackIndex`
+/// and `sidecarSubtitleTrackId` current as the user changes selection — the
+/// `-1` "Off" sentinel included — exactly as the three resolvers do today.
+struct TrackResumeSelections: Equatable {
+    /// `currentSelectedVersion?.fileId`. Only the *renewal* site prefers it
+    /// (`?? lastLoadRequest.preferredFileId`); the suspend site keeps the
+    /// request's own `preferredFileId`.
+    var selectedFileId: Int?
+    /// `resolvedAudioTrackIndexForResume()`.
+    var audioTrackIndex: Int?
+    /// `resolvedSubtitleTrackIndexForResume()`.
+    var subtitleTrackIndex: Int?
+    /// `resolvedSidecarSubtitleTrackIdForResume()`.
+    var sidecarSubtitleTrackId: Int64?
+
+    init(
+        selectedFileId: Int? = nil,
+        audioTrackIndex: Int? = nil,
+        subtitleTrackIndex: Int? = nil,
+        sidecarSubtitleTrackId: Int64? = nil
+    ) {
+        self.selectedFileId = selectedFileId
+        self.audioTrackIndex = audioTrackIndex
+        self.subtitleTrackIndex = subtitleTrackIndex
+        self.sidecarSubtitleTrackId = sidecarSubtitleTrackId
+    }
+
+    /// The seed `resetPublishedLoadState` leaves behind: no live selection, so
+    /// every resolver returns the request's preferred value.
+    static func seeded(from request: PlayerViewModel.LoadRequest) -> TrackResumeSelections {
+        TrackResumeSelections(
+            selectedFileId: nil,
+            audioTrackIndex: request.preferredAudioTrackIndex,
+            subtitleTrackIndex: request.preferredSubtitleTrackIndex,
+            sidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId
+        )
+    }
 }
 
 /// What is happening to a live load. Exactly one at a time — the mutually
 /// exclusive mode bits the view model kept as separate flags
 /// (`protocolV3ReplanTask != nil`, `backgroundRenewalSessionId`,
-/// `sourceOutageActive`, `hasReachedEndOfFile`, the seek filter pair) become
-/// cases here, which is what makes "no second replan while replanning"
-/// structural instead of a guard that two pipelines disagreed about.
+/// `sourceOutageActive`, `hasReachedEndOfFile`) become cases here, which is
+/// what makes "no second replan while replanning" structural instead of a
+/// guard that two pipelines disagreed about. The seek filter pair is
+/// deliberately **not** one of them — see `Playing.seek`.
 enum Sub: Equatable {
     case steady
     case recovering(RecoveryStep)
     case replanning(ReplanIntent)
-    case seeking(SeekRequest)
     case renewingSource(SourceRenewal)
     case ridingOutOutage(OutageRideThrough)
     case ended
@@ -392,6 +505,31 @@ enum SeekOrigin: Equatable {
     case reanchor
 }
 
+/// Which platform's scene-phase table applies.
+///
+/// The three tables in `handleScenePhase` (PVM:4711-4794) differ per platform
+/// and are the riskiest surface in this package, but `SiloTests` is an
+/// iOS-only bundle (`project.yml` `SiloTests: platform: iOS`), so an
+/// `#if os(tvOS)` assertion in a test never executes. The platform is
+/// therefore a *parameter* of the reducer's scene-phase rule and `#if os`
+/// appears exactly once, in `ScenePhasePlatform.current`, so all three tables
+/// are exercised from the iOS bundle.
+enum ScenePhasePlatform: Equatable, CaseIterable {
+    case iOS
+    case tvOS
+    case macOS
+
+    static var current: ScenePhasePlatform {
+        #if os(tvOS)
+        return .tvOS
+        #elseif os(macOS)
+        return .macOS
+        #else
+        return .iOS
+        #endif
+    }
+}
+
 // MARK: - Intents
 
 /// What the view (or the platform) asks for. The reducer is the only place
@@ -517,6 +655,23 @@ enum Effect: Equatable {
     case schedule(TimerID, after: Duration, LoadID)
     case cancelTimer(TimerID)
     case reportProgress(SessionIdentity, position: Double, isPaused: Bool)
+    /// `sessionBridge.syncProgress(contentId:position:duration:forceOverwrite:)`
+    /// — the content-scoped progress write, not the session heartbeat.
+    ///
+    /// One emitter: `attemptStaleSessionRenewal` (PVM:4262-4267) force-writes
+    /// the resume position against the *content* before it re-loads, because
+    /// the session it would otherwise report against is the one that vanished.
+    /// The `LoadID` is the outgoing load's, so the actor can drop a write whose
+    /// load was superseded; the actor must complete it **before** running the
+    /// `.startSession` that follows it in the same effect list, which is the
+    /// `await` ordering inside `staleSessionRecoveryTask`.
+    case syncProgress(
+        contentId: String,
+        position: Double,
+        duration: Double,
+        forceOverwrite: Bool,
+        LoadID
+    )
     case reportFirstFrame(SessionIdentity, ms: Int)
     case reportPlanExecutionStarted(SessionIdentity)
     /// Transport commands the view asked for (`play` / `pause`).

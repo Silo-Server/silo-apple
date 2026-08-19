@@ -1,84 +1,128 @@
+//
+//  RecoveryAction.swift
+//
+//  Stage 2 — the output alphabet of the single recovery owner.
+//
+//  One case per thing a recovery rung does today. The engine session (wave 2)
+//  and the session actor (wave 3) only *execute* these; they never decide.
+//  Nothing carries a closure, a task or a player reference, so the whole ladder
+//  is comparable in a test.
+//
+//  Anchors (`atMediaSeconds`) are on the **media** timeline. Observations are
+//  sampled on the player timeline, and `RecoveryContext.mediaSeconds(forPlayerSeconds:)`
+//  — `AVPlayerBackend.mediaTime(for:)` verbatim — converts. The two sinks that
+//  want a player-timeline value (`reloadEstablishedLoopbackItem`,
+//  `performRecoverySeek`) get it back through the exact inverse,
+//  `playerTime(forMediaTime:)`; both clamp at zero, so the round trip is exact
+//  for every anchor the policy can emit.
+//
+
 import Foundation
 
-// OWNERSHIP NOTE (wave 1): this file is the deliverable of Stage 2 package
-// `s2w1-recovery-policy` (wave 1B), which lands `RecoveryObservation`,
-// `RecoveryContext`, `RecoveryPolicy` and this enum together. It is duplicated
-// here — same path, same shape as design §2.4 — only because the wave-1E
-// control-plane types reference it: `Effect.runRecovery(RecoveryAction, LoadID)`
-// and `PlayerEvent.recovery(RecoveryAction, LoadID)` are binding deliverables
-// of that package and cannot be declared without it, and the two branches are
-// cut from the same base.
-//
-// MERGE ORDER (binding — an add/add conflict resolved carelessly leaves two
-// `enum RecoveryAction` declarations and the build fails on redeclaration):
-//   1. merge wave 1B (`stage2/s2w1-recovery-policy`) first;
-//   2. merge wave 1E (`stage2/s2w1-reducer-types`) and resolve
-//      `iosApp/iosApp/Screens/Player/Recovery/RecoveryAction.swift` in favour
-//      of 1B's version — take theirs wholesale, delete this copy;
-//   3. verify before building:
-//      `grep -rc "enum RecoveryAction" iosApp/iosApp | awk -F: '{n+=$2} END {print n}'`
-//      must print 1.
-// 1B nests `RouteFallback` inside `RecoveryAction` where this copy declares it
-// top-level; `PlaybackReducer` and `PlaybackReducerTests` only ever spell the
-// cases with leading-dot syntax, so taking 1B's file compiles unchanged.
-
-/// What a recovery decision asks the rest of the player to do.
-///
-/// One owner (design §4 I3): `RecoveryPolicy` is the only place that decides,
-/// the engine session and the session actor only execute. The engine-scoped
-/// cases (`reassertPlay` … `resumePlayback`) are performed inside the engine
-/// session; the session-scoped ones re-enter the control plane as reducer
-/// transitions.
+/// What the recovery owner decided to do. `nil` (no action) is the common case:
+/// an observation that does not qualify, or one that only advances the
+/// context's bookkeeping.
 enum RecoveryAction: Equatable {
-    /// Bare `avPlayer.play()`.
-    case reassertPlay
-    /// Startup ladder, stage `.initial`.
-    case nudgeStartup
-    /// Startup ladder, stage `.nudged`.
-    case reloadStartupItem
-    /// `recoverLocalLoopbackStallIfNeeded` / `vod_stall_nudge`.
-    case reanchor(atMediaSeconds: Double, reason: String)
-    /// `reloadEstablishedLoopbackItem`.
-    case reloadItem(atMediaSeconds: Double, reason: String)
-    /// `requestVODProducerRestart`.
-    case restartProducer(atSegmentIndex: Int, authoritative: Bool)
-    /// `rebuildSiloLoopbackSession` (budgeted).
-    case rebuildLocalSession(atMediaSeconds: Double, reason: String)
-    /// Playlist-unchanged while paused (`pendingLocalLoopbackRecoveryMediaTime`).
-    case deferUntilPlay(mediaSeconds: Double)
-    /// The auto-resume rung.
-    case resumePlayback
-    /// The view model's near-end rung: a failure this close to the end reads
-    /// as the stream draining, not as an engine defect.
-    case treatAsNaturalEnd
-    /// The V3 replan rung (also the HLS fallback rungs).
-    case requestServerReplan(classification: String, message: String)
-    /// The offline-only route-fallback rungs.
-    case switchRoute(RouteFallback)
-    /// `attemptBackgroundSessionRenewal` — silent, keeps the engine.
-    case renewSourceInBackground(reason: String)
-    /// `attemptStaleSessionRenewal` — visible, reloads the stream.
-    case renewSessionFresh(reason: String)
-    /// `handleOriginOutageChanged(true)`.
-    case rideThroughOutage(probeAfter: Duration)
-    /// `clearSourceOutageRideThroughState` + `kickPlaybackAfterExternalStallCleared`.
-    case endOutageRideThrough(kick: Bool)
-    /// `attemptServerOutageRecovery`.
-    case recoverFromServerOutage(reason: String)
-    /// The `waitForServerReady` poll.
-    case waitForServerReady(probeAfter: Duration)
-    /// `triggerAutomaticInterruptionRecovery` (tvOS transient inactive).
-    case autoRecoverInterruption
-    /// Terminal.
-    case fail(PlaybackFailure)
-}
 
-/// The two offline-only route switches the view-model ladder still performs.
-/// The fallback plan itself is built by the engine session, so the action
-/// stays a value.
-enum RouteFallback: Equatable {
-    /// Native direct failed → rebuild as a loopback session.
-    case loopbackFallback
-    /// Loopback failed → ask the server for an HLS plan.
-    case serverHLS(classification: String)
+    /// The offline-only route fallbacks. Both rungs are unreachable while
+    /// Protocol V3 is active — the server owns delivery through a replan — so
+    /// these fire only on an offline/legacy start.
+    enum RouteFallback: Equatable {
+        /// `attemptNativeDirectRouteRecovery`: hand the failed native-direct
+        /// source to the local loopback remuxer. The execution plan is built by
+        /// the engine session (`makeLoopbackFallbackPlan`), not carried here —
+        /// `PlaybackExecutionPlan` is not usefully `Equatable` and the plan
+        /// depends on live state the policy does not own.
+        case loopbackFallback
+        /// `requestServerHLSRouteFallback`: ask the server to replan onto a
+        /// server-produced HLS rendition. The classification is the wire token
+        /// the legacy call sites pass — `"silo_loopback_failed"` from the
+        /// loopback rung, `"native_direct_avplayer_failed"` when the loopback
+        /// fallback plan could not be built.
+        case serverHLS(classification: String)
+    }
+
+    /// Bare `avPlayer.play()`. The item-death confirmation state's
+    /// `.reassertPlay`: AVPlayer parked at rate 0 with media available, which is
+    /// a candidate for a dead item, not a user pause.
+    case reassertPlay
+    /// Startup ladder stage 1 — `nudgeLoopbackStartupConsumer()`: a
+    /// zero-tolerance seek to the startup target that forces AVFoundation to
+    /// rebuild its item loader.
+    case nudgeStartup
+    /// Startup ladder stage 2 — `reloadLoopbackStartupItem()`: a fresh
+    /// `AVPlayerItem` on the same loopback URL.
+    case reloadStartupItem
+    /// Reanchor the loopback session at `atMediaSeconds`.
+    ///
+    /// Two legacy sinks, distinguished by `reason`:
+    /// * `"stall"` / `"edge_watchdog"` / `"playlist_unchanged"` —
+    ///   `recoverLocalLoopbackStallIfNeeded`: flush the subtitle session, seek
+    ///   the extractor, then `load(.siloLoopback(spec.reanchored(at:)))`.
+    /// * `"vod_stall_nudge"` — `performVODStallRecovery(attempt: 1, …)`:
+    ///   `requestVODProducerRestart(at:authoritative: true)` **first**, then
+    ///   `cancelPendingSeeks()`, a recovery seek to the anchor, and `play()`.
+    ///   The producer restart is part of executing this action, not a separate
+    ///   action: the policy issues one decision per observation and the engine
+    ///   performs the recipe that decision names, exactly as
+    ///   `performVODStallRecovery` does today.
+    case reanchor(atMediaSeconds: Double, reason: String)
+    /// Rebuild AVFoundation's item on the same loopback session
+    /// (`reloadEstablishedLoopbackItem`), preserving producer, plan, store,
+    /// server, display criteria, audio session and budgets.
+    ///
+    /// `reason` is the legacy log/seek token: `"vod_stall"` from the playhead
+    /// watchdog's second and later attempts (which, like `.reanchor`, first
+    /// issue an authoritative producer restart — `performVODStallRecovery`
+    /// B:1917 restarts on every attempt), or
+    /// `"item_death_<trigger>_<attempt>"` from the item-death rung.
+    case reloadItem(atMediaSeconds: Double, reason: String)
+    /// `requestVODProducerRestart(at:authoritative:)` on its own.
+    case restartProducer(atSegmentIndex: Int, authoritative: Bool)
+    /// `rebuildSiloLoopbackSession(at:reason:)` — recreate the whole local
+    /// pipeline at the rendered clock. Budgeted: the policy only emits this
+    /// after `LoopbackRebuildBudget.consume()` succeeded.
+    case rebuildLocalSession(atMediaSeconds: Double, reason: String)
+    /// The "Playlist File unchanged" rung while the user is paused: latch the
+    /// media time and recover when playback is resumed
+    /// (`pendingLocalLoopbackRecoveryMediaTime`, consumed by `play()`).
+    case deferUntilPlay(mediaSeconds: Double)
+    /// The auto-resume rung — `resumeLocalLoopbackPlaybackIfNeeded`'s
+    /// `avPlayer.play()`.
+    case resumePlayback
+    /// `handlePlaybackError`'s near-end rung: treat the failure as the stream
+    /// draining and run `handleEndOfFile()`.
+    case treatAsNaturalEnd
+    /// `attemptProtocolV3Replan` — the online delivery/fallback owner.
+    case requestServerReplan(classification: String, message: String)
+    /// The offline-only route fallbacks.
+    case switchRoute(RouteFallback)
+    /// `attemptBackgroundSessionRenewal` — silent renewal that retargets the
+    /// source proxy's origin and leaves the player untouched.
+    case renewSourceInBackground(reason: String)
+    /// `attemptStaleSessionRenewal` — the visible renewal that re-runs the load.
+    case renewSessionFresh(reason: String)
+    /// `handleOriginOutageChanged(true)` — start (or continue) riding the
+    /// buffered runway. `probeAfter` is the interval the ride-through loop
+    /// sleeps *after* the health probe it issues now, i.e. the loop's `delay`
+    /// local at that moment (1 s on entry, doubling per probe, capped at 8 s).
+    case rideThroughOutage(probeAfter: Duration)
+    /// `handleOriginOutageChanged(false)` — `clearSourceOutageRideThroughState()`
+    /// and, when `kick` is set, `kickPlaybackAfterExternalStallCleared()`.
+    case endOutageRideThrough(kick: Bool)
+    /// `attemptServerOutageRecovery(reason:observedPosition:)` — the visible
+    /// recovery: tear the proxy and backend down, show "Reconnecting", wait for
+    /// the server, then reload.
+    ///
+    /// `reason` is the token form of `PlaybackSourceInterruptionReason`;
+    /// `"source_entity_changed"` is the discriminator the cache-handoff branch
+    /// needs (`discardSourceCacheHandoff()` instead of
+    /// `stashSourceCacheHandoff()`).
+    case recoverFromServerOutage(reason: String)
+    /// `waitForServerReady`'s next iteration: probe again after `probeAfter`.
+    case waitForServerReady(probeAfter: Duration)
+    /// `triggerAutomaticInterruptionRecovery()`.
+    case autoRecoverInterruption
+    /// Terminal. `finalizeTerminalPlaybackError(failure.legacyMessage)`.
+    case fail(PlaybackFailure)
 }

@@ -25,6 +25,21 @@ enum ExecutablePlan: Equatable {
         }
     }
 
+    /// `PlaybackExecutionPlan.delivery`, carried because the control plane has
+    /// a rule that reads it: `shouldAdoptBackendDuration` (PVM:3117-3128)
+    /// never adopts AVPlayer's duration under a `.transcode` delivery, since a
+    /// growing transcode playlist reports a manifest length that is shorter
+    /// than the real one. The view model kept it in `currentDeliveryStrategy`,
+    /// set at adopt from `plan.delivery` (PVM:2674); here it rides the plan so
+    /// the two can never disagree.
+    var delivery: PlaybackDeliveryStrategy {
+        switch self {
+        case .nativeDirect(let plan): return plan.delivery
+        case .serverHLS(let plan): return plan.delivery
+        case .localHLS(let plan): return plan.delivery
+        }
+    }
+
     /// Where the engine is told to start, i.e. today's
     /// `plan.startMode.seconds` argument to every load verb.
     var startSeconds: Double {
@@ -54,7 +69,8 @@ enum ExecutablePlan: Equatable {
                 NativeDirectPlan(
                     url: request.url,
                     headers: request.headers,
-                    startSeconds: startSeconds
+                    startSeconds: startSeconds,
+                    delivery: plan.delivery
                 )
             )
         case .avPlayerHLS:
@@ -62,7 +78,8 @@ enum ExecutablePlan: Equatable {
                 ServerHLSPlan(
                     manifestURL: request.url,
                     headers: request.headers,
-                    startMode: plan.startMode
+                    startMode: plan.startMode,
+                    delivery: plan.delivery
                 )
             )
         case .siloPlayerLoopback:
@@ -72,7 +89,8 @@ enum ExecutablePlan: Equatable {
             self = .localHLS(
                 LocalHLSPlan(
                     sessionSpec: loopbackSession,
-                    startSeconds: startSeconds
+                    startSeconds: startSeconds,
+                    delivery: plan.delivery
                 )
             )
         }
@@ -84,6 +102,7 @@ struct NativeDirectPlan: Equatable {
     let url: URL
     let headers: [String: String]
     let startSeconds: Double
+    var delivery: PlaybackDeliveryStrategy = .direct
 }
 
 /// A server-produced HLS manifest.
@@ -94,6 +113,7 @@ struct ServerHLSPlan: Equatable {
     /// two can never disagree: remux manifests are anchored server-side and
     /// always start at 0, transcode manifests seek to an absolute position.
     let startMode: PlaybackStartMode
+    var delivery: PlaybackDeliveryStrategy = .direct
 
     var startSeconds: Double { startMode.seconds }
 }
@@ -104,6 +124,7 @@ struct LocalHLSPlan: Equatable {
     /// Non-optional here — that is the whole point of the type.
     let sessionSpec: LoopbackSessionSpec
     let startSeconds: Double
+    var delivery: PlaybackDeliveryStrategy = .direct
 
     /// `LoopbackSessionSpec` has no `Equatable` conformance (declaring one
     /// retroactively would change overload resolution for existing call
@@ -113,6 +134,7 @@ struct LocalHLSPlan: Equatable {
     /// added, which is the signal to extend this too.
     static func == (lhs: LocalHLSPlan, rhs: LocalHLSPlan) -> Bool {
         lhs.startSeconds == rhs.startSeconds
+            && lhs.delivery == rhs.delivery
             && lhs.sessionSpec.sourceURL == rhs.sessionSpec.sourceURL
             && lhs.sessionSpec.headers == rhs.sessionSpec.headers
             && lhs.sessionSpec.sourceStartTimeSeconds == rhs.sessionSpec.sourceStartTimeSeconds
