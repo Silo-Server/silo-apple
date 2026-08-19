@@ -1366,36 +1366,41 @@ final class PlaybackReducerTests: XCTestCase {
 
     /// `handleOriginOutageChanged(true)`: the load rides its buffered runway
     /// while the health poll runs, and a second entry is a no-op.
-    func testOutageRideThroughPollsServerHealthOnceAndIsSingleFlight() {
+    /// The ride-through is a loop: `RecoveryPolicy` owns the single-flight
+    /// (entry only while `context.outage == nil`) and re-emits
+    /// `.rideThroughOutage(probeAfter:)` after every probe. The reducer must
+    /// accept each continuation — keeping `startedAt`/`noticeShown`, moving only
+    /// the next delay — and schedule the one-shot poll every time, so the
+    /// 0, 1, 2, 4, 8, 8 s sequence (PVM:4299-4310) actually happens.
+    func testOutageRideThroughContinuationsKeepStartAndRescheduleThePoll() {
         let loadID = LoadID()
-        let state = makePlaying(loadID: loadID)
-
-        let (riding, effects) = PlaybackReducer.reduce(
-            state,
-            event: .recovery(.rideThroughOutage(probeAfter: .seconds(1)), loadID),
-            now: now
-        )
-        XCTAssertEqual(
-            effects,
-            [.pollServerHealth(.sourceOutageRideThrough, after: .seconds(1), loadID)]
-        )
-        guard case .ridingOutOutage(let outage) = playing(riding)?.sub else {
-            return XCTFail("expected the ride-through sub-state")
+        var state = makePlaying(loadID: loadID)
+        let delays: [Duration] = [.zero, .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(8)]
+        var startedAt: Date?
+        for (index, delay) in delays.enumerated() {
+            let (next, effects) = PlaybackReducer.reduce(
+                state,
+                event: .recovery(.rideThroughOutage(probeAfter: delay), loadID),
+                now: now.addingTimeInterval(Double(index))
+            )
+            XCTAssertEqual(
+                effects,
+                [.pollServerHealth(.sourceOutageRideThrough, after: delay, loadID)],
+                "continuation \(index) must reschedule the poll"
+            )
+            guard case .ridingOutOutage(let outage) = playing(next)?.sub else {
+                return XCTFail("expected the ride-through sub-state at continuation \(index)")
+            }
+            if startedAt == nil { startedAt = outage.startedAt }
+            XCTAssertEqual(outage.startedAt, startedAt, "startedAt is set once, at entry")
+            XCTAssertEqual(outage.nextProbeDelay, delay)
+            XCTAssertFalse(outage.noticeShown)
+            state = next
         }
-        XCTAssertEqual(outage.startedAt, now)
-        XCTAssertEqual(outage.nextProbeDelay, .seconds(1))
-
-        let (again, againEffects) = PlaybackReducer.reduce(
-            riding,
-            event: .recovery(.rideThroughOutage(probeAfter: .seconds(2)), loadID),
-            now: now
-        )
-        XCTAssertEqual(again, riding)
-        XCTAssertTrue(againEffects.isEmpty)
 
         // Exit hands the kick back to the engine session.
         let (ended, endedEffects) = PlaybackReducer.reduce(
-            riding,
+            state,
             event: .recovery(.endOutageRideThrough(kick: true), loadID),
             now: now
         )

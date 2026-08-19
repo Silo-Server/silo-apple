@@ -1562,12 +1562,27 @@ enum PlaybackReducer {
 
         case .rideThroughOutage(let probeAfter):
             guard case .playing(var playing) = state else { return (state, []) }
-            if case .ridingOutOutage = playing.sub { return (state, []) }
-            let outage = OutageRideThrough(
-                startedAt: now,
-                nextProbeDelay: probeAfter,
-                noticeShown: false
-            )
+            // `RecoveryPolicy` single-flights the ENTRY (decideOriginOutage guards
+            // on `context.outage == nil`) and then re-emits `.rideThroughOutage`
+            // after every health probe as the CONTINUATION of the loop (the
+            // 0, 1, 2, 4, 8, 8 s sequence, PVM:4299-4310). The reducer therefore
+            // accepts the action whether or not it is already riding: a
+            // continuation keeps `startedAt`/`noticeShown` and only moves the
+            // next delay, and ALWAYS schedules the one-shot poll again.
+            let outage: OutageRideThrough
+            if case .ridingOutOutage(let existing) = playing.sub {
+                outage = OutageRideThrough(
+                    startedAt: existing.startedAt,
+                    nextProbeDelay: probeAfter,
+                    noticeShown: existing.noticeShown
+                )
+            } else {
+                outage = OutageRideThrough(
+                    startedAt: now,
+                    nextProbeDelay: probeAfter,
+                    noticeShown: false
+                )
+            }
             playing.sub = .ridingOutOutage(outage)
             return (
                 .playing(playing),
