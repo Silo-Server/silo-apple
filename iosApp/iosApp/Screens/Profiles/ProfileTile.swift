@@ -274,11 +274,12 @@ struct AddProfileTile: View {
     }
 }
 
-// MARK: - Avatar resolver (mirrors ProfileAvatarView's image/emoji logic)
+// MARK: - Avatar resolver (shared image/emoji resolution)
 
-/// Helpers extracted from `ProfileAvatarView` so the tile can render
-/// avatars in a tile shape rather than a circle. Kept as a small local
-/// utility rather than adjusting the shared view's API surface.
+/// The single avatar image/emoji resolver. `ProfileAvatarView` (size 256),
+/// `ProfileTile` (size 512, the default) and `StartupContentPrefetcher` all
+/// delegate to it; DiceBear URL synthesis goes through
+/// `ProfileAvatarPresets.imageURL(styleId:seed:size:)`.
 enum ProfileAvatarResolver {
     static func isImage(_ value: String) -> Bool {
         let lowercased = value.lowercased()

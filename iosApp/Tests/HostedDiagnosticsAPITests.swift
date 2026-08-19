@@ -265,7 +265,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: ["server-playback-session"],
             captureSessionID: "capture-session",
             consentMode: .manual
@@ -427,7 +427,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             consentMode: .manual
         )
@@ -571,7 +571,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 provenance: .postRestart,
                 occurredAt: occurredAt
             ),
-            deviceSummary: testDeviceSummary(model: "Apple TV", formFactor: "tv"),
+            deviceSummary: makeDeviceSummary(model: "Apple TV", formFactor: "tv"),
             playbackSessionIDs: [privateLogSessionID, privateBreadcrumbSessionID],
             captureSessionID: canonicalRunID
         )
@@ -1020,7 +1020,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             captureSessionID: "manual-frozen-run",
             consentMode: .manual
@@ -2091,7 +2091,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .nativeCrash,
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: ["private-playback-session"]
         )
 
@@ -2378,7 +2378,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             consentMode: .manual
         )
@@ -2431,7 +2431,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             type: .manual,
             capturedAt: capturedAt,
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIDs: [],
             consentMode: .manual
         )
@@ -2494,7 +2494,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                     type: .manual,
                     capturedAt: capturedAt,
                     crash: nil,
-                    deviceSummary: testDeviceSummary(),
+                    deviceSummary: makeDeviceSummary(),
                     playbackSessionIDs: [],
                     consentMode: .manual
                 ),
@@ -2766,7 +2766,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
     }
 
-    private func testDeviceSummary(
+    private func makeDeviceSummary(
         model: String = "iPhone",
         formFactor: String = "phone"
     ) -> DiagnosticsManifest.DeviceSummary {
@@ -2805,7 +2805,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             ),
             consent: DiagnosticsManifest.Consent(mode: .manual, noticeVersion: 3),
             crash: nil,
-            deviceSummary: testDeviceSummary(),
+            deviceSummary: makeDeviceSummary(),
             playbackSessionIds: [],
             logSummary: DiagnosticsManifest.LogSummary(
                 lines: 0,
@@ -3191,4 +3191,3 @@ private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
-

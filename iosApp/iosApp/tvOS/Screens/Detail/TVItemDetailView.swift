@@ -535,9 +535,9 @@ struct TVItemDetailView: View {
     }
 
     @ViewBuilder
-    private func descriptionTranslation(for contentId: String) -> some View {
-        DescriptionTranslationView(viewModel: viewModel, contentId: contentId)
-            .id(contentId)
+    private func descriptionTranslation(for detailContentId: String) -> some View {
+        DescriptionTranslationView(viewModel: viewModel, contentId: detailContentId)
+            .id(detailContentId)
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
