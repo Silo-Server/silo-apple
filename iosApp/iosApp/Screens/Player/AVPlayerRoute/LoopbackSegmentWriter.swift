@@ -4722,11 +4722,11 @@ final class LoopbackSegmentWriter {
     private func transformVideoPacketIfNeeded(_ pkt: UnsafeMutablePointer<AVPacket>) throws {
         guard videoMode == .convertProfile7To81 else { return }
         guard pkt.pointee.data != nil, pkt.pointee.size > 0 else { return }
-        // Compact in place instead of rebuilding: BL NALs lead the packet
-        // and stay put, the dropped EL NALs open a gap only behind them,
-        // and the RPU is rewritten where it stands. The old rebuild path
-        // (walk + Data + av_new_packet + memcpy) copied every frame twice
-        // at 60-75 Mbps — a steady mux-thread tax on A12-class devices.
+        // The single NAL walk for this rewrite: BL NALs lead the packet and
+        // stay put, the dropped EL NALs open a gap only behind them, and the
+        // RPU is rewritten where it stands. The rebuild alternative (walk +
+        // Data + av_new_packet + memcpy) copied every frame twice at
+        // 60-75 Mbps — a steady mux-thread tax on A12-class devices.
         let writableR = av_packet_make_writable(pkt)
         guard writableR >= 0 else { throw LoopbackWriterError.allocOutput }
         guard let data = pkt.pointee.data else { return }
@@ -4742,9 +4742,9 @@ final class LoopbackSegmentWriter {
             }
             let nalStart = read + nalLengthSize
             guard nalSize >= 2, nalStart + nalSize <= size else {
-                // Malformed tail: mirror the rebuild path — leave the whole
-                // packet verbatim when nothing changed yet, drop the tail
-                // once compaction has started.
+                // Malformed tail: leave the whole packet verbatim when
+                // nothing changed yet, drop the tail once compaction has
+                // started.
                 if !changed { return }
                 break
             }
@@ -4764,15 +4764,13 @@ final class LoopbackSegmentWriter {
                 let payload = try convertRpuNALToProfile81(nalData)
                 let needed = nalLengthSize + payload.count
                 guard write + needed <= next else {
-                    // Converted RPU outgrew the bytes consumed so far. With
-                    // a pristine buffer (no NAL moved or rewritten yet) the
-                    // old rebuild path handles it; after mutation the slack
-                    // equals every dropped EL byte so far, so overrunning it
-                    // means a pathologically grown RPU — surface it.
-                    if !changed && write == read {
-                        try rebuildProfile7Packet(pkt)
-                        return
-                    }
+                    // Converted RPU outgrew the bytes consumed so far: the
+                    // compaction slack is every EL byte dropped ahead of it,
+                    // and an RPU that outgrows even a pristine buffer has no
+                    // room to be written in place. One NAL walk owns this
+                    // rewrite, so there is no second, growable implementation
+                    // to fall back to — fail the session and let the route
+                    // ladder pick an engine that can play the title.
                     throw LoopbackWriterError.profile81ConversionFailed("rpu_grew_past_compaction_slack")
                 }
                 var length = payload.count
@@ -4798,11 +4796,8 @@ final class LoopbackSegmentWriter {
             read = next
         }
         guard changed else { return }
-        guard write > 0 else {
-            // Everything dropped — mirror the rebuild path's contract of
-            // never emitting an empty packet.
-            return
-        }
+        // Everything dropped — never emit an empty packet.
+        guard write > 0 else { return }
         av_shrink_packet(pkt, Int32(write))
     }
 
@@ -4863,71 +4858,6 @@ final class LoopbackSegmentWriter {
         }
     }
 
-    /// Rare fallback for the in-place compaction: rebuild the packet into a
-    /// fresh buffer (the pre-compaction transform path).
-    private func rebuildProfile7Packet(_ pkt: UnsafeMutablePointer<AVPacket>) throws {
-        guard let dataPtr = pkt.pointee.data else { return }
-        let packetBytes = UnsafeBufferPointer(start: dataPtr, count: Int(pkt.pointee.size))
-        let transformed = try transformedVideoPacketData(packetBytes: packetBytes)
-
-        var replacement = av_packet_alloc()
-        guard let newPacket = replacement else {
-            throw LoopbackWriterError.allocOutput
-        }
-        let allocR = av_new_packet(newPacket, Int32(transformed.count))
-        guard allocR >= 0, let newData = newPacket.pointee.data else {
-            av_packet_free(&replacement)
-            throw LoopbackWriterError.allocOutput
-        }
-        transformed.withUnsafeBytes { src in
-            guard let base = src.baseAddress else { return }
-            memcpy(newData, base, transformed.count)
-        }
-        av_packet_copy_props(newPacket, pkt)
-        av_packet_unref(pkt)
-        av_packet_move_ref(pkt, newPacket)
-        av_packet_free(&replacement)
-    }
-
-    private func transformedVideoPacketData(
-        packetBytes: UnsafeBufferPointer<UInt8>
-    ) throws -> Data {
-        var output = Data()
-        output.reserveCapacity(packetBytes.count)
-        var cursor = 0
-        while cursor + nalLengthSize <= packetBytes.count {
-            let prefixStart = cursor
-            var nalSize = 0
-            for i in 0..<nalLengthSize {
-                nalSize = (nalSize << 8) | Int(packetBytes[cursor + i])
-            }
-            let nalStart = cursor + nalLengthSize
-            guard nalSize >= 2, nalStart + nalSize <= packetBytes.count else { break }
-
-            let byte0 = packetBytes[nalStart]
-            let byte1 = packetBytes[nalStart + 1]
-            let nalType = Int((byte0 >> 1) & 0x3F)
-            let layerID = Int(((byte0 & 0x01) << 5) | ((byte1 & 0xF8) >> 3))
-
-            cursor = nalStart + nalSize
-
-            if layerID > 0 || nalType == 63 {
-                continue
-            }
-
-            if nalType == 62 {
-                let nalData = Data(bytes: packetBytes.baseAddress!.advanced(by: nalStart), count: nalSize)
-                let payload = try convertRpuNALToProfile81(nalData)
-                appendLengthPrefixedNAL(payload, into: &output)
-            } else {
-                if let base = packetBytes.baseAddress {
-                    output.append(base.advanced(by: prefixStart), count: nalLengthSize + nalSize)
-                }
-            }
-        }
-        return output.isEmpty ? Data(buffer: packetBytes) : output
-    }
-
     private func convertRpuNALToProfile81(_ nal: Data) throws -> Data {
         return try nal.withUnsafeBytes { raw -> Data in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else {
@@ -4949,15 +4879,6 @@ final class LoopbackSegmentWriter {
             return Data(bytes: written.pointee.data, count: written.pointee.len)
         }
     }
-
-    private func appendLengthPrefixedNAL(_ nal: Data, into output: inout Data) {
-        let length = nal.count
-        for shift in stride(from: (nalLengthSize - 1) * 8, through: 0, by: -8) {
-            output.append(UInt8((length >> shift) & 0xFF))
-        }
-        output.append(nal)
-    }
-
 
     /// Replace codecpar.extradata with freshly allocated memory matching the
     /// given bytes. Any pre-existing buffer is freed. Adds the standard
