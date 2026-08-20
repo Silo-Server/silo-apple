@@ -306,6 +306,10 @@ class PlayerViewModel {
     /// whichever AVPlayer-backed route was planned (native direct, SiloPlayer
     /// loopback, or server HLS). UI surface rendering binds to this directly.
     var avPlayerBackend: AVPlayerBackend? { engineSession?.surfaceBackend }
+    /// The route of the last engine this shell installed. Deliberately *not*
+    /// derived from `activeExecutionPlan`: the plan is dropped when the engine
+    /// is torn down, and the route a retired load ran on is still what the
+    /// terminal breadcrumb and the capability rows report.
     private var activeRouteKind: PlaybackEngineKind
 
     /// Canonical user volume/mute, owned by the VM rather than the backend.
@@ -326,12 +330,6 @@ class PlayerViewModel {
     /// The cache carried between two proxies for the same file. It deliberately
     /// outlives an engine session, so the slot lives here.
     private var sourceCacheHandoff: PlaybackEngineSession.SourceCacheHandoff?
-    /// The full `PlaybackExecutionPlan` the pending adopt resolved. The control
-    /// plane carries only the `ExecutablePlan` it decides with; the engine
-    /// install needs the whole thing, because the source proxy rewrites its URLs
-    /// and the loopback session spec travels on it. One slot, filled by
-    /// `adoptPrepared` and consumed by `installEngine`.
-    private var pendingExecutionPlan: PlaybackExecutionPlan?
     var backendCapabilities: PlayerBackendCapabilities {
         #if os(macOS)
         let base = PlayerBackendCapabilities.macAVFoundation
@@ -628,7 +626,6 @@ class PlayerViewModel {
         set { tasks[.deferredLiveSubtitleClose] = newValue }
     }
     private var resolvedServerUrl: String = ""
-    private var currentDeliveryStrategy: PlaybackDeliveryStrategy = .direct
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
     private var activePreparedProtocolV3: PreparedPlaybackV3?
@@ -650,17 +647,16 @@ class PlayerViewModel {
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     /// The replay intent the control plane last adopted, mirrored here for the
     /// three shell readers that need it synchronously: the Next Up carousel's
-    /// "hide what is playing" filter, the SiloControl wire projection, and
-    /// `switchQuality`'s pre-V3 branches, which build their own `.load` from it.
+    /// "hide what is playing" filter, the SiloControl wire projection, and the
+    /// offline quality latch.
     private var lastLoadRequest: LoadRequest?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let introAutoSkipCountdownDefaultSeconds = 5
+    /// How close to the end an end-of-file report has to be for the postroll
+    /// to treat it as the title finishing rather than the connection dropping.
+    /// `RecoveryPolicy` owns the same rule for the *failure* path.
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
-    /// How much media may still sit ahead of the playhead for a near-end
-    /// failure to still read as the stream draining. A real drain leaves the
-    /// player with essentially nothing queued.
-    private static let nearEndPlaybackErrorMaxBufferedAheadSeconds: Double = 1
     private var nextUpAutoplayCancelled = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
@@ -963,8 +959,9 @@ class PlayerViewModel {
     /// Merge one control-plane projection onto the published view state.
     ///
     /// It is a **merge**, never an assign (design section 2.3 contract note
-    /// (f)): `Presentation` still stubs `metadata`, and the view-local state
-    /// (controls, scrubbing, notices, next-up) is this model's alone.
+    /// (f)): the metadata, the stats row and the view-local state (controls,
+    /// scrubbing, notices, next-up) are this model's alone and travel on no
+    /// publish.
     /// `transportOnly` is the coalesced per-tick publish note (g) owes — the
     /// playhead and the buffer gauges, nothing that could fight a transition.
     @MainActor
@@ -978,13 +975,12 @@ class PlayerViewModel {
         if presentation.duration > 0 { duration = presentation.duration }
         bufferedAheadSeconds = presentation.bufferedAheadSeconds
         playbackRunwaySeconds = presentation.playbackRunwaySeconds
-        // `playbackStats` is deliberately NOT taken from the transport publish.
-        // `Presentation.playbackStats` is the backend's raw snapshot (its
-        // `source` is the loopback host behind the proxy); the composed stats —
-        // origin host swapped in, proxy/cache rows added — are written by the
-        // `.stats` arm of `applyEngineEventToPresentation` via
-        // `PlaybackStatsComposer`, which is the single owner (design §2.3
-        // contract note (f)). Taking both made the Source row flicker between
+        // `playbackStats` deliberately does not travel on a publish at all: the
+        // backend's raw snapshot names the loopback host behind the proxy, so
+        // the composed stats — origin host swapped in, proxy/cache rows added —
+        // are written by the `.stats` arm of `applyEngineEventToPresentation`
+        // via `PlaybackStatsComposer`, which is the single owner (design §2.3
+        // contract note (f)). Two owners made the Source row flicker between
         // 127.0.0.1 and the real server every tick.
         guard !transportOnly else { return }
 
@@ -1185,11 +1181,11 @@ class PlayerViewModel {
             // direct delivery, a loaded watch detail and a live proxy.
             canRenewSourceInBackground: !isDisposed
                 && offlinePlaybackContext == nil
-                && currentDeliveryStrategy == .direct
+                && activeExecutionPlan?.delivery == .direct
                 && currentWatchDetail != nil
                 && sourceProxy != nil,
             canAutoRecoverInterruption: canAutoRecoverInterruption,
-            canBuildLoopbackFallback: makeNativeDirectLoopbackFallbackPlan() != nil,
+            canBuildLoopbackFallback: makeNativeDirectLoopbackFallback() != nil,
             nearEnd: RecoveryContext.NearEndInputs(
                 duration: duration,
                 currentTime: currentTime,
@@ -1264,7 +1260,7 @@ class PlayerViewModel {
     @MainActor
     func prepareReplan(
         _ intent: ReplanIntent
-    ) async throws -> (prepared: PreparedPlayback, plan: ExecutablePlan, identity: SessionIdentity)? {
+    ) async throws -> (prepared: PreparedPlayback, plan: PlaybackExecutionPlan, identity: SessionIdentity)? {
         guard let watchDetail = currentWatchDetail else { return nil }
         let selectedSubtitleSnapshot = selectedSubtitleId
         // Hold every in-route recovery rung for the whole replan round trip:
@@ -1385,32 +1381,6 @@ class PlayerViewModel {
             planAttemptKey: protocolV3.planAttemptKey,
             outputContextId: protocolV3.outputContextId ?? ""
         )
-    }
-
-    /// Converting a playback error into a natural end is only safe when the
-    /// stream really did run out. The position alone cannot tell the two
-    /// apart, so the decision is corroborated: the source must not be in an
-    /// outage (the failure is then a transport problem the recovery ladder
-    /// owns) and the player must be out of runway (a failure with media still
-    /// queued ahead is a mid-stream fault, not a drain). Without the
-    /// corroboration the caller falls through to the normal ladder, which is
-    /// also what makes `handleEndOfFile`'s premature branch reachable again —
-    /// the old ratio arm made this predicate the exact negation of that check.
-    static func shouldTreatPlaybackErrorAsNaturalEnd(
-        duration: Double,
-        currentTime: Double,
-        bufferedAheadSeconds: Double,
-        isSourceOutageActive: Bool
-    ) -> Bool {
-        guard duration.isFinite, duration > 0, currentTime.isFinite, currentTime > 0 else {
-            return false
-        }
-        guard !isSourceOutageActive else { return false }
-        if bufferedAheadSeconds.isFinite,
-           bufferedAheadSeconds > Self.nearEndPlaybackErrorMaxBufferedAheadSeconds {
-            return false
-        }
-        return duration - currentTime <= Self.nearEndPlaybackErrorThresholdSeconds
     }
 
     private func loadNextUpCandidate(for detail: WatchDetail) {
@@ -1883,26 +1853,36 @@ class PlayerViewModel {
         )
     }
 
-    /// The SiloPlayer loopback plan the failed native-direct route can fall
-    /// back to, or nil when nothing local can remux this source. The policy
-    /// reads it as a precondition (`RecoveryContext.canBuildLoopbackFallback`);
-    /// the executor below builds it again for the load it issues.
-    private func makeNativeDirectLoopbackFallbackPlan() -> PlaybackExecutionPlan? {
+    /// The local remux a failed native-direct route can fall back to: the
+    /// running plan, where the replacement starts, and the loopback session
+    /// spec the remuxer would run. Nil when nothing local can remux this
+    /// source, which is the precondition the policy reads as
+    /// `RecoveryContext.canBuildLoopbackFallback` — spec constructibility is
+    /// part of it, because an unbuildable spec is what falls the rung through
+    /// to the server-HLS route. Only the executor wraps it in a plan.
+    private func makeNativeDirectLoopbackFallback()
+        -> (source: PlaybackExecutionPlan, startTime: Double, session: LoopbackSessionSpec)? {
         guard !isDisposed,
               let activeExecutionPlan,
-              activeExecutionPlan.engine == .avPlayerNativeDirect else {
+              activeExecutionPlan.engine == .avPlayerNativeDirect,
+              let version = currentSelectedVersion else {
             return nil
         }
         let startTime = currentTime.isFinite && currentTime > 0
             ? currentTime
             : activeExecutionPlan.startMode.seconds
-        return makeLoopbackFallbackPlan(
-            from: activeExecutionPlan,
-            requirements: activeExecutionPlan.requirements,
-            startTime: startTime,
-            traceToken: "fallback_silo_loopback_after_native_direct",
-            reason: "native_direct_avplayer_failed_silo_fallback"
-        )
+        let videoMode: LoopbackSessionSpec.VideoMode = isH264Video(version)
+            ? .passthroughH264
+            : .passthroughHEVC
+        guard let session = makeFallbackLoopbackSession(
+            streamRequest: activeExecutionPlan.sourceStreamRequest,
+            videoMode: videoMode,
+            videoRange: ApplePlaybackRoutePlanner.videoRange(for: videoMode, source: version),
+            sourceStartTimeSeconds: startTime
+        ) else {
+            return nil
+        }
+        return (activeExecutionPlan, startTime, session)
     }
 
     /// `attemptNativeDirectRouteRecovery`'s execution half: hand the failed
@@ -1911,7 +1891,14 @@ class PlayerViewModel {
     /// `RecoveryPolicy.decideEngineFailed`'s rung 9.
     @MainActor
     private func performNativeDirectLoopbackFallback(failure: PlaybackFailure?) {
-        guard let fallbackPlan = makeNativeDirectLoopbackFallbackPlan() else { return }
+        guard let fallback = makeNativeDirectLoopbackFallback() else { return }
+        let fallbackPlan = makeLoopbackFallbackPlan(
+            from: fallback.source,
+            loopbackSession: fallback.session,
+            startTime: fallback.startTime,
+            traceToken: "fallback_silo_loopback_after_native_direct",
+            reason: "native_direct_avplayer_failed_silo_fallback"
+        )
         Self.logger.warning(
             "[CMP-ROUTE] native-direct AVPlayer failed; retrying route=\(fallbackPlan.implementationRoute, privacy: .public) error=\(failure?.legacyMessage ?? "", privacy: .public)"
         )
@@ -1933,12 +1920,13 @@ class PlayerViewModel {
         trackSelection.restoreAfterRecovery(trackSnapshot)
         engineSession?.disposeEngineOnly(reason: "native_direct_fallback")
         logExecutionPlan(fallbackPlan)
-        // A replacement item inside the same load: the server session is
-        // untouched, only the local execution route changes.
-        pendingExecutionPlan = fallbackPlan
         guard let controlPlane else { return }
+        // A replacement item inside the same load: the server session is
+        // untouched, only the local execution route changes. The control plane
+        // takes the replacement plan, so the route it believes is running is
+        // the route that is running.
         // Main-actor-isolated for the ordering reason `send(_:)` documents.
-        Task { @MainActor in await controlPlane.reloadEngineInPlace() }
+        Task { @MainActor in await controlPlane.reloadEngine(with: fallbackPlan) }
     }
 
     /// Retarget a route onto server HLS. Every remaining engine is
@@ -1957,29 +1945,16 @@ class PlayerViewModel {
         )
     }
 
-    /// Build a SiloPlayer loopback plan that reuses the failed route's source
-    /// stream. Returns nil when the item cannot be locally remuxed (no
-    /// resolved version, or no loopback session spec) — the caller then falls
-    /// through to the server HLS rung.
+    /// Wrap a resolved loopback session in the plan the load path executes,
+    /// reusing the failed route's source stream.
     private func makeLoopbackFallbackPlan(
         from activeExecutionPlan: PlaybackExecutionPlan,
-        requirements: PlaybackRouteRequirements,
+        loopbackSession: LoopbackSessionSpec,
         startTime: Double,
         traceToken: String,
         reason: String
-    ) -> PlaybackExecutionPlan? {
-        guard let version = currentSelectedVersion else { return nil }
-        let videoMode: LoopbackSessionSpec.VideoMode = isH264Video(version)
-            ? .passthroughH264
-            : .passthroughHEVC
-        guard let loopbackSession = makeFallbackLoopbackSession(
-            streamRequest: activeExecutionPlan.sourceStreamRequest,
-            videoMode: videoMode,
-            videoRange: ApplePlaybackRoutePlanner.videoRange(for: videoMode, source: version),
-            sourceStartTimeSeconds: startTime
-        ) else {
-            return nil
-        }
+    ) -> PlaybackExecutionPlan {
+        let requirements = activeExecutionPlan.requirements
         return PlaybackExecutionPlan(
             delivery: .direct,
             engine: .siloPlayerLoopback,
@@ -2172,7 +2147,7 @@ class PlayerViewModel {
         _ prepared: PreparedPlayback,
         origin: PlaybackAdoptionOrigin,
         retryingUnplayableDirect: Bool = true
-    ) async throws -> ExecutablePlan {
+    ) async throws -> PlaybackExecutionPlan {
         let session = prepared.session
         let previousSessionId = currentServerSessionId
 
@@ -2270,7 +2245,6 @@ class PlayerViewModel {
         resolvedServerUrl = streamRequest.serverUrl
 
         let plan = try makeExecutionPlan(prepared: prepared, streamRequest: streamRequest)
-        currentDeliveryStrategy = plan.delivery
         switch origin {
         case .freshLoad(let fresh):
             playbackTimelineOffset = timelineOffset(
@@ -2342,12 +2316,13 @@ class PlayerViewModel {
             )
         }
 
-        // The engine install needs the *full* plan (the source proxy rewrites
-        // its URLs and the loopback spec travels on it); `ExecutablePlan` keeps
-        // only what the control plane decides with. The slot is the hand-off
-        // between the two halves of one adopt.
-        pendingExecutionPlan = plan
-        return try ExecutablePlan(plan, request: plan.streamRequest)
+        // Reject here, at the planning boundary, the one plan shape that has
+        // no executable form — a loopback route with no session spec. The
+        // engine install resolves the proxied plan and builds the real
+        // `ExecutablePlan` from it; this is the same rule, applied before the
+        // plan ever becomes a load.
+        _ = try ExecutablePlan(plan, request: plan.streamRequest)
+        return plan
     }
 
     /// A prepared session that cannot be executed. It carries the exact message
@@ -2371,14 +2346,11 @@ class PlayerViewModel {
     /// be executed.
     @MainActor
     func installEngine(
-        plan executable: ExecutablePlan,
+        plan: PlaybackExecutionPlan,
         loadID: LoadID,
         reuseEngine: Bool,
         adoptingOutage outage: RecoveryContext.OutageState?
     ) async -> (events: AsyncStream<EngineEvent>?, failure: String?) {
-        guard let plan = pendingExecutionPlan else {
-            return (nil, "The playback plan was unavailable.")
-        }
         pendingLoadID = loadID
         // Stop presentation while the replacement proxy is prepared, but retain
         // the backend. If the implementation route is unchanged, the replacement
@@ -2408,6 +2380,8 @@ class PlayerViewModel {
             prepared.proxy?.stop()
             return (nil, nil)
         }
+        // The plan the control plane handed over, with the source proxy's URLs
+        // written into it — the one rewrite the install owns.
         let loadPlan = prepared.plan
         activeExecutionPlan = loadPlan
         let installable: ExecutablePlan
@@ -2417,16 +2391,15 @@ class PlayerViewModel {
             prepared.proxy?.stop()
             return (nil, error.localizedDescription)
         }
-        _ = executable
         // Only a live protocol replan has a known-good outgoing backend to
         // preserve, and only when the implementation route is unchanged: a route
         // change has to renegotiate the audio session and the display criteria
         // on a fresh engine. Fresh loads and recovery paths already disposed
         // theirs, so they must build a new one even when the route kind matches.
-        let reusable = reuseEngine
-            && outgoing?.surfaceBackend != nil
-            && activeRouteKind == loadPlan.engine
-            ? outgoing : nil
+        // "Route unchanged" is the reducer's own test — `reuseEngine` is
+        // `plan.engine == playing.plan.engine`, and every install rewrites the
+        // plan it compares against — so it is not re-derived here.
+        let reusable = reuseEngine && outgoing?.surfaceBackend != nil ? outgoing : nil
         if reusable != nil {
             Self.logger.info(
                 "[CMP-ENGINE] reusing kind=\(loadPlan.engine.label, privacy: .public) family=\(loadPlan.engine.routeFamily.diagnosticsLabel, privacy: .public) load=\(loadID.raw.uuidString, privacy: .public)"
@@ -2659,30 +2632,6 @@ class PlayerViewModel {
         case .avPlayerNativeDirect:
             return 0
         }
-    }
-
-    /// A server transcode is exposed as a growing HLS playlist while FFmpeg is
-    /// producing it. AVPlayer reports the currently published playlist length
-    /// as the item duration, but that is not the VOD duration and can grow past
-    /// the probed media length. Keep a known server duration authoritative;
-    /// backend duration remains the fallback when the server has no value.
-    static func shouldAdoptBackendDuration(
-        _ reportedDuration: Double,
-        currentDuration: Double,
-        delivery: PlaybackDeliveryStrategy
-    ) -> Bool {
-        guard reportedDuration.isFinite, reportedDuration > 0 else { return false }
-        guard currentDuration.isFinite, currentDuration > 0 else { return true }
-        if case .transcode = delivery {
-            return false
-        }
-        return reportedDuration >= currentDuration
-    }
-
-    private func movieTime(for session: PlaybackSessionResponse) -> Double {
-        let playerTime = session.position.isFinite ? session.position : 0
-        let offset = session.timelineOffsetSeconds.isFinite ? session.timelineOffsetSeconds : 0
-        return max(0, playerTime + offset)
     }
 
     private func chapterInfoList(from version: FileVersion) -> [PlayerChapterInfo] {
@@ -3075,7 +3024,7 @@ class PlayerViewModel {
         request: LoadRequest,
         options: LoadOptions,
         origin: LoadOrigin
-    ) async throws -> (prepared: PreparedPlayback, plan: ExecutablePlan, identity: SessionIdentity) {
+    ) async throws -> (prepared: PreparedPlayback, plan: PlaybackExecutionPlan, identity: SessionIdentity) {
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
@@ -3495,7 +3444,7 @@ class PlayerViewModel {
     /// execution but does not order two distinct unstructured tasks, and this
     /// shell issues commands in pairs that must not invert — the re-anchor seek
     /// before the reload that carries it, `commitSeek` before `.play`. Every
-    /// forwarding site (this, `requestReplan`, `reloadEngineInPlace`) enqueues
+    /// forwarding site (this, `requestReplan`, `reloadEngine`) enqueues
     /// on the one serial executor the callers already run on, so the tasks start
     /// in call order and reach the control plane in that order.
     private func send(_ intent: PlayerIntent) {
@@ -3590,8 +3539,11 @@ class PlayerViewModel {
             send(.changeQuality(resolvedQualityId))
             return
         }
-        // The pre-V3 branches need version and plan knowledge the control plane
-        // does not hold, so they stay here and issue their own `.load`.
+        // No live V3 plan means an offline download: the prepare comes from
+        // `OfflinePlaybackBuilder`, which never carries a V3 plan and always
+        // resolves to direct play of a local file. There is no server to
+        // replan against and no second source to reselect, so the switch is
+        // either a label change on the local file or a refusal.
         let qualityOverrideCapKbps = AppleQualityAxes.resolvedBitrateCap(
             qualityOverride: resolvedQualityId,
             fallbackBitrateKbps: nil
@@ -3603,80 +3555,15 @@ class PlayerViewModel {
                 capKbps: qualityOverrideCapKbps
             )
         } ?? true
-        if !qualityRequiresTranscode {
-            if plan.delivery == .direct || plan.delivery == .remux {
-                if let selectedVersion = currentSelectedVersion,
-                   let watchDetail = currentWatchDetail,
-                   let lastLoadRequest,
-                   lastLoadRequest.offlineDownloadId == nil,
-                   ApplePlaybackQuality.shouldReselectSource(
-                       preferredQualityId: resolvedQualityId,
-                       selectedVersion: selectedVersion,
-                       availableVersions: watchDetail.versions
-                   ) {
-                    var request = lastLoadRequest.copyForRecovery(
-                        preferredFileId: nil,
-                        preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
-                        preferredSubtitleTrackIndex: trackSelection.resolvedSubtitleTrackIndexForResume(),
-                        preferredSidecarSubtitleTrackId: trackSelection.resolvedSidecarSubtitleTrackIdForResume(),
-                        offlineDownloadId: nil
-                    )
-                    request.preferredQualityOverride = resolvedQualityId
-                    let target = currentTime.isFinite ? max(0, currentTime) : 0
-                    qualitySwitchError = nil
-                    send(
-                        .load(
-                            request,
-                            origin: .userInitiated,
-                            options: LoadOptions(
-                                progressPosition: target,
-                                finalizeCurrentSession: true,
-                                resumePosition: target,
-                                allowNearEndResume: true
-                            )
-                        )
-                    )
-                    return
-                }
-                activeQualityId = resolvedQualityId
-                lastLoadRequest?.preferredQualityOverride = resolvedQualityId
-                qualitySwitchError = nil
-                return
-            }
-            if plan.delivery == .transcode, let lastLoadRequest {
-                // Currently transcoding, but the requested quality (e.g. back
-                // to Auto after a manual downgrade) no longer needs it. An
-                // in-place transcode restart can only produce HLS again —
-                // replan the whole session so the server can hand back direct
-                // play.
-                var request = lastLoadRequest.copyForRecovery(
-                    preferredFileId: lastLoadRequest.preferredFileId,
-                    preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
-                    preferredSubtitleTrackIndex: trackSelection.resolvedSubtitleTrackIndexForResume(),
-                    preferredSidecarSubtitleTrackId: trackSelection.resolvedSidecarSubtitleTrackIdForResume(),
-                    offlineDownloadId: lastLoadRequest.offlineDownloadId
-                )
-                request.preferredQualityOverride = resolvedQualityId
-                let target = currentTime.isFinite ? max(0, currentTime) : 0
-                qualitySwitchError = nil
-                send(
-                    .load(
-                        request,
-                        origin: .userInitiated,
-                        options: LoadOptions(
-                            progressPosition: target,
-                            finalizeCurrentSession: true,
-                            resumePosition: target,
-                            allowNearEndResume: true
-                        )
-                    )
-                )
-                return
-            }
+        if !qualityRequiresTranscode, plan.delivery == .direct || plan.delivery == .remux {
+            activeQualityId = resolvedQualityId
+            lastLoadRequest?.preferredQualityOverride = resolvedQualityId
+            qualitySwitchError = nil
+            return
         }
 
-        // No live V3 plan to replan against: the in-place restart refuses and
-        // re-arms the picker with its own error.
+        // The local file cannot serve the requested rung and nothing can
+        // transcode it here: re-arm the picker with its own error.
         isQualitySwitching = false
         qualitySwitchError = "Quality unavailable for this item."
         Self.logger.warning(
@@ -3969,18 +3856,11 @@ class PlayerViewModel {
         return false
     }
 
-    /// The `SeekOrigin` a `commitSeek` caller stands for. `SeekOrigin` is the
-    /// reducer's, so the shell's string source maps onto it once, here.
+    /// The `SeekOrigin` a `commitSeek` caller stands for. Only leaving the
+    /// postroll behaves differently — it is allowed to clear the EOF latch —
+    /// so every other source is an ordinary seek.
     private func seekOrigin(for source: String) -> SeekOrigin {
-        switch source {
-        case "skipDebounce": return .skip
-        case "chapter": return .chapter
-        case "intro": return .intro
-        case "credits": return .credits
-        case "nextUpBack": return .nextUpKeepWatching
-        case "scrub": return .scrub
-        default: return .user
-        }
+        source == "nextUpBack" ? .nextUpKeepWatching : .user
     }
 
     /// The UI half of a re-anchor: the stream rebuild that follows is what
@@ -4102,14 +3982,13 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-SEEK] local loopback reanchor seek target=\(clampedTarget, privacy: .public) origin=\(origin, privacy: .public) previousOffset=\(plan.loopbackSession?.sourceStartTimeSeconds ?? -1, privacy: .public)"
         )
+        guard let controlPlane else { return true }
         // A replacement item inside the *same* load, which is exactly what the
         // reducer's `fileLoaded` `.playing` arm models: the server session is
         // untouched, only the local remux is re-anchored.
-        pendingExecutionPlan = updatedPlan
-        guard let controlPlane else { return true }
         // Main-actor-isolated so it cannot overtake `beginReanchorSeekUI`'s
         // `.seek(.reanchor)` (see `send(_:)`).
-        Task { @MainActor in await controlPlane.reloadEngineInPlace() }
+        Task { @MainActor in await controlPlane.reloadEngine(with: updatedPlan) }
         return true
     }
 
@@ -4502,19 +4381,6 @@ class PlayerViewModel {
         inventory.filter {
             $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
         }.count
-    }
-
-    static func isUnexpectedBackwardPlaybackTime(
-        _ candidate: Double,
-        currentTime: Double,
-        explicitSeekInFlight: Bool
-    ) -> Bool {
-        guard !explicitSeekInFlight,
-              candidate.isFinite,
-              currentTime.isFinite else {
-            return false
-        }
-        return candidate + 0.75 < currentTime
     }
 
     func cycleAudioTrack() { trackSelection.cycleAudioTrack() }

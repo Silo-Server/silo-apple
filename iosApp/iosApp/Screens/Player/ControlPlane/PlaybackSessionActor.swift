@@ -29,7 +29,7 @@
 //  Ordering between two shell commands is preserved by *where they are
 //  enqueued*, not by the actor: an actor serialises execution, it does not
 //  order distinct unstructured tasks. Every shell forwarding site
-//  (`PlayerViewModel.send`, `requestReplan`, `reloadEngineInPlace`) therefore
+//  (`PlayerViewModel.send`, `requestReplan`, `reloadEngine`) therefore
 //  wraps its hop in `Task { @MainActor in … }`, so two commands issued from one
 //  main-thread call run their first job in call order on the main serial
 //  executor and reach this actor in that order.
@@ -239,7 +239,7 @@ actor PlaybackSessionActor {
             await stopSession(identity, position: position, isPaused: isPaused)
 
         case let .loadEngine(plan, loadID, reuseEngine):
-            await loadEngine(plan, loadID: loadID, reuseEngine: reuseEngine)
+            await loadEngine(plan.value, loadID: loadID, reuseEngine: reuseEngine)
 
         case let .disposeEngine(loadID, sourceCache):
             await disposeEngine(loadID, sourceCache: sourceCache)
@@ -328,15 +328,13 @@ actor PlaybackSessionActor {
         guard next.currentTime != lastPublished.currentTime
             || next.duration != lastPublished.duration
             || next.bufferedAheadSeconds != lastPublished.bufferedAheadSeconds
-            || next.playbackRunwaySeconds != lastPublished.playbackRunwaySeconds
-            || next.playbackStats != lastPublished.playbackStats else {
+            || next.playbackRunwaySeconds != lastPublished.playbackRunwaySeconds else {
             return
         }
         lastPublished.currentTime = next.currentTime
         lastPublished.duration = next.duration
         lastPublished.bufferedAheadSeconds = next.bufferedAheadSeconds
         lastPublished.playbackRunwaySeconds = next.playbackRunwaySeconds
-        lastPublished.playbackStats = next.playbackStats
         await shell?.applyPresentation(next, transportOnly: true)
     }
 
@@ -366,7 +364,11 @@ actor PlaybackSessionActor {
                 guard !Task.isCancelled else { return }
                 await self.ingest(
                     .session(
-                        .prepared(PreparedPlaybackRef(resolved.prepared), resolved.plan, for: loadID),
+                        .prepared(
+                            PreparedPlaybackRef(resolved.prepared),
+                            ExecutionPlanRef(resolved.plan),
+                            for: loadID
+                        ),
                         resolved.identity
                     )
                 )
@@ -443,7 +445,11 @@ actor PlaybackSessionActor {
 
     // MARK: - Engine lifecycle
 
-    private func loadEngine(_ plan: ExecutablePlan, loadID: LoadID, reuseEngine: Bool) async {
+    private func loadEngine(
+        _ plan: PlaybackExecutionPlan,
+        loadID: LoadID,
+        reuseEngine: Bool
+    ) async {
         pendingLoadID = loadID
         if let carried = carriedOutage {
             // The replacement session adopts the ride-through together with the
@@ -659,7 +665,10 @@ actor PlaybackSessionActor {
                 if let resolved {
                     await self.ingest(
                         .session(
-                            .replanned(PreparedPlaybackRef(resolved.prepared), resolved.plan),
+                            .replanned(
+                                PreparedPlaybackRef(resolved.prepared),
+                                ExecutionPlanRef(resolved.plan)
+                            ),
                             resolved.identity
                         )
                     )
@@ -735,7 +744,7 @@ actor PlaybackSessionActor {
                 // notes the failure on the driver and reports whether the silent
                 // path is spent.
                 let escalates = await shell.noteRenewalFailure(error, reason: renewal.reason)
-                await self.ingest(.session(.renewalFailed(transient: !escalates), identity))
+                await self.ingest(.session(.renewalFailed, identity))
                 guard escalates,
                       let source = Self.sessionMissingSource(forReason: renewal.reason) else {
                     return
@@ -888,16 +897,25 @@ actor PlaybackSessionActor {
         await run(effects)
     }
 
-    /// Re-install the engine for the load that is already playing.
+    /// Re-install the engine for the load that is already playing, under a
+    /// replacement plan the shell minted (contract note (e)): the
+    /// native-direct -> loopback fallback and the loopback seek-before-anchor
+    /// rebuild both replace the local execution route without touching the
+    /// server session, which is the case the reducer's `fileLoaded` `.playing`
+    /// arm already models as "a replacement item inside the same load".
+    /// Keeping the `LoadID` is what makes that arm reachable — a fresh one
+    /// would strand the outstanding re-anchor filter.
     ///
-    /// The loopback seek-before-anchor rebuild (contract note (e)) replaces the
-    /// local remux without touching the server session, which is the case the
-    /// reducer's `fileLoaded` `.playing` arm already models as "a replacement
-    /// item inside the same load". Keeping the `LoadID` is what makes that arm
-    /// reachable — a fresh one would strand the outstanding re-anchor filter.
-    func reloadEngineInPlace() async {
-        guard case let .playing(playing) = state else { return }
-        await loadEngine(playing.plan, loadID: playing.loadID, reuseEngine: false)
+    /// The plan is written onto `Playing` before the load is issued, so the
+    /// rules that read it — `reuseEngine` and the transcode duration guard —
+    /// see the plan the engine is actually running rather than the retired
+    /// one.
+    func reloadEngine(with plan: PlaybackExecutionPlan) async {
+        guard case var .playing(playing) = state else { return }
+        let replacement = ExecutionPlanRef(plan)
+        playing.plan = replacement
+        state = .playing(playing)
+        await perform(.loadEngine(replacement, playing.loadID, reuseEngine: false))
     }
 
     // MARK: - Teardown

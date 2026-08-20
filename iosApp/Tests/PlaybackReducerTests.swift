@@ -21,198 +21,10 @@ final class PlaybackReducerTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeRequest(
-        contentId: String = "content-1",
-        offlineDownloadId: String? = nil
-    ) -> LoadRequest {
-        LoadRequest(
-            contentId: contentId,
-            preferredFileId: 7,
-            preferredAudioTrackIndex: 1,
-            preferredSubtitleTrackIndex: nil,
-            preferredSidecarSubtitleTrackId: nil,
-            startFromBeginning: false,
-            offlineDownloadId: offlineDownloadId
-        )
-    }
-
-    private func makeIdentity(
-        session: String? = "session-1",
-        attempt: String = "apple:attempt-1",
-        planAttempt: String? = "apple-plan:1",
-        planAttemptKey: String? = "plan-key-1",
-        outputContext: String = "output-1"
-    ) -> SessionIdentity {
-        SessionIdentity(
-            serverSessionId: session,
-            playbackAttemptId: attempt,
-            planAttemptId: planAttempt,
-            planAttemptKey: planAttemptKey,
-            outputContextId: outputContext
-        )
-    }
-
-    private func makePlan(
-        engine: PlaybackEngineKind = .avPlayerNativeDirect,
-        startSeconds: Double = 0
-    ) -> ExecutablePlan {
-        switch engine {
-        case .avPlayerNativeDirect:
-            return .nativeDirect(
-                NativeDirectPlan(
-                    url: URL(string: "https://example.invalid/movie.mkv")!,
-                    headers: ["Authorization": "Bearer x"],
-                    startSeconds: startSeconds
-                )
-            )
-        case .avPlayerHLS:
-            return .serverHLS(
-                ServerHLSPlan(
-                    manifestURL: URL(string: "https://example.invalid/master.m3u8")!,
-                    headers: [:],
-                    startMode: startSeconds == 0 ? .startOfManifest : .absolutePosition(startSeconds)
-                )
-            )
-        case .siloPlayerLoopback:
-            return .localHLS(LocalHLSPlan(sessionSpec: makeSessionSpec(), startSeconds: startSeconds))
-        }
-    }
-
-    private func makeSessionSpec(
-        sourceStartTimeSeconds: Double = 0
-    ) -> LoopbackSessionSpec {
-        LoopbackSessionSpec(
-            sourceURL: URL(string: "https://example.invalid/movie.mkv")!,
-            headers: [:],
-            sourceStartTimeSeconds: sourceStartTimeSeconds,
-            sourceBitrateBps: 20_000_000,
-            videoMode: .passthroughHEVC,
-            sourceVideoFrameRate: 23.976,
-            selectedAudio: .absent,
-            availableAudioTracks: [],
-            manifestMetadata: LoopbackSessionSpec.ManifestMetadata(
-                advertisedDolbyVisionProfile: nil,
-                compatibilityBrand: nil,
-                videoRange: "SDR",
-                mayClaimAtmos: false
-            )
-        )
-    }
-
-    private func makePreparedRef(
-        position: Double = 0,
-        timelineOffsetSeconds: Double = 0,
-        durationSeconds: Double? = 1000,
-        activeQualityId: String = ApplePlaybackQuality.autoId,
-        fileId: Int = 7,
-        protocolV3: PreparedPlaybackV3? = nil
-    ) throws -> PreparedPlaybackRef {
-        let json = Data("""
-        {
-          "content_id": "content-1",
-          "type": "movie",
-          "title": "Test",
-          "versions": [{"file_id": \(fileId), "duration": 900}]
-        }
-        """.utf8)
-        let watchDetail = try HTTPClient.makeJSONDecoder().decode(WatchDetail.self, from: json)
-        let session = PlaybackSessionResponse(
-            sessionId: "session-1",
-            userId: nil,
-            profileId: nil,
-            mediaFileId: fileId,
-            playMethod: "direct",
-            position: position,
-            isPaused: false,
-            streamUrl: "https://example.invalid/movie.mkv",
-            audioTrackIndex: nil,
-            durationSeconds: durationSeconds,
-            timelineOffsetSeconds: timelineOffsetSeconds,
-            subtitleUrls: nil,
-            playbackInfo: nil
-        )
-        return PreparedPlaybackRef(
-            PreparedPlayback(
-                watchDetail: watchDetail,
-                selectedVersion: watchDetail.versions[0],
-                session: session,
-                activeQualityId: activeQualityId,
-                protocolV3: protocolV3
-            )
-        )
-    }
-
-    /// A minimal but *real* `PreparedPlaybackV3`, decoded rather than
-    /// hand-built so the fixture cannot drift from the wire shape. The
-    /// selected subtitle is an external sidecar, which is the branch of
-    /// `LoadRequest.adoptingProtocolV3Intent` (PVM:885-918) that produces a
-    /// sidecar track id and no embedded FFmpeg index — no `FileVersion`
-    /// subtitle streams needed.
-    private func makePreparedV3(
-        effectiveMediaFileId: Int = 9,
-        audioIndex: Int = 5,
-        subtitleCombinedIndex: Int? = 3
-    ) throws -> PreparedPlaybackV3 {
-        var selectedSubtitle = ""
-        var inventory = ""
-        if let index = subtitleCombinedIndex {
-            selectedSubtitle = #", "subtitle": {"id": "file:9:subtitle:\#(index)", "index": \#(index)}"#
-            inventory = #"""
-            {"track_id": "file:9:subtitle:\#(index)", "combined_index": \#(index),
-             "source": "external", "forced": false, "default": false,
-             "hearing_impaired": false, "delivery": "sidecar",
-             "url": "https://example.invalid/subs.vtt"}
-            """#
-        }
-        let json = Data("""
-        {
-          "protocol_version": 3,
-          "plan_id": "plan:fixture",
-          "session_id": "session-v3",
-          "delivery": "original_http",
-          "plan_attempt_key": "v3:opaque-fixture",
-          "stream": {"url": "/stream/session-v3", "protocol": "http_progressive",
-                     "headers": {}, "header_refresh": "session"},
-          "timeline": {"source_start_seconds": 0, "stream_origin_seconds": 0,
-                       "player_start_seconds": 0, "timeline_offset_seconds": 0,
-                       "can_seek_anywhere": true, "seek_restoration": "player_position"},
-          "selected_tracks": {"audio": {"id": "file:9:audio:\(audioIndex)", "index": \(audioIndex)}\(selectedSubtitle)},
-          "effective_recipe": {},
-          "claims": {
-            "video": {"hdr10": false, "hdr10_plus": false, "hlg": false, "dolby_vision": false},
-            "audio": {"passthrough": false, "atmos_preserved": false},
-            "subtitles": {"ass_styling_preserved": false, "bitmap_overlay": false,
-                          "bitmap_sidecar": false}
-          },
-          "subtitle": {"mode": "external", "inventory": [\(inventory)]},
-          "transformations": [],
-          "applied_quirks": [],
-          "runtime_corrections": [],
-          "degradation_warnings": [],
-          "decision_reason": "validated_original_playback",
-          "requested_media_file_id": \(effectiveMediaFileId),
-          "effective_media_file_id": \(effectiveMediaFileId),
-          "source": {"media_file_id": \(effectiveMediaFileId), "hdr10_plus": false,
-                     "dv_enhancement_layer": "none"},
-          "subtitle_fidelity_policy": "allow_simplified_rendering",
-          "available_qualities": []
-        }
-        """.utf8)
-        let plan = try HTTPClient.makeJSONDecoder().decode(PlaybackV3Plan.self, from: json)
-        return PreparedPlaybackV3(
-            playbackAttemptId: "apple:attempt-1",
-            planAttemptId: "apple-plan:1",
-            planAttemptKey: plan.planAttemptKey,
-            outputContextId: "output-1",
-            serverFeatures: [PlaybackProtocolV3.planFeature],
-            plan: plan
-        )
-    }
-
     private func makePlaying(
         loadID: LoadID = LoadID(),
         identity: SessionIdentity? = nil,
-        plan: ExecutablePlan? = nil,
+        plan: ExecutionPlanRef? = nil,
         request: LoadRequest? = nil,
         adoption: PlaybackAdoption = .freshLoad(.userInitiated),
         transport: TransportState = TransportState(positionSeconds: 100, durationSeconds: 1000),
@@ -223,12 +35,12 @@ final class PlaybackReducerTests: XCTestCase {
         resumeSelections: TrackResumeSelections? = nil,
         interruption: Playing.Interruption? = nil
     ) -> PlaybackState {
-        let request = request ?? makeRequest()
+        let request = request ?? ControlPlaneFixtures.makeRequest()
         return .playing(
             Playing(
                 loadID: loadID,
-                identity: identity ?? makeIdentity(),
-                plan: plan ?? makePlan(),
+                identity: identity ?? ControlPlaneFixtures.makeIdentity(),
+                plan: plan ?? ControlPlaneFixtures.makePlanRef(),
                 request: request,
                 adoption: adoption,
                 transport: transport,
@@ -248,7 +60,7 @@ final class PlaybackReducerTests: XCTestCase {
         phase: Preparing.Phase = .startingEngine,
         options: LoadOptions = LoadOptions(),
         adoption: PlaybackAdoption = .freshLoad(.userInitiated),
-        plan: ExecutablePlan? = nil,
+        plan: ExecutionPlanRef? = nil,
         transport: TransportState = TransportState(),
         activeQualityId: String? = ApplePlaybackQuality.autoId,
         hasProtocolV3: Bool = true,
@@ -258,16 +70,16 @@ final class PlaybackReducerTests: XCTestCase {
         .preparing(
             Preparing(
                 loadID: loadID,
-                identity: identity ?? makeIdentity(),
+                identity: identity ?? ControlPlaneFixtures.makeIdentity(),
                 phase: phase,
-                request: makeRequest(),
+                request: ControlPlaneFixtures.makeRequest(),
                 options: options,
                 adoption: adoption,
-                plan: plan ?? makePlan(),
+                plan: plan ?? ControlPlaneFixtures.makePlanRef(),
                 transport: transport,
                 activeQualityId: activeQualityId,
                 hasProtocolV3: hasProtocolV3,
-                resumeSelections: resumeSelections ?? .seeded(from: makeRequest()),
+                resumeSelections: resumeSelections ?? .seeded(from: ControlPlaneFixtures.makeRequest()),
                 interruption: interruption
             )
         )
@@ -290,9 +102,9 @@ final class PlaybackReducerTests: XCTestCase {
     /// then the replacement start.
     func testFreshLoadEmitsBeginFreshLoadEffectsInOrder() {
         let previous = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(loadID: previous, identity: identity)
-        let request = makeRequest(contentId: "content-2")
+        let request = ControlPlaneFixtures.makeRequest(contentId: "content-2")
         let options = LoadOptions(progressPosition: 100, resumePosition: 12)
 
         let (next, effects) = PlaybackReducer.reduce(
@@ -339,9 +151,9 @@ final class PlaybackReducerTests: XCTestCase {
     /// load, stops the outgoing session instead of only reporting against it.
     /// A recovery load does not clear the outage-recovery timer.
     func testFreshLoadFinalizesTheOutgoingSessionAndSkipsUserOnlyClears() {
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(identity: identity)
-        let offlineRequest = makeRequest(offlineDownloadId: "download-1")
+        let offlineRequest = ControlPlaneFixtures.makeRequest(offlineDownloadId: "download-1")
         let options = LoadOptions(progressPosition: 42, preserveInterruptionState: true)
 
         let (_, effects) = PlaybackReducer.reduce(
@@ -359,7 +171,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// From idle there is no outgoing session and no engine, so neither the
     /// report nor the dispose is emitted.
     func testFreshLoadFromIdleOnlyStartsTheSession() {
-        let request = makeRequest()
+        let request = ControlPlaneFixtures.makeRequest()
         let (next, effects) = PlaybackReducer.reduce(
             .idle,
             intent: .load(request, origin: .userInitiated, options: LoadOptions(progressPosition: 12)),
@@ -380,21 +192,21 @@ final class PlaybackReducerTests: XCTestCase {
     // MARK: - Prepare → engine
 
     func testPreparedStartsTheEngineWithoutReusingIt() throws {
-        let request = makeRequest()
+        let request = ControlPlaneFixtures.makeRequest()
         let (preparing, _) = PlaybackReducer.reduce(
             .idle,
             intent: .load(request, origin: .userInitiated, options: LoadOptions()),
             now: now
         )
         let loadID = try XCTUnwrap(preparing.loadID)
-        let identity = makeIdentity()
-        let plan = makePlan(engine: .siloPlayerLoopback)
+        let identity = ControlPlaneFixtures.makeIdentity()
+        let plan = ControlPlaneFixtures.makePlanRef(engine: .siloPlayerLoopback)
 
         let (next, effects) = PlaybackReducer.reduce(
             preparing,
             event: .session(
                 .prepared(
-                    try makePreparedRef(
+                    try ControlPlaneFixtures.makePreparedRef(
                         position: 610,
                         timelineOffsetSeconds: 7,
                         activeQualityId: "1080p",
@@ -438,8 +250,8 @@ final class PlaybackReducerTests: XCTestCase {
                 transport: TransportState(durationSeconds: 4321)
             ),
             event: .session(
-                .prepared(try makePreparedRef(durationSeconds: nil), makePlan(), for: loadID),
-                makeIdentity()
+                .prepared(try ControlPlaneFixtures.makePreparedRef(durationSeconds: nil), ControlPlaneFixtures.makePlanRef(), for: loadID),
+                ControlPlaneFixtures.makeIdentity()
             ),
             now: now
         )
@@ -452,14 +264,14 @@ final class PlaybackReducerTests: XCTestCase {
     func testPreparedForASupersededLoadIsIgnored() throws {
         let (preparing, _) = PlaybackReducer.reduce(
             .idle,
-            intent: .load(makeRequest(), origin: .userInitiated, options: LoadOptions()),
+            intent: .load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()),
             now: now
         )
         let (next, effects) = PlaybackReducer.reduce(
             preparing,
             event: .session(
-                .prepared(try makePreparedRef(), makePlan(), for: LoadID()),
-                makeIdentity()
+                .prepared(try ControlPlaneFixtures.makePreparedRef(), ControlPlaneFixtures.makePlanRef(), for: LoadID()),
+                ControlPlaneFixtures.makeIdentity()
             ),
             now: now
         )
@@ -474,13 +286,13 @@ final class PlaybackReducerTests: XCTestCase {
     /// scrubber never blinks to 0/0 on a load or an in-place replan.
     func testFileLoadedStartsPlaybackFromTheAdoptedTransport() throws {
         let loadID = LoadID()
-        let identity = makeIdentity()
-        let plan = makePlan()
+        let identity = ControlPlaneFixtures.makeIdentity()
+        let plan = ControlPlaneFixtures.makePlanRef()
         let (preparing, _) = PlaybackReducer.reduce(
             makePreparing(loadID: loadID, identity: identity, phase: .resolvingSession, plan: plan),
             event: .session(
                 .prepared(
-                    try makePreparedRef(position: 610, timelineOffsetSeconds: 7, activeQualityId: "4k"),
+                    try ControlPlaneFixtures.makePreparedRef(position: 610, timelineOffsetSeconds: 7, activeQualityId: "4k"),
                     plan,
                     for: loadID
                 ),
@@ -531,13 +343,13 @@ final class PlaybackReducerTests: XCTestCase {
     /// frozen position to the server every 10 s.
     func testThePlayheadAndTheProgressReportShareTheMovieTimeAxis() throws {
         let loadID = LoadID()
-        let identity = makeIdentity()
-        let plan = makePlan(engine: .avPlayerHLS)
+        let identity = ControlPlaneFixtures.makeIdentity()
+        let plan = ControlPlaneFixtures.makePlanRef(engine: .avPlayerHLS)
         let (adopted, _) = PlaybackReducer.reduce(
             makePreparing(loadID: loadID, identity: identity, phase: .resolvingSession, plan: plan),
             event: .session(
                 .prepared(
-                    try makePreparedRef(position: 60, timelineOffsetSeconds: 540),
+                    try ControlPlaneFixtures.makePreparedRef(position: 60, timelineOffsetSeconds: 540),
                     plan,
                     for: loadID
                 ),
@@ -593,7 +405,7 @@ final class PlaybackReducerTests: XCTestCase {
             )
             let (_, effects) = PlaybackReducer.reduce(
                 state,
-                event: .session(.replanned(try makePreparedRef(), makePlan()), makeIdentity()),
+                event: .session(.replanned(try ControlPlaneFixtures.makePreparedRef(), ControlPlaneFixtures.makePlanRef()), ControlPlaneFixtures.makeIdentity()),
                 now: now
             )
             return effects.contains {
@@ -605,7 +417,7 @@ final class PlaybackReducerTests: XCTestCase {
         let loadID = LoadID()
         let (_, freshEffects) = PlaybackReducer.reduce(
             makePreparing(loadID: loadID, phase: .resolvingSession),
-            event: .session(.prepared(try makePreparedRef(), makePlan(), for: loadID), makeIdentity()),
+            event: .session(.prepared(try ControlPlaneFixtures.makePreparedRef(), ControlPlaneFixtures.makePlanRef(), for: loadID), ControlPlaneFixtures.makeIdentity()),
             now: now
         )
         XCTAssertTrue(
@@ -659,7 +471,7 @@ final class PlaybackReducerTests: XCTestCase {
             reason: "progress",
             observedPosition: 100,
             startedAt: now,
-            issuedFor: makeIdentity()
+            issuedFor: ControlPlaneFixtures.makeIdentity()
         )
         let state = makePlaying(sub: .renewingSource(renewal))
         let (next, effects) = PlaybackReducer.reduce(state, intent: .changeQuality("720p"), now: now)
@@ -671,7 +483,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// engine — but the `LoadID` never does (review #1: callbacks re-bind).
     func testReplannedKeepsTheEngineAndMintsANewLoadID() throws {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let intent = ReplanIntent(
             kind: .serverReplan,
             position: 100,
@@ -681,17 +493,17 @@ final class PlaybackReducerTests: XCTestCase {
         let state = makePlaying(
             loadID: loadID,
             identity: identity,
-            plan: makePlan(engine: .siloPlayerLoopback),
+            plan: ControlPlaneFixtures.makePlanRef(engine: .siloPlayerLoopback),
             sub: .replanning(intent)
         )
-        let replacement = makePlan(engine: .siloPlayerLoopback, startSeconds: 100)
+        let replacement = ControlPlaneFixtures.makePlanRef(engine: .siloPlayerLoopback, startSeconds: 100)
         // The replan keeps the session and playback attempt and mints a new
         // plan attempt.
-        let replannedIdentity = makeIdentity(planAttempt: "apple-plan:2", planAttemptKey: "plan-key-2")
+        let replannedIdentity = ControlPlaneFixtures.makeIdentity(planAttempt: "apple-plan:2", planAttemptKey: "plan-key-2")
 
         let (next, effects) = PlaybackReducer.reduce(
             state,
-            event: .session(.replanned(try makePreparedRef(), replacement), replannedIdentity),
+            event: .session(.replanned(try ControlPlaneFixtures.makePreparedRef(), replacement), replannedIdentity),
             now: now
         )
 
@@ -708,16 +520,16 @@ final class PlaybackReducerTests: XCTestCase {
     /// Reuse is engine-scoped: a replan onto a different engine, and every
     /// transcode restart, installs a fresh backend.
     func testReplannedOntoADifferentEngineOrARestartDoesNotReuse() throws {
-        func reuse(kind: ReplanIntent.Kind, replacement: ExecutablePlan) throws -> Bool {
+        func reuse(kind: ReplanIntent.Kind, replacement: ExecutionPlanRef) throws -> Bool {
             let state = makePlaying(
-                plan: makePlan(engine: .siloPlayerLoopback),
+                plan: ControlPlaneFixtures.makePlanRef(engine: .siloPlayerLoopback),
                 sub: .replanning(
                     ReplanIntent(kind: kind, position: 100, classification: "c", message: "m")
                 )
             )
             let (_, effects) = PlaybackReducer.reduce(
                 state,
-                event: .session(.replanned(try makePreparedRef(), replacement), makeIdentity()),
+                event: .session(.replanned(try ControlPlaneFixtures.makePreparedRef(), replacement), ControlPlaneFixtures.makeIdentity()),
                 now: now
             )
             guard case .loadEngine(_, _, let reuseEngine) = effects.last else {
@@ -727,11 +539,11 @@ final class PlaybackReducerTests: XCTestCase {
             return reuseEngine
         }
 
-        XCTAssertFalse(try reuse(kind: .serverReplan, replacement: makePlan(engine: .avPlayerHLS)))
+        XCTAssertFalse(try reuse(kind: .serverReplan, replacement: ControlPlaneFixtures.makePlanRef(engine: .avPlayerHLS)))
         XCTAssertFalse(
             try reuse(
                 kind: .transcodeRestart(.qualityChange(qualityId: "720p")),
-                replacement: makePlan(engine: .siloPlayerLoopback)
+                replacement: ControlPlaneFixtures.makePlanRef(engine: .siloPlayerLoopback)
             )
         )
     }
@@ -747,8 +559,8 @@ final class PlaybackReducerTests: XCTestCase {
         let (next, effects) = PlaybackReducer.reduce(
             state,
             event: .session(
-                .replanned(try makePreparedRef(), makePlan()),
-                makeIdentity(session: "session-2", attempt: "apple:attempt-2")
+                .replanned(try ControlPlaneFixtures.makePreparedRef(), ControlPlaneFixtures.makePlanRef()),
+                ControlPlaneFixtures.makeIdentity(session: "session-2", attempt: "apple:attempt-2")
             ),
             now: now
         )
@@ -774,7 +586,6 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(playing(next)?.sub, .steady, "a seek does not take the load")
         XCTAssertEqual(request.fromSeconds, 100)
         XCTAssertEqual(request.targetSeconds, 300)
-        XCTAssertEqual(request.deadline, now.addingTimeInterval(15))
         XCTAssertEqual(playing(next)?.transport.positionSeconds, 300, "the scrubber jumps optimistically")
         XCTAssertEqual(effects, [
             .seek(request, loadID),
@@ -908,7 +719,7 @@ final class PlaybackReducerTests: XCTestCase {
         )
         let (reloaded, _) = PlaybackReducer.reduce(
             seeking,
-            intent: .load(makeRequest(), origin: .userInitiated, options: LoadOptions()),
+            intent: .load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()),
             now: now
         )
 
@@ -973,7 +784,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// second and stranded the load behind the loading overlay.
     func testASeekDuringAReplanKeepsBothTheSeekAndTheReplan() throws {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (replanning, _) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             intent: .changeQuality("1080p"),
@@ -982,7 +793,7 @@ final class PlaybackReducerTests: XCTestCase {
 
         let (seeking, seekEffects) = PlaybackReducer.reduce(
             replanning,
-            intent: .seek(targetSeconds: 300, origin: .skip),
+            intent: .seek(targetSeconds: 300, origin: .user),
             now: now
         )
         guard case .replanning = playing(seeking)?.sub else {
@@ -996,7 +807,7 @@ final class PlaybackReducerTests: XCTestCase {
         // ... and the replan answer is still accepted.
         let (replanned, replannedEffects) = PlaybackReducer.reduce(
             seeking,
-            event: .session(.replanned(try makePreparedRef(), makePlan()), identity),
+            event: .session(.replanned(try ControlPlaneFixtures.makePreparedRef(), ControlPlaneFixtures.makePlanRef()), identity),
             now: now
         )
         guard case .preparing = replanned else {
@@ -1028,25 +839,20 @@ final class PlaybackReducerTests: XCTestCase {
     }
 
     /// Every seek entry point refuses once the postroll latch is set
-    /// (`skipForward` PVM:4846, `skipBackward` PVM:4858, `seek(to:)` PVM:5300,
-    /// `seekTo(seconds:)` PVM:5315) — except the two that clear the latch
-    /// themselves before seeking: leaving the postroll with "Keep watching"
-    /// (PVM:2093-2110) and a reanchor (PVM:5063-5064).
+    /// (`skipForward`, `skipBackward`, `seek(to:)`, `seekTo(seconds:)`) —
+    /// except the two that clear the latch themselves before seeking: leaving
+    /// the postroll with "Keep watching", and a reanchor.
     func testSeekIsRefusedAfterTheEndOfFileExceptWhereTheLatchIsClearedFirst() {
         let loadID = LoadID()
         let state = makePlaying(loadID: loadID, sub: .ended)
 
-        for origin in [
-            SeekOrigin.user, .scrub, .skip, .chapter, .intro, .credits, .recovery("stall"),
-        ] {
-            let (next, effects) = PlaybackReducer.reduce(
-                state,
-                intent: .seek(targetSeconds: 300, origin: origin),
-                now: now
-            )
-            XCTAssertEqual(next, state, "\(origin) must be refused at EOF")
-            XCTAssertTrue(effects.isEmpty)
-        }
+        let (refused, refusedEffects) = PlaybackReducer.reduce(
+            state,
+            intent: .seek(targetSeconds: 300, origin: .user),
+            now: now
+        )
+        XCTAssertEqual(refused, state, "an ordinary seek must be refused at EOF")
+        XCTAssertTrue(refusedEffects.isEmpty)
 
         for origin in [SeekOrigin.nextUpKeepWatching, .reanchor] {
             let (next, effects) = PlaybackReducer.reduce(
@@ -1153,7 +959,7 @@ final class PlaybackReducerTests: XCTestCase {
                     reason: "progress",
                     observedPosition: 100,
                     startedAt: now,
-                    issuedFor: makeIdentity()
+                    issuedFor: ControlPlaneFixtures.makeIdentity()
                 )
             )
         )
@@ -1198,7 +1004,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// stop here would be a new server call on a wire-visible path.
     func testFailDisposesTheEngineAndPublishesTheErrorWithoutStoppingTheSession() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(loadID: loadID, identity: identity)
         let failure = PlaybackFailure(legacyMessage: "The stream could not be played.")
 
@@ -1218,7 +1024,7 @@ final class PlaybackReducerTests: XCTestCase {
             identity,
             "the bridge still holds the session; cleanup() and retry() both reach it"
         )
-        XCTAssertEqual(request, makeRequest(), "retry replays the last request")
+        XCTAssertEqual(request, ControlPlaneFixtures.makeRequest(), "retry replays the last request")
         XCTAssertEqual(position, 100, "finalizeTerminalPlaybackError keeps currentTime")
         XCTAssertTrue(effects.contains(.disposeEngine(loadID, sourceCache: .discard)))
         XCTAssertFalse(
@@ -1234,7 +1040,7 @@ final class PlaybackReducerTests: XCTestCase {
 
     /// A terminal replan failure lands on the same path.
     func testTerminalSessionFailureFails() {
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(
             identity: identity,
             sub: .replanning(
@@ -1264,7 +1070,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// resume where playback died, not restart the title.
     func testRetryResumesWherePlaybackDied() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (failed, _) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             event: .recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID),
@@ -1274,12 +1080,12 @@ final class PlaybackReducerTests: XCTestCase {
         let (next, effects) = PlaybackReducer.reduce(failed, intent: .retry, now: now)
 
         guard case .preparing(let preparing) = next else { return XCTFail("expected preparing") }
-        XCTAssertEqual(preparing.request, makeRequest())
+        XCTAssertEqual(preparing.request, ControlPlaneFixtures.makeRequest())
         XCTAssertEqual(preparing.options.progressPosition, 100)
         XCTAssertEqual(preparing.options.resumePosition, 100)
         XCTAssertTrue(preparing.options.allowNearEndResume)
         XCTAssertTrue(
-            effects.contains(.startSession(makeRequest(), preparing.options, preparing.loadID))
+            effects.contains(.startSession(ControlPlaneFixtures.makeRequest(), preparing.options, preparing.loadID))
         )
         XCTAssertEqual(PlaybackReducer.presentation(for: failed).currentTime, 100)
         // `beginFreshLoad`'s `progressPosition` really is reported: the
@@ -1296,7 +1102,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// `activePlaybackSessionId` mirror and never stops the session itself.
     func testDismissFromTheErrorScreenStillStopsTheSession() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (failed, failEffects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             event: .recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID),
@@ -1319,7 +1125,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// sub-state.
     func testRecoveryActionsMapToExactlyOneEffectSet() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
 
         func run(_ action: RecoveryAction, sub: Sub = .steady) -> (PlaybackState, [Effect]) {
             PlaybackReducer.reduce(
@@ -1635,7 +1441,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// the server answers `replanUnavailable`, so the reducer keeps it.
     func testServerHLSFallbackReplansWithTheFailureTextNotTheClassification() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (reported, reportedEffects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             event: .engine(
@@ -1681,7 +1487,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// Dropping it strands the player on the loading overlay for ever.
     func testAStartupEngineFailureStillReachesTheMidLadderRungs() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (reported, reportedEffects) = PlaybackReducer.reduce(
             makePreparing(loadID: loadID, identity: identity),
             event: .engine(.failed(PlaybackFailure(legacyMessage: "boom")), loadID),
@@ -1825,7 +1631,7 @@ final class PlaybackReducerTests: XCTestCase {
 
         let (_, load) = PlaybackReducer.reduce(
             state,
-            intent: .load(makeRequest(contentId: "content-2"), origin: .userInitiated, options: LoadOptions()),
+            intent: .load(ControlPlaneFixtures.makeRequest(contentId: "content-2"), origin: .userInitiated, options: LoadOptions()),
             now: now
         )
         XCTAssertEqual(disposition(in: load), .stash)
@@ -1863,8 +1669,8 @@ final class PlaybackReducerTests: XCTestCase {
     /// download and `startFromBeginning: false`.
     func testRenewSessionFreshSyncsProgressAndReloadsTheResolvedRequest() {
         let loadID = LoadID()
-        let identity = makeIdentity()
-        var request = makeRequest(offlineDownloadId: "download-1")
+        let identity = ControlPlaneFixtures.makeIdentity()
+        var request = ControlPlaneFixtures.makeRequest(offlineDownloadId: "download-1")
         request = LoadRequest(
             contentId: request.contentId,
             preferredFileId: request.preferredFileId,
@@ -1935,20 +1741,20 @@ final class PlaybackReducerTests: XCTestCase {
     /// identity the renewal was issued against.
     func testRenewalAnswerIsGuardedByTheIdentityItWasIssuedAgainst() throws {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (renewing, _) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             event: .recovery(.renewSourceInBackground(reason: "progress"), loadID),
             now: now
         )
-        let renewedIdentity = makeIdentity(session: "session-2", attempt: "apple:attempt-2")
+        let renewedIdentity = ControlPlaneFixtures.makeIdentity(session: "session-2", attempt: "apple:attempt-2")
 
         let (stale, staleEffects) = PlaybackReducer.reduce(
             renewing,
             event: .session(
                 .renewed(
-                    try makePreparedRef(),
-                    replacing: makeIdentity(session: "session-0", attempt: "apple:attempt-0")
+                    try ControlPlaneFixtures.makePreparedRef(),
+                    replacing: ControlPlaneFixtures.makeIdentity(session: "session-0", attempt: "apple:attempt-0")
                 ),
                 renewedIdentity
             ),
@@ -1961,7 +1767,7 @@ final class PlaybackReducerTests: XCTestCase {
             renewing,
             event: .session(
                 .renewed(
-                    try makePreparedRef(durationSeconds: 1234, activeQualityId: "720p", fileId: 12),
+                    try ControlPlaneFixtures.makePreparedRef(durationSeconds: 1234, activeQualityId: "720p", fileId: 12),
                     replacing: identity
                 ),
                 renewedIdentity
@@ -1989,7 +1795,7 @@ final class PlaybackReducerTests: XCTestCase {
             renewing,
             event: .session(
                 .renewed(
-                    try makePreparedRef(durationSeconds: nil, fileId: 7),
+                    try ControlPlaneFixtures.makePreparedRef(durationSeconds: nil, fileId: 7),
                     replacing: identity
                 ),
                 renewedIdentity
@@ -2009,8 +1815,8 @@ final class PlaybackReducerTests: XCTestCase {
         let (staleFailure, staleFailureEffects) = PlaybackReducer.reduce(
             renewing,
             event: .session(
-                .renewalFailed(transient: true),
-                makeIdentity(session: "session-0", attempt: "apple:attempt-0")
+                .renewalFailed,
+                ControlPlaneFixtures.makeIdentity(session: "session-0", attempt: "apple:attempt-0")
             ),
             now: now
         )
@@ -2019,7 +1825,7 @@ final class PlaybackReducerTests: XCTestCase {
 
         let (released, releasedEffects) = PlaybackReducer.reduce(
             renewing,
-            event: .session(.renewalFailed(transient: true), identity),
+            event: .session(.renewalFailed, identity),
             now: now
         )
         XCTAssertEqual(playing(released)?.sub, .steady)
@@ -2033,13 +1839,9 @@ final class PlaybackReducerTests: XCTestCase {
     func testBackendDurationIsAdoptedOnlyWhenThePurePredicateAllowsIt() {
         func duration(after reported: Double, delivery: PlaybackDeliveryStrategy) -> Double? {
             let loadID = LoadID()
-            let plan = ExecutablePlan.serverHLS(
-                ServerHLSPlan(
-                    manifestURL: URL(string: "https://example.invalid/master.m3u8")!,
-                    headers: [:],
-                    startMode: .startOfManifest,
-                    delivery: delivery
-                )
+            let plan = ControlPlaneFixtures.makePlanRef(
+                engine: .avPlayerHLS,
+                delivery: delivery
             )
             let (next, _) = PlaybackReducer.reduce(
                 makePlaying(
@@ -2116,7 +1918,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// are wire arguments to `startSession`
     /// (PlaybackSessionBridge.swift:401-511).
     func testAQualitySwitchIsReplayedAfterATvOSSuspendAndResume() throws {
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(identity: identity)
         XCTAssertNil(playing(state)?.request.preferredQualityOverride)
 
@@ -2128,14 +1930,14 @@ final class PlaybackReducerTests: XCTestCase {
         )
 
         // 2. The server answers with the authorised plan.
-        let prepared = try makePreparedRef(
+        let prepared = try ControlPlaneFixtures.makePreparedRef(
             activeQualityId: "720p",
             fileId: 9,
-            protocolV3: makePreparedV3(effectiveMediaFileId: 9, audioIndex: 5, subtitleCombinedIndex: 3)
+            protocolV3: ControlPlaneFixtures.makePreparedV3(effectiveMediaFileId: 9, audioIndex: 5, subtitleCombinedIndex: 3)
         )
         let (preparing, _) = PlaybackReducer.reduce(
             replanning,
-            event: .session(.replanned(prepared, makePlan()), identity),
+            event: .session(.replanned(prepared, ControlPlaneFixtures.makePlanRef()), identity),
             now: now
         )
         guard case .preparing(let adopting) = preparing else { return XCTFail("expected preparing") }
@@ -2184,17 +1986,17 @@ final class PlaybackReducerTests: XCTestCase {
     /// an offline load, whose request has no server plan to adopt
     /// (PVM:3596-3600).
     func testTheReplayRequestIsAdoptedOnPrepareAndOnRenewalButNotWhenOffline() throws {
-        let identity = makeIdentity()
-        let prepared = try makePreparedRef(
+        let identity = ControlPlaneFixtures.makeIdentity()
+        let prepared = try ControlPlaneFixtures.makePreparedRef(
             activeQualityId: "1080p",
             fileId: 9,
-            protocolV3: makePreparedV3()
+            protocolV3: ControlPlaneFixtures.makePreparedV3()
         )
 
         let loadID = LoadID()
         let (prepareNext, _) = PlaybackReducer.reduce(
-            makePreparing(loadID: loadID, identity: nil, phase: .resolvingSession, plan: makePlan()),
-            event: .session(.prepared(prepared, makePlan(), for: loadID), identity),
+            makePreparing(loadID: loadID, identity: nil, phase: .resolvingSession, plan: ControlPlaneFixtures.makePlanRef()),
+            event: .session(.prepared(prepared, ControlPlaneFixtures.makePlanRef(), for: loadID), identity),
             now: now
         )
         guard case .preparing(let adopted) = prepareNext else { return XCTFail("expected preparing") }
@@ -2211,7 +2013,7 @@ final class PlaybackReducerTests: XCTestCase {
                 issuedFor: identity
             )
         ))
-        let renewedIdentity = makeIdentity(session: "session-2")
+        let renewedIdentity = ControlPlaneFixtures.makeIdentity(session: "session-2")
         let (renewed, _) = PlaybackReducer.reduce(
             renewing,
             event: .session(.renewed(prepared, replacing: identity), renewedIdentity),
@@ -2222,7 +2024,7 @@ final class PlaybackReducerTests: XCTestCase {
 
         // Offline: no server plan, so the request is left exactly as it was.
         let offlineLoadID = LoadID()
-        let offlineRequest = makeRequest(offlineDownloadId: "download-1")
+        let offlineRequest = ControlPlaneFixtures.makeRequest(offlineDownloadId: "download-1")
         let (offlinePreparing, _) = PlaybackReducer.reduce(
             .idle,
             intent: .load(offlineRequest, origin: .userInitiated, options: LoadOptions()),
@@ -2233,7 +2035,7 @@ final class PlaybackReducerTests: XCTestCase {
         let (offlineAdopted, _) = PlaybackReducer.reduce(
             offlinePreparing,
             event: .session(
-                .prepared(prepared, makePlan(), for: startedID),
+                .prepared(prepared, ControlPlaneFixtures.makePlanRef(), for: startedID),
                 SessionIdentity.offline()
             ),
             now: now
@@ -2253,7 +2055,7 @@ final class PlaybackReducerTests: XCTestCase {
     func testAnOfflineLoadIgnoresTheQualityAndRouteIntents() {
         let offline = makePlaying(
             identity: SessionIdentity.offline(),
-            request: makeRequest(offlineDownloadId: "download-1"),
+            request: ControlPlaneFixtures.makeRequest(offlineDownloadId: "download-1"),
             hasProtocolV3: false
         )
 
@@ -2275,7 +2077,7 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertTrue(routeEffects.isEmpty)
 
         // With a live V3 plan the same route change is material and replans.
-        let online = makePlaying(identity: makeIdentity(outputContext: "stale-output"))
+        let online = makePlaying(identity: ControlPlaneFixtures.makeIdentity(outputContext: "stale-output"))
         let (_, onlineEffects) = PlaybackReducer.reduce(
             online,
             intent: .outputRouteChanged(snapshot),
@@ -2295,7 +2097,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// reports progress against the outgoing session at the position it is
     /// leaving (PVM:5234-5236) before the round trip.
     func testTranscodeRestartReportsProgressAgainstTheOutgoingSession() {
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(identity: identity)
 
         // No intent mints a `.transcodeRestart` yet (wave 3 does), so the
@@ -2360,7 +2162,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// tvOS suspends the whole load.
     func testScenePhaseBackgroundFollowsThePlatformTable() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let state = makePlaying(loadID: loadID, identity: identity)
 
         // iOS: pause, unless a route or PiP is carrying playback.
@@ -2482,7 +2284,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// through `copyForRecovery` from the **live** selection, so backgrounding
     /// the Apple TV after changing the audio track resumes on that track.
     func testTVOSSuspendStoresTheResolvedRequest() {
-        let request = makeRequest(offlineDownloadId: "download-1")
+        let request = ControlPlaneFixtures.makeRequest(offlineDownloadId: "download-1")
         let selections = TrackResumeSelections(
             selectedFileId: 12,
             audioTrackIndex: 3,
@@ -2619,7 +2421,7 @@ final class PlaybackReducerTests: XCTestCase {
 
         // A suspended player is not woken by the scene phase on any platform.
         let suspended = PlaybackState.suspended(
-            SuspendedContext(request: makeRequest(), resumePosition: 617)
+            SuspendedContext(request: ControlPlaneFixtures.makeRequest(), resumePosition: 617)
         )
         for platform in ScenePhasePlatform.allCases {
             let (next, effects) = PlaybackReducer.scenePhase(
@@ -2684,8 +2486,8 @@ final class PlaybackReducerTests: XCTestCase {
         let (preparing, _) = PlaybackReducer.reduce(
             replanning,
             event: .session(
-                .replanned(try makePreparedRef(position: 617), makePlan()),
-                makeIdentity()
+                .replanned(try ControlPlaneFixtures.makePreparedRef(position: 617), ControlPlaneFixtures.makePlanRef()),
+                ControlPlaneFixtures.makeIdentity()
             ),
             now: now
         )
@@ -2698,7 +2500,7 @@ final class PlaybackReducerTests: XCTestCase {
         )
         guard case .suspended(let context) = next else { return XCTFail("expected suspended") }
         XCTAssertEqual(context.resumePosition, 617)
-        XCTAssertEqual(context.request.contentId, makeRequest().contentId)
+        XCTAssertEqual(context.request.contentId, ControlPlaneFixtures.makeRequest().contentId)
 
         // And the replacement engine starts playing from there, not from 0 —
         // which is what the `fileLoaded` transport seeding is for.
@@ -2731,13 +2533,13 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         guard case .suspended(let context) = next else { return XCTFail("expected suspended") }
-        XCTAssertEqual(context.request.contentId, makeRequest().contentId)
+        XCTAssertEqual(context.request.contentId, ControlPlaneFixtures.makeRequest().contentId)
         XCTAssertEqual(context.resumePosition, 100)
         XCTAssertEqual(context.failure, failure)
         // `suspendForBackground`'s stop is unconditional (PVM:7634-7637), and
         // the failure never stopped the session — so it is still reachable.
         XCTAssertTrue(
-            suspendEffects.contains(.stopSession(makeIdentity(), position: 100, isPaused: true))
+            suspendEffects.contains(.stopSession(ControlPlaneFixtures.makeIdentity(), position: 100, isPaused: true))
         )
         XCTAssertEqual(PlaybackReducer.presentation(for: next).error, failure.legacyMessage)
 
@@ -2785,8 +2587,8 @@ final class PlaybackReducerTests: XCTestCase {
         let (prepared, _) = PlaybackReducer.reduce(
             loading,
             event: .session(
-                .prepared(try makePreparedRef(), makePlan(), for: preparing.loadID),
-                makeIdentity()
+                .prepared(try ControlPlaneFixtures.makePreparedRef(), ControlPlaneFixtures.makePlanRef(), for: preparing.loadID),
+                ControlPlaneFixtures.makeIdentity()
             ),
             now: now
         )
@@ -2815,7 +2617,7 @@ final class PlaybackReducerTests: XCTestCase {
         // A load that does not preserve it drops it, as `beginFreshLoad` does.
         let (plainLoad, _) = PlaybackReducer.reduce(
             state,
-            intent: .load(makeRequest(), origin: .userInitiated, options: LoadOptions()),
+            intent: .load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()),
             now: now
         )
         guard case .preparing(let plain) = plainLoad else { return XCTFail("expected preparing") }
@@ -2946,17 +2748,17 @@ final class PlaybackReducerTests: XCTestCase {
         let failed = PlaybackState.failed(
             PlaybackFailure(legacyMessage: "boom"),
             LoadID(),
-            identity: makeIdentity(),
-            request: makeRequest(),
+            identity: ControlPlaneFixtures.makeIdentity(),
+            request: ControlPlaneFixtures.makeRequest(),
             position: 617,
-            selections: .seeded(from: makeRequest())
+            selections: .seeded(from: ControlPlaneFixtures.makeRequest())
         )
         let suspended = PlaybackState.suspended(
-            SuspendedContext(request: makeRequest(), resumePosition: 617)
+            SuspendedContext(request: ControlPlaneFixtures.makeRequest(), resumePosition: 617)
         )
 
         let starts: [(String, PlaybackState, PlayerIntent)] = [
-            ("cold start", .idle, .load(makeRequest(), origin: .userInitiated, options: LoadOptions())),
+            ("cold start", .idle, .load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions())),
             ("retry", failed, .retry),
             ("resume", suspended, .resumeSuspended),
         ]
@@ -3009,7 +2811,7 @@ final class PlaybackReducerTests: XCTestCase {
     /// position (`resumeSuspendedPlayback`), on every platform — tvOS reaches
     /// it through `togglePlayPause` as well.
     func testSuspendedPlayerResumesTheStoredRequest() {
-        let context = SuspendedContext(request: makeRequest(), resumePosition: 617)
+        let context = SuspendedContext(request: ControlPlaneFixtures.makeRequest(), resumePosition: 617)
         let state = PlaybackState.suspended(context)
 
         for intent in [PlayerIntent.resumeSuspended, .togglePlayPause] {
@@ -3156,7 +2958,7 @@ final class PlaybackReducerTests: XCTestCase {
 
     func testDismissCancelsEveryTimerStopsTheSessionAndDisposes() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (next, effects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             intent: .dismiss,
@@ -3173,7 +2975,7 @@ final class PlaybackReducerTests: XCTestCase {
         // A disposed player accepts nothing else.
         let (afterLoad, loadEffects) = PlaybackReducer.reduce(
             next,
-            intent: .load(makeRequest(), origin: .userInitiated, options: LoadOptions()),
+            intent: .load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()),
             now: now
         )
         XCTAssertEqual(afterLoad, .disposed)
@@ -3184,7 +2986,7 @@ final class PlaybackReducerTests: XCTestCase {
 
     func testProgressTimerReportsAndReschedulesItself() {
         let loadID = LoadID()
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         let (next, effects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID, identity: identity),
             event: .timer(.progress, loadID),
@@ -3203,17 +3005,10 @@ final class PlaybackReducerTests: XCTestCase {
     /// only non-determinism (a minted `LoadID`) is confined to the state.
     func testReducerIsDeterministicForTheSameInputs() {
         let state = makePlaying()
-        let first = PlaybackReducer.reduce(state, intent: .seek(targetSeconds: 300, origin: .skip), now: now)
-        let second = PlaybackReducer.reduce(state, intent: .seek(targetSeconds: 300, origin: .skip), now: now)
-        // The seek id is minted per request, so compare everything else.
-        guard let firstRequest = playing(first.0)?.seek,
-              let secondRequest = playing(second.0)?.seek else {
-            return XCTFail("expected two seek requests")
-        }
-        XCTAssertEqual(firstRequest.fromSeconds, secondRequest.fromSeconds)
-        XCTAssertEqual(firstRequest.targetSeconds, secondRequest.targetSeconds)
-        XCTAssertEqual(firstRequest.deadline, secondRequest.deadline)
-        XCTAssertEqual(first.1.count, second.1.count)
+        let first = PlaybackReducer.reduce(state, intent: .seek(targetSeconds: 300, origin: .user), now: now)
+        let second = PlaybackReducer.reduce(state, intent: .seek(targetSeconds: 300, origin: .user), now: now)
+        XCTAssertEqual(first.0, second.0)
+        XCTAssertEqual(first.1, second.1)
     }
 
     // MARK: - ExecutablePlan
@@ -3273,7 +3068,7 @@ final class PlaybackReducerTests: XCTestCase {
         ))
         XCTAssertEqual(hls.startSeconds, 0, "a remux manifest is anchored server-side")
 
-        let spec = makeSessionSpec(sourceStartTimeSeconds: 42)
+        let spec = ControlPlaneFixtures.makeSessionSpec(sourceStartTimeSeconds: 42)
         let loopback = try ExecutablePlan(
             plan(engine: .siloPlayerLoopback, loopbackSession: spec, startMode: .absolutePosition(42)),
             request: request
@@ -3281,7 +3076,7 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(loopback, .localHLS(LocalHLSPlan(sessionSpec: spec, startSeconds: 42)))
         XCTAssertNotEqual(
             loopback,
-            .localHLS(LocalHLSPlan(sessionSpec: makeSessionSpec(sourceStartTimeSeconds: 0), startSeconds: 42)),
+            .localHLS(LocalHLSPlan(sessionSpec: ControlPlaneFixtures.makeSessionSpec(sourceStartTimeSeconds: 0), startSeconds: 42)),
             "the spec takes part in equality"
         )
         XCTAssertNotEqual(
@@ -3303,9 +3098,9 @@ final class PlaybackReducerTests: XCTestCase {
     // MARK: - Identity
 
     func testSessionIdentityMatchesTheSessionAcrossAReplanButNotAcrossASession() {
-        let original = makeIdentity()
-        let replanned = makeIdentity(planAttempt: "apple-plan:2", planAttemptKey: "plan-key-2")
-        let renewed = makeIdentity(session: "session-2", attempt: "apple:attempt-2")
+        let original = ControlPlaneFixtures.makeIdentity()
+        let replanned = ControlPlaneFixtures.makeIdentity(planAttempt: "apple-plan:2", planAttemptKey: "plan-key-2")
+        let renewed = ControlPlaneFixtures.makeIdentity(session: "session-2", attempt: "apple:attempt-2")
 
         XCTAssertTrue(replanned.belongsToSameSession(as: original))
         XCTAssertFalse(renewed.belongsToSameSession(as: original))
@@ -3317,11 +3112,12 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertNotEqual(SessionIdentity.offline(), offline)
     }
 
-    /// `LoadRequest`'s `Equatable` conformance is hand-written (the type is
-    /// nested in `PlayerViewModel`, so it cannot be synthesized from the
-    /// control plane). If a stored property is added, extend both.
-    func testLoadRequestEqualityCoversEveryStoredProperty() {
-        let mirrored = Set(Mirror(reflecting: makeRequest()).children.compactMap(\.label))
+    /// `Equatable` is synthesised, so it already covers every stored
+    /// property. `copyForRecovery` is the one that does not: it rebuilds the
+    /// request field by field, so a property added without being listed there
+    /// is silently dropped from every recovery replay. This pins the list.
+    func testCopyForRecoveryCarriesEveryStoredProperty() {
+        let mirrored = Set(Mirror(reflecting: ControlPlaneFixtures.makeRequest()).children.compactMap(\.label))
         XCTAssertEqual(mirrored, [
             "contentId",
             "preferredFileId",
@@ -3334,9 +3130,26 @@ final class PlaybackReducerTests: XCTestCase {
             "preferredQualityOverride",
         ])
 
-        var changed = makeRequest()
-        changed.preferredProtocolV3SubtitleIndex = 4
-        XCTAssertNotEqual(changed, makeRequest())
-        XCTAssertEqual(makeRequest(), makeRequest())
+        var original = ControlPlaneFixtures.makeRequest()
+        original.preferredProtocolV3SubtitleIndex = 4
+        original.preferredQualityOverride = "1080p"
+        let replay = original.copyForRecovery(
+            preferredFileId: original.preferredFileId,
+            preferredAudioTrackIndex: original.preferredAudioTrackIndex,
+            preferredSubtitleTrackIndex: original.preferredSubtitleTrackIndex,
+            preferredSidecarSubtitleTrackId: original.preferredSidecarSubtitleTrackId,
+            offlineDownloadId: original.offlineDownloadId
+        )
+        // The two the caller cannot pass: both are wire arguments to
+        // `startSession`, so a replay that dropped them would re-run the old
+        // rung and the old subtitle ordinal.
+        XCTAssertEqual(replay.preferredProtocolV3SubtitleIndex, 4)
+        XCTAssertEqual(replay.preferredQualityOverride, "1080p")
+        // `startFromBeginning` is deliberately *not* carried: a recovery must
+        // never re-honour it against a resume position.
+        XCTAssertFalse(replay.startFromBeginning)
+
+        XCTAssertNotEqual(original, ControlPlaneFixtures.makeRequest())
+        XCTAssertEqual(ControlPlaneFixtures.makeRequest(), ControlPlaneFixtures.makeRequest())
     }
 }
