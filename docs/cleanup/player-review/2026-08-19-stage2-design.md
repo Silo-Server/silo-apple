@@ -289,6 +289,27 @@ each of which wave 3 must close explicitly rather than inherit silently:
   quality menu also reads `qualityOptions` (PVM:2615-2618), which is not projected here; wave 3 keeps it on
   the presentation model and must not re-derive "V3 is active" from it.
 
+**As built (wave 3) — wave 4 plans against these (three review rounds; the round-2/3 fixes are part of the
+contract):**
+- **The `.time` axis contract:** `EngineEvent.time` carries MOVIE time. The one conversion site is
+  `PlaybackEngineSession.bindBackend` (a verbatim `mediaTime(for:)` copy over the session's
+  `mediaTimelineOffsetSeconds` mirror, fed only by `onTimelineOffsetChange` and seeded across `reusing:`).
+  The VM's `playbackTimelineOffset` survives only as the loopback re-anchor guard input and two `[CMP-SEEK]`
+  log fields — never as a conversion. Do not add a second `onTimeChange` binder.
+- **`PlaybackReducer.promotedForRecovery`:** a `.preparing(.startingEngine)` load is promoted onto `Playing`
+  at the seven mid-ladder recovery rungs (base had no load-state gate in `handlePlaybackError`), gated on the
+  action set + phase; `.resolvingSession` excluded. `Preparing.lastFailureMessage` feeds the server-HLS rung's
+  replan text (the frozen `RecoveryAction` was deliberately not widened).
+- **`SuspendedContext.retainedLoadID`:** the tvOS `.retainProxy` suspend keeps `engineSession` set (base
+  shape) and the resume emits `.disposeEngine(retained, .stash)` via `previousEngineLoadID`.
+- **`Presentation.isLoading` is `Bool?`:** `nil` = "leave the shell's overlay alone"; the `.pauseChanged`
+  publish is the one arm that sends it (base's `onPauseChange` never touched the overlay). There is no
+  state-derived overlay predicate — do not reintroduce one.
+- The two wave-2b disclosed gaps are CLOSED as legacy restorations (actor-scoped ride-through carry with
+  drop-on-fresh-load/terminal/EOF; the visible outage recovery reloads on a reachable probe).
+- Shell coverage note: actor tests run with `shell: nil` — `installEngine`/`teardownEngine`/
+  `applyPresentation` are pinned only at the effect level; §6 device rows 13/14 exercise the real paths.
+
 ### 2.4 Recovery — `Recovery/RecoveryPolicy.swift` + `Recovery/RecoveryObservation.swift` (wave 1B)
 ```swift
 enum RecoveryObservation: Equatable {
@@ -567,7 +588,7 @@ API are **deleted** from it.
 | **3 — reducer + actor cutover** | 3A `PlaybackSessionActor` runs `PlaybackReducer`; VM load/replan/seek/scene-phase/progress/session-id code replaced by intents + `Presentation` projection; `LoadID`/`SessionIdentity` everywhere; `SeekRequest`; scene-phase tables; legacy VM core deleted | `PlayerViewModel.swift`, `ControlPlane/*`, `Engine/*`, bridge call sites | identical except §7 items 4–6 | 1 implementer (max) + 1 reviewer; device pass (§6) |
 | **4 — deletions + test rewrites + docs** | 4A `TrackSelection` model replacing the eight `pending*`; 4B remaining deletions (`[CMP-MEM]`, `SILO_KEEP_DV_HLS` threading leftovers, `hasAttempted*`, dead rungs, `ProtocolV3SidecarRestoreIntent`, 8×200 ms seek retry), the six `PlaybackProtocolV3Tests` rewrites (inv-4 A.5), docs 01–09 truth pass, HANDOFF/backlog | 4A: `Tracks/*` · 4B: rest | identical | 2 + 2 |
 
-Wave 1 landed 2026-08-19 (see the as-built blocks in §2.3/§2.7; the reducer needed four review rounds — split later waves small). Wave 2a landed 2026-08-19 (one implementer + one reviewer, approved with two minors; as-built block above in §2.8). Wave 2b landed 2026-08-19 (one implementer + three review rounds — 8 issues, then 1 major + 5 minors, then approve; the wave-2b as-built block above and §2.3 item 9 are binding, and the **§6 device pass gates wave 3**). Waves 3–4 specs are drafts in `stage2/specs/` that **must be re-anchored** (line
+Wave 1 landed 2026-08-19 (see the as-built blocks in §2.3/§2.7; the reducer needed four review rounds — split later waves small). Wave 2a landed 2026-08-19 (one implementer + one reviewer, approved with two minors; as-built block above in §2.8). Wave 2b landed 2026-08-19 (one implementer + three review rounds — 8 issues, then 1 major + 5 minors, then approve; the wave-2b as-built block above and §2.3 item 9 are binding). Wave 3 landed 2026-08-20 (one implementer + three review rounds — 8+1 issues, then 2 blockers + 1 major + 3 minors, then one minor applied by the orchestrator; §2.3's wave-3 as-built block is binding; §6 rows 13/14 are the blockers' device paths and run on this tip before the PR is mergeable). The wave-4 specs are drafts in `stage2/specs/` that **must be re-anchored** (line
 numbers, names that wave 1 introduced) by the orchestrator before launch — each later wave's base is the
 previous wave's merged tip.
 
