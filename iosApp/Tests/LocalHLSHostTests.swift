@@ -257,8 +257,9 @@ final class LocalHLSHostTests: XCTestCase {
 
         host.requestProducerRestart(atSegmentIndex: 5)
 
-        // Parked, not run: no producer was swapped in behind the running one.
-        XCTAssertNil(host.segmentWriter)
+        // Parked, not run: no producer was swapped in behind the running one
+        // (a started writer always publishes its base index).
+        XCTAssertNil(host.activeVODWriterBaseIndex)
         XCTAssertTrue(host.restartCoalescer.isInFlight)
     }
 
@@ -276,7 +277,7 @@ final class LocalHLSHostTests: XCTestCase {
 
         host.requestProducerRestart(atSegmentIndex: 3, authoritative: true)
 
-        XCTAssertNil(host.segmentWriter)
+        XCTAssertNil(host.activeVODWriterBaseIndex)
         XCTAssertFalse(host.restartCoalescer.isInFlight)
     }
 
@@ -292,8 +293,45 @@ final class LocalHLSHostTests: XCTestCase {
 
         host.requestProducerRestart(atSegmentIndex: 2, authoritative: true)
 
-        XCTAssertNil(host.segmentWriter)
+        XCTAssertNil(host.activeVODWriterBaseIndex)
         XCTAssertFalse(host.restartCoalescer.isInFlight)
+    }
+
+    // MARK: - The narrow operations the adapter reaches for
+
+    /// The selection the adapter used to push straight at the writer is the
+    /// host's now, so the running producer and every producer a restart
+    /// builds after it decode the same stream.
+    func testBitmapSubtitleStreamSelectionIsHeldForEveryWriter() throws {
+        let host = makeHost()
+        XCTAssertNil(host.selectedBitmapSubtitleStream)
+
+        host.selectBitmapSubtitleStream(3)
+        XCTAssertEqual(host.selectedBitmapSubtitleStream, 3)
+
+        host.selectBitmapSubtitleStream(nil)
+        XCTAssertNil(host.selectedBitmapSubtitleStream)
+    }
+
+    /// Each reader in the adapter falls back to a neutral value (0 requests,
+    /// infinite time since a serve, the unredacted line). The host has to
+    /// answer "nothing" without a session rather than invent one.
+    func testNarrowOperationsReportNothingWithoutARunningSession() throws {
+        let host = makeHost()
+
+        XCTAssertNil(host.storeStats())
+        XCTAssertNil(host.secondsSinceLastSegmentServe())
+        XCTAssertNil(host.servedRequestCount)
+        XCTAssertNil(
+            host.resourceURL(
+                forPublishedResource: "master.m3u8",
+                reachableFromExternalDevice: false
+            )
+        )
+        XCTAssertEqual(host.redactLog("token/master.m3u8"), "token/master.m3u8")
+        // No listener to open; the AirPlay swap must not trap on a session
+        // that never bound one.
+        host.setAcceptsExternalClients(true)
     }
 
     // MARK: - Teardown
@@ -301,8 +339,10 @@ final class LocalHLSHostTests: XCTestCase {
     func testTeardownReleasesTheStoreServerAndEveryCallback() throws {
         let host = makeHost()
         host.start()
-        XCTAssertNotNil(host.segmentStore)
-        XCTAssertNotNil(host.segmentServer)
+        // The store and the server are reachable only through the narrow
+        // operations the backend uses; both answer while the session runs.
+        XCTAssertNotNil(host.storeStats())
+        XCTAssertNotNil(host.servedRequestCount)
 
         host.onFirstSegmentReady = { _ in XCTFail("late first segment must land nowhere") }
         host.onSegmentPlanResolved = { _ in XCTFail("late plan must land nowhere") }
@@ -314,9 +354,9 @@ final class LocalHLSHostTests: XCTestCase {
         host.teardown()
 
         XCTAssertTrue(host.isTornDown)
-        XCTAssertNil(host.segmentStore)
-        XCTAssertNil(host.segmentServer)
-        XCTAssertNil(host.segmentWriter)
+        XCTAssertNil(host.storeStats())
+        XCTAssertNil(host.servedRequestCount)
+        XCTAssertNil(host.secondsSinceLastSegmentServe())
         XCTAssertNil(host.onFirstSegmentReady)
         XCTAssertNil(host.onSegmentPlanResolved)
         XCTAssertNil(host.onGeneratedMediaStats)
