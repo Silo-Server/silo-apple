@@ -16,124 +16,15 @@ import XCTest
 /// on every simulator and device.
 final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
 
-    // MARK: - Fixture builders
-
-    private static let streamURL = URL(string: "https://example.invalid/stream")!
-
-    private func makeSession(playMethod: String = "direct") -> PlaybackSessionResponse {
-        PlaybackSessionResponse(
-            sessionId: "trace-session",
-            userId: nil,
-            profileId: nil,
-            mediaFileId: 1,
-            playMethod: playMethod,
-            position: 0,
-            isPaused: false,
-            streamUrl: Self.streamURL.absoluteString,
-            audioTrackIndex: 0,
-            durationSeconds: 120,
-            subtitleUrls: nil,
-            playbackInfo: nil
-        )
-    }
-
-    private func audio(
-        codec: String,
-        channels: Int = 2,
-        layout: String? = "stereo"
-    ) -> AudioTrack {
-        AudioTrack(
-            index: 1,
-            codec: codec,
-            channels: channels,
-            channelLayout: layout,
-            bitrate: 128_000,
-            sampleRate: 48_000,
-            language: "eng",
-            title: nil,
-            embeddedTitle: nil,
-            isDefault: true
-        )
-    }
-
-    private func video(
-        codec: String = "hevc",
-        width: Int = 3840,
-        height: Int = 2160,
-        colorTransfer: String? = nil,
-        videoRange: String? = nil,
-        dolbyVision: String? = nil
-    ) -> VideoTrack {
-        VideoTrack(
-            index: 0,
-            codec: codec,
-            width: width,
-            height: height,
-            frameRate: "23.976",
-            bitrate: 20_000,
-            profile: "Main 10",
-            level: 153,
-            bitDepth: 10,
-            colorRange: "tv",
-            colorTransfer: colorTransfer,
-            videoRange: videoRange,
-            dolbyVision: dolbyVision,
-            title: nil,
-            language: nil
-        )
-    }
-
-    private func subtitle(codec: String, isDefault: Bool = true) -> SubtitleTrack {
-        SubtitleTrack(
-            index: 2,
-            codec: codec,
-            language: "eng",
-            title: "English",
-            embeddedTitle: "English",
-            forced: false,
-            hearingImpaired: false,
-            isDefault: isDefault,
-            external: false,
-            externalPath: nil
-        )
-    }
-
-    private func version(
-        container: String,
-        codecVideo: String?,
-        codecAudio: String?,
-        videoTracks: [VideoTrack]? = nil,
-        audioTracks: [AudioTrack]? = nil,
-        subtitleTracks: [SubtitleTrack]? = nil
-    ) -> FileVersion {
-        FileVersion(
-            fileId: 1,
-            fileName: "trace.\(container)",
-            resolution: "2160p",
-            codecVideo: codecVideo,
-            codecAudio: codecAudio,
-            hdr: false,
-            container: container,
-            fileSize: 1_000_000,
-            duration: 120,
-            bitrate: 20_000,
-            videoTracks: videoTracks,
-            audioTracks: audioTracks,
-            subtitleTracks: subtitleTracks,
-            chapters: nil,
-            effectiveAudioTrackIndex: 0
-        )
-    }
-
     private func plan(
         _ version: FileVersion,
         session: PlaybackSessionResponse? = nil
     ) -> PlaybackExecutionPlan {
         makeTestExecutionPlan(
-            session: session ?? makeSession(),
+            session: session ?? makeTestSession(),
             version: version,
             streamRequest: StreamRequest(
-                url: Self.streamURL,
+                url: testStreamURL,
                 headers: ["Authorization": "Bearer trace"],
                 serverUrl: "https://example.invalid"
             )
@@ -153,9 +44,9 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
         [
             Case(
                 label: "mp4/h264/aac",
-                version: version(
+                version: makeTestVersion(
                     container: "mp4", codecVideo: "h264", codecAudio: "aac",
-                    audioTracks: [audio(codec: "aac")]
+                    audioTracks: [makeTestAudioTrack(codec: "aac")]
                 ),
                 engine: .avPlayerNativeDirect,
                 trace: [
@@ -170,10 +61,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mp4/h264/aac + embedded srt",
-                version: version(
+                version: makeTestVersion(
                     container: "mp4", codecVideo: "h264", codecAudio: "aac",
-                    audioTracks: [audio(codec: "aac")],
-                    subtitleTracks: [subtitle(codec: "subrip")]
+                    audioTracks: [makeTestAudioTrack(codec: "aac")],
+                    subtitleTracks: [makeTestSubtitleTrack(codec: "subrip")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -195,10 +86,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mkv/hevc/eac3",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "hevc", codecAudio: "eac3",
-                    videoTracks: [video(colorTransfer: "bt709")],
-                    audioTracks: [audio(codec: "eac3", channels: 6, layout: "5.1")]
+                    videoTracks: [makeTestVideoTrack(colorTransfer: "bt709")],
+                    audioTracks: [makeTestAudioTrack(codec: "eac3", channels: 6, layout: "5.1")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -218,10 +109,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mkv/hevc/truehd",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "hevc", codecAudio: "truehd",
-                    videoTracks: [video(colorTransfer: "smpte2084")],
-                    audioTracks: [audio(codec: "truehd", channels: 8, layout: "7.1")]
+                    videoTracks: [makeTestVideoTrack(colorTransfer: "smpte2084")],
+                    audioTracks: [makeTestAudioTrack(codec: "truehd", channels: 8, layout: "7.1")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -244,10 +135,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             // resolution and comes back from the server as HLS.
             Case(
                 label: "webm/vp9/opus 1080p",
-                version: version(
+                version: makeTestVersion(
                     container: "webm", codecVideo: "vp9", codecAudio: "opus",
-                    videoTracks: [video(codec: "vp9", width: 1920, height: 1080)],
-                    audioTracks: [audio(codec: "opus")]
+                    videoTracks: [makeTestVideoTrack(codec: "vp9", width: 1920, height: 1080)],
+                    audioTracks: [makeTestAudioTrack(codec: "opus")]
                 ),
                 engine: .avPlayerHLS,
                 trace: [
@@ -268,14 +159,14 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mp4/dv profile 5",
-                version: version(
+                version: makeTestVersion(
                     container: "mp4", codecVideo: "hevc", codecAudio: "eac3",
-                    videoTracks: [video(
+                    videoTracks: [makeTestVideoTrack(
                         colorTransfer: "smpte2084",
                         videoRange: "DolbyVision",
                         dolbyVision: "Profile 5"
                     )],
-                    audioTracks: [audio(codec: "eac3", channels: 6, layout: "5.1")]
+                    audioTracks: [makeTestAudioTrack(codec: "eac3", channels: 6, layout: "5.1")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -292,14 +183,14 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mkv/dv profile 7",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "hevc", codecAudio: "truehd",
-                    videoTracks: [video(
+                    videoTracks: [makeTestVideoTrack(
                         colorTransfer: "smpte2084",
                         videoRange: "DolbyVision",
                         dolbyVision: "Profile 7"
                     )],
-                    audioTracks: [audio(codec: "truehd", channels: 8, layout: "7.1")]
+                    audioTracks: [makeTestAudioTrack(codec: "truehd", channels: 8, layout: "7.1")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -316,14 +207,14 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mkv/dv profile 8",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "hevc", codecAudio: "eac3",
-                    videoTracks: [video(
+                    videoTracks: [makeTestVideoTrack(
                         colorTransfer: "smpte2084",
                         videoRange: "DolbyVision",
                         dolbyVision: "Profile 8"
                     )],
-                    audioTracks: [audio(codec: "eac3", channels: 6, layout: "5.1")]
+                    audioTracks: [makeTestAudioTrack(codec: "eac3", channels: 6, layout: "5.1")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -340,10 +231,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mkv/h264/aac + embedded pgs",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "h264", codecAudio: "aac",
-                    audioTracks: [audio(codec: "aac")],
-                    subtitleTracks: [subtitle(codec: "hdmv_pgs_subtitle")]
+                    audioTracks: [makeTestAudioTrack(codec: "aac")],
+                    subtitleTracks: [makeTestSubtitleTrack(codec: "hdmv_pgs_subtitle")]
                 ),
                 engine: .siloPlayerLoopback,
                 trace: [
@@ -366,10 +257,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "mkv/h264/aac + embedded dvb",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "h264", codecAudio: "aac",
-                    audioTracks: [audio(codec: "aac")],
-                    subtitleTracks: [subtitle(codec: "dvb_subtitle")]
+                    audioTracks: [makeTestAudioTrack(codec: "aac")],
+                    subtitleTracks: [makeTestSubtitleTrack(codec: "dvb_subtitle")]
                 ),
                 engine: .avPlayerHLS,
                 trace: [
@@ -391,9 +282,9 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "unknown container",
-                version: version(
+                version: makeTestVersion(
                     container: "wtv", codecVideo: "h264", codecAudio: "aac",
-                    audioTracks: [audio(codec: "aac")]
+                    audioTracks: [makeTestAudioTrack(codec: "aac")]
                 ),
                 engine: .avPlayerHLS,
                 trace: [
@@ -412,10 +303,10 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             ),
             Case(
                 label: "unknown video codec",
-                version: version(
+                version: makeTestVersion(
                     container: "mkv", codecVideo: "cinepak", codecAudio: "aac",
-                    videoTracks: [video(codec: "cinepak")],
-                    audioTracks: [audio(codec: "aac")]
+                    videoTracks: [makeTestVideoTrack(codec: "cinepak")],
+                    audioTracks: [makeTestAudioTrack(codec: "aac")]
                 ),
                 engine: .avPlayerHLS,
                 trace: [
@@ -477,31 +368,31 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
     /// the trace as an ordered log — a reader, or a rewrite that rebuilds it —
     /// has to reproduce that.
     func testRouteOutcomeTokensArePrependedNotAppended() {
-        let loopback = plan(version(
+        let loopback = plan(makeTestVersion(
             container: "mkv", codecVideo: "hevc", codecAudio: "aac",
-            videoTracks: [video(colorTransfer: "bt709")],
-            audioTracks: [audio(codec: "aac")]
+            videoTracks: [makeTestVideoTrack(colorTransfer: "bt709")],
+            audioTracks: [makeTestAudioTrack(codec: "aac")]
         )).decisionTrace
         XCTAssertEqual(loopback.first, "hevc_container_loopback_selected")
         XCTAssertEqual(loopback.dropFirst().first, "delivery_direct")
 
-        let dolbyVision = plan(version(
+        let dolbyVision = plan(makeTestVersion(
             container: "mkv", codecVideo: "hevc", codecAudio: "eac3",
-            videoTracks: [video(
+            videoTracks: [makeTestVideoTrack(
                 colorTransfer: "smpte2084",
                 videoRange: "DolbyVision",
                 dolbyVision: "Profile 8"
             )],
-            audioTracks: [audio(codec: "eac3", channels: 6, layout: "5.1")]
+            audioTracks: [makeTestAudioTrack(codec: "eac3", channels: 6, layout: "5.1")]
         )).decisionTrace
         XCTAssertEqual(dolbyVision.first, "dolby_vision_profile_8")
         XCTAssertEqual(dolbyVision.dropFirst().first, "profile81_passthrough_loopback_selected")
 
         // A route that fell through prepends nothing: the fallback trace does
         // start with the delivery token.
-        let fallback = plan(version(
+        let fallback = plan(makeTestVersion(
             container: "wtv", codecVideo: "h264", codecAudio: "aac",
-            audioTracks: [audio(codec: "aac")]
+            audioTracks: [makeTestAudioTrack(codec: "aac")]
         )).decisionTrace
         XCTAssertEqual(fallback.first, "delivery_direct")
     }
@@ -559,7 +450,7 @@ final class ApplePlaybackDecisionTraceSnapshotTests: XCTestCase {
             engine: engine,
             startMode: .absolutePosition(0),
             streamRequest: StreamRequest(
-                url: Self.streamURL,
+                url: testStreamURL,
                 headers: [:],
                 serverUrl: "https://example.invalid"
             ),
