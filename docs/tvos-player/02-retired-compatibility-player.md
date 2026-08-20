@@ -1,4 +1,4 @@
-Last verified against the code: 2026-08-18
+Last verified against the code: 2026-08-20
 
 # Retired: CompatibilityPlayer (PlayerCore)
 
@@ -123,3 +123,8 @@ Four helpers were genuinely shared and moved from `CoreMedia/` to
   `ApplePlaybackRoutePlanner.resolveLoopbackSelectedAudioTrack(...)`, which
   prefers an explicit selection, then a pending ff-index, then the preferred
   index, then the default-flagged track — no channel-count heuristic.
+- verified (2026-08-20): the Stage 2 control-plane extraction did not resurrect
+  anything documented here. `PlayerCore`, `CompatibilityPlayer`,
+  `PlaybackRecoveryPlanner` and `CompatibilityPlayerEngine` are still absent
+  from `iosApp/`; `AVPlayerBackend` remains the only backend, now behind the
+  `PlaybackBackend` protocol whose sole other conformance is a test fake.

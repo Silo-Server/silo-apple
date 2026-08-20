@@ -1,4 +1,4 @@
-Last verified against the code: 2026-08-18
+Last verified against the code: 2026-08-20
 
 # On-Device Video Bridge — RETIRED 2026-08-17
 
@@ -407,3 +407,6 @@ Not implemented. Do not read these as current behavior.
 - verified (while the tier existed): `bridgedVideoParameterSets` survived
   `reanchored(at:)` and was asserted for byte equality on restart. The field
   itself is gone.
+- verified (2026-08-20): still retired. No bridge tier reappeared with the
+  Stage 2 control-plane extraction — the loopback writer only remuxes, and the
+  `LocalHLSHost` that now owns its lifecycle carries no encode path.

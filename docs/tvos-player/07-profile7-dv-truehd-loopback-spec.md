@@ -3,6 +3,16 @@ consolidation (`avPlayerLocalDVLoopback` → `siloPlayerLoopback`, `DVSegment*` 
 `LoopbackSegment*`); the product contract itself is unchanged, and the Profile 7
 → 8.1 base-layer conversion behaves exactly as specified here.
 
+Re-verified 2026-08-20 after the Stage 2 control-plane extraction: the writer's
+mux internals, `ISOBoxSurgery`, `LoopbackSegmentPlan`/`Cutter` and the audio
+bridge are untouched, so every claim in this spec still holds. What moved is the
+pipeline's *lifecycle*, from `AVPlayerBackend` into
+[`LocalHLSHost`](../../iosApp/iosApp/Screens/Player/Engine/LocalHLSHost.swift) —
+read "the backend starts the writer/store/server" below as "the backend's
+`LocalHLSHost` does". Device evidence for the P7 + TrueHD row on the extracted
+build is in
+[`validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml).
+
 # Profile 7 Dolby Vision And TrueHD Loopback Spec
 
 ## 1. Goal

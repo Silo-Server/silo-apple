@@ -1,4 +1,4 @@
-Last verified against the code: 2026-08-18
+Last verified against the code: 2026-08-20
 
 # tvOS Video Player Documentation
 
@@ -13,12 +13,30 @@ plan documents or stale comments.
 The player used to be a hybrid of a hand-rolled FFmpeg/VideoToolbox decode core
 (`PlayerCore` / "CompatibilityPlayer") and an AVPlayer stack. That is over.
 `PlayerCore` was deleted; **every** playback route is now `AVPlayer` behind
-[`AVPlayerBackend.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift),
-and
-[`PlayerViewModel.swift`](../../iosApp/iosApp/Screens/Player/PlayerViewModel.swift)
-holds it as a single optional `avPlayerBackend`, installed per route by
-`installBackend(for:)` (the old `ActivePlayer`/`PlaybackCoordinator`
-abstraction was collapsed in `e458784`).
+[`AVPlayerBackend.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift).
+The backend is owned per load by a
+[`PlaybackEngineSession`](../../iosApp/iosApp/Screens/Player/Engine/PlaybackEngineSession.swift)
+(the old `ActivePlayer`/`PlaybackCoordinator` abstraction was collapsed in
+`e458784`, and the view model's own `installBackend`/`prepareBackend` pair went
+with the control-plane extraction).
+
+## Who owns what
+
+Playback is a control plane plus an execution plane:
+
+| Concern | Owner |
+| --- | --- |
+| Playback state and every load/seek/replan/scene-phase decision | [`PlaybackReducer`](../../iosApp/iosApp/Screens/Player/ControlPlane/PlaybackReducer.swift) (pure), run by [`PlaybackSessionActor`](../../iosApp/iosApp/Screens/Player/ControlPlane/PlaybackSessionActor.swift) |
+| Every recovery decision, and only there | [`RecoveryPolicy`](../../iosApp/iosApp/Screens/Player/Recovery/RecoveryPolicy.swift) (pure), reached only through the load's [`RecoveryDriver`](../../iosApp/iosApp/Screens/Player/Recovery/RecoveryDriver.swift) |
+| The backend, the source proxy and the load's recovery driver, per `LoadID` | [`PlaybackEngineSession`](../../iosApp/iosApp/Screens/Player/Engine/PlaybackEngineSession.swift) |
+| AVFoundation itself: items, observers, display criteria, audio session, PiP/AirPlay, seek deadlines, subtitles | [`AVPlayerBackend`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift) |
+| The loopback pipeline's lifecycle: store, server, writer, restarts, session directory | [`LocalHLSHost`](../../iosApp/iosApp/Screens/Player/Engine/LocalHLSHost.swift) |
+| The server playback session and `SessionIdentity` | [`PlaybackSessionBridge`](../../iosApp/iosApp/Screens/Player/PlaybackSessionBridge.swift) |
+| Audio/subtitle track selection | [`TrackSelectionCoordinator`](../../iosApp/iosApp/Screens/Player/Tracks/TrackSelectionCoordinator.swift) |
+| Presentation: overlays, notices, settings application, Now Playing, next-up | [`PlayerViewModel`](../../iosApp/iosApp/Screens/Player/PlayerViewModel.swift) |
+
+Identity is explicit: `LoadID` is minted by the control plane, `SessionIdentity`
+by the bridge, and every effect carries the one it is conditional on.
 
 What varies is *what AVPlayer is pointed at*.
 [`PlaybackEngineKind`](../../iosApp/iosApp/Screens/Player/PlaybackExecutionPlan.swift)
@@ -135,8 +153,13 @@ to point it at is the server.
   `FFmpegLogFilter` were relocated to
   [`Screens/Player/Shared/`](../../iosApp/iosApp/Screens/Player/Shared).
 - corrected (2026-08-18): the `ActivePlayer` enum and `PlaybackCoordinator`
-  were collapsed in `e458784`; `PlayerViewModel` now holds an optional
+  were collapsed in `e458784`; `PlayerViewModel` held an optional
   `AVPlayerBackend` directly (`installBackend(for:)` / `prepareBackend(for:)`).
+- corrected (2026-08-20): those two methods are gone with the control-plane
+  extraction. The backend is owned by the load's `PlaybackEngineSession`;
+  `PlayerViewModel.avPlayerBackend` is a computed forwarder
+  (`engineSession?.surfaceBackend`) kept for the render surface and the settings
+  appliers. See the ownership table above.
 - verified: `PlaybackEngineKind` is `{avPlayerHLS, avPlayerNativeDirect,
   siloPlayerLoopback}` and `PlaybackRouteFamily` is `{nativePlayer,
   siloPlayer}`.

@@ -1,6 +1,7 @@
 # Apple Route Capability Matrix
 
-Last verified against the code: 2026-08-18 (one-player consolidation).
+Last verified against the code: 2026-08-20 (one-player consolidation; re-verified after the
+Stage 2 control-plane extraction).
 Prior snapshots: 2026-07-24 (SiloPlayer AirPlay hardware validation),
 2026-07-03 (SiloPlayer loopback-primary Stages 0–4).
 
@@ -152,3 +153,8 @@ ever advertise `h264`/`hevc`). Decided once, in
 - corrected (2026-08-17): the matrix no longer blocks routes. `blockingReasons`
   and the `needs*` / `keeps*` requirement flags it consumed are gone; the two
   premium-claim flags and the per-route capability entries stay.
+- verified (2026-08-20): the matrix is untouched by the Stage 2 control-plane
+  extraction. `ApplePlaybackRouteCapabilities` still has the same four profiles
+  and the same per-route entries; route choice is still
+  `ApplePlaybackRoutePlanner`. Recovery moved to `RecoveryPolicy`, but recovery
+  never fed this matrix.

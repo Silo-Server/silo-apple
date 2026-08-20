@@ -510,36 +510,6 @@ final class AVPlayerBackend {
         PlaybackSourceCache.isConstrainedMemoryDevice ? 96 * 1024 * 1024 : 128 * 1024 * 1024
     }
 
-    /// Temporary [CMP-MEM] instrumentation: resident footprint as jetsam
-    /// accounts it. `phys_footprint` is the number the per-process limit
-    /// is enforced against (not `resident_size`), and
-    /// `os_proc_available_memory` is the headroom left before the kill —
-    /// together they attribute working-set growth directly from a capture
-    /// of a memory termination.
-    private static func memoryFootprintMiB() -> (footprint: Double, available: Double)? {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(
-            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
-        )
-        let kr = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-            }
-        }
-        guard kr == KERN_SUCCESS else { return nil }
-        // os_proc_available_memory is iOS/tvOS-only; macOS has no
-        // per-process jetsam limit to report headroom against.
-        #if os(iOS) || os(tvOS)
-        let available = Double(os_proc_available_memory()) / 1_048_576
-        #else
-        let available = -1.0
-        #endif
-        return (
-            footprint: Double(info.phys_footprint) / 1_048_576,
-            available: available
-        )
-    }
-
     /// Forward-buffer target applied once the first frame is on screen. Larger
     /// than the startup target: startup optimizes for time-to-first-frame
     /// (AVPlayer declares ready as soon as one fragment is decodable), while
@@ -603,9 +573,10 @@ final class AVPlayerBackend {
     /// here so transport KVO can reconcile those changes into Silo's intent.
     var isPictureInPictureActiveProvider: (() -> Bool)?
     var onSidecarTracksRegistered: (([SidecarSubtitleDescriptor]) -> Void)?
-    /// Temporary [CMP-MEM]: source-proxy cache stats for the periodic
-    /// footprint log line. The proxy is owned by PlayerViewModel, so it is
-    /// injected as a closure rather than held here.
+    /// Source-proxy cache stats. Declared by `PlaybackBackend` and wired by
+    /// the engine session; the proxy is owned outside this backend, so it
+    /// arrives as a closure rather than a reference. Nothing in this file
+    /// reads it.
     var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
     /// Live query into the source proxy's outage state; handed to writers so
     /// their blocking source reads can park through a flagged outage. Owned
@@ -722,7 +693,6 @@ final class AVPlayerBackend {
     /// nothing else will, and `attemptInitialPlaybackStart` gates on it.
     private var activeSeekDeadlineKind: SeekDeadlineKind?
     private var isInitialSeekInFlight = false
-    private var initialSeekRetryCount = 0
     private var subtitleSession: SubtitleSession?
     private var embeddedSubtitleExtractor: AVPlayerEmbeddedSubtitleExtractor?
     /// Change-detection key for the overlay's bitmap cue layers: overlay
@@ -1309,17 +1279,15 @@ final class AVPlayerBackend {
 
         case .initial(let mediaTarget):
             isInitialSeekInFlight = false
-            initialSeekRetryCount += 1
-            let retry = initialSeekRetryCount
             Self.logger.error(
-                "[CMP-SEEK] initial AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public) retry=\(retry, privacy: .public)"
+                "[CMP-SEEK] initial AVPlayer seek deadline mediaTarget=\(mediaTarget, privacy: .public)"
             )
-            if retry <= 8, let item = currentItem {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self, weak item] in
-                    guard let self, let item, !self.isDisposed, item === self.currentItem else { return }
-                    self.attemptInitialPlaybackStart(for: item, trigger: "deadline-retry-\(retry)")
-                }
-            } else if let item = currentItem {
+            // The deadline is the whole budget for the initial resume seek:
+            // start playing rather than leave the item parked. `hasSeekedToStart`
+            // stays false, so the item's `seekableTimeRanges`/`loadedTimeRanges`
+            // observers re-enter `attemptInitialPlaybackStart` as soon as more
+            // media makes the target reachable.
+            if let item = currentItem {
                 startPlaybackIfNeeded(for: item)
             }
         }
@@ -1756,7 +1724,6 @@ final class AVPlayerBackend {
         hasSeekedToStart = false
         hasReachedItemEnd = false
         pendingStartTime = startTime
-        initialSeekRetryCount = 0
         isInitialSeekInFlight = false
 
         switch strategy {
@@ -2808,31 +2775,12 @@ final class AVPlayerBackend {
         // classified (pause vs. wedge) directly from the log.
         if now - watchdogLastStateLogWall >= 3 {
             watchdogLastStateLogWall = now
-            // Temporary [CMP-MEM]: attribute footprint growth per tick —
-            // jetsam-accounted footprint + remaining headroom, alongside the
-            // app-managed pools (segment store RAM, source proxy cache) so a
-            // memory termination capture shows which pool was growing.
-            let mem = Self.memoryFootprintMiB()
-            let storeMiB = Double(segmentStore?.stats().memoryBytes ?? 0) / 1_048_576
-            let proxyMiB = Double(proxyStatsProvider?()?.cachedBytes ?? 0) / 1_048_576
-            let memSuffix: String
-            if let mem {
-                memSuffix = String(
-                    format: " footprint=%.1fMiB avail=%.1fMiB store=%.1fMiB proxy=%.1fMiB",
-                    mem.footprint, mem.available, storeMiB, proxyMiB
-                )
-            } else {
-                memSuffix = String(
-                    format: " footprint=? avail=? store=%.1fMiB proxy=%.1fMiB",
-                    storeMiB, proxyMiB
-                )
-            }
             let suspendedSuffix = suspendedRecoveryReasons.isEmpty
                 ? ""
                 : " suspended=[\(suspendedRecoveryReasons.sorted().joined(separator: ","))]"
             let stationaryFor = recoveryStationarySecondsProvider?() ?? 0
             cmpLog(
-                "[CMP-AVP] loopback playhead state pos=\(position) tc=\(statusLabel) rate=\(avPlayer.rate) paused=\(isUserPaused ? 1 : 0) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead) stationaryFor=\(stationaryFor)\(memSuffix)\(suspendedSuffix)"
+                "[CMP-AVP] loopback playhead state pos=\(position) tc=\(statusLabel) rate=\(avPlayer.rate) paused=\(isUserPaused ? 1 : 0) bufAhead=\(bufferedAhead) generatedAhead=\(generatedAhead) stationaryFor=\(stationaryFor)\(suspendedSuffix)"
             )
         }
 
@@ -3481,31 +3429,24 @@ final class AVPlayerBackend {
 
             if landedCorrectly {
                 self.hasSeekedToStart = true
-                self.initialSeekRetryCount = 0
                 self.resyncControlledSubtitlesAfterSeek(mediaSeconds: landedMedia)
                 self.startPlaybackIfNeeded(for: item)
                 self.onTimeChange?(landed)
                 return
             }
 
-            self.initialSeekRetryCount += 1
-            if self.initialSeekRetryCount <= 8 {
-                let retry = self.initialSeekRetryCount
-                Self.logger.warning(
-                    "Initial resume seek did not land mediaTarget=\(mediaTarget, privacy: .public) landedMedia=\(landedMedia, privacy: .public) landedPlayer=\(landed, privacy: .public) finished=\(finished, privacy: .public) retry=\(retry, privacy: .public)"
-                )
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    guard let self, !self.isDisposed else { return }
-                    self.attemptInitialPlaybackStart(for: item, trigger: "retry-\(retry)")
-                }
-            } else {
-                Self.logger.error(
-                    "Initial resume seek failed after retries mediaTarget=\(mediaTarget, privacy: .public) landedMedia=\(landedMedia, privacy: .public) landedPlayer=\(landed, privacy: .public)"
-                )
-                if self.itemHasSeekableMedia(item, containing: playerTarget) {
-                    self.startPlaybackIfNeeded(for: item)
-                    self.onTimeChange?(landed)
-                }
+            // No self-driven retry: `hasSeekedToStart` is still false and
+            // `isInitialSeekInFlight` was just cleared, so the item's
+            // `seekableTimeRanges`/`loadedTimeRanges` observers re-enter
+            // `attemptInitialPlaybackStart` the moment the media that would
+            // let the target land arrives. Starting here keeps the item from
+            // sitting silent if it never does.
+            Self.logger.error(
+                "Initial resume seek did not land mediaTarget=\(mediaTarget, privacy: .public) landedMedia=\(landedMedia, privacy: .public) landedPlayer=\(landed, privacy: .public) finished=\(finished, privacy: .public)"
+            )
+            if self.itemHasSeekableMedia(item, containing: playerTarget) {
+                self.startPlaybackIfNeeded(for: item)
+                self.onTimeChange?(landed)
             }
         }
     }
@@ -4248,7 +4189,6 @@ final class AVPlayerBackend {
         loopbackPlaylistName = nil
         loopbackPlaybackUsesExternalURL = false
         isInitialSeekInFlight = false
-        initialSeekRetryCount = 0
         isInitialVideoDisplayGatePrepared = false
         isWaitingForInitialVideoDisplay = false
         initialVideoDisplayGateStartTime = nil

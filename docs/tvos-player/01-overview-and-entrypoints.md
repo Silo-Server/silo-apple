@@ -1,4 +1,4 @@
-Last verified against the code: 2026-08-18
+Last verified against the code: 2026-08-20
 
 # Overview And Entrypoints
 
@@ -10,31 +10,64 @@ The Apple player spans a small set of files:
   SwiftUI screen shell. Chooses the render surface and installs tvOS remote
   handlers.
 - [`PlayerViewModel.swift`](../../iosApp/iosApp/Screens/Player/PlayerViewModel.swift)
-  Playback coordinator. Owns route planning, player state, settings
-  application, the fallback ladder, progress reporting, and cleanup.
-- [`AVPlayerBackend.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift)
-  The one and only backend. Loads a plan onto `AVPlayer`, and for the
-  SiloPlayer route also stands up the local loopback (writer, store, server).
+  The presentation shell. Projects the control plane's `Presentation` value
+  onto the members the views read, forwards view commands as `PlayerIntent`s
+  through `send(_:)`, and owns the *presentation* half of playback: settings
+  application, overlays and notices, Now Playing, next-up, and cleanup. It
+  decides no playback policy.
+- [`ControlPlane/PlaybackSessionActor.swift`](../../iosApp/iosApp/Screens/Player/ControlPlane/PlaybackSessionActor.swift)
+  The control plane. Holds `PlaybackState`, is the only caller of
+  `PlaybackReducer`, and runs the reducer's `[Effect]` with every effect
+  conditional on the `LoadID` / `SessionIdentity` it carries.
+- [`ControlPlane/PlaybackReducer.swift`](../../iosApp/iosApp/Screens/Player/ControlPlane/PlaybackReducer.swift)
+  Pure `(PlaybackState, PlayerIntent | PlayerEvent) → (PlaybackState, [Effect])`.
+  Every load / seek / replan / scene-phase decision is here.
+- [`Recovery/RecoveryPolicy.swift`](../../iosApp/iosApp/Screens/Player/Recovery/RecoveryPolicy.swift)
+  The one recovery decision owner — every in-route ladder rung, the failure
+  ladder, the origin-outage ride-through and the server-outage wait, with
+  their constants. `Recovery/RecoveryDriver.swift` is its only runtime caller,
+  one per load.
+- [`Engine/PlaybackEngineSession.swift`](../../iosApp/iosApp/Screens/Player/Engine/PlaybackEngineSession.swift)
+  One engine session per `LoadID`: it owns the backend adapter, the source
+  proxy, the load's `RecoveryDriver`, and a single ordered `EngineEvent`
+  stream. Disposing it *is* the teardown.
+- [`AVPlayerRoute/AVPlayerBackend.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift)
+  The one and only backend, and now only an AVFoundation adapter: items and
+  observers, display criteria, the initial-display gate, audio session,
+  PiP/AirPlay, seek deadlines, the subtitle plane. It reports
+  `RecoveryObservation`s where the ladders used to decide.
+- [`Engine/LocalHLSHost.swift`](../../iosApp/iosApp/Screens/Player/Engine/LocalHLSHost.swift)
+  The loopback lifecycle as one value: segment store, loopback HTTP server,
+  the producing writer and its demand-driven restarts, and the session
+  directory. The backend owns exactly one live host.
 - [`PlaybackSessionBridge.swift`](../../iosApp/iosApp/Screens/Player/PlaybackSessionBridge.swift)
-  Talks to the Silo API, picks a version, starts playback sessions, and
-  negotiates direct vs HLS delivery.
+  Talks to the Silo API, picks a version, starts playback sessions, mints the
+  `SessionIdentity`, and negotiates direct vs HLS delivery.
+- [`Tracks/TrackSelectionCoordinator.swift`](../../iosApp/iosApp/Screens/Player/Tracks/TrackSelectionCoordinator.swift)
+  The audio/subtitle track half behind `TrackSelectionPorts`. The view model
+  forwards to it; the views keep reading the same member names.
 - [`NowPlayingController.swift`](../../iosApp/iosApp/Screens/Player/NowPlayingController.swift)
   Bridges the current backend into `MPNowPlayingInfoCenter` and
   `MPRemoteCommandCenter`.
 
-There is no engine abstraction left. `PlayerViewModel` holds
-`private(set) var avPlayerBackend: AVPlayerBackend?`, and
-`installBackend(for:)` constructs an `AVPlayerBackend` on every platform and
-for every `PlaybackEngineKind` (the `ActivePlayer` enum and
-`PlaybackCoordinator` were collapsed in `e458784`). There is no second decode
-core to select.
+There is still no engine *abstraction* in the old sense — no second decode
+core to select. `PlaybackBackend` is a protocol only so the control-plane
+tests can drive a fake; `AVPlayerBackend` is its one production conformance,
+constructed on every platform and for every `PlaybackEngineKind`. What the
+view model holds is not the backend but the load's engine session:
+`private(set) var engineSession: PlaybackEngineSession?`, with
+`avPlayerBackend` a computed forwarder (`engineSession?.surfaceBackend`) for
+the view surface and the settings appliers.
 
 ## 2. Startup flow
 
 1. `PlayerView.onAppear` calls `viewModel.loadAndPlay(...)`.
-2. `PlayerViewModel.loadAndPlay(...)` attaches `NowPlayingController` command
-   handlers that dispatch through `activePlayer`.
-3. The view model calls `PlaybackSessionBridge.startSession(...)`.
+2. `PlayerViewModel.loadAndPlay(...)` builds a `LoadRequest` and sends
+   `PlayerIntent.load(request, origin: .userInitiated, options:)` to the
+   session actor. Nothing about the load is decided in the view model.
+3. The reducer answers with `Effect.startSession(request, options, LoadID)`;
+   the actor runs it, which calls
+   `PlaybackSessionBridge.startSession(...)` (or the offline builder).
 4. `PlaybackSessionBridge`:
    - fetches `/api/v1/watch/{contentId}`
    - selects a version from `WatchDetail.versions`
@@ -42,9 +75,14 @@ core to select.
    - posts `/api/v1/playback/start`
    - if the server chose `remux` or `transcode`, posts
      `/api/v1/playback/transcode/start`
-5. The view model turns the returned `streamUrl` into an absolute URL, adds a
-   Bearer token header if one exists, builds a `PlaybackExecutionPlan` through
-   `ApplePlaybackRoutePlanner.makeExecutionPlan(input:)`, and loads it.
+5. Still inside that effect, the shell turns the returned `streamUrl` into an
+   absolute URL, adds a Bearer token header if one exists, and builds a
+   `PlaybackExecutionPlan` through
+   `ApplePlaybackRoutePlanner.makeExecutionPlan(input:)` (plan-building is
+   adapter work, not reducer work). The prepared result comes back as
+   `SessionEvent.prepared`, and the reducer answers with
+   `Effect.loadEngine(plan, LoadID, reuseEngine:)` — that is what actually
+   starts the engine.
 
 Two details matter:
 
@@ -77,28 +115,40 @@ Current truth, and a common source of confusion:
 
 ## 4. Metadata and state flow back to UI
 
-The view model wires a shared callback surface into the backend. Those
-callbacks drive:
+The backend's callbacks are wired by the engine session, not by the view
+model, and they do not write UI state. Each one emits an `EngineEvent` on the
+session's single ordered stream; the session actor reduces it and answers with
+`Effect.publish(Presentation)` — the only path to UI state. `Presentation`
+carries:
 
-- `currentTime`
-- `duration`
-- `isPlaying`
-- `isBuffering`
-- `audioTracks`
-- `subtitleTracks`
-- `chapters`
-- `bufferedAheadSeconds`
+- `currentTime`, `duration`, `isPlaying`, `isBuffering`
+- `bufferedAheadSeconds`, `playbackRunwaySeconds`, `playbackStats`
+- `isLoading` (three-valued: `nil` means "this publish owns no overlay
+  decision"), `loadingReason`, `bufferingCause`
+- `hasEnded`, `isBackgroundSuspended`, `isReconnecting`
+- `activeQualityId`, `isQualitySwitching`, `metadata`
+- `serverSessionId` (the one session-id mirror the shell still needs, for the
+  SiloControl projection and the subtitle-AI gate)
 - terminal `error`
+
+`PlayerViewModel.applyPresentation(_:transportOnly:)` copies it onto the
+published members the views read. Track lists and chapters stay off
+`Presentation`: they ride the same event stream as `.tracks` / `.chapters` and
+land in `TrackSelectionCoordinator` and the chapter list through
+`applyEngineEventToPresentation`.
 
 Secondary overlay metadata does not come from a second API call. It is derived
 from the already-fetched `WatchDetail` and chosen `FileVersion` through
 `PreparedPlayback.playerMetadata(...)`.
 
-The view model also:
+Alongside that:
 
-- applies player settings on `onFileLoaded`
-- starts periodic progress reporting every 10 seconds
-- updates Now Playing state, rate-limited to one push every 2 seconds
+- the view model applies player settings when the load reports its file loaded
+- the reducer schedules the progress heartbeat on its own timer
+  (`TimerID.progress`, `PlaybackReducer.progressReportIntervalSeconds = 10`),
+  and the actor runs it as `Effect.reportProgress(SessionIdentity, …)`
+- the view model updates Now Playing state, rate-limited to one push every
+  2 seconds
 
 ## 5. Route selection
 
@@ -144,25 +194,37 @@ Every decision emits a trace. Useful tokens: `delivery_direct`,
 ## 6. The fallback ladder
 
 Because there is only one engine, runtime recovery is about re-pointing
-AVPlayer, and it is a strict two-step ladder in `PlayerViewModel`:
+AVPlayer. The *decision* is `RecoveryPolicy.decideEngineFailed`'s bottom two
+rungs — the only place the ladder exists — and the view model merely executes
+what comes back as a `RecoveryAction.switchRoute`:
 
-1. **Native direct fails → SiloPlayer loopback.**
-   `attemptNativeDirectRouteRecovery(after:)` builds a loopback plan from the
-   *same* source stream request via `makeLoopbackFallbackPlan(...)`
-   (`reason = native_direct_avplayer_failed_silo_fallback`,
-   trace `fallback_silo_loopback_after_native_direct`), preserving the current
-   position and the audio/subtitle selections. Guarded by
-   `hasAttemptedNativeDirectRouteRecovery` so it fires at most once.
-   If no loopback session can be built, it goes straight to step 2 with
-   trace `native_direct_blocked_hls_fallback`.
-2. **SiloPlayer loopback fails → server HLS.**
-   `attemptSiloRouteHLSFallback(after:)` calls `requestServerHLSRouteFallback`,
-   which triggers a protocol-V3 replan (`attemptProtocolV3Replan`) with
-   classification `silo_loopback_failed` and trace `fallback_hls_after_silo`.
-   Guarded by `hasAttemptedSiloRouteHLSFallback`.
+1. **Native direct fails → SiloPlayer loopback.** Rung 9. Fires only when the
+   route is `avPlayerNativeDirect`, the load has not already used its one
+   native-direct fallback (`RecoveryContext.attemptedNativeDirectFallback`),
+   and a loopback plan can actually be built
+   (`RecoveryContext.canBuildLoopbackFallback`, answered by the shell's
+   `makeNativeDirectLoopbackFallbackPlan`). The executor,
+   `performNativeDirectLoopbackFallback`, rebuilds that plan through
+   `makeLoopbackFallbackPlan(...)` (`reason =
+   native_direct_avplayer_failed_silo_fallback`, trace
+   `fallback_silo_loopback_after_native_direct`), preserving the current
+   position and the audio/subtitle selections, and reloads the engine in place
+   inside the same server session. If no loopback plan exists, the same rung
+   goes straight to server HLS with trace `native_direct_blocked_hls_fallback`.
+2. **SiloPlayer loopback fails → server HLS.** Rung 10. Fires when the route is
+   `siloPlayerLoopback`, the load has not used its one loopback-HLS fallback
+   (`RecoveryContext.attemptedLoopbackHLSFallback`), a watch detail exists and
+   no replan is already in flight. It becomes
+   `.switchRoute(.serverHLS(classification: "silo_loopback_failed"))`, which
+   the reducer turns into a protocol-V3 replan; `performServerHLSRouteFallback`
+   only writes the `fallback_hls_after_silo` trace.
 
-The method comment states the principle directly: "Every remaining engine is
-AVPlayer-backed, so 'fall back' now means renegotiating the session with the
+The one-shot latches live on the load's `RecoveryContext`, set by the policy
+as it returns the action, so they are load-scoped by construction — the old
+`hasAttempted*` fields on the view model are gone.
+
+The executor's comment states the principle directly: "Every remaining engine
+is AVPlayer-backed, so 'fall back' now means renegotiating the session with the
 server rather than swapping in another local decoder."
 
 Loopback writer failures that reach this rung include
@@ -170,31 +232,47 @@ Loopback writer failures that reach this rung include
 `.prematureSourceEnd` (see
 [`LoopbackSegmentWriter.swift`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentWriter.swift)).
 
-`PlayerViewModel.prepareBackend(for:)` deliberately *reuses* the already
-installed backend when the route kind is unchanged, so an in-place replan (an
-audio-track change on the loopback route, for instance) keeps the audio session
-and the negotiated tvOS display criteria instead of renegotiating HDMI around
-the replacement item.
+An in-place replan keeps the live backend. The reducer emits
+`Effect.loadEngine(plan, loadID, reuseEngine: true)`, the shell builds the
+replacement `PlaybackEngineSession` with the outgoing one passed as `reusing:`,
+and the *same* `AVPlayerBackend` instance carries over with its audio session
+and its negotiated tvOS display criteria — only the callbacks and the event
+stream re-bind to the new `LoadID`. That is what keeps an audio-track change on the
+loopback route from renegotiating HDMI around the replacement item.
 
 ## 7. Teardown and lifecycle
 
 `PlayerView.onDisappear` calls `viewModel.cleanup()`, which:
 
 - marks the VM disposed
-- cancels the overlay timer and progress task
-- detaches Now Playing handlers
-- disposes the backend directly (`avPlayerBackend?.dispose()`), which tears
-  down the AVPlayer item, the loopback writer/store/server, and releases the
-  tvOS display criteria
+- cancels the shell's UI timers and tasks (`tasks.cancelAll(in: .teardown)`)
+- detaches Now Playing handlers, cancels the sleep timer, resets the track
+  selection
+- shuts the control plane down (`PlaybackSessionActor.shutdown()`), which
+  cancels every control-plane timer and the engine-event loop
+- disposes the load's engine session (`engineSession?.dispose(reason:)`) and
+  drops the reference
 - sends a final stop request through `PlaybackSessionBridge.stopSession(...)`
+  in a detached completion task, unless the load was an offline download
 
-Scene transitions split into two paths:
+Dropping the engine session *is* the teardown: it disposes the backend (which
+tears the AVPlayer item down, tears down its `LocalHLSHost` — writer, store,
+server, session directory — and releases the tvOS display criteria), stops the
+source proxy, and cancels the load's timers. There is no hand-written field
+reset left.
 
-- `.inactive`: transient interruption only; pause the active backend and allow
-  quick foreground recovery if the player was already running
+Scene transitions are `PlayerIntent.scenePhase(phase)`, reduced against the
+reducer's per-platform scene-phase table. The shell resolves only what it
+alone can know before forwarding (on iOS, whether an automatic PiP that has not
+yet published `willStart` should hold the background off). The two outcomes:
+
+- `.inactive`: transient interruption only; pause and allow quick foreground
+  recovery if the player was already running
 - `.background`: hard suspend; snapshot resume context, stop the server
   playback session, unbind realtime control, detach Now Playing, dispose the
-  backend, and wait for an explicit user resume after wake
+  engine while *keeping* the source proxy
+  (`SourceCacheDisposition.retainProxy`), and wait for an explicit user resume
+  after wake
 
 The player route stays mounted after a background suspend. Playback does not
 auto-resume on wake, and tvOS Picture in Picture is unsupported.
@@ -224,7 +302,27 @@ auto-resume on wake, and tvOS Picture in Picture is unsupported.
   exist (collapsed in `e458784`); `PlayerViewModel` holds an optional
   `AVPlayerBackend`. There is still no `PlayerCore` type in the tree.
 - verified: the fallback ladder is native-direct → loopback → server HLS
-  replan, each rung guarded by a one-shot flag on the view model.
+  replan, each rung guarded by a one-shot latch.
+- corrected (2026-08-20): the control plane moved out of `PlayerViewModel`.
+  `PlaybackSessionActor` holds `PlaybackState` and runs `PlaybackReducer`;
+  `RecoveryPolicy`/`RecoveryDriver` own every recovery decision;
+  `PlaybackEngineSession` owns the backend + source proxy per `LoadID`;
+  `LocalHLSHost` owns the loopback lifecycle; `TrackSelectionCoordinator` owns
+  the track half. `installBackend(for:)` / `prepareBackend(for:)` /
+  `loadStream(...)` and the three generation counters are gone — identity is
+  `LoadID` / `SessionIdentity` on every effect.
+- corrected (2026-08-20): the ladder's one-shot flags are
+  `RecoveryContext.attemptedNativeDirectFallback` /
+  `attemptedLoopbackHLSFallback` on the load's recovery context, not
+  `hasAttemptedNativeDirectRouteRecovery` / `hasAttemptedSiloRouteHLSFallback`
+  on the view model. Those fields no longer exist.
+- corrected (2026-08-20): backend callbacks no longer write UI state. They emit
+  `EngineEvent`s that the session actor reduces; `Effect.publish(Presentation)`
+  is the only path to the published members.
+- corrected (2026-08-20): the initial resume seek no longer retries itself
+  8 × 200 ms. Its 15 s seek deadline is the whole budget, and the item's
+  `seekableTimeRanges` / `loadedTimeRanges` observers re-enter
+  `attemptInitialPlaybackStart` while the load has not landed its start point.
 - corrected: earlier revisions said the load path "can stay on
   CompatibilityPlayer" and that `PlayerCore.onUnsupportedStream` could force a
   runtime handoff. Both the type and that handoff are gone; decode-time
