@@ -4,8 +4,8 @@
 //  Stage 2 wave 2b — one engine session per `LoadID`.
 //
 //  Before this wave the view model held the backend, the source proxy and 17
-//  callback closures whose lifetime was guarded by a by-value capture of
-//  `streamLoadGeneration`, plus five session-id mirrors. A session owns those
+//  callback closures whose lifetime was guarded by a by-value capture of the
+//  stream-load generation, plus five session-id mirrors. A session owns those
 //  three things together: the callbacks are re-bound to *this* session, the
 //  stream ends when it is disposed, and a late event from a superseded load is
 //  dropped structurally rather than by comparing a number captured when the
@@ -58,6 +58,29 @@ final class PlaybackEngineSession {
     private let continuation: AsyncStream<EngineEvent>.Continuation
     private(set) var isDisposed = false
 
+    /// The backend's `mediaTimelineOffsetSeconds`, mirrored here so this
+    /// session can put the playhead it publishes on the **movie** axis.
+    ///
+    /// `PlaybackBackend.onTimeChange` reports AVPlayer's own clock
+    /// (`AVPlayerBackend:2353` yields `time.seconds` raw), which is the player
+    /// axis; every other producer of a position in the control plane is movie
+    /// time (`PlaybackReducer.movieTime(for:)` = `session.position +
+    /// session.timelineOffsetSeconds`, `SeekRequest.targetSeconds`,
+    /// `Effect.reportProgress`'s wire position). The view model used to convert
+    /// at its own callback — `let movieTime = seconds + playbackTimelineOffset`
+    /// (base PVM:998), against a mirror of exactly this value fed by
+    /// `EngineEvent.timelineOffset` — so on a server-remux resume
+    /// (`playMethod == "remux"` → `avPlayerHLS` + `startOfManifest`, where the
+    /// offset is the resume point) the two axes differed by minutes.
+    ///
+    /// The conversion happens **once**, here, at the boundary where the axis is
+    /// known: `AVPlayerBackend.setMediaTimelineOffset` is the only writer and it
+    /// calls `onTimelineOffsetChange` synchronously, before the item that
+    /// reports on the new axis exists (`PlayerViewModel.installEngine` sets it
+    /// before `session.start`). A reused backend keeps its offset across an
+    /// in-place replan, so the successor session seeds from it.
+    private var mediaTimelineOffsetSeconds: Double
+
     // MARK: - Lifecycle
 
     /// - Parameters:
@@ -76,6 +99,9 @@ final class PlaybackEngineSession {
         self.plan = plan
         self.transport = transport
         self.driver = RecoveryDriver(route: plan.engine)
+        // Seeded before `relinquishBackend()`, which is what makes the outgoing
+        // session's mirror unreachable.
+        self.mediaTimelineOffsetSeconds = existing?.mediaTimelineOffsetSeconds ?? 0
         let adopted = existing?.relinquishBackend()
         self.backend = adopted ?? backendFactory()
         let stream = AsyncStream<EngineEvent>.makeStream(bufferingPolicy: .unbounded)
@@ -320,8 +346,20 @@ final class PlaybackEngineSession {
         continuation.yield(event)
     }
 
+    /// `AVPlayerBackend.mediaTime(for:)` (AVPlayerBackend:1351), verbatim —
+    /// the same conversion `RecoveryContext.mediaSeconds(forPlayerSeconds:)`
+    /// (RecoveryContext:351) applies to the observation channel's playhead.
+    private func mediaTime(for playerTime: Double) -> Double {
+        guard playerTime.isFinite else { return 0 }
+        return max(0, playerTime + mediaTimelineOffsetSeconds)
+    }
+
     private func bindBackend() {
-        backend.onTimeChange = { [weak self] seconds in self?.emit(.time(seconds: seconds)) }
+        backend.onTimeChange = { [weak self] seconds in
+            guard let self else { return }
+            // The one axis conversion — see `mediaTimelineOffsetSeconds`.
+            self.emit(.time(seconds: self.mediaTime(for: seconds)))
+        }
         backend.onDurationChange = { [weak self] seconds in self?.emit(.duration(seconds: seconds)) }
         backend.onPauseChange = { [weak self] paused in
             guard let self else { return }
@@ -345,6 +383,7 @@ final class PlaybackEngineSession {
         backend.onChaptersChange = { [weak self] chapters in self?.emit(.chapters(chapters)) }
         backend.onTimelineOffsetChange = { [weak self] offset in
             guard let self else { return }
+            self.mediaTimelineOffsetSeconds = offset.isFinite ? max(0, offset) : 0
             self.driver.note(mediaTimelineOffset: offset)
             self.emit(.timelineOffset(offset))
         }

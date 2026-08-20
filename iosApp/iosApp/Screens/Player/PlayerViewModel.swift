@@ -318,15 +318,20 @@ class PlayerViewModel {
     /// Owned by the engine session; read here for stats, the outage predicate
     /// and the renewals' retarget.
     private var sourceProxy: PlaybackSourceProxy? { engineSession?.transport }
-    /// Identity of the load `loadStream` is currently assembling. It replaces
-    /// `streamLoadGeneration` at the one site that still needs it: the two
-    /// guards either side of `await prepareSource`, which have to drop a load
-    /// that was superseded while the proxy was starting. Every *callback* guard
-    /// the counter used to serve is now the engine session's own identity.
+    /// Identity of the load `installEngine` is currently assembling. It is the
+    /// guard on both sides of `await prepareSource`, which has to drop a load
+    /// that was superseded while the proxy was starting. The actor holds the
+    /// same value; this copy exists because the install runs on the main actor.
     private var pendingLoadID: LoadID?
     /// The cache carried between two proxies for the same file. It deliberately
     /// outlives an engine session, so the slot lives here.
     private var sourceCacheHandoff: PlaybackEngineSession.SourceCacheHandoff?
+    /// The full `PlaybackExecutionPlan` the pending adopt resolved. The control
+    /// plane carries only the `ExecutablePlan` it decides with; the engine
+    /// install needs the whole thing, because the source proxy rewrites its URLs
+    /// and the loopback session spec travels on it. One slot, filled by
+    /// `adoptPrepared` and consumed by `installEngine`.
+    private var pendingExecutionPlan: PlaybackExecutionPlan?
     var backendCapabilities: PlayerBackendCapabilities {
         #if os(macOS)
         let base = PlayerBackendCapabilities.macAVFoundation
@@ -421,10 +426,37 @@ class PlayerViewModel {
     /// a handoff that would 401 on the TV.
     private(set) var supportsExternalPlayback = false
     #endif
-    /// True after the active backend reports natural EOF. Used to keep the
-    /// UI in a terminal paused state without letting tail-drain callbacks
-    /// overwrite it or surface a false decode error.
-    private var hasReachedEndOfFile = false
+    /// The control plane. It holds `PlaybackState`, runs `PlaybackReducer` and
+    /// executes its effects; this view model forwards view commands to it as
+    /// `PlayerIntent`s and projects what it publishes back.
+    @ObservationIgnored
+    private var controlPlane: PlaybackSessionActor!
+    /// `Sub.ended`, mirrored from the last publish. It replaces the stored
+    /// `hasReachedEndOfFile` latch: the postroll guard on every transport
+    /// command reads the control plane's answer instead of a second copy.
+    private var hasEndedStream = false
+    /// `PlaybackState.suspended`, mirrored from the last publish.
+    var isBackgroundSuspended = false
+    /// `SessionIdentity.serverSessionId`, mirrored from the last publish. It
+    /// replaces the view model's active-session mirror; the SiloControl wire
+    /// projection and the subtitle-AI live gate are its only readers.
+    private var currentServerSessionId: String?
+    /// Whether the visible server-outage recovery is on screen, so the
+    /// "Reconnecting" notice is raised exactly once per recovery.
+    private var isReconnectingAfterOutage = false
+    /// The session holding the `server_replan` in-route suspension for the
+    /// round trip in flight, and — because exactly one replan may be in flight —
+    /// the shell's answer to `RecoveryContext.isReplanInFlight`.
+    private var replanSuspensionHolder: PlaybackEngineSession?
+    /// `shouldAutoRecoverFromInterruption()`: the pending interruption's
+    /// deadline, mirrored from the last publish. The interruption itself is
+    /// reducer state; the policy reads only "is there still time".
+    private var interruptionRecoveryDeadline: Date?
+    /// `RecoveryContext.canAutoRecoverInterruption`.
+    private var canAutoRecoverInterruption: Bool {
+        guard let interruptionRecoveryDeadline else { return false }
+        return Date() <= interruptionRecoveryDeadline
+    }
     let settings = PlayerSettings.shared
     let sleepTimer = SleepTimer()
     private let nowPlaying = NowPlayingController()
@@ -480,7 +512,7 @@ class PlayerViewModel {
     /// submit for both live and poll-only jobs; this flag only decides whether
     /// the request includes `session_id` for realtime cue streaming.
     var subtitleAILiveOverlayAvailable: Bool {
-        realtimeConnectedSnapshot && !realtimeUnavailableSnapshot && activePlaybackSessionId != nil
+        realtimeConnectedSnapshot && !realtimeUnavailableSnapshot && currentServerSessionId != nil
     }
 
     /// The `observeUnavailability` token, retained so `cleanup()` can remove
@@ -513,62 +545,17 @@ class PlayerViewModel {
         get { tasks[.remoteDismiss] }
         set { tasks[.remoteDismiss] = newValue }
     }
-    private var progressTask: Task<Void, Never>? {
-        get { tasks[.progress] }
-        set { tasks[.progress] = newValue }
-    }
-    private var staleSessionRecoveryTask: Task<Void, Never>? {
-        get { tasks[.staleSessionRecovery] }
-        set { tasks[.staleSessionRecovery] = newValue }
-    }
-    /// In-flight silent renewal of a lost direct-play session (same file,
-    /// same plan, new session id — player and cache untouched). Keyed by the
-    /// stale session id for single-flight; transient failures retry on the
-    /// next trigger up to `backgroundRenewalTransientFailureLimit` before
-    /// escalating to the visible stale-session renewal.
-    private var backgroundRenewalTask: Task<Void, Never>? {
-        get { tasks[.backgroundRenewal] }
-        set { tasks[.backgroundRenewal] = newValue }
-    }
-    /// The session id the in-flight silent renewal was issued against. The
-    /// *single-flight* is `RecoveryContext.backgroundRenewalInFlight`; this is
-    /// only the supersede check the renewal's completion applies before
-    /// adopting a session that may have been replaced while it was in flight.
-    private var backgroundRenewalSessionId: String?
-    /// Origin-outage ride-through (workstream B): while the source proxy is
-    /// parked in an outage, playback rides its buffered runway with no UI
-    /// change; this task polls server health (nudging an immediate re-probe
-    /// when it returns) and escalates to the visible outage recovery only
-    /// when the budget expires. A "Reconnecting" notice appears only if the
-    /// player actually starts buffering during the outage.
-    private var sourceOutageRideThroughTask: Task<Void, Never>? {
-        get { tasks[.sourceOutageRideThrough] }
-        set { tasks[.sourceOutageRideThrough] = newValue }
-    }
     /// Presentation latch for the "Reconnecting" / "Reconnected" notice pair.
     /// The *gate* that decides whether the notice is due is
     /// `RecoveryContext.OutageState.noticeShown`; this records whether it fired
     /// so the exit knows whether to say "Reconnected".
     private var sourceOutageNoticeShown = false
-    private var serverOutageRecoveryTask: Task<Void, Never>? {
-        get { tasks[.serverOutageRecovery] }
-        set { tasks[.serverOutageRecovery] = newValue }
-    }
     /// Held so the init-time `refreshSettingsFromServer` call can be cancelled
     /// from `cleanup()`. Without a handle the task lingered on a dismissed VM
     /// and could observe `self` after dispose.
     private var settingsRefreshTask: Task<Void, Never>? {
         get { tasks[.settingsRefresh] }
         set { tasks[.settingsRefresh] = newValue }
-    }
-    private var freshLoadTask: Task<Void, Never>? {
-        get { tasks[.freshLoad] }
-        set { tasks[.freshLoad] = newValue }
-    }
-    private var freshLoadGeneration: UInt64 = 0
-    private var protocolV3ReplanTask: Task<Void, Never>? {
-        get { tasks[.protocolV3Replan] }
-        set { tasks[.protocolV3Replan] = newValue }
     }
     private var nextUpLookupTask: Task<Void, Never>? {
         get { tasks[.nextUpLookup] }
@@ -581,10 +568,6 @@ class PlayerViewModel {
     private var nextUpCountdownTask: Task<Void, Never>? {
         get { tasks[.nextUpCountdown] }
         set { tasks[.nextUpCountdown] = newValue }
-    }
-    private var interruptionRecoveryTask: Task<Void, Never>? {
-        get { tasks[.interruptionRecovery] }
-        set { tasks[.interruptionRecovery] = newValue }
     }
     /// Trailing-edge skip debounce: each tap updates the preview and resets
     /// this timer. The seek fires exactly once, after `skipDebounceNanos` of
@@ -617,25 +600,6 @@ class PlayerViewModel {
     private static let holdSeekBaseStep: Double = 2.0 // seconds per tick at 1x
     private static let holdSeekTickNanos: UInt64 = 100_000_000 // 100ms (10Hz)
 
-    /// Seek-in-flight filter: both the pre-seek playhead and the target we
-    /// asked the player to jump to. `onTimeChange` reports that are closer
-    /// to `seekOriginTime` than to `seekTargetTime` are treated as stale
-    /// pipeline drainage and dropped. This is direction-agnostic — works
-    /// for forward and backward seeks — and handles back-to-back seeks
-    /// where the pipeline is still draining from *before* the previous
-    /// seek. The filter releases as soon as a report crosses the midpoint
-    /// between origin and target, which is the earliest point we can
-    /// confidently say the new position has landed. Safety timeout below
-    /// drops the filter if no matching report arrives (e.g. transport
-    /// error on HLS transcode), since a stuck filter would pin the
-    /// scrubber to the optimistic target forever.
-    private var seekOriginTime: Double?
-    private var seekTargetTime: Double?
-    private var seekFilterTimeoutTask: Task<Void, Never>? {
-        get { tasks[.seekFilterTimeout] }
-        set { tasks[.seekFilterTimeout] = newValue }
-    }
-    private static let seekFilterNanos: UInt64 = 5_000_000_000 // 5s
     /// Remux HLS manifests are generated from the requested origin and then
     /// presented to AVPlayer as a local 0-based timeline. Keep the movie-time
     /// offset here so UI/progress reporting remain full-runtime based.
@@ -668,7 +632,6 @@ class PlayerViewModel {
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
     private var activePreparedProtocolV3: PreparedPlaybackV3?
-    private var activePlaybackSessionId: String?
     private var autoSkippedIntroKey: String?
     private var autoSkippedCreditsKey: String?
     private var autoSkipIntroCancelledKey: String?
@@ -676,103 +639,6 @@ class PlayerViewModel {
     private var autoSkipIntroCountdownTask: Task<Void, Never>? {
         get { tasks[.autoSkipIntroCountdown] }
         set { tasks[.autoSkipIntroCountdown] = newValue }
-    }
-    private var staleSessionRecoverySessionId: String?
-    struct LoadRequest {
-        let contentId: String
-        let preferredFileId: Int?
-        let preferredAudioTrackIndex: Int?
-        let preferredSubtitleTrackIndex: Int?
-        let preferredSidecarSubtitleTrackId: Int64?
-        let startFromBeginning: Bool
-        /// Authoritative protocol-v3 combined ordinal. Unlike
-        /// `preferredSubtitleTrackIndex`, this also represents external,
-        /// downloaded, and server-extracted subtitle rows.
-        var preferredProtocolV3SubtitleIndex: Int? = nil
-        /// Set for local playback of a completed download. Routes the
-        /// prepare through `OfflinePlaybackBuilder` instead of a server
-        /// session, so retry after an error stays on the offline path.
-        var offlineDownloadId: String? = nil
-        /// Explicit quality for this load (mid-stream quality-change replan);
-        /// wins over `PlayerSettings.preferredQuality` in the bridge.
-        var preferredQualityOverride: String? = nil
-
-        /// Rebuild a request for the same playback session while retaining the
-        /// user's temporary quality choice. Recovery must not fall back to the
-        /// persisted preference merely because tracks or the file id changed.
-        func copyForRecovery(
-            preferredFileId: Int?,
-            preferredAudioTrackIndex: Int?,
-            preferredSubtitleTrackIndex: Int?,
-            preferredSidecarSubtitleTrackId: Int64?,
-            offlineDownloadId: String?
-        ) -> LoadRequest {
-            var request = LoadRequest(
-                contentId: contentId,
-                preferredFileId: preferredFileId,
-                preferredAudioTrackIndex: preferredAudioTrackIndex,
-                preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                preferredSidecarSubtitleTrackId: preferredSidecarSubtitleTrackId,
-                startFromBeginning: false,
-                offlineDownloadId: offlineDownloadId,
-                preferredQualityOverride: preferredQualityOverride
-            )
-            request.preferredProtocolV3SubtitleIndex = preferredProtocolV3SubtitleIndex
-            return request
-        }
-
-        /// Refresh the inputs used by session renewal from an adopted V3 plan.
-        /// Player track lists are transient and may already be empty when a
-        /// failed transport reports that its server session disappeared.
-        func adoptingProtocolV3Intent(
-            plan: PlaybackV3Plan,
-            selectedVersion: FileVersion,
-            activeQualityId: String
-        ) -> LoadRequest {
-            let selectedSubtitleIndex = plan.selectedTracks.subtitle?.index
-            let selectedSubtitle = selectedSubtitleIndex.flatMap { selectedIndex in
-                plan.subtitle.inventory.first(where: { $0.combinedIndex == selectedIndex })
-            }
-            let embeddedFFmpegIndex: Int? = selectedSubtitle.flatMap { item in
-                // A sidecar is the server-selected artifact even when it was
-                // extracted from an embedded stream. Arming both identities
-                // would publish and select the same subtitle twice.
-                guard item.source == "embedded", item.delivery != "sidecar" else { return nil }
-                return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
-                    serverCombinedIndex: item.combinedIndex,
-                    in: selectedVersion
-                )
-            }
-            let sidecarTrackId: Int64? = selectedSubtitle.flatMap { item in
-                guard item.delivery == "sidecar" else { return nil }
-                return SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
-            }
-            var request = copyForRecovery(
-                preferredFileId: plan.effectiveMediaFileId,
-                preferredAudioTrackIndex: plan.selectedTracks.audio?.index,
-                preferredSubtitleTrackIndex: embeddedFFmpegIndex,
-                preferredSidecarSubtitleTrackId: sidecarTrackId,
-                offlineDownloadId: offlineDownloadId
-            )
-            request.preferredProtocolV3SubtitleIndex = selectedSubtitleIndex
-            request.preferredQualityOverride = activeQualityId
-            return request
-        }
-    }
-
-    /// Where a `beginFreshLoad` invocation came from. Determines (a) whether
-    /// `startSession` is bounded by a timeout and (b) how a load failure is
-    /// surfaced to the user. The trigger is orthogonal to the `LoadRequest`
-    /// itself, so it's threaded as a separate parameter.
-    private enum LoadOrigin {
-        /// User picked an item — no timeout, full-screen error on failure.
-        case userInitiated
-        /// Auto-play hand-off from the Next Up postroll — timeout-bounded,
-        /// failures restore the postroll with `nextUpStartError` set.
-        case autoplay
-        /// Automatic recovery from a foreground-interruption. Failures stay on
-        /// the player surface instead of using the Next Up postroll.
-        case recovery
     }
 
     private enum BeginFreshLoadError: Error {
@@ -782,20 +648,11 @@ class PlayerViewModel {
 
     private static let autoplayPlayerDisposeTimeout: TimeInterval = 5
     private static let autoplayStartSessionTimeout: TimeInterval = 15
-    private struct PlaybackInterruptionState {
-        var wasPlaying: Bool
-        var positionSeconds: Double
-        var recoveryDeadline: Date
-        var didAutoRecover: Bool
-        var isPending: Bool
-    }
+    /// The replay intent the control plane last adopted, mirrored here for the
+    /// three shell readers that need it synchronously: the Next Up carousel's
+    /// "hide what is playing" filter, the SiloControl wire projection, and
+    /// `switchQuality`'s pre-V3 branches, which build their own `.load` from it.
     private var lastLoadRequest: LoadRequest?
-    private var playbackInterruption: PlaybackInterruptionState?
-    private static let interruptionRecoveryTimeout: TimeInterval = 3
-    private static let interruptionResumeSuccessThresholdSeconds: Double = 0.1
-    private static let serverOutageRecoveryInitialDelay: TimeInterval = 1
-    private static let serverOutageRecoveryMaxDelay: TimeInterval = 8
-    private static let serverOutageRecoveryTimeout: TimeInterval = 90
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let introAutoSkipCountdownDefaultSeconds = 5
@@ -804,11 +661,6 @@ class PlayerViewModel {
     /// failure to still read as the stream draining. A real drain leaves the
     /// player with essentially nothing queued.
     private static let nearEndPlaybackErrorMaxBufferedAheadSeconds: Double = 1
-    private struct SuspendedPlaybackContext {
-        let request: LoadRequest
-        let resumePosition: Double
-    }
-    private var suspendedPlayback: SuspendedPlaybackContext?
     private var nextUpAutoplayCancelled = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
@@ -822,7 +674,6 @@ class PlayerViewModel {
         message: "Playback stopped when Apple TV went to sleep. Press Play to resume.",
         tone: .info
     )
-    var isBackgroundSuspended: Bool { suspendedPlayback != nil }
     var suspendedNotice: PlayerNotice? {
         isBackgroundSuspended ? Self.suspendedPlaybackNotice : nil
     }
@@ -851,6 +702,7 @@ class PlayerViewModel {
 
     init() {
         activeRouteKind = .avPlayerNativeDirect
+        controlPlane = PlaybackSessionActor(bridge: sessionBridge, shell: self)
         realtimeClient = PlaybackRealtimeClient(
             commandHandler: { [weak self] command in
                 guard let self else {
@@ -898,7 +750,7 @@ class PlayerViewModel {
         // and immediately tear down an unused backend.
 
         sleepTimer.configure { [weak self] in
-            self?.avPlayerBackend?.pause()
+            self?.send(.pause)
         }
 
         systemCaptionObserverToken = NotificationCenter.default.addObserver(
@@ -917,26 +769,13 @@ class PlayerViewModel {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self,
-                  let activeProtocolV3 = self.activePreparedProtocolV3,
-                  !self.isDisposed,
-                  !self.isLoading else { return }
-            let observedSnapshot = ApplePlaybackV3Capabilities.snapshot()
-            guard PlaybackSessionBridge.isMaterialOutputRouteChange(
-                activeOutputContextId: activeProtocolV3.outputContextId,
-                observedOutputContextId: observedSnapshot.outputContextId
-            ) else {
-                Self.logger.debug(
-                    "Ignoring AVAudioSession route notification with unchanged Playback V3 output context"
-                )
-                return
-            }
-            self.attemptProtocolV3Replan(
-                position: self.currentTime,
-                classification: "output_route_changed",
-                message: "The Apple audio output route changed.",
-                outputRouteSnapshot: observedSnapshot
-            )
+            // The observer only forwards. The materiality rule, the
+            // `hasProtocolV3` precondition and the replan itself are the
+            // reducer's `.outputRouteChanged` arm; the `!isLoading` half of the
+            // legacy guard is structural there (a load in flight is
+            // `.preparing`, which the arm refuses).
+            guard let self, !self.isDisposed else { return }
+            self.send(.outputRouteChanged(ApplePlaybackV3Capabilities.snapshot()))
         }
         #endif
         settingsRefreshTask = Task { @MainActor [weak self] in
@@ -963,99 +802,65 @@ class PlayerViewModel {
         avPlayerBackend?.setUserMuted(m)
     }
 
-    /// One registered task per `LoadID`, consuming that session's event stream.
+    /// The presentation half of one engine event.
     ///
-    /// It replaces the 17 closures and their by-value `streamLoadGeneration`
-    /// guards: the stream belongs to one `PlaybackEngineSession`, ends when that
-    /// session is disposed, and every element is applied only while the session
-    /// is still the current one — identity, not a captured counter (design §4
-    /// I2). `pendingLoadID` is the second half of that identity: a newer load
-    /// mints it (and cancels this loop) at the point the legacy code bumped the
-    /// generation, which is well before the replacement session is installed.
-    private func consumeEngineEvents(of session: PlaybackEngineSession) {
-        tasks[.engineEvents]?.cancel()
-        tasks[.engineEvents] = Task { @MainActor [weak self] in
-            for await event in session.events {
-                guard let self,
-                      !self.isDisposed,
-                      self.engineSession === session,
-                      self.pendingLoadID == session.loadID,
-                      !session.isDisposed else { return }
-                self.apply(event, from: session)
-            }
-        }
-    }
-
-    /// The former VM callback bodies, one switch arm each and in the same
-    /// order. Nothing here is new: the only thing that changed is what proves
-    /// the event belongs to the live load.
+    /// It is `apply(_:from:)`'s body with every control decision removed: the
+    /// reducer has already ruled on the event by the time this runs and the
+    /// actor has already published whatever moved. What is left is the work that
+    /// was never control plane — Now Playing, next-up presentation, auto-skip,
+    /// stats composition, track application and the console breadcrumbs.
+    ///
+    /// - Parameter reduction: what the control plane did with this event — see
+    ///   `EngineEventReduction`. The presentation half runs after the reducer's,
+    ///   so an event the reducer refused (a stale drainage frame, a duration a
+    ///   transcode delivery must not adopt, an end-of-file during a visible
+    ///   outage recovery) has to be told apart here, and the pre-event
+    ///   transport state has to travel rather than be read back off `isPlaying`.
     @MainActor
-    private func apply(_ event: EngineEvent, from session: PlaybackEngineSession) {
+    func applyEngineEventToPresentation(_ event: EngineEvent, reduction: EngineEventReduction) {
+        guard !isDisposed else { return }
         switch event {
         case let .time(seconds):
             guard seconds.isFinite else { return }
-            guard !hasReachedEndOfFile else { return }
-            let movieTime = seconds + playbackTimelineOffset
-            // A replacement loopback item can briefly publish its anchor
-            // segment before its resume pre-seek lands. Outside an explicit
-            // seek, playback time is monotonic; do not let that loader frame
-            // move the UI or progress reporter backwards.
-            if Self.isUnexpectedBackwardPlaybackTime(
-                movieTime,
-                currentTime: currentTime,
-                explicitSeekInFlight: seekTargetTime != nil
-            ) {
+            // `onTimeChange` returned before any of this once the EOF latch was
+            // set: the postroll owns the surface and Now Playing is already
+            // parked at the end.
+            guard !hasEndedStream else { return }
+            // Already movie time: `PlaybackEngineSession` converts once, at the
+            // boundary (`EngineEvent.time`). Base converted here because the
+            // engine handed the view model AVPlayer's own clock; adding the
+            // offset a second time would double it.
+            let movieTime = seconds
+            guard reduction.accepted else {
+                // Still stale — the scrubber keeps the optimistic target, but
+                // Now Playing is kept fresh so the remote widget does not
+                // appear frozen.
                 pushNowPlayingIfDue()
                 return
             }
-            if let origin = seekOriginTime, let target = seekTargetTime {
-                // A seek is in flight. Reports closer to the pre-seek
-                // position than to the target are stale drainage frames
-                // — drop them and keep the optimistic `currentTime` that
-                // `commitSeek` already set. Once a report crosses the
-                // midpoint toward the target, the seek has effectively
-                // landed and live updates resume.
-                if abs(movieTime - origin) < abs(movieTime - target) {
-                    // Still stale — don't overwrite the scrubber, but do
-                    // keep Now Playing fresh with our optimistic target
-                    // so the remote widget doesn't appear frozen.
-                    pushNowPlayingIfDue()
-                    return
-                }
-                seekOriginTime = nil
-                seekTargetTime = nil
-                seekFilterTimeoutTask?.cancel()
-                seekFilterTimeoutTask = nil
-            }
-            currentTime = movieTime
-            completeInterruptionRecoveryIfNeeded(
-                observedTime: movieTime,
-                requiresForwardProgress: true
-            )
             updateNextUpPresentation(for: movieTime)
             autoSkipIntroIfNeeded(at: movieTime)
             autoSkipCreditsIfNeeded(at: movieTime)
             pushNowPlayingIfDue()
 
-        case let .duration(seconds):
-            guard Self.shouldAdoptBackendDuration(
-                seconds,
-                currentDuration: duration,
-                delivery: currentDeliveryStrategy
-            ) else { return }
-            duration = seconds
+        case .duration:
+            // Only once the backend's report was actually adopted:
+            // `onDurationChange` ran its next-up refresh inside the same guard.
+            guard reduction.accepted else { return }
             updateNextUpPresentation(for: currentTime)
 
         case let .pauseChanged(paused):
-            let wasPlaying = isPlaying
-            isPlaying = !paused
             // A pause from any source (remote button, transport button,
             // Siri, interruption) surfaces the transport overlay and pins
             // it — no auto-hide runs while paused, so it stays up until
             // the user acts. Resuming re-arms the auto-hide so a resume
-            // from an external source (Now Playing, Siri) doesn't leave
+            // from an external source (Now Playing, Siri) does not leave
             // the overlay stuck on-screen.
-            if paused, wasPlaying, !isLoading, !hasReachedEndOfFile {
+            //
+            // The test is against the transport state this event *changed*
+            // (`wasPlaying`), not against `isPlaying`: the reducer's publish has
+            // already merged the new value by the time this runs.
+            if paused, reduction.wasPlaying, !isLoading, !hasEndedStream {
                 pinControlsVisible()
             } else if !paused, showControls, !isHUDPresented {
                 scheduleHideControls()
@@ -1070,11 +875,9 @@ class PlayerViewModel {
         case let .fileLoaded(reason):
             handleFileLoaded(reason: reason)
 
-        case let .firstFrame(milliseconds):
-            Task { await sessionBridge.reportProtocolV3FirstFrame(milliseconds: milliseconds) }
-
-        case let .failed(failure):
-            handlePlaybackError(failure)
+        case .firstFrame, .failed, .recoveryAction:
+            // Reported and decided by the control plane.
+            break
 
         case let .tracks(tracks):
             trackSelection.applyTrackList(tracks)
@@ -1092,14 +895,12 @@ class PlayerViewModel {
                 cause: buffering ? "buffer_empty" : "likely_to_keep_up"
             )
             if buffering {
-                noteBufferingDuringSourceOutage(session: session)
+                noteBufferingDuringSourceOutage()
             }
 
-        case let .bufferedAhead(ahead):
-            guard ahead.playableAheadSeconds.isFinite,
-                  ahead.runwaySeconds.isFinite else { return }
-            bufferedAheadSeconds = max(0, ahead.playableAheadSeconds)
-            playbackRunwaySeconds = max(0, ahead.runwaySeconds)
+        case .bufferedAhead:
+            // Published by the control plane's coalesced transport merge.
+            break
 
         case let .stats(stats):
             let composed = PlaybackStatsComposer.compose(
@@ -1118,6 +919,12 @@ class PlayerViewModel {
             reconcileDynamicRangeBadge(with: composed.confirmedDynamicRange)
 
         case .endOfFile:
+            // The reducer refuses an end-of-file while a visible server-outage
+            // recovery owns the load — a late drain from the engine being torn
+            // down — and `handleEndOfFile` returned at its first statement for
+            // the same reason. Running it here would put a Next Up postroll and
+            // a terminal breadcrumb on top of the recovery.
+            guard reduction.accepted else { return }
             handleEndOfFile()
 
         case let .timelineOffset(offset):
@@ -1150,10 +957,114 @@ class PlayerViewModel {
 
         case let .sidecarTracksRegistered(descriptors):
             trackSelection.appendSidecarTracks(descriptors)
-
-        case let .recoveryAction(action):
-            executeRecoveryAction(action, session: session)
         }
+    }
+
+    /// Merge one control-plane projection onto the published view state.
+    ///
+    /// It is a **merge**, never an assign (design section 2.3 contract note
+    /// (f)): `Presentation` still stubs `metadata`, and the view-local state
+    /// (controls, scrubbing, notices, next-up) is this model's alone.
+    /// `transportOnly` is the coalesced per-tick publish note (g) owes — the
+    /// playhead and the buffer gauges, nothing that could fight a transition.
+    @MainActor
+    func applyPresentation(_ presentation: Presentation, transportOnly: Bool) {
+        currentTime = presentation.currentTime
+        // `.failed` and `.suspended` deliberately carry no duration (see
+        // `PlaybackState.failed`), and neither `finalizeTerminalPlaybackError`
+        // nor `suspendForBackground` reset it — the postroll that follows an
+        // autoplay failure and the tvOS wake screen both still show the length.
+        // A publish from a state that does not own one must not zero it.
+        if presentation.duration > 0 { duration = presentation.duration }
+        bufferedAheadSeconds = presentation.bufferedAheadSeconds
+        playbackRunwaySeconds = presentation.playbackRunwaySeconds
+        if let stats = presentation.playbackStats { playbackStats = stats }
+        guard !transportOnly else { return }
+
+        isPlaying = presentation.isPlaying
+        if error == nil, let failure = presentation.error {
+            // Terminal outcome #1 of 2 (the other is `handleEndOfFile`). Every
+            // recovery ladder ends either here or there, so between them a
+            // report always shows how a playback finished.
+            #if os(iOS) || os(tvOS)
+            DiagTrace.breadcrumb(
+                .essential,
+                level: .error,
+                category: .playback,
+                tag: "Player",
+                message: "playback ended in failure",
+                attrs: [
+                    "reason": .string(PlaybackFailure.stableToken(forLegacyMessage: failure)),
+                    "play_method": .string(activeRouteKind.label),
+                    // Shared with the bridge's session breadcrumbs so a
+                    // report's positions are all on the same scale.
+                    "position_ms": .int(
+                        PlaybackSessionBridge.diagnosticsPositionMilliseconds(presentation.currentTime)
+                    ),
+                ]
+            )
+            #endif
+            activePreparedProtocolV3 = nil
+        }
+        error = presentation.error
+        if let quality = presentation.activeQualityId { activeQualityId = quality }
+        isQualitySwitching = presentation.isQualitySwitching
+        hasEndedStream = presentation.hasEnded
+        currentServerSessionId = presentation.serverSessionId
+        interruptionRecoveryDeadline = presentation.interruptionRecoveryDeadline
+        setBuffering(presentation.isBuffering, cause: presentation.bufferingCause)
+        // `nil` = the publishing arm owns no overlay decision (the pause
+        // change) — leave the overlay exactly where it is.
+        if let loading = presentation.isLoading {
+            if loading {
+                isLoading = true
+            } else {
+                clearLoadingOverlay(reason: presentation.loadingReason)
+            }
+        }
+        applySuspendedState(presentation.isBackgroundSuspended)
+        applyReconnectingState(presentation.isReconnecting)
+    }
+
+    /// `suspendForBackground`'s presentation half, driven by the state rather
+    /// than by the scene-phase handler: it runs exactly when the control plane
+    /// enters (or leaves) `PlaybackState.suspended`.
+    @MainActor
+    private func applySuspendedState(_ suspended: Bool) {
+        guard suspended != isBackgroundSuspended else { return }
+        isBackgroundSuspended = suspended
+        guard suspended else { return }
+        Self.logger.info(
+            "[CMP-LIFECYCLE] tvOS player background suspend at position=\(self.currentTime, privacy: .public)"
+        )
+        cancelPendingIntroAutoSkip()
+        cancelNextUpCountdown()
+        tasks.cancelAll(in: .interaction)
+        sleepTimer.cancel()
+        activeNotice = nil
+        isHUDPresented = false
+        showControls = true
+        holdSeekRate = 0
+        isScrubbing = false
+        scrubPreviewTime = currentTime
+        nowPlaying.detach()
+        // The realtime socket is keyed by the session the suspend is about to
+        // stop; the resume's own load rebinds.
+        Task { [realtimeClient] in await realtimeClient?.unbind() }
+    }
+
+    /// The visible server-outage recovery's notice, raised once per recovery.
+    @MainActor
+    private func applyReconnectingState(_ reconnecting: Bool) {
+        guard reconnecting != isReconnectingAfterOutage else { return }
+        isReconnectingAfterOutage = reconnecting
+        guard reconnecting else { return }
+        showNotice(
+            title: "Reconnecting",
+            message: "The server is updating. Playback will resume when it is ready.",
+            tone: .warning,
+            duration: RecoveryPolicy.serverOutageRecoveryTimeout
+        )
     }
 
     /// Single exit point for "startup is finished", which is what `isLoading`
@@ -1179,21 +1090,12 @@ class PlayerViewModel {
     }
 
     private func handleFileLoaded(reason: String) {
-        hasReachedEndOfFile = false
-        error = nil
-        clearServerOutageRecoveryState()
-        completeInterruptionRecoveryIfNeeded(
-            observedTime: currentTime,
-            requiresForwardProgress: false
-        )
-        clearLoadingOverlay(reason: reason)
-        isPlaying = true
+        _ = reason
         applySettingsToPlayer()
         Self.logger.info(
             "[CMP-SUB] file loaded route=\(self.activeRouteKind.label, privacy: .public) pendingExternal=\(self.trackSelection.pendingExternalSubtitles.count, privacy: .public) tracks=\(self.subtitleTracks.count, privacy: .public)"
         )
         trackSelection.loadPendingExternalSubtitles()
-        startProgressReporting()
         hideControlsTask?.cancel()
         showControls = false
         nowPlaying.update(
@@ -1204,31 +1106,64 @@ class PlayerViewModel {
         )
     }
 
-    /// The engine's failure channel. `failure` is typed (review §4 item 4); the
-    /// legacy string survives only as the text the user and the server see.
+    /// Hand one shell-owned recovery signal to the live load's recovery owner.
     ///
-    /// The ladder itself is gone: rungs 2–10 and the terminal rung are
-    /// `RecoveryPolicy.decideEngineFailed`, and what is left here is rung 1's
-    /// load-state gate plus the execution of whatever the policy decided.
+    /// `PlaybackEngineSession.observe` is wave 2b's single entry point for a
+    /// signal from anywhere — the backend's ladders, the source proxy's three
+    /// reports, or this shell. It performs the engine-level arms where the rung
+    /// ran and forwards the shell-owned ones on its event stream, which is how
+    /// the decision reaches the reducer as `PlayerEvent.recovery`. Nothing is
+    /// decided here (design section 4 I3); the context refresh below is only the
+    /// shell-held inputs the policy reads.
     @MainActor
-    private func handlePlaybackError(_ failure: PlaybackFailure) {
-        let message = failure.legacyMessage
-        Self.logger.error("Player error: \(message, privacy: .public)")
-        guard !hasReachedEndOfFile else {
-            Self.logger.info("Ignoring playback error after EOF: \(message, privacy: .public)")
-            return
-        }
+    func observeRecovery(_ observation: RecoveryObservation) {
         guard let session = engineSession else { return }
-        refreshRecoveryContext(session: session)
-        guard let action = session.driver.observe(.engineFailed(failure)) else {
-            if session.driver.context.serverOutageRecovery != nil {
-                Self.logger.info(
-                    "Ignoring playback error while server outage recovery is active: \(message, privacy: .public)"
-                )
-            }
-            return
+        if case let .engineFailed(failure) = observation {
+            Self.logger.error("Player error: \(failure.legacyMessage, privacy: .public)")
         }
-        executeRecoveryAction(action, session: session, failure: failure)
+        refreshRecoveryContext(session: session)
+        session.observe(observation)
+    }
+
+    /// The live load's origin-outage ride-through, for the actor's
+    /// player-scoped carry (design section 2.8 wave-2b gap (b)).
+    @MainActor
+    func liveOutageState() -> RecoveryContext.OutageState? {
+        engineSession?.driver.context.outage
+    }
+
+    /// `clearServerOutageRecoveryState()`'s policy half: the slot has to be
+    /// released with the task that owned the wait.
+    @MainActor
+    func clearServerOutageRecoverySlot() {
+        engineSession?.driver.clearServerOutageRecovery()
+    }
+
+    /// `clearSourceOutageRideThroughState()`'s presentation half.
+    @MainActor
+    func clearOutageNoticeLatch() {
+        sourceOutageNoticeShown = false
+    }
+
+    /// Release the in-route suspension a replan held for its whole round trip.
+    ///
+    /// The hold travels with the backend instance: a same-engine replan's
+    /// replacement session inherits it when it adopts the backend, a route
+    /// change builds a session whose driver never held the reason. Both
+    /// candidates are released because only one of them can be holding it, and
+    /// releasing a reason a driver never took is a no-op.
+    @MainActor
+    func releaseReplanSuspension(completingQualitySwitch: Bool) {
+        replanSuspensionHolder?.suspendRecovery(
+            false,
+            reason: RecoveryDriver.serverReplanSuspensionReason
+        )
+        replanSuspensionHolder = nil
+        engineSession?.suspendRecovery(
+            false,
+            reason: RecoveryDriver.serverReplanSuspensionReason
+        )
+        if completingQualitySwitch { isQualitySwitching = false }
     }
 
     /// Everything the failure ladder and the two renewals need that lives on
@@ -1237,17 +1172,16 @@ class PlayerViewModel {
     private func refreshRecoveryContext(session: PlaybackEngineSession) {
         session.driver.note(
             isProtocolV3Active: activePreparedProtocolV3 != nil,
-            isReplanInFlight: protocolV3ReplanTask != nil,
+            isReplanInFlight: replanSuspensionHolder != nil,
             hasWatchDetail: currentWatchDetail != nil,
-            // `attemptBackgroundSessionRenewal`'s four preconditions
-            // (PVM:3752-3757): online, direct delivery, a loaded watch detail
-            // and a live proxy.
+            // `attemptBackgroundSessionRenewal`'s four preconditions: online,
+            // direct delivery, a loaded watch detail and a live proxy.
             canRenewSourceInBackground: !isDisposed
                 && offlinePlaybackContext == nil
                 && currentDeliveryStrategy == .direct
                 && currentWatchDetail != nil
                 && sourceProxy != nil,
-            canAutoRecoverInterruption: shouldAutoRecoverFromInterruption(),
+            canAutoRecoverInterruption: canAutoRecoverInterruption,
             canBuildLoopbackFallback: makeNativeDirectLoopbackFallbackPlan() != nil,
             nearEnd: RecoveryContext.NearEndInputs(
                 duration: duration,
@@ -1259,184 +1193,191 @@ class PlayerViewModel {
         )
     }
 
-    /// Runs one decision the recovery owner handed to the shell. Every body is
-    /// the legacy rung's body with its decision preamble removed.
+    /// The shell half of a recovery the reducer routed back as
+    /// `Effect.runRecovery`. The engine-level arms already ran on the backend,
+    /// where wave 2b's `PlaybackEngineSession.perform` executed them the moment
+    /// the rung fired; what is left here is the presentation and the two
+    /// shell-executed route fallbacks.
     @MainActor
-    private func executeRecoveryAction(
-        _ action: RecoveryAction,
-        session: PlaybackEngineSession,
-        failure: PlaybackFailure? = nil
-    ) {
+    func performEngineRecovery(_ action: RecoveryAction) {
         switch action {
         case .treatAsNaturalEnd:
-            Self.logger.info(
-                "Treating near-end playback error as EOF: \(failure?.legacyMessage ?? "", privacy: .public)"
-            )
+            Self.logger.info("Treating near-end playback error as EOF")
             handleEndOfFile()
 
-        case let .requestServerReplan(classification, message):
-            attemptProtocolV3Replan(
-                position: currentTime,
-                classification: classification,
-                message: message
-            )
-
         case let .switchRoute(fallback):
-            // PVM:1578 rung 7: the progress loop is stopped for every rung at
-            // or below the interruption rung, and only for those.
-            progressTask?.cancel()
             switch fallback {
             case .loopbackFallback:
-                performNativeDirectLoopbackFallback(failure: failure)
+                performNativeDirectLoopbackFallback(failure: nil)
             case let .serverHLS(classification):
-                performServerHLSRouteFallback(
-                    classification: classification,
-                    failure: failure
+                // The reducer minted the replan; what is left is the ladder's
+                // console trace, which names the rung that fired.
+                performServerHLSRouteFallback(classification: classification)
+            }
+
+        case let .rideThroughOutage(probeAfter):
+            guard probeAfter == .zero else { return }
+            sourceOutageNoticeShown = false
+            Self.logger.warning("[CMP-OUTAGE] ride-through started")
+            // Already out of runway when the outage was detected (e.g. a seek
+            // beyond the cache raced the outage) — the buffering edge will not
+            // fire again, so the engine session re-fed the gate at entry.
+            if engineSession?.driver.context.outage?.noticeShown == true {
+                showSourceOutageReconnectingNotice()
+            }
+
+        case .endOutageRideThrough:
+            // The latch release and the post-outage kick are the engine
+            // session's half of the same action.
+            Self.logger.info("[CMP-OUTAGE] ride-through ended; origin recovered")
+            let showReconnected = sourceOutageNoticeShown
+            sourceOutageNoticeShown = false
+            if showReconnected {
+                showNotice(
+                    title: "Reconnected",
+                    message: "Connection to the server was restored.",
+                    tone: .info,
+                    duration: 3
                 )
             }
 
-        case .autoRecoverInterruption:
-            progressTask?.cancel()
-            triggerAutomaticInterruptionRecovery()
-
-        case let .renewSourceInBackground(reason):
-            performBackgroundSessionRenewal(
-                reason: reason,
-                observedPosition: currentTime,
-                session: session
-            )
-
-        case let .renewSessionFresh(reason):
-            performStaleSessionRenewal(reason: reason, observedPosition: currentTime)
-
-        case let .rideThroughOutage(probeAfter):
-            runOutageRideThrough(probeAfter: probeAfter, session: session)
-
-        case let .endOutageRideThrough(kick):
-            _ = kick
-            endOutageRideThrough()
-
-        case let .recoverFromServerOutage(reason):
-            performServerOutageRecovery(
-                reason: reason,
-                observedPosition: currentTime,
-                session: session
-            )
-
-        case .waitForServerReady:
-            // Consumed inline by the visible recovery's own wait loop, which
-            // owns the captured replay request; it never reaches here.
-            break
-
-        case let .fail(terminal):
-            finalizeTerminalPlaybackError(terminal.legacyMessage)
-
-        case .reassertPlay, .nudgeStartup, .reloadStartupItem, .reanchor,
+        case .requestServerReplan, .renewSourceInBackground, .renewSessionFresh,
+             .recoverFromServerOutage, .waitForServerReady, .autoRecoverInterruption,
+             .fail, .reassertPlay, .nudgeStartup, .reloadStartupItem, .reanchor,
              .reloadItem, .restartProducer, .rebuildLocalSession,
              .deferUntilPlay, .resumePlayback:
-            // Engine-level; the session performed them where the rung ran.
+            // Reducer transitions, or engine arms the session already performed.
             break
         }
     }
 
-    private func attemptProtocolV3Replan(
-        position: Double,
-        classification: String,
-        message: String,
-        operation: String? = nil,
-        qualityPreference: String? = nil,
-        completesQualitySwitch: Bool = false,
-        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
-    ) {
-        guard protocolV3ReplanTask == nil,
-              let watchDetail = currentWatchDetail else {
-            if completesQualitySwitch { isQualitySwitching = false }
-            return
-        }
+    /// `attemptProtocolV3Replan`'s round trip. The single-flight, the overlay,
+    /// the heartbeat cancel and the quality latch are the reducer's; what is
+    /// left is the server call and the adopt.
+    @MainActor
+    func prepareReplan(
+        _ intent: ReplanIntent
+    ) async throws -> (prepared: PreparedPlayback, plan: ExecutablePlan, identity: SessionIdentity)? {
+        guard let watchDetail = currentWatchDetail else { return nil }
         let selectedSubtitleSnapshot = selectedSubtitleId
-        progressTask?.cancel()
-        isLoading = true
-        setBuffering(false, cause: "replan")
         // Hold every in-route recovery rung for the whole replan round trip:
         // the shell owns the route decision now, and a watchdog
-        // reanchor/reload/rebuild racing the server negotiation was review §3
-        // #3. The hold travels with the backend instance, exactly as it did
-        // when the latch was a backend field: a same-engine replan's
-        // replacement session inherits it when it adopts the backend, a route
-        // change builds a session whose driver never held the reason. The defer
-        // releases both candidates because only one of them can be holding it,
-        // and releasing a reason a driver never took is a no-op.
-        let replanSession = engineSession
-        replanSession?.suspendRecovery(true, reason: RecoveryDriver.serverReplanSuspensionReason)
-        protocolV3ReplanTask = Task { @MainActor [weak self] in
-            defer {
-                replanSession?.suspendRecovery(
-                    false,
-                    reason: RecoveryDriver.serverReplanSuspensionReason
-                )
-                self?.engineSession?.suspendRecovery(
-                    false,
-                    reason: RecoveryDriver.serverReplanSuspensionReason
-                )
-            }
-            guard let self, !self.isDisposed else { return }
-            defer {
-                self.protocolV3ReplanTask = nil
-                if completesQualitySwitch { self.isQualitySwitching = false }
-            }
-            do {
-                guard let prepared = try await self.sessionBridge.replanProtocolV3(
-                    watchDetail: watchDetail,
-                    position: position,
-                    classification: classification,
-                    message: message,
-                    operation: operation,
-                    qualityPreference: qualityPreference,
-                    audioTrackIndex: self.trackSelection.resolvedAudioTrackIndexForResume(),
-                    subtitleTrackIndex: self.trackSelection.resolvedProtocolV3SubtitleIndexForResume(),
-                    outputRouteSnapshot: outputRouteSnapshot
-                ) else {
-                    self.finalizeTerminalPlaybackError(message)
-                    return
-                }
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                if completesQualitySwitch {
-                    self.lastLoadRequest?.preferredQualityOverride = prepared.activeQualityId
-                }
+        // reanchor/reload/rebuild racing the server negotiation was review
+        // section 3 #3.
+        replanSuspensionHolder = engineSession
+        replanSuspensionHolder?.suspendRecovery(
+            true,
+            reason: RecoveryDriver.serverReplanSuspensionReason
+        )
 
-                try await self.adoptPreparedPlayback(
-                    prepared,
-                    origin: .protocolV3Replan(PlaybackAdoptionOrigin.Replan(
-                        selectedSubtitleSnapshot: selectedSubtitleSnapshot
-                    ))
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                Self.logger.error("Protocol V3 replan failed: \(String(describing: error), privacy: .public)")
-                if PlaybackSessionBridge.isPlaybackSessionMissing(error),
-                   let session = self.engineSession,
-                   // PVM:4214 — a session can only go missing after a load
-                   // started; without a replay request the legacy renewal
-                   // returned false and the ladder fell through to terminal.
-                   self.lastLoadRequest != nil {
-                    // PVM:1663-1670: this source never tries the silent renewal
-                    // first — `RecoveryPolicy.decideSessionMissing` short-
-                    // circuits `.replanCatch` onto the visible renewal. A `nil`
-                    // action means one is already in flight, which the legacy
-                    // single-flight also reported as handled.
-                    self.refreshRecoveryContext(session: session)
-                    if let action = session.driver.observe(
-                        .sessionMissing(source: .replanCatch)
-                    ) {
-                        self.executeRecoveryAction(action, session: session)
-                    }
-                    return
-                }
-                self.finalizeTerminalPlaybackError(error.localizedDescription)
+        switch intent.kind {
+        case .serverReplan:
+            guard let prepared = try await sessionBridge.replanProtocolV3(
+                watchDetail: watchDetail,
+                position: intent.position,
+                classification: intent.classification,
+                message: intent.message,
+                operation: intent.operation,
+                qualityPreference: intent.qualityPreference,
+                audioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
+                subtitleTrackIndex: trackSelection.resolvedProtocolV3SubtitleIndexForResume(),
+                outputRouteSnapshot: intent.outputRouteSnapshot
+            ) else {
+                return nil
             }
+            try Task.checkCancellation()
+            let plan = try await adoptPrepared(
+                prepared,
+                origin: .protocolV3Replan(PlaybackAdoptionOrigin.Replan(
+                    selectedSubtitleSnapshot: selectedSubtitleSnapshot
+                ))
+            )
+            return (prepared, plan, Self.identity(for: prepared))
+
+        case let .transcodeRestart(restart):
+            guard activePreparedProtocolV3 != nil, currentSelectedVersion != nil else {
+                Self.logger.warning(
+                    "[CMP-SEEK] V3 stream replan skipped: missing active protocol or item snapshot"
+                )
+                return nil
+            }
+            let isQualitySwitch: Bool
+            let qualityId: String
+            switch restart {
+            case let .qualityChange(id):
+                isQualitySwitch = true
+                qualityId = id
+            case .seekReanchor:
+                isQualitySwitch = false
+                qualityId = activeQualityId
+            }
+            let externalSubtitleSnapshot = trackSelection.knownExternalSubtitles
+            let selectedSecondarySubtitleSnapshot = selectedSecondarySubtitleId
+            let explicitSubtitleChoiceSnapshot = trackSelection.hasExplicitSubtitleChoice
+            // An embedded selection cannot be re-established by trackId across
+            // the backend rebuild (ids are not stable), and after a switch to
+            // transcode the same stream may resurface as a sidecar instead.
+            let embeddedSubtitleSelectionSnapshot =
+                trackSelection.embeddedSubtitleSelectionSnapshot()
+            if isQualitySwitch { activeQualityId = qualityId }
+            if !isQualitySwitch {
+                // Engine only: the replacement load still has to stash the live
+                // proxy's cache, so the transport stays up.
+                engineSession?.disposeEngineOnly(reason: "transcode_restart")
+            }
+            guard let prepared = try await sessionBridge.replanProtocolV3(
+                watchDetail: watchDetail,
+                position: intent.position,
+                classification: intent.classification,
+                message: intent.message,
+                operation: intent.operation,
+                qualityPreference: intent.qualityPreference,
+                audioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
+                subtitleTrackIndex: trackSelection.resolvedProtocolV3SubtitleIndexForResume()
+            ) else {
+                throw PlaybackV3TerminalFailure(
+                    reason: "replan_unavailable",
+                    message: "The active V3 playback plan cannot be replaced in place.",
+                    retryable: false
+                )
+            }
+            try Task.checkCancellation()
+            let plan = try await adoptPrepared(
+                prepared,
+                origin: .transcodeRestart(PlaybackAdoptionOrigin.TranscodeRestart(
+                    target: intent.position,
+                    isQualitySwitch: isQualitySwitch,
+                    selectedSubtitleSnapshot: selectedSubtitleSnapshot,
+                    subtitleUrlFallback: externalSubtitleSnapshot,
+                    recoveredEmbeddedSubtitleSelection: embeddedSubtitleSelectionSnapshot,
+                    recoveredSecondarySubtitleId: selectedSecondarySubtitleSnapshot,
+                    hasExplicitSubtitleChoice: explicitSubtitleChoiceSnapshot
+                ))
+            )
+            return (prepared, plan, Self.identity(for: prepared))
         }
+    }
+
+    /// The `SessionIdentity` a prepared session publishes. Offline prepares
+    /// carry no server session, no plan attempt and no negotiated output
+    /// context, so they get the stable offline stand-in.
+    static func identity(for prepared: PreparedPlayback) -> SessionIdentity {
+        guard let protocolV3 = prepared.protocolV3 else {
+            return SessionIdentity(
+                serverSessionId: prepared.session.sessionId,
+                playbackAttemptId: "legacy:\(prepared.session.sessionId)",
+                planAttemptId: nil,
+                planAttemptKey: nil,
+                outputContextId: ""
+            )
+        }
+        return SessionIdentity(
+            serverSessionId: prepared.session.sessionId,
+            playbackAttemptId: protocolV3.playbackAttemptId,
+            planAttemptId: protocolV3.planAttemptId,
+            planAttemptKey: protocolV3.planAttemptKey,
+            outputContextId: protocolV3.outputContextId ?? ""
+        )
     }
 
     /// Converting a playback error into a natural end is only safe when the
@@ -1704,7 +1645,7 @@ class PlayerViewModel {
     }
 
     private func updateNextUpPresentation(for movieTime: Double) {
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         if showNextUpScreen {
             updateNextUpCountdownForActivePlayback(at: movieTime)
             return
@@ -1844,7 +1785,7 @@ class PlayerViewModel {
         // that state, so let the shell fall back to closing the player.
         guard avPlayerBackend != nil else { return false }
 
-        let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
+        let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasEndedStream
         nextUpAutoplayCancelled = true
         nextUpPromptDismissed = true
         showNextUpScreen = false
@@ -1858,14 +1799,15 @@ class PlayerViewModel {
             // Returning from the terminal postroll needs a real playable
             // position; resuming at exact EOF would immediately present the
             // postroll again. Replay a short tail of the current episode.
-            hasReachedEndOfFile = false
+            // `.nextUpKeepWatching` is one of the two seek origins the reducer
+            // lets out of the postroll latch.
             let target = max(0, duration - 10)
             let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
             if !reloadsPlaybackPipeline {
-                avPlayerBackend?.play()
+                send(.play)
             }
         } else if !isPlaying {
-            avPlayerBackend?.play()
+            send(.play)
         }
         scheduleHideControls()
         return true
@@ -1891,11 +1833,15 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
-        beginFreshLoad(
-            request: request,
-            progressPosition: completionProgressPositionForCurrentItem(),
-            finalizeCurrentSession: true,
-            origin: .autoplay
+        send(
+            .load(
+                request,
+                origin: .autoplay,
+                options: LoadOptions(
+                    progressPosition: completionProgressPositionForCurrentItem(),
+                    finalizeCurrentSession: true
+                )
+            )
         )
     }
 
@@ -1908,17 +1854,22 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
-        beginFreshLoad(
-            request: request,
-            progressPosition: completionProgressPositionForCurrentItem(),
-            finalizeCurrentSession: true
+        send(
+            .load(
+                request,
+                origin: .userInitiated,
+                options: LoadOptions(
+                    progressPosition: completionProgressPositionForCurrentItem(),
+                    finalizeCurrentSession: true
+                )
+            )
         )
     }
 
     private func completionProgressPositionForCurrentItem() -> Double {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
-            hasReachedEndOfFile: hasReachedEndOfFile,
+            hasReachedEndOfFile: hasEndedStream,
             currentTime: currentTime,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds
@@ -1975,50 +1926,27 @@ class PlayerViewModel {
         trackSelection.restoreAfterRecovery(trackSnapshot)
         engineSession?.disposeEngineOnly(reason: "native_direct_fallback")
         logExecutionPlan(fallbackPlan)
-        Task { @MainActor [weak self] in
-            await self?.loadStream(plan: fallbackPlan)
-        }
+        // A replacement item inside the same load: the server session is
+        // untouched, only the local execution route changes.
+        pendingExecutionPlan = fallbackPlan
+        guard let controlPlane else { return }
+        // Main-actor-isolated for the ordering reason `send(_:)` documents.
+        Task { @MainActor in await controlPlane.reloadEngineInPlace() }
     }
 
     /// Retarget a route onto server HLS. Every remaining engine is
     /// AVPlayer-backed, so "fall back" now means renegotiating the session with
     /// the server rather than swapping in another local decoder.
     ///
-    /// Returns false when there is nothing to replan against or a replan is
-    /// already running — the precondition `loadStream`'s direct-unplayable
-    /// branch still owns, and the same one `RecoveryPolicy` carries as
-    /// `hasWatchDetail` / `isReplanInFlight` for the two failure-ladder rungs.
-    @discardableResult
-    private func requestServerHLSReplan(
-        classification: String,
-        message: String,
-        trace: String,
-        failureToken: String
-    ) -> Bool {
-        guard currentWatchDetail != nil, protocolV3ReplanTask == nil else { return false }
-        Self.logger.warning(
-            "[CMP-ROUTE] \(trace, privacy: .public); requesting a server HLS replan failureToken=\(failureToken, privacy: .public)"
-        )
-        attemptProtocolV3Replan(
-            position: currentTime,
-            classification: classification,
-            message: message
-        )
-        return true
-    }
-
+    /// The rung's console trace. The replan itself is the reducer's
+    /// `.switchRoute(.serverHLS)` arm, which mints it before this runs.
     @MainActor
-    private func performServerHLSRouteFallback(
-        classification: String,
-        failure: PlaybackFailure?
-    ) {
-        requestServerHLSReplan(
-            classification: classification,
-            message: failure?.legacyMessage ?? "",
-            trace: classification == "silo_loopback_failed"
-                ? "fallback_hls_after_silo"
-                : "native_direct_blocked_hls_fallback",
-            failureToken: failure?.stableToken ?? "-"
+    private func performServerHLSRouteFallback(classification: String) {
+        let trace = classification == "silo_loopback_failed"
+            ? "fallback_hls_after_silo"
+            : "native_direct_blocked_hls_fallback"
+        Self.logger.warning(
+            "[CMP-ROUTE] \(trace, privacy: .public); requesting a server HLS replan classification=\(classification, privacy: .public)"
         )
     }
 
@@ -2223,20 +2151,23 @@ class PlayerViewModel {
         }
     }
 
-    /// Publish a freshly prepared playback and hand the resolved plan to the
-    /// backend. Shared by every pipeline that replaces what is playing.
+    /// `adoptPreparedPlayback`'s shell half: everything the prepared session
+    /// changes about the player that is *not* control-plane state, plus the
+    /// execution plan it resolves to.
     ///
-    /// Returns early (after publishing a terminal error) when the stream URL
-    /// cannot be resolved. Throws only out of `makeExecutionPlan`, which every
-    /// caller already handles in its own `catch`.
+    /// The control-plane half — the playhead, the duration, the quality label,
+    /// the replay-request adopt and the engine load — is the reducer's, driven
+    /// by the `SessionEvent` this plan travels on. Plan-execution reporting is
+    /// the actor's `Effect.reportPlanExecutionStarted`, emitted in the same
+    /// position this method used to `await` it: before the engine load.
     @MainActor
-    private func adoptPreparedPlayback(
+    private func adoptPrepared(
         _ prepared: PreparedPlayback,
-        origin: PlaybackAdoptionOrigin
-    ) async throws {
+        origin: PlaybackAdoptionOrigin,
+        retryingUnplayableDirect: Bool = true
+    ) async throws -> ExecutablePlan {
         let session = prepared.session
-        let previousSessionId = activePlaybackSessionId
-        activePlaybackSessionId = session.sessionId
+        let previousSessionId = currentServerSessionId
 
         // Origin-specific state that has to land before the shared publish.
         switch origin {
@@ -2245,10 +2176,6 @@ class PlayerViewModel {
             autoSkippedCreditsKey = nil
             autoSkipIntroCancelledKey = nil
             cancelPendingIntroAutoSkip()
-            staleSessionRecoverySessionId = nil
-            backgroundRenewalTask?.cancel()
-            backgroundRenewalTask = nil
-            backgroundRenewalSessionId = nil
             // The transient-failure budget lives in `RecoveryContext` and is
             // load-scoped, so the replacement session starts with a full one.
             engineSession?.driver.noteBackgroundRenewalSucceeded()
@@ -2264,12 +2191,13 @@ class PlayerViewModel {
             autoSkippedCreditsKey = nil
             autoSkipIntroCancelledKey = nil
             cancelPendingIntroAutoSkip()
-            staleSessionRecoverySessionId = nil
             if restart.isQualitySwitch {
+                // Contract note (d): the quality restart's overlay is raised at
+                // the *adopt*, not when the replan was requested.
                 isLoading = true
                 setBuffering(false, cause: "quality_switch")
                 // Engine only — the replacement load stashes the live proxy's
-                // cache on its way through `loadStream`.
+                // cache on its way through `installEngine`.
                 engineSession?.disposeEngineOnly(reason: "quality_switch")
             }
         }
@@ -2280,21 +2208,13 @@ class PlayerViewModel {
         adoptProtocolV3RenewalIntent(from: prepared)
         trackSelection.adopt(prepared: prepared, origin: origin)
 
-        let fallbackDuration: Double = {
-            if case .freshLoad = origin { return 0 }
-            return duration
-        }()
-        duration = session.durationSeconds ?? prepared.selectedVersion.duration ?? fallbackDuration
-        currentTime = movieTime(for: session)
         qualityOptions = ApplePlaybackQuality.playbackOptions(
             serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
             fallbackVersion: prepared.selectedVersion
         )
-        activeQualityId = prepared.activeQualityId
 
         switch origin {
         case .freshLoad(let fresh):
-            isQualitySwitching = false
             qualitySwitchError = nil
             serverProvidedChapters = chapterInfoList(from: prepared.selectedVersion)
             applyMarkerRanges(
@@ -2321,14 +2241,13 @@ class PlayerViewModel {
             // session id; the synthetic offline session has neither.
             if !fresh.isOffline {
                 await realtimeClient.bind(sessionId: session.sessionId)
-                guard !Task.isCancelled, !isDisposed else { return }
+                try Task.checkCancellation()
             }
         case .protocolV3Replan, .transcodeRestart:
             // Rebinding on a changed session id used to be replan-only:
             // `restartCurrentTranscodeHLS` left the socket bound to the
             // retired session and went deaf to server events. A new session id
-            // always means a new channel, so this is a fix rather than pinned
-            // drift.
+            // always means a new channel.
             if previousSessionId != session.sessionId {
                 await realtimeClient.unbind()
                 await realtimeClient.bind(sessionId: session.sessionId)
@@ -2339,8 +2258,7 @@ class PlayerViewModel {
             session: session,
             additionalHeaders: prepared.protocolV3?.plan.stream.headers ?? [:]
         ) else {
-            finalizeTerminalPlaybackError(origin.invalidStreamURLMessage)
-            return
+            throw PlaybackAdoptionFailure(message: origin.invalidStreamURLMessage)
         }
         resolvedServerUrl = streamRequest.serverUrl
 
@@ -2355,8 +2273,7 @@ class PlayerViewModel {
             )
         case .protocolV3Replan:
             // Preserved drift: the replan path trusts the session's own offset
-            // instead of recomputing it from the plan. Follow-up: reconcile
-            // with `timelineOffset(for:session:requestedStart:)`.
+            // instead of recomputing it from the plan.
             playbackTimelineOffset = session.timelineOffsetSeconds
         case .transcodeRestart(let restart):
             playbackTimelineOffset = timelineOffset(
@@ -2375,64 +2292,91 @@ class PlayerViewModel {
             Self.logger.info(
                 "[CMP] streamPrepared playMethod=\(session.playMethod, privacy: .public) startTime=\(plan.startMode.seconds, privacy: .public)"
             )
-            await sessionBridge.reportProtocolV3PlanExecutionStarted()
         case .protocolV3Replan:
-            await sessionBridge.reportProtocolV3PlanExecutionStarted()
+            break
         case .transcodeRestart(let restart):
             Self.logger.info(
                 "[CMP-SEEK] in-place transcode restart loaded target=\(restart.target, privacy: .public)"
             )
             // Preserved drift: the in-place restart has never reported plan
-            // execution to the server. Follow-up: decide whether seek-reanchor
-            // and quality-change replans should report it too.
+            // execution to the server.
         }
 
-        await loadStream(plan: plan, reusingActiveEngine: origin.reusesActiveEngine)
-    }
-
-    private func loadStream(
-        plan: PlaybackExecutionPlan,
-        reusingActiveEngine: Bool = false
-    ) async {
-        // Offline playback has no server to replan against, so it keeps the
-        // historical best-effort attempt and fails through the normal error
-        // path if the local file really is unplayable.
+        // The one plan the engine must never be handed. Legacy discovered it at
+        // the top of `loadStream` and asked the server for a different one;
+        // asking here keeps the same bridge call with the same classification
+        // and message, one `await` earlier, and out of the state machine — a
+        // plan that was never executable never becomes a load.
         if offlinePlaybackContext == nil, Self.needsServerReplanBeforeLoad(plan: plan) {
             let message = "This title can't be played directly on this device."
             Self.logger.warning(
                 "[CMP-ROUTE] direct delivery resolved to the server HLS route; requesting a server transcode reason=\(plan.reason, privacy: .public)"
             )
-            // A false return means a replan is already in flight — including
-            // the one that produced this plan — so a direct source the server
-            // refuses to re-plan terminates instead of looping.
-            if !requestServerHLSReplan(
-                classification: "direct_source_unplayable",
-                // View-model-authored, not an engine report: it only ever
-                // existed as text, so it enters the typed channel as `.unknown`
-                // and the ladders see the identical string they saw before.
-                message: message,
-                trace: "direct source resolved to the server HLS route with no manifest",
-                failureToken: PlaybackFailure(legacyMessage: message).stableToken
-            ) {
-                finalizeTerminalPlaybackError(message)
+            // One attempt only: a direct source the server refuses to re-plan
+            // terminates instead of looping.
+            guard retryingUnplayableDirect, let watchDetail = currentWatchDetail else {
+                throw PlaybackAdoptionFailure(message: message)
             }
-            return
+            guard let replanned = try await sessionBridge.replanProtocolV3(
+                watchDetail: watchDetail,
+                position: currentTime,
+                classification: "direct_source_unplayable",
+                message: message,
+                audioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
+                subtitleTrackIndex: trackSelection.resolvedProtocolV3SubtitleIndexForResume()
+            ) else {
+                throw PlaybackAdoptionFailure(message: message)
+            }
+            try Task.checkCancellation()
+            return try await adoptPrepared(
+                replanned,
+                origin: origin,
+                retryingUnplayableDirect: false
+            )
         }
-        let loadID = LoadID()
+
+        // The engine install needs the *full* plan (the source proxy rewrites
+        // its URLs and the loopback spec travels on it); `ExecutablePlan` keeps
+        // only what the control plane decides with. The slot is the hand-off
+        // between the two halves of one adopt.
+        pendingExecutionPlan = plan
+        return try ExecutablePlan(plan, request: plan.streamRequest)
+    }
+
+    /// A prepared session that cannot be executed. It carries the exact message
+    /// the legacy terminal path published, so the error wall reads the same.
+    struct PlaybackAdoptionFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// `AVPlayerBackend` is not `Sendable`, but tearing one down off the main
+    /// thread is safe and deliberate: a slow `dispose()` must not stall the
+    /// replacement load. The box carries the reference across the hop.
+    private struct DisposableBackend: @unchecked Sendable {
+        let backend: AVPlayerBackend
+    }
+
+    /// `loadStream`, driven by `Effect.loadEngine`.
+    ///
+    /// Returns the new session's event stream for the actor to consume, or
+    /// `nil` plus a failure message when the source proxy or the plan could not
+    /// be executed.
+    @MainActor
+    func installEngine(
+        plan executable: ExecutablePlan,
+        loadID: LoadID,
+        reuseEngine: Bool,
+        adoptingOutage outage: RecoveryContext.OutageState?
+    ) async -> (events: AsyncStream<EngineEvent>?, failure: String?) {
+        guard let plan = pendingExecutionPlan else {
+            return (nil, "The playback plan was unavailable.")
+        }
         pendingLoadID = loadID
-        // Supersede the outgoing load's event stream here, where the legacy
-        // code bumped `streamLoadGeneration` — before the pause below and
-        // before the V3 track intent is re-armed. Everything the outgoing
-        // backend reports from this point on belongs to a load that has already
-        // been replaced: its pause must not surface as a user-visible pause, and
-        // a late `.tracks` must not consume the intent re-armed two statements
-        // down. The replacement session installs its own loop.
-        tasks[.engineEvents]?.cancel()
-        // Stop presentation while the replacement proxy is prepared, but
-        // retain the backend. If the implementation route is unchanged, the
-        // replacement session adopts that backend in place so tvOS can preserve
-        // identical display criteria and the active audio session.
-        // The loading indicator remains over the outgoing surface meanwhile.
+        // Stop presentation while the replacement proxy is prepared, but retain
+        // the backend. If the implementation route is unchanged, the replacement
+        // session adopts that backend in place so tvOS can preserve identical
+        // display criteria and the active audio session.
         avPlayerBackend?.pause()
         // Re-arm the authoritative V3 intent for the replacement stream. A final
         // track callback from the outgoing session may have consumed the first
@@ -2445,58 +2389,69 @@ class PlayerViewModel {
         let outgoing = engineSession
         let prepared: PlaybackEngineSession.SourcePreparation
         do {
-            prepared = try await prepareSource(for: plan)
+            prepared = try await prepareSource(for: plan, loadID: loadID)
         } catch {
-            guard loadID == pendingLoadID, !Task.isCancelled, !isDisposed else { return }
-            finalizeTerminalPlaybackError("SiloPlayer local source proxy failed to start: \(error.localizedDescription)")
-            return
+            guard loadID == pendingLoadID, !isDisposed else { return (nil, nil) }
+            return (
+                nil,
+                "SiloPlayer local source proxy failed to start: \(error.localizedDescription)"
+            )
         }
         guard loadID == pendingLoadID, !Task.isCancelled, !isDisposed else {
             prepared.proxy?.stop()
-            return
+            return (nil, nil)
         }
         let loadPlan = prepared.plan
         activeExecutionPlan = loadPlan
-        let executable: ExecutablePlan
+        let installable: ExecutablePlan
         do {
-            executable = try ExecutablePlan(loadPlan, request: loadPlan.streamRequest)
+            installable = try ExecutablePlan(loadPlan, request: loadPlan.streamRequest)
         } catch {
             prepared.proxy?.stop()
-            finalizeTerminalPlaybackError(error.localizedDescription)
-            return
+            return (nil, error.localizedDescription)
         }
+        _ = executable
         // Only a live protocol replan has a known-good outgoing backend to
-        // preserve, and only when the implementation route is unchanged
-        // (`prepareBackend(for:)`'s guard): a route change has to renegotiate
-        // the audio session and the display criteria on a fresh engine. Fresh
-        // loads and recovery paths already disposed theirs, so they must build a
-        // new one even when the route kind matches.
-        let reusable = reusingActiveEngine
+        // preserve, and only when the implementation route is unchanged: a route
+        // change has to renegotiate the audio session and the display criteria
+        // on a fresh engine. Fresh loads and recovery paths already disposed
+        // theirs, so they must build a new one even when the route kind matches.
+        let reusable = reuseEngine
             && outgoing?.surfaceBackend != nil
             && activeRouteKind == loadPlan.engine
             ? outgoing : nil
         if reusable != nil {
             Self.logger.info(
-                "[CMP-ENGINE] reusing kind=\(loadPlan.engine.label, privacy: .public) family=\(loadPlan.engine.routeFamily.diagnosticsLabel, privacy: .public)"
+                "[CMP-ENGINE] reusing kind=\(loadPlan.engine.label, privacy: .public) family=\(loadPlan.engine.routeFamily.diagnosticsLabel, privacy: .public) load=\(loadID.raw.uuidString, privacy: .public)"
             )
         } else {
             outgoing?.dispose(reason: "replaced")
             Self.logger.info(
-                "[CMP-ENGINE] installed kind=\(loadPlan.engine.label, privacy: .public) family=\(loadPlan.engine.routeFamily.diagnosticsLabel, privacy: .public)"
+                "[CMP-ENGINE] installed kind=\(loadPlan.engine.label, privacy: .public) family=\(loadPlan.engine.routeFamily.diagnosticsLabel, privacy: .public) load=\(loadID.raw.uuidString, privacy: .public)"
             )
         }
         let session = PlaybackEngineSession(
             loadID: loadID,
-            plan: executable,
+            plan: installable,
             backendFactory: { AVPlayerBackend() },
             reusing: reusable,
             transport: prepared.proxy
         )
+        // A hold may only be adopted together with its releaser: the actor holds
+        // the ride-through across a route change, so the session that replaces
+        // the retired backend inherits both the outage state and the
+        // `origin_outage` suspension that ends it.
+        if let outage, reusable == nil {
+            session.driver.adoptOutageRideThrough(outage)
+            session.driver.setSuspended(
+                true,
+                reason: RecoveryDriver.originOutageSuspensionReason
+            )
+        }
         engineSession = session
         activeRouteKind = loadPlan.engine
         sourceProxyFileId = prepared.proxy != nil ? currentSelectedVersion?.fileId : nil
         prepared.proxy?.setPlaybackRate(settings.playbackSpeed)
-        consumeEngineEvents(of: session)
         session.backend.setServerChapters(serverProvidedChapters)
         let backendTimelineOffset = avPlayerTimelineOffset(for: loadPlan)
         if loadPlan.engine == .siloPlayerLoopback {
@@ -2513,12 +2468,67 @@ class PlayerViewModel {
             self.handlePictureInPictureEngagementEnded()
         }
         #endif
-        session.start(startSeconds: executable.startSeconds)
+        let events = session.events
+        session.start(startSeconds: installable.startSeconds)
         // Re-applies the canonical user volume/mute after a swap (quality
         // switch, loopback fallback, route retarget): a fresh backend comes up
         // at full volume, so a remote-set level would otherwise be lost.
         session.backend.setUserVolume(userVolume)
         session.backend.setUserMuted(userMuted)
+        return (events, nil)
+    }
+
+    /// Tear one load's engine down. `engineOnly` is the visible server-outage
+    /// recovery, which keeps the session alive as that load's recovery owner
+    /// while it waits the server out.
+    @MainActor
+    func teardownEngine(
+        loadID: LoadID,
+        sourceCache: SourceCacheDisposition,
+        engineOnly: Bool
+    ) {
+        switch sourceCache {
+        case .stash:
+            stashSourceCacheHandoff()
+        case .discard:
+            discardSourceCacheHandoff()
+        case .retainProxy:
+            break
+        }
+        guard let session = engineSession, session.loadID == loadID else { return }
+        if engineOnly {
+            session.stopTransport()
+            session.disposeEngineOnly(reason: "server_outage")
+            return
+        }
+        switch sourceCache {
+        case .retainProxy:
+            // The tvOS background suspend disposes the engine and deliberately
+            // leaves the proxy — and its cache — running for the resume, and it
+            // **keeps the session**: `suspendForBackground` (base PVM:6010) did
+            // `engineSession?.dispose(retainingTransport: true)` and never
+            // cleared `engineSession`. `sourceProxy` is `engineSession?.transport`,
+            // so nilling it here would strand the proxy this disposition exists
+            // to retain — the resume's `.disposeEngine(…, .stash)` would find no
+            // session, hand no cached prefix to the replacement, and leave
+            // nothing for `cleanup()` to stop if the user exits from the wake
+            // screen (see `PlaybackEngineSession.dispose`'s own note).
+            session.dispose(reason: "background_suspend", retainingTransport: true)
+            return
+        case .stash, .discard:
+            // Tearing an `AVPlayerBackend` down off the main thread is safe and
+            // deliberate: a slow `dispose()` must not stall the replacement
+            // load behind it.
+            session.stopTransport()
+            let disposable = session.detachBackendForDisposal()
+            Self.logger.info("[CMP-ENGINE] session disposed reason=replaced")
+            if let disposable {
+                let box = DisposableBackend(backend: disposable)
+                DispatchQueue.global(qos: .userInitiated).async { box.backend.dispose() }
+            }
+        }
+        engineSession = nil
+        activeExecutionPlan = nil
     }
 
     /// File id the live proxy was built for — the stash metadata.
@@ -2549,7 +2559,8 @@ class PlayerViewModel {
     /// handoff slot against it. A handoff lives for exactly one load attempt,
     /// so the slot is emptied either way.
     private func prepareSource(
-        for plan: PlaybackExecutionPlan
+        for plan: PlaybackExecutionPlan,
+        loadID: LoadID
     ) async throws -> PlaybackEngineSession.SourcePreparation {
         let handoff = sourceCacheHandoff
         if PlaybackEngineSession.usesSourceProxy(for: plan) {
@@ -2584,7 +2595,7 @@ class PlayerViewModel {
                     // engine reports nothing into recovery, so the observation
                     // is dropped here rather than latching the policy's
                     // single-flight against a recovery that will never run.
-                    guard let self, !self.isDisposed, !self.hasReachedEndOfFile,
+                    guard let self, !self.isDisposed, !self.hasEndedStream,
                           let session = self.engineSession else { return }
                     self.refreshRecoveryContext(session: session)
                     session.observe(.sourceInterrupted(reason: reason))
@@ -2866,11 +2877,12 @@ class PlayerViewModel {
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
+    /// End of stream, presentation half. The postroll latch, the pause, the
+    /// playhead clamp, the overlay and the buffering capsule are the reducer's
+    /// `endOfFile` arm; what is left is the premature-EOF classification, the
+    /// terminal breadcrumb, the Now Playing push and the Next Up hand-off.
+    @MainActor
     private func handleEndOfFile() {
-        if engineSession?.driver.context.serverOutageRecovery != nil {
-            Self.logger.info("[CMP-RECOVERY] ignoring EOF while server outage recovery is active")
-            return
-        }
         // Detect a premature EOF before the autoplay hand-off. FFmpeg's
         // demuxer reports end-of-stream when the upstream HTTP connection is
         // reset, even if the file's real duration is still seconds away. The
@@ -2902,16 +2914,12 @@ class PlayerViewModel {
             // or hit Back.
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
-            // `showNotice` is `@MainActor`; this callback may not be, so
-            // dispatch onto the main actor explicitly.
-            Task { @MainActor [weak self] in
-                self?.showNotice(
-                    title: "Connection lost",
-                    message: "Lost connection to the server before the episode finished.",
-                    tone: .warning,
-                    duration: 6
-                )
-            }
+            showNotice(
+                title: "Connection lost",
+                message: "Lost connection to the server before the episode finished.",
+                tone: .warning,
+                duration: 6
+            )
         }
 
         #if os(iOS) || os(tvOS)
@@ -2935,19 +2943,8 @@ class PlayerViewModel {
         )
         #endif
 
-        hasReachedEndOfFile = true
-        clearServerOutageRecoveryState()
         hideControlsTask?.cancel()
         hideControlsTask = nil
-        // AVPlayer reports EOF once the item is already fully drained, so
-        // pausing here is safe.
-        avPlayerBackend?.pause()
-        if duration.isFinite, duration > 0 {
-            currentTime = duration
-        }
-        clearLoadingOverlay(reason: "end_of_file")
-        setBuffering(false, cause: "end_of_file")
-        isPlaying = false
         showControls = true
         nowPlaying.update(
             title: title,
@@ -2958,17 +2955,13 @@ class PlayerViewModel {
 
         // Natural end of an offline download: latch the local watched state
         // immediately (not just at close) so retention/reclaim see it even
-        // if the process dies before `cleanup()` runs. DownloadManager is
-        // MainActor-isolated; this callback may not be.
+        // if the process dies before `cleanup()` runs.
         if !isPremature, let offline = offlinePlaybackContext {
-            let endPosition = currentTime
-            Task { @MainActor [weak self] in
-                self?.recordOfflineProgress(
-                    context: offline,
-                    position: endPosition,
-                    markCompleted: true
-                )
-            }
+            recordOfflineProgress(
+                context: offline,
+                position: currentTime,
+                markCompleted: true
+            )
         }
 
         beginNextUpPostroll(videoEnded: true)
@@ -2981,25 +2974,27 @@ class PlayerViewModel {
         // driving remote commands against the current backend without a
         // re-attach step.
         nowPlaying.attach(handlers: NowPlayingController.Handlers(
-            play:        { [weak self] in self?.avPlayerBackend?.play() },
-            pause:       { [weak self] in self?.avPlayerBackend?.pause() },
+            play:        { [weak self] in self?.send(.play) },
+            pause:       { [weak self] in self?.send(.pause) },
             isPaused:    { [weak self] in
                 guard let self else { return true }
-                return self.hasReachedEndOfFile || (self.avPlayerBackend?.isPaused() ?? true)
+                return self.hasEndedStream || !self.isPlaying
             },
             currentTime: { [weak self] in self?.currentTime ?? 0 },
-            seek:        { [weak self] t in self?.avPlayerBackend?.seek(to: t) }
+            seek:        { [weak self] t in
+                self?.send(.seek(targetSeconds: t, origin: .user))
+            }
         ))
     }
 
+    /// The view-local half of a fresh load. `isLoading`/`error` and every
+    /// control-plane projection are published by the reducer's own `beginLoad`.
     private func resetPublishedLoadState(
         preferredAudioTrackIndex: Int?,
         preferredSubtitleTrackIndex: Int?,
         preferredSidecarSubtitleTrackId: Int64?,
         preferredProtocolV3SubtitleIndex: Int? = nil
     ) {
-        isLoading = true
-        error = nil
         // Drops the notice/auto-hide/seek-debounce timers that belonged to the
         // outgoing stream. `tearDownHoldSeek` still runs for its UI state.
         tasks.cancelAll(in: .interaction)
@@ -3008,8 +3003,6 @@ class PlayerViewModel {
         tearDownHoldSeek()
         isScrubbing = false
         scrubPreviewTime = currentTime
-        seekOriginTime = nil
-        seekTargetTime = nil
         showControls = false
         showNextUpScreen = false
         nextUpEpisode = nil
@@ -3035,8 +3028,6 @@ class PlayerViewModel {
         creditsRange = nil
         cancelPendingIntroAutoSkip()
         qualityOptions = [ApplePlaybackQuality.auto]
-        activeQualityId = ApplePlaybackQuality.autoId
-        isQualitySwitching = false
         qualitySwitchError = nil
         serverProvidedChapters = []
         currentWatchDetail = nil
@@ -3045,10 +3036,6 @@ class PlayerViewModel {
         autoSkippedIntroKey = nil
         autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
-        bufferedAheadSeconds = 0
-        playbackRunwaySeconds = 0
-        stashSourceCacheHandoff()
-        engineSession?.stopTransport()
     }
 
     private func adoptProtocolV3RenewalIntent(from prepared: PreparedPlayback) {
@@ -3070,57 +3057,25 @@ class PlayerViewModel {
         )
     }
 
-    private func makeSuspendedPlaybackContext() -> SuspendedPlaybackContext? {
-        guard let lastLoadRequest else { return nil }
-        let request = lastLoadRequest.copyForRecovery(
-            preferredFileId: lastLoadRequest.preferredFileId,
-            preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
-            preferredSubtitleTrackIndex: trackSelection.resolvedSubtitleTrackIndexForResume(),
-            preferredSidecarSubtitleTrackId: trackSelection.resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: lastLoadRequest.offlineDownloadId
-        )
-        let resumePosition = currentTime.isFinite ? max(0, currentTime) : 0
-        return SuspendedPlaybackContext(
-            request: request,
-            resumePosition: resumePosition
-        )
-    }
-
-    private func clearForegroundInterruptionState() {
-        playbackInterruption = nil
-        interruptionRecoveryTask?.cancel()
-        interruptionRecoveryTask = nil
-    }
-
-    private func clearSuspendedPlaybackState() {
-        suspendedPlayback = nil
-    }
-
-    private func beginFreshLoad(
+    /// `beginFreshLoad`'s task body, driven by `Effect.startSession`.
+    ///
+    /// The prologue that used to sit in front of it — the timer cancels, the
+    /// outgoing progress report or finalize, and the outgoing engine dispose —
+    /// is the reducer's `beginLoad`, emitted as effects the actor already ran
+    /// by the time this is entered.
+    @MainActor
+    func prepareFreshSession(
         request: LoadRequest,
-        progressPosition: Double?,
-        finalizeCurrentSession: Bool = false,
-        resumePositionOverride: Double? = nil,
-        allowNearEndResume: Bool = false,
-        preserveInterruptionState: Bool = false,
-        origin: LoadOrigin = .userInitiated
-    ) {
-        guard !isDisposed else { return }
+        options: LoadOptions,
+        origin: LoadOrigin
+    ) async throws -> (prepared: PreparedPlayback, plan: ExecutablePlan, identity: SessionIdentity) {
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
         lastLoadRequest = request
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
-        hasReachedEndOfFile = false
         cancelNextUpFlow()
-        if origin == .userInitiated {
-            clearServerOutageRecoveryState()
-        }
-        if !preserveInterruptionState {
-            clearForegroundInterruptionState()
-        }
-        clearSuspendedPlaybackState()
         attachNowPlayingIfNeeded()
         resetPublishedLoadState(
             preferredAudioTrackIndex: request.preferredAudioTrackIndex,
@@ -3129,135 +3084,60 @@ class PlayerViewModel {
             preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex
         )
 
-        freshLoadTask?.cancel()
-        protocolV3ReplanTask?.cancel()
-        protocolV3ReplanTask = nil
-        freshLoadGeneration &+= 1
-        let currentFreshLoadGeneration = freshLoadGeneration
-        let snapshotPosition = progressPosition
-        // Offline loads never start a replacement server session, so the
-        // prior one must be finalized here — otherwise the bridge keeps
-        // holding it and a later teardown would report the offline item's
-        // position against the stale session.
-        let shouldFinalizeCurrentSession = finalizeCurrentSession || request.offlineDownloadId != nil
-        freshLoadTask = Task { @MainActor [weak self] in
-            guard let self, !self.isDisposed else { return }
-            defer {
-                if self.freshLoadGeneration == currentFreshLoadGeneration {
-                    self.freshLoadTask = nil
-                }
-            }
+        await realtimeClient.unbind()
+        try Task.checkCancellation()
 
-            if let snapshotPosition, snapshotPosition.isFinite, snapshotPosition >= 0 {
-                if shouldFinalizeCurrentSession {
-                    await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
-                } else {
-                    await self.sessionBridge.reportProgress(position: snapshotPosition, isPaused: true)
-                }
-            }
-            guard !Task.isCancelled, !self.isDisposed else { return }
+        // The init kicked off `settingsRefreshTask` to fetch the server's
+        // effective device settings before playback starts. Awaiting it here
+        // (instead of issuing a fresh `refreshFromServer`) avoids the race that
+        // produced two back-to-back `/settings/effective` round-trips on every
+        // play — the init request is already in flight and its result is what we
+        // want anyway.
+        await settingsRefreshTask?.value
+        try Task.checkCancellation()
 
-            await self.realtimeClient.unbind()
-            guard !Task.isCancelled, !self.isDisposed else { return }
-
-            do {
-                try await self.disposeActivePlayerForFreshLoad(
-                    timeout: origin == .userInitiated ? nil : Self.autoplayPlayerDisposeTimeout
-                )
-                guard !Task.isCancelled, !self.isDisposed else { return }
-
-                // The init kicked off `settingsRefreshTask` to fetch the
-                // server's effective device settings before playback
-                // starts. Awaiting it here (instead of issuing a fresh
-                // `refreshFromServer`) avoids the race that produced two
-                // back-to-back `/settings/effective` round-trips on every
-                // play — the init request is already in flight and its
-                // result is what we want anyway. If the task already
-                // finished, this returns immediately.
-                await self.settingsRefreshTask?.value
-                guard !Task.isCancelled, !self.isDisposed else { return }
-
-                let prepared: PreparedPlayback
-                if let offlineDownloadId = request.offlineDownloadId {
-                    // Fully local prepare from the stored record + manifest.
-                    // Must keep working in airplane mode, so nothing on this
-                    // branch (or downstream of it while
-                    // `offlinePlaybackContext` is set) may require the server.
-                    let offline = try await OfflinePlaybackBuilder.loadPreparedPlayback(
-                        downloadId: offlineDownloadId,
-                        startFromBeginning: request.startFromBeginning,
-                        resumePositionOverride: resumePositionOverride
-                    )
-                    self.offlinePlaybackContext = OfflinePlaybackContext(
-                        downloadId: offline.downloadId,
-                        mediaItemId: offline.mediaItemId
-                    )
-                    self.nowPlaying.setArtworkURL(offline.posterFileURL)
-                    prepared = offline.prepared
-                } else {
-                    // Bound the start-session call when the load was triggered
-                    // by autoplay or interruption recovery. A user-initiated load
-                    // keeps the unbounded behavior — a slow manual pick is
-                    // annoying but doesn't wedge the UI; a hung autoplay does
-                    // (the user is stuck on a half-cross-faded Next Up screen
-                    // with no obvious way out).
-                    prepared = try await self.runStartSession(
-                        request: request,
-                        resumePosition: resumePositionOverride,
-                        allowNearEndResume: allowNearEndResume,
-                        timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
-                    )
-                }
-                guard !Task.isCancelled, !self.isDisposed else { return }
-
-                try await self.adoptPreparedPlayback(
-                    prepared,
-                    origin: .freshLoad(PlaybackAdoptionOrigin.FreshLoad(
-                        isOffline: request.offlineDownloadId != nil,
-                        requestedStart: resumePositionOverride
-                    ))
-                )
-            } catch let error {
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                Self.logger.error("Load failed: \(String(describing: error), privacy: .public)")
-                self.handleBeginFreshLoadFailure(error: error, origin: origin)
-            }
+        let prepared: PreparedPlayback
+        if let offlineDownloadId = request.offlineDownloadId {
+            // Fully local prepare from the stored record + manifest. Must keep
+            // working in airplane mode, so nothing on this branch (or downstream
+            // of it while `offlinePlaybackContext` is set) may require the
+            // server.
+            let offline = try await OfflinePlaybackBuilder.loadPreparedPlayback(
+                downloadId: offlineDownloadId,
+                startFromBeginning: request.startFromBeginning,
+                resumePositionOverride: options.resumePosition
+            )
+            offlinePlaybackContext = OfflinePlaybackContext(
+                downloadId: offline.downloadId,
+                mediaItemId: offline.mediaItemId
+            )
+            nowPlaying.setArtworkURL(offline.posterFileURL)
+            prepared = offline.prepared
+        } else {
+            // Bound the start-session call when the load was triggered by
+            // autoplay or interruption recovery. A user-initiated load keeps the
+            // unbounded behavior — a slow manual pick is annoying but does not
+            // wedge the UI; a hung autoplay does.
+            prepared = try await startServerSession(
+                request: request,
+                resumePosition: options.resumePosition,
+                allowNearEndResume: options.allowNearEndResume,
+                timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
+            )
         }
-    }
+        try Task.checkCancellation()
 
-    private func disposeActivePlayerForFreshLoad(timeout: TimeInterval?) async throws {
-        let player = engineSession?.detachBackendForDisposal()
-        engineSession = nil
-        try await Self.disposePlayerOffMain(player, timeout: timeout)
-    }
-
-    /// `AVPlayerBackend` is not `Sendable`, but tearing one down off the main
-    /// thread is safe and deliberate: a slow `dispose()` must not stall the
-    /// replacement load. The box carries the reference across the hop — the
-    /// `ActivePlayer` enum this replaced was `@unchecked Sendable` for exactly
-    /// the same reason.
-    private struct DisposableBackend: @unchecked Sendable {
-        let backend: AVPlayerBackend
-    }
-
-    private static func disposePlayerOffMain(_ player: AVPlayerBackend?, timeout: TimeInterval?) async throws {
-        guard let player else { return }
-        let disposable = DisposableBackend(backend: player)
-
-        try await withCheckedThrowingContinuation { continuation in
-            let completion = OneShotContinuation()
-
-            DispatchQueue.global(qos: .userInitiated).async {
-                disposable.backend.dispose()
-                completion.resume(continuation, with: .success(()))
-            }
-
-            if let timeout {
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
-                    completion.resume(continuation, with: .failure(BeginFreshLoadError.playerDisposeTimeout))
-                }
-            }
-        }
+        let plan = try await adoptPrepared(
+            prepared,
+            origin: .freshLoad(PlaybackAdoptionOrigin.FreshLoad(
+                isOffline: request.offlineDownloadId != nil,
+                requestedStart: options.resumePosition
+            ))
+        )
+        let identity = request.offlineDownloadId != nil
+            ? SessionIdentity.offline()
+            : Self.identity(for: prepared)
+        return (prepared, plan, identity)
     }
 
     /// Race `sessionBridge.startSession` against an optional timeout. A nil
@@ -3265,9 +3145,7 @@ class PlayerViewModel {
     /// timeout cancels the in-flight start when it elapses; URLSession's
     /// cancellation propagates as `CancellationError`, which we translate to
     /// `BeginFreshLoadError.startSessionTimeout` for the caller's catch block.
-    /// If the surrounding `freshLoadTask` itself is cancelled (e.g. user
-    /// navigated away), we propagate the cancellation unchanged.
-    private func runStartSession(
+    private func startServerSession(
         request: LoadRequest,
         resumePosition: Double?,
         allowNearEndResume: Bool,
@@ -3335,14 +3213,17 @@ class PlayerViewModel {
         }
     }
 
-    /// Routes a `beginFreshLoad` failure based on what triggered the load.
-    /// User-initiated loads keep the historical full-screen error wall.
-    /// Autoplay and interruption-recovery loads instead restore the Next Up
-    /// postroll with `nextUpStartError` set so the user can pick something
-    /// from On Deck or hit Back without the player being taken hostage by an
-    /// `error` overlay.
+    /// Routes a failed load based on what triggered it, and answers with the
+    /// message the error wall should carry — or `nil` when this origin keeps the
+    /// player on a recoverable surface instead.
+    ///
+    /// User-initiated loads keep the historical full-screen error wall. Autoplay
+    /// and interruption-recovery loads restore the Next Up postroll with
+    /// `nextUpStartError` set so the user can pick something from On Deck or hit
+    /// Back without the player being taken hostage by an `error` overlay.
     @MainActor
-    private func handleBeginFreshLoadFailure(error: Error, origin: LoadOrigin) {
+    func presentLoadFailure(_ error: Error, origin: LoadOrigin) -> String? {
+        Self.logger.error("Load failed: \(String(describing: error), privacy: .public)")
         let message: String = {
             if case BeginFreshLoadError.playerDisposeTimeout = error {
                 return "The previous playback engine didn't finish shutting down."
@@ -3358,17 +3239,12 @@ class PlayerViewModel {
 
         switch origin {
         case .userInitiated:
-            finalizeTerminalPlaybackError(message)
+            return message
         case .autoplay:
             Self.logger.warning(
                 "[CMP] beginFreshLoad recovered from autoplay failure: \(message, privacy: .public)"
             )
-            // Tear down the disposed player + source proxy the same way
-            // `finalizeTerminalPlaybackError` would, but DON'T set
-            // `viewModel.error` — we want a recoverable surface, not a wall.
             engineSession?.stopTransport()
-            clearLoadingOverlay(reason: "autoplay_failure")
-            isPlaying = false
             // Restore the postroll surface so the user can choose what to
             // do next. Drop the candidate episode so the panel renders the
             // "Finished" branch with the new `nextUpStartError` message.
@@ -3385,458 +3261,207 @@ class PlayerViewModel {
                 tone: .warning,
                 duration: 6
             )
+            return nil
         case .recovery:
             Self.logger.warning(
                 "[CMP] beginFreshLoad recovered from playback recovery failure: \(message, privacy: .public)"
             )
-            clearServerOutageRecoveryState()
             engineSession?.stopTransport()
-            clearLoadingOverlay(reason: "recovery_failure")
-            isPlaying = false
             showNotice(
                 title: "Playback recovery failed",
                 message: message,
                 tone: .warning,
                 duration: 6
             )
+            return nil
         }
     }
 
-    private func completeInterruptionRecoveryIfNeeded(
-        observedTime: Double,
-        requiresForwardProgress: Bool
-    ) {
-        guard var interruption = playbackInterruption, interruption.isPending else { return }
-        let didRecover: Bool
-        if requiresForwardProgress {
-            didRecover = observedTime.isFinite
-                && observedTime >= interruption.positionSeconds
-                + Self.interruptionResumeSuccessThresholdSeconds
-        } else {
-            didRecover = true
-        }
-        guard didRecover else { return }
-
-        interruption.isPending = false
-        playbackInterruption = nil
-        interruptionRecoveryTask?.cancel()
-        interruptionRecoveryTask = nil
-        error = nil
-        clearLoadingOverlay(reason: "interruption_recovered")
-    }
-
-    private func shouldAutoRecoverFromInterruption() -> Bool {
-        guard let interruption = playbackInterruption, interruption.isPending else { return false }
-        guard !interruption.didAutoRecover else { return false }
-        return Date() <= interruption.recoveryDeadline
-    }
-
-    private func triggerAutomaticInterruptionRecovery() {
-        guard let lastLoadRequest, var interruption = playbackInterruption, !interruption.didAutoRecover else {
-            return
-        }
-        interruption.didAutoRecover = true
-        interruption.isPending = true
-        playbackInterruption = interruption
-        interruptionRecoveryTask?.cancel()
-        interruptionRecoveryTask = nil
-        error = nil
-        isLoading = true
-        isPlaying = false
-        beginFreshLoad(
-            request: lastLoadRequest,
-            progressPosition: interruption.positionSeconds,
-            resumePositionOverride: interruption.positionSeconds,
-            allowNearEndResume: true,
-            preserveInterruptionState: true,
-            origin: .recovery
-        )
-    }
-
-    private func finalizeTerminalPlaybackError(_ message: String) {
-        #if os(iOS) || os(tvOS)
-        // Terminal outcome #1 of 2 (the other is `handleEndOfFile`). Every
-        // recovery ladder — V3 replan, native-direct fallback, Silo
-        // compatibility fallback, session renewal, outage ride-through — ends
-        // either here or there, so between them a report always shows how a
-        // playback finished. Emitted before the state teardown below so the
-        // position and plan describe the failed session, not the cleared one.
-        DiagTrace.breadcrumb(
-            .essential,
-            level: .error,
-            category: .playback,
-            tag: "Player",
-            message: "playback ended in failure",
-            attrs: [
-                "reason": .string(PlaybackFailure.stableToken(forLegacyMessage: message)),
-                "play_method": .string(activeRouteKind.label),
-                // Shared with the bridge's session breadcrumbs so a report's
-                // positions are all on the same scale and rounding.
-                "position_ms": .int(PlaybackSessionBridge.diagnosticsPositionMilliseconds(currentTime)),
-            ]
-        )
-        #endif
-        progressTask?.cancel()
-        progressTask = nil
-        staleSessionRecoveryTask?.cancel()
-        staleSessionRecoveryTask = nil
-        backgroundRenewalTask?.cancel()
-        backgroundRenewalTask = nil
-        backgroundRenewalSessionId = nil
-        // Follow-up: this deliberately does NOT sweep `.activeStream` — it can
-        // be reached from inside `freshLoadTask` / `protocolV3ReplanTask`, and
-        // cancelling the task that is publishing the error would swallow it.
-        clearForegroundInterruptionState()
-        clearSuspendedPlaybackState()
-        clearServerOutageRecoveryState()
-        discardSourceCacheHandoff()
-        engineSession?.dispose(reason: "terminal")
-        activePlaybackSessionId = nil
-        activePreparedProtocolV3 = nil
-        activeExecutionPlan = nil
-        error = message
-        clearLoadingOverlay(reason: "failure")
-        isPlaying = false
-    }
-
-    /// The typed source behind a renewal's `reason` token, so an escalation can
-    /// re-enter `RecoveryPolicy.decideSessionMissing` on the same rung the
-    /// silent renewal was decided from.
-    private static func sessionMissingSource(forReason reason: String) -> SessionMissingSource? {
-        switch reason {
-        case SessionMissingSource.playerError.reason: return .playerError
-        case SessionMissingSource.proxy404.reason: return .proxy404
-        case SessionMissingSource.progressHeartbeat.reason: return .progressHeartbeat
-        case SessionMissingSource.replanCatch.reason: return .replanCatch
-        default: return nil
-        }
-    }
-
-    /// Silently renews a lost server session in place: the bridge stages a
-    /// fresh V3 start and accepts it only when the effective direct route is
-    /// unchanged. The source proxy is then retargeted at the renewed stream URL
-    /// while the player, remuxer, and cache remain untouched.
+    /// `attemptBackgroundSessionRenewal`'s round trip and adoption.
     ///
     /// Whether this playback *can* be renewed in place, and whether one is
-    /// already in flight, are `RecoveryPolicy.decideSessionMissing`'s
-    /// (`canRenewSourceInBackground` / `backgroundRenewalInFlight`); what is
-    /// left here is the round trip and the adoption.
+    /// already in flight, are `RecoveryPolicy.decideSessionMissing`'s; the
+    /// single-flight is the reducer's `Sub.renewingSource`. What is left here is
+    /// the bridge call, the proxy retarget and the shell-side adoption.
+    ///
+    /// Returns `nil` when the load moved on while the renewal was in flight —
+    /// adopting the new session into it would cross-wire two loads.
     @MainActor
-    private func performBackgroundSessionRenewal(
-        reason: String,
-        observedPosition: Double,
-        session: PlaybackEngineSession
-    ) {
-        guard let currentWatchDetail else { return }
-        let staleSessionId = activePlaybackSessionId ?? "unknown"
-        backgroundRenewalSessionId = staleSessionId
-        let resumePosition = observedPosition.isFinite
-            ? max(0, observedPosition)
+    func prepareRenewal(
+        _ renewal: SourceRenewal
+    ) async throws -> (prepared: PreparedPlayback, identity: SessionIdentity)? {
+        guard let currentWatchDetail, let session = engineSession else { return nil }
+        let staleSessionId = renewal.issuedFor.serverSessionId ?? "unknown"
+        let resumePosition = renewal.observedPosition.isFinite
+            ? max(0, renewal.observedPosition)
             : max(0, currentTime)
 
         Self.logger.warning(
-            "[CMP-RECOVERY] background session renewal started session=\(staleSessionId, privacy: .public) reason=\(reason, privacy: .public) position=\(resumePosition, privacy: .public)"
+            "[CMP-RECOVERY] background session renewal started session=\(staleSessionId, privacy: .public) reason=\(renewal.reason, privacy: .public) position=\(resumePosition, privacy: .public)"
         )
 
-        backgroundRenewalTask?.cancel()
-        backgroundRenewalTask = Task { @MainActor [weak self] in
-            guard let self, !self.isDisposed else { return }
-            do {
-                let renewed = try await self.sessionBridge.renewDirectSession(
-                    watchDetail: currentWatchDetail,
-                    position: resumePosition,
-                    // The bridge owns the adopted V3 plan. Passing no
-                    // overrides makes renewal repeat that exact tuple instead
-                    // of consulting player tracks that may already be empty.
-                    audioTrackIndex: nil,
-                    subtitleTrackIndex: nil
-                )
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                // A fresh load may have replaced this playback while the
-                // renewal was in flight; adopting the new session into it
-                // would cross-wire two generations.
-                guard self.activePlaybackSessionId == staleSessionId,
-                      self.engineSession === session,
-                      session.transport != nil else {
-                    Self.logger.info(
-                        "[CMP-RECOVERY] background renewal superseded session=\(staleSessionId, privacy: .public)"
-                    )
-                    return
-                }
-                guard let streamRequest = await self.makeStreamRequest(
-                    session: renewed.session,
-                    additionalHeaders: renewed.protocolV3?.plan.stream.headers ?? [:]
-                ) else {
-                    self.failBackgroundRenewal(
-                        reason: reason,
-                        observedPosition: resumePosition,
-                        detail: "invalid renewed stream URL",
-                        session: session
-                    )
-                    return
-                }
-                session.retargetSource(url: streamRequest.url, headers: streamRequest.headers)
-                self.activePlaybackSessionId = renewed.session.sessionId
-                self.currentWatchDetail = renewed.watchDetail
-                self.currentSelectedVersion = renewed.selectedVersion
-                self.activePreparedProtocolV3 = renewed.protocolV3
-                self.adoptProtocolV3RenewalIntent(from: renewed)
-                self.trackSelection.adoptRenewedSubtitleUrls(renewed.session.subtitleUrls)
-                self.trackSelection.loadPendingExternalSubtitles()
-                self.duration = renewed.session.durationSeconds ?? renewed.selectedVersion.duration ?? self.duration
-                self.activeQualityId = renewed.activeQualityId
-                self.qualityOptions = ApplePlaybackQuality.playbackOptions(
-                    serverQualities: renewed.protocolV3?.plan.availableQualities ?? [],
-                    fallbackVersion: renewed.selectedVersion
-                )
-                self.staleSessionRecoverySessionId = nil
-                self.backgroundRenewalSessionId = nil
-                session.driver.noteBackgroundRenewalSucceeded()
-                await self.realtimeClient.unbind()
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                await self.realtimeClient.bind(sessionId: renewed.session.sessionId)
-                Self.logger.info(
-                    "[CMP-RECOVERY] background session renewal succeeded old=\(staleSessionId, privacy: .public) new=\(renewed.session.sessionId, privacy: .public) reason=\(reason, privacy: .public)"
-                )
-            } catch let error as PlaybackSessionBridge.DirectSessionRenewalError {
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                // The server re-planned (or nothing is renewable): only a
-                // full visible renewal can pick up the new plan.
-                self.failBackgroundRenewal(
-                    reason: reason,
-                    observedPosition: resumePosition,
-                    detail: String(describing: error),
-                    session: session
-                )
-            } catch {
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                self.backgroundRenewalSessionId = nil
-                if session.driver.noteBackgroundRenewalTransientFailure() {
-                    self.failBackgroundRenewal(
-                        reason: reason,
-                        observedPosition: resumePosition,
-                        detail: "transient failures exhausted: \(error)",
-                        session: session
-                    )
-                } else {
-                    // The in-flight flag is already clear, so the next trigger
-                    // (progress heartbeat or stream 404) retries; a genuinely
-                    // dead server escalates through the source-interruption
-                    // path independently of this renewal.
-                    Self.logger.warning(
-                        "[CMP-RECOVERY] background renewal transient failure #\(session.driver.context.backgroundRenewalTransientFailures) session=\(staleSessionId, privacy: .public): \(String(describing: error), privacy: .public)"
-                    )
-                }
-            }
+        let renewed = try await sessionBridge.renewDirectSession(
+            watchDetail: currentWatchDetail,
+            position: resumePosition,
+            // The bridge owns the adopted V3 plan. Passing no overrides makes
+            // renewal repeat that exact tuple instead of consulting player
+            // tracks that may already be empty.
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil
+        )
+        try Task.checkCancellation()
+        guard currentServerSessionId == staleSessionId,
+              engineSession === session,
+              session.transport != nil else {
+            Self.logger.info(
+                "[CMP-RECOVERY] background renewal superseded session=\(staleSessionId, privacy: .public)"
+            )
+            return nil
         }
+        guard let streamRequest = await makeStreamRequest(
+            session: renewed.session,
+            additionalHeaders: renewed.protocolV3?.plan.stream.headers ?? [:]
+        ) else {
+            throw PlaybackAdoptionFailure(message: "invalid renewed stream URL")
+        }
+        session.retargetSource(url: streamRequest.url, headers: streamRequest.headers)
+        currentWatchDetailAdopt(renewed)
+        session.driver.noteBackgroundRenewalSucceeded()
+        await realtimeClient.unbind()
+        try Task.checkCancellation()
+        await realtimeClient.bind(sessionId: renewed.session.sessionId)
+        Self.logger.info(
+            "[CMP-RECOVERY] background session renewal succeeded old=\(staleSessionId, privacy: .public) new=\(renewed.session.sessionId, privacy: .public) reason=\(renewal.reason, privacy: .public)"
+        )
+        return (renewed, Self.identity(for: renewed))
     }
 
+    /// The renewal's shell-side adoption: the plan facts a re-probed source may
+    /// have changed. The playhead is deliberately *not* adopted — the retarget
+    /// is silent and playback never stopped.
     @MainActor
-    private func failBackgroundRenewal(
-        reason: String,
-        observedPosition: Double,
-        detail: String,
-        session: PlaybackEngineSession
-    ) {
+    private func currentWatchDetailAdopt(_ renewed: PreparedPlayback) {
+        currentWatchDetail = renewed.watchDetail
+        currentSelectedVersion = renewed.selectedVersion
+        activePreparedProtocolV3 = renewed.protocolV3
+        adoptProtocolV3RenewalIntent(from: renewed)
+        trackSelection.adoptRenewedSubtitleUrls(renewed.session.subtitleUrls)
+        trackSelection.loadPendingExternalSubtitles()
+        qualityOptions = ApplePlaybackQuality.playbackOptions(
+            serverQualities: renewed.protocolV3?.plan.availableQualities ?? [],
+            fallbackVersion: renewed.selectedVersion
+        )
+    }
+
+    /// Record a failed silent renewal on the load's recovery owner and report
+    /// whether the silent path is now spent. The `_bg_renewal_failed` suffix and
+    /// the escalation to the visible renewal are the policy's decision.
+    @MainActor
+    func noteRenewalFailure(_ error: Error, reason: String) -> Bool {
+        guard let session = engineSession else { return false }
+        if error is PlaybackSessionBridge.DirectSessionRenewalError {
+            // The server re-planned (or nothing is renewable): only a full
+            // visible renewal can pick up the new plan.
+            Self.logger.warning(
+                "[CMP-RECOVERY] background renewal escalating to visible renewal reason=\(reason, privacy: .public): \(String(describing: error), privacy: .public)"
+            )
+            session.driver.noteBackgroundRenewalExhausted()
+            refreshRecoveryContext(session: session)
+            return true
+        }
+        if session.driver.noteBackgroundRenewalTransientFailure() {
+            Self.logger.warning(
+                "[CMP-RECOVERY] background renewal escalating to visible renewal reason=\(reason, privacy: .public): transient failures exhausted: \(String(describing: error), privacy: .public)"
+            )
+            session.driver.noteBackgroundRenewalExhausted()
+            refreshRecoveryContext(session: session)
+            return true
+        }
+        // The in-flight flag is already clear, so the next trigger (progress
+        // heartbeat or stream 404) retries; a genuinely dead server escalates
+        // through the source-interruption path independently of this renewal.
         Self.logger.warning(
-            "[CMP-RECOVERY] background renewal escalating to visible renewal reason=\(reason, privacy: .public): \(detail, privacy: .public)"
+            "[CMP-RECOVERY] background renewal transient failure #\(session.driver.context.backgroundRenewalTransientFailures) reason=\(reason, privacy: .public): \(String(describing: error), privacy: .public)"
         )
-        backgroundRenewalSessionId = nil
-        // Put the context where the policy reads "the silent path is spent",
-        // then re-observe: the `_bg_renewal_failed` suffix and the escalation
-        // to the visible renewal are its decision, not this function's.
-        session.driver.noteBackgroundRenewalExhausted()
-        refreshRecoveryContext(session: session)
-        guard let source = Self.sessionMissingSource(forReason: reason) else { return }
-        if let action = session.driver.observe(.sessionMissing(source: source)) {
-            executeRecoveryAction(action, session: session)
-        }
+        return false
     }
 
-    /// `attemptStaleSessionRenewal`'s execution half: force-write the resume
-    /// position against the *content* (the session it would otherwise report
-    /// against is the one that vanished), then re-run the load. The
-    /// single-flight and the supersede of any silent renewal are the policy's.
+    /// One server health probe. Auth statuses count as reachable — the server is
+    /// up even if this credential cannot read /health — but the log line names
+    /// them apart from a clean 200, and the failure line carries the error, so
+    /// the three outcomes stay distinguishable on the console.
     @MainActor
-    private func performStaleSessionRenewal(reason: String, observedPosition: Double) {
-        guard !isDisposed, let lastLoadRequest else { return }
-
-        let staleSessionId = activePlaybackSessionId ?? "unknown"
-        staleSessionRecoverySessionId = staleSessionId
-        // A visible renewal supersedes any in-flight silent one; a late
-        // retarget landing mid-teardown would cross-wire the generations.
-        backgroundRenewalTask?.cancel()
-        backgroundRenewalTask = nil
-        backgroundRenewalSessionId = nil
-
-        let resumePosition = observedPosition.isFinite
-            ? max(0, observedPosition)
-            : max(0, currentTime)
-        let contentId = currentWatchDetail?.contentId ?? lastLoadRequest.contentId
-        let durationHint = duration.isFinite && duration > 0
-            ? duration
-            : (currentSelectedVersion?.duration ?? 0)
-        let renewalRequest = lastLoadRequest.copyForRecovery(
-            preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
-            preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
-            preferredSubtitleTrackIndex: trackSelection.resolvedSubtitleTrackIndexForResume(),
-            preferredSidecarSubtitleTrackId: trackSelection.resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil
-        )
-
-        Self.logger.warning(
-            "Renewing stale playback session \(staleSessionId, privacy: .public) reason=\(reason, privacy: .public) position=\(resumePosition, privacy: .public)"
-        )
-
-        staleSessionRecoveryTask?.cancel()
-        staleSessionRecoveryTask = Task { @MainActor [weak self] in
-            guard let self, !self.isDisposed else { return }
-            _ = await self.sessionBridge.syncProgress(
-                contentId: contentId,
-                position: resumePosition,
-                duration: durationHint,
-                forceOverwrite: true
-            )
-            guard !Task.isCancelled, !self.isDisposed else { return }
-
-            self.progressTask?.cancel()
-            self.beginFreshLoad(
-                request: renewalRequest,
-                progressPosition: nil,
-                resumePositionOverride: resumePosition,
-                allowNearEndResume: true,
-                preserveInterruptionState: true,
-                origin: .recovery
-            )
-        }
-    }
-
-    /// The origin-outage ride-through's executor. Entry keeps playback
-    /// untouched (the player rides its buffered runway) and starts a
-    /// server-health poll whose success nudges an immediate origin re-probe.
-    /// Every continuation, the backoff and the escalation to the visible
-    /// recovery are `RecoveryPolicy`'s, fed by the probes this loop reports.
-    @MainActor
-    private func runOutageRideThrough(probeAfter: Duration, session: PlaybackEngineSession) {
-        if probeAfter == .zero {
-            sourceOutageNoticeShown = false
-            Self.logger.warning("[CMP-OUTAGE] ride-through started")
-            // Already out of runway when the outage was detected (e.g. a seek
-            // beyond the cache raced the outage) — the buffering edge won't
-            // fire again, so the engine session re-fed the gate at entry.
-            if session.driver.context.outage?.noticeShown == true {
-                showSourceOutageReconnectingNotice()
-            }
-        }
-        sourceOutageRideThroughTask?.cancel()
-        sourceOutageRideThroughTask = Task { @MainActor [weak self] in
-            var sleepFor = probeAfter
-            while true {
-                if sleepFor != .zero {
-                    try? await Task.sleep(for: sleepFor)
-                }
-                // The ride-through's owner outlives one load. Legacy's loop was
-                // gated on the view-model-scoped `sourceOutageActive` and
-                // re-read `self.avPlayerBackend` / `self.sourceProxy` on every
-                // turn, so an in-place replan (which cancels neither this task
-                // nor that flag) kept polling and still released the hold it
-                // had left on the reused backend instance. The replacement
-                // session adopts both the `origin_outage` hold and the outage
-                // state, so this poll re-resolves the live session each turn
-                // rather than holding the one that started it — otherwise the
-                // only releaser dies with the superseded load and every
-                // in-route rung stays muzzled for the rest of the load.
-                guard let self, !Task.isCancelled, !self.isDisposed,
-                      let owner = self.engineSession,
-                      owner.driver.context.outage != nil else { return }
-                let ok = await self.probeServerHealthOnce().isReachable
-                guard !Task.isCancelled, !self.isDisposed,
-                      let current = self.engineSession else { return }
-                if ok {
-                    Self.logger.info("[CMP-OUTAGE] server healthy; nudging origin re-probe")
-                    self.sourceProxy?.reprobeOrigin()
-                }
-                self.refreshRecoveryContext(session: current)
-                switch current.driver.observe(.serverHealthProbe(ok: ok)) {
-                case let .rideThroughOutage(next):
-                    sleepFor = next
-                case .none:
-                    return
-                case let .some(escalation):
-                    Self.logger.error(
-                        "[CMP-OUTAGE] ride-through budget exhausted; escalating to visible recovery"
-                    )
-                    self.executeRecoveryAction(escalation, session: current)
-                    return
-                }
-            }
-        }
-    }
-
-    /// `clearSourceOutageRideThroughState()` + the "Reconnected" notice. The
-    /// latch release and the post-outage kick are the engine session's half of
-    /// `RecoveryAction.endOutageRideThrough`.
-    @MainActor
-    private func endOutageRideThrough() {
-        Self.logger.info("[CMP-OUTAGE] ride-through ended; origin recovered")
-        let showReconnected = sourceOutageNoticeShown
-        clearSourceOutageRideThroughState()
-        if showReconnected {
-            showNotice(
-                title: "Reconnected",
-                message: "Connection to the server was restored.",
-                tone: .info,
-                duration: 3
-            )
-        }
-    }
-
-    private func clearSourceOutageRideThroughState() {
-        sourceOutageNoticeShown = false
-        sourceOutageRideThroughTask?.cancel()
-        sourceOutageRideThroughTask = nil
-    }
-
-    /// The outcome of one server health probe. Auth statuses count as
-    /// reachable — the server is up even if this credential can't read /health
-    /// — but the visible recovery's log line names them apart from a clean
-    /// 200, and its failure line carries the error, so the three outcomes stay
-    /// distinguishable at the call site.
-    private enum ServerHealthProbeOutcome {
-        case healthy
-        case authReached(Int)
-        case failed(Error)
-
-        var isReachable: Bool {
-            switch self {
-            case .healthy, .authReached:
-                return true
-            case .failed:
-                return false
-            }
-        }
-    }
-
-    /// One server health probe.
-    private func probeServerHealthOnce() async -> ServerHealthProbeOutcome {
+    func probeServerHealthOnce(reporting timerID: TimerID) async -> Bool {
         do {
             let _: HealthStatus = try await HTTPClient.shared.get("/api/v1/health")
-            return .healthy
+            if timerID == .serverOutageRecovery {
+                Self.logger.info("[CMP-RECOVERY] server health probe succeeded")
+            }
+            return true
         } catch {
             if let httpError = error as? HTTPError,
                let statusCode = httpError.statusCode,
                statusCode == 401 || statusCode == 403 {
-                return .authReached(statusCode)
+                if timerID == .serverOutageRecovery {
+                    Self.logger.info(
+                        "[CMP-RECOVERY] server health probe reached auth status=\(statusCode, privacy: .public); treating server as ready"
+                    )
+                }
+                return true
             }
-            return .failed(error)
+            if timerID == .serverOutageRecovery {
+                // The delay in force at *this* probe — `waitForServerReady`'s
+                // `delay` local, which it logged before doubling it.
+                let retryDelay = engineSession?.driver.context.serverOutageRecovery?.nextDelay
+                    ?? RecoveryPolicy.serverOutageRecoveryInitialDelay
+                Self.logger.warning(
+                    "[CMP-RECOVERY] server health probe failed; retrying in \(retryDelay, privacy: .public)s error=\(String(describing: error), privacy: .public)"
+                )
+            }
+            return false
         }
+    }
+
+    /// Nudge the source proxy to re-probe its origin after a healthy server
+    /// probe during a ride-through.
+    @MainActor
+    func reprobeOrigin() {
+        sourceProxy?.reprobeOrigin()
+    }
+
+    /// `Effect.seek`. The reducer already moved the published playhead and
+    /// armed the stale-frame filter; this is the engine call.
+    @MainActor
+    func engineSeek(to seconds: Double) {
+        engineSession?.seek(to: seconds)
+    }
+
+    /// `Effect.transport`. Fire and forget: `isPlaying` has one writer, the
+    /// backend's `onPauseChange`, which comes back through the reducer.
+    @MainActor
+    func engineTransport(_ command: TransportCommand) {
+        switch command {
+        case .play: avPlayerBackend?.play()
+        case .pause: avPlayerBackend?.pause()
+        }
+    }
+
+    /// Flush one watch-progress sample into the offline queue, if this load is
+    /// an offline download. Answers whether it was — the online heartbeat must
+    /// not also report against a server session the offline path never minted.
+    @MainActor
+    func recordOfflineProgressIfOffline() -> Bool {
+        guard let offline = offlinePlaybackContext else { return false }
+        recordOfflineProgress(context: offline)
+        return true
     }
 
     /// The runway gate: report the buffering edge and show the "Reconnecting"
     /// notice the first time the player actually runs out of runway during an
     /// origin outage. `RecoveryContext.OutageState.noticeShown` is the gate.
     @MainActor
-    private func noteBufferingDuringSourceOutage(session: PlaybackEngineSession) {
+    private func noteBufferingDuringSourceOutage() {
+        guard let session = engineSession else { return }
         let wasShown = session.driver.context.outage?.noticeShown ?? true
         session.observe(.bufferingChanged(true))
         guard !wasShown, session.driver.context.outage?.noticeShown == true else { return }
@@ -3855,160 +3480,20 @@ class PlayerViewModel {
         )
     }
 
-    /// The visible outage recovery's executor: tear the proxy and engine down,
-    /// show "Reconnecting", and wait for the server. Single-flight, the
-    /// cancellation of an in-flight silent renewal and the end of the
-    /// ride-through are `RecoveryPolicy.beginServerOutageRecovery`'s.
-    @MainActor
-    private func performServerOutageRecovery(
-        reason: String,
-        observedPosition: Double,
-        session: PlaybackEngineSession
-    ) {
-        // The ride-through's in-route suppression is released before any
-        // load-state gate can turn this executor into a no-op: legacy released
-        // it at the escalation point (PVM:3980-3982 at 8649b1f) and only then
-        // called `attemptServerOutageRecovery`, whose `!hasReachedEndOfFile`
-        // guard could bail.
-        session.suspendRecovery(false, reason: RecoveryDriver.originOutageSuspensionReason)
-        guard !isDisposed,
-              !hasReachedEndOfFile,
-              let lastLoadRequest else {
-            // Legacy never reached `activeServerOutageRecoverySessionId = …` on
-            // this path, so the policy's single-flight must not stay latched
-            // against a recovery that will never run.
-            session.driver.clearServerOutageRecovery()
-            return
-        }
-
-        let interruptedSessionId = activePlaybackSessionId ?? "unknown"
-        // Outage recovery tears the proxy down; cancel any in-flight silent
-        // renewal so its retarget can't land mid-teardown, and end the
-        // ride-through (its watchdog suppression is released above, its timer
-        // here).
-        backgroundRenewalTask?.cancel()
-        backgroundRenewalTask = nil
-        backgroundRenewalSessionId = nil
-        clearSourceOutageRideThroughState()
-
-        let resumePosition = observedPosition.isFinite
-            ? max(0, observedPosition)
-            : max(0, currentTime)
-        let recoveryRequest = lastLoadRequest.copyForRecovery(
-            preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
-            preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
-            preferredSubtitleTrackIndex: trackSelection.resolvedSubtitleTrackIndexForResume(),
-            preferredSidecarSubtitleTrackId: trackSelection.resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil
-        )
-
-        Self.logger.warning(
-            "[CMP-RECOVERY] server outage recovery started session=\(interruptedSessionId, privacy: .public) reason=\(reason, privacy: .public) position=\(resumePosition, privacy: .public)"
-        )
-
-        progressTask?.cancel()
-        progressTask = nil
-        if reason == "source_entity_changed" {
-            // The validator proved the cached prefix belongs to the replaced
-            // entity, so it must not be adopted by the recovery plan.
-            discardSourceCacheHandoff()
-        } else {
-            stashSourceCacheHandoff()
-        }
-        // The engine goes; the session stays as this load's recovery owner
-        // until the replacement load installs its own.
-        session.stopTransport()
-        session.disposeEngineOnly(reason: "server_outage")
-        clearLoadingOverlay(reason: "server_outage")
-        isPlaying = false
-        error = nil
-        showNotice(
-            title: "Reconnecting",
-            message: "The server is updating. Playback will resume when it is ready.",
-            tone: .warning,
-            duration: RecoveryPolicy.serverOutageRecoveryTimeout
-        )
-
-        serverOutageRecoveryTask?.cancel()
-        serverOutageRecoveryTask = Task { @MainActor [weak self] in
-            // `waitForServerReady`'s first probe is issued by this tail, exactly
-            // as PVM:4494-4504 did; every later delay comes back from the policy
-            // as `.waitForServerReady(probeAfter:)`.
-            var sleepFor: Duration?
-            while true {
-                if let sleepFor {
-                    try? await Task.sleep(for: sleepFor)
-                }
-                guard let self, !Task.isCancelled, !self.isDisposed,
-                      self.engineSession === session,
-                      session.driver.context.serverOutageRecovery != nil else {
-                    Self.logger.info(
-                        "[CMP-RECOVERY] server outage recovery cancelled session=\(interruptedSessionId, privacy: .public)"
-                    )
-                    return
-                }
-                let outcome = await self.probeServerHealthOnce()
-                guard !Task.isCancelled, !self.isDisposed,
-                      self.engineSession === session else { return }
-                switch outcome {
-                case .healthy:
-                    Self.logger.info("[CMP-RECOVERY] server health probe succeeded")
-                case let .authReached(statusCode):
-                    Self.logger.info(
-                        "[CMP-RECOVERY] server health probe reached auth status=\(statusCode, privacy: .public); treating server as ready"
-                    )
-                case let .failed(probeError):
-                    // The delay in force at *this* probe — `waitForServerReady`'s
-                    // `delay` local, which it logged before doubling it. The
-                    // policy hands the same number back as
-                    // `.waitForServerReady(probeAfter:)` unless the remaining
-                    // budget is shorter.
-                    let retryDelay = session.driver.context.serverOutageRecovery?.nextDelay
-                        ?? RecoveryPolicy.serverOutageRecoveryInitialDelay
-                    Self.logger.warning(
-                        "[CMP-RECOVERY] server health probe failed; retrying in \(retryDelay, privacy: .public)s error=\(String(describing: probeError), privacy: .public)"
-                    )
-                }
-                let ok = outcome.isReachable
-                self.refreshRecoveryContext(session: session)
-                switch session.driver.observe(.serverHealthProbe(ok: ok)) {
-                case let .waitForServerReady(next):
-                    sleepFor = next
-                case .none:
-                    // The wait is over: the probe reached the server and the
-                    // policy cleared the recovery slot.
-                    Self.logger.info(
-                        "[CMP-RECOVERY] server ready; restarting playback session=\(interruptedSessionId, privacy: .public) position=\(resumePosition, privacy: .public)"
-                    )
-                    self.beginFreshLoad(
-                        request: recoveryRequest,
-                        progressPosition: nil,
-                        resumePositionOverride: resumePosition,
-                        allowNearEndResume: true,
-                        preserveInterruptionState: true,
-                        origin: .recovery
-                    )
-                    return
-                case let .some(terminal):
-                    Self.logger.error(
-                        "[CMP-RECOVERY] server outage recovery exhausted session=\(interruptedSessionId, privacy: .public)"
-                    )
-                    self.executeRecoveryAction(terminal, session: session)
-                    return
-                }
-            }
-        }
-    }
-
-    private func clearServerOutageRecoveryState() {
-        // The policy's `serverOutageRecovery` slot is this function's other
-        // legacy half (`activeServerOutageRecoverySessionId = nil`), and it is
-        // what `handlePlaybackError` and `handleEndOfFile` gate on — so it has
-        // to be released with the task that owned the wait, not left latched
-        // against a wait nobody is running any more.
-        engineSession?.driver.clearServerOutageRecovery()
-        serverOutageRecoveryTask?.cancel()
-        serverOutageRecoveryTask = nil
+    /// Forward one view command to the control plane. Every command is an
+    /// intent: the reducer decides what it means, the actor runs the effects,
+    /// and whatever moved comes back as a `Presentation`.
+    ///
+    /// The hop is `@MainActor`-isolated on purpose. An actor serialises
+    /// execution but does not order two distinct unstructured tasks, and this
+    /// shell issues commands in pairs that must not invert — the re-anchor seek
+    /// before the reload that carries it, `commitSeek` before `.play`. Every
+    /// forwarding site (this, `requestReplan`, `reloadEngineInPlace`) enqueues
+    /// on the one serial executor the callers already run on, so the tasks start
+    /// in call order and reach the control plane in that order.
+    private func send(_ intent: PlayerIntent) {
+        guard !isDisposed, let controlPlane else { return }
+        Task { @MainActor in await controlPlane.send(intent) }
     }
 
     func loadAndPlay(
@@ -4029,42 +3514,38 @@ class PlayerViewModel {
             startFromBeginning: startFromBeginning,
             offlineDownloadId: offlineDownloadId
         )
-        beginFreshLoad(
-            request: request,
-            progressPosition: currentTime,
-            resumePositionOverride: resumePositionOverride
+        send(
+            .load(
+                request,
+                origin: .userInitiated,
+                options: LoadOptions(
+                    progressPosition: currentTime,
+                    resumePosition: resumePositionOverride
+                )
+            )
         )
     }
 
-    /// Re-run the last `loadAndPlay` from scratch after an error. Currently a
-    /// fresh session — simpler than retrying just the stream load, and
-    /// tolerates stale server-side sessions that may have been reaped.
+    /// Re-run the last load from scratch after an error — or, on tvOS, resume a
+    /// player the system suspended. `PlaybackReducer.retry` rebuilds the request
+    /// from whichever state the player rests in and resumes at the playhead the
+    /// failure left behind.
     func retry() {
-        guard let last = lastLoadRequest else { return }
-        Self.logger.info("Retrying playback for contentId=\(last.contentId, privacy: .public)")
-        beginFreshLoad(
-            request: last,
-            progressPosition: currentTime,
-            resumePositionOverride: currentTime,
-            allowNearEndResume: true
-        )
-    }
-
-    func togglePlayPause() {
         #if os(tvOS)
         if isBackgroundSuspended {
-            resumeSuspendedPlayback()
+            Self.logger.info("[CMP-LIFECYCLE] tvOS explicit resume from suspended playback")
+            error = nil
+            showControls = true
+            send(.resumeSuspended)
             return
         }
         #endif
-        // `isPlaying` is driven by the backend's `onPauseChange` callback;
-        // let that be the single writer so the UI can't drift out of sync
-        // with the actual pipeline state on error paths.
-        if isPlaying {
-            avPlayerBackend?.pause()
-        } else {
-            avPlayerBackend?.play()
-        }
+        send(.retry)
+    }
+
+    func togglePlayPause() {
+        send(.togglePlayPause)
+        guard !isBackgroundSuspended else { return }
         scheduleHideControls()
     }
 
@@ -4074,9 +3555,9 @@ class PlayerViewModel {
     /// `TVPlayerControls` consumes a separate request token to focus and
     /// activate its timeline scrubber.
     func pauseForTimelineSelection() {
-        guard !isBackgroundSuspended, !isLoading, !hasReachedEndOfFile else { return }
+        guard !isBackgroundSuspended, !isLoading, !hasEndedStream else { return }
         if isPlaying {
-            avPlayerBackend?.pause()
+            send(.pause)
         }
         pinControlsVisible()
     }
@@ -4092,20 +3573,18 @@ class PlayerViewModel {
 
         guard resolvedQualityId != activeQualityId || qualitySwitchError != nil else { return }
         if activePreparedProtocolV3 != nil {
-            let target = currentTime.isFinite ? max(0, currentTime) : 0
+            // The V3 branch is the reducer's `.changeQuality`: it applies the
+            // same "already on this rung" guard, mints the replan and clears the
+            // spinner when the round trip ends.
             isQualitySwitching = true
             qualitySwitchError = nil
             showControls = true
             hideControlsTask?.cancel()
-            attemptProtocolV3Replan(
-                position: target,
-                classification: "quality_changed",
-                message: "User selected playback quality \(resolvedQualityId).",
-                qualityPreference: resolvedQualityId,
-                completesQualitySwitch: true
-            )
+            send(.changeQuality(resolvedQualityId))
             return
         }
+        // The pre-V3 branches need version and plan knowledge the control plane
+        // does not hold, so they stay here and issue their own `.load`.
         let qualityOverrideCapKbps = AppleQualityAxes.resolvedBitrateCap(
             qualityOverride: resolvedQualityId,
             fallbackBitrateKbps: nil
@@ -4138,12 +3617,17 @@ class PlayerViewModel {
                     request.preferredQualityOverride = resolvedQualityId
                     let target = currentTime.isFinite ? max(0, currentTime) : 0
                     qualitySwitchError = nil
-                    beginFreshLoad(
-                        request: request,
-                        progressPosition: target,
-                        finalizeCurrentSession: true,
-                        resumePositionOverride: target,
-                        allowNearEndResume: true
+                    send(
+                        .load(
+                            request,
+                            origin: .userInitiated,
+                            options: LoadOptions(
+                                progressPosition: target,
+                                finalizeCurrentSession: true,
+                                resumePosition: target,
+                                allowNearEndResume: true
+                            )
+                        )
                     )
                     return
                 }
@@ -4157,8 +3641,7 @@ class PlayerViewModel {
                 // to Auto after a manual downgrade) no longer needs it. An
                 // in-place transcode restart can only produce HLS again —
                 // replan the whole session so the server can hand back direct
-                // play. Same pattern as interruption recovery: preserve the
-                // current track selections and resume at the current position.
+                // play.
                 var request = lastLoadRequest.copyForRecovery(
                     preferredFileId: lastLoadRequest.preferredFileId,
                     preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
@@ -4169,114 +3652,68 @@ class PlayerViewModel {
                 request.preferredQualityOverride = resolvedQualityId
                 let target = currentTime.isFinite ? max(0, currentTime) : 0
                 qualitySwitchError = nil
-                beginFreshLoad(
-                    request: request,
-                    progressPosition: target,
-                    finalizeCurrentSession: true,
-                    resumePositionOverride: target,
-                    allowNearEndResume: true
+                send(
+                    .load(
+                        request,
+                        origin: .userInitiated,
+                        options: LoadOptions(
+                            progressPosition: target,
+                            finalizeCurrentSession: true,
+                            resumePosition: target,
+                            allowNearEndResume: true
+                        )
+                    )
                 )
                 return
             }
         }
 
-        let target = currentTime.isFinite ? max(0, currentTime) : 0
-        isQualitySwitching = true
-        qualitySwitchError = nil
-        showControls = true
-        hideControlsTask?.cancel()
-        _ = restartCurrentTranscodeHLS(
-            to: target,
-            origin: target,
-            qualityId: resolvedQualityId,
-            source: "quality"
+        // No live V3 plan to replan against: the in-place restart refuses and
+        // re-arms the picker with its own error.
+        isQualitySwitching = false
+        qualitySwitchError = "Quality unavailable for this item."
+        Self.logger.warning(
+            "[CMP-SEEK] V3 stream replan skipped: missing active protocol or item snapshot"
         )
     }
 
     func handleScenePhase(_ phase: ScenePhase) {
         #if os(tvOS)
-        switch phase {
-        case .inactive:
-            pauseForForegroundInterruptionIfNeeded()
-        case .background:
-            suspendForBackground()
-        case .active:
-            if isBackgroundSuspended {
-                Self.logger.info("[CMP-LIFECYCLE] tvOS player woke from background suspend; awaiting explicit resume")
-                showControls = true
-                hideControlsTask?.cancel()
-                break
-            }
-            guard var interruption = playbackInterruption,
-                  interruption.isPending,
-                  interruption.wasPlaying else { break }
+        if phase == .active, isBackgroundSuspended {
+            Self.logger.info("[CMP-LIFECYCLE] tvOS player woke from background suspend; awaiting explicit resume")
+            showControls = true
+            hideControlsTask?.cancel()
+            return
+        }
+        if phase == .active, interruptionRecoveryDeadline != nil {
             Self.logger.info("[CMP-LIFECYCLE] tvOS player resuming after transient inactive interruption")
-            interruption.recoveryDeadline = Date().addingTimeInterval(
-                Self.interruptionRecoveryTimeout
+        }
+        if phase == .inactive, !isBackgroundSuspended, isPlaying {
+            Self.logger.info(
+                "[CMP-LIFECYCLE] tvOS player entering transient inactive pause at position=\(self.currentTime, privacy: .public)"
             )
-            playbackInterruption = interruption
-            isLoading = true
-            error = nil
-            avPlayerBackend?.play()
-
-            interruptionRecoveryTask?.cancel()
-            interruptionRecoveryTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(
-                    for: .seconds(Self.interruptionRecoveryTimeout)
-                )
-                guard !Task.isCancelled, let self else { return }
-                guard let interruption = self.playbackInterruption,
-                      interruption.isPending,
-                      !interruption.didAutoRecover,
-                      Date() >= interruption.recoveryDeadline else { return }
-                self.triggerAutomaticInterruptionRecovery()
-            }
-        @unknown default:
-            break
-        }
-        #elseif os(macOS)
-        switch phase {
-        case .background:
-            if isPlaying {
-                avPlayerBackend?.pause()
-            }
-        case .inactive, .active:
-            break
-        @unknown default:
-            break
-        }
-        #else
-        isSceneBackgrounded = phase == .background
-        switch phase {
-        case .background:
-            // AirPlay is playing on the receiver, not the phone; pausing here
-            // would stop the TV. `handleExternalPlaybackActiveChange` covers
-            // the route going away while we stay backgrounded.
-            if avPlayerBackend?.isExternalPlaybackActive == true {
-                break
-            }
-            // PiP keeps playing in the floating window after the app is
-            // backgrounded; pausing here would defeat it.
-            if PictureInPictureCoordinator.shared.isEngaged {
-                break
-            }
-            // Automatic PiP can publish `willStart` just after ScenePhase
-            // reaches background. Give it one bounded window; failure/stop
-            // callbacks re-run the same pause policy immediately.
-            if PictureInPictureCoordinator.shared.isPossible {
-                schedulePictureInPictureBackgroundGrace()
-                break
-            }
-            pauseBackgroundPlaybackIfUnrouted()
-        case .active:
-            pictureInPictureBackgroundGraceTask?.cancel()
-            pictureInPictureBackgroundGraceTask = nil
-        case .inactive:
-            break
-        @unknown default:
-            break
         }
         #endif
+        #if os(iOS)
+        isSceneBackgrounded = phase == .background
+        if phase == .background {
+            // The third background exemption — automatic PiP that has not
+            // published `willStart` yet — is a UI timer, so the shell resolves it
+            // *before* the control plane sees the phase (design section 2.3
+            // contract note (b)).
+            if avPlayerBackend?.isExternalPlaybackActive != true,
+               !PictureInPictureCoordinator.shared.isEngaged,
+               PictureInPictureCoordinator.shared.isPossible {
+                schedulePictureInPictureBackgroundGrace()
+                return
+            }
+        }
+        if phase == .active {
+            pictureInPictureBackgroundGraceTask?.cancel()
+            pictureInPictureBackgroundGraceTask = nil
+        }
+        #endif
+        send(.scenePhase(phase))
     }
 
     #if os(iOS)
@@ -4316,7 +3753,7 @@ class PlayerViewModel {
         guard avPlayerBackend?.isExternalPlaybackActive != true else { return }
         guard !PictureInPictureCoordinator.shared.isEngaged else { return }
         Self.logger.info("Background playback has no active AirPlay or PiP route; pausing")
-        avPlayerBackend?.pause()
+        send(.pause)
     }
     #endif
 
@@ -4328,7 +3765,7 @@ class PlayerViewModel {
     /// next double-tap.
     func skipForward(_ seconds: Double = 30, revealingControls: Bool = true) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
         )
@@ -4340,7 +3777,7 @@ class PlayerViewModel {
 
     func skipBackward(_ seconds: Double = 10, revealingControls: Bool = true) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
         )
@@ -4380,7 +3817,7 @@ class PlayerViewModel {
     /// transport buttons.
     func beginHoldSeek(forward: Bool) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         if isHoldSeeking { return } // already in a session
         Self.logger.info(
             "[CMP-SEEK] hold seek begin direction=\(forward ? "forward" : "backward", privacy: .public) current=\(self.currentTime, privacy: .public)"
@@ -4499,17 +3936,15 @@ class PlayerViewModel {
         }
     }
 
-    /// Commit a seek target. Optimistically moves `currentTime` to the
-    /// target and arms the origin↔target filter so stale `onTimeChange`
-    /// frames from the pipeline can't overwrite it. Without this, the
-    /// scrubber visibly jumps back to the pre-seek position between the
-    /// `seek` call and the first post-seek report.
+    /// Commit a seek target.
     ///
-    /// Back-to-back seeks are safe because we capture `seekOriginTime`
-    /// from the pre-commit `currentTime` (which on a repeat commit is the
-    /// prior optimistic target) — the midpoint between that and the new
-    /// target still correctly rejects drainage from either the current or
-    /// the prior seek.
+    /// The optimistic playhead move, the origin/target filter and its 5 s safety
+    /// valve are the reducer's `beginSeek`; what is left here is the branch it
+    /// deliberately does not model (design section 2.3 contract note (e)): a
+    /// target the *current stream cannot contain* has to rebuild the stream
+    /// instead of seeking it. That decision needs plan knowledge — the delivery,
+    /// the loopback anchor, the server's `seek_reanchor` feature — which the
+    /// control plane does not hold.
     @discardableResult
     private func commitSeek(to target: Double, source: String = "unspecified") -> Bool {
         Self.logger.info(
@@ -4519,39 +3954,35 @@ class PlayerViewModel {
             return true
         }
 
-        hasReachedEndOfFile = false
-        seekOriginTime = currentTime
-        seekTargetTime = target
-        avPlayerBackend?.seek(to: target)
-        currentTime = target
+        send(.seek(targetSeconds: target, origin: seekOrigin(for: source)))
         isScrubbing = false
         Self.logger.info(
-            "[CMP-SEEK] commit dispatched source=\(source, privacy: .public) origin=\(self.seekOriginTime ?? -1, privacy: .public) target=\(target, privacy: .public)"
+            "[CMP-SEEK] commit dispatched source=\(source, privacy: .public) origin=\(self.currentTime, privacy: .public) target=\(target, privacy: .public)"
         )
-
-        // Safety valve: if the filter doesn't release naturally (e.g. a
-        // transport error means no post-seek `onTimeChange` ever arrives,
-        // or an HLS transcode takes a while to deliver the first segment
-        // after the new keyframe), drop it after the grace period so we
-        // don't pin the scrubber to the optimistic target forever.
-        seekFilterTimeoutTask?.cancel()
-        seekFilterTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: Self.seekFilterNanos)
-            guard !Task.isCancelled, let self else { return }
-            self.seekOriginTime = nil
-            self.seekTargetTime = nil
-            self.seekFilterTimeoutTask = nil
-        }
         return false
     }
 
+    /// The `SeekOrigin` a `commitSeek` caller stands for. `SeekOrigin` is the
+    /// reducer's, so the shell's string source maps onto it once, here.
+    private func seekOrigin(for source: String) -> SeekOrigin {
+        switch source {
+        case "skipDebounce": return .skip
+        case "chapter": return .chapter
+        case "intro": return .intro
+        case "credits": return .credits
+        case "nextUpBack": return .nextUpKeepWatching
+        case "scrub": return .scrub
+        default: return .user
+        }
+    }
+
+    /// The UI half of a re-anchor: the stream rebuild that follows is what
+    /// actually moves the playhead, so the reducer's `.reanchor` origin arms the
+    /// filter, moves the scrubber and takes down the safety valve without
+    /// issuing an engine seek.
     private func beginReanchorSeekUI(origin: Double, target: Double) {
-        hasReachedEndOfFile = false
-        seekOriginTime = origin
-        seekTargetTime = target
-        seekFilterTimeoutTask?.cancel()
-        seekFilterTimeoutTask = nil
-        currentTime = target
+        _ = origin
+        send(.seek(targetSeconds: target, origin: .reanchor))
         scrubPreviewTime = target
         isScrubbing = false
         isLoading = true
@@ -4588,11 +4019,14 @@ class PlayerViewModel {
 
         if let protocolV3 = activePreparedProtocolV3,
            protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
-            attemptProtocolV3Replan(
-                position: clampedTarget,
-                classification: "seek_reanchor",
-                message: "Reanchor the active stream at the requested source position.",
-                operation: "seek_reanchor"
+            requestReplan(
+                ReplanIntent(
+                    kind: .serverReplan,
+                    position: clampedTarget,
+                    classification: "seek_reanchor",
+                    message: "Reanchor the active stream at the requested source position.",
+                    operation: "seek_reanchor"
+                )
             )
             return true
         }
@@ -4608,11 +4042,16 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: lastLoadRequest.preferredSidecarSubtitleTrackId,
             offlineDownloadId: nil
         )
-        beginFreshLoad(
-            request: seekRequest,
-            progressPosition: origin,
-            resumePositionOverride: clampedTarget,
-            allowNearEndResume: true
+        send(
+            .load(
+                seekRequest,
+                origin: .userInitiated,
+                options: LoadOptions(
+                    progressPosition: origin,
+                    resumePosition: clampedTarget,
+                    allowNearEndResume: true
+                )
+            )
         )
         return true
     }
@@ -4656,131 +4095,30 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-SEEK] local loopback reanchor seek target=\(clampedTarget, privacy: .public) origin=\(origin, privacy: .public) previousOffset=\(plan.loopbackSession?.sourceStartTimeSeconds ?? -1, privacy: .public)"
         )
-        Task { @MainActor [weak self] in
-            await self?.loadStream(plan: updatedPlan)
-        }
+        // A replacement item inside the *same* load, which is exactly what the
+        // reducer's `fileLoaded` `.playing` arm models: the server session is
+        // untouched, only the local remux is re-anchored.
+        pendingExecutionPlan = updatedPlan
+        guard let controlPlane else { return true }
+        // Main-actor-isolated so it cannot overtake `beginReanchorSeekUI`'s
+        // `.seek(.reanchor)` (see `send(_:)`).
+        Task { @MainActor in await controlPlane.reloadEngineInPlace() }
         return true
     }
 
-    private func restartCurrentTranscodeHLS(
-        to target: Double,
-        origin: Double,
-        qualityId: String,
-        source: String
-    ) -> Bool {
-        guard let protocolV3 = activePreparedProtocolV3,
-              let currentWatchDetail,
-              currentSelectedVersion != nil else {
-            Self.logger.warning("[CMP-SEEK] V3 stream replan skipped: missing active protocol or item snapshot")
-            if source == "quality" {
-                isQualitySwitching = false
-                qualitySwitchError = "Quality unavailable for this item."
-            }
-            return false
-        }
-        if source == "seek",
-           !protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
-            return false
-        }
-
-        let externalSubtitleSnapshot = trackSelection.knownExternalSubtitles
-        let selectedSubtitleSnapshot = selectedSubtitleId
-        let selectedSecondarySubtitleSnapshot = selectedSecondarySubtitleId
-        let explicitSubtitleChoiceSnapshot = trackSelection.hasExplicitSubtitleChoice
-        // An embedded selection can't be re-established by trackId across
-        // the backend rebuild (ids aren't stable), and after a switch to
-        // transcode the same stream may resurface as a sidecar instead.
-        // Snapshot its attributes for fuzzy re-selection — the same
-        // mechanism interruption recovery and route fallback use.
-        let embeddedSubtitleSelectionSnapshot = trackSelection.embeddedSubtitleSelectionSnapshot()
-        let previousQualityId = activeQualityId
-        if source == "quality" {
-            activeQualityId = qualityId
-        }
-
-        freshLoadTask?.cancel()
-        freshLoadGeneration &+= 1
-        let currentFreshLoadGeneration = freshLoadGeneration
-        freshLoadTask = Task { @MainActor [weak self] in
-            guard let self, !self.isDisposed else { return }
-            defer {
-                if source == "quality" {
-                    self.isQualitySwitching = false
-                }
-                if self.freshLoadGeneration == currentFreshLoadGeneration {
-                    self.freshLoadTask = nil
-                }
-            }
-
-            if origin.isFinite, origin >= 0 {
-                await self.sessionBridge.reportProgress(position: origin, isPaused: true)
-            }
-            guard !Task.isCancelled, !self.isDisposed else { return }
-
-            if source != "quality" {
-                // Engine only: `loadStream` still has to stash the live proxy's
-                // cache for the replacement, so the transport stays up.
-                self.engineSession?.disposeEngineOnly(reason: "transcode_restart")
-            }
-
-            do {
-                guard let prepared = try await self.sessionBridge.replanProtocolV3(
-                    watchDetail: currentWatchDetail,
-                    position: target,
-                    classification: source == "quality" ? "quality_changed" : "seek_reanchor",
-                    message: source == "quality"
-                        ? "User selected playback quality \(qualityId)."
-                        : "Reanchor the active stream at the requested source position.",
-                    operation: source == "quality"
-                        ? PlaybackProtocolV3.ReplanOperation.qualityChange
-                        : PlaybackProtocolV3.ReplanOperation.seekReanchor,
-                    qualityPreference: source == "quality" ? qualityId : nil,
-                    audioTrackIndex: self.trackSelection.resolvedAudioTrackIndexForResume(),
-                    subtitleTrackIndex: self.trackSelection.resolvedProtocolV3SubtitleIndexForResume()
-                ) else {
-                    throw PlaybackV3TerminalFailure(
-                        reason: "replan_unavailable",
-                        message: "The active V3 playback plan cannot be replaced in place.",
-                        retryable: false
-                    )
-                }
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                if source == "quality" {
-                    self.lastLoadRequest?.preferredQualityOverride = qualityId
-                }
-                try await self.adoptPreparedPlayback(
-                    prepared,
-                    origin: .transcodeRestart(PlaybackAdoptionOrigin.TranscodeRestart(
-                        target: target,
-                        isQualitySwitch: source == "quality",
-                        selectedSubtitleSnapshot: selectedSubtitleSnapshot,
-                        subtitleUrlFallback: externalSubtitleSnapshot,
-                        recoveredEmbeddedSubtitleSelection: embeddedSubtitleSelectionSnapshot,
-                        recoveredSecondarySubtitleId: selectedSecondarySubtitleSnapshot,
-                        hasExplicitSubtitleChoice: explicitSubtitleChoiceSnapshot
-                    ))
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                Self.logger.error("[CMP-SEEK] in-place transcode restart failed: \(String(describing: error), privacy: .public)")
-                if source == "quality" {
-                    self.activeQualityId = previousQualityId
-                    self.qualitySwitchError = "Couldn't switch quality."
-                    self.clearLoadingOverlay(reason: "quality_switch_failure")
-                    self.setBuffering(false, cause: "quality_switch_failure")
-                } else {
-                    self.finalizeTerminalPlaybackError(String(describing: error))
-                }
-            }
-        }
-        return true
+    /// Mint a replan the reducer did not decide for itself: the two seek
+    /// re-anchor paths and, historically, the in-place transcode restart.
+    ///
+    /// Main-actor-isolated for the ordering reason `send(_:)` documents: it is
+    /// always preceded by `beginReanchorSeekUI`'s `.seek(.reanchor)`.
+    private func requestReplan(_ intent: ReplanIntent) {
+        guard !isDisposed, let controlPlane else { return }
+        Task { @MainActor in await controlPlane.requestReplan(intent) }
     }
 
     func seek(to fraction: Double) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         guard duration > 0 else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -4795,7 +4133,7 @@ class PlayerViewModel {
     /// progress-bar scrubber.
     func seekTo(seconds: Double) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         Self.logger.info(
@@ -4837,7 +4175,7 @@ class PlayerViewModel {
         guard settings.autoSkipIntro,
               !isLoading,
               !isBackgroundSuspended,
-              !hasReachedEndOfFile,
+              !hasEndedStream,
               let introRange,
               let key = currentIntroSkipKey(for: introRange) else {
             cancelPendingIntroAutoSkip()
@@ -4890,7 +4228,7 @@ class PlayerViewModel {
                   self.settings.autoSkipIntro,
                   !self.isLoading,
                   !self.isBackgroundSuspended,
-                  !self.hasReachedEndOfFile,
+                  !self.hasEndedStream,
                   self.pendingAutoSkipIntroKey == key,
                   self.autoSkipIntroCancelledKey != key,
                   self.autoSkippedIntroKey != key,
@@ -4922,7 +4260,7 @@ class PlayerViewModel {
         let key = creditsRange.flatMap(currentCreditsSkipKey(for:))
         guard let target = CreditsAutoSkipPolicy.target(
             enabled: settings.autoSkipCredits,
-            playbackEligible: !isLoading && !isBackgroundSuspended && !hasReachedEndOfFile,
+            playbackEligible: !isLoading && !isBackgroundSuspended && !hasEndedStream,
             time: time,
             range: creditsRange,
             markerKey: key,
@@ -4941,7 +4279,7 @@ class PlayerViewModel {
     }
 
     private func currentIntroSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard let sessionId = currentServerSessionId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
@@ -4949,7 +4287,7 @@ class PlayerViewModel {
     }
 
     private func currentCreditsSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard let sessionId = currentServerSessionId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
@@ -4958,7 +4296,7 @@ class PlayerViewModel {
 
     func beginScrub(fraction: Double) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         guard duration > 0 else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -4969,14 +4307,14 @@ class PlayerViewModel {
 
     func updateScrub(fraction: Double) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         guard duration > 0 else { return }
         scrubPreviewTime = max(0, min(fraction, 1)) * duration
     }
 
     func endScrub(resumePlayback: Bool = false, shouldSeek: Bool = true) {
         guard !isBackgroundSuspended else { return }
-        guard !hasReachedEndOfFile else { return }
+        guard !hasEndedStream else { return }
         guard isScrubbing else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -4999,7 +4337,7 @@ class PlayerViewModel {
             )
         }
         if resumePlayback, !reloadsPlaybackPipeline {
-            avPlayerBackend?.play()
+            send(.play)
         }
         scheduleHideControls()
     }
@@ -5036,7 +4374,7 @@ class PlayerViewModel {
                     activePreparedProtocolV3: self.activePreparedProtocolV3,
                     currentSelectedVersion: self.currentSelectedVersion,
                     currentWatchDetail: self.currentWatchDetail,
-                    activePlaybackSessionId: self.activePlaybackSessionId,
+                    serverSessionId: self.currentServerSessionId,
                     resolvedServerUrl: self.resolvedServerUrl,
                     activeRouteKind: self.activeRouteKind,
                     backendCapabilities: self.backendCapabilities,
@@ -5053,22 +4391,24 @@ class PlayerViewModel {
             backendCapabilities: { [weak self] in
                 self?.backendCapabilities ?? TrackSelectionContext.unavailable.backendCapabilities
             },
-            activePlaybackSessionId: { [weak self] in self?.activePlaybackSessionId ?? nil },
+            serverSessionId: { [weak self] in self?.currentServerSessionId ?? nil },
             currentSelectedVersion: { [weak self] in self?.currentSelectedVersion ?? nil },
             // The subtitle index the third parameter carries is diagnostic
             // only: the durable write already happened through
             // `setLastLoadRequestProtocolV3SubtitleIndex` at the one site that
-            // has a value, and `attemptProtocolV3Replan` takes no such
-            // argument.
+            // has a value, and the replan intent takes no such argument.
             requestReplan: { [weak self] classification, message, _ in
                 guard let self else { return }
-                self.attemptProtocolV3Replan(
-                    position: self.currentTime,
-                    classification: classification,
-                    message: message
+                self.requestReplan(
+                    ReplanIntent(
+                        kind: .serverReplan,
+                        position: self.currentTime,
+                        classification: classification,
+                        message: message
+                    )
                 )
             },
-            isReplanInFlight: { [weak self] in (self?.protocolV3ReplanTask ?? nil) != nil },
+            isReplanInFlight: { [weak self] in self?.replanSuspensionHolder != nil },
             lastLoadRequest: { [weak self] in self?.lastLoadRequest ?? nil },
             setLastLoadRequestProtocolV3SubtitleIndex: { [weak self] index in
                 self?.lastLoadRequest?.preferredProtocolV3SubtitleIndex = index
@@ -5180,18 +4520,6 @@ class PlayerViewModel {
         default:
             return nil
         }
-    }
-
-    /// The by-value generation guard the 17 backend callbacks used to carry.
-    /// Wave 2b replaced every one of them with the engine session's own
-    /// identity, so nothing in the player calls this any more; it stays until
-    /// wave 3 retires `PlaybackProtocolV3Tests`' pin on it with the rest of the
-    /// generation model.
-    static func isCurrentStreamCallback(
-        _ callbackGeneration: UInt64,
-        currentGeneration: UInt64
-    ) -> Bool {
-        callbackGeneration == currentGeneration
     }
 
     static func isUnexpectedBackwardPlaybackTime(
@@ -5356,8 +4684,6 @@ class PlayerViewModel {
         isSceneBackgrounded = false
         #endif
         activeExecutionPlan = nil
-        activePlaybackSessionId = nil
-        staleSessionRecoverySessionId = nil
         currentWatchDetail = nil
         currentSelectedVersion = nil
         introRange = nil
@@ -5369,9 +4695,7 @@ class PlayerViewModel {
         trackSelection.reset()
         activeNotice = nil
         tearDownHoldSeek()
-        backgroundRenewalSessionId = nil
-        clearSourceOutageRideThroughState()
-        clearServerOutageRecoveryState()
+        sourceOutageNoticeShown = false
         // Everything except the cleanup-completion task installed below.
         tasks.cancelAll(in: .teardown)
         if let outputRouteObserverToken {
@@ -5380,8 +4704,6 @@ class PlayerViewModel {
         }
         sleepTimer.cancel()
         nowPlaying.detach()
-        clearForegroundInterruptionState()
-        clearSuspendedPlaybackState()
         // Final offline progress flush before teardown — the counterpart of
         // the online path's `stopSession` report below. Captured into locals
         // so the detached task doesn't read torn-down player state.
@@ -5393,7 +4715,7 @@ class PlayerViewModel {
             let finalOfflinePosition = completionProgressPositionForCurrentItem()
             let endedNaturally = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
                 isNextUpPresented: showNextUpScreen,
-                hasReachedEndOfFile: hasReachedEndOfFile,
+                hasReachedEndOfFile: hasEndedStream,
                 currentTime: currentTime,
                 duration: duration,
                 promptSeconds: settings.nextUpPromptSeconds
@@ -5411,6 +4733,19 @@ class PlayerViewModel {
         }
 
         let finalPosition = currentTime
+        // `.dismiss` cancels every control-plane timer, disposes the engine
+        // (discarding the source-cache handoff) and stops the server session.
+        // The stop below is the one the bridge still owes for a *non-offline*
+        // load; `PlaybackReducer.dismiss` emits its own `.stopSession` only when
+        // the state still holds an identity, and both are identity-guarded, so
+        // whichever lands second is a no-op.
+        let controlPlane = self.controlPlane
+        self.controlPlane = nil
+        if let controlPlane {
+            // Main-actor-isolated with the rest of the forwarding path, so the
+            // teardown cannot overtake an intent the view issued just before it.
+            Task { @MainActor in await controlPlane.shutdown() }
+        }
         engineSession?.dispose(reason: "cleanup")
         // Drop the disposed session so any post-teardown call is an explicit
         // no-op rather than relying on the backend's own `isDisposed` guard.
@@ -5472,7 +4807,7 @@ class PlayerViewModel {
 
     @MainActor
     private func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
-        guard event.sessionId == activePlaybackSessionId else { return }
+        guard event.sessionId == currentServerSessionId else { return }
         switch event.name {
         case .markersUpdated:
             guard let payload = PlaybackRealtimeMarkersUpdatedPayload(payload: event.payload) else {
@@ -5516,7 +4851,7 @@ class PlayerViewModel {
     private func handleRealtimeCommand(_ command: PlaybackRealtimeCommandEnvelope) async throws {
         switch command.name {
         case .pause:
-            avPlayerBackend?.pause()
+            send(.pause)
             if isAdminIssued(command) {
                 showNotice(
                     title: "Playback paused by admin",
@@ -5526,7 +4861,7 @@ class PlayerViewModel {
                 )
             }
         case .unpause:
-            avPlayerBackend?.play()
+            send(.play)
             if isAdminIssued(command) {
                 showNotice(
                     title: "Playback resumed by admin",
@@ -5536,12 +4871,8 @@ class PlayerViewModel {
                 )
             }
         case .playPause:
-            let wasPaused = avPlayerBackend?.isPaused() ?? true
-            if wasPaused {
-                avPlayerBackend?.play()
-            } else {
-                avPlayerBackend?.pause()
-            }
+            let wasPaused = !isPlaying
+            send(.togglePlayPause)
             if isAdminIssued(command) {
                 showNotice(
                     title: wasPaused ? "Playback resumed by admin" : "Playback paused by admin",
@@ -5598,7 +4929,7 @@ class PlayerViewModel {
                 duration: 10
             )
         case .stop, .terminate:
-            avPlayerBackend?.pause()
+            send(.pause)
             if isAdminIssued(command) {
                 let isTerminate = command.name == .terminate
                 showNotice(
@@ -5846,36 +5177,6 @@ class PlayerViewModel {
         }
     }
 
-    private func startProgressReporting() {
-        progressTask?.cancel()
-        progressTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                guard !Task.isCancelled else { return }
-                guard let self else { return }
-                if let offline = self.offlinePlaybackContext {
-                    self.recordOfflineProgress(context: offline)
-                    continue
-                }
-                let result = await self.sessionBridge.reportProgress(
-                    position: self.currentTime,
-                    isPaused: !self.isPlaying
-                )
-                if result == .missingSession, let session = self.engineSession {
-                    // Which renewal this heartbeat's missing session deserves —
-                    // silent, visible, or neither because one is already in
-                    // flight — is `RecoveryPolicy.decideSessionMissing`'s.
-                    self.refreshRecoveryContext(session: session)
-                    if let action = session.driver.observe(
-                        .sessionMissing(source: .progressHeartbeat)
-                    ) {
-                        self.executeRecoveryAction(action, session: session)
-                    }
-                }
-            }
-        }
-    }
-
     /// Route one watch-progress sample into the offline queue. The explicit
     /// `position` lets the terminal flushes (EOF, player close) pin the
     /// end-state instead of relying on the last observed tick; `markCompleted`
@@ -5950,90 +5251,6 @@ class PlayerViewModel {
     }
     #endif
 
-    private func pauseForForegroundInterruptionIfNeeded() {
-        guard !isBackgroundSuspended else { return }
-        guard isPlaying else { return }
-        let position = currentTime
-        let wasPlaying = isPlaying
-        Self.logger.info(
-            "[CMP-LIFECYCLE] tvOS player entering transient inactive pause at position=\(position, privacy: .public)"
-        )
-        playbackInterruption = PlaybackInterruptionState(
-            wasPlaying: wasPlaying,
-            positionSeconds: position,
-            recoveryDeadline: Date(),
-            didAutoRecover: false,
-            isPending: wasPlaying
-        )
-        interruptionRecoveryTask?.cancel()
-        interruptionRecoveryTask = nil
-        error = nil
-        avPlayerBackend?.pause()
-    }
-
-    private func suspendForBackground() {
-        guard !isBackgroundSuspended else { return }
-        guard let suspendedContext = makeSuspendedPlaybackContext() else { return }
-
-        let position = suspendedContext.resumePosition
-        Self.logger.info(
-            "[CMP-LIFECYCLE] tvOS player background suspend at position=\(position, privacy: .public)"
-        )
-
-        suspendedPlayback = suspendedContext
-
-        // Reset the state that travels with these tasks first, then sweep by
-        // scope. The hand-maintained list this replaced only covered the fresh
-        // load, progress, and interaction timers, so the V3 replan, session
-        // renewal, outage recovery, Next Up countdown, and auto-skip countdown
-        // all kept running against a session about to be stopped below.
-        clearForegroundInterruptionState()
-        clearSourceOutageRideThroughState()
-        clearServerOutageRecoveryState()
-        cancelPendingIntroAutoSkip()
-        cancelNextUpCountdown()
-        backgroundRenewalSessionId = nil
-        tasks.cancelAll(in: .interaction, .activeStream, .sessionRecovery)
-        sleepTimer.cancel()
-
-        activeNotice = nil
-        isHUDPresented = false
-        setBuffering(false, cause: "background_suspend")
-        clearLoadingOverlay(reason: "background_suspend")
-        isPlaying = false
-        showControls = true
-        holdSeekRate = 0
-        isScrubbing = false
-        scrubPreviewTime = position
-
-        nowPlaying.detach()
-        engineSession?.dispose(reason: "background_suspend", retainingTransport: true)
-
-        // Registered rather than unstructured so the stop is observable, but
-        // in no teardown scope: cancelling it would strand the server session.
-        // A resume that overtakes it stays safe because the bridge clears its
-        // identity only when the stopped session is still the current one.
-        suspendStopSessionTask = Task { [weak self] in
-            await self?.realtimeClient.unbind()
-            await self?.sessionBridge.stopSession(position: position, isPaused: true)
-        }
-    }
-
-    private func resumeSuspendedPlayback() {
-        guard let suspendedPlayback else { return }
-        Self.logger.info(
-            "[CMP-LIFECYCLE] tvOS explicit resume from suspended playback at position=\(suspendedPlayback.resumePosition, privacy: .public)"
-        )
-        clearSuspendedPlaybackState()
-        error = nil
-        showControls = true
-        beginFreshLoad(
-            request: suspendedPlayback.request,
-            progressPosition: nil,
-            resumePositionOverride: suspendedPlayback.resumePosition,
-            allowNearEndResume: true
-        )
-    }
 }
 
 private enum SiloControlPlayerError: LocalizedError {
@@ -6089,10 +5306,10 @@ extension PlayerViewModel {
         }
         switch command.name {
         case .play:
-            avPlayerBackend?.play()
+            send(.play)
             scheduleHideControls()
         case .pause:
-            avPlayerBackend?.pause()
+            send(.pause)
             scheduleHideControls()
         case .playPause:
             togglePlayPause()
@@ -6102,7 +5319,7 @@ extension PlayerViewModel {
             }
             seekTo(seconds: seconds)
         case .stop:
-            avPlayerBackend?.pause()
+            send(.pause)
             requestRemoteDismiss()
         case .selectAudioTrack:
             guard let trackId = command.trackId else {
@@ -6185,7 +5402,7 @@ extension PlayerViewModel {
 
         return SiloControlPlaybackState(
             contentId: liveContentId,
-            sessionId: activePlaybackSessionId,
+            sessionId: currentServerSessionId,
             title: titleText.isEmpty ? "Loading" : titleText,
             subtitle: subtitleText.isEmpty ? nil : subtitleText,
             isPlaying: isPlaying,

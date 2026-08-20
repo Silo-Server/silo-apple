@@ -325,6 +325,59 @@ final class PlaybackEngineSessionTests: XCTestCase {
         )
     }
 
+    /// The axis conversion, once, on the way out.
+    ///
+    /// `PlaybackBackend.onTimeChange` reports AVPlayer's own clock; everything
+    /// downstream (the reducer's playhead, the seek targets it is compared
+    /// against, the position `Effect.reportProgress` puts on the wire) is movie
+    /// time. The view model used to convert at its callback
+    /// (`seconds + playbackTimelineOffset`, base PVM:998); the session does it
+    /// now, so there is exactly one conversion site.
+    func testTimeEventsAreEmittedOnTheMovieTimeAxis() async {
+        let backend = FakePlaybackBackend()
+        let session = makeSession(plan: localHLSPlan(), backend: backend)
+
+        // No offset yet: the two axes coincide.
+        backend.fireTime(10)
+        // A server-remux resume: the manifest starts at the resume point, so
+        // AVPlayer's clock restarts near zero and the offset carries the rest.
+        backend.fireTimelineOffset(300)
+        backend.fireTime(12.5)
+        // A non-finite sample is floored, exactly as `mediaTime(for:)` does.
+        backend.fireTime(.nan)
+
+        let events = await drain(session)
+        XCTAssertEqual(
+            events,
+            [
+                .time(seconds: 10),
+                .timelineOffset(300),
+                .time(seconds: 312.5),
+                .time(seconds: 0),
+            ]
+        )
+    }
+
+    /// An in-place replan keeps the live backend, and the backend keeps its
+    /// timeline offset — so the successor session has to seed its mirror from
+    /// the session it replaces or the first tick after the swap would land
+    /// minutes early.
+    func testAReusedBackendKeepsItsTimelineOffsetForTheSuccessorSession() async {
+        let backend = FakePlaybackBackend()
+        let first = makeSession(plan: localHLSPlan(), backend: backend)
+        backend.fireTimelineOffset(300)
+
+        let second = makeSession(
+            plan: localHLSPlan(),
+            backend: FakePlaybackBackend(),
+            reusing: first
+        )
+        backend.fireTime(12.5)
+
+        let events = await drain(second)
+        XCTAssertEqual(events, [.time(seconds: 312.5)])
+    }
+
     /// Three of those callbacks also feed the recovery context, because the
     /// pure policy cannot read the player: the play-intent latch, the
     /// file-loaded edge and the media-timeline offset.

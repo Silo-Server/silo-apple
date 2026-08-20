@@ -1646,7 +1646,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
     }
 
     func testRecoveryLoadRequestsKeepTheSessionQualityOverride() throws {
-        let original = PlayerViewModel.LoadRequest(
+        let original = LoadRequest(
             contentId: "movie-1",
             preferredFileId: 10,
             preferredAudioTrackIndex: 2,
