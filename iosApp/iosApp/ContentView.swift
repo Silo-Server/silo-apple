@@ -1693,6 +1693,49 @@ struct MainTabLibrarySnapshot: Equatable {
     }
 }
 
+/// Owns the library list behind the primary menu: the fail-closed reset when
+/// the authority changes, the refresh, and the cancellation/authority
+/// re-check around the response. Held as `@State` by every screen that
+/// projects libraries into a menu — `MainTabView`, `InterfaceCustomizationView`
+/// and (on tvOS) `TVGeneralSettingsPane` — so that rule has one owner.
+@Observable
+@MainActor
+final class LibrarySnapshotLoader {
+    /// Tagged with the server/profile that authorized the list. A profile
+    /// transition fails direct roots closed immediately, even before its
+    /// cache invalidation and network refresh finish.
+    private(set) var snapshot: MainTabLibrarySnapshot = .cachedForCurrentAuthority()
+
+    /// The authority currently in force — re-read rather than cached so a
+    /// profile switch is visible the moment it lands.
+    var currentAuthority: MainTabLibraryAuthority? { MainTabLibraryAuthority.current }
+
+    /// Libraries safe to show right now: none unless the snapshot was
+    /// authorized by the authority in force.
+    var libraries: [Library] { snapshot.availableLibraries(for: currentAuthority) }
+
+    func refresh(for authority: MainTabLibraryAuthority?) async {
+        let retained = snapshot.authority == authority ? snapshot.libraries : []
+        snapshot = .init(authority: authority, libraries: retained)
+        guard let authority else { return }
+        do {
+            let response = try await StartupContentPrefetcher.fetchUserLibraries()
+            guard !Task.isCancelled, currentAuthority == authority else { return }
+            snapshot = .init(authority: authority, libraries: response.libraries)
+        } catch {
+            // Keep the same-authority cache; a different authority already
+            // failed closed above.
+        }
+    }
+
+    /// Adopt a list some other loader already fetched, provided it was
+    /// authorized by the authority still in force.
+    func adopt(libraries: [Library], for authority: MainTabLibraryAuthority?) {
+        guard let authority, authority == currentAuthority else { return }
+        snapshot = .init(authority: authority, libraries: libraries)
+    }
+}
+
 struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
@@ -1701,10 +1744,7 @@ struct MainTabView: View {
     /// synced/custom menu contains an Audiobooks destination.
     @State private var navPrefs = AppNavPreferences.shared
     @State private var serverRegistry = ServerRegistry.shared
-    /// Tagged with the server/profile that authorized the library list. A
-    /// profile transition fails direct roots closed immediately, even before
-    /// its cache invalidation and network refresh finish.
-    @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
+    @State private var libraryLoader = LibrarySnapshotLoader()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
     /// Shared namespace for the poster → detail zoom transition. Injected into
@@ -1730,12 +1770,12 @@ struct MainTabView: View {
         }
         .tint(.siloOnSurface)
         .task(id: currentLibraryAuthority) {
-            await loadVisibleLibraries(for: currentLibraryAuthority)
+            await libraryLoader.refresh(for: currentLibraryAuthority)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             let authority = currentLibraryAuthority
-            Task { await loadVisibleLibraries(for: authority) }
+            Task { await libraryLoader.refresh(for: authority) }
         }
         #if !os(tvOS)
         // Mirror Android's offline start-destination: launching with no
@@ -1786,7 +1826,7 @@ struct MainTabView: View {
                 visibleDestinations: visibleDestinations
             )
         }
-        .onChange(of: librarySnapshot) { _, _ in
+        .onChange(of: libraryLoader.snapshot) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
                 visibleDestinations: visibleDestinations
@@ -1794,10 +1834,8 @@ struct MainTabView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
             notification in
-            guard let authority = currentLibraryAuthority,
-                  let response = notification.object as? LibrariesResponse
-            else { return }
-            librarySnapshot = .init(authority: authority, libraries: response.libraries)
+            guard let response = notification.object as? LibrariesResponse else { return }
+            libraryLoader.adopt(libraries: response.libraries, for: currentLibraryAuthority)
         }
         #if !os(macOS)
         .fullScreenCover(isPresented: Binding(
@@ -1851,9 +1889,7 @@ struct MainTabView: View {
     private var visibleDestinations: [MainTabDestination] {
         var destinations = projectedMainTabDestinations(
             primaryMenu: uiCustomization.primaryMenu,
-            availableLibraries: librarySnapshot.availableLibraries(
-                for: currentLibraryAuthority
-            ),
+            availableLibraries: libraryLoader.libraries,
             showAudiobooks: navPrefs.showAudiobooks
         )
         #if !os(tvOS)
@@ -1866,23 +1902,7 @@ struct MainTabView: View {
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority.current
-    }
-
-    private func loadVisibleLibraries(for authority: MainTabLibraryAuthority?) async {
-        let retainedLibraries = librarySnapshot.authority == authority
-            ? librarySnapshot.libraries
-            : []
-        librarySnapshot = .init(authority: authority, libraries: retainedLibraries)
-        guard let authority else { return }
-        do {
-            let response = try await StartupContentPrefetcher.fetchUserLibraries()
-            guard !Task.isCancelled, currentLibraryAuthority == authority else { return }
-            librarySnapshot = .init(authority: authority, libraries: response.libraries)
-        } catch {
-            // Keep the active-profile cache, or fail closed with no direct
-            // library roots when there is no safe offline routing metadata.
-        }
+        libraryLoader.currentAuthority
     }
 
     private var selectedDestination: MainTabDestination {
@@ -2103,12 +2123,9 @@ struct MainTabView: View {
             }
         }
 
-        let availableLibraries = librarySnapshot.availableLibraries(
-            for: currentLibraryAuthority
-        )
         return groupPinnedLibrariesUnderMediaTypes(
             visibleDestinations,
-            libraries: availableLibraries,
+            libraries: libraryLoader.libraries,
             libraryID: { destination in
                 guard case .library(let libraryID) = destination.id else { return nil }
                 return libraryID
@@ -2189,8 +2206,7 @@ struct MainTabView: View {
         authority: MainTabLibraryAuthority?,
         libraries: [Library]
     ) {
-        guard let authority, authority == currentLibraryAuthority else { return }
-        librarySnapshot = .init(authority: authority, libraries: libraries)
+        libraryLoader.adopt(libraries: libraries, for: authority)
     }
 
     @ViewBuilder

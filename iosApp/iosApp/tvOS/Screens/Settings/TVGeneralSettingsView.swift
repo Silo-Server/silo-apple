@@ -12,7 +12,7 @@ struct TVGeneralSettingsPane: View {
     @State private var activePicker: PickerKind?
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
-    @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
+    @State private var libraryLoader = LibrarySnapshotLoader()
     let activeProfile: UserProfile?
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let changePairedProfile: () -> Void
@@ -138,14 +138,14 @@ struct TVGeneralSettingsPane: View {
             await preferences.refresh()
         }
         .task(id: currentLibraryAuthority) {
-            await refreshLibraries(for: currentLibraryAuthority)
+            await libraryLoader.refresh(for: currentLibraryAuthority)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             let authority = currentLibraryAuthority
             Task {
                 async let preferencesRefresh: Void = preferences.refresh()
-                async let librariesRefresh: Void = refreshLibraries(for: authority)
+                async let librariesRefresh: Void = libraryLoader.refresh(for: authority)
                 _ = await (preferencesRefresh, librariesRefresh)
             }
         }
@@ -271,25 +271,11 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority.current
+        libraryLoader.currentAuthority
     }
 
     private var libraries: [Library] {
-        librarySnapshot.availableLibraries(for: currentLibraryAuthority)
-    }
-
-    private func refreshLibraries(for authority: MainTabLibraryAuthority?) async {
-        let retained = librarySnapshot.authority == authority ? librarySnapshot.libraries : []
-        librarySnapshot = .init(authority: authority, libraries: retained)
-        guard let authority else { return }
-        do {
-            let response = try await StartupContentPrefetcher.fetchUserLibraries()
-            guard !Task.isCancelled, currentLibraryAuthority == authority else { return }
-            librarySnapshot = .init(authority: authority, libraries: response.libraries)
-        } catch {
-            // Keep the same-authority cache; a different authority already
-            // failed closed above.
-        }
+        libraryLoader.libraries
     }
 
     private static let customPresetId = "custom"
