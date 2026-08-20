@@ -82,7 +82,7 @@ final class ConnectionMonitor {
                 category: .network,
                 tag: "Reach",
                 message: "server reachable",
-                attrs: ["outcome": .string("reachable")]
+                attrs: ["outcome": .string(HTTPDiagnosticsOutcome.reachable)]
             )
             #endif
         }
@@ -110,7 +110,7 @@ final class ConnectionMonitor {
             category: .network,
             tag: "Reach",
             message: "server unreachable",
-            attrs: ["outcome": .string("unreachable")]
+            attrs: ["outcome": .string(HTTPDiagnosticsOutcome.unreachable)]
         )
         #endif
         serverStatus = .unreachable
@@ -167,7 +167,11 @@ final class ConnectionMonitor {
             category: .network,
             tag: "Reach",
             message: "device network path changed",
-            attrs: ["outcome": .string(online ? "online" : "offline")]
+            attrs: [
+                "outcome": .string(
+                    online ? HTTPDiagnosticsOutcome.online : HTTPDiagnosticsOutcome.offline
+                ),
+            ]
         )
         #endif
         if online {
@@ -203,7 +207,7 @@ final class ConnectionMonitor {
             category: .network,
             tag: "Reach",
             message: "reprobe loop armed",
-            attrs: ["outcome": .string("unreachable")]
+            attrs: ["outcome": .string(HTTPDiagnosticsOutcome.unreachable)]
         )
         #endif
         reprobeTask = Task { [weak self] in

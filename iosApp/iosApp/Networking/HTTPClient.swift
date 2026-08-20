@@ -1225,7 +1225,18 @@ actor HTTPClient {
         // none of that may ever reach a log line, so the raw URL is
         // deliberately never held in a variable the emission sites below can
         // reach: they can only see the already-templated string.
-        let diagnosticsPath = HTTPDiagnosticsPath.attribute(for: request.url)
+        //
+        // Behind the capture gate, and that ordering is the point: templating
+        // is ~14 regex matches per path segment, twice, and this is the one
+        // function every ordinary request in the app passes through. Paying it
+        // for a report that will never be written costs more than every line it
+        // feeds is worth, so the memoized gate — the same one `DiagTrace` reads
+        // per call — decides first. `nil` means "not capturing", and every
+        // emission site below is skipped rather than logging a placeholder
+        // path.
+        let diagnosticsPath = DiagnosticsCoordinator.isDiagnosticsCaptureEnabled
+            ? HTTPDiagnosticsPath.attribute(for: request.url)
+            : nil
         let diagnosticsMethod = request.httpMethod ?? "GET"
         let startedAt = ContinuousClock.now
         #endif
@@ -1241,19 +1252,21 @@ actor HTTPClient {
             // Essential: an identity-change rejection is invisible to the user
             // as anything but "it didn't load", and it is the signature of the
             // server-switch races this class exists to prevent.
-            DiagTrace.log(
-                .essential,
-                level: .warning,
-                category: .network,
-                tag: "HTTP",
-                message: "request rejected",
-                attrs: [
-                    "method": .string(diagnosticsMethod),
-                    "path": .string(diagnosticsPath),
-                    "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
-                    "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
-                ]
-            )
+            if let diagnosticsPath {
+                DiagTrace.log(
+                    .essential,
+                    level: .warning,
+                    category: .network,
+                    tag: "HTTP",
+                    message: "request rejected",
+                    attrs: [
+                        "method": .string(diagnosticsMethod),
+                        "path": .string(diagnosticsPath),
+                        "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
+                        "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
+                    ]
+                )
+            }
             #endif
             throw error
         }
@@ -1265,20 +1278,22 @@ actor HTTPClient {
         } catch {
             if isRequestDispatchBlocked || requestDispatchRevision != dispatchRevision {
                 #if os(iOS) || os(tvOS)
-                DiagTrace.log(
-                    .essential,
-                    level: .warning,
-                    category: .network,
-                    tag: "HTTP",
-                    message: "request rejected",
-                    attrs: [
-                        "method": .string(diagnosticsMethod),
-                        "path": .string(diagnosticsPath),
-                        "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-                        "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
-                        "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
-                    ]
-                )
+                if let diagnosticsPath {
+                    DiagTrace.log(
+                        .essential,
+                        level: .warning,
+                        category: .network,
+                        tag: "HTTP",
+                        message: "request rejected",
+                        attrs: [
+                            "method": .string(diagnosticsMethod),
+                            "path": .string(diagnosticsPath),
+                            "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+                            "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
+                            "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
+                        ]
+                    )
+                }
                 #endif
                 throw HTTPError.requestIdentityChanged
             }
@@ -1293,25 +1308,27 @@ actor HTTPClient {
             // ordinary (screen dismissed, server switched) and high-volume, so
             // it is verbose; a real transport failure is the "it won't connect"
             // evidence this instrumentation exists for, so it is essential.
-            let isCancellation = (error as? URLError)?.code == .cancelled
-            DiagTrace.log(
-                isCancellation ? .verbose : .essential,
-                level: isCancellation ? .debug : .error,
-                category: .network,
-                tag: "HTTP",
-                message: isCancellation ? "request cancelled" : "transport failure",
-                attrs: [
-                    "method": .string(diagnosticsMethod),
-                    "path": .string(diagnosticsPath),
-                    "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-                    "outcome": .string(
-                        isCancellation
-                            ? HTTPDiagnosticsOutcome.cancelled
-                            : HTTPDiagnosticsOutcome.transportError
-                    ),
-                    "error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error)),
-                ]
-            )
+            if let diagnosticsPath {
+                let isCancellation = HTTPError.indicatesCancellation(error)
+                DiagTrace.log(
+                    isCancellation ? .verbose : .essential,
+                    level: isCancellation ? .debug : .error,
+                    category: .network,
+                    tag: "HTTP",
+                    message: isCancellation ? "request cancelled" : "transport failure",
+                    attrs: [
+                        "method": .string(diagnosticsMethod),
+                        "path": .string(diagnosticsPath),
+                        "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+                        "outcome": .string(
+                            isCancellation
+                                ? HTTPDiagnosticsOutcome.cancelled
+                                : HTTPDiagnosticsOutcome.transportError
+                        ),
+                        "error_code": .string(HTTPDiagnosticsErrorCode.classify(transport: error)),
+                    ]
+                )
+            }
             #endif
             throw HTTPError.network(underlying: error)
         }
@@ -1325,39 +1342,43 @@ actor HTTPClient {
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
         } catch {
             #if os(iOS) || os(tvOS)
-            DiagTrace.log(
-                .essential,
-                level: .warning,
-                category: .network,
-                tag: "HTTP",
-                message: "response rejected",
-                attrs: [
-                    "method": .string(diagnosticsMethod),
-                    "path": .string(diagnosticsPath),
-                    "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-                    "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
-                    "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
-                ]
-            )
+            if let diagnosticsPath {
+                DiagTrace.log(
+                    .essential,
+                    level: .warning,
+                    category: .network,
+                    tag: "HTTP",
+                    message: "response rejected",
+                    attrs: [
+                        "method": .string(diagnosticsMethod),
+                        "path": .string(diagnosticsPath),
+                        "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+                        "outcome": .string(HTTPDiagnosticsOutcome.identityChanged),
+                        "error_code": .string(HTTPDiagnosticsOutcome.identityChanged),
+                    ]
+                )
+            }
             #endif
             throw error
         }
         guard let http = response as? HTTPURLResponse else {
             #if os(iOS) || os(tvOS)
-            DiagTrace.log(
-                .essential,
-                level: .error,
-                category: .network,
-                tag: "HTTP",
-                message: "non-http response",
-                attrs: [
-                    "method": .string(diagnosticsMethod),
-                    "path": .string(diagnosticsPath),
-                    "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-                    "outcome": .string(HTTPDiagnosticsOutcome.invalidResponse),
-                    "error_code": .string(HTTPDiagnosticsOutcome.invalidResponse),
-                ]
-            )
+            if let diagnosticsPath {
+                DiagTrace.log(
+                    .essential,
+                    level: .error,
+                    category: .network,
+                    tag: "HTTP",
+                    message: "non-http response",
+                    attrs: [
+                        "method": .string(diagnosticsMethod),
+                        "path": .string(diagnosticsPath),
+                        "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+                        "outcome": .string(HTTPDiagnosticsOutcome.invalidResponse),
+                        "error_code": .string(HTTPDiagnosticsOutcome.invalidResponse),
+                    ]
+                )
+            }
             #endif
             throw HTTPError.invalidResponse
         }
@@ -1383,23 +1404,25 @@ actor HTTPClient {
         // records the status and leaves the verdict to the essential line
         // `ensureSuccess` emits. Guessing here would mean every quiet 404 also
         // reads as an error somewhere in the report.
-        var responseAttrs: [String: DiagLogAttributeValue] = [
-            "method": .string(diagnosticsMethod),
-            "path": .string(diagnosticsPath),
-            "status": .int(http.statusCode),
-            "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
-        ]
-        if (200..<300).contains(http.statusCode) {
-            responseAttrs["outcome"] = .string(HTTPDiagnosticsOutcome.success)
+        if let diagnosticsPath {
+            var responseAttrs: [String: DiagLogAttributeValue] = [
+                "method": .string(diagnosticsMethod),
+                "path": .string(diagnosticsPath),
+                "status": .int(http.statusCode),
+                "duration_ms": .int(Self.elapsedMilliseconds(since: startedAt)),
+            ]
+            if (200..<300).contains(http.statusCode) {
+                responseAttrs["outcome"] = .string(HTTPDiagnosticsOutcome.success)
+            }
+            DiagTrace.log(
+                .verbose,
+                level: .debug,
+                category: .network,
+                tag: "HTTP",
+                message: "response received",
+                attrs: responseAttrs
+            )
         }
-        DiagTrace.log(
-            .verbose,
-            level: .debug,
-            category: .network,
-            tag: "HTTP",
-            message: "response received",
-            attrs: responseAttrs
-        )
         #endif
         return (data, http)
     }
@@ -1454,7 +1477,7 @@ actor HTTPClient {
             // cancelled refresh is ordinary (a server switch tore down the
             // flight) and says nothing about the server, while a real transport
             // failure is the evidence a stuck-auth report needs.
-            let isCancellation = (error as? URLError)?.code == .cancelled
+            let isCancellation = HTTPError.indicatesCancellation(error)
             DiagTrace.log(
                 isCancellation ? .verbose : .essential,
                 level: isCancellation ? .debug : .error,
@@ -1544,8 +1567,7 @@ actor HTTPClient {
     /// validation, and other response-processing errors still prove that the
     /// server answered and must not start the offline reprobe loop.
     private static func noteServerUnreachable(for error: Error) async {
-        guard let urlError = error as? URLError,
-              urlError.code != .cancelled else { return }
+        guard error is URLError, !HTTPError.indicatesCancellation(error) else { return }
         await MainActor.run {
             ConnectionMonitor.shared.noteServerUnreachable()
         }
@@ -2106,6 +2128,32 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
         return nil
     }
 
+    /// True for every shape a cancelled request can take. The one place that
+    /// rule is written, because it is asked from three layers — `perform`'s
+    /// transport catch, the refresh transport, reachability — and by
+    /// `StartupContentPrefetcher`, which sees the same failure a second time
+    /// after `perform` has wrapped it.
+    ///
+    /// There are three shapes, because a request can be torn down at three
+    /// depths and each layer reports in its own vocabulary:
+    ///
+    /// 1. `CancellationError` — a caller's own generation guard, thrown while
+    ///    the fetch was awaiting.
+    /// 2. A bare `URLError.cancelled` — URLSession tearing the request down.
+    /// 3. That same cancellation wrapped in `HTTPError.network(underlying:)` —
+    ///    the common case downstream of `perform`, which rethrows *every*
+    ///    transport error that way, so callers unwrap and ask again.
+    ///
+    /// Matching on `NSURLErrorDomain`/`NSURLErrorCancelled` rather than
+    /// `URLError` alone so a bridged `NSError` — which is what a cancellation
+    /// looks like once it has crossed an `Error` existential more than once —
+    /// is caught by the same test.
+    static func indicatesCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
     /// Machine-readable identifier from the server's JSON error envelope
     /// (e.g. `profile_limit_reached`). Callers that want to branch on the
     /// specific condition — rather than just showing `errorDescription` —
@@ -2293,7 +2341,7 @@ enum HTTPDiagnosticsOutcome {
     /// A 401 refresh either did not run or produced no usable new credential,
     /// so the original 401 stands.
     static let notRetried = "not_retried"
-    /// Reachability transitions.
+    /// Reachability transitions, emitted by ``ConnectionMonitor``.
     static let reachable = "reachable"
     static let unreachable = "unreachable"
     static let online = "online"
@@ -2372,15 +2420,16 @@ enum HTTPDiagnosticsErrorCode {
 /// decodes opaque JSON whose object keys are server-defined setting keys, so a
 /// `CodingKey` there is runtime data, not source text.
 ///
-/// The rules below are deliberately stricter than
-/// ``DiagnosticsPathTemplate/isEmissionPrivateSegment(_:)``, which answers a
-/// *path-context* question. `msg` is scanned in *text* context, where the
-/// hosted collector applies rules a path segment never sees — notably
+/// The scan applied here is ``DiagnosticsPathTemplate/isTextPrivate(_:)``,
+/// deliberately stricter than the
+/// ``DiagnosticsPathTemplate/isEmissionPrivateSegment(_:)`` question the path
+/// attribute asks. `msg` is scanned in *text* context, where the hosted
+/// collector applies rules a path segment never sees — notably
 /// `PRIVATE_ID_IN_TEXT` (`session_<8+>`, `server_<8+>`, `item_<8+>`, …),
 /// unanchored compact-UUID, and a bare 12-hex MAC shape. A value that is a
 /// perfectly legal path segment can still reject the bundle from inside `msg`.
 ///
-/// Verified by running these exact rules against
+/// Verified by running those exact rules against
 /// `silo-diagnostics/src/privacy.ts` over ~400k randomized type names and
 /// coding paths (including hex-biased alphabets): zero rejections. Re-run that
 /// check before loosening anything here — the failure mode is not a bad log
@@ -2422,7 +2471,7 @@ enum HTTPDecodingDiagnostics {
         // ("Session" + "Abcdefgh" -> "Session_Abcdefgh" matches
         // PRIVATE_ID_IN_TEXT). Test the finished string, not the pieces, and
         // fail closed: a type name is a nicety, the report is not.
-        return isTextPrivate(joined) ? unknownType : joined
+        return DiagnosticsPathTemplate.isTextPrivate(joined) ? unknownType : joined
     }
 
     /// `items > 0 > title`. ` > ` rather than `.` because a dotted key path
@@ -2446,7 +2495,7 @@ enum HTTPDecodingDiagnostics {
         // Anything that is not a plain letter-initial identifier is a
         // server-supplied key rather than a Swift property name, so it is
         // templated wholesale rather than inspected further.
-        guard isPlainIdentifier(value), !isTextPrivate(value) else {
+        guard isPlainIdentifier(value), !DiagnosticsPathTemplate.isTextPrivate(value) else {
             return DiagnosticsPathTemplate.placeholder
         }
         return value
@@ -2456,31 +2505,5 @@ enum HTTPDecodingDiagnostics {
         guard let first = value.first, first.isASCII, first.isLetter else { return false }
         return value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
     }
-
-    /// Whether this token would be rejected by the collector's *text-context*
-    /// scan. Mirrors privacy.ts `PRIVATE_ID_IN_TEXT`, `UUID_VALUE`,
-    /// `COMPACT_UUID_VALUE`, the bare-MAC arm of `MAC_ADDRESS`, and
-    /// `HEX_ID_SEGMENT`. Keep in sync with that file.
-    private static func isTextPrivate(_ value: String) -> Bool {
-        let range = NSRange(location: 0, length: (value as NSString).length)
-        return textPrivateRegexes.contains { $0.firstMatch(in: value, range: range) != nil }
-    }
-
-    private static let textPrivateRegexes: [NSRegularExpression] = [
-        // PRIVATE_ID_IN_TEXT
-        try! NSRegularExpression(
-            pattern: #"(?i)(?:^|[^A-Za-z0-9])(?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,})(?=$|[^A-Za-z0-9_-])"#
-        ),
-        // UUID_VALUE (unanchored, version-agnostic)
-        try! NSRegularExpression(
-            pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
-        ),
-        // COMPACT_UUID_VALUE
-        try! NSRegularExpression(pattern: #"(?i)(?:^|[^0-9a-f])[0-9a-f]{32}(?=$|[^0-9a-f])"#),
-        // MAC_ADDRESS, bare-hex arm
-        try! NSRegularExpression(pattern: #"(?i)(?:^|[^0-9a-f-])[0-9a-f]{12}(?=$|[^0-9a-f-])"#),
-        // HEX_ID_SEGMENT
-        try! NSRegularExpression(pattern: #"(?i)^[0-9a-f]{16,}$"#),
-    ]
 }
 #endif

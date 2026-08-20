@@ -809,10 +809,11 @@ struct DiagnosticsBundleBuilder {
     private static let hostedAuthorityURLRegex = try! NSRegularExpression(
         pattern: #"(?i)\b(?:https?|wss?)://[^\s<>\"']+"#
     )
-    // The path-segment regexes (UUID / numeric / hex / opaque) live in
+    // The path-segment regexes (UUID / numeric / hex / opaque), the UUID_VALUE
+    // pattern, and the privacy.ts identifier-prefix alternation live in
     // DiagnosticsPathTemplate, shared with emission-time network templating.
     private static let hostedBareUUIDRegex = try! NSRegularExpression(
-        pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
+        pattern: DiagnosticsPathTemplate.unanchoredUUIDPattern
     )
     private static let hostedBareCompactUUIDRegex = try! NSRegularExpression(
         pattern: #"(?i)(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])"#
@@ -848,7 +849,8 @@ struct DiagnosticsBundleBuilder {
         pattern: #"(?i)(?<![A-Za-z0-9_.-])((?:\"[A-Za-z][A-Za-z0-9_.-]{0,95}\"|'[A-Za-z][A-Za-z0-9_.-]{0,95}'|[A-Za-z][A-Za-z0-9_.-]{0,95})\s*[:=]\s*(?:[\"'])?)([-+]?)((?:(?:0x[0-9a-f]{1,16}|0[0-7]{1,15}|[0-9]{1,16})\.){1,3}(?:0x[0-9a-f]{1,16}|0[0-7]{1,15}|[0-9]{1,16})|0x[0-9a-f]{1,16}|0[0-7]+|[0-9]{7,10})(?![0-9A-Za-z.])"#
     )
     private static let hostedBarePrivateIdentifierRegex = try! NSRegularExpression(
-        pattern: #"(?i)(?<![A-Za-z0-9])((?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,}))(?![A-Za-z0-9_-])"#
+        pattern: #"(?i)(?<![A-Za-z0-9])("# + DiagnosticsPathTemplate.privateIDPrefixAlternation
+            + #"[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,}))(?![A-Za-z0-9_-])"#
     )
     private static let hostedExactMetricKitBinaryUUIDRegex = try! NSRegularExpression(
         pattern: #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#

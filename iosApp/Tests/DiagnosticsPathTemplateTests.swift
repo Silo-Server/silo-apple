@@ -6,8 +6,9 @@ import XCTest
 /// The bar these tests hold the helper to is the hosted collector's own
 /// scanner: `silo-diagnostics/src/privacy.ts` `hasPrivatePathSegment`. That
 /// function is a whole-report gate — one raw id in one line rejects the entire
-/// bundle — so `assertCollectorWouldAccept` reimplements its rules and every
-/// case asserts the *output* passes them, not merely that it changed.
+/// bundle — so every case asserts the *output* passes
+/// `CollectorPrivacyOracle`'s transcription of those rules, not merely that it
+/// changed.
 final class DiagnosticsPathTemplateTests: XCTestCase {
     // MARK: - Real Silo routes
 
@@ -130,7 +131,7 @@ final class DiagnosticsPathTemplateTests: XCTestCase {
         XCTAssertEqual(templated, "/api/v1/items/{id}")
         // The host is logged nowhere, by anyone: rule 2 forbids raw hostnames.
         XCTAssertFalse(templated.contains("example.com"))
-        assertCollectorWouldAccept(templated)
+        CollectorPrivacyOracle.assertPathAccepted(templated)
     }
 
     // MARK: - Hosted bundle behavior is unchanged
@@ -194,106 +195,11 @@ final class DiagnosticsPathTemplateTests: XCTestCase {
     ) {
         let actual = DiagnosticsPathTemplate.templatedPath(forRawPath: input)
         XCTAssertEqual(actual, expected, "templating \(input)", file: file, line: line)
-        assertCollectorWouldAccept(actual, file: file, line: line)
+        CollectorPrivacyOracle.assertPathAccepted(
+            actual,
+            source: input,
+            file: file,
+            line: line
+        )
     }
-
-    /// Mirrors `silo-diagnostics/src/privacy.ts` `hasPrivatePathSegment`. Kept
-    /// in the test rather than the helper on purpose: the helper must satisfy
-    /// the collector's rules, so checking it against a copy of its own logic
-    /// would prove nothing.
-    private func assertCollectorWouldAccept(
-        _ path: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        XCTAssertFalse(path.contains("?"), "path contains a query marker: \(path)", file: file, line: line)
-        XCTAssertFalse(path.contains("#"), "path contains a fragment marker: \(path)", file: file, line: line)
-
-        let lowercased = path.lowercased()
-        for prefix in ["/users/", "/private/", "/var/mobile/", "/data/user/"] {
-            XCTAssertFalse(
-                lowercased.hasPrefix(prefix),
-                "path keeps collector-rejected prefix \(prefix): \(path)",
-                file: file,
-                line: line
-            )
-        }
-
-        for rawPart in path.split(separator: "/", omittingEmptySubsequences: true) {
-            let segment = String(rawPart)
-            guard let decoded = Self.fullyPercentDecoded(segment) else {
-                XCTFail("segment \(segment) is undecodable in \(path)", file: file, line: line)
-                continue
-            }
-            XCTAssertFalse(decoded.contains("/"), "segment decodes to a separator: \(path)", file: file, line: line)
-            // Checked on the decoded segment *before* punctuation trimming.
-            // Trimming strips `.` from both ends, so "." and ".." collapse to
-            // "" — asserting against the trimmed form can never fail and would
-            // claim coverage of the `.`/`..` rule that does not exist.
-            XCTAssertNotEqual(decoded, ".", "relative segment survived: \(path)", file: file, line: line)
-            XCTAssertNotEqual(decoded, "..", "relative segment survived: \(path)", file: file, line: line)
-
-            // The collector trims surrounding punctuation before applying its
-            // segment rules, so everything below works from the trimmed form.
-            let normalized = Self.trimmingPunctuation(decoded)
-            if normalized.isEmpty
-                || Self.matches(Self.templateSegment, normalized)
-                || Self.matches(Self.safeVersionSegment, normalized) {
-                continue
-            }
-            let candidates = [normalized] + normalized.components(
-                separatedBy: CharacterSet(charactersIn: ".,;:()[]")
-            )
-            for candidate in candidates where !candidate.isEmpty {
-                for (name, regex) in Self.privateSegmentRules {
-                    XCTAssertFalse(
-                        Self.matches(regex, candidate),
-                        "segment \(candidate) matches collector rule \(name) in \(path)",
-                        file: file,
-                        line: line
-                    )
-                }
-            }
-        }
-    }
-
-    /// Percent-decodes to a fixed point, mirroring the collector's decode step.
-    /// Deliberately does *not* trim punctuation: `.`/`..` are rejected on the
-    /// decoded segment, and trimming first would erase them.
-    private static func fullyPercentDecoded(_ raw: String) -> String? {
-        var segment = raw
-        for _ in 0..<3 {
-            guard let decoded = segment.removingPercentEncoding else { return nil }
-            if decoded == segment { return segment }
-            segment = decoded
-        }
-        guard let decoded = segment.removingPercentEncoding, decoded == segment else { return nil }
-        return segment
-    }
-
-    private static func trimmingPunctuation(_ value: String) -> String {
-        value.trimmingCharacters(in: CharacterSet(charactersIn: #"([]"'.,;!:)"#))
-    }
-
-    private static func matches(_ regex: NSRegularExpression, _ value: String) -> Bool {
-        regex.firstMatch(in: value, range: NSRange(location: 0, length: (value as NSString).length)) != nil
-    }
-
-    private static func regex(_ pattern: String) -> NSRegularExpression {
-        // swiftlint:disable:next force_try
-        try! NSRegularExpression(pattern: pattern)
-    }
-
-    private static let templateSegment = regex(#"^\{[a-z][a-z0-9_]*\}$"#)
-    private static let safeVersionSegment = regex(#"(?i)^v[0-9]+$"#)
-    private static let privateSegmentRules: [(String, NSRegularExpression)] = [
-        ("UUID_VALUE", regex(#"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#)),
-        ("NUMERIC", regex(#"^[0-9]+$"#)),
-        (
-            "PRIVATE_ID_SEGMENT",
-            regex(#"(?i)^(?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-][a-z0-9_-]{4,}$"#)
-        ),
-        ("HEX_ID_SEGMENT", regex(#"(?i)^[a-f0-9]{16,}$"#)),
-        ("OPAQUE_ID_SEGMENT", regex(#"(?i)^[a-z0-9_-]{20,}$"#)),
-    ]
 }

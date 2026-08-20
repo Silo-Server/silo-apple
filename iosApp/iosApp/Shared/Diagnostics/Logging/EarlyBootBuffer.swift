@@ -28,9 +28,9 @@ import os
 ///
 /// Core invariant: this type has no filesystem API and never touches disk.
 final class EarlyBootBuffer {
-    /// A rendered breadcrumb is roughly 200-400 bytes, so 200 lines caps the
-    /// staging cost near 40-80 KB. That stays well under the journal's 128 KiB
-    /// segment, so a full flush cannot immediately rotate away the very lines
+    /// A staged breadcrumb is roughly 200-400 bytes once encoded, so 200 lines
+    /// caps the staging cost near 40-80 KB. That stays well under the journal's
+    /// 128 KiB segment, so a full flush cannot immediately rotate away the very lines
     /// it just wrote, and it is an order of magnitude more than the handful of
     /// lifecycle breadcrumbs a normal pre-auth boot emits — overflow means
     /// something pathological is looping, and the newest lines are the ones
@@ -51,7 +51,7 @@ final class EarlyBootBuffer {
     static let shared = EarlyBootBuffer()
 
     struct Snapshot: Equatable {
-        let lines: [String]
+        let lines: [DiagnosticsLogLine]
         let droppedCount: Int
         let isSealed: Bool
     }
@@ -59,7 +59,7 @@ final class EarlyBootBuffer {
     private let capacity: Int
     private let stagingWindow: TimeInterval
     private let scheduleExpiration: (TimeInterval, @escaping () -> Void) -> Void
-    private var lines: [String] = []
+    private var lines: [DiagnosticsLogLine] = []
     private var droppedCount = 0
     /// Set by the first `drain()`/`discard()`. Once the launch's consent
     /// decision has been made, later lines belong to an established account and
@@ -94,10 +94,11 @@ final class EarlyBootBuffer {
 
     /// Stages one pre-consent breadcrumb. Returns whether it was staged.
     ///
-    /// The line is rendered by `DiagLog.renderedLine` — the same call the
-    /// journal and the log ring use — so redaction, contract validation, and
-    /// the capture-session id are identical to every other line, and a staged
-    /// line is byte-for-byte what the journal would have written.
+    /// The line is built by `DiagLog.validatedLine` — the same construction the
+    /// journal and the log ring use before they encode — so redaction,
+    /// attribute checking, contract validation, and the capture-session id are
+    /// identical to every other line, and a flushed line is byte-for-byte what
+    /// the journal would have written directly.
     @discardableResult
     func record(
         level: DiagnosticsLogLevel = .info,
@@ -116,7 +117,7 @@ final class EarlyBootBuffer {
         guard !isSealed else {
             return false
         }
-        guard let rendered = DiagLog.renderedLine(
+        guard let line = DiagLog.validatedLine(
             level: level,
             category: category,
             tag: tag,
@@ -127,19 +128,23 @@ final class EarlyBootBuffer {
         ) else {
             return false
         }
-        return append(rendered)
+        return append(line)
     }
 
-    /// Returns the staged lines oldest-first and clears them, sealing the
-    /// buffer. The caller owns writing them through the journal's gate.
-    func drain() -> [String] {
+    /// Returns the staged lines oldest-first with the overflow count that
+    /// accompanies them, clears both, and seals the buffer. The caller owns
+    /// writing the lines through the journal's gate, and owns reporting the
+    /// count — overflow means something pathological was looping before
+    /// consent resolved, which is itself the evidence.
+    func drain() -> (lines: [DiagnosticsLogLine], droppedCount: Int) {
         lock.lock()
         let drained = lines
+        let dropped = droppedCount
         lines.removeAll()
         droppedCount = 0
         sealed = true
         lock.unlock()
-        return drained
+        return (drained, dropped)
     }
 
     /// Drops every staged line without flushing, and seals the buffer. Used on
@@ -169,13 +174,6 @@ final class EarlyBootBuffer {
         let sealed = self.sealed
         lock.unlock()
         return sealed
-    }
-
-    var isEmpty: Bool {
-        lock.lock()
-        let empty = lines.isEmpty
-        lock.unlock()
-        return empty
     }
 
     func snapshot() -> Snapshot {
@@ -211,7 +209,7 @@ final class EarlyBootBuffer {
         lock.unlock()
     }
 
-    private func append(_ rendered: String) -> Bool {
+    private func append(_ line: DiagnosticsLogLine) -> Bool {
         var scheduledGeneration: UInt64?
         lock.lock()
         // Re-check under the lock: the unlocked fast path above can race a
@@ -228,7 +226,7 @@ final class EarlyBootBuffer {
             lines.removeFirst(evicted)
             droppedCount += evicted
         }
-        lines.append(rendered)
+        lines.append(line)
         if !expirationScheduled {
             expirationScheduled = true
             scheduledGeneration = stagingGeneration

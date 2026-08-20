@@ -608,9 +608,10 @@ final class AuthService: @unchecked Sendable {
         #if os(iOS) || os(tvOS)
         // Purge the active binding now, while still authenticated: the /logout
         // below invalidates the session, after which the binding could only be
-        // resolved from the last-known snapshot. The registry-wide purge always
-        // runs in ServerRegistry.signOut regardless, catching diagnostics under
-        // older server_instance_ids for this URL.
+        // resolved from the last-known snapshot. Both purges belong to this
+        // function — ServerRegistry.signOut only clears tokens and profile
+        // selection — so the registry-wide one below still has to run, catching
+        // diagnostics under older server_instance_ids for this URL.
         let purgedCurrentBinding = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
         #else
         let purgedCurrentBinding = false
@@ -653,11 +654,7 @@ final class AuthService: @unchecked Sendable {
             return false
         }
         if let signingOutServerId {
-            await ServerRegistry.shared.signOut(
-                serverId: signingOutServerId,
-                purgeCurrentBinding: false,
-                purgeRegistryBindings: false
-            )
+            await ServerRegistry.shared.signOut(serverId: signingOutServerId)
         } else {
             await TokenStore.shared.clearTokens()
         }

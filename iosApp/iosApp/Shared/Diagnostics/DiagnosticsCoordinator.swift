@@ -2114,9 +2114,14 @@ actor DiagnosticsCoordinator {
         flushEarlyBootBuffer(earlyBootBuffer, into: breadcrumbJournal)
     }
 
-    /// Drain `buffer` into `journal`, returning how many lines the journal
-    /// accepted. Exposed with explicit collaborators so tests can exercise the
-    /// flush against a temp-directory journal instead of the process one.
+    /// Drain `buffer` into `journal`, returning how many staged lines the
+    /// journal accepted. Exposed with explicit collaborators so tests can
+    /// exercise the flush against a temp-directory journal instead of the
+    /// process one.
+    ///
+    /// An overflow adds one line of its own after them, which is deliberately
+    /// not counted in the return value: it reports lost evidence rather than
+    /// being any of it.
     ///
     /// Nothing here decides whether the write is allowed: every line goes
     /// through `BreadcrumbJournal.append`, which re-checks `isEnabled()` under
@@ -2128,15 +2133,28 @@ actor DiagnosticsCoordinator {
         _ buffer: EarlyBootBuffer,
         into journal: BreadcrumbJournal
     ) -> Int {
-        let decoder = DiagnosticsJSONCoding.makeDecoder()
+        let staged = buffer.drain()
         var written = 0
-        for rendered in buffer.drain() {
-            guard let line = try? decoder.decode(DiagnosticsLogLine.self, from: Data(rendered.utf8)) else {
-                continue
-            }
-            if journal.append(line) {
-                written += 1
-            }
+        for line in staged.lines where journal.append(line) {
+            written += 1
+        }
+        if staged.droppedCount > 0 {
+            // The overflow itself is evidence: the buffer holds an order of
+            // magnitude more than a normal pre-consent boot emits, so reaching
+            // its cap means something was looping before the launch's consent
+            // decision. Recorded through the same journal — and so the same
+            // gate — as the lines it accompanies, and after them, so the count
+            // sits with the surviving tail it describes.
+            journal.append(
+                level: .warning,
+                category: .lifecycle,
+                tag: "Diag",
+                message: "early boot staging overflowed, dropped \(staged.droppedCount) breadcrumbs",
+                attrs: [
+                    "phase": .string("earlyBootFlush"),
+                    "outcome": .string("dropped"),
+                ]
+            )
         }
         return written
     }
