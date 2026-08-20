@@ -1101,15 +1101,19 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(playing(ended)?.sub, .ended)
     }
 
-    /// The near-end rung reaches the same terminal-but-clean state.
+    /// The near-end rung reaches the same terminal-but-clean state — and
+    /// carries the shell's `handleEndOfFile` half with it, without which a
+    /// near-end failure would set the postroll latch and never present the
+    /// postroll.
     func testTreatAsNaturalEndEndsTheLoad() {
         let loadID = LoadID()
-        let (next, _) = PlaybackReducer.reduce(
+        let (next, effects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID),
             event: .recovery(.treatAsNaturalEnd, loadID),
             now: now
         )
         XCTAssertEqual(playing(next)?.sub, .ended)
+        XCTAssertEqual(effects.last, .runRecovery(.treatAsNaturalEnd, loadID))
     }
 
     // MARK: - Failure
@@ -1320,11 +1324,21 @@ final class PlaybackReducerTests: XCTestCase {
         }
 
         let routeFallback = run(.switchRoute(.loopbackFallback))
-        XCTAssertEqual(routeFallback.1, [.runRecovery(.switchRoute(.loopbackFallback), loadID)])
+        // The heartbeat is stopped for every rung at or below the interruption
+        // rung, and only for those (PVM:1578 rung 7).
+        XCTAssertEqual(routeFallback.1, [
+            .cancelTimer(.progress),
+            .runRecovery(.switchRoute(.loopbackFallback), loadID),
+        ])
         XCTAssertEqual(playing(routeFallback.0)?.sub, .recovering(.switchingRoute))
 
         let serverHLS = run(.switchRoute(.serverHLS(classification: "silo_loopback_failed")))
-        XCTAssertEqual(serverHLS.1.first, .cancelTimer(.progress))
+        // The shell's `[CMP-ROUTE]` trace first, then the replan prologue.
+        XCTAssertEqual(
+            serverHLS.1.first,
+            .runRecovery(.switchRoute(.serverHLS(classification: "silo_loopback_failed")), loadID)
+        )
+        XCTAssertEqual(serverHLS.1.dropFirst().first, .cancelTimer(.progress))
         XCTAssertEqual(
             serverHLS.1.last,
             .replan(
@@ -1385,7 +1399,14 @@ final class PlaybackReducerTests: XCTestCase {
             )
             XCTAssertEqual(
                 effects,
-                [.pollServerHealth(.sourceOutageRideThrough, after: delay, loadID)],
+                [
+                    // The shell's entry half: the notice latch, the
+                    // `[CMP-OUTAGE] ride-through started` line and the
+                    // already-out-of-runway notice, all gated on
+                    // `probeAfter == .zero`.
+                    .runRecovery(.rideThroughOutage(probeAfter: delay), loadID),
+                    .pollServerHealth(.sourceOutageRideThrough, after: delay, loadID),
+                ],
                 "continuation \(index) must reschedule the poll"
             )
             guard case .ridingOutOutage(let outage) = playing(next)?.sub else {

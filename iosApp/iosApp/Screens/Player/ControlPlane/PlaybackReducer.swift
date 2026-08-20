@@ -1436,9 +1436,13 @@ enum PlaybackReducer {
             // `requestServerHLSRouteFallback` — the same replan call with the
             // route classification. The failure text the ladder passed as
             // `message` is not carried on the action, so the classification
-            // stands in for it; wave 2 threads the real one if the server
-            // needs it.
-            return requestReplan(
+            // stands in for it.
+            //
+            // `.runRecovery` carries the shell's half, which is the
+            // `[CMP-ROUTE] … requesting a server HLS replan` trace line: the
+            // rung it names is what a console capture reads the fallback
+            // ladder from.
+            let (next, effects) = requestReplan(
                 playing,
                 intent: ReplanIntent(
                     kind: .serverReplan,
@@ -1447,6 +1451,7 @@ enum PlaybackReducer {
                     message: classification
                 )
             )
+            return (next, [.runRecovery(action, playing.loadID)] + effects)
 
         case .switchRoute(.loopbackFallback):
             // The offline native-direct → loopback rung. The engine session
@@ -1454,7 +1459,12 @@ enum PlaybackReducer {
             // the engine in place.
             guard case .playing(var playing) = state else { return (state, []) }
             playing.sub = .recovering(.switchingRoute)
-            return (.playing(playing), [.runRecovery(action, playing.loadID)])
+            // PVM:1578 rung 7: the progress loop is stopped for every rung at
+            // or below the interruption rung, and only for those.
+            return (
+                .playing(playing),
+                [.cancelTimer(.progress), .runRecovery(action, playing.loadID)]
+            )
 
         case .renewSourceInBackground(let reason):
             guard case .playing(var playing) = state else { return (state, []) }
@@ -1567,7 +1577,10 @@ enum PlaybackReducer {
                     preserveInterruptionState: true
                 )
             )
-            return (next, [.cancelTimer(.interruptionRecovery)] + effects)
+            return (
+                next,
+                [.cancelTimer(.interruptionRecovery), .cancelTimer(.progress)] + effects
+            )
 
         case .rideThroughOutage(let probeAfter):
             guard case .playing(var playing) = state else { return (state, []) }
@@ -1595,7 +1608,10 @@ enum PlaybackReducer {
             playing.sub = .ridingOutOutage(outage)
             return (
                 .playing(playing),
-                [.pollServerHealth(.sourceOutageRideThrough, after: probeAfter, playing.loadID)]
+                [
+                    .runRecovery(action, playing.loadID),
+                    .pollServerHealth(.sourceOutageRideThrough, after: probeAfter, playing.loadID),
+                ]
             )
 
         case .endOutageRideThrough:
@@ -1674,7 +1690,14 @@ enum PlaybackReducer {
             )
 
         case .treatAsNaturalEnd:
-            return endOfFile(state)
+            // The reducer's own end-of-stream transition, plus the shell half
+            // `handleEndOfFile` owes: the premature-EOF classification, the
+            // terminal breadcrumb and the Next Up hand-off. Without the
+            // `.runRecovery` a near-end failure would set the postroll latch
+            // and never present the postroll.
+            let (next, effects) = endOfFile(state)
+            guard let loadID = state.loadID, !effects.isEmpty else { return (next, effects) }
+            return (next, effects + [.runRecovery(action, loadID)])
 
         case .fail(let failure):
             return fail(state, failure: failure)

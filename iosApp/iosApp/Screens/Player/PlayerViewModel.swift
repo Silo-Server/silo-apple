@@ -1177,10 +1177,10 @@ class PlayerViewModel {
             switch fallback {
             case .loopbackFallback:
                 performNativeDirectLoopbackFallback(failure: nil)
-            case .serverHLS:
-                // The reducer turns this into a server replan; there is no
-                // engine-level half.
-                break
+            case let .serverHLS(classification):
+                // The reducer minted the replan; what is left is the ladder's
+                // console trace, which names the rung that fired.
+                performServerHLSRouteFallback(classification: classification)
             }
 
         case let .rideThroughOutage(probeAfter):
@@ -1905,44 +1905,15 @@ class PlayerViewModel {
     /// AVPlayer-backed, so "fall back" now means renegotiating the session with
     /// the server rather than swapping in another local decoder.
     ///
-    /// Returns false when there is nothing to replan against or a replan is
-    /// already running — the precondition `loadStream`'s direct-unplayable
-    /// branch still owns, and the same one `RecoveryPolicy` carries as
-    /// `hasWatchDetail` / `isReplanInFlight` for the two failure-ladder rungs.
-    @discardableResult
-    private func requestServerHLSReplan(
-        classification: String,
-        message: String,
-        trace: String,
-        failureToken: String
-    ) -> Bool {
-        guard currentWatchDetail != nil else { return false }
-        Self.logger.warning(
-            "[CMP-ROUTE] \(trace, privacy: .public); requesting a server HLS replan failureToken=\(failureToken, privacy: .public)"
-        )
-        requestReplan(
-            ReplanIntent(
-                kind: .serverReplan,
-                position: currentTime,
-                classification: classification,
-                message: message
-            )
-        )
-        return true
-    }
-
+    /// The rung's console trace. The replan itself is the reducer's
+    /// `.switchRoute(.serverHLS)` arm, which mints it before this runs.
     @MainActor
-    private func performServerHLSRouteFallback(
-        classification: String,
-        failure: PlaybackFailure?
-    ) {
-        requestServerHLSReplan(
-            classification: classification,
-            message: failure?.legacyMessage ?? "",
-            trace: classification == "silo_loopback_failed"
-                ? "fallback_hls_after_silo"
-                : "native_direct_blocked_hls_fallback",
-            failureToken: failure?.stableToken ?? "-"
+    private func performServerHLSRouteFallback(classification: String) {
+        let trace = classification == "silo_loopback_failed"
+            ? "fallback_hls_after_silo"
+            : "native_direct_blocked_hls_fallback"
+        Self.logger.warning(
+            "[CMP-ROUTE] \(trace, privacy: .public); requesting a server HLS replan classification=\(classification, privacy: .public)"
         )
     }
 

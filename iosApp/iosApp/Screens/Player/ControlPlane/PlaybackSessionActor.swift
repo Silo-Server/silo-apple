@@ -76,7 +76,7 @@ actor PlaybackSessionActor {
     /// and had neither problem. Holding it here restores that — every session
     /// this actor installs adopts the live ride-through together with the hold
     /// that releases it, which is the rule design §2.8 states.
-    private var carriedOutage: RecoveryContext.OutageState?
+    private(set) var carriedOutage: RecoveryContext.OutageState?
 
     /// The post-outage-reload engine-failure suppression window.
     ///
@@ -89,9 +89,23 @@ actor PlaybackSessionActor {
     /// replacement stream starts stopped being suppressed. This is that window,
     /// released with the `.serverOutageRecovery` timer, which `fileLoaded`
     /// cancels.
-    private var suppressesEngineFailuresAfterOutage = false
+    private(set) var suppressesEngineFailuresAfterOutage = false
 
-    init(bridge: PlaybackSessionBridge, shell: PlayerViewModel) {
+    #if DEBUG
+    /// Every effect the actor ran, in order.
+    ///
+    /// `PlayerViewModel` is the only shell there is and the suite has never
+    /// been able to build one (inventory-4 A.0: `PlayerViewModel(` is 0 hits),
+    /// so `PlaybackSessionActorTests` drives an actor with `shell: nil` — the
+    /// reducer and the whole effect-routing path run, the main-actor arms are
+    /// no-ops, and this is the record it asserts over.
+    private(set) var recordedEffects: [Effect] = []
+
+    /// Drop everything recorded so far, so a test can assert on one step.
+    func clearRecordedEffects() { recordedEffects.removeAll() }
+    #endif
+
+    init(bridge: PlaybackSessionBridge, shell: PlayerViewModel?) {
         self.bridge = bridge
         self.shell = shell
     }
@@ -107,34 +121,61 @@ actor PlaybackSessionActor {
 
     /// Something happened. `event` already carries the identity it happened for.
     func ingest(_ event: PlayerEvent) async {
-        await noteBeforeReducing(event)
+        noteBeforeReducing(event)
         let (next, effects) = PlaybackReducer.reduce(state, event: event, now: Date())
         state = next
+        await noteAfterReducing(event)
         await run(effects)
     }
 
     /// Read-only snapshot for the shell's synchronous projections.
     func currentState() -> PlaybackState { state }
 
-    /// The two actor-scoped gates the reducer cannot express, raised from the
-    /// event that causes them and *before* the reduction, so the effects that
-    /// same event produces already run under them.
-    private func noteBeforeReducing(_ event: PlayerEvent) async {
-        guard case let .recovery(action, loadID) = event, state.loadID == loadID else { return }
-        switch action {
-        case .recoverFromServerOutage:
-            // The visible recovery owns the load until its replacement stream
-            // reports `fileLoaded`; every engine failure in between is the
-            // server going away, not a playback fault.
-            suppressesEngineFailuresAfterOutage = true
-        case .rideThroughOutage:
-            // Snapshot the ride-through the policy just entered (or continued)
-            // so a route-change replan later in this load resumes the *same*
-            // budget instead of starting a second one.
-            carriedOutage = await shell?.liveOutageState()
-        default:
-            break
+    /// The suppression window, raised *before* the reduction so the effects
+    /// that same event produces already run under it.
+    private func noteBeforeReducing(_ event: PlayerEvent) {
+        guard case let .recovery(action, loadID) = event,
+              state.loadID == loadID,
+              case .recoverFromServerOutage = action else {
+            return
         }
+        // The visible recovery owns the load until its replacement stream
+        // reports `fileLoaded`; every engine failure in between is the server
+        // going away, not a playback fault.
+        suppressesEngineFailuresAfterOutage = true
+    }
+
+    /// Snapshot the ride-through the policy just entered (or continued), so a
+    /// route-change replan later in this load resumes the *same* 90 s budget
+    /// instead of starting a second one.
+    ///
+    /// The deadline and the backoff come from the reducer's own
+    /// `Sub.ridingOutOutage`, which is why the carry survives a session the
+    /// actor never sees; `noticeShown` is the policy's once-per-outage runway
+    /// gate and is read off the live driver, because only the policy sets it.
+    private func noteAfterReducing(_ event: PlayerEvent) async {
+        guard case let .recovery(action, _) = event, case .rideThroughOutage = action else {
+            return
+        }
+        guard case let .playing(playing) = state,
+              case let .ridingOutOutage(outage) = playing.sub else {
+            return
+        }
+        let noticeShown = await shell?.liveOutageState()?.noticeShown
+            ?? carriedOutage?.noticeShown
+            ?? false
+        carriedOutage = RecoveryContext.OutageState(
+            rideThroughStart: outage.startedAt,
+            nextProbeDelay: Self.seconds(outage.nextProbeDelay),
+            noticeShown: noticeShown
+        )
+    }
+
+    /// `Duration` as the `TimeInterval` `RecoveryContext` stores.
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1e18
     }
 
     // MARK: - Effect runner
@@ -146,6 +187,9 @@ actor PlaybackSessionActor {
     }
 
     private func perform(_ effect: Effect) async {
+        #if DEBUG
+        recordedEffects.append(effect)
+        #endif
         switch effect {
         case let .startSession(request, options, loadID):
             startSession(request: request, options: options, loadID: loadID)
@@ -353,8 +397,8 @@ actor PlaybackSessionActor {
     // MARK: - Engine lifecycle
 
     private func loadEngine(_ plan: ExecutablePlan, loadID: LoadID, reuseEngine: Bool) async {
-        guard let shell else { return }
         pendingLoadID = loadID
+        guard let shell else { return }
         // Supersede the outgoing load's event stream here, where the legacy
         // code bumped the stream-load generation — before the outgoing engine
         // is paused and before the V3 track intent is re-armed.
@@ -412,12 +456,15 @@ actor PlaybackSessionActor {
         tasks[.engineEvents] = Task { [weak self] in
             for await event in events {
                 guard let self, !Task.isCancelled else { return }
-                await self.handleEngineEvent(event, loadID: loadID)
+                await self.ingestEngineEvent(event, loadID: loadID)
             }
         }
     }
 
-    private func handleEngineEvent(_ event: EngineEvent, loadID: LoadID) async {
+    /// One engine event, stamped with the load that produced it. Internal
+    /// because it *is* the pump's body: a test drives the same path the stream
+    /// does rather than a parallel one.
+    func ingestEngineEvent(_ event: EngineEvent, loadID: LoadID) async {
         guard pendingLoadID == loadID else { return }
 
         // Wave 2b's shell-executed recovery arm. The load's `RecoveryDriver`
@@ -672,6 +719,8 @@ actor PlaybackSessionActor {
     private func runHealthProbe(_ timerID: TimerID, loadID: LoadID) async {
         guard state.loadID == loadID, let shell else { return }
         if timerID == .sourceOutageRideThrough {
+            // The ride-through's owner outlives one session: the carry is what
+            // keeps the loop alive across a route change.
             let live = await shell.liveOutageState()
             guard live != nil || carriedOutage != nil else { return }
         }
