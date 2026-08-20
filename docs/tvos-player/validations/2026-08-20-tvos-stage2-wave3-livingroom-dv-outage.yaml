@@ -1,13 +1,13 @@
-# Validation record — Stage 2 wave-3 device rows on the Living Room Apple TV (the validated DV display path).
+# Validation record — Stage 2 wave-3 device rows on the AppleTV11,1 unit (the validated DV display path).
 # DV P7+TrueHD row PASSES on the wave-3 build; seek-heavy on the DV route PASSES; a 76 s production outage was
 # FULLY ABSORBED with zero user-visible impact; tvOS suspend→resume PASSES with the exact-position reanchor in
 # the log. The visible outage-recovery machinery (ride-through → probes → auto-reload) remains unexercised on
 # hardware — the runway absorbed everything — and stays on the post-wave-4 §6 gate.
 date: 2026-08-20
 platform: tvOS 26.6
-device: Apple TV 4K (2nd generation) — AppleTV11,1 ("Living Room TV", 57E8BE0C-3651-549F-B497-EBC654638B81)
+device: Apple TV 4K (2nd generation) — AppleTV11,1
 output_path: HDMI (CMP-OUTPUT hdrOutputEligible=true hdr10=true dolbyVision=true dvModes=5,8 sinkType=HDMIOutput)
-app_build: SiloTV Debug from silo-apple player/architecture-remediation @ ecf1770 (Stage 2 waves 1+2a+2b+3 merged)
+app_build: SiloTV Debug from silo-apple PR #172 @ ecf1770 (Stage 2 waves 1+2a+2b+3 merged)
 server: production (owner-approved stop/start for the outage row)
 method: devicectl install from the Mini; deep-link silo://play/movie-tmdb-950387; timestamped console capture;
   owner drove seeks/suspend with the physical remote

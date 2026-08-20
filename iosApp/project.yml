@@ -316,6 +316,8 @@ targets:
           - "Fixtures/SettingsContract/**"
           - "Fixtures/PlaybackV3"
           - "Fixtures/PlaybackV3/**"
+          - "Fixtures/DiagnosticsContract"
+          - "Fixtures/DiagnosticsContract/**"
       # The vendored settings contract. SettingsConformanceTests reads both
       # files out of the test bundle at runtime and fails hard when either is
       # missing, so the build phase is stated rather than left to XcodeGen's
@@ -352,6 +354,52 @@ targets:
       - path: Tests/Fixtures/PlaybackV3/subtitle_inventory.json
         buildPhase: resources
       - path: Tests/Fixtures/PlaybackV3/SOURCE
+        buildPhase: none
+      # The vendored client-diagnostics contract. DiagnosticsContractTests and
+      # DiagnosticsAttributeRegistryParityTests read these out of the bundle at
+      # runtime, so they are listed rather than inferred, for the same reason as
+      # the two blocks above.
+      - path: Tests/Fixtures/DiagnosticsContract/attr-registry.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/android-manual-no-profile.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/android-manual.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/android-tv-crash-ueh.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/device.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/ios-hang-metrickit.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/loglines.jsonl
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/valid/tvos-abnormal-exit.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/invalid/archive-entry-outside-allowlist.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/invalid/bad-schema-version.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/invalid/missing-consent.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/invalid/platform-macos-reserved.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/invalid/stack-excerpt-over-8kib.json
+        buildPhase: resources
+      - path: Tests/Fixtures/DiagnosticsContract/fixtures/invalid/unknown-report-type.json
+        buildPhase: resources
+      # Reference material for humans: the JSON Schemas the fixtures above are
+      # generated against, the re-vendoring instructions and the provenance
+      # record. In the project so they are discoverable next to the fixtures,
+      # out of the bundle because no test reads them.
+      - path: Tests/Fixtures/DiagnosticsContract/device.schema.json
+        buildPhase: none
+      - path: Tests/Fixtures/DiagnosticsContract/logline.schema.json
+        buildPhase: none
+      - path: Tests/Fixtures/DiagnosticsContract/manifest.schema.json
+        buildPhase: none
+      - path: Tests/Fixtures/DiagnosticsContract/README.md
+        buildPhase: none
+      - path: Tests/Fixtures/DiagnosticsContract/SOURCE
         buildPhase: none
     dependencies:
       - target: Silo

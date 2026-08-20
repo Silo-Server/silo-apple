@@ -15,7 +15,8 @@ filenames like `<date>-<platform>-<implementation-route>-<claim>.yaml`.
 | --- | --- |
 | Date | `2026-04-22` |
 | Platform | `tvOS 18.5` |
-| Device | `Apple TV 4K (3rd gen)` |
+| Device | `Apple TV 4K (3rd gen) — AppleTV14,1` |
+| Build | `PR #172 @ ecf1770` |
 | Route family | `NativePlayer` |
 | Implementation route | `avPlayerNativeDirect` |
 | Delivery | `direct` / `transcode` |
@@ -28,12 +29,19 @@ filenames like `<date>-<platform>-<implementation-route>-<claim>.yaml`.
 | Actual behavior | `Passed` / `Failed` plus notes |
 | Evidence | screenshots, AVR panel text, system banners, logs |
 
+No device identifiers, no branch names: records are committed to a public
+repository, so give the model identifier (`AppleTV14,1`) and never a device
+UUID, serial number, room nickname or production hostname, and cite the build
+as a PR number plus commit SHA — a branch name resolves to nothing once it
+merges.
+
 ## Example record
 
 ```yaml
 date: 2026-04-22
 platform: tvOS 18.5
-device: Apple TV 4K (3rd gen)
+device: Apple TV 4K (3rd gen) — AppleTV14,1
+app_build: SiloTV Debug from silo-apple PR #172 @ ecf1770
 route_family: SiloPlayer
 implementation_route: siloPlayerLoopback
 delivery: direct

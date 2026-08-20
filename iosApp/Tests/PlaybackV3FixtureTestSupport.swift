@@ -55,3 +55,128 @@ func makeTestExecutionPlan(
         )
     )
 }
+
+// MARK: - Planner model fixtures
+
+/// The stream URL every planner fixture is built around.
+let testStreamURL = URL(string: "https://example.invalid/stream")!
+
+func makeTestSession(
+    playMethod: String = "direct",
+    position: Double = 0,
+    audioTrackIndex: Int? = 0
+) -> PlaybackSessionResponse {
+    PlaybackSessionResponse(
+        sessionId: "test-session",
+        userId: nil,
+        profileId: nil,
+        mediaFileId: 1,
+        playMethod: playMethod,
+        position: position,
+        isPaused: false,
+        streamUrl: testStreamURL.absoluteString,
+        audioTrackIndex: audioTrackIndex,
+        durationSeconds: 120,
+        subtitleUrls: nil,
+        playbackInfo: nil
+    )
+}
+
+func makeTestAudioTrack(
+    index: Int = 1,
+    codec: String,
+    channels: Int = 2,
+    layout: String? = "stereo",
+    language: String = "eng",
+    title: String? = nil,
+    isDefault: Bool = true
+) -> AudioTrack {
+    AudioTrack(
+        index: index,
+        codec: codec,
+        channels: channels,
+        channelLayout: layout,
+        bitrate: 128_000,
+        sampleRate: 48_000,
+        language: language,
+        title: title,
+        embeddedTitle: title,
+        isDefault: isDefault
+    )
+}
+
+func makeTestVideoTrack(
+    codec: String = "hevc",
+    width: Int = 3840,
+    height: Int = 2160,
+    colorTransfer: String? = nil,
+    videoRange: String? = nil,
+    dolbyVision: String? = nil
+) -> VideoTrack {
+    VideoTrack(
+        index: 0,
+        codec: codec,
+        width: width,
+        height: height,
+        frameRate: "23.976",
+        bitrate: 20_000,
+        profile: "Main 10",
+        level: 153,
+        bitDepth: 10,
+        colorRange: "tv",
+        colorTransfer: colorTransfer,
+        videoRange: videoRange,
+        dolbyVision: dolbyVision,
+        title: nil,
+        language: nil
+    )
+}
+
+func makeTestSubtitleTrack(
+    index: Int = 2,
+    codec: String,
+    isDefault: Bool = true,
+    forced: Bool = false
+) -> SubtitleTrack {
+    SubtitleTrack(
+        index: index,
+        codec: codec,
+        language: "eng",
+        title: "English",
+        embeddedTitle: "English",
+        forced: forced,
+        hearingImpaired: false,
+        isDefault: isDefault,
+        external: false,
+        externalPath: nil
+    )
+}
+
+func makeTestVersion(
+    container: String,
+    codecVideo: String?,
+    codecAudio: String?,
+    resolution: String = "2160p",
+    bitrate: Int? = 20_000,
+    videoTracks: [VideoTrack]? = nil,
+    audioTracks: [AudioTrack]? = nil,
+    subtitleTracks: [SubtitleTrack]? = nil
+) -> FileVersion {
+    FileVersion(
+        fileId: 1,
+        fileName: "fixture.\(container)",
+        resolution: resolution,
+        codecVideo: codecVideo,
+        codecAudio: codecAudio,
+        hdr: false,
+        container: container,
+        fileSize: 1_000_000,
+        duration: 120,
+        bitrate: bitrate,
+        videoTracks: videoTracks,
+        audioTracks: audioTracks,
+        subtitleTracks: subtitleTracks,
+        chapters: nil,
+        effectiveAudioTrackIndex: 0
+    )
+}

@@ -1,0 +1,29 @@
+Source: silo-server docs/design/schemas/client-diagnostics/v1
+Server ref: main
+Vendored: 2026-08-20 (provenance recorded; files unchanged by this commit)
+
+Verified file by file with `git hash-object` against the server blobs:
+
+  attr-registry.json    5fdb5d73acc9529837cac90d253e9e3bfc0055bb (2026-08-15)
+  device.schema.json    5fdb5d73acc9529837cac90d253e9e3bfc0055bb
+  logline.schema.json   5fdb5d73acc9529837cac90d253e9e3bfc0055bb
+  fixtures/**           5fdb5d73acc9529837cac90d253e9e3bfc0055bb (13 files)
+  manifest.schema.json  4fa84a661a37 — STALE, re-vendor required
+
+manifest.schema.json is still the copy from the directory's first server
+commit (4fa84a66). Server `main` carries 1f9bd9999068, and that commit is not
+cosmetic: alongside `description` notes explaining that every `maxLength` is a
+character count the server enforces in UTF-8 bytes, it pins
+`prefixItems: [{ "const": "manifest.json" }]` on `archive.entries` and adds a
+top-level `allOf` that requires the `crash` object for the event report types
+(crash/anr/native_crash/hang/abnormal_exit) and forbids it for `manual`,
+mirroring ValidateManifest in internal/diagnostics/contract/contract.go. Those
+are real constraints. The re-vendor is deferred only because nothing reads this
+file — it is `buildPhase: none` in project.yml, and every executable fixture in
+this directory is already at 5fdb5d73 — so do it, together with the
+silo-android copy, the next time this directory is touched.
+
+Do not hand-edit these files: re-vendor from the exact server commit that
+changed the contract, verify with shasum that every file matches the server
+copy, keep the silo-android copy in step, and regenerate Silo.xcodeproj with
+cd iosApp && xcodegen generate.

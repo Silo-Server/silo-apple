@@ -1,10 +1,10 @@
 # Validation record — HDR10 HEVC MKV via siloPlayerLoopback with tvOS display-criteria (HDR mode + frame-rate) switching.
-# Two titles, same session/build; recorded from the app console (devicectl --console) on the bedroom Apple TV.
+# Two titles, same session/build; recorded from the app console (devicectl --console) on the AppleTV14,1 unit.
 date: 2026-08-17
 platform: tvOS 26.6
-device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV")
-app_build: SiloTV Debug from silo-apple player/architecture-remediation @ ed761e3 (Round 1 merged)
-server: production (silo.arkyncdn.net) — client-only validation; server untouched
+device: Apple TV 4K (3rd generation) — AppleTV14,1
+app_build: SiloTV Debug from silo-apple PR #172 @ ed761e3 (Round 1 merged)
+server: production — client-only validation; server untouched
 route_family: SiloPlayer
 implementation_route: siloPlayerLoopback
 delivery: direct (wireDelivery=original_http, server decision_reason=validated_original_playback)
