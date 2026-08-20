@@ -256,6 +256,15 @@ enum PlaybackReducer {
             // `clearServerOutageRecoveryState()`, user-initiated loads only.
             effects.append(.cancelTimer(.serverOutageRecovery))
         }
+        // A fresh load abandons whatever the outgoing load was riding out. The
+        // ride-through is player-scoped now (the actor carries it across a
+        // replan so a route change keeps the original deadline), so the load
+        // that leaves it behind has to release it: legacy's loop died here by
+        // itself — its next turn read the replacement session's driver, which
+        // has no outage — and an adopted hold with no releaser suspends the
+        // replacement's whole in-route ladder. Only the replan path keeps the
+        // carry, which is the case it exists for.
+        effects.append(.cancelTimer(.sourceOutageRideThrough))
         if !options.preserveInterruptionState {
             effects.append(.cancelTimer(.interruptionRecovery))
         }
@@ -1038,10 +1047,15 @@ enum PlaybackReducer {
         case .endOfFile:
             return endOfFile(state)
 
-        case .failed:
+        case .failed(let failure):
             // Not decided here: the actor asks `RecoveryPolicy` and feeds the
-            // decision back as `.recovery(action, loadID)`.
-            return (state, [])
+            // decision back as `.recovery(action, loadID)`. The *text* is kept,
+            // because the server-HLS fallback rung's replan carries it as its
+            // `message` and `RecoveryAction` has no room for it (see
+            // `Playing.lastFailureMessage`).
+            guard case .playing(var playing) = state else { return (state, []) }
+            playing.lastFailureMessage = failure.legacyMessage
+            return (.playing(playing), [])
 
         case .tracks, .chapters, .timelineOffset, .sidecarTracksRegistered,
              .externalPlaybackAllowed, .externalPlaybackUnavailable:
@@ -1192,6 +1206,15 @@ enum PlaybackReducer {
             interruption.isPending = false
             playing.interruption = nil
             effects.append(.cancelTimer(.interruptionRecovery))
+            // The one publish this high-frequency arm emits, and only on the
+            // tick that completes a recovery: `completeInterruptionRecoveryIfNeeded`
+            // took the loading overlay down under its own reason and dropped
+            // the published deadline the tvOS resume banner reads.
+            effects.append(
+                .publish(
+                    presentation(for: .playing(playing), loadingReason: "interruption_recovered")
+                )
+            )
         }
         return (.playing(playing), effects)
     }
@@ -1239,6 +1262,12 @@ enum PlaybackReducer {
             next,
             [
                 .cancelTimer(.serverOutageRecovery),
+                // Nothing left to ride out: the stream drained. Legacy kept
+                // polling here but its escalation was a no-op behind
+                // `attemptServerOutageRecovery`'s `!hasReachedEndOfFile` gate;
+                // dropping the loop is that gate, and it keeps the carried
+                // ride-through from being adopted by the autoplay that follows.
+                .cancelTimer(.sourceOutageRideThrough),
                 .transport(.pause, playing.loadID),
                 .publish(presentation(for: next, loadingReason: "end_of_file", bufferingCause: "end_of_file")),
             ]
@@ -1434,23 +1463,29 @@ enum PlaybackReducer {
         case .switchRoute(.serverHLS(let classification)):
             guard case .playing(let playing) = state else { return (state, []) }
             // `requestServerHLSRouteFallback` — the same replan call with the
-            // route classification. The failure text the ladder passed as
-            // `message` is not carried on the action, so the classification
-            // stands in for it.
+            // route classification. `RecoveryAction` carries no failure text,
+            // so the message is the one this load last reported
+            // (`Playing.lastFailureMessage`), which is exactly what
+            // `performServerHLSRouteFallback(classification:failure:)` passed:
+            // it is the replan's wire `error_cause` and the wall text if the
+            // server answers `replanUnavailable`.
             //
             // `.runRecovery` carries the shell's half, which is the
             // `[CMP-ROUTE] … requesting a server HLS replan` trace line: the
             // rung it names is what a console capture reads the fallback
-            // ladder from.
+            // ladder from. It is emitted only when the replan was actually
+            // minted — `requestServerHLSReplan` logged after its
+            // "no replan already running" guard, not before it.
             let (next, effects) = requestReplan(
                 playing,
                 intent: ReplanIntent(
                     kind: .serverReplan,
                     position: playing.transport.positionSeconds,
                     classification: classification,
-                    message: classification
+                    message: playing.lastFailureMessage ?? ""
                 )
             )
+            guard !effects.isEmpty else { return (next, effects) }
             return (next, [.runRecovery(action, playing.loadID)] + effects)
 
         case .switchRoute(.loopbackFallback):
@@ -1583,7 +1618,21 @@ enum PlaybackReducer {
             )
 
         case .rideThroughOutage(let probeAfter):
-            guard case .playing(var playing) = state else { return (state, []) }
+            // The ride-through outlives one load: a replan taken during an
+            // outage moves the state to `.preparing` while the replacement
+            // stream is negotiated, and the poll that owns the 90 s escalation
+            // (and the release of the `origin_outage` hold) has to keep
+            // running through that window — legacy's loop was view-model
+            // scoped and did (`runOutageRideThrough` re-resolved the live
+            // session every turn and was gated on nothing else). Re-arm it
+            // without touching a state that is not `.playing`.
+            guard case .playing(var playing) = state else {
+                guard let loadID = state.loadID else { return (state, []) }
+                return (
+                    state,
+                    [.pollServerHealth(.sourceOutageRideThrough, after: probeAfter, loadID)]
+                )
+            }
             // `RecoveryPolicy` single-flights the ENTRY (decideOriginOutage guards
             // on `context.outage == nil`) and then re-emits `.rideThroughOutage`
             // after every health probe as the CONTINUATION of the loop (the
@@ -1615,14 +1664,25 @@ enum PlaybackReducer {
             )
 
         case .endOutageRideThrough:
-            guard case .playing(var playing) = state,
-                  case .ridingOutOutage = playing.sub else {
-                return (state, [])
+            // The origin recovered. The release is unconditional on the
+            // sub-state: a replan taken during the ride-through overwrote
+            // `.ridingOutOutage`, and refusing the exit there would strand the
+            // carried ride-through — every later session would adopt its
+            // `origin_outage` hold with no owner left to release it, which is
+            // the failure `RecoveryDriver.adoptOutageRideThrough` documents.
+            guard let loadID = state.loadID else { return (state, []) }
+            var next = state
+            if case .playing(var playing) = state, case .ridingOutOutage = playing.sub {
+                playing.sub = .steady
+                next = .playing(playing)
             }
-            playing.sub = .steady
+            // `.runRecovery` first: the shell's half reads the once-per-outage
+            // notice latch to decide whether to show "Reconnected", and the
+            // cancel below is what clears it (`endOutageRideThrough` read it
+            // before `clearSourceOutageRideThroughState()`).
             return (
-                .playing(playing),
-                [.cancelTimer(.sourceOutageRideThrough), .runRecovery(action, playing.loadID)]
+                next,
+                [.runRecovery(action, loadID), .cancelTimer(.sourceOutageRideThrough)]
             )
 
         case .recoverFromServerOutage(let reason):
@@ -1787,8 +1847,43 @@ enum PlaybackReducer {
             }
             return recovery(state, action: .autoRecoverInterruption, now: now)
 
+        case .serverOutageRecovery:
+            // The one task slot whose completion *is* a transition: a health
+            // probe that reaches the server ends the visible recovery's wait
+            // (`RecoveryPolicy.decideServerHealthProbe` clears the slot and
+            // answers nothing), and the tail of `attemptServerOutageRecovery`
+            // was the replacement load — `waitForServerReady`'s `true` return
+            // landed on a fresh load with the `.recovery` origin, at the
+            // position the outage interrupted and with the request rebuilt from
+            // the live selections. Without it the player waits on "Reconnecting"
+            // forever. The actor ingests this only on a reachable probe.
+            guard case .playing(let playing) = state,
+                  case .recovering(let step) = playing.sub,
+                  step == .recoveringFromServerOutage || step == .waitingForServerReady else {
+                return (state, [])
+            }
+            let resumePosition = playing.transport.positionSeconds.isFinite
+                ? max(0, playing.transport.positionSeconds)
+                : 0
+            return beginLoad(
+                from: state,
+                request: recoveryRequest(
+                    playing.request,
+                    selections: playing.resumeSelections,
+                    preferringSelectedFileId: true,
+                    keepingOfflineDownload: false
+                ),
+                adoption: .freshLoad(.recovery),
+                options: LoadOptions(
+                    progressPosition: nil,
+                    resumePosition: resumePosition,
+                    allowNearEndResume: true,
+                    preserveInterruptionState: true
+                )
+            )
+
         case .freshLoad, .protocolV3Replan, .staleSessionRecovery, .backgroundRenewal,
-             .sourceOutageRideThrough, .serverOutageRecovery:
+             .sourceOutageRideThrough:
             // Task slots, not deadlines: their completion arrives as a session
             // event or as a `RecoveryPolicy` decision.
             return (state, [])
@@ -1824,6 +1919,10 @@ enum PlaybackReducer {
             .cancelTimer(.backgroundRenewal),
             .cancelTimer(.interruptionRecovery),
             .cancelTimer(.serverOutageRecovery),
+            // Same reason as `beginLoad`'s: the load that was riding out an
+            // outage is over, so the carried ride-through must not be adopted
+            // — hold included — by whatever the user starts next.
+            .cancelTimer(.sourceOutageRideThrough),
         ]
         if let loadID = state.loadID {
             // `finalizeTerminalPlaybackError` discards (PVM:4063): the load

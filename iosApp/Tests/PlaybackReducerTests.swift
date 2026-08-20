@@ -305,6 +305,11 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertNotEqual(loadID, previous, "every load mints a new LoadID")
         XCTAssertEqual(effects, [
             .cancelTimer(.serverOutageRecovery),
+            // The load that was riding out an origin outage is being abandoned,
+            // so the ride-through the actor carries is released with it — an
+            // adopted `origin_outage` hold with no releaser would suspend the
+            // replacement load's whole in-route ladder.
+            .cancelTimer(.sourceOutageRideThrough),
             .cancelTimer(.interruptionRecovery),
             .publish(PlaybackReducer.presentation(for: next)),
             .cancelTimer(.freshLoad),
@@ -321,7 +326,7 @@ final class PlaybackReducerTests: XCTestCase {
 
         // `resetPublishedLoadState` raises the overlay and clears the error
         // (PVM:3476-3477) — the load path's only publish before `fileLoaded`.
-        guard case .publish(let overlay) = effects[2] else {
+        guard case .publish(let overlay) = effects[3] else {
             return XCTFail("expected the loading publish")
         }
         XCTAssertTrue(overlay.isLoading)
@@ -363,6 +368,7 @@ final class PlaybackReducerTests: XCTestCase {
         guard let loadID = next.loadID else { return XCTFail("expected a minted LoadID") }
         XCTAssertEqual(effects, [
             .cancelTimer(.serverOutageRecovery),
+            .cancelTimer(.sourceOutageRideThrough),
             .cancelTimer(.interruptionRecovery),
             .publish(PlaybackReducer.presentation(for: next)),
             .cancelTimer(.freshLoad),
@@ -1012,8 +1018,11 @@ final class PlaybackReducerTests: XCTestCase {
 
         XCTAssertEqual(playing(next)?.sub, .ended)
         XCTAssertEqual(playing(next)?.transport.positionSeconds, 1000, "the playhead pins to duration")
-        XCTAssertEqual(Array(effects.prefix(2)), [
+        XCTAssertEqual(Array(effects.prefix(3)), [
             .cancelTimer(.serverOutageRecovery),
+            // The stream drained: there is nothing left to ride out, and the
+            // autoplay that follows must not adopt the carried ride-through.
+            .cancelTimer(.sourceOutageRideThrough),
             .transport(.pause, loadID),
         ])
         // `handleEndOfFile` clears all three published transport bits together
@@ -1346,7 +1355,10 @@ final class PlaybackReducerTests: XCTestCase {
                     kind: .serverReplan,
                     position: 100,
                     classification: "silo_loopback_failed",
-                    message: "silo_loopback_failed"
+                    // No failure was reported on this load, which is the
+                    // `failure?.legacyMessage ?? ""` `requestServerHLSReplan`
+                    // was given from a non-ladder caller.
+                    message: ""
                 ),
                 identity
             )
@@ -1426,9 +1438,28 @@ final class PlaybackReducerTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(playing(ended)?.sub, .steady)
+        // The shell's half runs *before* the cancel: it reads the
+        // once-per-outage notice latch to decide whether to show "Reconnected"
+        // and the cancel is what clears that latch (`endOutageRideThrough` read
+        // it before `clearSourceOutageRideThroughState()`).
         XCTAssertEqual(endedEffects, [
-            .cancelTimer(.sourceOutageRideThrough),
             .runRecovery(.endOutageRideThrough(kick: true), loadID),
+            .cancelTimer(.sourceOutageRideThrough),
+        ])
+
+        // And the exit is unconditional on the sub-state: a replan taken during
+        // the ride-through overwrote `.ridingOutOutage`, and refusing the exit
+        // there would strand the actor's carried ride-through — every later
+        // session would adopt its `origin_outage` hold with no releaser left.
+        let (steadyEnded, steadyEffects) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID),
+            event: .recovery(.endOutageRideThrough(kick: true), loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(steadyEnded)?.sub, .steady)
+        XCTAssertEqual(steadyEffects, [
+            .runRecovery(.endOutageRideThrough(kick: true), loadID),
+            .cancelTimer(.sourceOutageRideThrough),
         ])
     }
 
@@ -1461,6 +1492,124 @@ final class PlaybackReducerTests: XCTestCase {
         }
         XCTAssertTrue(presentation.isReconnecting)
         XCTAssertFalse(presentation.isPlaying, "PVM:4438 writes isPlaying = false by hand")
+    }
+
+    /// `waitForServerReady`'s tail. When the probe reaches the server the
+    /// policy clears its slot and answers nothing, so the transition that
+    /// finishes the visible recovery is this one: the replacement load, at the
+    /// position the outage interrupted, rebuilt from the live selections
+    /// (PVM:3981-3990). Without it the player waits on "Reconnecting" forever.
+    func testServerReadyRestartsTheInterruptedLoad() {
+        let loadID = LoadID()
+        let (recovering, _) = PlaybackReducer.reduce(
+            makePlaying(
+                loadID: loadID,
+                transport: TransportState(positionSeconds: 240, durationSeconds: 1000)
+            ),
+            event: .recovery(.recoverFromServerOutage(reason: "network_unavailable"), loadID),
+            now: now
+        )
+        let (next, effects) = PlaybackReducer.reduce(
+            recovering,
+            event: .timer(.serverOutageRecovery, loadID),
+            now: now
+        )
+        guard case .preparing(let preparing) = next else {
+            return XCTFail("expected the replacement load")
+        }
+        XCTAssertNotEqual(preparing.loadID, loadID)
+        XCTAssertEqual(preparing.adoption, .freshLoad(.recovery))
+        XCTAssertEqual(preparing.options.resumePosition ?? -1, 240, accuracy: 0.001)
+        XCTAssertTrue(preparing.options.allowNearEndResume)
+        XCTAssertTrue(preparing.options.preserveInterruptionState)
+        XCTAssertNil(preparing.options.progressPosition, "the session that vanished is not reported to")
+        XCTAssertTrue(effects.contains { effect in
+            if case .startSession(_, _, let id) = effect { return id == preparing.loadID }
+            return false
+        })
+        // A recovery load must not cancel the outage-recovery slot: the
+        // post-outage suppression window rides into the replacement load and is
+        // released by its `fileLoaded` (design section 2.8 wave-2b gap (a)).
+        XCTAssertFalse(effects.contains(.cancelTimer(.serverOutageRecovery)))
+
+        // Only from the recovery's own sub-states.
+        let (ignored, ignoredEffects) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID),
+            event: .timer(.serverOutageRecovery, loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(ignored)?.loadID, loadID)
+        XCTAssertTrue(ignoredEffects.isEmpty)
+    }
+
+    /// `RecoveryAction.switchRoute(.serverHLS)` carries only the
+    /// classification, but the rung that decides it always has the failure in
+    /// hand and the legacy executor passed its text to the replan
+    /// (`requestServerHLSReplan(message: failure?.legacyMessage ?? "")`). That
+    /// text is the wire's `diagnostics["error_cause"]` and the wall text when
+    /// the server answers `replanUnavailable`, so the reducer keeps it.
+    func testServerHLSFallbackReplansWithTheFailureTextNotTheClassification() {
+        let loadID = LoadID()
+        let identity = makeIdentity()
+        let (reported, reportedEffects) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID, identity: identity),
+            event: .engine(
+                .failed(PlaybackFailure(legacyMessage: "The operation could not be completed.")),
+                loadID
+            ),
+            now: now
+        )
+        XCTAssertTrue(reportedEffects.isEmpty, "the failure is decided by RecoveryPolicy, not here")
+
+        let (_, effects) = PlaybackReducer.reduce(
+            reported,
+            event: .recovery(
+                .switchRoute(.serverHLS(classification: "silo_loopback_failed")),
+                loadID
+            ),
+            now: now
+        )
+        XCTAssertEqual(
+            effects.last,
+            .replan(
+                ReplanIntent(
+                    kind: .serverReplan,
+                    position: 100,
+                    classification: "silo_loopback_failed",
+                    message: "The operation could not be completed."
+                ),
+                identity
+            )
+        )
+    }
+
+    /// The rung's console trace names a replan that was actually minted:
+    /// `requestServerHLSReplan` logged *after* its "no replan already running"
+    /// guard, so a refused fallback emits no `[CMP-ROUTE]` line.
+    func testServerHLSFallbackEmitsNoTraceWhenTheReplanSlotIsBusy() {
+        let loadID = LoadID()
+        let (next, effects) = PlaybackReducer.reduce(
+            makePlaying(
+                loadID: loadID,
+                sub: .replanning(
+                    ReplanIntent(
+                        kind: .serverReplan,
+                        position: 100,
+                        classification: "player_error",
+                        message: "boom"
+                    )
+                )
+            ),
+            event: .recovery(
+                .switchRoute(.serverHLS(classification: "silo_loopback_failed")),
+                loadID
+            ),
+            now: now
+        )
+        XCTAssertTrue(effects.isEmpty)
+        guard case .replanning = playing(next)?.sub else {
+            return XCTFail("the in-flight replan must survive")
+        }
     }
 
     /// A `source_entity_changed` outage is the one reason whose cached prefix

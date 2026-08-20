@@ -810,18 +810,24 @@ class PlayerViewModel {
     /// was never control plane — Now Playing, next-up presentation, auto-skip,
     /// stats composition, track application and the console breadcrumbs.
     ///
-    /// - Parameter playheadAdvanced: whether the reducer accepted this tick.
-    ///   `onTimeChange` drops stale drainage frames and backward loader frames
-    ///   but still keeps Now Playing fresh with the optimistic target, so the
-    ///   two outcomes are not interchangeable.
+    /// - Parameter reduction: what the control plane did with this event — see
+    ///   `EngineEventReduction`. The presentation half runs after the reducer's,
+    ///   so an event the reducer refused (a stale drainage frame, a duration a
+    ///   transcode delivery must not adopt, an end-of-file during a visible
+    ///   outage recovery) has to be told apart here, and the pre-event
+    ///   transport state has to travel rather than be read back off `isPlaying`.
     @MainActor
-    func applyEngineEventToPresentation(_ event: EngineEvent, playheadAdvanced: Bool) {
+    func applyEngineEventToPresentation(_ event: EngineEvent, reduction: EngineEventReduction) {
         guard !isDisposed else { return }
         switch event {
         case let .time(seconds):
             guard seconds.isFinite else { return }
+            // `onTimeChange` returned before any of this once the EOF latch was
+            // set: the postroll owns the surface and Now Playing is already
+            // parked at the end.
+            guard !hasEndedStream else { return }
             let movieTime = seconds + playbackTimelineOffset
-            guard playheadAdvanced else {
+            guard reduction.accepted else {
                 // Still stale — the scrubber keeps the optimistic target, but
                 // Now Playing is kept fresh so the remote widget does not
                 // appear frozen.
@@ -834,6 +840,9 @@ class PlayerViewModel {
             pushNowPlayingIfDue()
 
         case .duration:
+            // Only once the backend's report was actually adopted:
+            // `onDurationChange` ran its next-up refresh inside the same guard.
+            guard reduction.accepted else { return }
             updateNextUpPresentation(for: currentTime)
 
         case let .pauseChanged(paused):
@@ -843,7 +852,11 @@ class PlayerViewModel {
             // the user acts. Resuming re-arms the auto-hide so a resume
             // from an external source (Now Playing, Siri) does not leave
             // the overlay stuck on-screen.
-            if paused, isPlaying, !isLoading, !hasEndedStream {
+            //
+            // The test is against the transport state this event *changed*
+            // (`wasPlaying`), not against `isPlaying`: the reducer's publish has
+            // already merged the new value by the time this runs.
+            if paused, reduction.wasPlaying, !isLoading, !hasEndedStream {
                 pinControlsVisible()
             } else if !paused, showControls, !isHUDPresented {
                 scheduleHideControls()
@@ -902,6 +915,12 @@ class PlayerViewModel {
             reconcileDynamicRangeBadge(with: composed.confirmedDynamicRange)
 
         case .endOfFile:
+            // The reducer refuses an end-of-file while a visible server-outage
+            // recovery owns the load — a late drain from the engine being torn
+            // down — and `handleEndOfFile` returned at its first statement for
+            // the same reason. Running it here would put a Next Up postroll and
+            // a terminal breadcrumb on top of the recovery.
+            guard reduction.accepted else { return }
             handleEndOfFile()
 
         case let .timelineOffset(offset):
@@ -947,7 +966,12 @@ class PlayerViewModel {
     @MainActor
     func applyPresentation(_ presentation: Presentation, transportOnly: Bool) {
         currentTime = presentation.currentTime
-        duration = presentation.duration
+        // `.failed` and `.suspended` deliberately carry no duration (see
+        // `PlaybackState.failed`), and neither `finalizeTerminalPlaybackError`
+        // nor `suspendForBackground` reset it — the postroll that follows an
+        // autoplay failure and the tvOS wake screen both still show the length.
+        // A publish from a state that does not own one must not zero it.
+        if presentation.duration > 0 { duration = presentation.duration }
         bufferedAheadSeconds = presentation.bufferedAheadSeconds
         playbackRunwaySeconds = presentation.playbackRunwaySeconds
         if let stats = presentation.playbackStats { playbackStats = stats }
@@ -1770,7 +1794,7 @@ class PlayerViewModel {
             // `.nextUpKeepWatching` is one of the two seek origins the reducer
             // lets out of the postroll latch.
             let target = max(0, duration - 10)
-            let reloadsPlaybackPipeline = commitSeek(to: target, source: "keepWatching")
+            let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
             if !reloadsPlaybackPipeline {
                 send(.play)
             }
@@ -1898,7 +1922,8 @@ class PlayerViewModel {
         // untouched, only the local execution route changes.
         pendingExecutionPlan = fallbackPlan
         guard let controlPlane else { return }
-        Task { await controlPlane.reloadEngineInPlace() }
+        // Main-actor-isolated for the ordering reason `send(_:)` documents.
+        Task { @MainActor in await controlPlane.reloadEngineInPlace() }
     }
 
     /// Retarget a route onto server HLS. Every remaining engine is
@@ -3441,9 +3466,17 @@ class PlayerViewModel {
     /// Forward one view command to the control plane. Every command is an
     /// intent: the reducer decides what it means, the actor runs the effects,
     /// and whatever moved comes back as a `Presentation`.
+    ///
+    /// The hop is `@MainActor`-isolated on purpose. An actor serialises
+    /// execution but does not order two distinct unstructured tasks, and this
+    /// shell issues commands in pairs that must not invert — the re-anchor seek
+    /// before the reload that carries it, `commitSeek` before `.play`. Every
+    /// forwarding site (this, `requestReplan`, `reloadEngineInPlace`) enqueues
+    /// on the one serial executor the callers already run on, so the tasks start
+    /// in call order and reach the control plane in that order.
     private func send(_ intent: PlayerIntent) {
         guard !isDisposed, let controlPlane else { return }
-        Task { await controlPlane.send(intent) }
+        Task { @MainActor in await controlPlane.send(intent) }
     }
 
     func loadAndPlay(
@@ -3920,7 +3953,7 @@ class PlayerViewModel {
         case "chapter": return .chapter
         case "intro": return .intro
         case "credits": return .credits
-        case "keepWatching": return .nextUpKeepWatching
+        case "nextUpBack": return .nextUpKeepWatching
         case "scrub": return .scrub
         default: return .user
         }
@@ -4050,15 +4083,20 @@ class PlayerViewModel {
         // untouched, only the local remux is re-anchored.
         pendingExecutionPlan = updatedPlan
         guard let controlPlane else { return true }
-        Task { await controlPlane.reloadEngineInPlace() }
+        // Main-actor-isolated so it cannot overtake `beginReanchorSeekUI`'s
+        // `.seek(.reanchor)` (see `send(_:)`).
+        Task { @MainActor in await controlPlane.reloadEngineInPlace() }
         return true
     }
 
     /// Mint a replan the reducer did not decide for itself: the two seek
     /// re-anchor paths and, historically, the in-place transcode restart.
+    ///
+    /// Main-actor-isolated for the ordering reason `send(_:)` documents: it is
+    /// always preceded by `beginReanchorSeekUI`'s `.seek(.reanchor)`.
     private func requestReplan(_ intent: ReplanIntent) {
         guard !isDisposed, let controlPlane else { return }
-        Task { await controlPlane.requestReplan(intent) }
+        Task { @MainActor in await controlPlane.requestReplan(intent) }
     }
 
     func seek(to fraction: Double) {
@@ -4687,7 +4725,9 @@ class PlayerViewModel {
         let controlPlane = self.controlPlane
         self.controlPlane = nil
         if let controlPlane {
-            Task { await controlPlane.shutdown() }
+            // Main-actor-isolated with the rest of the forwarding path, so the
+            // teardown cannot overtake an intent the view issued just before it.
+            Task { @MainActor in await controlPlane.shutdown() }
         }
         engineSession?.dispose(reason: "cleanup")
         // Drop the disposed session so any post-teardown call is an explicit

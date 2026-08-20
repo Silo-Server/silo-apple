@@ -246,6 +246,115 @@ final class PlaybackSessionActorTests: XCTestCase {
         XCTAssertEqual(continued.nextProbeDelay, 2, accuracy: 0.001)
     }
 
+    /// The deadline is only half of it: the poll that *owns* the deadline (and
+    /// the release of the `origin_outage` hold) has to follow the replacement
+    /// load. Wave 2b's loop had no load compare and survived an in-place
+    /// replan; a route change retires the session it was riding, so the actor
+    /// re-arms the poll against the load that adopted the carry.
+    func testRideThroughPollFollowsARouteChangeReplanOntoTheReplacementLoad() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+        let identity = try unwrap(await actor.currentState().identity)
+
+        await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
+        await actor.send(.changeQuality("1080p"))
+        await actor.clearRecordedEffects()
+        await actor.ingest(
+            .session(
+                .replanned(try makePreparedRef(), makePlan(engine: .avPlayerHLS)),
+                identity
+            )
+        )
+        let replacement = try unwrap(await actor.currentState().loadID)
+        XCTAssertNotEqual(replacement, loadID)
+        let rearmed = await effects(actor)
+        XCTAssertTrue(
+            rearmed.contains { effect in
+                if case .pollServerHealth(let timer, _, let id) = effect {
+                    return timer == .sourceOutageRideThrough && id == replacement
+                }
+                return false
+            },
+            "the ride-through poll must be re-armed for the load that adopted the carry"
+        )
+    }
+
+    /// The exit is unconditional on the sub-state. A replan overwrote
+    /// `.ridingOutOutage`, so gating the release on it would strand the carry —
+    /// and every later session would adopt its hold with nothing left to
+    /// release it.
+    func testEndingTheRideThroughAfterAReplanStillReleasesTheCarry() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+        let identity = try unwrap(await actor.currentState().identity)
+
+        await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
+        await actor.send(.changeQuality("1080p"))
+        await actor.ingest(
+            .session(.replanned(try makePreparedRef(), makePlan()), identity)
+        )
+        let replacement = try unwrap(await actor.currentState().loadID)
+        await actor.ingestEngineEvent(.fileLoaded(reason: "test"), loadID: replacement)
+        guard case .playing(let playing) = await actor.currentState(),
+              case .steady = playing.sub else {
+            return XCTFail("the replan must have left the ride-through sub-state")
+        }
+        let carried = await actor.carriedOutage
+        XCTAssertNotNil(carried)
+
+        await actor.ingest(.recovery(.endOutageRideThrough(kick: true), replacement))
+        let released = await actor.carriedOutage
+        XCTAssertNil(released)
+    }
+
+    /// The carry is released by every transition that abandons the load it was
+    /// riding for — only the replan path keeps it. Otherwise a Next Up
+    /// autoplay, a Retry or a terminal failure would hand an `origin_outage`
+    /// hold to a session whose proxy will never report the outage ending, and
+    /// `RecoveryContext.isRecoverySuspended` would gate that load's whole
+    /// in-route ladder.
+    func testATerminalFailureAndTheLoadThatFollowsDropTheCarriedRideThrough() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+
+        await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
+        let riding = await actor.carriedOutage
+        XCTAssertNotNil(riding)
+        await actor.ingest(.recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID))
+        let afterFailure = await actor.carriedOutage
+        XCTAssertNil(afterFailure)
+
+        // And the load that follows it starts with no outage to adopt.
+        await actor.send(.retry)
+        let afterRetry = await actor.carriedOutage
+        XCTAssertNil(afterRetry)
+    }
+
+    func testAFreshLoadDropsTheCarriedRideThrough() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+
+        await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
+        let riding = await actor.carriedOutage
+        XCTAssertNotNil(riding)
+        // The Next Up hand-off: a different title, a different origin.
+        await actor.send(
+            .load(makeRequest(contentId: "content-2"), origin: .autoplay, options: LoadOptions())
+        )
+        let afterAutoplay = await actor.carriedOutage
+        XCTAssertNil(afterAutoplay)
+    }
+
+    func testEndOfFileDropsTheCarriedRideThrough() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+
+        await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
+        await actor.ingestEngineEvent(.endOfFile, loadID: loadID)
+        let afterDrain = await actor.carriedOutage
+        XCTAssertNil(afterDrain)
+    }
+
     func testEndingTheRideThroughReleasesTheCarriedHold() async throws {
         let actor = try makeActor()
         let loadID = try await startPlaying(actor)
@@ -293,6 +402,39 @@ final class PlaybackSessionActorTests: XCTestCase {
         // closes with it.
         let released = await actor.suppressesEngineFailuresAfterOutage
         XCTAssertFalse(released)
+    }
+
+    /// `waitForServerReady`'s tail. A probe that reaches the server ends the
+    /// visible recovery's wait — the policy clears its slot and answers
+    /// nothing — and the recovery is finished by re-loading the title at the
+    /// position the outage interrupted. Without it the player waits on
+    /// "Reconnecting" forever.
+    func testServerReadyRestartsTheLoadAfterAVisibleOutageRecovery() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+        await actor.ingest(.engine(.time(seconds: 120), loadID))
+
+        await actor.ingest(.recovery(.recoverFromServerOutage(reason: "network_unavailable"), loadID))
+        guard case .playing(let recovering) = await actor.currentState(),
+              case .recovering(.recoveringFromServerOutage) = recovering.sub else {
+            return XCTFail("expected .recovering(.recoveringFromServerOutage)")
+        }
+        await actor.clearRecordedEffects()
+
+        // The actor ingests this only when the health probe reached the server.
+        await actor.ingest(.timer(.serverOutageRecovery, loadID))
+        guard case .preparing(let replacement) = await actor.currentState() else {
+            return XCTFail("the wait's tail is the replacement load")
+        }
+        XCTAssertNotEqual(replacement.loadID, loadID)
+        XCTAssertEqual(replacement.adoption, .freshLoad(.recovery))
+        XCTAssertEqual(replacement.options.resumePosition ?? -1, 120, accuracy: 0.001)
+        XCTAssertTrue(replacement.options.preserveInterruptionState)
+        let ran = await effects(actor)
+        XCTAssertTrue(ran.contains { effect in
+            if case .startSession(_, _, let id) = effect { return id == replacement.loadID }
+            return false
+        })
     }
 
     // MARK: - Scene phase

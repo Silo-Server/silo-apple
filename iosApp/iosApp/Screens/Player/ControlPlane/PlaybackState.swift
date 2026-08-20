@@ -233,6 +233,18 @@ struct Playing: Equatable {
     /// The live inputs `copyForRecovery` needs (see `TrackResumeSelections`).
     var resumeSelections: TrackResumeSelections
     var interruption: Interruption?
+    /// The text of the last engine failure this load reported.
+    ///
+    /// `RecoveryAction` is frozen and carries only the *classification* on
+    /// `.switchRoute(.serverHLS)`, but the rung that decides it
+    /// (`RecoveryPolicy.decideEngineFailed`) always has the failure in hand and
+    /// the legacy executor passed its text on: `performServerHLSRouteFallback`
+    /// → `requestServerHLSReplan(message: failure?.legacyMessage ?? "")`. That
+    /// `message` is both the replan's wire `diagnostics["error_cause"]`
+    /// (PlaybackSessionBridge) and the wall text when the server answers
+    /// `replanUnavailable`, so the reducer keeps the last text rather than
+    /// degrading both to a token.
+    var lastFailureMessage: String?
 }
 
 /// What `LoadRequest.copyForRecovery` (PVM:860-880) is given when a load is

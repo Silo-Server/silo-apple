@@ -24,12 +24,31 @@
 //  the actor calls is `@MainActor` and the `await` performs the hop. That hop is
 //  the one behaviour difference this wave adds beyond design §7: a view command
 //  reaches the engine a run-loop turn later than when the view model called the
-//  backend inline. Ordering is unchanged, because one actor serialises what the
-//  main queue used to.
+//  backend inline.
+//
+//  Ordering between two shell commands is preserved by *where they are
+//  enqueued*, not by the actor: an actor serialises execution, it does not
+//  order distinct unstructured tasks. Every shell forwarding site
+//  (`PlayerViewModel.send`, `requestReplan`, `reloadEngineInPlace`) therefore
+//  wraps its hop in `Task { @MainActor in … }`, so two commands issued from one
+//  main-thread call run their first job in call order on the main serial
+//  executor and reach this actor in that order.
 //
 
 import Foundation
 import OSLog
+
+/// What the reducer did with an engine event, handed to the shell alongside it.
+///
+/// The presentation half of an event runs after the control-plane half, so the
+/// facts it used to read off the published state — "was this playing before?",
+/// "did the reducer take this?" — have to travel with it.
+struct EngineEventReduction: Sendable, Equatable {
+    /// The reducer acted on the event rather than refusing it.
+    var accepted: Bool
+    /// The transport state *before* this event was reduced.
+    var wasPlaying: Bool
+}
 
 actor PlaybackSessionActor {
 
@@ -139,6 +158,15 @@ actor PlaybackSessionActor {
               case .recoverFromServerOutage = action else {
             return
         }
+        if carriedOutage != nil {
+            // The ride-through's own escalation point. Legacy logged it from
+            // the poll loop, which is where the policy answered it; here the
+            // answer arrives on the session's stream, and a live carry is what
+            // says the escalation came from an exhausted ride-through.
+            Self.logger.error(
+                "[CMP-OUTAGE] ride-through budget exhausted; escalating to visible recovery"
+            )
+        }
         // The visible recovery owns the load until its replacement stream
         // reports `fileLoaded`; every engine failure in between is the server
         // going away, not a playback fault.
@@ -149,25 +177,33 @@ actor PlaybackSessionActor {
     /// route-change replan later in this load resumes the *same* 90 s budget
     /// instead of starting a second one.
     ///
-    /// The deadline and the backoff come from the reducer's own
-    /// `Sub.ridingOutOutage`, which is why the carry survives a session the
-    /// actor never sees; `noticeShown` is the policy's once-per-outage runway
-    /// gate and is read off the live driver, because only the policy sets it.
+    /// The values are the **policy's**: the live driver's `context.outage` is
+    /// what `decideServerHealthProbe` reads for the 90 s escalation and what it
+    /// has just written, so the carry mirrors it rather than re-deriving a
+    /// start date. The reducer's own `Sub.ridingOutOutage` is the fallback for
+    /// the window where there is no live session (a replan between two
+    /// engines), and there the existing carry's start always wins — a
+    /// continuation must never restart the budget.
     private func noteAfterReducing(_ event: PlayerEvent) async {
         guard case let .recovery(action, _) = event, case .rideThroughOutage = action else {
+            return
+        }
+        if let live = await shell?.liveOutageState() {
+            carriedOutage = RecoveryContext.OutageState(
+                rideThroughStart: carriedOutage?.rideThroughStart ?? live.rideThroughStart,
+                nextProbeDelay: live.nextProbeDelay,
+                noticeShown: live.noticeShown
+            )
             return
         }
         guard case let .playing(playing) = state,
               case let .ridingOutOutage(outage) = playing.sub else {
             return
         }
-        let noticeShown = await shell?.liveOutageState()?.noticeShown
-            ?? carriedOutage?.noticeShown
-            ?? false
         carriedOutage = RecoveryContext.OutageState(
-            rideThroughStart: outage.startedAt,
+            rideThroughStart: carriedOutage?.rideThroughStart ?? outage.startedAt,
             nextProbeDelay: Self.seconds(outage.nextProbeDelay),
-            noticeShown: noticeShown
+            noticeShown: carriedOutage?.noticeShown ?? false
         )
     }
 
@@ -339,7 +375,7 @@ actor PlaybackSessionActor {
                 // the error wall should carry, or `nil` when this origin keeps
                 // the player on a recoverable surface instead.
                 let message = await shell.presentLoadFailure(error, origin: origin)
-                await self.abandonLoad(loadID, message: message)
+                await self.abandonLoad(loadID, message: message, origin: origin)
             }
         }
     }
@@ -350,7 +386,7 @@ actor PlaybackSessionActor {
     /// so the terminal transition runs either way; what differs is whether the
     /// error wall is published. `message == nil` is the autoplay/recovery arm,
     /// which deliberately leaves the player on a recoverable surface.
-    private func abandonLoad(_ loadID: LoadID, message: String?) async {
+    private func abandonLoad(_ loadID: LoadID, message: String?, origin: LoadOrigin) async {
         guard state.loadID == loadID else { return }
         let failure = PlaybackFailure(legacyMessage: message ?? "")
         let (next, effects) = PlaybackReducer.reduce(
@@ -363,6 +399,12 @@ actor PlaybackSessionActor {
             if case let .publish(presentation) = effect, message == nil {
                 var recoverable = presentation
                 recoverable.error = nil
+                // `handleBeginFreshLoadFailure` took the overlay down under the
+                // origin's own reason, which is what a console capture reads
+                // these two recoverable outcomes apart by.
+                recoverable.loadingReason = origin == .autoplay
+                    ? "autoplay_failure"
+                    : "recovery_failure"
                 await publish(recoverable)
                 continue
             }
@@ -398,6 +440,19 @@ actor PlaybackSessionActor {
 
     private func loadEngine(_ plan: ExecutablePlan, loadID: LoadID, reuseEngine: Bool) async {
         pendingLoadID = loadID
+        if let carried = carriedOutage {
+            // The replacement session adopts the ride-through together with the
+            // `origin_outage` hold it releases, so the poll that owns both is
+            // re-armed against this load. Without it the loop that survived the
+            // replan would keep answering for a `LoadID` that no longer exists.
+            await perform(
+                .pollServerHealth(
+                    .sourceOutageRideThrough,
+                    after: .seconds(carried.nextProbeDelay),
+                    loadID
+                )
+            )
+        }
         guard let shell else { return }
         // Supersede the outgoing load's event stream here, where the legacy
         // code bumped the stream-load generation — before the outgoing engine
@@ -476,8 +531,11 @@ actor PlaybackSessionActor {
         }
 
         // The one event the actor still gates before the reducer: the
-        // post-outage-reload suppression window.
+        // post-outage-reload suppression window. The reduction runs first all
+        // the same — it decides nothing, it only records the failure text the
+        // server-HLS fallback rung replans with.
         if case let .failed(failure) = event {
+            await ingest(.engine(event, loadID))
             await handleEngineFailure(failure)
             return
         }
@@ -486,17 +544,71 @@ actor PlaybackSessionActor {
         await ingest(.engine(event, loadID))
         await publishTransportIfChanged()
 
-        let advanced = Self.playheadAdvanced(from: before, to: state)
-        await shell?.applyEngineEventToPresentation(event, playheadAdvanced: advanced)
+        await shell?.applyEngineEventToPresentation(
+            event,
+            reduction: Self.reduction(of: event, from: before, to: state)
+        )
     }
 
-    /// Whether the reducer accepted the tick that just went in.
-    /// `onTimeChange` drops stale drainage frames and backward loader frames
-    /// but still keeps Now Playing fresh, so the shell needs to know which of
-    /// the two happened.
+    /// What the reduction did with the event the shell is about to see.
+    ///
+    /// The shell half runs *after* the reducer's, so the two arms that used to
+    /// read the pre-event value off the published state cannot: `isPlaying` has
+    /// already been merged by the `.pauseChanged` publish, and an event the
+    /// reducer **refused** (a stale time frame, a duration a `.transcode`
+    /// delivery must not adopt, an end-of-file during a visible outage
+    /// recovery) would otherwise still run its presentation half in full.
+    private static func reduction(
+        of event: EngineEvent,
+        from before: PlaybackState,
+        to after: PlaybackState
+    ) -> EngineEventReduction {
+        EngineEventReduction(
+            accepted: accepted(event, from: before, to: after),
+            wasPlaying: isPlaying(before)
+        )
+    }
+
+    private static func accepted(
+        _ event: EngineEvent,
+        from before: PlaybackState,
+        to after: PlaybackState
+    ) -> Bool {
+        switch event {
+        case .time:
+            // `onTimeChange` drops stale drainage frames and backward loader
+            // frames but still keeps Now Playing fresh, so the two outcomes are
+            // not interchangeable.
+            return playheadAdvanced(from: before, to: after)
+        case .duration:
+            return duration(of: before) != duration(of: after)
+        case .endOfFile:
+            // `handleEndOfFile` returned at its first statement while a visible
+            // server-outage recovery owned the load; the reducer expresses the
+            // same refusal by leaving the sub-state alone.
+            guard case let .playing(playing) = after else { return false }
+            return playing.sub == .ended
+        default:
+            return true
+        }
+    }
+
     private static func playheadAdvanced(from before: PlaybackState, to after: PlaybackState) -> Bool {
         guard case let .playing(old) = before, case let .playing(new) = after else { return false }
         return old.transport.positionSeconds != new.transport.positionSeconds
+    }
+
+    private static func duration(of state: PlaybackState) -> Double? {
+        guard case let .playing(playing) = state else { return nil }
+        return playing.transport.durationSeconds
+    }
+
+    private static func isPlaying(_ state: PlaybackState) -> Bool {
+        switch state {
+        case .playing(let playing): return !playing.transport.isPaused
+        case .preparing(let preparing): return !preparing.transport.isPaused
+        case .idle, .suspended, .failed, .disposed: return false
+        }
     }
 
     /// `handlePlaybackError`'s remainder: rung 1's load-state gate, then the
@@ -717,20 +829,43 @@ actor PlaybackSessionActor {
     }
 
     private func runHealthProbe(_ timerID: TimerID, loadID: LoadID) async {
-        guard state.loadID == loadID, let shell else { return }
+        guard let shell else { return }
+        // The visible recovery is load-scoped — it keeps the `LoadID` it
+        // started under while it disposes the engine — but the ride-through is
+        // **not**: a replan (in place or route-changing) mints a new one and
+        // the loop has to survive it, exactly as `runOutageRideThrough` did by
+        // being gated on the ride-through's own liveness rather than on the
+        // load. Its state is the carry (adopted, with the `origin_outage` hold,
+        // by every session the actor installs while it is set).
         if timerID == .sourceOutageRideThrough {
-            // The ride-through's owner outlives one session: the carry is what
-            // keeps the loop alive across a route change.
             let live = await shell.liveOutageState()
-            guard live != nil || carriedOutage != nil else { return }
+            guard state.loadID != nil, live != nil || carriedOutage != nil else { return }
+        } else {
+            guard state.loadID == loadID else { return }
         }
         let reachable = await shell.probeServerHealthOnce(reporting: timerID)
-        guard !Task.isCancelled, state.loadID == loadID else { return }
-        if timerID == .sourceOutageRideThrough, reachable {
-            Self.logger.info("[CMP-OUTAGE] server healthy; nudging origin re-probe")
-            await shell.reprobeOrigin()
+        guard !Task.isCancelled, let currentLoadID = state.loadID else { return }
+        if timerID == .sourceOutageRideThrough {
+            let stillRiding = await shell.liveOutageState() != nil
+            guard carriedOutage != nil || stillRiding else { return }
+            if reachable {
+                Self.logger.info("[CMP-OUTAGE] server healthy; nudging origin re-probe")
+                await shell.reprobeOrigin()
+            }
+        } else if currentLoadID != loadID {
+            return
         }
         await observeOnLiveSession(.serverHealthProbe(ok: reachable))
+        guard timerID == .serverOutageRecovery, reachable else { return }
+        // `waitForServerReady`'s `true` return: the policy cleared its slot and
+        // answered nothing, because the tail of the visible recovery is the
+        // replacement load — the one thing that takes the "Reconnecting"
+        // surface back down. The reducer owns which load that is.
+        let resumePosition = PlaybackReducer.presentation(for: state).currentTime
+        Self.logger.info(
+            "[CMP-RECOVERY] server ready; restarting playback position=\(resumePosition, privacy: .public)"
+        )
+        await ingest(.timer(.serverOutageRecovery, currentLoadID))
     }
 
     // MARK: - Replans and reloads the shell mints
