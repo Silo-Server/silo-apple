@@ -1796,6 +1796,23 @@ final class LoopbackSegmentWriter {
                 throw LoopbackWriterError.muxWriteFailures(lastRC: secondRC, consecutive: 1)
             }
         }
+        // Progressive anchor whose last interim flush already drained the
+        // muxer: the cut's flush then has nothing to emit (movenc returns
+        // without a moof/mdat when no track holds samples), so the box sink
+        // never sees the `mdat` that finalizes the closing segment.
+        // `vodClosingSegmentIndex` stays set, the next segment's fragments
+        // append onto the still-pending buffer, and the whole thing is
+        // stored under the NEXT index (living-room mid-title resume: seg N
+        // never produced, seg N+1 stored with N's tfdt and double duration,
+        // AVPlayer stuck on an empty seg N → "cannot be tone mapped").
+        // The accumulated buffer IS the complete closing segment — publish it.
+        if vodClosingSegmentIndex != nil, pendingSegmentIsProgressive, !pendingSegmentBytes.isEmpty {
+            cmpLog("[CMP-AVP] vod cut segment=\(closingSegment) already drained by interim flushes — finalizing the progressive buffer (\(pendingSegmentBytes.count) bytes)")
+            finalizeCurrentSegment()
+        }
+        if vodClosingSegmentIndex != nil {
+            cmpLog("[CMP-AVP] vod cut segment=\(closingSegment) flushed but no closing fragment was emitted (initWritten=\(initSegmentWritten ? 1 : 0), pending=\(pendingSegmentBytes.count)) — naming drift likely")
+        }
         try throwIfFatalIOError()
         // Moov-wedge escalation (start-over deadlock, 2026-07-06): a cut
         // flush for a parse-needing audio codec MUST have emitted moov —
