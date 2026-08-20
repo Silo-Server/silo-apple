@@ -12,7 +12,7 @@
 //  endpoint already picks an audio track based on per-series and
 //  per-library prefs and returns it as `session.audioTrackIndex`.
 //  PlayerViewModel feeds that index in as the track selection's
-//  `AudioSelection.planIndex` rung and the track-list funnel applies it.
+//  `AudioSelection.planIndex` and the track-list funnel applies it.
 //
 
 import Foundation
@@ -28,32 +28,51 @@ enum SubtitleAutoSelection: Equatable {
     case select(PlayerTrack)
 }
 
+/// The subtitle-preference record, whatever resolved it: the server's
+/// `effective_subtitle_*` cascade, Apple's caption profile, or a per-series
+/// sticky pick. One shape for the whole client — the track coordinator
+/// snapshots it, `PlaybackSessionBridge` sends it into the first V3 start, and
+/// `SubtitleAutoResolver.Inputs` resolves it against a track list.
+struct SubtitleSelectionPreferences: Equatable {
+    /// `subtitle_language` cascaded down to this content. `nil`
+    /// means the user has no preference at any level. Empty
+    /// string means "no subs" — distinct from no preference.
+    let preferredLanguage: String?
+    /// Additional ordered language fallbacks. Used by Apple's caption
+    /// profile, which exposes a stack rather than one server value.
+    let additionalPreferredLanguages: [String]
+    /// `subtitle_mode` from the cascade. `nil` → fall back to "auto".
+    let mode: SubtitleMode?
+    /// Whether forced subs should be auto-selected when available.
+    let showForced: Bool
+    /// Apple's Forced Only display mode.
+    let forcedOnly: Bool
+    /// Prefer CC/SDH over plain subtitles when Apple requests the
+    /// accessibility media characteristics.
+    let preferAccessibilityTracks: Bool
+    /// An explicit device language stack is authoritative. If none of
+    /// those languages exists, clear any server-selected subtitle rather
+    /// than leaking the server profile back into device-settings mode.
+    let disableWhenNoLanguageMatch: Bool
+    /// Per-series sticky pick. Highest priority signal — if a track
+    /// matches the signature, select it regardless of language /
+    /// mode.
+    let trackSignature: SubtitleTrackSignature?
+}
+
 struct SubtitleAutoResolver {
 
     struct Inputs {
-        /// `subtitle_language` cascaded down to this content. `nil`
-        /// means the user has no preference at any level. Empty
-        /// string means "no subs" — distinct from no preference.
+        /// See `SubtitleSelectionPreferences` for what each of these eight
+        /// preference fields means; they are flattened onto `Inputs` because
+        /// the resolver reads them individually.
         let preferredLanguage: String?
-        /// Additional ordered language fallbacks. Used by Apple's caption
-        /// profile, which exposes a stack rather than one server value.
         let additionalPreferredLanguages: [String]
-        /// `subtitle_mode` from the cascade. `nil` → fall back to "auto".
         let mode: SubtitleMode?
-        /// Whether forced subs should be auto-selected when available.
         let showForced: Bool
-        /// Apple's Forced Only display mode.
         let forcedOnly: Bool
-        /// Prefer CC/SDH over plain subtitles when Apple requests the
-        /// accessibility media characteristics.
         let preferAccessibilityTracks: Bool
-        /// An explicit device language stack is authoritative. If none of
-        /// those languages exists, clear any server-selected subtitle rather
-        /// than leaking the server profile back into device-settings mode.
         let disableWhenNoLanguageMatch: Bool
-        /// Per-series sticky pick. Highest priority signal — if a track
-        /// matches the signature, select it regardless of language /
-        /// mode.
         let trackSignature: SubtitleTrackSignature?
         /// Tracks we can choose from (already-discovered embedded +
         /// sidecar entries).
@@ -86,6 +105,28 @@ struct SubtitleAutoResolver {
             self.trackSignature = trackSignature
             self.availableSubtitles = availableSubtitles
             self.currentAudioLanguage = currentAudioLanguage
+        }
+
+        /// Resolve an already-snapshotted preference record against a track
+        /// list. The eight-field transcription lives here once instead of at
+        /// every call site.
+        init(
+            preferences: SubtitleSelectionPreferences,
+            availableSubtitles: [PlayerTrack],
+            currentAudioLanguage: String?
+        ) {
+            self.init(
+                preferredLanguage: preferences.preferredLanguage,
+                additionalPreferredLanguages: preferences.additionalPreferredLanguages,
+                mode: preferences.mode,
+                showForced: preferences.showForced,
+                forcedOnly: preferences.forcedOnly,
+                preferAccessibilityTracks: preferences.preferAccessibilityTracks,
+                disableWhenNoLanguageMatch: preferences.disableWhenNoLanguageMatch,
+                trackSignature: preferences.trackSignature,
+                availableSubtitles: availableSubtitles,
+                currentAudioLanguage: currentAudioLanguage
+            )
         }
     }
 
@@ -367,7 +408,13 @@ struct SubtitleAutoResolver {
             .replacingOccurrences(of: "_", with: "-")
     }
 
-    private static func canonicalPrimaryLanguage(_ identifier: String) -> String {
+    /// The one language canonicalizer in the client: primary subtag folded
+    /// through Foundation, which normalizes arbitrary alpha-2, alpha-3
+    /// terminology and alpha-3 bibliographic spellings without a
+    /// hand-maintained table. `SubtitleDisplayOrder` groups picker rows with
+    /// this so the picker and the auto-resolver can never disagree about which
+    /// tracks are "the same language".
+    static func canonicalPrimaryLanguage(_ identifier: String) -> String {
         let primary = identifier.split(separator: "-").first.map(String.init) ?? identifier
         let languageCode = Locale(identifier: primary).language.languageCode
         return languageCode?.identifier(.alpha2)

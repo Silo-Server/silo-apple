@@ -63,7 +63,11 @@ struct TrackSelectionPorts {
     /// distinguish "write nil" from "no write" — at the single site that has a
     /// value. A later producer may consume it; none has to.
     var requestReplan: (_ classification: String, _ message: String, _ protocolV3SubtitleIndex: Int?) -> Void
-    /// True while a V3 replan round trip is outstanding (`protocolV3ReplanTask != nil`).
+    /// True while a V3 replan round trip is outstanding. The producer reads
+    /// `PlayerViewModel.replanSuspensionHolder`, which `prepareReplan` arms
+    /// *inside* the async round trip (not when the replan is requested) and
+    /// `releaseReplanSuspension` clears — so this is the "a replacement plan is
+    /// actually being fetched" predicate, not "a replan was asked for".
     var isReplanInFlight: () -> Bool
     /// The durable load request whose `preferred*` fields are the fallback for
     /// the resume resolvers. Read-only: the only field the track half writes is
@@ -84,6 +88,18 @@ struct TrackSelectionPorts {
     /// scope) so `cleanup()`/`deinit` keep cancelling it by sweep.
     var deferredLiveSubtitleCloseTask: () -> Task<Void, Never>?
     var setDeferredLiveSubtitleCloseTask: (Task<Void, Never>?) -> Void
+    /// Device-settings vs server-policy subtitle selection: the gate on almost
+    /// every automatic subtitle branch. Defaults to the process-wide settings
+    /// object the view model would otherwise hand over, so the production
+    /// construction site says nothing and a test can vary it per instance.
+    var subtitleMatchesSystemAppearance: () -> Bool = {
+        PlayerSettings.shared.subtitleMatchesSystemAppearance
+    }
+    /// Apple's caption *selection* preferences (ordered languages, display
+    /// mode, accessibility preference). Same default, same reason.
+    var systemSelectionPreferences: () -> SystemCaptionSelectionPreferences = {
+        PlayerSettings.shared.subtitleSystemSelectionPreferences
+    }
 }
 
 extension TrackSelectionContext {

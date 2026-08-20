@@ -14,19 +14,6 @@ import XCTest
 @MainActor
 final class TrackSelectionCoordinatorTests: XCTestCase {
 
-    private var matchesSystemAppearanceBefore = false
-
-    override func setUp() {
-        super.setUp()
-        matchesSystemAppearanceBefore = PlayerSettings.shared.subtitleMatchesSystemAppearance
-        PlayerSettings.shared.subtitleMatchesSystemAppearance = false
-    }
-
-    override func tearDown() {
-        PlayerSettings.shared.subtitleMatchesSystemAppearance = matchesSystemAppearanceBefore
-        super.tearDown()
-    }
-
     // MARK: - applyTrackList: pending indices
 
     func testApplyTrackListAppliesPendingAudioIndexAndClearsIt() {
@@ -222,8 +209,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         XCTAssertNil(explicit.selectedSubtitleId, "an explicit choice outranks the forced sidecar")
 
         // (b) device-settings mode routes every sidecar through Apple's policy.
-        PlayerSettings.shared.subtitleMatchesSystemAppearance = true
-        let systemMode = makeCoordinator(PortRecorder())
+        let systemMode = makeCoordinator(PortRecorder(), matchesSystemAppearance: true)
         systemMode.resetForLoad(
             preferredAudioTrackIndex: nil,
             preferredSubtitleTrackIndex: nil,
@@ -371,7 +357,8 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
 
     private func makeCoordinator(
         _ recorder: PortRecorder,
-        isBackgroundSuspended: Bool = false
+        isBackgroundSuspended: Bool = false,
+        matchesSystemAppearance: Bool = false
     ) -> TrackSelectionCoordinator {
         var ports = TrackSelectionPorts(
             backend: { nil },
@@ -414,7 +401,15 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             resolveServerUrl: { raw, _ in URL(string: raw) },
             subtitleAILiveOverlayAvailable: { false },
             deferredLiveSubtitleCloseTask: { nil },
-            setDeferredLiveSubtitleCloseTask: { _ in }
+            setDeferredLiveSubtitleCloseTask: { _ in },
+            subtitleMatchesSystemAppearance: { matchesSystemAppearance },
+            systemSelectionPreferences: {
+                SystemCaptionSelectionPreferences(
+                    displayMode: .automatic,
+                    preferredLanguages: [],
+                    prefersAccessibilityTracks: false
+                )
+            }
         )
         ports.requestReplan = { classification, message, index in
             recorder.replans.append((classification, message, index))
@@ -439,7 +434,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             audioSelection: TrackSelectionSnapshot(track: audio),
             subtitleSelection: nil,
             secondarySubtitleId: nil,
-            origin: .autoPolicy
+            origin: .automatic
         )
     }
 
