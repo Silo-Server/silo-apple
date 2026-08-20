@@ -32,9 +32,9 @@ is over, §2).
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `ecf1770` (round 6 + tail, Stage 2 waves 1 + 2a + 2b + 3 merged), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
+| Branch / PR | `player/architecture-remediation` @ `2bc8db9` (round 6 + tail, Stage 2 waves 1 + 2a + 2b + 3 + 4 merged — Stage 2 implementation complete), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
 | Size vs `main` | ~150 commits, ~530 files, roughly +20k / −32k raw |
-| Suite (iOS `SiloTests`, only test target) | `Executed 1795 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `ecf1770` (1539 + 180 wave-1 + 11 wave-2a + 27 wave-2b + 38 wave-3 tests, net) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
+| Suite (iOS `SiloTests`, only test target) | `Executed 1804 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `2bc8db9` (1539 + 180 wave-1 + 11 wave-2a + 27 wave-2b + 38 wave-3 + 9 wave-4 tests, net) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
 | Hardware | HDR10 loopback + display criteria validated (bedroom gen-3 08-17, Living Room gen-2 08-18); DV rows validated 08-18 on Living Room (P8.1 passthrough, P7→8.1 + TrueHD→FLAC); §8 anomaly **closed as environmental** |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
@@ -296,10 +296,13 @@ not reach the player.
    (rows 12/13 proper) and DV rows to the post-wave-3 §6 full gate. Follow-ups filed in the validation record:
    writer startup read-deadline + one-retry; cmpLog mirrors for the source proxy's OSLog-only transport lines;
    auto-subtitle replan cooldown. **Wave 3 (actor cutover) merged @ `ecf1770`** after three review rounds
-   (see backlog §0; design §2.3's wave-3 as-built block is binding for wave 4). NEXT: re-anchor the two
-   wave-4 specs (`spec-s2w4-track-selection-model.json`, `spec-s2w4-deletions-and-docs.json`) against the tip
-   → run wave 4 → **the full §6 device gate** (rows 1/3/4/7/12/13/14/16 — 13/14 are wave 3's blocker paths;
-   the deep-outage and DV rows deferred from the 2b pass fold in here) before PR #172 is treated as mergeable.
+   (see backlog §0; design §2.3's wave-3 as-built block is binding for wave 4). **Wave 4 merged 2026-08-20** (both packages approved first pass; see backlog §0). **Stage 2's code work is
+   done.** NEXT, the only gate left: **the full §6 device pass on this tip** — rows 4 (h264/AAC native-direct),
+   12 (source expiry → silent renewal), 13 (server outage long enough to DRAIN the runway — the 76 s stop on 08-20
+   was fully absorbed, so use a 3+ min stop or an out-of-cache seek mid-outage; the visible reload path has
+   never run on hardware), 14 (native-direct startup failure → rung 1 → ≤1 rung 2 — wave 3's blocker-2 path),
+   16 (macOS background, recorded not changed); rows 1/3/7 + suspend/resume were already run on the wave-3 tip
+   (living room 08-20) and need only a spot re-check on the wave-4 tip. Then PR #172 is mergeable.
    Housekeeping: the shared simulator template `89473B29-…` was deleted mid-wave-3; prepare a new template or
    pass `simTemplateUdid` (a stock iPhone 17 Pro `51D3BB39-…` works) to the wave-4 run. Lessons from waves 1–2: keep packages small, every review round on high-risk packages
    found real fidelity gaps (reducer ×5, engine session ×3), and read the as-built blocks before writing the
