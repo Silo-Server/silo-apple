@@ -20,18 +20,12 @@ final class PlayerTaskRegistry {
 
     /// A teardown sweep. A key may belong to several.
     enum Scope {
-        /// The view model is going away. Cancels everything except the
-        /// cleanup-completion task, which *is* the teardown.
+        /// The registry's owner is going away. Cancels everything except the
+        /// two keys whose task *is* the teardown.
         case teardown
         /// Transient UI affordances: control auto-hide, notice dismissal,
         /// seek debouncing and filtering, the hold-seek session.
         case interaction
-        /// Work bound to the stream that is currently loaded — it becomes
-        /// meaningless the moment that stream is replaced or suspended.
-        case activeStream
-        /// Server-facing recovery for the *current* playback session:
-        /// renewal, stale-session repair, and outage ride-through.
-        case sessionRecovery
     }
 
     enum Key: CaseIterable {
@@ -78,33 +72,26 @@ final class PlayerTaskRegistry {
             // unstructured.
             case .suspendStopSession:
                 return []
-            // Awaited by `beginFreshLoad` instead of being reissued, so it
-            // only dies with the view model.
-            case .settingsRefresh:
-                return [.teardown]
-            // The engine session's event loop (wave 2b). It ends on its own
-            // when the session that owns the stream is disposed, which is what
-            // replaced the by-value generation guard on every callback — so no
-            // stream-scoped sweep may cancel it early and drop the events a
-            // dying load still owes (`.failed`, the terminal `.endOfFile`).
-            case .engineEvents:
-                return [.teardown]
-
-            case .freshLoad, .protocolV3Replan, .progress,
-                 .nextUpCountdown, .autoSkipIntroCountdown:
-                return [.teardown, .activeStream]
-
-            case .staleSessionRecovery, .backgroundRenewal, .sourceOutageRideThrough,
-                 .serverOutageRecovery, .interruptionRecovery:
-                return [.teardown, .sessionRecovery]
-
-            case .nextUpLookup, .nextUpOnDeck, .deferredLiveSubtitleClose,
-                 .pictureInPictureBackgroundGrace:
-                return [.teardown]
-
             case .hideControls, .noticeDismiss, .remoteDismiss, .skipDebounce,
                  .seekFilterTimeout, .holdSeek, .holdSeekAutoRamp:
                 return [.teardown, .interaction]
+            // Everything else lives as long as the object that owns the
+            // registry. The control plane cancels its own timers one key at a
+            // time (`Effect.cancelTimer`, e.g. the suspend sweep) and the shell
+            // does the same for its UI work, so the only sweep these belong to
+            // is the final one. `.engineEvents` in particular must never be
+            // cancelled earlier than that: it ends on its own when the session
+            // owning the stream is disposed, and cutting it short would drop
+            // the events a dying load still owes (`.failed`, the terminal
+            // `.endOfFile`). `.settingsRefresh` is awaited by `beginFreshLoad`
+            // rather than reissued.
+            case .settingsRefresh, .engineEvents, .freshLoad, .protocolV3Replan,
+                 .progress, .nextUpCountdown, .autoSkipIntroCountdown,
+                 .staleSessionRecovery, .backgroundRenewal, .sourceOutageRideThrough,
+                 .serverOutageRecovery, .interruptionRecovery, .nextUpLookup,
+                 .nextUpOnDeck, .deferredLiveSubtitleClose,
+                 .pictureInPictureBackgroundGrace:
+                return [.teardown]
             }
         }
     }
