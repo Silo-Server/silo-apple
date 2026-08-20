@@ -54,6 +54,39 @@ enum DiagLog {
         timestamp: Date = Date(),
         captureSessionID: String = DiagLog.captureSessionID
     ) -> String? {
+        guard let line = validatedLine(
+            level: level,
+            category: category,
+            tag: tag,
+            message: message,
+            attrs: attrs,
+            timestamp: timestamp,
+            captureSessionID: captureSessionID
+        ) else {
+            return nil
+        }
+        do {
+            let data = try DiagnosticsJSONCoding.makeEncoder().encode(line)
+            return String(data: data, encoding: .utf8)
+        } catch {
+            assertionFailure("Invalid diagnostics log line: \(error)")
+            return nil
+        }
+    }
+
+    /// The redacted, attribute-checked, contract-valid line *before* it is
+    /// encoded. Destinations that keep lines in memory (``EarlyBootBuffer``)
+    /// stage this and let their eventual writer encode once, rather than
+    /// encoding here only to decode it back.
+    static func validatedLine(
+        level: DiagnosticsLogLevel,
+        category: Category,
+        tag: String,
+        message: String,
+        attrs: [String: DiagLogAttributeValue] = [:],
+        timestamp: Date = Date(),
+        captureSessionID: String = DiagLog.captureSessionID
+    ) -> DiagnosticsLogLine? {
         let line = DiagnosticsLogLine(
             ts: DiagnosticsTimestamp.string(from: timestamp),
             run: captureSessionID,
@@ -65,8 +98,7 @@ enum DiagLog {
         )
         do {
             try line.validate()
-            let data = try DiagnosticsJSONCoding.makeEncoder().encode(line)
-            return String(data: data, encoding: .utf8)
+            return line
         } catch {
             assertionFailure("Invalid diagnostics log line: \(error)")
             return nil

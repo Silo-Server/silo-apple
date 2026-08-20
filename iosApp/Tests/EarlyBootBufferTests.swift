@@ -42,11 +42,7 @@ final class EarlyBootBufferTests: XCTestCase {
             captureSessionID: "run-render"
         ))
 
-        let rendered = try XCTUnwrap(buffer.snapshot().lines.first)
-        let line = try DiagnosticsJSONCoding.makeDecoder().decode(
-            DiagnosticsLogLine.self,
-            from: Data(rendered.utf8)
-        )
+        let line = try XCTUnwrap(buffer.snapshot().lines.first)
         // Same shape as any other breadcrumb: contract-valid, carrying the
         // capture-session id, with only registered attribute keys.
         XCTAssertNoThrow(try line.validate())
@@ -66,9 +62,9 @@ final class EarlyBootBufferTests: XCTestCase {
             captureSessionID: "run-redact"
         ))
 
-        let rendered = try XCTUnwrap(buffer.snapshot().lines.first)
-        XCTAssertFalse(rendered.contains("user@example.com"))
-        XCTAssertTrue(rendered.contains("[redacted_email]"))
+        let line = try XCTUnwrap(buffer.snapshot().lines.first)
+        XCTAssertFalse(line.msg.contains("user@example.com"))
+        XCTAssertTrue(line.msg.contains("[redacted_email]"))
     }
 
     func testNonBreadcrumbCategoriesAreNotStaged() {
@@ -89,7 +85,7 @@ final class EarlyBootBufferTests: XCTestCase {
         let buffer = makeBuffer()
         XCTAssertTrue(buffer.record(category: .lifecycle, tag: "Boot", message: "started"))
 
-        XCTAssertEqual(buffer.drain().count, 1)
+        XCTAssertEqual(buffer.drain().lines.count, 1)
         XCTAssertTrue(buffer.snapshot().lines.isEmpty)
         XCTAssertTrue(buffer.isSealed)
 
@@ -107,7 +103,7 @@ final class EarlyBootBufferTests: XCTestCase {
 
         XCTAssertTrue(buffer.snapshot().lines.isEmpty)
         XCTAssertTrue(buffer.isSealed)
-        XCTAssertTrue(buffer.drain().isEmpty)
+        XCTAssertTrue(buffer.drain().lines.isEmpty)
     }
 
     func testStagingWindowExpiryDiscardsUnflushedLines() {
@@ -143,7 +139,7 @@ final class EarlyBootBufferTests: XCTestCase {
 
         let snapshot = buffer.snapshot()
         XCTAssertEqual(snapshot.lines.count, iterations)
-        XCTAssertEqual(Set(snapshot.lines).count, iterations)
+        XCTAssertEqual(Set(tags(snapshot.lines)).count, iterations)
         XCTAssertEqual(snapshot.droppedCount, 0)
     }
 
@@ -288,6 +284,34 @@ final class EarlyBootBufferTests: XCTestCase {
         // Drained: a second flush cannot duplicate the same lines.
         XCTAssertEqual(DiagnosticsCoordinator.flushEarlyBootBuffer(buffer, into: journal), 0)
         XCTAssertEqual(journal.readAll().count, 2)
+    }
+
+    func testFlushRecordsThatOverflowDroppedStagedLines() throws {
+        let directory = try makeTemporaryDirectory()
+        let journal = BreadcrumbJournal(directory: directory, isEnabled: { true })
+        let buffer = makeBuffer(capacity: 2)
+
+        for index in 0..<4 {
+            XCTAssertTrue(buffer.record(
+                category: .lifecycle,
+                tag: "Boot\(index)",
+                message: "phase changed",
+                captureSessionID: "run-overflow-flush"
+            ))
+        }
+
+        XCTAssertEqual(DiagnosticsCoordinator.flushEarlyBootBuffer(buffer, into: journal), 2)
+
+        // The count is written through the same journal and gate as the lines
+        // it accompanies, after them, so a report shows the surviving tail and
+        // the fact that a launch was looping before consent resolved.
+        let lines = journal.readAll()
+        XCTAssertEqual(lines.map(\.tag), ["Boot2", "Boot3", "Diag"])
+        let overflow = try XCTUnwrap(lines.last)
+        XCTAssertEqual(overflow.lvl, .warning)
+        XCTAssertEqual(overflow.attrs?["outcome"], .string("dropped"))
+        XCTAssertEqual(overflow.attrs?["phase"], .string("earlyBootFlush"))
+        XCTAssertTrue(overflow.msg.contains("2"), "the dropped count is the whole point: \(overflow.msg)")
     }
 
     func testFlushWritesNothingWhenTheJournalGateIsClosed() throws {
@@ -822,11 +846,8 @@ final class EarlyBootBufferTests: XCTestCase {
         )
     }
 
-    private func tags(_ renderedLines: [String]) -> [String] {
-        let decoder = DiagnosticsJSONCoding.makeDecoder()
-        return renderedLines.compactMap { rendered in
-            try? decoder.decode(DiagnosticsLogLine.self, from: Data(rendered.utf8)).tag
-        }
+    private func tags(_ lines: [DiagnosticsLogLine]) -> [String] {
+        lines.map(\.tag)
     }
 
     private func makeTemporaryDirectory() throws -> URL {
