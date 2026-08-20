@@ -161,7 +161,7 @@ private struct PhoneEpisodeCard: View {
             }
 
             if let progress = progressFraction {
-                progressBar(fraction: progress)
+                ProgressBar.episodeStill(fraction: progress, height: 3)
             }
         }
         .frame(width: cardWidth, height: stillHeight)
@@ -190,20 +190,6 @@ private struct PhoneEpisodeCard: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.black)
         }
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.black.opacity(0.6))
-                    .frame(height: 3)
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: geo.size.width * CGFloat(fraction), height: 3)
-            }
-        }
-        .frame(height: 3)
     }
 
     private var progressFraction: Double? {

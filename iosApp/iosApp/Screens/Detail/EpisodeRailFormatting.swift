@@ -21,8 +21,8 @@ enum EpisodeRailFormatting {
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
             parts.append(airDate)
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(DetailFacts.episodeRuntime(minutes: runtime))
+        if let runtime = RuntimeLabel.minutes(episode.runtime, style: .compact) {
+            parts.append(runtime)
         }
         return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }

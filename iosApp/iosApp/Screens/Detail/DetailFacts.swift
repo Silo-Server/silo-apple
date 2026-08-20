@@ -51,15 +51,6 @@ enum DetailFacts {
         return hasScreenplay ? "Writer" : "Written by"
     }
 
-    /// Runtime label used by the episode rails/rows on phone and tvOS
-    /// ("1h 4m" / "42m").
-    static func episodeRuntime(minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
-    }
-
     static func creditNames(from detail: ItemDetail, forJobs jobs: [String]) -> String? {
         guard let crew = detail.crew else { return nil }
         let lowered = jobs.map { $0.lowercased() }

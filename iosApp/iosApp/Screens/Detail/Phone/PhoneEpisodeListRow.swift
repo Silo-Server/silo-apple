@@ -70,7 +70,7 @@ struct PhoneEpisodeListRow: View {
             }
 
             if let progress = EpisodeRailFormatting.progressFraction(for: episode) {
-                progressBar(fraction: progress)
+                ProgressBar.episodeStill(fraction: progress, height: 3)
             }
         }
         .frame(width: thumbnailWidth, height: thumbnailHeight)
@@ -111,18 +111,6 @@ struct PhoneEpisodeListRow: View {
         }
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Rectangle().fill(.black.opacity(0.6))
-                Rectangle()
-                    .fill(.white)
-                    .frame(width: proxy.size.width * CGFloat(fraction))
-            }
-        }
-        .frame(height: 3)
     }
 }
 #endif

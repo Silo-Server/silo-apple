@@ -80,19 +80,12 @@ struct EpisodeThumbCard: View {
             playedOverride = nil
         }
         #else
-        Group {
-            if contextMenuItems.hasAny {
-                iosButton.contextMenu {
-                    contextMenuItems
-                }
-            } else {
-                iosButton
+        iosButton
+            .cardContextMenu(contextMenuItems)
+            .onChange(of: item.userState?.played) { _, _ in
+                playedOverride = nil
             }
-        }
-        .onChange(of: item.userState?.played) { _, _ in
-            playedOverride = nil
-        }
-        .frame(width: cardWidth)
+            .frame(width: cardWidth)
         #endif
     }
 
@@ -328,18 +321,7 @@ struct EpisodeThumbCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
-        thumbnailButtonWithContext(button)
-    }
-
-    @ViewBuilder
-    private func thumbnailButtonWithContext<ButtonContent: View>(_ button: ButtonContent) -> some View {
-        if contextMenuItems.hasAny {
-            button.contextMenu {
-                contextMenuItems
-            }
-        } else {
-            button
-        }
+        button.cardContextMenu(contextMenuItems)
     }
     #endif
 

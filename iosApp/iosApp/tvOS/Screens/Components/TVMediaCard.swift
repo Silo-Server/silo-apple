@@ -109,30 +109,22 @@ struct TVMediaCard: View {
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        favoriteOverride = newValue
-        Task {
-            if await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) == false {
-                favoriteOverride = !newValue // Revert on failure
-            }
-        }
+        PersonalListToggles.toggleFavorite(
+            contentId: contentId,
+            isFavorite: isFavorite,
+            inWatchlist: isInWatchlist,
+            write: { favoriteOverride = $0 }
+        )
     }
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
-            if await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            ) == false {
-                watchlistOverride = !newValue // Revert on failure
-            }
-        }
+        PersonalListToggles.toggleWatchlist(
+            contentId: contentId,
+            isFavorite: isFavorite,
+            inWatchlist: isInWatchlist,
+            write: { watchlistOverride = $0 }
+        )
     }
 
     @ViewBuilder
