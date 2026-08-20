@@ -1264,14 +1264,15 @@ final class PlaybackReducerTests: XCTestCase {
     /// The ride-through is a loop: `RecoveryPolicy` owns the single-flight
     /// (entry only while `context.outage == nil`) and re-emits
     /// `.rideThroughOutage(probeAfter:)` after every probe. The reducer must
-    /// accept each continuation — keeping `startedAt`/`noticeShown`, moving only
-    /// the next delay — and schedule the one-shot poll every time, so the
-    /// 0, 1, 2, 4, 8, 8 s sequence (PVM:4299-4310) actually happens.
+    /// accept each continuation — holding the marker, never restarting it — and
+    /// schedule the one-shot poll every time, so the 0, 1, 2, 4, 8, 8 s
+    /// sequence (PVM:4299-4310) actually happens. The budget's origin and the
+    /// backoff are `RecoveryContext.OutageState`'s; the carry that keeps them
+    /// across a route change is pinned by `PlaybackSessionActorTests`.
     func testOutageRideThroughContinuationsKeepStartAndRescheduleThePoll() {
         let loadID = LoadID()
         var state = makePlaying(loadID: loadID)
         let delays: [Duration] = [.zero, .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(8)]
-        var startedAt: Date?
         for (index, delay) in delays.enumerated() {
             let (next, effects) = PlaybackReducer.reduce(
                 state,
@@ -1290,13 +1291,11 @@ final class PlaybackReducerTests: XCTestCase {
                 ],
                 "continuation \(index) must reschedule the poll"
             )
-            guard case .ridingOutOutage(let outage) = playing(next)?.sub else {
-                return XCTFail("expected the ride-through sub-state at continuation \(index)")
-            }
-            if startedAt == nil { startedAt = outage.startedAt }
-            XCTAssertEqual(outage.startedAt, startedAt, "startedAt is set once, at entry")
-            XCTAssertEqual(outage.nextProbeDelay, delay)
-            XCTAssertFalse(outage.noticeShown)
+            XCTAssertEqual(
+                playing(next)?.sub,
+                .ridingOutOutage,
+                "expected the ride-through sub-state at continuation \(index)"
+            )
             state = next
         }
 

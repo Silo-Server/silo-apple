@@ -182,33 +182,30 @@ actor PlaybackSessionActor {
     /// route-change replan later in this load resumes the *same* 90 s budget
     /// instead of starting a second one.
     ///
-    /// The values are the **policy's**: the live driver's `context.outage` is
-    /// what `decideServerHealthProbe` reads for the 90 s escalation and what it
-    /// has just written, so the carry mirrors it rather than re-deriving a
-    /// start date. The reducer's own `Sub.ridingOutOutage` is the fallback for
-    /// the window where there is no live session (a replan between two
-    /// engines), and there the existing carry's start always wins — a
+    /// `RecoveryContext.OutageState` is the ride-through's one representation
+    /// and this is a mirror of it: the live driver's `context.outage` is what
+    /// `decideServerHealthProbe` reads for the 90 s escalation and what it has
+    /// just written, notice latch included. Between two engines of a
+    /// route-change replan no session can answer for it, and there the mirror
+    /// falls back on the action that policy emitted — the same numbers, not a
+    /// second copy of the state. Either way the existing start wins: a
     /// continuation must never restart the budget.
     private func noteAfterReducing(_ event: PlayerEvent) async {
-        guard case let .recovery(action, _) = event, case .rideThroughOutage = action else {
+        guard case let .recovery(action, _) = event,
+              case let .rideThroughOutage(probeAfter) = action else {
             return
         }
-        if let live = await shell?.liveOutageState() {
-            carriedOutage = RecoveryContext.OutageState(
-                rideThroughStart: carriedOutage?.rideThroughStart ?? live.rideThroughStart,
-                nextProbeDelay: live.nextProbeDelay,
-                noticeShown: live.noticeShown
-            )
-            return
-        }
-        guard case let .playing(playing) = state,
-              case let .ridingOutOutage(outage) = playing.sub else {
-            return
-        }
+        let live = await shell?.liveOutageState()
+        // The entry (`probeAfter == .zero`) is what mints the carry; a
+        // continuation only ever moves one that already exists, so a probe that
+        // outlived its ride-through cannot resurrect the hold it released.
+        guard probeAfter == .zero || carriedOutage != nil || live != nil else { return }
         carriedOutage = RecoveryContext.OutageState(
-            rideThroughStart: carriedOutage?.rideThroughStart ?? outage.startedAt,
-            nextProbeDelay: Self.seconds(outage.nextProbeDelay),
-            noticeShown: carriedOutage?.noticeShown ?? false
+            rideThroughStart: carriedOutage?.rideThroughStart
+                ?? live?.rideThroughStart
+                ?? Date(),
+            nextProbeDelay: live?.nextProbeDelay ?? Self.seconds(probeAfter),
+            noticeShown: live?.noticeShown ?? carriedOutage?.noticeShown ?? false
         )
     }
 
@@ -740,11 +737,19 @@ actor PlaybackSessionActor {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
+                // Sub-state first, policy flag second, never the other way
+                // round: a `.sessionMissing` landing between the two releases
+                // must find one of them still closed. Clearing
+                // `backgroundRenewalInFlight` first let the policy decide a
+                // renewal the reducer then swallowed against the sub-state this
+                // reduction had not cleared yet — stranding the flag, and every
+                // later silent renewal, for the rest of the load.
+                //
                 // The transient budget lives in `RecoveryContext`; the shell
                 // notes the failure on the driver and reports whether the silent
                 // path is spent.
-                let escalates = await shell.noteRenewalFailure(error, reason: renewal.reason)
                 await self.ingest(.session(.renewalFailed, identity))
+                let escalates = await shell.noteRenewalFailure(error, reason: renewal.reason)
                 guard escalates,
                       let source = Self.sessionMissingSource(forReason: renewal.reason) else {
                     return
