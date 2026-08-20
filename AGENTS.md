@@ -121,8 +121,8 @@ target) runs `0 failures` with `3 keychain-migration skips` on an unsigned
 (`CODE_SIGNING_ALLOWED=NO`) simulator host — any failure at all is a real regression. History:
 through 2026-08-18 the suite carried ~14 "environment" failures treated as baseline; those were
 root-caused and fixed (11 were `errSecMissingEntitlement` from the unsigned host, resolved by a
-`KeychainBackend` seam on `SharedKeychain` with an in-memory test fake; the rest were stale tab
-projections and orphaned scoped-refresh tests). Do not reintroduce a non-zero baseline; the 3
+`KeychainBackend` seam on `SharedKeychain` with an in-memory test fake; the remaining 3 were stale pre-#132 tab-projection expectations, and two orphaned
+scoped-refresh tests were deleted alongside the dead `TokenStore` overloads). Do not reintroduce a non-zero baseline; the 3
 remaining skips are `BrandMigrationTests` cases where the Keychain itself is the subject.
 
 **Docs hygiene.** Implementation plans, specs, mockups, and audits are ephemeral working
