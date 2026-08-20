@@ -24,8 +24,8 @@ control_run:
   verdict: >
     ENVIRONMENTAL. With build (08-18 bisect: every variant failed on bedroom), bytes/plan (identical), date
     (bedroom pass 08-17, bedroom fail 08-18, living-room pass 08-18) and display-criteria outcome (applied on
-    both) all controlled, the only remaining variable is the bedroom TV/AVR/HDMI display path. §8 of
-    docs/cleanup/HANDOFF.md is closed; the Round 3 gate is cleared.
+    both) all controlled, the only remaining variable is the bedroom TV/AVR/HDMI display path. The HDR10
+    loopback anomaly is closed as environmental.
   residual: "non-blocking — check the bedroom input/cable/AVR/Match-Dynamic-Range settings at leisure; re-run the same deep link there afterwards if curious"
 
 bonus_dv_rows:  # owner-driven UI sessions in the same capture; these were the pending "DV rows"

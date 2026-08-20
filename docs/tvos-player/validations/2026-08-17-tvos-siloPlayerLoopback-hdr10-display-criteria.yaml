@@ -34,7 +34,7 @@ runs:
       - "[CMP-AVP] item ready format videoCodec=HEVC videoDetail=3840x2160 dynamicRange=HDR10 audioCodec=AC-3 audioDetail=5.1, 48000 Hz"
       - "0 [CMP-AVP] ERROR lines"
 not_validated_in_this_pass:
-  - Seek-heavy behaviour (pyatv companion/MRP key presses did not reach the player from the Mini; needs a hands-on Siri Remote pass — see review §11 row 7)
+  - Seek-heavy behaviour (pyatv companion/MRP key presses did not reach the player from the Mini; needs a hands-on Siri Remote pass with the physical remote)
   - TV-side mode banner photo / AVR panel (log evidence only)
 notes:
   - The console also showed the Round-1 recovery-suspension latch toggling only during server replans ("[CMP-OUTAGE] recovery suspension on/off reason=server_replan"), never during these two loopback sessions.

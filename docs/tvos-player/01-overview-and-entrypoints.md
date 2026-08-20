@@ -291,7 +291,11 @@ auto-resume on wake, and tvOS Picture in Picture is unsupported.
   EVENT serving mode and `player.apple.siloplayer_primary_enabled` kill switch
   were retired on 2026-08-17 (the key is no longer read), but the writer still
   falls back internally to a growing EVENT playlist when it cannot build a safe
-  VOD plan. The retired mode also removed
+  VOD plan. Known pre-existing gap: that internal degrade is invisible to the
+  engine session, which keeps its VOD wiring (retention/pruning, in-item-only
+  seeks, VOD-sized runway) for a plan-less session — so such a session can prune
+  live segment names and cannot reanchor an out-of-window seek; a mode-aware
+  signal back to the session would close it. The retired mode also removed
   the planner blockers that only existed when the gate was off
   (`h264_loopback_startup_unreliable`, `hevc_sdr_loopback_startup_unreliable`,
   `video_bridge_requires_vod_plan`).

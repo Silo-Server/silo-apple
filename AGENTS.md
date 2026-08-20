@@ -116,10 +116,14 @@ controls. Every interactive zone gets exactly one focus owner — either a nativ
 a single composite focus owner; never mix row-level focusable controls with manual directional
 focus mutation.
 
-**Simulator test baseline is not zero.** The iOS suite (`SiloTests`, the only test target) has
-a documented baseline of ~14 environment failures (keychain/profile-identity assumptions the
-simulator can't satisfy) plus 3 keychain skips. Treat that shape as green; treat any *other*
-failure as a real regression. Never add a change of yours to the baseline.
+**Simulator test baseline is genuinely green.** The iOS suite (`SiloTests`, the only test
+target) runs `0 failures` with `3 keychain-migration skips` on an unsigned
+(`CODE_SIGNING_ALLOWED=NO`) simulator host — any failure at all is a real regression. History:
+through 2026-08-18 the suite carried ~14 "environment" failures treated as baseline; those were
+root-caused and fixed (11 were `errSecMissingEntitlement` from the unsigned host, resolved by a
+`KeychainBackend` seam on `SharedKeychain` with an in-memory test fake; the remaining 3 were stale pre-#132 tab-projection expectations, and two orphaned
+scoped-refresh tests were deleted alongside the dead `TokenStore` overloads). Do not reintroduce a non-zero baseline; the 3
+remaining skips are `BrandMigrationTests` cases where the Keychain itself is the subject.
 
 **Docs hygiene.** Implementation plans, specs, mockups, and audits are ephemeral working
 artifacts, not documentation. `docs/` is gitignored by default — write plans and scratch
@@ -164,8 +168,9 @@ not done until each of these is handled or ruled out:
 - `cd iosApp && xcodebuild build -project Silo.xcodeproj -scheme Silo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO` — iOS build without signing.
 - Scheme `SiloTV` with a tvOS simulator destination for tvOS; scheme `SiloMac` with
   `platform=macOS` for macOS. All three should build before a PR.
-- Tests run under the `Silo` scheme on an iOS simulator; remember the failure baseline in
-  gotchas. Keychain-dependent tests need a normally-signed simulator build.
+- Tests run under the `Silo` scheme on an iOS simulator; the suite is genuinely green (0
+  failures / 3 keychain skips — see gotchas), so any failure is a regression. Keychain-dependent
+  tests need a normally-signed simulator build.
 
 These commands assume a local Xcode. From a Linux host, every Apple toolchain operation runs
 on the remote `mac-builder` Mac — read the `mac-builder` skill first and `docs/mac-builder.md`
