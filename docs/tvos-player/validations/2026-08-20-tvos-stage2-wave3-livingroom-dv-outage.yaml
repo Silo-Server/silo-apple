@@ -1,0 +1,53 @@
+# Validation record — Stage 2 wave-3 device rows on the Living Room Apple TV (the validated DV display path).
+# DV P7+TrueHD row PASSES on the wave-3 build; seek-heavy on the DV route PASSES; a 76 s production outage was
+# FULLY ABSORBED with zero user-visible impact; tvOS suspend→resume PASSES with the exact-position reanchor in
+# the log. The visible outage-recovery machinery (ride-through → probes → auto-reload) remains unexercised on
+# hardware — the runway absorbed everything — and stays on the post-wave-4 §6 gate.
+date: 2026-08-20
+platform: tvOS 26.6
+device: Apple TV 4K (2nd generation) — AppleTV11,1 ("Living Room TV", 57E8BE0C-3651-549F-B497-EBC654638B81)
+output_path: HDMI (CMP-OUTPUT hdrOutputEligible=true hdr10=true dolbyVision=true dvModes=5,8 sinkType=HDMIOutput)
+app_build: SiloTV Debug from silo-apple player/architecture-remediation @ ecf1770 (Stage 2 waves 1+2a+2b+3 merged)
+server: production (owner-approved stop/start for the outage row)
+method: devicectl install from the Mini; deep-link silo://play/movie-tmdb-950387; timestamped console capture;
+  owner drove seeks/suspend with the physical remote
+
+row_1_dv_p7_truehd:  # design §6 row 1 on the wave-3 build
+  title_ref: movie-tmdb-950387  # "A Minecraft Movie", DV P7 + TrueHD 7.1 MKV — same title as the 08-18 record
+  result: PASS
+  evidence: >
+    11:40:12 load .siloLoopback videoMode=profile7_to81_base_layer → dovi block version=1.0 profile=8 level=6
+    rpu=1 el=0 bl=1 (enhancement layer discarded, base layer kept) → audio transcode truehd→fLaC 8ch
+    session-anchored → tv display apply fps=23.976 format=dolbyVision(hdr10) matching=1 → TTFF ~8 s → item
+    ready "Dolby Vision HEVC 3840x2160, DV Profile 8 Level 6 (HDR10 compatible), FLAC 7.1 48 kHz". Soak clean
+    (tc=playing rate=1.0, bufAhead 8-12 s, generatedAhead ~47-52 s), owner confirmed DV presentation on screen.
+
+row_7_seek_heavy_dv:  # owner-driven seeks on the DV+FLAC-bridge route (heavier reanchors than the HDR10 row)
+  result: PASS
+  evidence: >
+    Owner seeks at 11:45:53 (→1376.6, seg 344) and 11:46:40-41 — two reanchors ONE SECOND apart
+    (→1480.2 seg 370, →1508.1 seg 377), the quick-succession stress case, both anchored instantly; a further
+    forward seek DURING the production outage (see below) also landed and played from generated/cached data.
+    Zero errors, zero recovery lines, playback continuous throughout.
+
+row_13_server_outage_76s:  # owner-approved production stop
+  result: PASS (fully absorbed — ride-through machinery not engaged)
+  evidence: >
+    `compose stop silo` 11:46:48 → `start` 11:48:04 (76 s), health+ready green after. The TV: ZERO
+    outage/recovery/reconnect lines across the entire session (grep count 0), playhead advanced continuously
+    at rate=1.0 through the whole window, and the owner seeked forward mid-outage without incident. The ~10 s
+    player buffer + ~50 s generated runway + the source proxy's prefetched cache absorbed the entire outage —
+    the producer never needed origin bytes the cache could not serve until the server was back. This is the
+    designed-for product outcome (a node dying mid-stream is a non-event), but it means the visible
+    ride-through → probe → auto-reload path (wave 3's biggest repair) has still not run on hardware; forcing
+    it needs a longer stop or an out-of-cache seek during the outage. Stays on the post-wave-4 §6 gate.
+
+suspend_resume_exit:  # tvOS TV-button suspend mid-playback, reopen, play
+  result: PASS
+  evidence: >
+    11:50:01 userPaused=1 → 11:50:04 benign -11868 failedToEnd from the dying pipeline (userPaused=1, no
+    recovery fired) → teardown clean; the app SURVIVED the suspend (console capture kept growing). Owner
+    report: reopening shows the player paused at the correct timestamp (no auto-resume — matches legacy);
+    pressing play resumes. Log: 11:50:29 loopback source seek requested=1708.203841042 → vod producer
+    anchored segment=426 start=1708.203841042 — the EXACT position of the suspend-time failedToEnd, i.e. the
+    wave-3 `.retainProxy` + retained-load stash + deferred-resume chain reanchoring frame-exact on hardware.
