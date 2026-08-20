@@ -6,9 +6,8 @@ import Foundation
 /// decision trace, claims, requirements — everything `logExecutionPlan`
 /// reports). `ExecutablePlan` is the subset the load verb needs, resolved once
 /// at the planning boundary so the engine session cannot be handed a loopback
-/// route without a session spec: `PlayerViewModel.loadBackend`'s
-/// `PlaybackEngineLoadError.missingLoopbackSession` throw becomes impossible
-/// downstream of this initializer.
+/// route without a session spec: `PlaybackEngineLoadError.missingLoopbackSession`
+/// becomes impossible downstream of this initializer.
 enum ExecutablePlan: Equatable {
     /// `AVPlayerBackend.loadDirectFile(url:headers:startTime:)`.
     case nativeDirect(NativeDirectPlan)
@@ -26,12 +25,11 @@ enum ExecutablePlan: Equatable {
     }
 
     /// `PlaybackExecutionPlan.delivery`, carried because the control plane has
-    /// a rule that reads it: `shouldAdoptBackendDuration` (PVM:3117-3128)
+    /// a rule that reads it: `PlaybackReducer.shouldAdoptBackendDuration`
     /// never adopts AVPlayer's duration under a `.transcode` delivery, since a
     /// growing transcode playlist reports a manifest length that is shorter
-    /// than the real one. The view model kept it in `currentDeliveryStrategy`,
-    /// set at adopt from `plan.delivery` (PVM:2674); here it rides the plan so
-    /// the two can never disagree.
+    /// than the real one. It rides the plan so the route and its delivery can
+    /// never disagree.
     var delivery: PlaybackDeliveryStrategy {
         switch self {
         case .nativeDirect(let plan): return plan.delivery
@@ -54,13 +52,12 @@ enum ExecutablePlan: Equatable {
     ///
     /// `request` is the stream request the load path resolved for this attempt
     /// — `plan.streamRequest` normally, or the source-proxy-rewritten request
-    /// when the proxy replaced the origin. It mirrors `loadBackend`'s
-    /// `let request = plan.streamRequest` so the URL/header pair stays a single
-    /// decision made by the caller.
+    /// when the proxy replaced the origin — so the URL/header pair stays a
+    /// single decision made by the caller.
     ///
     /// - Throws: `PlaybackEngineLoadError.missingLoopbackSession`, and only
     ///   that — the loopback route without a `loopbackSession` is the one
-    ///   plan shape that has no executable form (`PVM.loadBackend`).
+    ///   plan shape that has no executable form.
     init(_ plan: PlaybackExecutionPlan, request: StreamRequest) throws {
         let startSeconds = plan.startMode.seconds
         switch plan.engine {

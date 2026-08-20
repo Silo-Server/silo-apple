@@ -23,7 +23,7 @@ final class PlaybackSessionActorTests: XCTestCase {
 
     func testFreshLoadReachesPlayingAndSchedulesTheProgressHeartbeat() async throws {
         let actor = try makeActor()
-        let request = makeRequest()
+        let request = ControlPlaneFixtures.makeRequest()
 
         await actor.send(.load(request, origin: .userInitiated, options: LoadOptions()))
         let loadID = try unwrap(await actor.currentState().loadID)
@@ -37,9 +37,9 @@ final class PlaybackSessionActorTests: XCTestCase {
             return false
         })
 
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         await actor.ingest(
-            .session(.prepared(try makePreparedRef(), makePlan(), for: loadID), identity)
+            .session(.prepared(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(), for: loadID), identity)
         )
         // The plan arrives with the prepared session, so the load goes straight
         // to `.startingEngine` and the engine load is issued.
@@ -113,12 +113,12 @@ final class PlaybackSessionActorTests: XCTestCase {
     /// reachable from here or the player sits on the loading overlay for ever.
     func testAnEngineFailureBeforeTheFirstFrameStillMintsTheReplan() async throws {
         let actor = try makeActor()
-        await actor.send(.load(makeRequest(), origin: .userInitiated, options: LoadOptions()))
+        await actor.send(.load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()))
         let loadID = try unwrap(await actor.currentState().loadID)
-        let identity = makeIdentity()
+        let identity = ControlPlaneFixtures.makeIdentity()
         await actor.ingest(
             .session(
-                .prepared(try makePreparedRef(), makePlan(), for: loadID),
+                .prepared(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(), for: loadID),
                 identity
             )
         )
@@ -172,7 +172,7 @@ final class PlaybackSessionActorTests: XCTestCase {
 
         await actor.clearRecordedEffects()
         await actor.ingest(
-            .session(.replanned(try makePreparedRef(), makePlan()), identity)
+            .session(.replanned(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef()), identity)
         )
         // Same implementation route, so the live `AVPlayerBackend` survives
         // (design §4 I4) — but the load identity never does.
@@ -195,7 +195,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         await actor.clearRecordedEffects()
         await actor.ingest(
             .session(
-                .replanned(try makePreparedRef(), makePlan(engine: .avPlayerHLS)),
+                .replanned(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(engine: .avPlayerHLS)),
                 identity
             )
         )
@@ -249,9 +249,9 @@ final class PlaybackSessionActorTests: XCTestCase {
 
         await actor.ingest(.recovery(.renewSourceInBackground(reason: "player_error"), loadID))
         // An answer to a renewal that was issued against a *different* session.
-        let stale = makeIdentity(session: "session-stale", attempt: "apple:attempt-stale")
+        let stale = ControlPlaneFixtures.makeIdentity(session: "session-stale", attempt: "apple:attempt-stale")
         await actor.ingest(
-            .session(.renewed(try makePreparedRef(), replacing: stale), makeIdentity(session: "session-2"))
+            .session(.renewed(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), replacing: stale), ControlPlaneFixtures.makeIdentity(session: "session-2"))
         )
         guard case .playing(let playing) = await actor.currentState(),
               case .renewingSource = playing.sub else {
@@ -276,7 +276,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         await actor.send(.changeQuality("1080p"))
         await actor.ingest(
             .session(
-                .replanned(try makePreparedRef(), makePlan(engine: .avPlayerHLS)),
+                .replanned(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(engine: .avPlayerHLS)),
                 identity
             )
         )
@@ -316,7 +316,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         await actor.clearRecordedEffects()
         await actor.ingest(
             .session(
-                .replanned(try makePreparedRef(), makePlan(engine: .avPlayerHLS)),
+                .replanned(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(engine: .avPlayerHLS)),
                 identity
             )
         )
@@ -346,7 +346,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
         await actor.send(.changeQuality("1080p"))
         await actor.ingest(
-            .session(.replanned(try makePreparedRef(), makePlan()), identity)
+            .session(.replanned(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef()), identity)
         )
         let replacement = try unwrap(await actor.currentState().loadID)
         await actor.ingestEngineEvent(.fileLoaded(reason: "test"), loadID: replacement)
@@ -394,7 +394,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         XCTAssertNotNil(riding)
         // The Next Up hand-off: a different title, a different origin.
         await actor.send(
-            .load(makeRequest(contentId: "content-2"), origin: .autoplay, options: LoadOptions())
+            .load(ControlPlaneFixtures.makeRequest(contentId: "content-2"), origin: .autoplay, options: LoadOptions())
         )
         let afterAutoplay = await actor.carriedOutage
         XCTAssertNil(afterAutoplay)
@@ -437,7 +437,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         // The visible recovery waits the server out and then re-loads. Legacy's
         // `activeServerOutageRecoverySessionId` was view-model state, so the
         // window survived into the replacement load.
-        await actor.send(.load(makeRequest(), origin: .recovery, options: LoadOptions()))
+        await actor.send(.load(ControlPlaneFixtures.makeRequest(), origin: .recovery, options: LoadOptions()))
         let survived = await actor.suppressesEngineFailuresAfterOutage
         XCTAssertTrue(survived)
     }
@@ -447,10 +447,10 @@ final class PlaybackSessionActorTests: XCTestCase {
         let loadID = try await startPlaying(actor)
 
         await actor.ingest(.recovery(.recoverFromServerOutage(reason: "source_gone"), loadID))
-        await actor.send(.load(makeRequest(), origin: .recovery, options: LoadOptions()))
+        await actor.send(.load(ControlPlaneFixtures.makeRequest(), origin: .recovery, options: LoadOptions()))
         let replacement = try unwrap(await actor.currentState().loadID)
         await actor.ingest(
-            .session(.prepared(try makePreparedRef(), makePlan(), for: replacement), makeIdentity())
+            .session(.prepared(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(), for: replacement), ControlPlaneFixtures.makeIdentity())
         )
         await actor.ingestEngineEvent(.fileLoaded(reason: "test"), loadID: replacement)
         // `handleFileLoaded` cancelled the outage-recovery slot, and the window
@@ -643,11 +643,62 @@ final class PlaybackSessionActorTests: XCTestCase {
 
         await actor.send(.play)
         await actor.send(.seek(targetSeconds: 10, origin: .user))
-        await actor.send(.load(makeRequest(), origin: .userInitiated, options: LoadOptions()))
+        await actor.send(.load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()))
         let stillDisposed = await actor.currentState()
         XCTAssertEqual(stillDisposed, .disposed)
         let ran = await effects(actor)
         XCTAssertTrue(ran.isEmpty)
+    }
+
+    // MARK: - Shell-minted route change
+
+    /// The two route changes the shell mints — the native-direct -> loopback
+    /// fallback and the loopback seek re-anchor — go through the control plane
+    /// rather than swapping the running plan behind it. The plan the reducer
+    /// then reads has to be the one the engine is running: `reuseEngine` is
+    /// `plan.engine == playing.plan.engine`, so a stale record would rebuild an
+    /// engine that did not need rebuilding (or, worse, reuse one that did).
+    func testShellMintedRouteChangeRewritesThePlanTheReducerDecidesFrom() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+        guard case .playing(let native) = await actor.currentState() else {
+            return XCTFail("expected .playing")
+        }
+        XCTAssertEqual(native.plan.engine, .avPlayerNativeDirect)
+
+        let loopback = ControlPlaneFixtures.makePlan(engine: .siloPlayerLoopback)
+        await actor.reloadEngine(with: loopback)
+
+        guard case .playing(let reloaded) = await actor.currentState() else {
+            return XCTFail("a replacement item stays inside the same load")
+        }
+        XCTAssertEqual(reloaded.loadID, loadID, "the LoadID is kept, so the re-anchor filter survives")
+        XCTAssertEqual(reloaded.plan.engine, .siloPlayerLoopback)
+        let ran = await effects(actor)
+        XCTAssertEqual(ran, [.loadEngine(ExecutionPlanRef(loopback), loadID, reuseEngine: false)])
+
+        // The reuse decision now reads the loopback route that is running: a
+        // server replan back onto loopback keeps the live backend, where a
+        // stale native-direct record would have thrown it away.
+        await actor.clearRecordedEffects()
+        await actor.send(.changeQuality("1080p"))
+        await actor.ingest(
+            .session(
+                .replanned(
+                    try ControlPlaneFixtures.makeProtocolV3PreparedRef(),
+                    ControlPlaneFixtures.makePlanRef(engine: .siloPlayerLoopback)
+                ),
+                ControlPlaneFixtures.makeIdentity()
+            )
+        )
+        let replanned = await effects(actor)
+        XCTAssertTrue(
+            replanned.contains { effect in
+                if case .loadEngine(_, _, let reuseEngine) = effect { return reuseEngine }
+                return false
+            },
+            "the replan reuses the engine because the route did not change"
+        )
     }
 
     // MARK: - Harness
@@ -659,7 +710,7 @@ final class PlaybackSessionActorTests: XCTestCase {
                 named: "capability_response",
                 bundleClass: Self.self
             ),
-            watchDetail: try makeWatchDetail()
+            watchDetail: try ControlPlaneFixtures.makeWatchDetail()
         )
         return PlaybackSessionActor(
             bridge: PlaybackSessionBridge(
@@ -676,10 +727,10 @@ final class PlaybackSessionActorTests: XCTestCase {
     /// answers are fed in by hand, exactly as the shell would.
     @discardableResult
     private func startPlaying(_ actor: PlaybackSessionActor) async throws -> LoadID {
-        await actor.send(.load(makeRequest(), origin: .userInitiated, options: LoadOptions()))
+        await actor.send(.load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()))
         let loadID = try unwrap(await actor.currentState().loadID)
         await actor.ingest(
-            .session(.prepared(try makePreparedRef(), makePlan(), for: loadID), makeIdentity())
+            .session(.prepared(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), ControlPlaneFixtures.makePlanRef(), for: loadID), ControlPlaneFixtures.makeIdentity())
         )
         await actor.ingestEngineEvent(.fileLoaded(reason: "test"), loadID: loadID)
         await actor.clearRecordedEffects()
@@ -698,164 +749,5 @@ final class PlaybackSessionActorTests: XCTestCase {
         line: UInt = #line
     ) throws -> T {
         try XCTUnwrap(value, file: file, line: line)
-    }
-
-    private func makeRequest(contentId: String = "content-1") -> LoadRequest {
-        LoadRequest(
-            contentId: contentId,
-            preferredFileId: 7,
-            preferredAudioTrackIndex: 1,
-            preferredSubtitleTrackIndex: nil,
-            preferredSidecarSubtitleTrackId: nil,
-            startFromBeginning: false
-        )
-    }
-
-    private func makeIdentity(
-        session: String? = "session-1",
-        attempt: String = "apple:attempt-1"
-    ) -> SessionIdentity {
-        SessionIdentity(
-            serverSessionId: session,
-            playbackAttemptId: attempt,
-            planAttemptId: "apple-plan:1",
-            planAttemptKey: "plan-key-1",
-            outputContextId: "output-1"
-        )
-    }
-
-    private func makePlan(engine: PlaybackEngineKind = .avPlayerNativeDirect) -> ExecutablePlan {
-        switch engine {
-        case .avPlayerNativeDirect:
-            return .nativeDirect(
-                NativeDirectPlan(
-                    url: URL(string: "https://example.invalid/movie.mkv")!,
-                    headers: [:],
-                    startSeconds: 0
-                )
-            )
-        case .avPlayerHLS:
-            return .serverHLS(
-                ServerHLSPlan(
-                    manifestURL: URL(string: "https://example.invalid/master.m3u8")!,
-                    headers: [:],
-                    startMode: .startOfManifest
-                )
-            )
-        case .siloPlayerLoopback:
-            return .localHLS(
-                LocalHLSPlan(
-                    sessionSpec: LoopbackSessionSpec(
-                        sourceURL: URL(string: "https://example.invalid/movie.mkv")!,
-                        headers: [:],
-                        sourceStartTimeSeconds: 0,
-                        sourceBitrateBps: 20_000_000,
-                        videoMode: .passthroughHEVC,
-                        sourceVideoFrameRate: 23.976,
-                        selectedAudio: .absent,
-                        availableAudioTracks: [],
-                        manifestMetadata: LoopbackSessionSpec.ManifestMetadata(
-                            advertisedDolbyVisionProfile: nil,
-                            compatibilityBrand: nil,
-                            videoRange: "SDR",
-                            mayClaimAtmos: false
-                        )
-                    ),
-                    startSeconds: 0
-                )
-            )
-        }
-    }
-
-    private func makeWatchDetail() throws -> WatchDetail {
-        let json = Data("""
-        {
-          "content_id": "content-1",
-          "type": "movie",
-          "title": "Test",
-          "versions": [{"file_id": 7, "duration": 900}]
-        }
-        """.utf8)
-        return try HTTPClient.makeJSONDecoder().decode(WatchDetail.self, from: json)
-    }
-
-    /// A minimal but *real* `PreparedPlaybackV3`, decoded rather than
-    /// hand-built so the fixture cannot drift from the wire shape. It is what
-    /// makes `Playing.hasProtocolV3` true, which is the precondition of both
-    /// intents that mint a server replan.
-    private func makePreparedV3() throws -> PreparedPlaybackV3 {
-        let json = Data("""
-        {
-          "protocol_version": 3,
-          "plan_id": "plan:fixture",
-          "session_id": "session-1",
-          "delivery": "original_http",
-          "plan_attempt_key": "plan-key-1",
-          "stream": {"url": "/stream/session-1", "protocol": "http_progressive",
-                     "headers": {}, "header_refresh": "session"},
-          "timeline": {"source_start_seconds": 0, "stream_origin_seconds": 0,
-                       "player_start_seconds": 0, "timeline_offset_seconds": 0,
-                       "can_seek_anywhere": true, "seek_restoration": "player_position"},
-          "selected_tracks": {"audio": {"id": "file:7:audio:1", "index": 1}},
-          "effective_recipe": {},
-          "claims": {
-            "video": {"hdr10": false, "hdr10_plus": false, "hlg": false, "dolby_vision": false},
-            "audio": {"passthrough": false, "atmos_preserved": false},
-            "subtitles": {"ass_styling_preserved": false, "bitmap_overlay": false,
-                          "bitmap_sidecar": false}
-          },
-          "subtitle": {"mode": "external", "inventory": []},
-          "transformations": [],
-          "applied_quirks": [],
-          "runtime_corrections": [],
-          "degradation_warnings": [],
-          "decision_reason": "validated_original_playback",
-          "requested_media_file_id": 7,
-          "effective_media_file_id": 7,
-          "source": {"media_file_id": 7, "hdr10_plus": false,
-                     "dv_enhancement_layer": "none"},
-          "subtitle_fidelity_policy": "allow_simplified_rendering",
-          "available_qualities": []
-        }
-        """.utf8)
-        let plan = try HTTPClient.makeJSONDecoder().decode(PlaybackV3Plan.self, from: json)
-        return PreparedPlaybackV3(
-            playbackAttemptId: "apple:attempt-1",
-            planAttemptId: "apple-plan:1",
-            planAttemptKey: plan.planAttemptKey,
-            outputContextId: "output-1",
-            serverFeatures: [PlaybackProtocolV3.planFeature],
-            plan: plan
-        )
-    }
-
-    private func makePreparedRef(
-        position: Double = 0,
-        durationSeconds: Double? = 1000
-    ) throws -> PreparedPlaybackRef {
-        let watchDetail = try makeWatchDetail()
-        return PreparedPlaybackRef(
-            PreparedPlayback(
-                watchDetail: watchDetail,
-                selectedVersion: watchDetail.versions[0],
-                session: PlaybackSessionResponse(
-                    sessionId: "session-1",
-                    userId: nil,
-                    profileId: nil,
-                    mediaFileId: 7,
-                    playMethod: "direct",
-                    position: position,
-                    isPaused: false,
-                    streamUrl: "https://example.invalid/movie.mkv",
-                    audioTrackIndex: nil,
-                    durationSeconds: durationSeconds,
-                    timelineOffsetSeconds: 0,
-                    subtitleUrls: nil,
-                    playbackInfo: nil
-                ),
-                activeQualityId: ApplePlaybackQuality.autoId,
-                protocolV3: try makePreparedV3()
-            )
-        )
     }
 }

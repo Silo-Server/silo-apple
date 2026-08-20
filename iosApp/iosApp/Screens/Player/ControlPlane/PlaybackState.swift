@@ -6,9 +6,6 @@ import SwiftUI
 // actor runs. Every effect carries the identity it is conditional on
 // (`LoadID` or `SessionIdentity`), so a late result from a superseded load or
 // session is dropped structurally (design §4 I2).
-//
-// Nothing consumes these types yet — wave 3 moves `PlayerViewModel`'s load,
-// replan, seek, scene-phase and recovery code onto them.
 
 // MARK: - State
 
@@ -28,8 +25,8 @@ enum PlaybackState: Equatable {
     /// terminal path deliberately keeps).
     ///
     /// `position` is the playhead the failure happened at.
-    /// `finalizeTerminalPlaybackError` (PVM:4027-4071) deliberately does not
-    /// reset `currentTime`, which is what lets `retry()` (PVM:4557-4566) pass
+    /// `finalizeTerminalPlaybackError` deliberately does not
+    /// reset `currentTime`, which is what lets `retry()` pass
     /// `progressPosition: currentTime` / `resumePositionOverride: currentTime`
     /// and resume where playback died; without it here, Retry would restart
     /// the title from the beginning.
@@ -44,12 +41,12 @@ enum PlaybackState: Equatable {
     ///
     /// `identity` is the server session the failed load was bound to. The
     /// terminal path itself deliberately does **not** stop it —
-    /// `finalizeTerminalPlaybackError` (PVM:4027-4071) only drops the view
+    /// `finalizeTerminalPlaybackError` only drops the view
     /// model's active-session-id mirror and lets the session lapse —
     /// but the bridge is still holding it, and the two things that can happen
-    /// *next* on the error screen do reach it: `cleanup()` (PVM:6358/6404)
+    /// *next* on the error screen do reach it: `cleanup()`
     /// stops it whenever the load was not offline, and `retry()`
-    /// (PVM:4557-4566) reports `currentTime` against it before the
+    /// reports `currentTime` against it before the
     /// replacement session starts. Dropping the identity here made both of
     /// those unrepresentable.
     case failed(
@@ -91,19 +88,7 @@ struct Preparing: Equatable {
     enum Phase: Equatable {
         /// `runStartSession` / `OfflinePlaybackBuilder.loadPreparedPlayback`.
         case resolvingSession
-        /// The prepared session is being turned into an `ExecutablePlan`.
-        ///
-        /// RESERVED — the reducer never rests here, and wave 3 must not write
-        /// a guard that assumes it can: resolving a plan runs the route
-        /// planner and the V3 adapter, which is actor work, so the plan
-        /// arrives *with* `SessionEvent.prepared` / `.replanned` and
-        /// `.resolvingSession` moves straight to `.startingEngine`. The case
-        /// is kept because it is a binding name in design §2.3 and because
-        /// wave 2/3 may split planning off the prepare (an offline plan
-        /// rebuild, a route re-plan after a capability change) — at which
-        /// point this is the phase that load rests in.
-        case planning
-        /// `loadBackend` was issued; waiting for `fileLoaded`.
+        /// The engine load was issued; waiting for `fileLoaded`.
         case startingEngine
     }
 
@@ -113,58 +98,59 @@ struct Preparing: Equatable {
     var phase: Phase
     /// Today's `lastLoadRequest`, and **mutable for the same reason it is a
     /// `var` there**: every adopt rewrites it from the plan the server just
-    /// authorised (`adoptProtocolV3RenewalIntent`, PVM:3596-3607 →
-    /// `LoadRequest.adoptingProtocolV3Intent`, PVM:885-918), and
+    /// authorised (`adoptProtocolV3RenewalIntent` →
+    /// `LoadRequest.adoptingProtocolV3Intent`), and
     /// `attemptProtocolV3Replan` latches the user's quality choice onto it
-    /// first (PVM:1652-1654), as does `restartCurrentTranscodeHLS`
-    /// (PVM:5264-5266). Modelling it as a `let` seeded once from the `.load`
+    /// first, as does `restartCurrentTranscodeHLS`.
+    /// Modelling it as a `let` seeded once from the `.load`
     /// intent dropped `preferredProtocolV3SubtitleIndex` and
     /// `preferredQualityOverride` from every replay — `copyForRecovery`
-    /// (PVM:860-880) carries both from its *receiver*, and both are wire
-    /// arguments to `startSession` (PlaybackSessionBridge.swift:401-511:
-    /// `qualityOverride:`, `explicitCombinedIndex:`, `resolvedQualityPreference`)
+    /// carries both from its *receiver*, and both are wire
+    /// arguments to `startSession` (`qualityOverride:`,
+    /// `explicitCombinedIndex:`, `resolvedQualityPreference`)
     /// — so a tvOS suspend/resume, a visible renewal, an outage recovery, an
     /// interruption recovery or Retry after a mid-stream quality switch would
     /// have replayed the *old* rung and the *old* subtitle ordinal.
     var request: LoadRequest
     let options: LoadOptions
     let adoption: PlaybackAdoption
-    /// Known from `.startingEngine` onwards: the plan arrives *with* the
-    /// prepared session (see `Phase.planning`).
-    var plan: ExecutablePlan?
+    /// Known from `.startingEngine` onwards: resolving a plan runs the route
+    /// planner and the V3 adapter, so it arrives *with* the prepared session
+    /// rather than in a phase of its own.
+    var plan: ExecutionPlanRef?
     /// The transport projections carried across the load.
     ///
-    /// `resetPublishedLoadState` (PVM:3475-3546) deliberately does **not**
+    /// `resetPublishedLoadState` deliberately does **not**
     /// clear `currentTime`, `duration` or the buffering flag — it only mirrors
     /// `currentTime` into `scrubPreviewTime` and zeroes
     /// `bufferedAheadSeconds`/`playbackRunwaySeconds` — so a load in flight
     /// still has a playhead and a duration, which is what
-    /// `makeSuspendedPlaybackContext` (PVM:3643-3657) snapshots when tvOS
+    /// `makeSuspendedPlaybackContext` snapshots when tvOS
     /// backgrounds mid-load.
     ///
     /// When the session resolves, `adoptPreparedPlayback` overwrites
-    /// `positionSeconds` with `movieTime(for: session)` (PVM:2613 / PVM:3130-3134)
+    /// `positionSeconds` with `movieTime(for: session)`
     /// and `durationSeconds` with
     /// `session.durationSeconds ?? selectedVersion.duration ?? fallback`
-    /// (PVM:2612) — *before* the engine load — so `fileLoaded` starts the
+    /// — *before* the engine load — so `fileLoaded` starts the
     /// `Playing` state from the adopted values rather than from zero.
     var transport: TransportState
     /// `activeQualityId`. `resetPublishedLoadState` sets it to
     /// `ApplePlaybackQuality.autoId`; the adopt sets it to
-    /// `prepared.activeQualityId` (PVM:2619) and it then persists for the
+    /// `prepared.activeQualityId` and it then persists for the
     /// whole load.
     var activeQualityId: String?
-    /// `activePreparedProtocolV3 != nil` — set at the adopt (PVM:2588) and
-    /// cleared by `resetPublishedLoadState` (PVM:3515) and
-    /// `finalizeTerminalPlaybackError` (PVM:4066). See `Playing.hasProtocolV3`
+    /// `activePreparedProtocolV3 != nil` — set at the adopt and
+    /// cleared by `resetPublishedLoadState` and
+    /// `finalizeTerminalPlaybackError`. See `Playing.hasProtocolV3`
     /// for why the control plane needs the bit.
     var hasProtocolV3: Bool = false
     /// The inputs `copyForRecovery` needs when this load is suspended or
     /// renewed (see `TrackResumeSelections`).
     var resumeSelections: TrackResumeSelections
     /// A `preserveInterruptionState` load keeps the pending tvOS interruption
-    /// alive across the reload (PVM:3691-3693), so
-    /// `completeInterruptionRecoveryIfNeeded` (PVM:3976-3996) can still clear
+    /// alive across the reload, so
+    /// `completeInterruptionRecoveryIfNeeded` can still clear
     /// it — and the loading overlay — once the replacement stream advances.
     var interruption: Playing.Interruption?
     /// The text of the last engine failure this load reported, for the same
@@ -190,7 +176,12 @@ struct Playing: Equatable {
     let loadID: LoadID
     /// Rewritten in place by a silent source renewal, which keeps the load.
     var identity: SessionIdentity
-    let plan: ExecutablePlan
+    /// The plan the engine is running. Rewritten in place by a route change
+    /// the shell mints (the native-direct -> loopback fallback and the
+    /// loopback re-anchor both replace the local execution route without
+    /// touching the server session), so the reuse rule and the duration rule
+    /// below always read the plan that is actually executing.
+    var plan: ExecutionPlanRef
     /// Today's `lastLoadRequest`: the replay intent every recovery path
     /// rebuilds a fresh load from — and, like the view model's, re-adopted at
     /// every server prepare/replan/renewal rather than frozen at `.load`. See
@@ -203,7 +194,7 @@ struct Playing: Equatable {
     ///
     /// Deliberately a field rather than a `Sub` case (design §2.3 sketched it
     /// as `Sub.seeking`): in the view model `seekOriginTime`/`seekTargetTime`
-    /// (PVM:5020-5045) are independent of `protocolV3ReplanTask`,
+    /// are independent of `protocolV3ReplanTask`,
     /// the renewal's session-id echo and the EOF latch, so a seek that
     /// arrives while a replan owns the load is performed *and* the replan
     /// still lands. Modelling it as a `Sub` case made the two mutually
@@ -214,21 +205,21 @@ struct Playing: Equatable {
     /// lives on `Playing`, and every engine load builds a new one.
     var seek: SeekRequest?
     /// `activeQualityId` — set by the adopt from `prepared.activeQualityId`
-    /// (PVM:2619) and *not* re-derived per publish: a replan that is not a
+    /// and *not* re-derived per publish: a replan that is not a
     /// quality switch must not clear the label the user sees.
     var activeQualityId: String?
     /// `activePreparedProtocolV3 != nil`: whether a *live server V3 plan* owns
     /// this load. Set at the adopt from `prepared.protocolV3 != nil`
-    /// (PVM:2588) and false for offline/legacy loads.
+    /// and false for offline/legacy loads.
     ///
     /// It is the precondition of both intents that mint a server replan, and
     /// neither is expressible from the rest of the state:
-    ///   * `switchQuality` (PVM:4600-4622) only takes the replan branch when
+    ///   * `switchQuality` only takes the replan branch when
     ///     `activePreparedProtocolV3 != nil`; without V3 it resolves the id
     ///     differently (`normalizeStoredId`) and runs source-reselection or
     ///     transcode branches that need version and plan knowledge the control
     ///     plane does not hold, so those stay with the shell.
-    ///   * the AVAudioSession route observer (PVM:1082-1086) guards on
+    ///   * the AVAudioSession route observer guards on
     ///     `activePreparedProtocolV3` before it even reads the snapshot.
     /// `SessionIdentity.offline()` publishes `outputContextId: ""`, which no
     /// real snapshot can equal, so without this bit an offline load would
@@ -252,16 +243,16 @@ struct Playing: Equatable {
     var lastFailureMessage: String?
 }
 
-/// What `LoadRequest.copyForRecovery` (PVM:860-880) is given when a load is
-/// suspended for tvOS background (`makeSuspendedPlaybackContext`,
-/// PVM:3643-3657) or renewed from scratch (`attemptStaleSessionRenewal`,
-/// PVM:4236-4242). Both sites rebuild the request from the **live** selection,
+/// What `LoadRequest.copyForRecovery` is given when a load is
+/// suspended for tvOS background (`makeSuspendedPlaybackContext`) or renewed
+/// from scratch (`attemptStaleSessionRenewal`). Both sites rebuild the request
+/// from the **live** selection,
 /// not from the request that started the load, so backgrounding the Apple TV
 /// after changing the audio track resumes on that track and a recovery never
 /// re-honours a `startFromBeginning: true` against a resume override.
 ///
 /// The reducer cannot compute these — `resolvedAudioTrackIndexForResume()` and
-/// friends (PVM:3549-3594) read the player's live track lists, which the track
+/// friends read the player's live track lists, which the track
 /// coordinator owns — so they are carried. They are seeded from the request at
 /// `beginLoad` (which is what `resetPublishedLoadState` + those resolvers
 /// produce while a load is in flight: the lists are empty, so each resolver
@@ -338,7 +329,7 @@ struct SuspendedContext: Equatable {
     let request: LoadRequest
     let resumePosition: Double
     /// Set when the suspend happened on the error screen.
-    /// `suspendForBackground` (PVM:7592-7638) needs only `lastLoadRequest`, and
+    /// `suspendForBackground` needs only `lastLoadRequest`, and
     /// `finalizeTerminalPlaybackError` keeps that — so backgrounding the Apple
     /// TV while a failure is on screen suspends *and* leaves `error` set. One
     /// enum case cannot be both `.failed` and `.suspended`, so the failure
@@ -377,15 +368,14 @@ struct TransportState: Equatable {
     var isBuffering: Bool = false
     var bufferedAheadSeconds: Double = 0
     var runwaySeconds: Double = 0
-    var stats: PlaybackStats?
     /// `AVPlayerBackend.isExternalPlaybackActive` (AirPlay). The iOS
     /// background rule exempts it.
     var isExternalPlaybackActive: Bool = false
     /// `PictureInPictureCoordinator.isEngaged` — `isActive || isTransitioning`
-    /// — which is the fact the scene-phase handler reads today (PVM:4772), not
-    /// the backend's `isPictureInPictureActiveProvider` (PVM:1440-1442, plain
+    /// — which is the fact the scene-phase handler reads today, not
+    /// the backend's `isPictureInPictureActiveProvider` (plain
     /// `isActive`). `isTransitioning` exists *for this call site*
-    /// (`PictureInPictureCoordinator.swift:30-33`): wiring the provider here
+    /// (`PictureInPictureCoordinator.isTransitioning`): wiring the provider here
     /// would pause playback in the window where iOS auto-starts PiP as the app
     /// is being backgrounded, i.e. on every automatic PiP start on iPhone.
     ///
@@ -427,7 +417,7 @@ struct LoadOptions: Equatable {
     /// `allowNearEndResume`.
     var allowNearEndResume: Bool
     /// `preserveInterruptionState` — keeps the tvOS interruption alive across
-    /// the load (PVM:3691-3693): the pending `Playing.Interruption` rides on
+    /// the load: the pending `Playing.Interruption` rides on
     /// `Preparing.interruption` and is restored into `Playing` when the
     /// replacement engine reports `fileLoaded`, so
     /// `completeInterruptionRecoveryIfNeeded` can still complete it. The
@@ -491,14 +481,13 @@ struct ReplanIntent: Equatable {
         case serverReplan
         /// `restartCurrentTranscodeHLS` — always reloads the engine.
         ///
-        /// Its prologue reports progress against the outgoing session
-        /// (PVM:5234-5236), which the reducer emits. Two further obligations
+        /// Its prologue reports progress against the outgoing session,
+        /// which the reducer emits. Two further obligations
         /// are wave 3's, because they happen outside the request:
-        /// the outgoing engine is disposed (PVM:5239-5240 for a non-quality
-        /// restart, PVM:2580 at the adopt for a quality one) — implied here by
+        /// the outgoing engine is disposed — implied here by
         /// `reuseEngine == false`, which `.replanned` always computes for this
         /// kind — and a quality restart raises the loading overlay and clears
-        /// the buffering flag at the *adopt* (PVM:2578-2582), i.e. from the
+        /// the buffering flag at the *adopt*, i.e. from the
         /// `.replanned` arm rather than from `requestReplan`.
         case transcodeRestart(TranscodeRestartOrigin)
     }
@@ -554,11 +543,10 @@ struct SourceRenewal: Equatable {
     let reason: String
     let observedPosition: Double
     let startedAt: Date
-    /// The session the renewal was issued against (`staleSessionId`,
-    /// PVM:4094). A renewal mints a *new* server session by definition, so
-    /// `belongsToSameSession` cannot guard its answer; the VM instead re-checks
-    /// the active session id against the stale one before adopting
-    /// (PVM:4123-4130), and this is that check's data.
+    /// The session the renewal was issued against. A renewal mints a *new*
+    /// server session by definition, so `belongsToSameSession` cannot guard its
+    /// answer; the active session id is re-checked against the stale one before
+    /// the answer is adopted, and this is that check's data.
     let issuedFor: SessionIdentity
 }
 
@@ -574,38 +562,33 @@ struct OutageRideThrough: Equatable {
 // MARK: - Seeking
 
 struct SeekRequest: Equatable {
-    let id: UUID
     /// The pre-seek position (`seekOriginTime`) — the filter needs it to tell
     /// a stale drainage frame from a landed one.
     let fromSeconds: Double
     /// `seekTargetTime`.
     let targetSeconds: Double
     let origin: SeekOrigin
-    /// Every seek has one (design §4 I5); mirrors the backend's
-    /// `seekCompletionDeadlineSeconds`.
-    let deadline: Date
 }
 
 enum SeekOrigin: Equatable {
+    /// Every ordinary seek — the scrubber, skip, a chapter/intro/credits jump.
+    /// The reducer treats them identically; only the two below behave
+    /// differently, so only they are cases.
     case user
-    case scrub
-    case skip
-    case chapter
-    case intro
-    case credits
+    /// Leaving the terminal postroll (`keepWatchingCurrentEpisode`): it is one
+    /// of the two origins allowed to clear the EOF latch.
     case nextUpKeepWatching
-    case recovery(String)
     /// A stream rebuild anchored at a new position: `beginReanchorSeekUI`
-    /// (PVM:5063-5076) arms the origin/target filter, moves the scrubber and
+    /// arms the origin/target filter, moves the scrubber and
     /// cancels the 5 s safety timeout — and issues **no** engine seek. The
     /// anchoring is done by the rebuild that follows it (a `seek_reanchor` V3
     /// replan, a fresh load, or a re-anchored loopback `loadStream`), which is
     /// also what raises the loading overlay and clears the buffering flag.
     ///
     /// **Wave-3 obligation:** the rebuild is *not* modelled by this reducer —
-    /// `commitSeek`'s first branch (`reloadServerBackedHLSForSeek`
-    /// PVM:5078-5131, `reloadLocalLoopbackForSeekBeforeAnchor` PVM:5133-5175)
-    /// chooses it before any of the three `.seek` paths below. Wiring a plain
+    /// `commitSeek`'s first branch (`reloadServerBackedHLSForSeek`,
+    /// `reloadLocalLoopbackForSeekBeforeAnchor`) chooses it before either
+    /// `.seek` path below. Wiring a plain
     /// `.seek` intent straight through would regress seeking past the anchor
     /// on remux/transcode HLS and on loopback, and the loopback re-anchor is
     /// the one path where nothing else raises the overlay.
@@ -614,7 +597,7 @@ enum SeekOrigin: Equatable {
 
 /// Which platform's scene-phase table applies.
 ///
-/// The three tables in `handleScenePhase` (PVM:4711-4794) differ per platform
+/// The three tables in `handleScenePhase` differ per platform
 /// and are the riskiest surface in this package, but `SiloTests` is an
 /// iOS-only bundle (`project.yml` `SiloTests: platform: iOS`), so an
 /// `#if os(tvOS)` assertion in a test never executes. The platform is
@@ -661,7 +644,6 @@ enum PlayerIntent: Equatable {
 enum PlayerEvent: Equatable {
     case engine(EngineEvent, LoadID)
     case session(SessionEvent, SessionIdentity)
-    case transport(TransportEvent, LoadID)
     /// The action `RecoveryPolicy` decided for an observation the actor
     /// collected. The reducer maps it to state + effects; it never decides.
     case recovery(RecoveryAction, LoadID)
@@ -708,28 +690,20 @@ enum EngineEvent: Equatable {
 enum SessionEvent: Equatable {
     /// Carries the `LoadID` it answers: a fresh prepare mints a brand-new
     /// `SessionIdentity`, so there is nothing else to match it against.
-    case prepared(PreparedPlaybackRef, ExecutablePlan, for: LoadID)
+    case prepared(PreparedPlaybackRef, ExecutionPlanRef, for: LoadID)
     /// Matched on the session it replaced (`SessionIdentity` keeps the server
     /// session and playback attempt across a replan; only the plan attempt
     /// changes).
-    case replanned(PreparedPlaybackRef, ExecutablePlan)
+    case replanned(PreparedPlaybackRef, ExecutionPlanRef)
     /// The server declined to replace the plan in place (`replan` → `nil`).
     case replanUnavailable
     case terminal(PlaybackV3TerminalFailure)
-    case sessionMissing
     /// `replacing` is the session the renewal was issued against, so the
     /// reducer can refuse an answer to a renewal that is no longer the one in
-    /// flight — the only mutation that rewrites `Playing.identity`
-    /// (PVM:4123-4130's active-versus-stale session-id guard).
+    /// flight — the only mutation that rewrites `Playing.identity`, and the
+    /// one the active-versus-stale session-id guard exists for.
     case renewed(PreparedPlaybackRef, replacing: SessionIdentity)
-    case renewalFailed(transient: Bool)
-}
-
-/// `PlaybackSourceProxy` → control plane.
-enum TransportEvent: Equatable {
-    case sessionMissing
-    case sourceInterrupted(reason: String)
-    case originOutage(active: Bool)
+    case renewalFailed
 }
 
 /// The control-plane keys of `PlayerTaskRegistry.Key`. UI timers
@@ -759,14 +733,14 @@ enum Effect: Equatable {
     case stopSession(SessionIdentity, position: Double?, isPaused: Bool)
     /// `reuseEngine == true` is today's `prepareBackend(for:)` path: the live
     /// `AVPlayerBackend` survives, its callbacks re-bind to the new `LoadID`.
-    case loadEngine(ExecutablePlan, LoadID, reuseEngine: Bool)
+    case loadEngine(ExecutionPlanRef, LoadID, reuseEngine: Bool)
     /// Tear the load's engine down. `sourceCache` is what the outgoing source
     /// proxy's cached prefix is worth to whatever comes next — the four
     /// dispose sites disagree about it today and the effect has to carry the
     /// disagreement, not average it (see `SourceCacheDisposition`).
     case disposeEngine(LoadID, sourceCache: SourceCacheDisposition)
     case seek(SeekRequest, LoadID)
-    /// `replanProtocolV3` → `.session(.replanned | .replanUnavailable | .terminal | .sessionMissing)`.
+    /// `replanProtocolV3` → `.session(.replanned | .replanUnavailable | .terminal)`.
     case replan(ReplanIntent, SessionIdentity)
     /// `renewDirectSession` + `PlaybackSourceProxy.retargetOrigin`.
     case renewSource(SourceRenewal, SessionIdentity)
@@ -781,7 +755,7 @@ enum Effect: Equatable {
     /// `sessionBridge.syncProgress(contentId:position:duration:forceOverwrite:)`
     /// — the content-scoped progress write, not the session heartbeat.
     ///
-    /// One emitter: `attemptStaleSessionRenewal` (PVM:4262-4267) force-writes
+    /// One emitter: `attemptStaleSessionRenewal` force-writes
     /// the resume position against the *content* before it re-loads, because
     /// the session it would otherwise report against is the one that vanished.
     /// The `LoadID` is the outgoing load's, so the actor can drop a write whose
@@ -809,24 +783,23 @@ enum TransportCommand: Equatable {
 }
 
 /// What an engine teardown does with the outgoing `PlaybackSourceProxy`'s
-/// cached prefix (`SourceCacheHandoff`, PVM:2835-2892). The handoff lives for
+/// cached prefix (`SourceCacheHandoff`). The handoff lives for
 /// exactly one load attempt and `SourceCacheAdoptionPolicy` decides whether
 /// the next proxy may adopt it, so the *only* thing a dispose site chooses is
 /// whether to offer it at all — and the sites genuinely disagree.
 enum SourceCacheDisposition: Equatable {
     /// `stashSourceCacheHandoff()` immediately before `sourceProxy.stop()`:
     /// keep the prefix for a same-file successor. Both halves of a fresh load
-    /// (`resetPublishedLoadState` PVM:3524, `loadStream` PVM:2759) and every
-    /// server-outage recovery whose reason is *not* `source_entity_changed`
-    /// (PVM:4433).
+    /// (`resetPublishedLoadState`, `loadStream`) and every
+    /// server-outage recovery whose reason is *not* `source_entity_changed`.
     case stash
     /// `discardSourceCacheHandoff()`: the prefix must not be adopted.
-    /// `finalizeTerminalPlaybackError` (PVM:4063), `cleanup()` (PVM:6386), and
-    /// a `source_entity_changed` outage recovery (PVM:4429-4432), where the
+    /// `finalizeTerminalPlaybackError`, `cleanup()`, and
+    /// a `source_entity_changed` outage recovery, where the
     /// validator proved the cached bytes belong to the *replaced* entity —
     /// adopting them would serve the old file's prefix under the new one.
     case discard
-    /// The engine goes, the proxy stays: `suspendForBackground` (PVM:7592-7638)
+    /// The engine goes, the proxy stays: `suspendForBackground`
     /// calls `avPlayerBackend?.dispose()` and deliberately never touches
     /// `sourceProxy`, so the tvOS background suspend keeps the live proxy —
     /// and its cache — and the resume's own `beginLoad` is what finally stashes
@@ -858,8 +831,6 @@ struct Presentation: Equatable {
     var isQualitySwitching: Bool = false
     var bufferedAheadSeconds: Double = 0
     var playbackRunwaySeconds: Double = 0
-    var playbackStats: PlaybackStats?
-    var metadata: PlayerMetadata?
     /// Why the loading overlay is being taken down, so `clearLoadingOverlay`'s
     /// `[CMP] playback loading overlay dismissed reason=…` breadcrumb keeps its
     /// wording. The reason is a property of the *transition*, not of the state,
@@ -900,8 +871,6 @@ struct Presentation: Equatable {
         isQualitySwitching: Bool = false,
         bufferedAheadSeconds: Double = 0,
         playbackRunwaySeconds: Double = 0,
-        playbackStats: PlaybackStats? = nil,
-        metadata: PlayerMetadata? = nil,
         loadingReason: String = "",
         bufferingCause: String = "",
         hasEnded: Bool = false,
@@ -920,8 +889,6 @@ struct Presentation: Equatable {
         self.isQualitySwitching = isQualitySwitching
         self.bufferedAheadSeconds = bufferedAheadSeconds
         self.playbackRunwaySeconds = playbackRunwaySeconds
-        self.playbackStats = playbackStats
-        self.metadata = metadata
         self.loadingReason = loadingReason
         self.bufferingCause = bufferingCause
         self.hasEnded = hasEnded
@@ -932,6 +899,40 @@ struct Presentation: Equatable {
 }
 
 // MARK: - Boxed payloads
+
+/// The execution plan the control plane carries, by reference.
+///
+/// `PlaybackExecutionPlan` is the artefact the engine install executes: the
+/// source proxy rewrites its URLs and the loopback session spec travels on it,
+/// so the control plane must carry the whole thing rather than a projection of
+/// it — a projection is what left the shell holding the real plan in a side
+/// slot. It bundles server response models and a `LoopbackSessionSpec` with no
+/// `Equatable` conformance, so — exactly like `PreparedPlaybackRef` below — it
+/// is compared by the facts the control plane decides with: the route, the
+/// delivery, where the plan starts and what it points at.
+struct ExecutionPlanRef: Equatable {
+    let value: PlaybackExecutionPlan
+
+    init(_ value: PlaybackExecutionPlan) {
+        self.value = value
+    }
+
+    /// The implementation route, which is what the reuse rule compares.
+    var engine: PlaybackEngineKind { value.engine }
+    /// The delivery strategy, which is what the duration rule reads: a
+    /// growing transcode playlist reports a manifest length shorter than the
+    /// real one, so its duration is never adopted.
+    var delivery: PlaybackDeliveryStrategy { value.delivery }
+
+    static func == (lhs: ExecutionPlanRef, rhs: ExecutionPlanRef) -> Bool {
+        lhs.value.engine == rhs.value.engine
+            && lhs.value.delivery == rhs.value.delivery
+            && lhs.value.startMode == rhs.value.startMode
+            && lhs.value.streamRequest.url == rhs.value.streamRequest.url
+            && lhs.value.loopbackSession?.sourceStartTimeSeconds
+                == rhs.value.loopbackSession?.sourceStartTimeSeconds
+    }
+}
 
 /// `PreparedPlayback` carries three server response models with no `Equatable`
 /// conformance, so the event that delivers it compares by the identity keys

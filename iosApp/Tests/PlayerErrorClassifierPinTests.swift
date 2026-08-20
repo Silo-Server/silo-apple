@@ -64,27 +64,33 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
         )
     }
 
-    // MARK: - shouldTreatPlaybackErrorAsNaturalEnd
+    // MARK: - RecoveryPolicy.shouldTreatAsNaturalEnd
 
     /// Corroborated near-end conversion: 8 seconds remaining, no source
     /// outage, and no runway left. The 98.5% ratio arm is gone — it made this
     /// predicate the exact negation of `handleEndOfFile`'s premature check, so
     /// the "Connection lost" branch could never run on the error path.
+    ///
+    /// `RecoveryPolicy.shouldTreatAsNaturalEnd` is the rung the shipping
+    /// player runs (`decideEngineFailed` reads it from the load's
+    /// `RecoveryContext`), so it is the one pinned here.
     private func isNaturalEnd(
         duration: Double,
         currentTime: Double,
         bufferedAhead: Double = 0,
         outage: Bool = false
     ) -> Bool {
-        PlayerViewModel.shouldTreatPlaybackErrorAsNaturalEnd(
-            duration: duration,
-            currentTime: currentTime,
-            bufferedAheadSeconds: bufferedAhead,
-            isSourceOutageActive: outage
+        RecoveryPolicy.shouldTreatAsNaturalEnd(
+            RecoveryContext.NearEndInputs(
+                duration: duration,
+                currentTime: currentTime,
+                bufferedAhead: bufferedAhead,
+                sourceOutageActive: outage
+            )
         )
     }
 
-    func testShouldTreatPlaybackErrorAsNaturalEndTable() {
+    func testShouldTreatAsNaturalEndTable() {
         // Threshold is 8 seconds remaining, with the buffer drained.
         XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 92))
         XCTAssertTrue(isNaturalEnd(duration: 100, currentTime: 98.5))

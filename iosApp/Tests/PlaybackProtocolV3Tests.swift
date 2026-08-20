@@ -1160,21 +1160,21 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testReplacementLoaderCannotMovePlaybackBackwardsWithoutASeek() {
         XCTAssertTrue(
-            PlayerViewModel.isUnexpectedBackwardPlaybackTime(
+            PlaybackReducer.isUnexpectedBackwardPlaybackTime(
                 32.1,
                 currentTime: 35,
                 explicitSeekInFlight: false
             )
         )
         XCTAssertFalse(
-            PlayerViewModel.isUnexpectedBackwardPlaybackTime(
+            PlaybackReducer.isUnexpectedBackwardPlaybackTime(
                 32.1,
                 currentTime: 35,
                 explicitSeekInFlight: true
             )
         )
         XCTAssertFalse(
-            PlayerViewModel.isUnexpectedBackwardPlaybackTime(
+            PlaybackReducer.isUnexpectedBackwardPlaybackTime(
                 34.5,
                 currentTime: 35,
                 explicitSeekInFlight: false
@@ -1184,28 +1184,28 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testGrowingTranscodePlaylistCannotReplaceKnownVODDuration() {
         XCTAssertFalse(
-            PlayerViewModel.shouldAdoptBackendDuration(
+            PlaybackReducer.shouldAdoptBackendDuration(
                 73,
                 currentDuration: 57,
                 delivery: .transcode
             )
         )
         XCTAssertTrue(
-            PlayerViewModel.shouldAdoptBackendDuration(
+            PlaybackReducer.shouldAdoptBackendDuration(
                 73,
                 currentDuration: 0,
                 delivery: .transcode
             )
         )
         XCTAssertTrue(
-            PlayerViewModel.shouldAdoptBackendDuration(
+            PlaybackReducer.shouldAdoptBackendDuration(
                 73,
                 currentDuration: 57,
                 delivery: .direct
             )
         )
         XCTAssertFalse(
-            PlayerViewModel.shouldAdoptBackendDuration(
+            PlaybackReducer.shouldAdoptBackendDuration(
                 50,
                 currentDuration: 57,
                 delivery: .direct

@@ -95,23 +95,4 @@ struct LoadRequest: Equatable {
         request.preferredQualityOverride = activeQualityId
         return request
     }
-
-    /// Every stored property, compared. `PlaybackReducerTests`'
-    /// `testLoadRequestEqualityCoversEveryStoredProperty` fails if one is added
-    /// without being listed here.
-    ///
-    /// Written out rather than synthesised because the reducer's structural
-    /// guards compare requests, and a silently-synthesised conformance would
-    /// grow a new field without the test noticing.
-    static func == (lhs: LoadRequest, rhs: LoadRequest) -> Bool {
-        lhs.contentId == rhs.contentId
-            && lhs.preferredFileId == rhs.preferredFileId
-            && lhs.preferredAudioTrackIndex == rhs.preferredAudioTrackIndex
-            && lhs.preferredSubtitleTrackIndex == rhs.preferredSubtitleTrackIndex
-            && lhs.preferredSidecarSubtitleTrackId == rhs.preferredSidecarSubtitleTrackId
-            && lhs.startFromBeginning == rhs.startFromBeginning
-            && lhs.preferredProtocolV3SubtitleIndex == rhs.preferredProtocolV3SubtitleIndex
-            && lhs.offlineDownloadId == rhs.offlineDownloadId
-            && lhs.preferredQualityOverride == rhs.preferredQualityOverride
-    }
 }
