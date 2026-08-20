@@ -5,95 +5,82 @@ import XCTest
 /// The `TrackSelection` model's own resolution rules (Stage 2 wave 4).
 ///
 /// `TrackSelectionCoordinatorTests` drives the two apply funnels end to end;
-/// this file pins the value semantics they depend on — which rung each setter
-/// touches, that consuming one rung leaves the others armed, and that the
-/// index space a case names is the one it hands back.
+/// this file pins the value semantics they depend on — which field each funnel
+/// consumes, that consuming one leaves the others armed, and that the index
+/// space a field names is the one it hands back.
 final class TrackSelectionTests: XCTestCase {
 
-    // MARK: - Rungs are independent
+    // MARK: - Fields are independent
 
-    /// A resume that carries an explicit sidecar pick arms two rungs at once:
+    /// A resume that carries an explicit sidecar pick arms two fields at once:
     /// the embedded plane must go "Off" (so the container default does not
     /// surface while the sidecar rows are still loading) and the sidecar has to
-    /// be re-selected once they arrive. The eight `pending*` fields did this by
-    /// being eight fields; the ladder does it in one value.
-    func testSidecarResumeArmsEmbeddedOffAndTheSidecarRungTogether() {
+    /// be re-selected once they arrive. The eight `pending*` optionals did this
+    /// by being eight separate fields; the selection does it in one value.
+    func testSidecarResumeArmsEmbeddedOffAndTheSidecarFieldTogether() {
         let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 4)
-        let selection = SubtitleSelection.unset
-            .settingEmbedded(ffIndex: -1)
-            .settingSidecar(trackId: sidecarId)
+        let selection = SubtitleSelection(
+            embedded: .wireIndex(-1),
+            sidecarTrackId: sidecarId
+        )
 
-        XCTAssertEqual(selection, .ladder([.off, .sidecar(trackId: sidecarId)]))
-        XCTAssertEqual(selection.embeddedRung, .off)
+        XCTAssertEqual(selection.embedded, .off)
         XCTAssertEqual(selection.sidecarTrackId, sidecarId)
         XCTAssertNil(selection.serverRenderedTrackId)
-        XCTAssertNil(selection.recoveredSnapshot)
+        XCTAssertNil(selection.recovered)
     }
 
-    /// The track-list funnel consumes the embedded rung and the sidecar-append
-    /// funnel the sidecar rung; neither may take the other's.
-    func testConsumingOneRungLeavesTheOthersArmed() {
+    /// The track-list funnel consumes the embedded field and the sidecar-append
+    /// funnel the sidecar field; neither may take the other's.
+    func testConsumingOneFieldLeavesTheOthersArmed() {
         let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 4)
         let snapshot = TrackSelectionSnapshot(track: subtitleTrack(trackId: 20, ffIndex: 2))
-        var selection = SubtitleSelection.unset
-            .settingEmbedded(ffIndex: 7)
-            .settingSidecar(trackId: sidecarId)
-            .settingRecovered(snapshot)
-
-        selection = selection.settingEmbedded(ffIndex: nil)
-        XCTAssertNil(selection.embeddedRung)
-        XCTAssertEqual(selection.sidecarTrackId, sidecarId)
-        XCTAssertEqual(selection.recoveredSnapshot, snapshot)
-
-        selection = selection.settingSidecar(trackId: nil)
-        XCTAssertNil(selection.sidecarTrackId)
-        XCTAssertEqual(selection.recoveredSnapshot, snapshot)
-
-        selection = selection.settingRecovered(nil)
-        XCTAssertEqual(selection, .unset)
-        XCTAssertTrue(selection.rungs.isEmpty)
-    }
-
-    /// A single armed rung is that case, not a one-element ladder — otherwise
-    /// two equal selections would compare unequal depending on how they were
-    /// built.
-    func testSettersNormalizeToASingleRungCase() {
-        XCTAssertEqual(SubtitleSelection.unset.settingEmbedded(ffIndex: 3), .embedded(ffIndex: 3))
-        XCTAssertEqual(
-            SubtitleSelection.embedded(ffIndex: 3).settingEmbedded(ffIndex: 5),
-            .embedded(ffIndex: 5),
-            "arming the same plane twice replaces the rung rather than stacking it"
+        var selection = SubtitleSelection(
+            embedded: .wireIndex(7),
+            sidecarTrackId: sidecarId,
+            recovered: snapshot
         )
-        XCTAssertEqual(AudioSelection.unset.settingPlanIndex(2), .planIndex(2))
-        XCTAssertEqual(AudioSelection.planIndex(2).settingPlanIndex(nil), .unset)
+
+        selection.embedded = nil
+        XCTAssertNil(selection.embedded)
+        XCTAssertEqual(selection.sidecarTrackId, sidecarId)
+        XCTAssertEqual(selection.recovered, snapshot)
+
+        selection.sidecarTrackId = nil
+        XCTAssertNil(selection.sidecarTrackId)
+        XCTAssertEqual(selection.recovered, snapshot)
+
+        selection.recovered = nil
+        XCTAssertEqual(selection, .unset)
     }
 
-    /// The `-1` wire sentinel is the explicit "Off" case, and only negative
+    /// The `-1` wire sentinel is the explicit "Off" rung, and only negative
     /// values are: index 0 is a real embedded stream.
     func testNegativeEmbeddedIndexIsTheExplicitOffRung() {
-        XCTAssertEqual(SubtitleSelection.unset.settingEmbedded(ffIndex: -1), .off)
-        XCTAssertEqual(SubtitleSelection.unset.settingEmbedded(ffIndex: 0), .embedded(ffIndex: 0))
-        XCTAssertEqual(SubtitleSelection.unset.settingEmbedded(ffIndex: nil), .unset)
+        XCTAssertEqual(SubtitleSelection.EmbeddedRung.wireIndex(-1), .off)
+        XCTAssertEqual(SubtitleSelection.EmbeddedRung.wireIndex(0), .stream(ffIndex: 0))
+        XCTAssertEqual(SubtitleSelection.EmbeddedRung.wireIndex(3), .stream(ffIndex: 3))
+        XCTAssertNil(SubtitleSelection.EmbeddedRung.wireIndex(nil))
     }
 
-    // MARK: - Audio ladder
+    // MARK: - Audio axis
 
     /// A route recovery seeds the plan index *and* the pre-rebuild snapshot:
     /// the exact index is tried first and the snapshot is the fallback for the
     /// case where the replacement stream no longer publishes it.
-    func testAudioLadderKeepsThePlanIndexAndTheRecoverySnapshot() {
+    func testAudioSelectionKeepsThePlanIndexAndTheRecoverySnapshot() {
         let snapshot = TrackSelectionSnapshot(track: audioTrack(trackId: 99, srcId: 1))
-        var audio = AudioSelection.unset
-            .settingPlanIndex(1)
-            .settingRecovered(snapshot)
+        var audio = AudioSelection(planIndex: 1, recovered: snapshot)
 
-        XCTAssertEqual(audio, .ladder([.planIndex(1), .recovered(snapshot)]))
         XCTAssertEqual(audio.planIndex, 1)
-        XCTAssertEqual(audio.recoveredSnapshot, snapshot)
+        XCTAssertEqual(audio.recovered, snapshot)
 
-        audio = audio.settingPlanIndex(nil)
-        XCTAssertNil(audio.planIndex)
-        XCTAssertEqual(audio, .recovered(snapshot), "the fuzzy fallback survives the exact match")
+        audio.planIndex = nil
+        XCTAssertEqual(
+            audio,
+            AudioSelection(recovered: snapshot),
+            "the fuzzy fallback survives the exact match"
+        )
     }
 
     // MARK: - Plan-named selections
@@ -105,11 +92,11 @@ final class TrackSelectionTests: XCTestCase {
         let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
         XCTAssertEqual(
             SubtitleSelection.planned(selectedSubtitleIndex: 3, subtitleMode: "render"),
-            .sidecar(trackId: sidecarId)
+            SubtitleSelection(sidecarTrackId: sidecarId)
         )
         XCTAssertEqual(
             SubtitleSelection.planned(selectedSubtitleIndex: 3, subtitleMode: "burn_in"),
-            .serverRendered(trackId: sidecarId)
+            SubtitleSelection(serverRenderedTrackId: sidecarId)
         )
         XCTAssertEqual(
             SubtitleSelection.planned(selectedSubtitleIndex: 3, subtitleMode: "off"),

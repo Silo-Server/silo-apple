@@ -109,10 +109,11 @@ enum SubtitleDisplayOrder {
         return 7
     }
 
-    /// Canonical lowercased grouping key: primary subtag, with known
-    /// 3-letter ISO 639-2 codes folded onto their 2-letter 639-1 form so
-    /// "en" and "eng" land in the same group. Returns nil for empty /
-    /// "und" so those tracks form the trailing unknown group.
+    /// Canonical lowercased grouping key: the primary subtag folded through
+    /// `SubtitleAutoResolver.canonicalPrimaryLanguage`, the client's one
+    /// language canonicalizer, so "en" and "eng" land in the same group and
+    /// the picker's idea of "same language" is the auto-resolver's. Returns
+    /// nil for empty / "und" so those tracks form the trailing unknown group.
     static func canonicalLanguageKey(_ code: String?) -> String? {
         guard let trimmed = code?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
@@ -121,7 +122,7 @@ enum SubtitleDisplayOrder {
         let normalized = trimmed.lowercased().replacingOccurrences(of: "_", with: "-")
         let primary = normalized.split(separator: "-").first.map(String.init) ?? normalized
         if primary.isEmpty || primary == "und" { return nil }
-        return iso639Alias[primary] ?? primary
+        return SubtitleAutoResolver.canonicalPrimaryLanguage(primary)
     }
 
     /// English display name for a canonical key, used for alphabetical
@@ -132,50 +133,4 @@ enum SubtitleDisplayOrder {
         }
         return key.uppercased()
     }
-
-    // MARK: - Private
-
-    /// 3-letter ISO 639-2 (B and T) → 2-letter ISO 639-1, for the
-    /// languages that realistically appear in subtitle metadata. The
-    /// server passes through whatever the source codec carried, mixing
-    /// both forms, so grouping has to canonicalize.
-    private static let iso639Alias: [String: String] = [
-        "ara": "ar",
-        "ben": "bn",
-        "bul": "bg",
-        "chi": "zh", "zho": "zh",
-        "cze": "cs", "ces": "cs",
-        "dan": "da",
-        "dut": "nl", "nld": "nl",
-        "eng": "en",
-        "est": "et",
-        "fin": "fi",
-        "fra": "fr", "fre": "fr",
-        "ger": "de", "deu": "de",
-        "gre": "el", "ell": "el",
-        "heb": "he",
-        "hin": "hi",
-        "hun": "hu",
-        "ice": "is", "isl": "is",
-        "ind": "id",
-        "ita": "it",
-        "jpn": "ja",
-        "kor": "ko",
-        "lav": "lv",
-        "lit": "lt",
-        "may": "ms", "msa": "ms",
-        "nor": "no", "nob": "no", "nno": "no",
-        "pol": "pl",
-        "por": "pt",
-        "rum": "ro", "ron": "ro",
-        "rus": "ru",
-        "slo": "sk", "slk": "sk",
-        "slv": "sl",
-        "spa": "es",
-        "swe": "sv",
-        "tha": "th",
-        "tur": "tr",
-        "ukr": "uk",
-        "vie": "vi",
-    ]
 }

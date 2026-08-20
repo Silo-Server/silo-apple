@@ -146,4 +146,19 @@ final class SubtitleDisplayOrderTests: XCTestCase {
         XCTAssertNil(SubtitleDisplayOrder.canonicalLanguageKey(""))
         XCTAssertNil(SubtitleDisplayOrder.canonicalLanguageKey(nil))
     }
+
+    /// The picker and the auto-resolver share one canonicalizer, so a 639-2
+    /// code that was never in the retired 40-entry alias table now folds the
+    /// same way on both sides — `tam`/`ta` and `cat`/`ca` are one group each,
+    /// not two.
+    func testCanonicalLanguageKeyMatchesTheAutoResolverOutsideTheRetiredTable() {
+        for (alpha3, alpha2) in [("tam", "ta"), ("cat", "ca"), ("fas", "fa"), ("srp", "sr")] {
+            XCTAssertEqual(SubtitleDisplayOrder.canonicalLanguageKey(alpha3), alpha2)
+            XCTAssertEqual(SubtitleDisplayOrder.canonicalLanguageKey(alpha2), alpha2)
+            XCTAssertTrue(
+                SubtitleAutoResolver.languagesMatch(alpha3, alpha2),
+                "\(alpha3)/\(alpha2) must be one language on both sides"
+            )
+        }
+    }
 }

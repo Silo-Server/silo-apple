@@ -319,16 +319,10 @@ actor PlaybackSessionBridge {
         let combinedIndex: Int?
     }
 
-    struct InitialProtocolV3SubtitlePreferences: Equatable {
-        let preferredLanguage: String?
-        let additionalPreferredLanguages: [String]
-        let mode: SubtitleMode?
-        let showForced: Bool
-        let forcedOnly: Bool
-        let preferAccessibilityTracks: Bool
-        let disableWhenNoLanguageMatch: Bool
-        let trackSignature: SubtitleTrackSignature?
-    }
+    /// The caller's already-resolved subtitle preferences for this start. One
+    /// shape with the track coordinator's snapshot and the auto-resolver's
+    /// inputs — see `SubtitleSelectionPreferences`.
+    typealias InitialProtocolV3SubtitlePreferences = SubtitleSelectionPreferences
 
     private var activeProtocolV3: ActiveProtocolV3?
     private var protocolV3FirstFramePlanIds: Set<String> = []

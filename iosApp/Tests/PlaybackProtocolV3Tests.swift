@@ -1057,7 +1057,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 selectedSubtitleIndex: 3,
                 subtitleMode: "render"
             ),
-            .sidecar(trackId: sidecarId)
+            SubtitleSelection(sidecarTrackId: sidecarId)
         )
         XCTAssertEqual(
             SubtitleSelection.sidecarRestore(
@@ -1065,7 +1065,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 selectedSubtitleIndex: 3,
                 subtitleMode: "burn_in"
             ),
-            .serverRendered(trackId: sidecarId)
+            SubtitleSelection(serverRenderedTrackId: sidecarId)
         )
         XCTAssertEqual(
             SubtitleSelection.sidecarRestore(
@@ -1136,13 +1136,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
 
         XCTAssertEqual(adopted.preferredAudioTrackIndex, 1)
-        XCTAssertEqual(selection.audio, .planIndex(1))
+        XCTAssertEqual(selection.audio, AudioSelection(planIndex: 1))
         // A plan that does not render subtitles locally arms explicit "Off"
         // (the legacy `-1` sentinel) and no sidecar.
-        XCTAssertEqual(selection.primary, .off)
+        XCTAssertEqual(selection.primary.embedded, .off)
         XCTAssertNil(selection.primary.sidecarTrackId)
         // Adopting a plan is not a user choice — and never demotes one.
-        XCTAssertEqual(selection.origin, .serverPlan)
+        XCTAssertEqual(selection.origin, .automatic)
         var latched = TrackSelection(audio: .unset, primary: .unset, secondary: .unset, origin: .user)
         latched.armAdoptedProtocolV3Intent(
             plan: makePlan(selectedAudioIndex: 1),
