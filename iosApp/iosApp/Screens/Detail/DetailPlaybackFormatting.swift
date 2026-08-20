@@ -1,5 +1,110 @@
 import Foundation
 
+/// The version/track policy the phone and tvOS detail screens share: which
+/// version a set of picks resolves to, which fileId the play route has to
+/// carry, and whether a candidate track index survives that version. Each
+/// screen owns only the storage its picks live in (`@State` on phone, the
+/// cached view model on tvOS) and builds one of these per use.
+struct DetailPlaybackSelection {
+    let versions: [FileVersion]
+    /// The item's last-played fileId — `displayVersion`'s second rung.
+    let lastFileId: Int?
+    /// This visit's explicit Version pick, or nil for "Auto".
+    let versionFileId: Int?
+    let audioTrackIndex: Int?
+    let subtitleTrackIndex: Int?
+
+    init(
+        versions: [FileVersion],
+        lastFileId: Int?,
+        versionFileId: Int?,
+        audioTrackIndex: Int? = nil,
+        subtitleTrackIndex: Int? = nil
+    ) {
+        self.versions = versions
+        self.lastFileId = lastFileId
+        self.versionFileId = versionFileId
+        self.audioTrackIndex = audioTrackIndex
+        self.subtitleTrackIndex = subtitleTrackIndex
+    }
+
+    init(
+        detail: ItemDetail?,
+        versionFileId: Int?,
+        audioTrackIndex: Int? = nil,
+        subtitleTrackIndex: Int? = nil
+    ) {
+        self.init(
+            versions: detail?.versions ?? [],
+            lastFileId: detail?.userData?.lastFileId,
+            versionFileId: versionFileId,
+            audioTrackIndex: audioTrackIndex,
+            subtitleTrackIndex: subtitleTrackIndex
+        )
+    }
+
+    init(
+        detail: WatchDetail?,
+        versionFileId: Int?,
+        audioTrackIndex: Int? = nil,
+        subtitleTrackIndex: Int? = nil
+    ) {
+        self.init(
+            versions: detail?.versions ?? [],
+            lastFileId: detail?.userData?.lastFileId,
+            versionFileId: versionFileId,
+            audioTrackIndex: audioTrackIndex,
+            subtitleTrackIndex: subtitleTrackIndex
+        )
+    }
+
+    /// The version the selector displays and the play route resolves to.
+    var effectiveVersion: FileVersion? {
+        DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: versionFileId,
+            lastFileId: lastFileId,
+            preferredQualityId: PlayerSettings.shared.preferredQuality
+        )
+    }
+
+    /// FileId the play route must carry for this item.
+    var playbackFileId: Int? {
+        playbackFileId(resolvedFileId: versionFileId)
+    }
+
+    /// Next-up analogue: the season/series layout already resolved a fileId
+    /// from its own Version pick (non-nil only when the user changed
+    /// Version). When that is nil but an audio/subtitle override is set,
+    /// resolve the effective version's fileId so the chosen tracks can still
+    /// be carried through `.playerWithFile(...)` instead of being dropped by
+    /// `.player`.
+    func playbackFileId(resolvedFileId: Int?) -> Int? {
+        if let resolvedFileId { return resolvedFileId }
+        if audioTrackIndex != nil || subtitleTrackIndex != nil {
+            return effectiveVersion?.fileId
+        }
+        return nil
+    }
+
+    /// Drop an audio pick the resolved version cannot satisfy.
+    func sanitizedAudioIndex(_ candidate: Int?) -> Int? {
+        DetailPlaybackFormatting.sanitizedAudioIndex(
+            version: effectiveVersion,
+            candidate: candidate
+        )
+    }
+
+    /// Drop a subtitle pick the resolved version cannot satisfy. The
+    /// negative "off" sentinel always survives.
+    func sanitizedSubtitleIndex(_ candidate: Int?) -> Int? {
+        DetailPlaybackFormatting.sanitizedSubtitleIndex(
+            version: effectiveVersion,
+            candidate: candidate
+        )
+    }
+}
+
 enum DetailPlaybackFormatting {
     struct AudioOption: Identifiable, Hashable {
         let ordinal: Int
@@ -29,6 +134,14 @@ enum DetailPlaybackFormatting {
             return nil
         }
         return position
+    }
+
+    /// Resume offset for an item's own play button.
+    static func playableResumePosition(for detail: ItemDetail) -> Double? {
+        playableResumePosition(
+            position: detail.userData?.positionSeconds,
+            duration: detail.userData?.durationSeconds
+        )
     }
 
     // MARK: - Track index sanitizing
@@ -268,14 +381,62 @@ enum DetailPlaybackFormatting {
         mode: String?
     ) -> Int? {
         if let signature,
-           let tracks = version?.subtitleTracks,
-           let match = bestSignatureMatch(signature, in: tracks) {
-            return match.index
+           let match = signatureMatch(signature, in: version?.subtitleTracks ?? []),
+           let ffmpegStreamIndex = match.ffIndex {
+            return ffmpegStreamIndex
         }
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return -1
         }
         return nil
+    }
+
+    /// The stored per-item signature resolved against this version's tracks by
+    /// the player's own resolver. Language and mode are left neutral so only
+    /// the signature rung can fire.
+    private static func signatureMatch(
+        _ signature: SubtitleTrackSignature,
+        in tracks: [SubtitleTrack]
+    ) -> PlayerTrack? {
+        guard case .select(let track) = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: nil,
+            mode: .auto,
+            showForced: false,
+            trackSignature: signature,
+            availableSubtitles: SubtitleTrackCandidates.playerTracks(from: tracks),
+            currentAudioLanguage: nil
+        )) else { return nil }
+        return track
+    }
+
+    /// Selector seed for the subtitle override the server remembers, applied
+    /// on entry and after a pick made inside the player is persisted.
+    /// Returns the index the selector should hold — `current` whenever
+    /// nothing should change, so the caller can skip a redundant write.
+    ///
+    /// `preferredSubtitleTrackIndex` is per-visit state, so without this the
+    /// selector always reopens on "Auto" even though the pick was persisted;
+    /// audio doesn't need an equivalent because `resolvedAudioOrdinal` falls
+    /// back to `effectiveAudioTrackIndex`.
+    static func seededSubtitleIndex(
+        current: Int?,
+        wasManuallySelected: Bool,
+        detail: ItemDetail?,
+        version: FileVersion?
+    ) -> Int? {
+        let usesDeviceSettings = PlayerSettings.shared.subtitleMatchesSystemAppearance
+        if usesDeviceSettings {
+            // Device-settings mode starts from Apple's caption policy, so a
+            // server seed must not linger in the selector.
+            return wasManuallySelected ? current : nil
+        }
+        guard !wasManuallySelected, current == nil, let detail else { return current }
+        return launchPreferredSubtitleIndex(
+            version: version,
+            signature: detail.effectiveSubtitleTrackSignature,
+            mode: detail.effectiveSubtitleMode,
+            usesDeviceSettings: usesDeviceSettings
+        )
     }
 
     /// A server-remembered track is useful for reflecting the server policy
@@ -296,141 +457,49 @@ enum DetailPlaybackFormatting {
         )
     }
 
-    /// Mirrors `SubtitleAutoResolver.bestSignatureMatch` scoring, applied
-    /// to the detail payload's `SubtitleTrack` metadata, so the selector
-    /// shows the same track the player would restore on its own.
-    private static func bestSignatureMatch(
-        _ sig: SubtitleTrackSignature,
-        in tracks: [SubtitleTrack]
-    ) -> SubtitleTrack? {
-        var best: (SubtitleTrack, Int)?
-        for track in tracks where track.index != nil {
-            var score = 0
-            var strongSignal = false
-            if let sigLang = sig.language, !sigLang.isEmpty,
-               let lang = track.language,
-               SubtitleAutoResolver.languagesMatch(lang, sigLang) {
-                score += 5
-                strongSignal = true
-            }
-            if sig.forced == (track.forced ?? false) {
-                score += 1
-            }
-            if sig.hearingImpaired == (track.hearingImpaired ?? false) {
-                score += 1
-            }
-            if let sigCodec = sig.codec, let codec = track.codec,
-               sigCodec.caseInsensitiveCompare(codec) == .orderedSame {
-                score += 1
-            }
-            if let sigLabel = sig.label, !sigLabel.isEmpty,
-               let title = track.title ?? track.embeddedTitle,
-               title.localizedCaseInsensitiveContains(sigLabel) {
-                score += 2
-                strongSignal = true
-            }
-            // Forced/HI/codec equality alone is meaningless (`false ==
-            // false` holds for nearly every track); require a language or
-            // label hit so a weak "match" can't override Auto.
-            if strongSignal, score > (best?.1 ?? 0) {
-                best = (track, score)
-            }
-        }
-        return best?.0
-    }
-
     /// Preview the track the player's `SubtitleAutoResolver` would auto-select
-    /// for the "Auto" (no explicit override) case, applied to the detail
-    /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
-    /// subtitles (mode off, no preference, or audio already in the preferred
-    /// language). Mirrors `SubtitleAutoResolver.resolve` branch-for-branch
-    /// with the inputs the detail page can supply, including where
-    /// `showForced` does and does not apply.
+    /// for the "Auto" (no explicit override) case, over the detail payload's
+    /// track list. Runs the real resolver rather than restating its policy, so
+    /// the pill cannot drift from what the player does — including the
+    /// `.noChange` case, which the session bridge freezes into the plan the
+    /// same way. Returns nil when Auto resolves to no subtitles.
     private static func autoResolvedSubtitle(
         version: FileVersion?,
         context: SubtitleAutoContext
     ) -> (track: SubtitleTrack, ordinal: Int)? {
         let tracks = version?.subtitleTracks ?? []
-        guard !tracks.isEmpty else { return nil }
+        let candidates = SubtitleTrackCandidates.indexedPlayerTracks(from: tracks)
+        guard !candidates.isEmpty else { return nil }
+        let available = candidates.map(\.track)
 
-        let mode = SubtitleMode(rawValue: context.mode ?? "") ?? .auto
-        if mode == .off { return nil }
+        let resolution = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: context.preferredLanguage,
+            mode: SubtitleMode(rawValue: context.mode ?? ""),
+            showForced: context.showForced,
+            trackSignature: context.signature,
+            availableSubtitles: available,
+            currentAudioLanguage: context.audioLanguage
+        ))
 
-        if let signature = context.signature,
-           let match = bestSignatureMatch(signature, in: tracks),
-           let ordinal = tracks.firstIndex(where: { $0.id == match.id }) {
-            return (match, ordinal)
-        }
-
-        guard let rawLang = context.preferredLanguage else {
-            if mode == .always {
-                return bestLanguageMatch(nil, in: tracks, preferForced: context.showForced)
-            }
-            return nil
-        }
-
-        if rawLang.isEmpty { return nil }
-
-        // Auto mode hides subs when the audio already matches the preferred
-        // subtitle language (e.g. English audio + English sub preference) —
-        // unless forced subs are wanted, in which case the language-matching
-        // forced (signs-only) track is exactly what plays.
-        if mode == .auto, let audio = context.audioLanguage,
-           SubtitleAutoResolver.languagesMatch(audio, rawLang) {
-            if context.showForced,
-               let forced = tracks.enumerated().first(where: { _, track in
-                   (track.forced ?? false)
-                       && track.language.map { SubtitleAutoResolver.languagesMatch($0, rawLang) } == true
-               }) {
-                return (forced.element, forced.offset)
-            }
-            return nil
+        let selected: PlayerTrack?
+        switch resolution {
+        case .select(let track):
+            selected = track
+        case .disable:
+            selected = nil
+        case .noChange:
+            // "Leave the player alone" means its demuxer keeps the media's
+            // default track; the sidecar route also promotes a forced one.
+            // `PlaybackSessionBridge` freezes that deterministic choice into
+            // the plan, so preview the same track here.
+            selected = available.first(where: { $0.isDefault })
+                ?? available.first(where: { $0.isForced })
         }
 
-        // The user wants readable subs in this language: always the
-        // full-dialogue track — `showForced` must NOT steal this pick
-        // (mirrors the resolver's preferForced: false here).
-        if let pick = bestLanguageMatch(rawLang, in: tracks, preferForced: false) {
-            return pick
-        }
-
-        if context.showForced,
-           let forced = tracks.enumerated().first(where: { $0.element.forced == true }) {
-            return (forced.element, forced.offset)
-        }
-        return nil
-    }
-
-    /// Language-scored pick mirroring `SubtitleAutoResolver.bestLanguageMatch`
-    /// over `SubtitleTrack`. Prefers full-dialogue (non-forced, non-SDH) unless
-    /// `preferForced` is set. Carries the array offset through as the ordinal.
-    private static func bestLanguageMatch(
-        _ language: String?,
-        in tracks: [SubtitleTrack],
-        preferForced: Bool
-    ) -> (track: SubtitleTrack, ordinal: Int)? {
-        let pool = tracks.enumerated().filter { _, track in
-            guard let language else { return true }
-            guard let trackLang = track.language else { return false }
-            return SubtitleAutoResolver.languagesMatch(trackLang, language)
-        }
-        guard !pool.isEmpty else { return nil }
-        if preferForced, let forced = pool.first(where: { $0.element.forced == true }) {
-            return (forced.element, forced.offset)
-        }
-        if let full = pool.first(where: {
-            !($0.element.forced ?? false)
-                && !($0.element.hearingImpaired ?? false)
-                && !SubtitleAutoResolver.titleIndicatesHearingImpaired(
-                    $0.element.title ?? $0.element.embeddedTitle
-                )
-        }) {
-            return (full.element, full.offset)
-        }
-        if let nonForced = pool.first(where: { !($0.element.forced ?? false) }) {
-            return (nonForced.element, nonForced.offset)
-        }
-        return (pool[0].element, pool[0].offset)
+        guard let selected,
+              let match = candidates.first(where: { $0.track.trackId == selected.trackId })
+        else { return nil }
+        return (tracks[match.ordinal], match.ordinal)
     }
 
     static func subtitleOptions(
@@ -470,10 +539,9 @@ enum DetailPlaybackFormatting {
         }
     }
 
-    /// Inputs needed to preview what the player's subtitle auto-resolver
-    /// would land on, so the selector can annotate "Auto" with the concrete
-    /// track (or "None"). Mirrors `SubtitleAutoResolver.Inputs` with the
-    /// subset the detail payload can supply.
+    /// The subset of `SubtitleAutoResolver.Inputs` the detail payload can
+    /// supply, so the selector can annotate "Auto" with the concrete track
+    /// (or "Off").
     struct SubtitleAutoContext {
         var preferredLanguage: String?
         var mode: String?
