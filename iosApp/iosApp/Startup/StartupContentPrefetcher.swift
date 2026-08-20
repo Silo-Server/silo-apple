@@ -188,37 +188,41 @@ enum StartupContentPrefetcher {
     #if os(iOS) || os(tvOS)
     // MARK: - Diagnostics
 
-    /// Classifies a prefetch failure into a small, stable set of tokens for the
-    /// `reason` attribute.
+    /// Classifies a prefetch failure into the same closed vocabulary
+    /// `HTTPClient` writes into `network.error_code`.
     ///
-    /// The vocabulary is deliberately coarse. `reason` is what a reader groups
-    /// on across reports, so it has to mean the same thing in every build; a
-    /// pass-through of the error's own text would be neither stable nor
-    /// necessarily free of server-authored detail. Anything not recognised here
-    /// becomes `other` rather than leaking a description.
+    /// Every prefetch goes through `HTTPClient.perform`, so a failure is
+    /// classified twice: once on the network line, once here on the lifecycle
+    /// line. Delegating to ``HTTPDiagnosticsErrorCode`` and
+    /// ``HTTPDiagnosticsOutcome`` is what makes those two lines groupable by
+    /// the same token instead of describing one failure as `transport_error`
+    /// in one category and `network` in the other.
     ///
-    /// `invalid_profile` is called out because it is the one classification
-    /// that already drives recovery (`recoverFromInvalidProfile`): a user who
-    /// reports "it bounced me to Who's Watching on launch" is looking at that
-    /// token, and it is otherwise indistinguishable from a plain HTTP failure.
+    /// Only the two prefetch-specific tokens are spelled here.
+    /// `invalid_profile` is the one classification that already drives recovery
+    /// (`recoverFromInvalidProfile`): a user who reports "it bounced me to
+    /// Who's Watching on launch" is looking at that token, and it is otherwise
+    /// indistinguishable from a plain HTTP failure. `no_server` names a launch
+    /// with nothing configured to fetch from. Anything unrecognised becomes
+    /// `other` rather than leaking the error's own text, which is neither
+    /// stable across builds nor necessarily free of server-authored detail.
+    ///
     /// `nonisolated` because `PrefetchProbe` is a nested type and so does not
     /// inherit this enum's `@MainActor`; its `finish` calls this from whatever
     /// context the failing fetch unwound on. The classification is a pure
     /// function of the error value and touches no actor state, so there is
     /// nothing to hop for.
-    ///
-    /// Cancellation arrives in three shapes and all three mean the same thing,
-    /// so the check is factored out rather than repeated per branch — see
-    /// `indicatesCancellation`.
     nonisolated static func prefetchFailureReason(_ error: Error) -> String {
-        if indicatesCancellation(error) { return "cancelled" }
+        if HTTPError.indicatesCancellation(error) { return HTTPDiagnosticsOutcome.cancelled }
         guard let httpError = error as? HTTPError else {
             // URLSession surfaces transport failures as NSError before
             // HTTPClient wraps them; the cancelled case was already claimed
             // above, so anything left in this domain is a real transport
             // failure.
             let nsError = error as NSError
-            if nsError.domain == NSURLErrorDomain { return "network" }
+            if nsError.domain == NSURLErrorDomain {
+                return HTTPDiagnosticsErrorCode.classify(transport: error)
+            }
             return "other"
         }
         if indicatesInvalidProfile(httpError) { return "invalid_profile" }
@@ -226,7 +230,7 @@ enum StartupContentPrefetcher {
         case .serverUrlNotConfigured:
             return "no_server"
         case .requestIdentityChanged:
-            return "identity_changed"
+            return HTTPDiagnosticsOutcome.identityChanged
         case .network(let underlying):
             // A cancellation reaches here wrapped: `HTTPClient.perform` catches
             // the transport error and rethrows it as `.network(underlying:)`
@@ -236,46 +240,19 @@ enum StartupContentPrefetcher {
             // to feed a cancelled request into reachability — "cancellation
             // says nothing about reachability" — and for the same reason: a
             // server or profile switch cancelling its own in-flight prefetches
-            // is the routine path, and classifying it as `network` would put a
-            // warning-level phantom connectivity failure in every report that
-            // contains an identity transition.
-            return indicatesCancellation(underlying) ? "cancelled" : "network"
-        case .decodingFailed:
-            return "decode_failed"
+            // is the routine path, and classifying it as a transport failure
+            // would put a warning-level phantom connectivity failure in every
+            // report that contains an identity transition.
+            return HTTPError.indicatesCancellation(underlying)
+                ? HTTPDiagnosticsOutcome.cancelled
+                : HTTPDiagnosticsErrorCode.classify(transport: underlying)
+        case .decodingFailed(_, let underlying):
+            return HTTPDiagnosticsErrorCode.classify(decoding: underlying)
         case .http(let statusCode, _):
-            // Bucketed, not verbatim: the status class is what distinguishes
-            // "the server rejected us" from "the server is broken", and the
-            // exact code adds cardinality without adding meaning here.
-            if statusCode == 401 || statusCode == 403 { return "unauthorized" }
-            if (500..<600).contains(statusCode) { return "server_error" }
-            return "http_\(statusCode / 100)xx"
+            return HTTPDiagnosticsErrorCode.http(status: statusCode)
         case .invalidURL, .invalidResponse, .encodingFailed:
             return "other"
         }
-    }
-
-    /// True for every shape a cancelled prefetch can take.
-    ///
-    /// There are three, because a prefetch can be torn down at three different
-    /// depths and each layer reports in its own vocabulary:
-    ///
-    /// 1. `CancellationError` — the prefetcher's own generation guards, thrown
-    ///    when a `resetProfileScopedPrefetches` bumped the generation while the
-    ///    fetch was awaiting.
-    /// 2. A bare `URLError.cancelled` — URLSession tearing the request down,
-    ///    reaching a caller that did not route through `HTTPClient.perform`.
-    /// 3. That same `URLError.cancelled` wrapped in `HTTPError.network` —
-    ///    the common case, because `perform` rethrows *every* transport error
-    ///    as `.network(underlying:)` and the cause survives only in the payload.
-    ///
-    /// Matching on `NSURLErrorDomain`/`NSURLErrorCancelled` rather than
-    /// `URLError` alone so a bridged `NSError` — which is what a cancellation
-    /// looks like once it has crossed an `Error` existential more than once —
-    /// is caught by the same test.
-    nonisolated static func indicatesCancellation(_ error: Error) -> Bool {
-        if error is CancellationError { return true }
-        let nsError = error as NSError
-        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     /// One line per prefetch, essential tier.
@@ -318,7 +295,7 @@ enum StartupContentPrefetcher {
         func finish(error: Error?) {
             guard isOriginator else { return }
             let reason = error.map(StartupContentPrefetcher.prefetchFailureReason(_:))
-            let cancelled = reason == "cancelled"
+            let cancelled = reason == HTTPDiagnosticsOutcome.cancelled
             var attrs: [String: DiagLogAttributeValue] = [
                 "phase": .string(phase),
                 "duration_ms": .int(LaunchTimeline.milliseconds(since: mark)),

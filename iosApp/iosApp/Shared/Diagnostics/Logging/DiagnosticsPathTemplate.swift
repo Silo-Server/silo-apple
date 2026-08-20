@@ -10,7 +10,7 @@ import Foundation
 /// attribute carries a numeric, UUID, hex, or opaque segment, and self-hosted
 /// evidence full of raw ids cannot be correlated by route either.
 ///
-/// Two entry points, deliberately not the same:
+/// Three entry points, deliberately not the same:
 ///
 /// * ``template(_:)`` / ``isPrivateSegment(_:)`` are the *hosted bundle* rules,
 ///   byte-for-byte the four regexes `DiagnosticsBundleBuilder` has always used.
@@ -24,6 +24,10 @@ import Foundation
 ///   miss: unanchored/any-version UUIDs, dotted sub-parts (`12345.json`),
 ///   `PRIVATE_ID_SEGMENT` prefixes (`session_…`, `item_…`), percent-encoding,
 ///   and `.`/`..`.
+/// * ``isTextPrivate(_:)`` is the *text-context* rule set, for values scanned
+///   as prose (`msg`, string attributes) rather than as a path. It is stricter
+///   again: `PRIVATE_ID_IN_TEXT` matches unanchored, and the compact-UUID and
+///   bare-MAC shapes only exist here.
 ///
 /// Mirrors privacy.ts `UUID_VALUE`, `PRIVATE_ID_SEGMENT`, `HEX_ID_SEGMENT`,
 /// `OPAQUE_ID_SEGMENT`, `TEMPLATE_SEGMENT`, and `SAFE_VERSION_SEGMENT`. When
@@ -32,6 +36,25 @@ enum DiagnosticsPathTemplate {
     /// The placeholder emitted for a private segment. Matches the collector's
     /// `TEMPLATE_SEGMENT` (`^\{[a-z][a-z0-9_]*\}$`), which is always accepted.
     static let placeholder = "{id}"
+
+    /// privacy.ts's identifier-prefix alternation, shared by its
+    /// `PRIVATE_ID_SEGMENT` (path context, below) and `PRIVATE_ID_IN_TEXT`
+    /// (text context, ``isTextPrivate(_:)``) rules and by
+    /// `DiagnosticsBundleBuilder`'s hosted redaction.
+    ///
+    /// One constant rather than three transcriptions: the collector rejects a
+    /// whole report on one match, so a token added to privacy.ts that reaches
+    /// only two of three copies is a silently discarded bundle. Interpolated
+    /// into the patterns rather than merged into one regex because the three
+    /// contexts differ in anchoring and capture, not in the prefix list.
+    static let privateIDPrefixAlternation =
+        #"(?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)"#
+
+    /// privacy.ts `UUID_VALUE`: unanchored and version-agnostic, so a UUID
+    /// embedded in a longer value still rejects the report. Shared with the
+    /// hosted bundle redaction for the same reason as the alternation above.
+    static let unanchoredUUIDPattern =
+        #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
 
     // MARK: - Hosted bundle rules (unchanged behavior)
 
@@ -106,6 +129,38 @@ enum DiagnosticsPathTemplate {
         }
     }
 
+    // MARK: - Text rules
+
+    /// Whether this token would be rejected by the collector's *text-context*
+    /// scan — the rules that apply to `msg` and to string attribute values,
+    /// rather than to a path segment. Mirrors privacy.ts `PRIVATE_ID_IN_TEXT`,
+    /// `UUID_VALUE`, `COMPACT_UUID_VALUE`, the bare-MAC arm of `MAC_ADDRESS`,
+    /// and `HEX_ID_SEGMENT`.
+    ///
+    /// Deliberately stricter than ``isEmissionPrivateSegment(_:)``, which
+    /// answers a path-context question: `PRIVATE_ID_IN_TEXT` matches
+    /// unanchored, so a value that is a perfectly legal path segment can still
+    /// reject the bundle from inside a message.
+    static func isTextPrivate(_ value: String) -> Bool {
+        textPrivateRegexes.contains { matches($0, value) }
+    }
+
+    private static let textPrivateRegexes: [NSRegularExpression] = [
+        // PRIVATE_ID_IN_TEXT
+        try! NSRegularExpression(
+            pattern: #"(?i)(?:^|[^A-Za-z0-9])"# + privateIDPrefixAlternation
+                + #"[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,})(?=$|[^A-Za-z0-9_-])"#
+        ),
+        // UUID_VALUE (unanchored, version-agnostic)
+        try! NSRegularExpression(pattern: unanchoredUUIDPattern),
+        // COMPACT_UUID_VALUE
+        try! NSRegularExpression(pattern: #"(?i)(?:^|[^0-9a-f])[0-9a-f]{32}(?=$|[^0-9a-f])"#),
+        // MAC_ADDRESS, bare-hex arm
+        try! NSRegularExpression(pattern: #"(?i)(?:^|[^0-9a-f-])[0-9a-f]{12}(?=$|[^0-9a-f-])"#),
+        // HEX_ID_SEGMENT
+        try! NSRegularExpression(pattern: #"(?i)^[0-9a-f]{16,}$"#),
+    ]
+
     private static func templatedEmissionPath(_ path: String) -> String {
         let templated = path.split(separator: "/", omittingEmptySubsequences: false)
             .map { segment -> String in
@@ -154,10 +209,8 @@ enum DiagnosticsPathTemplate {
     private static let anchoredUUIDSegmentRegex = try! NSRegularExpression(
         pattern: #"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#
     )
-    /// privacy.ts `UUID_VALUE`: unanchored and version-agnostic, so a UUID
-    /// embedded in a longer segment still rejects the report.
     private static let unanchoredUUIDRegex = try! NSRegularExpression(
-        pattern: #"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
+        pattern: unanchoredUUIDPattern
     )
     private static let numericSegmentRegex = try! NSRegularExpression(
         pattern: #"^[0-9]+$"#
@@ -170,7 +223,7 @@ enum DiagnosticsPathTemplate {
     )
     /// privacy.ts `PRIVATE_ID_SEGMENT`.
     private static let privateIDSegmentRegex = try! NSRegularExpression(
-        pattern: #"(?i)^(?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-][a-z0-9_-]{4,}$"#
+        pattern: #"(?i)^"# + privateIDPrefixAlternation + #"[_-][a-z0-9_-]{4,}$"#
     )
     /// Not a collector rule — an emission-side tightening. ULIDs and other
     /// short base32/base36 ids (`/v1/reports/01H8XK3P2Q`) are too short for

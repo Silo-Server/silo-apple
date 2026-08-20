@@ -9,19 +9,15 @@ import XCTest
 /// only part of network instrumentation that can *fail*. A missing log line
 /// costs one piece of evidence; a path or message that the hosted collector's
 /// privacy scanner rejects costs the user's entire report, silently, after
-/// upload. So every assertion here checks the *output* against a
-/// reimplementation of the collector's own rules
-/// (`silo-diagnostics/src/privacy.ts`), not merely that a value changed.
+/// upload. So every assertion here checks the *output* against
+/// `CollectorPrivacyOracle`, the shared transcription of the collector's own
+/// rules (`silo-diagnostics/src/privacy.ts`), not merely that a value changed.
 ///
-/// Two scanners are modelled, and the distinction matters:
-///
-/// * `assertPathAccepted` mirrors `hasPrivatePathSegment`, applied to
-///   `attrs.path`.
-/// * `assertMessageAccepted` mirrors the *text-context* rules
-///   (`PRIVATE_ID_IN_TEXT`, `UUID_VALUE`, `COMPACT_UUID_VALUE`, the bare-MAC
-///   arm of `MAC_ADDRESS`, and the dotted hostname/route scan) applied to
-///   `msg`. A value that is a legal path segment can still be rejected from
-///   inside a message, which is why the decode renderer has its own rules.
+/// Two scanners are modelled there, and the distinction matters:
+/// `assertPathAccepted` mirrors `hasPrivatePathSegment` for `attrs.path`, and
+/// `assertMessageAccepted` mirrors the *text-context* rules for `msg`. A value
+/// that is a legal path segment can still be rejected from inside a message,
+/// which is why the decode renderer has its own rules.
 final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
 
     // MARK: - Path attribute
@@ -120,8 +116,8 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
         for route in routes {
             for identifier in identifiers {
                 let raw = route.replacingOccurrences(of: "%@", with: identifier)
-                assertPathAccepted(HTTPDiagnosticsPath.attribute(forRawPath: raw), source: raw)
-                assertPathAccepted(
+                CollectorPrivacyOracle.assertPathAccepted(HTTPDiagnosticsPath.attribute(forRawPath: raw), source: raw)
+                CollectorPrivacyOracle.assertPathAccepted(
                     HTTPDiagnosticsPath.attribute(forRawPath: raw + "?token=abc"),
                     source: raw
                 )
@@ -152,7 +148,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
             XCTAssertFalse(actual.contains("example"), "host survived in \(actual)")
             XCTAssertFalse(actual.contains("192"), "host survived in \(actual)")
             XCTAssertFalse(actual.contains("localhost"), "host survived in \(actual)")
-            assertPathAccepted(actual, source: origin)
+            CollectorPrivacyOracle.assertPathAccepted(actual, source: origin)
         }
     }
 
@@ -279,7 +275,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
                     type=\(HTTPDecodingDiagnostics.typeName(type)) \
                     coding path \(HTTPDecodingDiagnostics.codingPath(path))
                     """
-                assertMessageAccepted(message)
+                CollectorPrivacyOracle.assertMessageAccepted(message)
             }
         }
     }
@@ -302,7 +298,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
         XCTAssertEqual(classify(.secureConnectionFailed), "tls_handshake_failed")
         for code in [URLError.serverCertificateUntrusted, .serverCertificateHasBadDate,
                      .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot] {
-            assertMessageAccepted(classify(code))
+            CollectorPrivacyOracle.assertMessageAccepted(classify(code))
         }
     }
 
@@ -324,7 +320,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
             let value = HTTPDiagnosticsErrorCode.classify(
                 transport: URLError(URLError.Code(rawValue: raw))
             )
-            assertMessageAccepted(value)
+            CollectorPrivacyOracle.assertMessageAccepted(value)
         }
     }
 
@@ -370,7 +366,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
             HTTPDiagnosticsOutcome.online,
             HTTPDiagnosticsOutcome.offline,
         ] {
-            assertMessageAccepted(value)
+            CollectorPrivacyOracle.assertMessageAccepted(value)
         }
     }
 
@@ -397,7 +393,7 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
     ) {
         let actual = HTTPDiagnosticsPath.attribute(forRawPath: raw)
         XCTAssertEqual(actual, expected, file: file, line: line)
-        assertPathAccepted(actual, source: raw, file: file, line: line)
+        CollectorPrivacyOracle.assertPathAccepted(actual, source: raw, file: file, line: line)
     }
 
     private func assertPath(
@@ -408,110 +404,6 @@ final class HTTPClientDiagnosticsClassificationTests: XCTestCase {
     ) {
         let actual = HTTPDiagnosticsPath.attribute(for: URL(string: raw))
         XCTAssertEqual(actual, expected, file: file, line: line)
-        assertPathAccepted(actual, source: raw, file: file, line: line)
+        CollectorPrivacyOracle.assertPathAccepted(actual, source: raw, file: file, line: line)
     }
-
-    /// Mirrors `silo-diagnostics/src/privacy.ts` `hasPrivatePathSegment`, the
-    /// gate applied to `attrs.path`.
-    private func assertPathAccepted(
-        _ path: String,
-        source: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        XCTAssertFalse(path.contains("?"), "query marker survived \(source)", file: file, line: line)
-        XCTAssertFalse(path.contains("#"), "fragment survived \(source)", file: file, line: line)
-        let lowercased = path.lowercased()
-        for prefix in ["/users/", "/private/", "/var/mobile/", "/data/user/"] {
-            XCTAssertFalse(
-                lowercased.hasPrefix(prefix),
-                "rejected prefix \(prefix) survived \(source)",
-                file: file,
-                line: line
-            )
-        }
-        for rawSegment in path.split(separator: "/", omittingEmptySubsequences: true) {
-            let segment = String(rawSegment)
-            XCTAssertFalse(segment.contains("%"), "encoded segment in \(path)", file: file, line: line)
-            if segment == "{id}" || Self.matches(Self.safeVersion, segment) { continue }
-            let candidates = [segment] + segment.components(
-                separatedBy: CharacterSet(charactersIn: ".,;:()[]")
-            )
-            for candidate in candidates where !candidate.isEmpty {
-                for (name, regex) in Self.privateSegmentRules {
-                    XCTAssertFalse(
-                        Self.matches(regex, candidate),
-                        "\(candidate) matches \(name) in \(path) (from \(source))",
-                        file: file,
-                        line: line
-                    )
-                }
-            }
-        }
-    }
-
-    /// Mirrors the collector's text-context rules, which apply to `msg` and to
-    /// string attribute values. Strictly different from the path rules above:
-    /// a dotted token is fine in neither, but `PRIVATE_ID_IN_TEXT` matches
-    /// unanchored here, so `Session_Abcdefgh` is rejected inside a sentence
-    /// even though no path segment equals it.
-    private func assertMessageAccepted(
-        _ message: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        for (name, regex) in Self.textRules {
-            XCTAssertFalse(
-                Self.matches(regex, message),
-                "message matches collector rule \(name): \(message)",
-                file: file,
-                line: line
-            )
-        }
-        // The dotted hostname/route scan: any `a.b` token in text is treated as
-        // a hostname or route candidate unless it is on a hand-curated
-        // allowlist we deliberately do not depend on.
-        XCTAssertNil(
-            Self.dottedToken.firstMatch(
-                in: message,
-                range: NSRange(location: 0, length: (message as NSString).length)
-            ),
-            "message contains a dotted token: \(message)",
-            file: file,
-            line: line
-        )
-    }
-
-    private static func matches(_ regex: NSRegularExpression, _ value: String) -> Bool {
-        regex.firstMatch(
-            in: value,
-            range: NSRange(location: 0, length: (value as NSString).length)
-        ) != nil
-    }
-
-    private static func regex(_ pattern: String) -> NSRegularExpression {
-        try! NSRegularExpression(pattern: pattern)
-    }
-
-    private static let safeVersion = regex(#"(?i)^v[0-9]+$"#)
-
-    /// privacy.ts `UUID_VALUE`, numeric, `PRIVATE_ID_SEGMENT`,
-    /// `HEX_ID_SEGMENT`, `OPAQUE_ID_SEGMENT`.
-    private static let privateSegmentRules: [(String, NSRegularExpression)] = [
-        ("UUID_VALUE", regex(#"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#)),
-        ("NUMERIC", regex(#"^[0-9]+$"#)),
-        ("PRIVATE_ID_SEGMENT", regex(#"(?i)^(?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-][a-z0-9_-]{4,}$"#)),
-        ("HEX_ID_SEGMENT", regex(#"(?i)^[0-9a-f]{16,}$"#)),
-        ("OPAQUE_ID_SEGMENT", regex(#"^[A-Za-z0-9_-]{20,}$"#)),
-    ]
-
-    /// privacy.ts text-context rules.
-    private static let textRules: [(String, NSRegularExpression)] = [
-        ("PRIVATE_ID_IN_TEXT", regex(#"(?i)(?:^|[^A-Za-z0-9])(?:ps|playback|session|file|item|media|plan|attempt|profile|account|user|device|content|library|request|req|correlation|server|subtitle|track|run)[_-](?:[0-9]+|[A-Za-z0-9][A-Za-z0-9_-]{7,})(?=$|[^A-Za-z0-9_-])"#)),
-        ("UUID_VALUE", regex(#"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#)),
-        ("COMPACT_UUID_VALUE", regex(#"(?i)(?:^|[^0-9a-f])[0-9a-f]{32}(?=$|[^0-9a-f])"#)),
-        ("MAC_ADDRESS", regex(#"(?i)(?:^|[^0-9a-f-])[0-9a-f]{12}(?=$|[^0-9a-f-])"#)),
-    ]
-
-    private static let dottedToken = regex(#"[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9][A-Za-z0-9_.-]*"#)
 }
