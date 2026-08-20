@@ -357,7 +357,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         let carried = await actor.carriedOutage
         XCTAssertNotNil(carried)
 
-        await actor.ingest(.recovery(.endOutageRideThrough(kick: true), replacement))
+        await actor.ingest(.recovery(.endOutageRideThrough, replacement))
         let released = await actor.carriedOutage
         XCTAssertNil(released)
     }
@@ -417,7 +417,7 @@ final class PlaybackSessionActorTests: XCTestCase {
         await actor.ingest(.recovery(.rideThroughOutage(probeAfter: .zero), loadID))
         let entered = await actor.carriedOutage
         XCTAssertNotNil(entered)
-        await actor.ingest(.recovery(.endOutageRideThrough(kick: true), loadID))
+        await actor.ingest(.recovery(.endOutageRideThrough, loadID))
         // Dropping the carry *is* the release of the `origin_outage` hold for
         // every session installed after this point (wave-3 obligation 3).
         let released = await actor.carriedOutage

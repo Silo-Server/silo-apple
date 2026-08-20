@@ -2,13 +2,12 @@ import Foundation
 
 /// The control plane's view of a playback backend.
 ///
-/// This is the surface `PlayerViewModel` already drives on `AVPlayerBackend`
-/// (Stage 2 inventory-3 §1.2/§1.3/§1.4/§1.6), lifted to a protocol so the
-/// control plane can be exercised against a test double and, from wave 2, so
-/// `PlaybackEngineSession` can hold `any PlaybackBackend`. It is a *seam*, not
-/// a redesign: every member below is copied from `AVPlayerBackend` verbatim,
-/// including the callback closures, which wave 2 replaces with an
-/// `EngineEvent` stream.
+/// This is the surface the control plane drives on `AVPlayerBackend`, lifted
+/// to a protocol so `PlaybackEngineSession` can hold `any PlaybackBackend` and
+/// so the control plane can be exercised against a test double. It is a *seam*,
+/// not a redesign: every member below is `AVPlayerBackend`'s own, including the
+/// callback closures, which the engine session turns into an `EngineEvent`
+/// stream.
 ///
 /// Deliberately **not** on this protocol: the view-layer surface (`avPlayer`,
 /// `subtitleOverlay`, `attachSubtitleOverlay(_:owner:)`,
@@ -17,15 +16,15 @@ import Foundation
 /// the concrete `AVPlayerBackend`, and the pure static helpers.
 ///
 /// Isolation: nonisolated, like `AVPlayerBackend` itself and like the
-/// `PlaybackEngineSession` that holds `any PlaybackBackend` from wave 2b
-/// (design §2.8 as-built, same reason `LocalHLSHost` is a plain class). Every
-/// caller still drives it from the main queue; making the protocol
+/// `PlaybackEngineSession` that holds `any PlaybackBackend` (the same reason
+/// `LocalHLSHost` is a plain class). Every caller still drives it from the main
+/// queue; making the protocol
 /// `@MainActor` would have forced a hop into the backend's own notification
 /// observers and `RunLoop.main` timers, which is exactly what the in-route
 /// recovery rungs must not gain.
 protocol PlaybackBackend: AnyObject {
 
-    // MARK: - Load / transport (inventory-3 §1.2)
+    // MARK: - Load / transport
 
     func load(sessionSpec: LoopbackSessionSpec, startTime: Double)
     func loadRemoteHLS(url: URL, headers: [String: String], startTime: Double)
@@ -42,12 +41,14 @@ protocol PlaybackBackend: AnyObject {
     func setMediaTimelineOffset(_ offset: Double)
     func dispose()
 
-    // MARK: - Recovery (wave 2b)
+    // MARK: - Recovery
     //
-    // The wave-1 two-owner recovery handshake is gone: suspension is
+    // There is no two-owner recovery handshake: suspension is
     // `RecoveryContext.suspendedReasons`, held by the one `RecoveryDriver`, and
-    // the post-outage kick is `RecoveryAction.endOutageRideThrough(kick:)`
-    // performed below. The backend observes and executes; it never decides.
+    // the post-outage kick is `RecoveryAction.endOutageRideThrough` performed
+    // below. The backend observes and executes; it never decides. Everything
+    // `PlaybackEngineSession` needs to drive recovery is here, so the seam holds
+    // for any conformer.
 
     /// Every in-route recovery signal, emitted where a ladder used to decide.
     var onRecoveryObservation: ((RecoveryObservation) -> Void)? { get set }
@@ -58,8 +59,23 @@ protocol PlaybackBackend: AnyObject {
     /// Runs one engine-level `RecoveryAction`. Session- and transport-level
     /// actions are the shell's and are ignored here.
     func perform(_ action: RecoveryAction)
+    /// A new engine load started on this backend, including the in-session
+    /// reloads a reanchor, a rebuild or a deferred `play()` recovery performs.
+    /// The recovery owner resets exactly the per-load state that path reset when
+    /// it owned those fields.
+    var onEngineReloaded: (() -> Void)? { get set }
+    /// The loopback startup ladder was (re-)armed; the payload is the local HLS
+    /// server's served-request baseline, which seeds
+    /// `RecoveryContext.StartupState`.
+    var onStartupLadderArmed: ((UInt64) -> Void)? { get set }
+    /// Diagnostic mirror of `RecoveryContext.suspendedReasons`, written by the
+    /// engine session whenever the driver's latch changes so the backend's
+    /// periodic telemetry can keep naming the holders. Nothing branches on it.
+    var suspendedRecoveryReasons: Set<String> { get set }
+    /// The recovery owner's `stationaryFor`, for that same telemetry line.
+    var recoveryStationarySecondsProvider: (() -> Double)? { get set }
 
-    // MARK: - Tracks / subtitles / chapters (inventory-3 §1.4)
+    // MARK: - Tracks / subtitles / chapters
 
     func selectAudioTrack(_ trackId: Int64)
     func selectSubtitleTrack(_ trackId: Int64?)
@@ -83,7 +99,7 @@ protocol PlaybackBackend: AnyObject {
     var isExternalPlaybackActive: Bool { get }
     var isExternalPlaybackAllowed: Bool { get }
 
-    // MARK: - Callbacks (inventory-3 §1.6)
+    // MARK: - Callbacks
 
     var onTimeChange: ((Double) -> Void)? { get set }
     var onDurationChange: ((Double) -> Void)? { get set }
@@ -104,7 +120,7 @@ protocol PlaybackBackend: AnyObject {
     var onExternalPlaybackUnavailable: (() -> Void)? { get set }
     var onSidecarTracksRegistered: (([SidecarSubtitleDescriptor]) -> Void)? { get set }
 
-    // MARK: - Inbound providers (inventory-3 §1.6)
+    // MARK: - Inbound providers
 
     var isPictureInPictureActiveProvider: (() -> Bool)? { get set }
     var sourceOutageStateProvider: (() -> Bool)? { get set }

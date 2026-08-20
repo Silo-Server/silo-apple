@@ -1251,7 +1251,7 @@ class PlayerViewModel {
         case .requestServerReplan, .renewSourceInBackground, .renewSessionFresh,
              .recoverFromServerOutage, .waitForServerReady, .autoRecoverInterruption,
              .fail, .reassertPlay, .nudgeStartup, .reloadStartupItem, .reanchor,
-             .reloadItem, .restartProducer, .rebuildLocalSession,
+             .reloadItem, .rebuildLocalSession,
              .deferUntilPlay, .resumePlayback:
             // Reducer transitions, or engine arms the session already performed.
             break
@@ -3470,7 +3470,7 @@ class PlayerViewModel {
     private func noteBufferingDuringSourceOutage() {
         guard let session = engineSession else { return }
         let wasShown = session.driver.context.outage?.noticeShown ?? true
-        session.observe(.bufferingChanged(true))
+        session.observe(.runwayExhaustedDuringOutage)
         guard !wasShown, session.driver.context.outage?.noticeShown == true else { return }
         showSourceOutageReconnectingNotice()
     }

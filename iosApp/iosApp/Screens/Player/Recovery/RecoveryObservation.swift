@@ -1,19 +1,15 @@
 //
 //  RecoveryObservation.swift
 //
-//  Stage 2 (control-plane extraction) — the input alphabet of the single
-//  recovery owner, `RecoveryPolicy`.
+//  The input alphabet of the single recovery owner, `RecoveryPolicy`.
 //
-//  Today six in-route ladders live inside `AVPlayerBackend` (startup watchdog,
-//  playhead watchdog, item-death evidence, edge watchdog, `.PlaybackStalled`,
-//  "Playlist File unchanged") and three more live in `PlayerViewModel`
-//  (`handlePlaybackError`, the origin-outage ride-through, the two session
-//  renewals). Each one both *observes* and *decides*. Stage 2 splits those
-//  halves: the observation sites keep their timers, notifications and KVO and
-//  emit one of these cases; every decision moves into `RecoveryPolicy.decide`.
-//
-//  Nothing here is wired yet — wave 2 makes the engine session emit these and
-//  execute the resulting `RecoveryAction`s.
+//  Nine ladders used to both *observe* and *decide*: six inside
+//  `AVPlayerBackend` (startup watchdog, playhead watchdog, item-death evidence,
+//  edge watchdog, `.PlaybackStalled`, "Playlist File unchanged") and three
+//  inside `PlayerViewModel` (`handlePlaybackError`, the origin-outage
+//  ride-through, the two session renewals). Those halves are split: the
+//  observation sites keep their timers, notifications and KVO and emit one of
+//  these cases; every decision is `RecoveryPolicy.decide`'s.
 //
 
 import Foundation
@@ -29,8 +25,11 @@ import Foundation
 /// the actions' anchors carry.
 struct PlayheadSample: Equatable {
     /// How AVPlayer reports its transport. Mirrors `AVPlayer.timeControlStatus`
-    /// without importing AVFoundation into the policy.
-    enum TimeControl: Equatable {
+    /// without importing AVFoundation into the policy;
+    /// `AVPlayerBackend.timeControl(for:)` is the one mapping. The raw value is
+    /// the `tc=` log token, so every line that prints transport state prints the
+    /// same vocabulary.
+    enum TimeControl: String, Equatable {
         case paused
         case waiting
         case playing
@@ -59,18 +58,17 @@ struct PlayheadSample: Equatable {
     /// target of a loopback seek that has been issued but has not landed.
     ///
     /// The wedge rung anchors on it in preference to `position`
-    /// (B:1917-1918 `performVODStallRecovery`): a wedged zero-tolerance seek
-    /// leaves the frozen clock at the PRE-seek position (B:1160-1164), so
-    /// recovering at `position` would silently discard the user's seek. It is
-    /// usually nil at tick time — the tick's own `!isSeekPending` guard plus
-    /// the clear-sites at B:1196/B:1253/B:1310 see to that — but it is
-    /// reachable in the main-queue window between `handleSeekDeadline`'s
-    /// `markSeekSettled()` (B:1268) and the `Task` at B:1297-1304 that
+    /// (`AVPlayerBackend.performVODStallRecovery`): a wedged zero-tolerance seek
+    /// leaves the frozen clock at the PRE-seek position, so recovering at
+    /// `position` would silently discard the user's seek. It is usually nil at
+    /// tick time — the tick's own `!isSeekPending` guard plus the backend's
+    /// clear-sites see to that — but it is reachable in the main-queue window
+    /// between `handleSeekDeadline`'s `markSeekSettled()` and the `Task` that
     /// re-latches and consumes it, which is exactly the case the preference
     /// exists for.
     ///
-    /// Only the wedge rung reads it. The shared reanchor rung deliberately
-    /// does not (B:3678 reads `currentTime()` alone).
+    /// Only the wedge rung reads it. The shared reanchor rung deliberately does
+    /// not: it reads `currentTime()` alone.
     var pendingSeekMediaTarget: Double?
 
     init(
@@ -151,13 +149,14 @@ enum SessionMissingSource: Equatable {
     /// (`reason: "progress"`).
     case progressHeartbeat
     /// The Protocol V3 replan's `catch` fell through to a visible renewal
-    /// (`reason: "protocol_v3_replan_missing_session"`, PVM:1663-1670).
+    /// (`reason: "protocol_v3_replan_missing_session"`).
     ///
     /// This is the one source that never tries the silent renewal first: the
     /// legacy `catch` calls `attemptStaleSessionRenewal` directly, because once
     /// the server has re-planned "only a full visible renewal can pick up the
-    /// new plan" (PVM:4165). `RecoveryPolicy.decideSessionMissing` short-
-    /// circuits on it for that reason.
+    /// new plan", while the silent path keeps the existing plan alive.
+    /// `RecoveryPolicy.decideSessionMissing` short-circuits on it for that
+    /// reason.
     case replanCatch
 
     /// The `reason` token the legacy call sites pass, reproduced verbatim so
@@ -171,20 +170,6 @@ enum SessionMissingSource: Equatable {
         case .replanCatch: return "protocol_v3_replan_missing_session"
         }
     }
-}
-
-/// Mirrors `AVPlayerBackend.SeekDeadlineKind` (private, at the seek-deadline
-/// state) so the policy can see a seek that never completed.
-enum SeekDeadlineKind: Equatable {
-    /// A user-initiated seek. `mediaTarget` is the media-timeline target that
-    /// was requested.
-    case interactive(mediaTarget: Double)
-    /// The resume seek issued at load. `mediaTarget` is the media-timeline
-    /// start position.
-    case initial(mediaTarget: Double)
-    /// A seek issued by a recovery rung (stall nudge, item reload). It carries
-    /// no follow-up of its own: the rung that issued it owns the next step.
-    case recovery(reason: String)
 }
 
 /// Everything the recovery owner can be told. One case per observation site
@@ -223,10 +208,10 @@ enum RecoveryObservation: Equatable {
     case edgeSample(EdgeSample)
     /// `.AVPlayerItemPlaybackStalled`.
     case playbackStalled
-    /// `.AVPlayerItemFailedToPlayToEndTime` on the current item (B:3438).
+    /// `.AVPlayerItemFailedToPlayToEndTime` on the current item.
     ///
     /// This is the **only** thing that arms the item-death confirmation
-    /// state's `.failedToEnd` candidate: B:3453-3461 calls
+    /// state's `.failedToEnd` candidate: calls
     /// `LoopbackItemDeathConfirmationState.noteExplicitFailure` and returns for
     /// every such notification on an established loopback item, whatever the
     /// error says. `.itemDeathEvidence` is a different mechanism
@@ -238,13 +223,13 @@ enum RecoveryObservation: Equatable {
     /// Emitted for every failed-to-end notification. The policy consumes it on
     /// an established loopback item and otherwise returns no action, because
     /// the rest of that notification's legacy tail
-    /// (`recoverLocalLoopbackFailureIfNeeded`, B:3536) is reachable only when
+    /// (`recoverLocalLoopbackFailureIfNeeded`,) is reachable only when
     /// this arm did **not** consume it and arrives classified as
     /// `.playlistUnchanged`.
     case itemFailedToEnd(position: Double, userPaused: Bool)
     /// The tail of a `.AVPlayerItemFailedToPlayToEndTime` that the
     /// `.itemFailedToEnd` arm did not consume, whose description carries
-    /// "Playlist File unchanged" or "-12888" (B:3553).
+    /// "Playlist File unchanged" or "-12888".
     case playlistUnchanged(userPaused: Bool)
     /// `isPlaybackLikelyToKeepUp` / `loadedTimeRanges` KVO — the auto-resume
     /// rung's trigger.
@@ -252,12 +237,18 @@ enum RecoveryObservation: Equatable {
     /// `likely` is `AVPlayerItem.isPlaybackLikelyToKeepUp` read at the moment
     /// the KVO fired. It is a payload rather than an implication of the case
     /// name because the rung's predicate is
-    /// `item.isPlaybackLikelyToKeepUp || bufferedAhead > 0.5` (B:3713) and both
+    /// `item.isPlaybackLikelyToKeepUp || bufferedAhead > 0.5` and both
     /// KVOs feed it — without the flag the emitter would have to evaluate half
-    /// the rung, which is exactly the split ownership Stage 2 removes.
+    /// the rung, which is exactly the split ownership this layer removes.
     case likelyToKeepUp(rate: Double, bufferedAhead: Double, reachedEnd: Bool, likely: Bool)
-    /// A seek deadline expired without the seek completing.
-    case seekDeadlineExpired(kind: SeekDeadlineKind)
+    /// A user-initiated seek's deadline expired without the seek completing;
+    /// `mediaTarget` is the media-timeline target that was requested.
+    ///
+    /// The backend's other two deadline kinds never cross this boundary: a
+    /// recovery seek's follow-up belongs to the rung that issued it, and the
+    /// initial resume seek's retry is transport bookkeeping. Both stay inside
+    /// `AVPlayerBackend.handleSeekDeadline`.
+    case interactiveSeekDeadlineExpired(mediaTarget: Double)
     /// The backend reported a typed failure (any route).
     case engineFailed(PlaybackFailure)
 
@@ -272,6 +263,9 @@ enum RecoveryObservation: Equatable {
     /// One `/api/v1/health` probe finished. `ok` is the legacy predicate: any
     /// success, plus 401/403 (auth reached ⇒ the server is up).
     case serverHealthProbe(ok: Bool)
-    /// Buffering edge, for the origin-outage "Reconnecting" runway gate.
-    case bufferingChanged(Bool)
+    /// The buffered runway ran out while an origin outage is being ridden —
+    /// the "Reconnecting" notice's gate. Only the exhausted edge was ever
+    /// reported: the notice fires once per outage and the refill edge never
+    /// meant anything to the policy.
+    case runwayExhaustedDuringOutage
 }

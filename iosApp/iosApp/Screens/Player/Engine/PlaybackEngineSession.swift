@@ -67,8 +67,8 @@ final class PlaybackEngineSession {
     /// time (`PlaybackReducer.movieTime(for:)` = `session.position +
     /// session.timelineOffsetSeconds`, `SeekRequest.targetSeconds`,
     /// `Effect.reportProgress`'s wire position). The view model used to convert
-    /// at its own callback — `let movieTime = seconds + playbackTimelineOffset`
-    /// (base PVM:998), against a mirror of exactly this value fed by
+    /// at its own callback — `let movieTime = seconds + playbackTimelineOffset`,
+    /// against a mirror of exactly this value fed by
     /// `EngineEvent.timelineOffset` — so on a server-remux resume
     /// (`playMethod == "remux"` → `avPlayerHLS` + `startOfManifest`, where the
     /// offset is the resume point) the two axes differed by minutes.
@@ -259,14 +259,14 @@ final class PlaybackEngineSession {
 
         case .endOutageRideThrough:
             // `clearSourceOutageRideThroughState()` released the latch *before*
-            // the post-outage kick ran (PVM:3992-3996), and the kick's own rung
+            // the post-outage kick ran, and the kick's own rung
             // reads it.
             driver.setSuspended(false, reason: RecoveryDriver.originOutageSuspensionReason)
             backend.perform(action)
             emit(.recoveryAction(action))
 
         case .reassertPlay, .nudgeStartup, .reloadStartupItem, .reanchor,
-             .reloadItem, .restartProducer, .rebuildLocalSession,
+             .reloadItem, .rebuildLocalSession,
              .deferUntilPlay, .resumePlayback, .fail:
             backend.perform(action)
         }
@@ -312,17 +312,17 @@ final class PlaybackEngineSession {
         switch observation {
         case .startupTick, .playheadTick, .itemDeathEvidence, .edgeSample,
              .playbackStalled, .itemFailedToEnd, .playlistUnchanged,
-             .likelyToKeepUp, .seekDeadlineExpired:
+             .likelyToKeepUp, .interactiveSeekDeadlineExpired:
             return true
         case .engineFailed, .originOutage, .sourceInterrupted, .sessionMissing,
-             .serverHealthProbe, .bufferingChanged:
+             .serverHealthProbe, .runwayExhaustedDuringOutage:
             return false
         }
     }
 
     /// `PlaybackSourceProxy.onOriginOutageChanged`.
     ///
-    /// Wave-1B obligation (c): `handleOriginOutageChanged(true)` also called
+    /// `handleOriginOutageChanged(true)` also called
     /// `noteBufferingDuringSourceOutage()` when the player was *already* out of
     /// runway, because the buffering edge will not fire again — so the
     /// once-per-outage gate is re-fed here at entry.
@@ -334,7 +334,7 @@ final class PlaybackEngineSession {
     func reportOriginOutage(_ active: Bool, isBuffering: Bool) {
         observe(.originOutage(active: active))
         if active, isBuffering {
-            observe(.bufferingChanged(true))
+            observe(.runwayExhaustedDuringOutage)
         }
     }
 
@@ -404,21 +404,18 @@ final class PlaybackEngineSession {
         backend.sourceOutageStateProvider = { [weak self] in
             self?.transport?.isOriginOutageActive ?? false
         }
-
-        if let concrete = surfaceBackend {
-            concrete.onEngineReloaded = { [weak self] in
-                self?.driver.noteEngineLoadStarted()
-            }
-            concrete.onStartupLadderArmed = { [weak self] served in
-                self?.driver.armStartupLadder(startedAt: Date(), servedRequests: served)
-            }
-            concrete.recoveryStationarySecondsProvider = { [weak self] in
-                guard let since = self?.driver.context.playhead.stationarySince else { return 0 }
-                return Date().timeIntervalSince(since)
-            }
-            driver.onSuspensionChanged = { [weak concrete] reasons in
-                concrete?.suspendedRecoveryReasons = reasons
-            }
+        backend.onEngineReloaded = { [weak self] in
+            self?.driver.noteEngineLoadStarted()
+        }
+        backend.onStartupLadderArmed = { [weak self] served in
+            self?.driver.armStartupLadder(startedAt: Date(), servedRequests: served)
+        }
+        backend.recoveryStationarySecondsProvider = { [weak self] in
+            guard let since = self?.driver.context.playhead.stationarySince else { return 0 }
+            return Date().timeIntervalSince(since)
+        }
+        driver.onSuspensionChanged = { [weak self] reasons in
+            self?.backend.suspendedRecoveryReasons = reasons
         }
     }
 
@@ -442,11 +439,9 @@ final class PlaybackEngineSession {
         backend.onSidecarTracksRegistered = nil
         backend.onRecoveryObservation = nil
         backend.sourceOutageStateProvider = nil
-        if let concrete = surfaceBackend {
-            concrete.onEngineReloaded = nil
-            concrete.onStartupLadderArmed = nil
-            concrete.recoveryStationarySecondsProvider = nil
-        }
+        backend.onEngineReloaded = nil
+        backend.onStartupLadderArmed = nil
+        backend.recoveryStationarySecondsProvider = nil
         driver.onSuspensionChanged = nil
     }
 }

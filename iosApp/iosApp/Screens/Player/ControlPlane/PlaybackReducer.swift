@@ -1846,7 +1846,7 @@ enum PlaybackReducer {
         // action (`.reloadItem` / `.rebuildLocalSession` both needed
         // `.recovering(step)`). This way a new case fails to compile until
         // someone classifies it.
-        case .reassertPlay, .nudgeStartup, .reanchor, .restartProducer,
+        case .reassertPlay, .nudgeStartup, .reanchor,
              .deferUntilPlay, .resumePlayback:
             guard let loadID = state.loadID else { return (state, []) }
             return (state, [.runRecovery(action, loadID)])

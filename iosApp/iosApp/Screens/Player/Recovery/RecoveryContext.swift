@@ -1,22 +1,19 @@
 //
 //  RecoveryContext.swift
 //
-//  Stage 2 — the threaded state of the single recovery owner.
+//  The threaded state of the single recovery owner.
 //
-//  Every field here replaces a mutable field that today lives on either
+//  Every field here replaces a mutable field that used to live on either
 //  `AVPlayerBackend` (the six in-route ladders' watchdog state) or
 //  `PlayerViewModel` (the outage ride-through latches, the two renewal
 //  single-flights, the two route-fallback `hasAttempted*` latches). The three
-//  pure value types that already exist — `LoopbackItemDeathRecoveryState`,
-//  `LoopbackItemDeathConfirmationState`, `LoopbackRebuildBudget` — are reused
-//  verbatim rather than reimplemented: they are already the decision cores of
-//  their rungs, they already carry the right constants, and they already have
-//  tests.
+//  value types with a state machine of their own —
+//  `LoopbackItemDeathRecoveryState`, `LoopbackItemDeathConfirmationState`,
+//  `LoopbackRebuildBudget` — are next door in `LoopbackRecoveryStates.swift`.
 //
 //  `RecoveryPolicy.decide` takes a context by value and returns the next one;
-//  the caller (wave 2's engine session, wave 3's session actor) stores it
-//  against the load's identity, which is what makes every recovery decision
-//  identity-scoped without a generation counter.
+//  `PlaybackEngineSession` stores it against the load's identity, which is what
+//  makes every recovery decision identity-scoped without a generation counter.
 //
 
 import Foundation
@@ -115,9 +112,8 @@ struct RecoveryContext: Equatable {
         }
     }
 
-    /// A copy of `AVPlayerBackend.LoopbackEdgeWatch` (private, at the
-    /// `loopbackEdgeWatch` field). Wave 2 deletes the backend's copy when the
-    /// edge sampler becomes an observation source.
+    /// The edge watchdog's rolling comparison state: what the loaded range and
+    /// the local playlist looked like at the previous sample.
     struct EdgeWatchState: Equatable {
         var lastLoadedEnd: Double
         var lastLoadedEndAdvancedAt: Date
@@ -223,19 +219,19 @@ struct RecoveryContext: Equatable {
 
     var startup: StartupState?
     var playhead: PlayheadState
-    /// Reused verbatim — `AVPlayerBackend.loopbackItemDeathRecoveryState`.
+    /// The item-death evidence counter (see `LoopbackRecoveryStates.swift`).
     var itemDeath: LoopbackItemDeathRecoveryState
-    /// Reused verbatim — `AVPlayerBackend.loopbackItemDeathConfirmationState`.
+    /// The item-death confirmation window.
     var itemDeathConfirmation: LoopbackItemDeathConfirmationState
     var edge: EdgeWatchState?
-    /// Reused verbatim — `AVPlayerBackend.loopbackRebuildBudget`.
+    /// The per-load ceiling on full session rebuilds.
     var rebuildBudget: LoopbackRebuildBudget
     var outage: OutageState?
     var serverOutageRecovery: ServerOutageRecoveryState?
     /// `PlayerViewModel.backgroundRenewalTransientFailures`.
     var backgroundRenewalTransientFailures: Int
     /// Whether a silent (background) source renewal is in flight. Replaces the
-    /// background-renewal session-id echo; wave 3 scopes it by `SessionIdentity`.
+    /// background-renewal session-id echo.
     var backgroundRenewalInFlight: Bool
     /// Whether the visible (fresh) renewal is in flight. Replaces the
     /// stale-session-recovery session-id echo.
@@ -253,14 +249,14 @@ struct RecoveryContext: Equatable {
     /// `requestServerHLSRouteFallback` return false.
     var isReplanInFlight: Bool
     /// `PlayerViewModel.currentWatchDetail != nil` — the other half of
-    /// `requestServerHLSRouteFallback`'s guard (PVM:2284). Without a watch
+    /// `requestServerHLSRouteFallback`'s guard. Without a watch
     /// detail there is nothing to replan against, so both offline server-HLS
     /// rungs return false and the failure ladder runs on to its terminal rung.
     ///
     /// The online rung (`isProtocolV3Active`) deliberately does not read it:
-    /// PVM:1553-1555 calls `attemptProtocolV3Replan` and returns whether or not
-    /// the replan is accepted, so no lower rung runs either way and the engine
-    /// executing `.requestServerReplan` reproduces the no-op at PVM:1609.
+    /// the ladder calls `attemptProtocolV3Replan` and returns whether or not the
+    /// replan is accepted, so no lower rung runs either way and the engine
+    /// executing `.requestServerReplan` reproduces the no-op.
     var hasWatchDetail: Bool
     /// A foreground interruption is pending, not yet auto-recovered, and inside
     /// its 3 s deadline (`shouldAutoRecoverFromInterruption`).
@@ -350,52 +346,4 @@ struct RecoveryContext: Equatable {
         guard playerSeconds.isFinite else { return 0 }
         return max(0, playerSeconds + mediaTimelineOffset)
     }
-
-    // MARK: - Equatable
-
-    /// Hand-written because two of the three reused value types
-    /// (`LoopbackItemDeathRecoveryState`, `LoopbackItemDeathConfirmationState`)
-    /// keep all of their stored properties `private` and do not declare
-    /// `Equatable`. The conformance cannot be added from here — Swift only
-    /// synthesises it in the type's own file, and wave 1 may not edit
-    /// `AVPlayerBackend.swift` — so those two are compared structurally by
-    /// reflection instead of being silently dropped from `==`, which would make
-    /// two contexts with different item-death evidence compare equal. Both are
-    /// plain data (`Double?` + two `Int`s; one optional three-field candidate),
-    /// so the reflected description is a total, deterministic rendering of
-    /// their whole state. Wave 2 owns `AVPlayerBackend.swift` and replaces this
-    /// with the real conformances.
-    static func == (lhs: RecoveryContext, rhs: RecoveryContext) -> Bool {
-        lhs.route == rhs.route
-            && lhs.playbackEstablished == rhs.playbackEstablished
-            && lhs.userPaused == rhs.userPaused
-            && lhs.suspendedReasons == rhs.suspendedReasons
-            && lhs.mediaTimelineOffset == rhs.mediaTimelineOffset
-            && lhs.startup == rhs.startup
-            && lhs.playhead == rhs.playhead
-            && structurallyEqual(lhs.itemDeath, rhs.itemDeath)
-            && structurallyEqual(lhs.itemDeathConfirmation, rhs.itemDeathConfirmation)
-            && lhs.edge == rhs.edge
-            && lhs.rebuildBudget.used == rhs.rebuildBudget.used
-            && lhs.outage == rhs.outage
-            && lhs.serverOutageRecovery == rhs.serverOutageRecovery
-            && lhs.backgroundRenewalTransientFailures == rhs.backgroundRenewalTransientFailures
-            && lhs.backgroundRenewalInFlight == rhs.backgroundRenewalInFlight
-            && lhs.freshRenewalInFlight == rhs.freshRenewalInFlight
-            && lhs.canRenewSourceInBackground == rhs.canRenewSourceInBackground
-            && lhs.isProtocolV3Active == rhs.isProtocolV3Active
-            && lhs.isReplanInFlight == rhs.isReplanInFlight
-            && lhs.hasWatchDetail == rhs.hasWatchDetail
-            && lhs.canAutoRecoverInterruption == rhs.canAutoRecoverInterruption
-            && lhs.attemptedNativeDirectFallback == rhs.attemptedNativeDirectFallback
-            && lhs.attemptedLoopbackHLSFallback == rhs.attemptedLoopbackHLSFallback
-            && lhs.canBuildLoopbackFallback == rhs.canBuildLoopbackFallback
-            && lhs.nearEnd == rhs.nearEnd
-    }
-}
-
-/// Structural comparison for the two reused backend value types that cannot
-/// conform to `Equatable` from this file. See `RecoveryContext.==`.
-private func structurallyEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
-    String(reflecting: lhs) == String(reflecting: rhs)
 }
