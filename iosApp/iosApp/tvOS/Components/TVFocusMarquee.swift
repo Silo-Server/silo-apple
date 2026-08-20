@@ -165,19 +165,9 @@ extension TVMarqueeContent {
     /// Episode/movie length: the metadata runtime when present, else
     /// derived from the file duration the payload already carries.
     private static func lengthText(runtimeMinutes: Int?, durationSeconds: Double?) -> String? {
-        if let text = runtimeText(minutes: runtimeMinutes) { return text }
+        if let text = RuntimeLabel.minutes(runtimeMinutes, style: .spelled) { return text }
         guard let durationSeconds, durationSeconds > 0 else { return nil }
-        return runtimeText(minutes: Int((durationSeconds / 60).rounded()))
-    }
-
-    private static func runtimeText(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        if minutes >= 60 {
-            let hours = minutes / 60
-            let rest = minutes % 60
-            return rest == 0 ? "\(hours)h" : "\(hours)h \(rest)m"
-        }
-        return "\(minutes) min"
+        return RuntimeLabel.minutes(Int((durationSeconds / 60).rounded()), style: .spelled)
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

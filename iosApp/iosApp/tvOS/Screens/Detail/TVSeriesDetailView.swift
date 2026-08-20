@@ -56,7 +56,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    @Environment(\.resetFocus) private var resetFocus
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
     /// True while focus sits anywhere inside the season chip row. Used to
@@ -69,11 +68,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// (Play / Start Over / circle buttons). Backing up into it restores the
     /// page-entry framing by scrolling the hero back to the top.
     @FocusState private var actionRowFocused: Bool
-    /// Reevaluate the page-entry default only once, after the asynchronously
-    /// supplied Play button has joined the laid-out focus graph. A later season
-    /// selection is user navigation and must not pull focus away from its chip.
-    @State private var didResetInitialPlayFocus = false
-    @State private var initialFocusSeasonKey: String?
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -99,16 +93,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             .ignoresSafeArea()
             .focusScope(detailFocusNamespace)
             .defaultFocus($playFocused, true, priority: .userInitiated)
-            .onChange(of: selectedSeason?.contentId, initial: true) { _, seasonKey in
-                guard let seasonKey else { return }
-                if initialFocusSeasonKey == nil {
-                    initialFocusSeasonKey = seasonKey
-                } else if initialFocusSeasonKey != seasonKey {
-                    // Choosing another season is explicit navigation. Consume
-                    // the entry one-shot even if its Play button never arrived.
-                    didResetInitialPlayFocus = true
-                }
-            }
             .detailFocusScroll(
                 proxy: scrollProxy,
                 seasonRowFocused: seasonRowFocused,
@@ -181,67 +165,36 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private var actionRow: some View {
-        HStack(spacing: 36) {
-            if let nextUp = nextUpEpisode {
-                TVPrimaryPillButton(
-                    icon: "play.fill",
-                    title: playButtonLabel(for: nextUp),
-                    action: { onPlayEpisode(nextUp.contentId, selectedFileId(for: nextUp), false) },
-                    focused: $playFocused
-                )
-                .onGeometryChange(for: Bool.self) { proxy in
-                    proxy.size.width > 0 && proxy.size.height > 0
-                } action: { isLaidOut in
-                    guard isLaidOut else { return }
-                    resetInitialPlayFocus()
+        TVDetailActionRow(
+            playTitle: nextUpEpisode.map(playButtonLabel(for:)),
+            onPlay: {
+                guard let nextUp = nextUpEpisode else { return }
+                onPlayEpisode(nextUp.contentId, selectedFileId(for: nextUp), false)
+            },
+            onStartOver: nextUpEpisode?.userData?.isInProgress == true
+                ? {
+                    guard let nextUp = nextUpEpisode else { return }
+                    onPlayEpisode(nextUp.contentId, selectedFileId(for: nextUp), true)
                 }
-                if nextUp.userData?.isInProgress == true {
-                    TVSecondaryPillButton(
-                        icon: "backward.end.fill",
-                        title: "Start Over",
-                        action: { onPlayEpisode(nextUp.contentId, selectedFileId(for: nextUp), true) }
-                    )
+                : nil,
+            isFavorite: isFavorite,
+            onToggleFavorite: onToggleFavorite,
+            inWatchlist: inWatchlist,
+            onToggleWatchlist: onToggleWatchlist,
+            isWatched: isWatched,
+            watchedLabelMark: "Mark Series Watched",
+            watchedLabelUnmark: "Mark Series Unwatched",
+            onToggleWatched: onToggleWatched,
+            initialFocusScope: .season(key: selectedSeason?.contentId),
+            focusNamespace: detailFocusNamespace,
+            playFocused: $playFocused,
+            rowFocused: $actionRowFocused,
+            moreMenu: {
+                if supportsTrailerFetch {
+                    moreMenu
                 }
             }
-
-            TVCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-
-            TVCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-
-            TVCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? "Mark Series Unwatched" : "Mark Series Watched",
-                action: onToggleWatched
-            )
-
-            if supportsTrailerFetch {
-                moreMenu
-            }
-        }
-        // Container binding — flips true when any button in the row has
-        // focus, driving the scroll-to-top in `body`.
-        .focused($actionRowFocused)
-        // Mirror of the selector row's full-width focus section: the subtitle
-        // pill below can extend past the last circle button, and an Up press
-        // from that overhang would otherwise skip this row for the synopsis.
-        // Full-width bounds put the row under every selector pill so Up lands
-        // on the nearest action button. Buttons stay left-aligned.
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .focusSection()
+        )
     }
 
     // MARK: - More menu
@@ -256,17 +209,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 Label("Find Trailers", systemImage: "film.stack")
             }
         }
-    }
-
-    private func resetInitialPlayFocus() {
-        guard !didResetInitialPlayFocus else { return }
-        guard let seasonKey = selectedSeason?.contentId else { return }
-        if initialFocusSeasonKey == nil {
-            initialFocusSeasonKey = seasonKey
-        }
-        guard initialFocusSeasonKey == seasonKey else { return }
-        didResetInitialPlayFocus = true
-        resetFocus(in: detailFocusNamespace)
     }
 
     /// Best "Play" target for the series: an in-progress episode if there

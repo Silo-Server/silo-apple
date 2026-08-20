@@ -353,13 +353,6 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRuntime(_ minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let h = minutes / 60
-        let m = minutes % 60
-        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
-    }
-
     /// English display name for a language tag, matching web's
     /// `formatLanguage` (English CLDR names, so "en" → "English" not
     /// "EN"). A tag CLDR can't name falls back to the uppercased code
@@ -398,7 +391,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .clock,
             iconCapable: true,
-            getValue: { formatRuntime($0.runtime) }
+            getValue: { RuntimeLabel.minutes($0.runtime, style: .compact) }
         ),
         OverlayDef(
             id: .originalLanguage,

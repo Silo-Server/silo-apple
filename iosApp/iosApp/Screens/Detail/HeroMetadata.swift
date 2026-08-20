@@ -66,8 +66,8 @@ enum HeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = detail.runtime, runtime > 0 {
-            tokens.append(.text(formatRuntime(runtime)))
+        if let runtime = RuntimeLabel.minutes(detail.runtime, style: .spelled) {
+            tokens.append(.text(runtime))
         }
         if let imdb = detail.ratingImdb {
             tokens.append(.text(String(format: "★ %.1f", imdb)))
@@ -232,12 +232,5 @@ enum HeroMetadata {
 
     private static func hasSubtitles(version: FileVersion) -> Bool {
         !(version.subtitleTracks ?? []).isEmpty
-    }
-
-    static func formatRuntime(_ minutes: Int) -> String {
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes) min"
     }
 }

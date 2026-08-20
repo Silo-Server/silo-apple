@@ -86,6 +86,68 @@ extension View {
             self
         }
     }
+
+    /// Same, for the full card menu: no menu at all when the card has no
+    /// entries to offer, rather than an empty one.
+    @ViewBuilder
+    func cardContextMenu(_ items: CardContextMenuItems) -> some View {
+        if items.hasAny {
+            contextMenu { items }
+        } else {
+            self
+        }
+    }
+}
+
+/// The optimistic write / call / revert around `PersonalListSync` that every
+/// card menu performs: flip the caller's override, snapshot the sibling flag,
+/// and put the override back when the server call fails. The anti-clobber
+/// merge itself lives once, in `PersonalListSync.writeBack`.
+@MainActor
+enum PersonalListToggles {
+    /// - Parameters:
+    ///   - write: applies the optimistic value to the caller's override.
+    ///   - onCommit: called with the committed pair once the server agrees,
+    ///     for callers that publish the new state upward.
+    static func toggleFavorite(
+        contentId: String,
+        isFavorite: Bool,
+        inWatchlist: Bool,
+        write: @escaping @MainActor (Bool) -> Void,
+        onCommit: (@MainActor (_ isFavorite: Bool, _ inWatchlist: Bool) -> Void)? = nil
+    ) {
+        let newValue = !isFavorite
+        write(newValue)
+        Task {
+            if await PersonalListSync.setFavorite(
+                contentId: contentId, isFavorite: newValue, inWatchlist: inWatchlist
+            ) {
+                onCommit?(newValue, inWatchlist)
+            } else {
+                write(isFavorite)
+            }
+        }
+    }
+
+    static func toggleWatchlist(
+        contentId: String,
+        isFavorite: Bool,
+        inWatchlist: Bool,
+        write: @escaping @MainActor (Bool) -> Void,
+        onCommit: (@MainActor (_ isFavorite: Bool, _ inWatchlist: Bool) -> Void)? = nil
+    ) {
+        let newValue = !inWatchlist
+        write(newValue)
+        Task {
+            if await PersonalListSync.setWatchlist(
+                contentId: contentId, isFavorite: isFavorite, inWatchlist: newValue
+            ) {
+                onCommit?(isFavorite, newValue)
+            } else {
+                write(inWatchlist)
+            }
+        }
+    }
 }
 
 /// Server sync behind the card context-menu toggles. Mirrors

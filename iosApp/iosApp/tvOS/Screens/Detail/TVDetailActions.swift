@@ -175,6 +175,158 @@ struct TVCircleActionButton: View {
     }
 }
 
+// MARK: - Detail action row
+
+/// The hero action row shared by the movie/episode, season and series
+/// detail screens: an optional Play + "Start Over" pair, the three
+/// favorite / watchlist / watched circles, and an optional overflow menu.
+/// `playTitle == nil` hides the whole play region (a series or season with
+/// no next-up episode yet).
+///
+/// The row also owns the page-entry Play-focus one-shot. The first
+/// default-focus evaluation can run before the asynchronously supplied Play
+/// button has joined the laid-out focus graph, leaving focus on the
+/// geometrically higher synopsis, so the scoped default is re-evaluated once
+/// Play reports a real size. On the season-scoped screens that one-shot
+/// belongs to the season shown on entry: choosing another season is explicit
+/// navigation and must consume the one-shot rather than pull focus off the
+/// chip the user just picked.
+///
+/// Focus ownership (docs/tvos-focus.md): every control here is an ordinary
+/// focusable button in the native focus graph. The row adds only the
+/// container binding its screen scrolls from and one full-width
+/// `.focusSection()` — it never moves focus in response to a direction.
+struct TVDetailActionRow<MoreMenu: View>: View {
+    /// Which page-entry focus rule applies. `.page` fires the one-shot as
+    /// soon as Play is laid out; `.season` gates it on the season key the
+    /// page was entered with.
+    enum InitialFocusScope: Equatable {
+        case page
+        case season(key: String?)
+    }
+
+    /// Label for the primary pill. `nil` renders no play region at all.
+    let playTitle: String?
+    let onPlay: () -> Void
+    /// `nil` hides the "Start Over" pill.
+    let onStartOver: (() -> Void)?
+    let isFavorite: Bool
+    let onToggleFavorite: () -> Void
+    let inWatchlist: Bool
+    let onToggleWatchlist: () -> Void
+    let isWatched: Bool
+    /// Accessibility labels for the watched circle — per-screen because the
+    /// target differs (episode / movie / season / series).
+    let watchedLabelMark: String
+    let watchedLabelUnmark: String
+    let onToggleWatched: () -> Void
+    let initialFocusScope: InitialFocusScope
+    /// The screen's `.focusScope(...)` namespace, re-evaluated by the
+    /// page-entry one-shot.
+    let focusNamespace: Namespace.ID
+    /// Bound to the Play pill so the screen's `.defaultFocus(...)` can claim it.
+    let playFocused: FocusState<Bool>.Binding
+    /// Container binding — flips true when any button in the row has focus,
+    /// driving the scroll-to-top in `detailFocusScroll`.
+    let rowFocused: FocusState<Bool>.Binding
+    @ViewBuilder let moreMenu: () -> MoreMenu
+
+    @Environment(\.resetFocus) private var resetFocus
+    @State private var didResetInitialPlayFocus = false
+    @State private var initialFocusSeasonKey: String?
+
+    var body: some View {
+        HStack(spacing: 36) {
+            if let playTitle {
+                TVPrimaryPillButton(
+                    icon: "play.fill",
+                    title: playTitle,
+                    action: onPlay,
+                    focused: playFocused
+                )
+                .onGeometryChange(for: Bool.self) { proxy in
+                    proxy.size.width > 0 && proxy.size.height > 0
+                } action: { isLaidOut in
+                    guard isLaidOut else { return }
+                    resetInitialPlayFocus()
+                }
+
+                if let onStartOver {
+                    TVSecondaryPillButton(
+                        icon: "backward.end.fill",
+                        title: "Start Over",
+                        action: onStartOver
+                    )
+                }
+            }
+
+            TVCircleActionButton(
+                icon: "heart",
+                iconActive: "heart.fill",
+                isActive: isFavorite,
+                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
+                action: onToggleFavorite
+            )
+
+            TVCircleActionButton(
+                icon: "bookmark",
+                iconActive: "bookmark.fill",
+                isActive: inWatchlist,
+                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                action: onToggleWatchlist
+            )
+
+            TVCircleActionButton(
+                icon: "checkmark.circle",
+                iconActive: "checkmark.circle.fill",
+                isActive: isWatched,
+                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
+                action: onToggleWatched
+            )
+
+            moreMenu()
+        }
+        // Container binding — flips true when any button in the row has
+        // focus, driving the scroll-to-top in `detailFocusScroll`.
+        .focused(rowFocused)
+        // Mirror of the selector row's full-width focus section: the subtitle
+        // pill below can extend past the last circle button, and an Up press
+        // from that overhang would otherwise skip this row for the synopsis.
+        // Full-width bounds put the row under every selector pill so Up lands
+        // on the nearest action button. Buttons stay left-aligned.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
+        .onChange(of: seasonKey, initial: true) { _, seasonKey in
+            guard let seasonKey else { return }
+            if initialFocusSeasonKey == nil {
+                initialFocusSeasonKey = seasonKey
+            } else if initialFocusSeasonKey != seasonKey {
+                // Choosing another season is explicit navigation. Consume
+                // the entry one-shot even if its Play button never arrived.
+                didResetInitialPlayFocus = true
+            }
+        }
+    }
+
+    private var seasonKey: String? {
+        guard case .season(let key) = initialFocusScope else { return nil }
+        return key
+    }
+
+    private func resetInitialPlayFocus() {
+        guard !didResetInitialPlayFocus else { return }
+        if case .season = initialFocusScope {
+            guard let seasonKey else { return }
+            if initialFocusSeasonKey == nil {
+                initialFocusSeasonKey = seasonKey
+            }
+            guard initialFocusSeasonKey == seasonKey else { return }
+        }
+        didResetInitialPlayFocus = true
+        resetFocus(in: focusNamespace)
+    }
+}
+
 // MARK: - Pill ButtonStyle
 
 /// Shared ButtonStyle for the hero's pill controls. Owns all focus

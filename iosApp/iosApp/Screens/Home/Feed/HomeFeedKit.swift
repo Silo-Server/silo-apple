@@ -54,20 +54,11 @@ enum HomeFeed {
 // MARK: - Metadata formatting
 
 enum HomeFeedMeta {
-    static func runtime(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let hours = minutes / 60
-        let remainder = minutes % 60
-        if hours > 0, remainder > 0 { return "\(hours)h \(remainder)m" }
-        if hours > 0 { return "\(hours)h" }
-        return "\(remainder)m"
-    }
-
     static func remaining(position: Double?, duration: Double?) -> String? {
         guard let position, let duration, duration > 0, position > 0 else { return nil }
         let minutesLeft = Int((duration - position) / 60)
         guard minutesLeft > 0 else { return nil }
-        return runtime(minutes: minutesLeft).map { "\($0) left" }
+        return RuntimeLabel.minutes(minutesLeft, style: .compact).map { "\($0) left" }
     }
 
     static func progress(for item: SectionItem) -> Double? {
@@ -168,17 +159,14 @@ private struct HomeCardMenu: ViewModifier {
     private var hasPersonalActions: Bool { item.userState != nil }
 
     func body(content: Content) -> some View {
-        if menuItems.hasAny {
-            content
-                .contextMenu { menuItems }
-                .onChange(of: item.userState) { _, _ in
-                    playedOverride = nil
-                    favoriteOverride = nil
-                    watchlistOverride = nil
-                }
-        } else {
-            content
-        }
+        content
+            .cardContextMenu(menuItems)
+            // Harmless without a menu: nothing can set an override there.
+            .onChange(of: item.userState) { _, _ in
+                playedOverride = nil
+                favoriteOverride = nil
+                watchlistOverride = nil
+            }
     }
 
     private var menuItems: CardContextMenuItems {
@@ -207,29 +195,21 @@ private struct HomeCardMenu: ViewModifier {
     }
 
     private func toggleFavorite() {
-        let newValue = !isFavorite
-        let watchlist = inWatchlist
-        favoriteOverride = newValue
-        Task {
-            if await PersonalListSync.setFavorite(
-                contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) == false {
-                favoriteOverride = !newValue
-            }
-        }
+        PersonalListToggles.toggleFavorite(
+            contentId: item.contentId,
+            isFavorite: isFavorite,
+            inWatchlist: inWatchlist,
+            write: { favoriteOverride = $0 }
+        )
     }
 
     private func toggleWatchlist() {
-        let newValue = !inWatchlist
-        let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
-            if await PersonalListSync.setWatchlist(
-                contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
-            ) == false {
-                watchlistOverride = !newValue
-            }
-        }
+        PersonalListToggles.toggleWatchlist(
+            contentId: item.contentId,
+            isFavorite: isFavorite,
+            inWatchlist: inWatchlist,
+            write: { watchlistOverride = $0 }
+        )
     }
 }
 

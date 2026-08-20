@@ -155,21 +155,14 @@ struct MediaCard: View {
             watchlistOverride = nil
         }
         #else
-        Group {
-            if contextMenuItems.hasAny {
-                iosCardButton.contextMenu {
-                    contextMenuItems
-                }
-            } else {
-                iosCardButton
+        iosCardButton
+            .cardContextMenu(contextMenuItems)
+            .onChange(of: userState) { _, _ in
+                playedOverride = nil
+                favoriteOverride = nil
+                watchlistOverride = nil
             }
-        }
-        .onChange(of: userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
-        }
-        .frame(width: cardWidth)
+            .frame(width: cardWidth)
         #endif
     }
 
@@ -249,38 +242,31 @@ struct MediaCard: View {
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        favoriteOverride = newValue
-        Task {
-            if await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
-                )
-            } else {
-                favoriteOverride = !newValue // Revert on failure
-            }
-        }
+        PersonalListToggles.toggleFavorite(
+            contentId: contentId,
+            isFavorite: isFavorite,
+            inWatchlist: isInWatchlist,
+            write: { favoriteOverride = $0 },
+            onCommit: publishUserState
+        )
     }
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
-            if await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            ) {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
-                )
-            } else {
-                watchlistOverride = !newValue // Revert on failure
-            }
-        }
+        PersonalListToggles.toggleWatchlist(
+            contentId: contentId,
+            isFavorite: isFavorite,
+            inWatchlist: isInWatchlist,
+            write: { watchlistOverride = $0 },
+            onCommit: publishUserState
+        )
+    }
+
+    /// Favorites / Watchlist grids drop the card in place from this.
+    private func publishUserState(isFavorite: Bool, inWatchlist: Bool) {
+        onUserStateChanged?(
+            MediaItemUserState(played: isPlayed, isFavorite: isFavorite, inWatchlist: inWatchlist)
+        )
     }
 
     private var cardContent: some View {
@@ -540,18 +526,7 @@ private struct FocusableMediaCard<Content: View>: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
-        mediaButtonWithContext(button)
-    }
-
-    @ViewBuilder
-    private func mediaButtonWithContext<ButtonContent: View>(_ button: ButtonContent) -> some View {
-        if contextMenuItems.hasAny {
-            button.contextMenu {
-                contextMenuItems
-            }
-        } else {
-            button
-        }
+        button.cardContextMenu(contextMenuItems)
     }
 
     private var contextMenuItems: CardContextMenuItems {
