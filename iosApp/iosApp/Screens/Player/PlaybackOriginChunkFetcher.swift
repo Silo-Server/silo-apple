@@ -163,7 +163,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
             // Begin is serialized with admission. Cancellation therefore can
             // neither observe this request before begin nor deliver end first.
             callbacks.beginRequest()
-            Self.logger.info("[CMP-SOURCE-CACHE] chunk fetch start=\(start, privacy: .public) len=\(end - start, privacy: .public)")
+            cmpLog("[CMP-SOURCE-CACHE] chunk fetch start=\(start) len=\(end - start)")
             runLocked(id: id, range: range, attempt: 1)
         }
     }
@@ -677,7 +677,7 @@ final class PlaybackOriginChunkFetcher: @unchecked Sendable {
         cause: PlaybackOriginReconnectPolicy.EndCause,
         statusCode: Int?
     ) {
-        Self.logger.warning("[CMP-SOURCE-CACHE] chunk failed start=\(range.lowerBound, privacy: .public) cause=\(String(describing: cause), privacy: .public) status=\(statusCode ?? 0, privacy: .public)")
+        cmpLog("[CMP-SOURCE-CACHE] chunk failed start=\(range.lowerBound) cause=\(String(describing: cause)) status=\(statusCode ?? 0)")
         finishLocked(id: id)
         guard !cancelled else { return }
         callbacks.didFail(range, cause, statusCode)

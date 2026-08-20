@@ -729,7 +729,7 @@ final class PlaybackOriginStream {
         let gen = generation
         lock.unlock()
         guard stalled else { return }
-        Self.logger.warning("[CMP-SOURCE-CACHE] origin stream stalled; reconnecting cursor=\(self.snapshot().writeCursor, privacy: .public)")
+        cmpLog("[CMP-SOURCE-CACHE] origin stream stalled; reconnecting cursor=\(self.snapshot().writeCursor)")
         connectionEnded(generation: gen, cause: .stalled, statusCode: nil)
     }
 
@@ -1018,8 +1018,8 @@ final class PlaybackOriginStream {
             lock.unlock()
             if didPark {
                 let cachedAhead = callbacks.cachedAheadBytes()
-                Self.logger.info(
-                    "[CMP-SOURCE-CACHE] origin stream parked cursor=\(cursor, privacy: .public) cachedAheadBytes=\(cachedAhead, privacy: .public)"
+                cmpLog(
+                    "[CMP-SOURCE-CACHE] origin stream parked cursor=\(cursor) cachedAheadBytes=\(cachedAhead)"
                 )
                 // A demand may have raised the mark between the decision
                 // above and the park; its unpark attempt saw parked ==
@@ -1179,7 +1179,7 @@ final class PlaybackOriginStream {
         expectedGeneration: UInt64
     ) {
         guard terminate(expectedGeneration: expectedGeneration) else { return }
-        Self.logger.warning("[CMP-SOURCE-CACHE] origin stream gave up cause=\(String(describing: cause), privacy: .public)")
+        cmpLog("[CMP-SOURCE-CACHE] origin stream gave up cause=\(String(describing: cause))")
         callbacks.didGiveUp(self, cause, statusCode)
     }
 

@@ -260,8 +260,8 @@ final class PlaybackSourceCache {
         let value = prefetchArmed
         lock.unlock()
         if didRearm {
-            Self.logger.info(
-                "[CMP-SOURCE-CACHE] hysteresis re-arm cachedAheadBytes=\(cachedAhead, privacy: .public) lowWaterBytes=\(self.lowWaterBytes, privacy: .public)"
+            cmpLog(
+                "[CMP-SOURCE-CACHE] hysteresis re-arm cachedAheadBytes=\(cachedAhead) lowWaterBytes=\(self.lowWaterBytes)"
             )
         }
         return value
@@ -857,7 +857,7 @@ private final class PlaybackSourceResource {
         if outageCleared {
             onOriginOutageChanged?(false)
         }
-        Self.logger.info("[CMP-SOURCE-CACHE] origin retargeted for renewed session")
+        cmpLog("[CMP-SOURCE-CACHE] origin retargeted for renewed session")
     }
 
     /// Whether the transport is parked in an origin outage. Read by the
@@ -1217,8 +1217,8 @@ private final class PlaybackSourceResource {
             // Once per response, off the per-chunk hot path. The end-cause
             // token (satisfied vs client_closed) has been the definitive
             // signal in past "direct play stops mid-file" investigations.
-            Self.logger.debug(
-                "[CMP-SRV] get end cause=\(String(describing: endCause), privacy: .public) cursor=\(cursor, privacy: .public)"
+            cmpLog(
+                "[CMP-SRV] get end cause=\(String(describing: endCause)) cursor=\(cursor)"
             )
         }
         noteDemandHint(at: cursor)
@@ -1329,8 +1329,8 @@ private final class PlaybackSourceResource {
                     toStart = stream
                 }
             case .chunk(let reason):
-                Self.logger.info(
-                    "[CMP-SOURCE-CACHE] window claim diverted reason=\(reason.rawValue, privacy: .public) offset=\(offset, privacy: .public) cursor=\(cursor ?? -1, privacy: .public) served=\(servedSequentialBytes, privacy: .public) routed=chunk"
+                cmpLog(
+                    "[CMP-SOURCE-CACHE] window claim diverted reason=\(reason.rawValue) offset=\(offset) cursor=\(cursor ?? -1) served=\(servedSequentialBytes) routed=chunk"
                 )
                 chunk = true
                 deferChunkUntilEntityKnown = resumeCapable && sourceEntityETag == nil
@@ -1879,8 +1879,8 @@ private final class PlaybackSourceResource {
         guard let cause else { return }
         if park {
             let entered = enterOutageAndScheduleProbe(failureOffset: stream.snapshot().writeCursor)
-            Self.logger.warning(
-                "[CMP-OUTAGE] window gave up cause=\(String(describing: cause), privacy: .public) status=\(statusCode ?? 0, privacy: .public); parked entry=\(entered, privacy: .public)"
+            cmpLog(
+                "[CMP-OUTAGE] window gave up cause=\(String(describing: cause)) status=\(statusCode ?? 0); parked entry=\(entered)"
             )
             if entered {
                 onOriginOutageChanged?(true)
@@ -1942,8 +1942,8 @@ private final class PlaybackSourceResource {
         }
         if park {
             let entered = enterOutageAndScheduleProbe(failureOffset: range.lowerBound)
-            Self.logger.warning(
-                "[CMP-OUTAGE] chunk gave up cause=\(String(describing: cause), privacy: .public) status=\(statusCode ?? 0, privacy: .public); parked entry=\(entered, privacy: .public)"
+            cmpLog(
+                "[CMP-OUTAGE] chunk gave up cause=\(String(describing: cause)) status=\(statusCode ?? 0); parked entry=\(entered)"
             )
             if entered {
                 onOriginOutageChanged?(true)

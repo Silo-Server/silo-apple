@@ -536,6 +536,9 @@ final class LoopbackSegmentWriter {
     /// (AVPlayerBackend installs observers on that signal) and two fires
     /// would double-add the periodic time observer.
     private var firstSegmentReadyFired = false
+    /// Reset on any successful read; lets a single deadline-aborted read retry
+    /// once before it is treated as a dead source (diagnostics SILO-9AQBTQJV).
+    private var deadlineRetryConsumed = false
     /// Latch-once HDR10+ SEI scan over outgoing video packets. Only consulted
     /// while `onHDR10PlusMetadataDetected` is installed.
     private var hdr10PlusSEIDetector = HDR10PlusSEIDetector()
@@ -1920,12 +1923,26 @@ final class LoopbackSegmentWriter {
                     break
                 }
                 if rc < 0 {
+                    cancelLock.lock()
+                    let deadlineAborted = interruptToken.didAbortOnDeadline
+                    cancelLock.unlock()
+                    if deadlineAborted, !deadlineRetryConsumed {
+                        // One slow read (a deep-resume chunk that missed its
+                        // span) is a hiccup, not a dead source: retry once with
+                        // a fresh span. A genuinely frozen origin aborts again
+                        // and still fails below.
+                        deadlineRetryConsumed = true
+                        cmpLog("[CMP-AVP] read deadline abort; retrying once (firstSegment=\(firstSegmentReadyFired))")
+                        if let packet { av_packet_unref(packet) }
+                        continue
+                    }
                     // Genuine end-of-content finalizes below; a source that
                     // died clearly short of the known bytes/plan throws so
                     // the truncation is never published as a complete VOD.
                     try throwIfPrematureSourceEnd(readRC: rc)
                     break
                 }
+                deadlineRetryConsumed = false
                 emitSourceDownloadStatsIfNeeded()
                 guard let pkt = packet else { break }
                 let inputIdx = Int(pkt.pointee.stream_index)
@@ -2195,6 +2212,12 @@ final class LoopbackSegmentWriter {
     /// deadline so it can stretch to the outage park allowance while the
     /// source proxy reports an origin outage.
     static let readDeadlineSeconds: Double = 10
+    /// More forgiving allowance before the first segment is produced. A deep
+    /// resume opens its read cursor far into the file, so the writer is served
+    /// by RTT-bound chunk fetches with no forward cache yet — the phase most
+    /// exposed to a slow origin. Too tight here surfaces as the startup
+    /// watchdog's `fetches_frozen` route-kill (diagnostics SILO-9AQBTQJV).
+    static let startupReadDeadlineSeconds: Double = 30
     /// Span allowance for the whole `avformat_open_input` +
     /// `find_stream_info` bootstrap (multi-second legitimate on cold-cache
     /// 4K WAN opens; wedged opens must still fail well before the consumer
@@ -2216,7 +2239,10 @@ final class LoopbackSegmentWriter {
         cancelLock.lock()
         let token = interruptToken
         cancelLock.unlock()
-        token.beginBlockingSpan(allowanceSeconds: Self.readDeadlineSeconds)
+        let allowance = firstSegmentReadyFired
+            ? Self.readDeadlineSeconds
+            : Self.startupReadDeadlineSeconds
+        token.beginBlockingSpan(allowanceSeconds: allowance)
         defer { token.endBlockingSpan() }
         return av_read_frame(ctx, pkt)
     }
