@@ -978,7 +978,14 @@ class PlayerViewModel {
         if presentation.duration > 0 { duration = presentation.duration }
         bufferedAheadSeconds = presentation.bufferedAheadSeconds
         playbackRunwaySeconds = presentation.playbackRunwaySeconds
-        if let stats = presentation.playbackStats { playbackStats = stats }
+        // `playbackStats` is deliberately NOT taken from the transport publish.
+        // `Presentation.playbackStats` is the backend's raw snapshot (its
+        // `source` is the loopback host behind the proxy); the composed stats —
+        // origin host swapped in, proxy/cache rows added — are written by the
+        // `.stats` arm of `applyEngineEventToPresentation` via
+        // `PlaybackStatsComposer`, which is the single owner (design §2.3
+        // contract note (f)). Taking both made the Source row flicker between
+        // 127.0.0.1 and the real server every tick.
         guard !transportOnly else { return }
 
         isPlaying = presentation.isPlaying
