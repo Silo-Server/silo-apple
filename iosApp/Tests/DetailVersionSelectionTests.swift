@@ -526,6 +526,84 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertTrue(editions[0].label == "Standard")
     }
 
+
+    // MARK: - Dolby Vision tiebreak (equal-resolution version ranking)
+
+    private static let dvVersionsJSON = """
+    [
+      { "file_id": 1, "resolution": "2160p", "codec_video": "hevc", "hdr": true },
+      { "file_id": 2, "resolution": "2160p", "codec_video": "hevc", "hdr": true,
+        "video_tracks": [ { "index": 0, "codec": "hevc", "dolby_vision": "profile 8" } ] }
+    ]
+    """
+
+    func testDolbyVisionWinsTheTieWhenTheDisplaySupportsItAndTheSettingIsOn() {
+        let versions = decodedVersions(Self.dvVersionsJSON)
+        let selected = DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: nil,
+            dynamicRange: .init(supportsDolbyVision: true, supportsHDR: true, dolbyVisionEnabled: true)
+        )
+        XCTAssertEqual(selected?.fileId, 2, "the Dolby Vision 2160p file must win over the plain HDR10 2160p file")
+    }
+
+    func testDolbyVisionDoesNotWinWhenTheDisplayCannotPresentIt() {
+        let versions = decodedVersions(Self.dvVersionsJSON)
+        let selected = DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: nil,
+            dynamicRange: .init(supportsDolbyVision: false, supportsHDR: true, dolbyVisionEnabled: true)
+        )
+        // Both are HDR (the DV file has an HDR10 base layer), so the tie falls to
+        // the deterministic fileId rule — never to array order.
+        XCTAssertEqual(selected?.fileId, 1, "with no DV display support neither HDR file is preferred; lower fileId wins")
+    }
+
+    func testDolbyVisionDoesNotWinWhenTheSettingIsOff() {
+        let versions = decodedVersions(Self.dvVersionsJSON)
+        let selected = DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: nil,
+            dynamicRange: .init(supportsDolbyVision: true, supportsHDR: true, dolbyVisionEnabled: false)
+        )
+        XCTAssertEqual(selected?.fileId, 1, "Dolby Vision disabled in settings must not force the DV file")
+    }
+
+    func testDolbyVisionNeverOverridesAHigherResolution() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 1, "resolution": "2160p", "codec_video": "hevc", "hdr": true },
+          { "file_id": 2, "resolution": "1080p", "codec_video": "hevc", "hdr": true,
+            "video_tracks": [ { "index": 0, "codec": "hevc", "dolby_vision": "profile 5" } ] }
+        ]
+        """)
+        let selected = DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: nil,
+            dynamicRange: .init(supportsDolbyVision: true, supportsHDR: true, dolbyVisionEnabled: true)
+        )
+        XCTAssertEqual(selected?.fileId, 1, "a 1080p Dolby Vision file must not beat a 2160p file")
+    }
+
+    func testBridgeAndDetailSelectorsAgreeOnTheDolbyVisionTie() {
+        let versions = decodedVersions(Self.dvVersionsJSON)
+        let ctx = VersionDynamicRangePreference.Context(
+            supportsDolbyVision: true, supportsHDR: true, dolbyVisionEnabled: true
+        )
+        let detail = DetailVersionSelection.displayVersion(
+            versions: versions, selectedFileId: nil, lastFileId: nil, dynamicRange: ctx
+        )
+        let bridge = PlaybackSessionBridge.selectVersion(
+            from: versions, lastFileId: nil, preferredQuality: nil, dynamicRange: ctx
+        )
+        XCTAssertEqual(detail?.fileId, bridge.fileId, "the detail label and the play-time pick must choose the same version")
+        XCTAssertEqual(bridge.fileId, 2)
+    }
+
     private func version(fileId: Int, resolution: String?) -> FileVersion {
         FileVersion(
             fileId: fileId,

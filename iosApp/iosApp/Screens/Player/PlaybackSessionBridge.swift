@@ -1662,11 +1662,16 @@ actor PlaybackSessionBridge {
     static func selectVersion(
         from versions: [FileVersion],
         lastFileId: Int?,
-        preferredQuality: String?
+        preferredQuality: String?,
+        dynamicRange: VersionDynamicRangePreference.Context = .current
     ) -> FileVersion {
-        let ranked = versions.sorted {
-            score(for: $0, preferredQuality: preferredQuality) >
-                score(for: $1, preferredQuality: preferredQuality)
+        // Deterministic: score descending, then fileId ascending, so a
+        // same-resolution / same-dynamic-range tie is never resolved by array
+        // order.
+        let ranked = versions.sorted { lhs, rhs in
+            let ls = score(for: lhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
+            let rs = score(for: rhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
+            return ls != rs ? ls > rs : lhs.fileId < rhs.fileId
         }
 
         if let preferredQuality,
@@ -1684,7 +1689,11 @@ actor PlaybackSessionBridge {
         return ranked.first ?? versions[0]
     }
 
-    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
+    private static func score(
+        for version: FileVersion,
+        preferredQuality: String?,
+        dynamicRange: VersionDynamicRangePreference.Context = .current
+    ) -> Int {
         var score = resolutionRank(version.resolution) * 10
 
         if let preferredQuality {
@@ -1697,6 +1706,7 @@ actor PlaybackSessionBridge {
             }
         }
 
+        score += VersionDynamicRangePreference.bonus(for: version, context: dynamicRange)
         return score
     }
 

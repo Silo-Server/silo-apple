@@ -7,7 +7,8 @@ enum DetailVersionSelection {
         versions: [FileVersion],
         selectedFileId: Int?,
         lastFileId: Int?,
-        preferredQualityId: String? = nil
+        preferredQualityId: String? = nil,
+        dynamicRange: VersionDynamicRangePreference.Context = .current
     ) -> FileVersion? {
         if let selectedFileId,
            let selected = versions.first(where: { $0.fileId == selectedFileId }) {
@@ -20,9 +21,13 @@ enum DetailVersionSelection {
         }
 
         let preferredQuality = normalizedQualityPreference(preferredQualityId)
-        return versions.max {
-            score(for: $0, preferredQuality: preferredQuality)
-                < score(for: $1, preferredQuality: preferredQuality)
+        // Deterministic max: higher score wins; a score tie breaks toward the
+        // lower fileId so equal-resolution / equal-dynamic-range versions never
+        // depend on array order.
+        return versions.max { lhs, rhs in
+            let ls = score(for: lhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
+            let rs = score(for: rhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
+            return ls != rs ? ls < rs : lhs.fileId > rhs.fileId
         }
     }
 
@@ -48,7 +53,11 @@ enum DetailVersionSelection {
         }
     }
 
-    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
+    private static func score(
+        for version: FileVersion,
+        preferredQuality: String?,
+        dynamicRange: VersionDynamicRangePreference.Context = .current
+    ) -> Int {
         var score = resolutionRank(version.resolution) * 10
 
         if let preferredQuality {
@@ -59,6 +68,7 @@ enum DetailVersionSelection {
             }
         }
 
+        score += VersionDynamicRangePreference.bonus(for: version, context: dynamicRange)
         return score
     }
 
