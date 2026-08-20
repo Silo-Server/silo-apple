@@ -1,5 +1,13 @@
 import Foundation
 
+enum OutputRouteFreshLoadRetryPolicy {
+    static let maximumRetries = 3
+
+    static func shouldRetry(completedRetries: Int) -> Bool {
+        completedRetries < maximumRetries
+    }
+}
+
 /// Centralizes runtime fallback policy so engine failures and PlayerCore stream
 /// rejections are not interpreted ad hoc by the view model. This first slice
 /// preserves today's behavior exactly while making the decision surface typed.
@@ -10,6 +18,7 @@ struct PlaybackRecoveryPlanner {
         let streamRequest: StreamRequest
         let startTime: Double
         let activePlan: PlaybackExecutionPlan?
+        let hasProtocolV3Recovery: Bool
         let hevcLoopbackVideoRange: String?
     }
 
@@ -22,6 +31,7 @@ struct PlaybackRecoveryPlanner {
 
     enum Decision {
         case terminal(message: String, diagnosticLine: String, disposeActiveCore: Bool)
+        case replan(message: String, diagnosticLine: String, disposeActiveCore: Bool)
         case fallback(plan: PlaybackExecutionPlan, diagnosticLine: String)
     }
 
@@ -29,6 +39,22 @@ struct PlaybackRecoveryPlanner {
         context: Context,
         makeLoopbackSession: (LoopbackRequest) -> LoopbackSessionSpec?
     ) -> Decision {
+        if case .h264SoftwareDecodeOutOfBounds = context.reason {
+            let message = "This video's H.264 High 10 stream exceeds this device's local decoder limits."
+            if context.hasProtocolV3Recovery {
+                return .replan(
+                    message: message,
+                    diagnosticLine: "[CMP-ROUTE] H.264 High 10 runtime bounds rejection requested server replan",
+                    disposeActiveCore: true
+                )
+            }
+            return .terminal(
+                message: message,
+                diagnosticLine: "[CMP-ROUTE] H.264 High 10 runtime bounds rejection had no server recovery route",
+                disposeActiveCore: true
+            )
+        }
+
         guard context.currentDelivery == .direct else {
             let message = "Adaptive stream rejected by PlayerCore while Apple HLS AVPlayer routing is gated off."
             return .terminal(
@@ -66,6 +92,8 @@ struct PlaybackRecoveryPlanner {
         let sourceMetadata = context.activePlan?.sourceMetadata ?? .unknown
 
         switch context.reason {
+        case .h264SoftwareDecodeOutOfBounds:
+            preconditionFailure("H.264 software bounds rejection is handled before fallback planning")
         case .dolbyVisionProfile5:
             return PlaybackExecutionPlan.dolbyVisionLoopback(
                 streamRequest: context.streamRequest,

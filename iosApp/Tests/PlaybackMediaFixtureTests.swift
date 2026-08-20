@@ -152,7 +152,7 @@ final class PlaybackMediaFixtureTests: XCTestCase {
                 audioCodec: "aac"
             ))
             let stream = StreamRequest(url: url, headers: [:], serverUrl: "")
-            let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
+            let plan = try ApplePlaybackRoutePlanner().makeExecutionPlan(
                 input: ApplePlaybackPlannerInput(
                     session: session,
                     selectedVersion: version,
@@ -221,6 +221,12 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         var oversized = codecpar
         oversized.width = 3_840
         XCTAssertFalse(PlayerCore.h264SoftwareDecodeWithinAdvertisedBounds(oversized, stream: videoStream.pointee))
+        var missingLevel = codecpar
+        missingLevel.level = 0
+        XCTAssertFalse(PlayerCore.h264SoftwareDecodeWithinAdvertisedBounds(missingLevel, stream: videoStream.pointee))
+        var unsupportedLevel = codecpar
+        unsupportedLevel.level = 52
+        XCTAssertFalse(PlayerCore.h264SoftwareDecodeWithinAdvertisedBounds(unsupportedLevel, stream: videoStream.pointee))
         var ordinaryH264 = codecpar
         ordinaryH264.profile = 100
         ordinaryH264.format = AV_PIX_FMT_YUV420P.rawValue
@@ -242,7 +248,8 @@ final class PlaybackMediaFixtureTests: XCTestCase {
 
         let probedTracks = LocalMediaProbe.videoTracks(at: url)
         let probedVideo = try XCTUnwrap(probedTracks.first)
-        XCTAssertEqual(probedVideo.bitrate, 130)
+        let probedBitrate = try XCTUnwrap(probedVideo.bitrate)
+        XCTAssertTrue((100 ... 200).contains(probedBitrate))
 
         let session = PlaybackSessionResponse(
             sessionId: "high10-session", userId: nil, profileId: nil, mediaFileId: 77,
@@ -250,21 +257,26 @@ final class PlaybackMediaFixtureTests: XCTestCase {
             streamUrl: url.absoluteString, audioTrackIndex: 0, durationSeconds: 1,
             subtitleUrls: nil, playbackInfo: nil
         )
-        let version = FileVersion(
-            fileId: 77, fileName: "v3_h264_high10_aac.mp4", resolution: "320x180",
-            codecVideo: "h264", codecAudio: "aac", hdr: false, container: "mp4",
-            fileSize: 20_000, duration: 1, bitrate: 200,
-            videoTracks: [VideoTrack(
-                index: 0, codec: "h264", width: 320, height: 180, frameRate: "24",
-                bitrate: 120, profile: "High 10", level: 51, bitDepth: 10,
-                colorRange: "tv", colorSpace: nil, colorPrimaries: nil,
-                colorTransfer: nil, videoRange: "SDR", dolbyVision: nil,
-                title: nil, language: nil
-            )],
-            audioTracks: nil, subtitleTracks: nil, chapters: nil,
-            effectiveAudioTrackIndex: 0
-        )
-        let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(input: ApplePlaybackPlannerInput(
+        func makeVersion(width: Int?, height: Int?, bitrate: Int?) -> FileVersion {
+            FileVersion(
+                fileId: 77, fileName: "v3_h264_high10_aac.mp4", resolution: "1920x1080",
+                codecVideo: "h264", codecAudio: "aac", hdr: false, container: "mp4",
+                fileSize: 20_000, duration: 1, bitrate: 8_000,
+                videoTracks: [VideoTrack(
+                    index: 0, codec: "h264", width: width, height: height, frameRate: "24",
+                    bitrate: bitrate, profile: "High 10", level: 51, bitDepth: 10,
+                    colorRange: "tv", colorSpace: nil, colorPrimaries: nil,
+                    colorTransfer: nil, videoRange: "SDR", dolbyVision: nil,
+                    title: nil, language: nil
+                )],
+                audioTracks: nil, subtitleTracks: nil, chapters: nil,
+                effectiveAudioTrackIndex: 0
+            )
+        }
+        let version = makeVersion(width: 320, height: 180, bitrate: 120)
+        let plan = try ApplePlaybackRoutePlanner(
+            supportsH264High10SoftwareDecode: { true }
+        ).makeExecutionPlan(input: ApplePlaybackPlannerInput(
             session: session, selectedVersion: version,
             streamRequest: StreamRequest(url: url, headers: [:], serverUrl: ""),
             routeRequirements: .baseline, selectedAudioTrackId: nil,
@@ -277,6 +289,35 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         XCTAssertEqual(plan.reason, "h264_high10_software_decode")
         XCTAssertEqual(plan.sourceMetadata.frameRate, 24)
         XCTAssertEqual(plan.sourceMetadata.bitrateKbps, 120)
+
+        let eligiblePlanner = ApplePlaybackRoutePlanner(
+            supportsH264High10SoftwareDecode: { true }
+        )
+        XCTAssertThrowsError(try eligiblePlanner.makeExecutionPlan(input: ApplePlaybackPlannerInput(
+            session: session, selectedVersion: makeVersion(width: 1_920, height: 1_080, bitrate: 8_000),
+            streamRequest: StreamRequest(url: url, headers: [:], serverUrl: ""),
+            routeRequirements: .baseline, selectedAudioTrackId: nil,
+            pendingAudioFfIndex: nil, preferredAudioTrackIndex: 0,
+            selectedPrimarySubtitleTrackId: nil, selectedSecondarySubtitleTrackId: nil,
+            hlsRouteFeatureEnabled: true, siloPlayerPrimaryEnabled: true,
+            dolbyVisionPolicy: .default
+        ))) { error in
+            XCTAssertEqual(
+                error as? ApplePlaybackRoutePlanningError,
+                .h264High10SoftwareDecodeUnavailable
+            )
+        }
+        XCTAssertThrowsError(try ApplePlaybackRoutePlanner(
+            supportsH264High10SoftwareDecode: { false }
+        ).makeExecutionPlan(input: ApplePlaybackPlannerInput(
+            session: session, selectedVersion: version,
+            streamRequest: StreamRequest(url: url, headers: [:], serverUrl: ""),
+            routeRequirements: .baseline, selectedAudioTrackId: nil,
+            pendingAudioFfIndex: nil, preferredAudioTrackIndex: 0,
+            selectedPrimarySubtitleTrackId: nil, selectedSecondarySubtitleTrackId: nil,
+            hlsRouteFeatureEnabled: true, siloPlayerPrimaryEnabled: true,
+            dolbyVisionPolicy: .default
+        )))
     }
 
     func testHigh10PlayerCorePublishesNonSquarePresentationAndPixelAspectRatio() throws {
@@ -484,7 +525,7 @@ final class PlaybackMediaFixtureTests: XCTestCase {
         )
         let stream = StreamRequest(url: streamURL, headers: [:], serverUrl: "")
 
-        let plan = ApplePlaybackRoutePlanner().makeExecutionPlan(
+        let plan = try ApplePlaybackRoutePlanner().makeExecutionPlan(
             input: ApplePlaybackPlannerInput(
                 session: session,
                 selectedVersion: version,

@@ -35,6 +35,9 @@ extension PlayerCore {
     /// the rejection (e.g. route to an AVPlayer-backed fallback) — the
     /// core itself stays agnostic about fallbacks.
     enum StreamRejection {
+        /// The source requires the bounded H.264 High 10 software decoder,
+        /// but the stream discovered at runtime exceeds the advertised limits.
+        case h264SoftwareDecodeOutOfBounds
         /// Dolby Vision Profile 5: `buildVideoFormatDescription` detected
         /// `AV_PKT_DATA_DOVI_CONF` with profile 5.
         case dolbyVisionProfile5

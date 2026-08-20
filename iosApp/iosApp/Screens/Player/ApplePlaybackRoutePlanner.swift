@@ -161,6 +161,14 @@ struct ApplePlaybackPlannerInput {
     }
 }
 
+enum ApplePlaybackRoutePlanningError: LocalizedError, Equatable {
+    case h264High10SoftwareDecodeUnavailable
+
+    var errorDescription: String? {
+        "This H.264 High 10 source exceeds the validated local software-decoder limits."
+    }
+}
+
 struct ApplePlaybackRoutePlanner {
     private static let nativeDirectContainers: Set<String> = ["mp4", "mov", "m4v"]
     private static let nativeDirectVideoCodecs: Set<String> = ["h264", "hevc"]
@@ -188,7 +196,16 @@ struct ApplePlaybackRoutePlanner {
         "pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "vobsub"
     ]
 
-    func makeExecutionPlan(input: ApplePlaybackPlannerInput) -> PlaybackExecutionPlan {
+    private let supportsH264High10SoftwareDecode: () -> Bool
+
+    init(
+        supportsH264High10SoftwareDecode: @escaping () -> Bool =
+            ApplePlaybackV3Capabilities.supportsValidatedH264High10DeviceClass
+    ) {
+        self.supportsH264High10SoftwareDecode = supportsH264High10SoftwareDecode
+    }
+
+    func makeExecutionPlan(input: ApplePlaybackPlannerInput) throws -> PlaybackExecutionPlan {
         let session = input.session
         let selectedVersion = input.selectedVersion
         let delivery = PlaybackDeliveryStrategy(playMethod: session.playMethod)
@@ -264,6 +281,16 @@ struct ApplePlaybackRoutePlanner {
                 for: selectedVersion,
                 fallbackCodec: session.playbackInfo?.videoCodec
             )
+            if requiresSoftwareH264,
+               !AppleH264High10SoftwareDecodePolicy.supports(
+                   Self.h264High10SourceFacts(
+                       for: selectedVersion,
+                       fallbackCodec: session.playbackInfo?.videoCodec
+                   ),
+                   deviceSupported: supportsH264High10SoftwareDecode()
+               ) {
+                throw ApplePlaybackRoutePlanningError.h264High10SoftwareDecodeUnavailable
+            }
             if requiresSoftwareH264 {
                 directLoopbackSession = nil
                 engine = .playerCoreDirect
@@ -539,17 +566,33 @@ extension ApplePlaybackRoutePlanner {
         for version: FileVersion,
         fallbackCodec: String? = nil
     ) -> Bool {
-        let sourceCodec = version.videoTracks?.first?.codec ?? version.codecVideo ?? fallbackCodec
-        let codec = sourceCodec?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard codec == "h264" || codec == "avc" || codec == "avc1" else { return false }
-        guard let track = version.videoTracks?.first else { return false }
-        if let bitDepth = track.bitDepth, bitDepth > 8 { return true }
-        let profile = track.profile?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-        return profile == "high 10" || profile == "high10" || profile == "high 10 intra"
+        let facts = h264High10SourceFacts(for: version, fallbackCodec: fallbackCodec)
+        return AppleH264High10SoftwareDecodePolicy.requiresSoftwareDecode(
+            codec: facts.codec,
+            bitDepth: facts.bitDepth,
+            profile: facts.profile
+        )
+    }
+
+    static func h264High10SourceFacts(
+        for version: FileVersion,
+        fallbackCodec: String? = nil
+    ) -> AppleH264High10SourceFacts {
+        let track = version.videoTracks?.first
+        // Track values are authoritative. The file-level codec and bitrate
+        // are equivalent scanner summaries and are the only safe fallbacks;
+        // profile, level, depth, dimensions, and frame rate must remain
+        // explicit so an incomplete High 10 source is never over-claimed.
+        return AppleH264High10SourceFacts(
+            codec: track?.codec ?? version.codecVideo ?? fallbackCodec,
+            profile: track?.profile,
+            level: track?.level,
+            bitDepth: track?.bitDepth,
+            width: track?.width,
+            height: track?.height,
+            frameRate: track?.frameRate.flatMap(Double.init),
+            bitrateKbps: track?.bitrate ?? version.bitrate
+        )
     }
 
     static func hevcLoopbackVideoRange(for version: FileVersion) -> String {

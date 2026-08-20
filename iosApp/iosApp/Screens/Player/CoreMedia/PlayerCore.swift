@@ -3819,6 +3819,14 @@ final class PlayerCore: NSObject {
                 authoritativeBitrateKbps: authoritativeH264SoftwareBitrateKbps
             ) else {
                 Self.logger.warning("video: H.264 software decode exceeds advertised 720p24/4096Kbps/level-5.1 bounds")
+                if let url = lastLoadURL {
+                    pendingRejection = (
+                        .h264SoftwareDecodeOutOfBounds,
+                        url,
+                        lastLoadHeaders,
+                        lastLoadStartTime
+                    )
+                }
                 return false
             }
             videoDecodeMode = .software
@@ -4129,9 +4137,13 @@ final class PlayerCore: NSObject {
         authoritativeFrameRate: Double? = nil,
         authoritativeBitrateKbps: Int? = nil
     ) -> Bool {
-        guard codecpar.width > 0, codecpar.height > 0,
+        let baseProfile = codecpar.profile & ~Int32(2_048)
+        guard codecpar.codec_id == AV_CODEC_ID_H264,
+              baseProfile == 110,
+              codecParameterBitDepth(codecpar) == 10,
+              AppleH264High10SoftwareDecodePolicy.levels.contains(Int(codecpar.level)),
+              codecpar.width > 0, codecpar.height > 0,
               codecpar.width <= 1_280, codecpar.height <= 720 else { return false }
-        if codecpar.level > 0 && codecpar.level > 51 { return false }
         let containerBitrateKbps = codecpar.bit_rate > 0 ? Double(codecpar.bit_rate) / 1_000 : nil
         let knownBitrates = [containerBitrateKbps, authoritativeBitrateKbps.map(Double.init)]
             .compactMap { $0 }

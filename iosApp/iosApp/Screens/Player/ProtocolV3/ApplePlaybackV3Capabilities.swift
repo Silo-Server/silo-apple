@@ -33,29 +33,92 @@ struct ApplePlaybackV3CapabilitySnapshot: Equatable {
     }
 }
 
-enum ApplePlaybackV3Capabilities {
-    /// Standard H.264 levels through the runtime's inclusive 5.1 ceiling.
-    /// Enumerating them keeps this strict software capability truthful for
-    /// consumers that interpret `levels` as a supported set rather than as
-    /// the server planner's current "at least" upper-bound representation.
-    static let h264SoftwareDecodeLevels = [
+struct AppleH264High10SourceFacts: Equatable {
+    let codec: String?
+    let profile: String?
+    let level: Int?
+    let bitDepth: Int?
+    let width: Int?
+    let height: Int?
+    let frameRate: Double?
+    let bitrateKbps: Int?
+}
+
+enum AppleH264High10SoftwareDecodePolicy {
+    static let levels = [
         9, 10, 11, 12, 13,
         20, 21, 22,
         30, 31, 32,
         40, 41, 42,
         50, 51
     ]
+    static let profiles = ["high 10", "high 10 intra"]
+    static let maxWidth = 1_280
+    static let maxHeight = 720
+    static let maxFrameRate = 24.001
+    static let maxBitrateKbps = 4_096
+
+    static func requiresSoftwareDecode(codec: String?, bitDepth: Int?, profile: String?) -> Bool {
+        guard normalizedCodec(codec) == "h264" else { return false }
+        if let bitDepth, bitDepth > 8 { return true }
+        guard let profile = normalizedProfile(profile) else { return false }
+        return profiles.contains(profile)
+    }
+
+    static func supports(_ facts: AppleH264High10SourceFacts, deviceSupported: Bool) -> Bool {
+        guard deviceSupported,
+              normalizedCodec(facts.codec) == "h264",
+              let profile = normalizedProfile(facts.profile), profiles.contains(profile),
+              facts.bitDepth == 10,
+              let level = facts.level, levels.contains(level),
+              let width = facts.width, width > 0, width <= maxWidth,
+              let height = facts.height, height > 0, height <= maxHeight,
+              let frameRate = facts.frameRate, frameRate > 0, frameRate <= maxFrameRate,
+              let bitrateKbps = facts.bitrateKbps,
+              bitrateKbps > 0, bitrateKbps <= maxBitrateKbps else { return false }
+        return true
+    }
+
+    private static func normalizedCodec(_ value: String?) -> String? {
+        let codec = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+        return ["h264", "avc", "avc1"].contains(codec) ? "h264" : codec
+    }
+
+    private static func normalizedProfile(_ value: String?) -> String? {
+        let compact = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+        switch compact {
+        case "high10": return "high 10"
+        case "high10intra": return "high 10 intra"
+        default: return value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        }
+    }
+}
+
+enum ApplePlaybackV3Capabilities {
+    /// Standard H.264 levels through the runtime's inclusive 5.1 ceiling.
+    /// Enumerating them keeps this strict software capability truthful for
+    /// consumers that interpret `levels` as a supported set rather than as
+    /// the server planner's current "at least" upper-bound representation.
+    static let h264SoftwareDecodeLevels = AppleH264High10SoftwareDecodePolicy.levels
 
     static let h264High10SoftwareDecodeCapability = PlaybackV3VideoDecodeCapability(
         codec: "h264",
         decoderName: "FFmpeg",
-        profiles: ["high 10", "high 10 intra"],
+        profiles: AppleH264High10SoftwareDecodePolicy.profiles,
         levels: h264SoftwareDecodeLevels,
         bitDepths: [10],
-        maxWidth: 1_280,
-        maxHeight: 720,
+        maxWidth: AppleH264High10SoftwareDecodePolicy.maxWidth,
+        maxHeight: AppleH264High10SoftwareDecodePolicy.maxHeight,
         maxFrameRate: 24,
-        maxBitrateKbps: 4_096,
+        maxBitrateKbps: AppleH264High10SoftwareDecodePolicy.maxBitrateKbps,
         hardware: false
     )
 

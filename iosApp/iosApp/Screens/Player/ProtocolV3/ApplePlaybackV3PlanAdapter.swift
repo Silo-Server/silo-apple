@@ -15,6 +15,7 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedClientTransformation(String)
     case invalidClientTransformation(String)
     case unsupportedRuntimeCorrection(String)
+    case localVideoDecodeUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
             return "The V3 client transformation cannot be executed as planned: \(value)."
         case .unsupportedRuntimeCorrection(let value):
             return "The V3 plan requires an unsupported runtime correction: \(value)."
+        case .localVideoDecodeUnavailable:
+            return "This H.264 High 10 source exceeds the validated local software-decoder limits."
         }
     }
 }
@@ -215,7 +218,9 @@ enum ApplePlaybackV3PlanAdapter {
         v3: PreparedPlaybackV3,
         basePlan: PlaybackExecutionPlan,
         streamRequest: StreamRequest,
-        routeRequirements: PlaybackRouteRequirements
+        routeRequirements: PlaybackRouteRequirements,
+        supportsH264High10SoftwareDecode: Bool =
+            ApplePlaybackV3Capabilities.supportsValidatedH264High10DeviceClass()
     ) throws -> PlaybackExecutionPlan {
         try validate(v3.plan)
         let plan = v3.plan
@@ -231,6 +236,12 @@ enum ApplePlaybackV3PlanAdapter {
             // planner. High 10 must never fall back to AVPlayer when catalog
             // video tracks are absent or stale.
             if requiresSoftwareH264Decode(plan.source) {
+                guard AppleH264High10SoftwareDecodePolicy.supports(
+                    high10SourceFacts(plan.source),
+                    deviceSupported: supportsH264High10SoftwareDecode
+                ) else {
+                    throw ApplePlaybackV3PlanError.localVideoDecodeUnavailable
+                }
                 engine = .playerCoreDirect
                 loopbackSession = nil
             } else {
@@ -315,17 +326,26 @@ enum ApplePlaybackV3PlanAdapter {
     private static func requiresSoftwareH264Decode(
         _ source: PlaybackV3SourceDescriptor
     ) -> Bool {
-        let codec = source.videoCodec?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard codec == "h264" || codec == "avc" || codec == "avc1" else { return false }
-        if let bitDepth = source.bitDepth, bitDepth > 8 { return true }
-        let profile = source.videoProfile?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-        return profile == "high 10" || profile == "high10" || profile == "high 10 intra"
+        AppleH264High10SoftwareDecodePolicy.requiresSoftwareDecode(
+            codec: source.videoCodec,
+            bitDepth: source.bitDepth,
+            profile: source.videoProfile
+        )
+    }
+
+    private static func high10SourceFacts(
+        _ source: PlaybackV3SourceDescriptor
+    ) -> AppleH264High10SourceFacts {
+        AppleH264High10SourceFacts(
+            codec: source.videoCodec,
+            profile: source.videoProfile,
+            level: source.videoLevel,
+            bitDepth: source.bitDepth,
+            width: source.width,
+            height: source.height,
+            frameRate: source.frameRate,
+            bitrateKbps: source.bitrateKbps
+        )
     }
 
     private static func forcedLoopbackSession(

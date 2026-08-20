@@ -222,7 +222,7 @@ final class OfflinePlaybackMappingTests: XCTestCase {
             try manifest(audioTracksJSON: singleEAC3Track, selectedAudioTrackIndex: 0),
             videoTracks: videoTracks
         )
-        return ApplePlaybackRoutePlanner().makeExecutionPlan(
+        return try ApplePlaybackRoutePlanner().makeExecutionPlan(
             input: ApplePlaybackPlannerInput(
                 session: playback.session,
                 selectedVersion: playback.selectedVersion,

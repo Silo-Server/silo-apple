@@ -2589,7 +2589,7 @@ class PlayerViewModel {
         streamRequest: StreamRequest
     ) throws -> PlaybackExecutionPlan {
         let routeRequirements = makeRouteRequirements(prepared: prepared)
-        let basePlan = ApplePlaybackRoutePlanner().makeExecutionPlan(
+        let basePlan = try ApplePlaybackRoutePlanner().makeExecutionPlan(
             input: ApplePlaybackPlannerInput(
                 session: prepared.session,
                 selectedVersion: prepared.selectedVersion,
@@ -3134,6 +3134,7 @@ class PlayerViewModel {
                 streamRequest: streamRequest,
                 startTime: startTime,
                 activePlan: activeExecutionPlan,
+                hasProtocolV3Recovery: activePreparedProtocolV3 != nil,
                 hevcLoopbackVideoRange: hevcLoopbackVideoRange
             ),
             makeLoopbackSession: { [weak self] request in
@@ -3154,6 +3155,18 @@ class PlayerViewModel {
                 activePlayer.core?.dispose()
             }
             finalizeTerminalPlaybackError(message)
+        case .replan(let message, let diagnosticLine, let disposeActiveCore):
+            Self.logger.warning("\(diagnosticLine, privacy: .public)")
+            if disposeActiveCore {
+                activePlayer.core?.dispose()
+            }
+            if !attemptProtocolV3Replan(
+                position: startTime,
+                classification: "unsupported_stream",
+                message: message
+            ) {
+                finalizeTerminalPlaybackError(message)
+            }
         case .fallback(let fallbackPlan, let diagnosticLine):
             Self.logger.info("\(diagnosticLine, privacy: .public)")
             #if os(iOS) || os(tvOS)
@@ -3753,7 +3766,8 @@ class PlayerViewModel {
         resumePositionOverride: Double? = nil,
         allowNearEndResume: Bool = false,
         preserveInterruptionState: Bool = false,
-        origin: LoadOrigin = .userInitiated
+        origin: LoadOrigin = .userInitiated,
+        outputRouteSupersededAttempt: Int = 0
     ) {
         guard !isDisposed else { return }
         #if os(tvOS)
@@ -3968,16 +3982,21 @@ class PlayerViewModel {
                     // start using a freshly sampled capability snapshot rather
                     // than letting the obsolete request terminate playback.
                     self.pendingProtocolV3OutputRouteSnapshot = nil
-                    self.beginFreshLoad(
-                        request: request,
-                        progressPosition: snapshotPosition,
-                        finalizeCurrentSession: finalizeCurrentSession,
-                        resumePositionOverride: resumePositionOverride,
-                        allowNearEndResume: allowNearEndResume,
-                        preserveInterruptionState: preserveInterruptionState,
-                        origin: origin
-                    )
-                    return
+                    if OutputRouteFreshLoadRetryPolicy.shouldRetry(
+                        completedRetries: outputRouteSupersededAttempt
+                    ) {
+                        self.beginFreshLoad(
+                            request: request,
+                            progressPosition: snapshotPosition,
+                            finalizeCurrentSession: finalizeCurrentSession,
+                            resumePositionOverride: resumePositionOverride,
+                            allowNearEndResume: allowNearEndResume,
+                            preserveInterruptionState: preserveInterruptionState,
+                            origin: origin,
+                            outputRouteSupersededAttempt: outputRouteSupersededAttempt + 1
+                        )
+                        return
+                    }
                 }
                 self.handleBeginFreshLoadFailure(error: error, origin: origin)
             }

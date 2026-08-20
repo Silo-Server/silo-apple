@@ -396,12 +396,136 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             streamRequest: streamRequest,
             engine: .avPlayerNativeDirect
         )
-        let plan = makePlan(videoProfile: "high 10", bitDepth: 10)
+        let plan = makePlan(
+            videoProfile: "high 10",
+            bitDepth: 10,
+            width: 1_280,
+            height: 720,
+            bitrateKbps: 4_096
+        )
 
         let adapted = try adaptedPlan(plan, base: base, streamRequest: streamRequest)
 
         XCTAssertEqual(adapted.engine, .playerCoreDirect)
         XCTAssertNil(adapted.loopbackSession)
+    }
+
+    func testOriginalHigh10PlanOutsideSoftwareDecodePolicyIsRejected() {
+        let streamRequest = makeStreamRequest()
+        let base = makeBaseExecutionPlan(
+            streamRequest: streamRequest,
+            engine: .avPlayerNativeDirect
+        )
+
+        XCTAssertThrowsError(try adaptedPlan(
+            makePlan(videoProfile: "high 10", bitDepth: 10),
+            base: base,
+            streamRequest: streamRequest
+        )) { error in
+            XCTAssertEqual(error as? ApplePlaybackV3PlanError, .localVideoDecodeUnavailable)
+        }
+    }
+
+    func testHigh10SoftwareDecodePolicyRequiresCompleteBoundedFactsAndEligibleDevice() {
+        func facts(
+            codec: String? = "H.264",
+            profile: String? = "High_10",
+            level: Int? = 51,
+            bitDepth: Int? = 10,
+            width: Int? = 1_280,
+            height: Int? = 720,
+            frameRate: Double? = 24,
+            bitrateKbps: Int? = 4_096
+        ) -> AppleH264High10SourceFacts {
+            AppleH264High10SourceFacts(
+                codec: codec,
+                profile: profile,
+                level: level,
+                bitDepth: bitDepth,
+                width: width,
+                height: height,
+                frameRate: frameRate,
+                bitrateKbps: bitrateKbps
+            )
+        }
+
+        XCTAssertTrue(AppleH264High10SoftwareDecodePolicy.supports(facts(), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(level: 52), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(width: 1_281), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(height: 721), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(frameRate: 24.01), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(bitrateKbps: 4_097), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(width: nil), deviceSupported: true))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.supports(facts(), deviceSupported: false))
+    }
+
+    func testHigh10SoftwareDecodeRequirementExcludesOrdinaryH264AndHEVCMain10() {
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.requiresSoftwareDecode(
+            codec: "avc1",
+            bitDepth: 8,
+            profile: "High"
+        ))
+        XCTAssertFalse(AppleH264High10SoftwareDecodePolicy.requiresSoftwareDecode(
+            codec: "hevc",
+            bitDepth: 10,
+            profile: "Main 10"
+        ))
+        XCTAssertTrue(AppleH264High10SoftwareDecodePolicy.requiresSoftwareDecode(
+            codec: "H.264",
+            bitDepth: 10,
+            profile: "High-10"
+        ))
+    }
+
+    func testOutputRouteSupersededFreshLoadRetryCeiling() {
+        XCTAssertTrue(OutputRouteFreshLoadRetryPolicy.shouldRetry(completedRetries: 0))
+        XCTAssertTrue(OutputRouteFreshLoadRetryPolicy.shouldRetry(completedRetries: 1))
+        XCTAssertTrue(OutputRouteFreshLoadRetryPolicy.shouldRetry(completedRetries: 2))
+        XCTAssertFalse(OutputRouteFreshLoadRetryPolicy.shouldRetry(completedRetries: 3))
+    }
+
+    func testHigh10RuntimeBoundsRejectionRequestsProtocolV3Replan() {
+        let streamRequest = makeStreamRequest()
+        let decision = PlaybackRecoveryPlanner().decide(
+            context: .init(
+                reason: .h264SoftwareDecodeOutOfBounds,
+                currentDelivery: .direct,
+                streamRequest: streamRequest,
+                startTime: 12,
+                activePlan: makeBaseExecutionPlan(streamRequest: streamRequest),
+                hasProtocolV3Recovery: true,
+                hevcLoopbackVideoRange: nil
+            ),
+            makeLoopbackSession: { _ in nil }
+        )
+
+        guard case .replan(let message, _, let disposeActiveCore) = decision else {
+            return XCTFail("Expected Protocol V3 replan")
+        }
+        XCTAssertTrue(disposeActiveCore)
+        XCTAssertTrue(message.contains("local decoder limits"))
+    }
+
+    func testHigh10RuntimeBoundsRejectionWithoutRecoveryIsTerminal() {
+        let streamRequest = makeStreamRequest()
+        let decision = PlaybackRecoveryPlanner().decide(
+            context: .init(
+                reason: .h264SoftwareDecodeOutOfBounds,
+                currentDelivery: .direct,
+                streamRequest: streamRequest,
+                startTime: 12,
+                activePlan: makeBaseExecutionPlan(streamRequest: streamRequest),
+                hasProtocolV3Recovery: false,
+                hevcLoopbackVideoRange: nil
+            ),
+            makeLoopbackSession: { _ in nil }
+        )
+
+        guard case .terminal(let message, _, let disposeActiveCore) = decision else {
+            return XCTFail("Expected terminal decoder-limit failure")
+        }
+        XCTAssertTrue(disposeActiveCore)
+        XCTAssertTrue(message.contains("local decoder limits"))
     }
 
     func testUnsupportedPlanRequirementsAreRejected() {
@@ -1572,7 +1696,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ),
             basePlan: base,
             streamRequest: streamRequest,
-            routeRequirements: .baseline
+            routeRequirements: .baseline,
+            supportsH264High10SoftwareDecode: true
         )
     }
 
