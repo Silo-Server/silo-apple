@@ -179,6 +179,50 @@ final class PlaybackWindowClaimPolicyTests: XCTestCase {
         )
     }
 
+    func testOwnerReclaimsTheWindowAfterAPersistentBehindStreak() {
+        // Deep 4K resume (diagnostics SILO-9AQBTQJV): the same owner trails the
+        // window within one chunk indefinitely. The first few misses are
+        // transient chunks; once the streak proves it is stuck, it reclaims the
+        // window instead of staying RTT-bound.
+        let below = PlaybackWindowClaimPolicy.maxSameOwnerBehindDiversions - 1
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 10,
+                windowCursor: 50,
+                sameOwnerBehindStreak: below
+            ),
+            .chunk(.sameOwnerBehindWindow),
+            "a still-transient streak keeps serving one chunk"
+        )
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner,
+                owner: owner,
+                ownerIsAlive: true,
+                demandOffset: 10,
+                windowCursor: 50,
+                sameOwnerBehindStreak: PlaybackWindowClaimPolicy.maxSameOwnerBehindDiversions
+            ),
+            .retarget,
+            "a stuck reader reclaims the window at the streak threshold"
+        )
+    }
+
+    func testFarBehindStillReclaimsRegardlessOfStreak() {
+        // The pre-existing >one-chunk-behind reclaim is unchanged (streak 0).
+        let cursor = PlaybackWindowClaimPolicy.sameOwnerChunkBehindBytes + 100
+        XCTAssertEqual(
+            PlaybackWindowClaimPolicy.arbitrate(
+                claimant: owner, owner: owner, ownerIsAlive: true,
+                demandOffset: 0, windowCursor: cursor, sameOwnerBehindStreak: 0
+            ),
+            .retarget
+        )
+    }
+
     func testOwnerReanchorsWhenFarBehindProductiveWindow() {
         // A sequential reader can lag after finite-cache eviction. Discrete
         // fallback is deliberately bounded to one chunk so that reader can

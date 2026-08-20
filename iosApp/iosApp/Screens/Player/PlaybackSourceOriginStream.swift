@@ -75,6 +75,12 @@ enum PlaybackWindowClaimPolicy {
     /// preserving the ahead window would make a lagging sequential reader
     /// issue an unbounded series of RTT-bound chunk requests.
     static let sameOwnerChunkBehindBytes = PlaybackOriginRoutingPolicy.chunkBytes
+    /// A behind-cursor race resolves in one or two chunks. A same-owner reader
+    /// that stays stuck within one chunk of the window — a deep 4K resume whose
+    /// interleaved video/audio reads trail the productive cursor indefinitely
+    /// (diagnostics SILO-9AQBTQJV: 633 consecutive diversions, starving 4K DV
+    /// onto RTT-bound 4 MB fetches) — reclaims the window after a short streak.
+    static let maxSameOwnerBehindDiversions = 4
 
     enum ChunkReason: String, Equatable {
         /// Another live response owns the streaming window.
@@ -95,7 +101,8 @@ enum PlaybackWindowClaimPolicy {
         owner: UUID?,
         ownerIsAlive: Bool,
         demandOffset: Int64,
-        windowCursor: Int64?
+        windowCursor: Int64?,
+        sameOwnerBehindStreak: Int = 0
     ) -> Verdict {
         guard let owner, ownerIsAlive else { return .retarget }
         guard let claimant else { return .chunk(.liveOwnerConflict) }
@@ -103,6 +110,11 @@ enum PlaybackWindowClaimPolicy {
         if let windowCursor,
            demandOffset < windowCursor,
            windowCursor - demandOffset <= sameOwnerChunkBehindBytes {
+            // Transient behind-cursor race → one chunk. A reader stuck here
+            // reclaims the window once the streak shows it is not transient.
+            if sameOwnerBehindStreak >= maxSameOwnerBehindDiversions {
+                return .retarget
+            }
             return .chunk(.sameOwnerBehindWindow)
         }
         return .retarget

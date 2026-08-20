@@ -748,6 +748,9 @@ private final class PlaybackSourceResource {
     /// (`PlaybackWindowClaimPolicy`) — the fix for the 2026-07 tvOS
     /// cancellation/range-request storm.
     private var windowOwnerServeID: UUID?
+    /// Consecutive `same_owner_behind_window` diversions for the current window
+    /// owner; drives the streak-bounded reclaim in `PlaybackWindowClaimPolicy`.
+    private var sameOwnerBehindDivertStreak = 0
 
     init(
         originURL: URL,
@@ -1072,6 +1075,7 @@ private final class PlaybackSourceResource {
         activeServeIDs.remove(id)
         if windowOwnerServeID == id {
             windowOwnerServeID = nil
+            sameOwnerBehindDivertStreak = 0
         }
         if let key = serveIDsByConnection.first(where: { $0.value == id })?.key {
             serveIDsByConnection.removeValue(forKey: key)
@@ -1304,6 +1308,7 @@ private final class PlaybackSourceResource {
             servedSequentialBytes: servedSequentialBytes
         ) {
         case .rideWindow:
+            sameOwnerBehindDivertStreak = 0
             toNote = windowStream
         case .claimWindow:
             let ownerIsAlive = windowOwnerServeID.map { activeServeIDs.contains($0) } ?? false
@@ -1312,9 +1317,11 @@ private final class PlaybackSourceResource {
                 owner: windowOwnerServeID,
                 ownerIsAlive: ownerIsAlive,
                 demandOffset: offset,
-                windowCursor: cursor
+                windowCursor: cursor,
+                sameOwnerBehindStreak: sameOwnerBehindDivertStreak
             ) {
             case .retarget:
+                sameOwnerBehindDivertStreak = 0
                 windowOwnerServeID = serveID
                 if let window = windowStream {
                     toRetarget = window
@@ -1329,13 +1336,19 @@ private final class PlaybackSourceResource {
                     toStart = stream
                 }
             case .chunk(let reason):
+                if reason == .sameOwnerBehindWindow {
+                    sameOwnerBehindDivertStreak += 1
+                } else {
+                    sameOwnerBehindDivertStreak = 0
+                }
                 cmpLog(
-                    "[CMP-SOURCE-CACHE] window claim diverted reason=\(reason.rawValue) offset=\(offset) cursor=\(cursor ?? -1) served=\(servedSequentialBytes) routed=chunk"
+                    "[CMP-SOURCE-CACHE] window claim diverted reason=\(reason.rawValue) offset=\(offset) cursor=\(cursor ?? -1) served=\(servedSequentialBytes) streak=\(sameOwnerBehindDivertStreak) routed=chunk"
                 )
                 chunk = true
                 deferChunkUntilEntityKnown = resumeCapable && sourceEntityETag == nil
             }
         case .chunk:
+            sameOwnerBehindDivertStreak = 0
             chunk = true
             // A resume-capable chunk must be bound to the streaming
             // window's representation. If a startup probe wins the race
