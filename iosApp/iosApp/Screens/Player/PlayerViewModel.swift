@@ -1313,7 +1313,7 @@ class PlayerViewModel {
             }
             let externalSubtitleSnapshot = trackSelection.knownExternalSubtitles
             let selectedSecondarySubtitleSnapshot = selectedSecondarySubtitleId
-            let explicitSubtitleChoiceSnapshot = trackSelection.hasExplicitSubtitleChoice
+            let selectionOriginSnapshot = trackSelection.selection.origin
             // An embedded selection cannot be re-established by trackId across
             // the backend rebuild (ids are not stable), and after a switch to
             // transcode the same stream may resurface as a sidecar instead.
@@ -1351,7 +1351,7 @@ class PlayerViewModel {
                     subtitleUrlFallback: externalSubtitleSnapshot,
                     recoveredEmbeddedSubtitleSelection: embeddedSubtitleSelectionSnapshot,
                     recoveredSecondarySubtitleId: selectedSecondarySubtitleSnapshot,
-                    hasExplicitSubtitleChoice: explicitSubtitleChoiceSnapshot
+                    selectionOrigin: selectionOriginSnapshot
                 ))
             )
             return (prepared, plan, Self.identity(for: prepared))
@@ -2016,7 +2016,7 @@ class PlayerViewModel {
                 streamRequest: streamRequest,
                 routeRequirements: routeRequirements,
                 selectedAudioTrackId: selectedAudioId,
-                pendingAudioFfIndex: trackSelection.pendingAudioFfIndex,
+                planAudioSelectionIndex: trackSelection.selection.audio.planIndex,
                 preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
                 selectedPrimarySubtitleTrackId: selectedSubtitleId,
                 selectedSecondarySubtitleTrackId: selectedSecondarySubtitleId,
@@ -2126,9 +2126,9 @@ class PlayerViewModel {
             /// The restart keeps the previous sidecar list when the replacement
             /// session omits one; the other two origins reset to empty.
             let subtitleUrlFallback: [SubtitleUrl]
-            let recoveredEmbeddedSubtitleSelection: TrackSelectionCoordinator.TrackSelectionSnapshot?
+            let recoveredEmbeddedSubtitleSelection: TrackSelectionSnapshot?
             let recoveredSecondarySubtitleId: Int64?
-            let hasExplicitSubtitleChoice: Bool
+            let selectionOrigin: SelectionOrigin
         }
 
         var subtitleUrlFallback: [SubtitleUrl] {
@@ -3153,7 +3153,7 @@ class PlayerViewModel {
     ) async throws -> PreparedPlayback {
         let initialSubtitlePreferences: PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences? = {
             guard settings.subtitleMatchesSystemAppearance,
-                  !trackSelection.hasExplicitSubtitleChoice else {
+                  trackSelection.selection.origin != .user else {
                 return nil
             }
             let preferences = trackSelection.systemCaptionPrefsSnapshot()
@@ -4497,31 +4497,6 @@ class PlayerViewModel {
         }.count
     }
 
-    enum ProtocolV3SidecarRestoreIntent: Equatable {
-        case renderLocally(Int64)
-        case serverRendered(Int64)
-    }
-
-    static func protocolV3SidecarRestoreIntent(
-        snapshot: Int64?,
-        selectedSubtitleIndex: Int?,
-        subtitleMode: String?
-    ) -> ProtocolV3SidecarRestoreIntent? {
-        guard let snapshot,
-              SubtitleTrackIdSpace.isSidecar(snapshot),
-              SubtitleTrackIdSpace.sidecarIndex(from: snapshot) == selectedSubtitleIndex else {
-            return nil
-        }
-        switch subtitleMode {
-        case "render":
-            return .renderLocally(snapshot)
-        case "burn_in":
-            return .serverRendered(snapshot)
-        default:
-            return nil
-        }
-    }
-
     static func isUnexpectedBackwardPlaybackTime(
         _ candidate: Double,
         currentTime: Double,
@@ -4533,44 +4508,6 @@ class PlayerViewModel {
             return false
         }
         return candidate + 0.75 < currentTime
-    }
-
-    struct ProtocolV3PendingTrackIntent: Equatable {
-        let audioIndex: Int?
-        let embeddedSubtitleIndex: Int?
-        let sidecarSubtitleTrackId: Int64?
-    }
-
-    static func protocolV3PendingTrackIntent(
-        plan: PlaybackV3Plan,
-        request: LoadRequest
-    ) -> ProtocolV3PendingTrackIntent {
-        let rendersSubtitleLocally = plan.subtitle.mode == "render"
-        return ProtocolV3PendingTrackIntent(
-            audioIndex: request.preferredAudioTrackIndex,
-            embeddedSubtitleIndex: rendersSubtitleLocally
-                ? request.preferredSubtitleTrackIndex
-                : -1,
-            sidecarSubtitleTrackId: rendersSubtitleLocally
-                ? request.preferredSidecarSubtitleTrackId
-                : nil
-        )
-    }
-
-    static func protocolV3SubtitleUrlsForCurrentRoute(
-        _ urls: [SubtitleUrl],
-        routeUsesEmbeddedExtraction: Bool,
-        selectedSubtitleIndex: Int?,
-        subtitleMode: String?
-    ) -> [SubtitleUrl] {
-        guard routeUsesEmbeddedExtraction else { return urls }
-        let selectedRenderedSidecarIndex = subtitleMode == "render"
-            ? selectedSubtitleIndex
-            : nil
-        return urls.filter { subtitle in
-            subtitle.source?.localizedCaseInsensitiveCompare("embedded") != .orderedSame
-                || subtitle.index == selectedRenderedSidecarIndex
-        }
     }
 
     func cycleAudioTrack() { trackSelection.cycleAudioTrack() }
@@ -5123,9 +5060,9 @@ class PlayerViewModel {
             ApplePlaybackRoutePlanner.makeLoopbackSessionSpec(
                 for: version,
                 selectedAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume()
-                    ?? trackSelection.pendingAudioFfIndex,
+                    ?? trackSelection.selection.audio.planIndex,
                 selectedAudioTrackId: selectedAudioId,
-                pendingAudioFfIndex: trackSelection.pendingAudioFfIndex,
+                planAudioSelectionIndex: trackSelection.selection.audio.planIndex,
                 preferredAudioTrackIndex: trackSelection.resolvedAudioTrackIndexForResume(),
                 streamRequest: streamRequest,
                 videoMode: videoMode,

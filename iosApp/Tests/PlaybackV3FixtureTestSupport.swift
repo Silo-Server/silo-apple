@@ -29,7 +29,7 @@ enum PlaybackV3FixtureTestSupport {
 }
 
 /// Builds a planner execution plan from the fields the tests actually vary.
-/// `selectedAudioTrackId`, `pendingAudioFfIndex` and
+/// `selectedAudioTrackId`, `planAudioSelectionIndex` and
 /// `selectedSecondarySubtitleTrackId` are `nil` at every call site.
 func makeTestExecutionPlan(
     session: PlaybackSessionResponse,
@@ -47,7 +47,7 @@ func makeTestExecutionPlan(
             streamRequest: streamRequest,
             routeRequirements: routeRequirements,
             selectedAudioTrackId: nil,
-            pendingAudioFfIndex: nil,
+            planAudioSelectionIndex: nil,
             preferredAudioTrackIndex: preferredAudioTrackIndex,
             selectedPrimarySubtitleTrackId: selectedPrimarySubtitleTrackId,
             selectedSecondarySubtitleTrackId: nil,

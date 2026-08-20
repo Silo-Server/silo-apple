@@ -45,7 +45,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         ])
 
         XCTAssertEqual(coordinator.selectedAudioId, 11)
-        XCTAssertNil(coordinator.pendingAudioFfIndex, "the pending index is consumed once it matches")
+        XCTAssertNil(coordinator.selection.audio.planIndex, "the pending index is consumed once it matches")
 
         // A second track list must not re-apply the (now consumed) intent.
         coordinator.applyTrackList([
@@ -195,7 +195,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             preferredSidecarSubtitleTrackId: nil,
             preferredProtocolV3SubtitleIndex: nil
         )
-        XCTAssertFalse(coordinator.hasExplicitSubtitleChoice)
+        XCTAssertNotEqual(coordinator.selection.origin, .user)
 
         coordinator.appendSidecarTracks([
             descriptor(index: 0),
@@ -217,7 +217,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             preferredSidecarSubtitleTrackId: nil,
             preferredProtocolV3SubtitleIndex: nil
         )
-        XCTAssertTrue(explicit.hasExplicitSubtitleChoice)
+        XCTAssertEqual(explicit.selection.origin, .user)
         explicit.appendSidecarTracks([descriptor(index: 1, forced: true)])
         XCTAssertNil(explicit.selectedSubtitleId, "an explicit choice outranks the forced sidecar")
 
@@ -252,7 +252,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
 
         XCTAssertNil(coordinator.selectedAudioId)
         XCTAssertNil(coordinator.selectedSubtitleId)
-        XCTAssertFalse(coordinator.hasExplicitSubtitleChoice)
+        XCTAssertNotEqual(coordinator.selection.origin, .user)
         XCTAssertEqual(recorder.hideControlsCount, 0)
     }
 
@@ -266,12 +266,12 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             preferredProtocolV3SubtitleIndex: nil
         )
         coordinator.applyTrackList([audioTrack(trackId: 10, srcId: 0)])
-        XCTAssertEqual(coordinator.pendingAudioFfIndex, 1, "no track matched, so the intent survives")
+        XCTAssertEqual(coordinator.selection.audio.planIndex, 1, "no track matched, so the intent survives")
 
         coordinator.selectAudio(coordinator.audioTracks[0])
 
         XCTAssertEqual(coordinator.selectedAudioId, 10)
-        XCTAssertNil(coordinator.pendingAudioFfIndex, "a manual pick drops the server intent")
+        XCTAssertNil(coordinator.selection.audio.planIndex, "a manual pick drops the server intent")
         XCTAssertEqual(recorder.hideControlsCount, 1)
         XCTAssertTrue(recorder.replans.isEmpty, "no V3 plan is active, so the switch is local")
     }
@@ -300,9 +300,10 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.selectedAudioId)
         XCTAssertNil(coordinator.selectedSubtitleId)
         XCTAssertNil(coordinator.selectedSecondarySubtitleId)
-        XCTAssertEqual(coordinator.pendingAudioFfIndex, 3)
-        XCTAssertFalse(
-            coordinator.hasExplicitSubtitleChoice,
+        XCTAssertEqual(coordinator.selection.audio.planIndex, 3)
+        XCTAssertNotEqual(
+            coordinator.selection.origin,
+            .user,
             "an audio-only intent is not an explicit subtitle choice"
         )
 
@@ -313,8 +314,8 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             preferredSidecarSubtitleTrackId: nil,
             preferredProtocolV3SubtitleIndex: 4
         )
-        XCTAssertTrue(coordinator.hasExplicitSubtitleChoice)
-        XCTAssertNil(coordinator.pendingAudioFfIndex)
+        XCTAssertEqual(coordinator.selection.origin, .user)
+        XCTAssertNil(coordinator.selection.audio.planIndex)
     }
 
     // MARK: - Display members: observation scope
@@ -435,10 +436,10 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         TrackSelectionCoordinator.RecoverySnapshot(
             prefs: nil,
             externalSubtitles: [],
-            audioSelection: TrackSelectionCoordinator.TrackSelectionSnapshot(track: audio),
+            audioSelection: TrackSelectionSnapshot(track: audio),
             subtitleSelection: nil,
             secondarySubtitleId: nil,
-            hasExplicitSubtitleChoice: false
+            origin: .autoPolicy
         )
     }
 

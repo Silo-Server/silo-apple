@@ -11,8 +11,8 @@
 //  Audio resolution is *not* done here: the server's `/playback/start`
 //  endpoint already picks an audio track based on per-series and
 //  per-library prefs and returns it as `session.audioTrackIndex`.
-//  PlayerViewModel feeds that index in as `pendingAudioFfIndex` and
-//  the existing pending-match path applies it.
+//  PlayerViewModel feeds that index in as the track selection's
+//  `AudioSelection.planIndex` rung and the track-list funnel applies it.
 //
 
 import Foundation
