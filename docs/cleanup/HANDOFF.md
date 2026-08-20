@@ -287,13 +287,15 @@ not reach the player.
    applied post-merge). The round-2/3 major class to watch in wave 3: **a hold may only be adopted together
    with its releaser** (design §2.8 as-built). Two disclosed gaps deferred to wave 3's shell-scoped state: the
    post-outage-reload suppression window and the route-change-during-ride-through divergence (design §2.8).
-   **NEXT: the wave-2b device pass gates further work** — Living Room Apple TV, design §6 rows 1/3/7 (loopback
-   DV/HDR10, seek-heavy reanchor — exercises the restored main-actor hops), 12/13 (renewal; server restart →
-   ride-through → replan → resume — where the carry-owner fix lives; confirm `suspended=[…]` in the periodic
-   `[CMP-AVP] loopback playhead state` line clears after the replan), 16, plus a tvOS background-suspend →
-   resume → exit pass for `dispose(retainingTransport:)`. The owner turns the TV on. Then: re-anchor
-   `spec-s2w3-actor-cutover.json` against the tip (design §2.3/§2.8 as-built blocks are binding) → wave 3 →
-   device pass → wave 4. Lessons from waves 1–2: keep packages small, every review round on high-risk packages
+   **Wave-2b device pass (bedroom TV, 2026-08-19 evening — record in `docs/tvos-player/validations/`):** rows
+   3 (HDR10 loopback) and 7 (seek-heavy) PASS on the wave-2b build; production restart ridden out invisibly;
+   bonus pass of the route-fallback ladder when the bedroom path's known environmental `-11868` killed the
+   loopback item (rebuild → server replan, all clean). A startup `prematureSourceEnd('EXIT')` scare was
+   root-caused to origin latency during a sick server window (code-proven ≥10 s read-deadline abort; the
+   pre-wave-2 control build reproduced neither) — NOT a Stage 2 regression. Owner deferred the deep-outage
+   (rows 12/13 proper) and DV rows to the post-wave-3 §6 full gate. Follow-ups filed in the validation record:
+   writer startup read-deadline + one-retry; cmpLog mirrors for the source proxy's OSLog-only transport lines;
+   auto-subtitle replan cooldown. Wave 3 (actor cutover) launched off `7a1aadc` with the re-anchored spec. Lessons from waves 1–2: keep packages small, every review round on high-risk packages
    found real fidelity gaps (reducer ×5, engine session ×3), and read the as-built blocks before writing the
    next spec. Owner decided 2026-08-19: no macOS smoke harness — the
    simulator suite is the per-wave gate and the physical Apple TV covers DV/TrueHD/loopback rows. Key finding from the inventories: **no test constructs
