@@ -883,9 +883,9 @@ final class RecoveryPolicyTests: XCTestCase {
     }
 
     func testItemDeath_FailedToEnd_ArmsNothingOutsideAnEstablishedLoopback() {
-        // Anything else falls through to
-        // `recoverLocalLoopbackFailureIfNeeded`, which arrives classified as
-        // `.playlistUnchanged` instead.
+        // Anything else falls through to the "Playlist File unchanged" /
+        // `-12888` tail of `AVPlayerBackend.itemFailedToEndObserver`, which
+        // arrives classified as `.playlistUnchanged` instead.
         var startup = startupContext()
         var action: RecoveryAction?
         (action, startup) = RecoveryPolicy.decide(
@@ -1821,9 +1821,11 @@ final class RecoveryPolicyTests: XCTestCase {
             now: t0
         )
         XCTAssertEqual(action, .recoverFromServerOutage(reason: "source_entity_changed"))
+        // The shell half of the same decision: `PlaybackReducer`'s
+        // `.recoverFromServerOutage` case emits `.cancelTimer(.backgroundRenewal)`.
         XCTAssertFalse(
             next.backgroundRenewalInFlight,
-            "PVM:4406 cancels the silent renewal so its retarget cannot land mid-teardown"
+            "the outage teardown cancels the silent renewal so its retarget cannot land mid-teardown"
         )
     }
 

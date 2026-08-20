@@ -65,8 +65,10 @@ play out its buffered runway:
   that comes back healthy also nudges an immediate origin re-probe
   (`[CMP-OUTAGE] server healthy; nudging origin re-probe`) rather than waiting
   for the transport's own slow cadence. When the origin returns, the policy
-  answers `.endOutageRideThrough(kick:)`, and the `kick` flag is what re-starts
-  a player that parked at rate 0.
+  answers `.endOutageRideThrough`, which carries no payload: it clears the
+  ride-through state and unconditionally runs the post-outage kick
+  (`AVPlayerBackend.kickPlaybackAfterOutage`), which is what re-starts a player
+  that parked at rate 0.
 - The ride-through deliberately outlives a load. Its health-probe loop is gated
   on the ride-through's own liveness, not on the `LoadID`, so a replan that
   mints a new load mid-outage does not abandon the loop.

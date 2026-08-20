@@ -647,8 +647,9 @@ enum RecoveryPolicy {
         now: Date
     ) -> (RecoveryAction?, RecoveryContext) {
         // Loopback only, and only after the file-loaded edge.
-        // Anything else falls through to `recoverLocalLoopbackFailureIfNeeded`
-        // whose only live tail arrives as `.playlistUnchanged`.
+        // Anything else falls through to the "Playlist File unchanged" /
+        // `-12888` tail of `AVPlayerBackend.itemFailedToEndObserver`, which
+        // arrives as `.playlistUnchanged`.
         guard context.route == .siloPlayerLoopback, context.playbackEstablished else {
             return (nil, context)
         }

@@ -222,10 +222,10 @@ enum RecoveryObservation: Equatable {
     ///
     /// Emitted for every failed-to-end notification. The policy consumes it on
     /// an established loopback item and otherwise returns no action, because
-    /// the rest of that notification's legacy tail
-    /// (`recoverLocalLoopbackFailureIfNeeded`,) is reachable only when
-    /// this arm did **not** consume it and arrives classified as
-    /// `.playlistUnchanged`.
+    /// the rest of that notification's tail — the "Playlist File unchanged" /
+    /// `-12888` branch of `AVPlayerBackend.itemFailedToEndObserver` — is
+    /// reachable only when this arm did **not** consume it, and arrives
+    /// classified as `.playlistUnchanged`.
     case itemFailedToEnd(position: Double, userPaused: Bool)
     /// The tail of a `.AVPlayerItemFailedToPlayToEndTime` that the
     /// `.itemFailedToEnd` arm did not consume, whose description carries
