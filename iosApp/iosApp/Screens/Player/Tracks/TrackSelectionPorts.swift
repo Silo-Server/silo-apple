@@ -16,7 +16,9 @@ struct TrackSelectionContext {
     let resolvedServerUrl: String
     let activeRouteKind: PlaybackEngineKind
     let backendCapabilities: PlayerBackendCapabilities
-    let offlinePlaybackContext: PlayerViewModel.OfflinePlaybackContext?
+    /// True while playback is running from a local download — there is no
+    /// server session, so nothing the track half persists has anywhere to go.
+    let isOfflinePlayback: Bool
     let currentTime: Double
     let isBackgroundSuspended: Bool
     let isPlaying: Bool
@@ -52,17 +54,14 @@ struct TrackSelectionPorts {
     var backendCapabilities: () -> PlayerBackendCapabilities
     var serverSessionId: () -> String?
     var currentSelectedVersion: () -> FileVersion?
-    /// Ask the server for a replacement V3 plan. Maps onto
-    /// `PlayerViewModel.attemptProtocolV3Replan(position:classification:message:)`
-    /// with `position` taken from the same `currentTime` the four legacy call
-    /// sites passed. `protocolV3SubtitleIndex` names the subtitle the replan is
-    /// about (nil at the three user-command sites); it is **descriptive only**
-    /// and the view model's producer ignores it, because the durable write of
-    /// that index has already gone through
+    /// Ask the server for a replacement V3 plan. Maps onto the shell's
+    /// `requestReplan(_: ReplanIntent)` with `position` taken from the same
+    /// `currentTime` the four call sites passed. The subtitle the replan is
+    /// about travels through
     /// `setLastLoadRequestProtocolV3SubtitleIndex` — the one channel that can
     /// distinguish "write nil" from "no write" — at the single site that has a
-    /// value. A later producer may consume it; none has to.
-    var requestReplan: (_ classification: String, _ message: String, _ protocolV3SubtitleIndex: Int?) -> Void
+    /// value.
+    var requestReplan: (_ classification: String, _ message: String) -> Void
     /// True while a V3 replan round trip is outstanding. The producer reads
     /// `PlayerViewModel.replanSuspensionHolder`, which `prepareReplan` arms
     /// *inside* the async round trip (not when the replan is requested) and
@@ -83,11 +82,6 @@ struct TrackSelectionPorts {
     /// Whether the realtime websocket can carry live AI-subtitle cues. Owned by
     /// the view model (it mirrors the realtime client's connectivity).
     var subtitleAILiveOverlayAvailable: () -> Bool
-    /// The M5 deferred live-track close timer stays in the view model's
-    /// `PlayerTaskRegistry` (key `.deferredLiveSubtitleClose`, `.teardown`
-    /// scope) so `cleanup()`/`deinit` keep cancelling it by sweep.
-    var deferredLiveSubtitleCloseTask: () -> Task<Void, Never>?
-    var setDeferredLiveSubtitleCloseTask: (Task<Void, Never>?) -> Void
     /// Device-settings vs server-policy subtitle selection: the gate on almost
     /// every automatic subtitle branch. Defaults to the process-wide settings
     /// object the view model would otherwise hand over, so the production
@@ -121,7 +115,7 @@ extension TrackSelectionContext {
             supportsSubtitleDelay: false,
             supportsSubtitleStyling: false
         ),
-        offlinePlaybackContext: nil,
+        isOfflinePlayback: false,
         currentTime: 0,
         isBackgroundSuspended: true,
         isPlaying: false

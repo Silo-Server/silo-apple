@@ -48,7 +48,6 @@ final class PlayerTaskRegistry {
 
         case nextUpLookup
         case nextUpOnDeck
-        case deferredLiveSubtitleClose
         case pictureInPictureBackgroundGrace
 
         case hideControls
@@ -89,8 +88,7 @@ final class PlayerTaskRegistry {
                  .progress, .nextUpCountdown, .autoSkipIntroCountdown,
                  .staleSessionRecovery, .backgroundRenewal, .sourceOutageRideThrough,
                  .serverOutageRecovery, .interruptionRecovery, .nextUpLookup,
-                 .nextUpOnDeck, .deferredLiveSubtitleClose,
-                 .pictureInPictureBackgroundGrace:
+                 .nextUpOnDeck, .pictureInPictureBackgroundGrace:
                 return [.teardown]
             }
         }

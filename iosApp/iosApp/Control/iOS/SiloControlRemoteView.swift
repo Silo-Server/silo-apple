@@ -538,7 +538,7 @@ private extension SiloControlPlaybackState {
                              SiloControlOption(id: "1080", label: "1080p", detail: nil)],
             activeQualityId: "auto", isQualitySwitching: false,
             playbackSpeed: 1.0, videoGravity: VideoGravity.fit.rawValue, hdrEnabled: false,
-            supportsVideoGravity: true, supportsHDRToggle: true,
+            supportsVideoGravity: true, supportsHDRToggle: false,
             volume: 0.8,
             isMuted: false,
             hasNextEpisode: true,

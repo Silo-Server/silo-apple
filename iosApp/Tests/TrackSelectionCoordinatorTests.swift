@@ -164,7 +164,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         coordinator.adopt(
             prepared: prepared,
             origin: .protocolV3Replan(
-                PlayerViewModel.PlaybackAdoptionOrigin.Replan(selectedSubtitleSnapshot: sidecarId)
+                PlaybackAdoptionOrigin.Replan(selectedSubtitleSnapshot: sidecarId)
             )
         )
 
@@ -346,7 +346,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
 
     /// Records the port calls the assertions read back.
     private final class PortRecorder {
-        var replans: [(classification: String, message: String, subtitleIndex: Int?)] = []
+        var replans: [(classification: String, message: String)] = []
         var hideControlsCount = 0
         var lastLoadRequestSubtitleIndexWrites: [Int?] = []
         /// How often the whole-context port was built. The display members must
@@ -372,7 +372,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                     resolvedServerUrl: "",
                     activeRouteKind: .avPlayerNativeDirect,
                     backendCapabilities: .avFoundation,
-                    offlinePlaybackContext: nil,
+                    isOfflinePlayback: false,
                     currentTime: 0,
                     isBackgroundSuspended: isBackgroundSuspended,
                     isPlaying: false
@@ -390,7 +390,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                 recorder.narrowReadCount += 1
                 return nil
             },
-            requestReplan: { _, _, _ in },
+            requestReplan: { _, _ in },
             isReplanInFlight: { false },
             lastLoadRequest: { nil },
             setLastLoadRequestProtocolV3SubtitleIndex: { _ in },
@@ -400,8 +400,6 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             scheduleHideControls: {},
             resolveServerUrl: { raw, _ in URL(string: raw) },
             subtitleAILiveOverlayAvailable: { false },
-            deferredLiveSubtitleCloseTask: { nil },
-            setDeferredLiveSubtitleCloseTask: { _ in },
             subtitleMatchesSystemAppearance: { matchesSystemAppearance },
             systemSelectionPreferences: {
                 SystemCaptionSelectionPreferences(
@@ -411,8 +409,8 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                 )
             }
         )
-        ports.requestReplan = { classification, message, index in
-            recorder.replans.append((classification, message, index))
+        ports.requestReplan = { classification, message in
+            recorder.replans.append((classification, message))
         }
         ports.scheduleHideControls = { recorder.hideControlsCount += 1 }
         ports.setLastLoadRequestProtocolV3SubtitleIndex = { index in

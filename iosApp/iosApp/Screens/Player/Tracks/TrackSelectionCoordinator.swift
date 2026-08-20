@@ -65,13 +65,11 @@ final class TrackSelectionCoordinator {
     /// dropping the live row and the persisted track landing.
     private var pendingLiveSubtitleCloseTrackId: Int64?
     /// Bounded fallback timer that closes a deferred live track if the persisted
-    /// selection never lands. Cancelled when the seamless close fires or on
-    /// cleanup. Stored in the view model's task registry (see the port) so the
-    /// teardown sweep keeps owning its lifetime.
-    private var deferredLiveSubtitleCloseTask: Task<Void, Never>? {
-        get { ports.deferredLiveSubtitleCloseTask() }
-        set { ports.setDeferredLiveSubtitleCloseTask(newValue) }
-    }
+    /// selection never lands. Cancelled when the seamless close fires and by
+    /// `reset()`, the coordinator's own teardown. The task holds its owner
+    /// weakly, so the path that skips `reset()` (`PlayerViewModel.deinit`
+    /// without a `cleanup()`) leaves it to expire as a no-op.
+    private var deferredLiveSubtitleCloseTask: Task<Void, Never>?
     /// Snapshot of the server-cascaded subtitle prefs for the currently
     /// loaded content. Captured from `WatchDetail.effective_*` at
     /// session-start time and consumed once the player reports its
@@ -186,8 +184,7 @@ final class TrackSelectionCoordinator {
             )
             ports.requestReplan(
                 "audio_track_changed",
-                "User selected audio track \(track.title ?? String(track.trackId)).",
-                nil
+                "User selected audio track \(track.title ?? String(track.trackId))."
             )
             ports.scheduleHideControls()
             return
@@ -219,8 +216,7 @@ final class TrackSelectionCoordinator {
             )
             ports.requestReplan(
                 "subtitle_track_changed",
-                "User selected subtitle track \(track.title ?? String(track.trackId)).",
-                nil
+                "User selected subtitle track \(track.title ?? String(track.trackId))."
             )
             ports.scheduleHideControls()
             return
@@ -249,8 +245,7 @@ final class TrackSelectionCoordinator {
             )
             ports.requestReplan(
                 "subtitle_track_changed",
-                "User disabled subtitles.",
-                nil
+                "User disabled subtitles."
             )
             ports.scheduleHideControls()
             return
@@ -265,7 +260,7 @@ final class TrackSelectionCoordinator {
     /// server to remember anything for.
     private var trackPrefPersistKey: String? {
         let context = self.context
-        guard context.offlinePlaybackContext == nil, let detail = context.currentWatchDetail else { return nil }
+        guard !context.isOfflinePlayback, let detail = context.currentWatchDetail else { return nil }
         return TrackSelectionPersistence.prefKey(
             seriesId: detail.seriesId,
             contentId: detail.contentId
@@ -337,6 +332,20 @@ final class TrackSelectionCoordinator {
         applySecondarySubtitleTrackSelection(nil)
         ports.scheduleHideControls()
     }
+
+    // MARK: - AI / search / live-subtitle seam
+    //
+    // Everything from here to the end of the live-subtitle track seam is the
+    // AI + provider-search + live-cue surface rather than track selection. It
+    // stays in this type because it is not separable from the track state: it
+    // reads and writes `subtitleTracks`, `selectedSubtitleId`,
+    // `knownExternalSubtitles` and `selection.primary`, and it drives the two
+    // user commands (`selectSubtitle`, `disableSubtitles`) directly, while the
+    // track half calls back into it (`performDeferredLiveSubtitleCloseIfNeeded`
+    // from `appendSidecarTracks`, `subtitleAI.reset()` from `reset()`) and
+    // branches on the AI-live id space in six more places. A separate type
+    // would hold a reference to this one and re-expose that state, which is
+    // more surface than it removes.
 
     // MARK: - AI subtitles (translate / transcribe over polling)
 
@@ -514,12 +523,23 @@ final class TrackSelectionCoordinator {
             Self.logger.warning("[AI-SUB] no V3 subtitle inventory for subtitle handoff")
             return nil
         }
-        let baseTrackCount = PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount(inventory)
+        let baseTrackCount = Self.protocolV3DownloadedSubtitleBaseTrackCount(inventory)
         return SubtitleAIController.HandoffContext(
             sessionId: sessionId,
             baseTrackCount: baseTrackCount,
             resolveURL: { [weak self] path in self?.ports.resolveServerUrl(path, serverUrl) }
         )
+    }
+
+    /// The combined ordinal the first downloaded subtitle occupies: the number
+    /// of inventory entries that are not downloaded, over the plan's dense
+    /// externals → embedded → downloaded ordering.
+    static func protocolV3DownloadedSubtitleBaseTrackCount(
+        _ inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int {
+        inventory.filter {
+            $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
+        }.count
     }
 
     /// Completion handoff for a finished AI subtitle job: register the
@@ -1407,8 +1427,7 @@ final class TrackSelectionCoordinator {
         ports.setLastLoadRequestProtocolV3SubtitleIndex(combinedIndex)
         ports.requestReplan(
             "subtitle_track_changed",
-            "Automatic caption policy selected a different subtitle track.",
-            combinedIndex
+            "Automatic caption policy selected a different subtitle track."
         )
         return true
     }
@@ -1571,7 +1590,7 @@ final class TrackSelectionCoordinator {
     /// The sidecar-list + per-origin restore half of `adoptPreparedPlayback`,
     /// applied after the renewal intent has been armed so an explicit sidecar
     /// restore wins over the plan's own selection.
-    func adopt(prepared: PreparedPlayback, origin: PlayerViewModel.PlaybackAdoptionOrigin) {
+    func adopt(prepared: PreparedPlayback, origin: PlaybackAdoptionOrigin) {
         pendingExternalSubtitles = prepared.session.subtitleUrls ?? origin.subtitleUrlFallback
         knownExternalSubtitles = pendingExternalSubtitles
 
@@ -1645,6 +1664,8 @@ final class TrackSelectionCoordinator {
     func reset() {
         knownExternalSubtitles = []
         subtitleAI.reset()
+        deferredLiveSubtitleCloseTask?.cancel()
+        deferredLiveSubtitleCloseTask = nil
         pendingLiveSubtitleCloseTrackId = nil
         selection.audio.recovered = nil
         selection.primary.recovered = nil
