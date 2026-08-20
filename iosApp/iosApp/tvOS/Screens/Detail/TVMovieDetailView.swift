@@ -55,7 +55,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    @Environment(\.resetFocus) private var resetFocus
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
     /// True while focus sits anywhere inside the season chip row — drives the
@@ -64,11 +63,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
-    /// The first default-focus evaluation can run before the pushed page's
-    /// button is registered, leaving focus on the geometrically higher
-    /// synopsis. Reevaluate the scoped default once Play has been laid out.
-    @State private var didResetInitialPlayFocus = false
-
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
@@ -159,72 +153,28 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     }
 
     private var actionRow: some View {
-        HStack(spacing: 36) {
-            TVPrimaryPillButton(
-                icon: "play.fill",
-                title: primaryPlayLabel,
-                action: { onPlay(false) },
-                focused: $playFocused
-            )
-            .onGeometryChange(for: Bool.self) { proxy in
-                proxy.size.width > 0 && proxy.size.height > 0
-            } action: { isLaidOut in
-                guard isLaidOut else { return }
-                resetInitialPlayFocus()
+        TVDetailActionRow(
+            playTitle: primaryPlayLabel,
+            onPlay: { onPlay(false) },
+            onStartOver: hasResumeProgress ? { onPlay(true) } : nil,
+            isFavorite: isFavorite,
+            onToggleFavorite: onToggleFavorite,
+            inWatchlist: inWatchlist,
+            onToggleWatchlist: onToggleWatchlist,
+            isWatched: isWatched,
+            watchedLabelMark: watchedLabelMark,
+            watchedLabelUnmark: watchedLabelUnmark,
+            onToggleWatched: onToggleWatched,
+            initialFocusScope: .page,
+            focusNamespace: detailFocusNamespace,
+            playFocused: $playFocused,
+            rowFocused: $actionRowFocused,
+            moreMenu: {
+                if hasMoreMenu {
+                    moreMenu
+                }
             }
-
-            if hasResumeProgress {
-                TVSecondaryPillButton(
-                    icon: "backward.end.fill",
-                    title: "Start Over",
-                    action: { onPlay(true) }
-                )
-            }
-
-            TVCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-
-            TVCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-
-            TVCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                action: onToggleWatched
-            )
-
-            if hasMoreMenu {
-                moreMenu
-            }
-        }
-        // Container binding — flips true when any button in the row has
-        // focus, driving the scroll-to-top in `detailFocusScroll`.
-        .focused($actionRowFocused)
-        // Mirror of the selector row's full-width focus section: the subtitle
-        // pill below can extend past the last circle button, and an Up press
-        // from that overhang would otherwise skip this row for the synopsis.
-        // Full-width bounds put the row under every selector pill so Up lands
-        // on the nearest action button. Buttons stay left-aligned.
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .focusSection()
-    }
-
-    private func resetInitialPlayFocus() {
-        guard !didResetInitialPlayFocus else { return }
-        didResetInitialPlayFocus = true
-        resetFocus(in: detailFocusNamespace)
+        )
     }
 
     // MARK: - More menu
