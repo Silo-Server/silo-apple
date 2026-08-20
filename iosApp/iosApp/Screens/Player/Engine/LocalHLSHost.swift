@@ -91,9 +91,6 @@ final class LocalHLSHost {
     var isExternalPlaybackActive: (() -> Bool)?
     /// The backend's first-segment gate: not disposed and no item attached yet.
     var canAttachFirstSegment: (() -> Bool)?
-    /// The bitmap subtitle stream the backend has selected; every new writer
-    /// inherits it so a selection survives producer restarts.
-    var selectedBitmapSubtitleTapStream: (() -> Int?)?
     /// Whether the HDR10+ badge has already flipped: the per-packet SEI scan
     /// is installed only while it has not.
     var hasDetectedHDR10Plus: (() -> Bool)?
@@ -128,9 +125,9 @@ final class LocalHLSHost {
 
     // MARK: - Pipeline
 
-    private(set) var segmentWriter: LoopbackSegmentWriter?
-    private(set) var segmentServer: LoopbackSegmentServer?
-    private(set) var segmentStore: LoopbackSegmentStore?
+    private var segmentWriter: LoopbackSegmentWriter?
+    private var segmentServer: LoopbackSegmentServer?
+    private var segmentStore: LoopbackSegmentStore?
     /// The plan resolved for this source, seeded from the retired session's
     /// and republished whenever a producer resolves one.
     private(set) var resolvedVODPlan: ResolvedVODPlan?
@@ -152,6 +149,10 @@ final class LocalHLSHost {
     /// host lives — a strategy change goes through `load` → teardown → a new
     /// host.
     private var writerSpec: LoopbackSessionSpec
+    /// The bitmap subtitle stream the producer decodes for the backend's tap,
+    /// or nil for none. Owned here so the running writer and every writer a
+    /// restart builds after it carry the same selection.
+    private(set) var selectedBitmapSubtitleStream: Int?
     private(set) var isTornDown = false
 
     init(
@@ -292,7 +293,7 @@ final class LocalHLSHost {
             self?.onBitmapSubtitleTapCue?(streamIndex, cues, trimActiveAt)
         }
         // Selection survives producer restarts: every new writer inherits it.
-        writer.setBitmapSubtitleTapStream(selectedBitmapSubtitleTapStream?() ?? nil)
+        writer.setBitmapSubtitleTapStream(selectedBitmapSubtitleStream)
         activeVODWriterBaseIndex = vodBaseIndex
         activeVODWriterHeadIndex = vodBaseIndex - 1
         // Seed the consumer window at the producer's base so a resumed
@@ -505,6 +506,65 @@ final class LocalHLSHost {
         )
     }
 
+    // MARK: - Operations the backend needs
+
+    /// The store's counters, or nil when no session is running. The stats
+    /// panel, the playhead watchdog and the reanchor log all read them.
+    func storeStats() -> LoopbackSegmentStoreStats? {
+        segmentStore?.stats()
+    }
+
+    /// Wall seconds since the store last served a segment, nil before the
+    /// first serve or without a store. A consumer still pulling is filling
+    /// its buffer, not wedged.
+    func secondsSinceLastSegmentServe() -> Double? {
+        segmentStore?.secondsSinceLastSegmentServe()
+    }
+
+    /// Total HTTP requests the server has parsed, nil without one. The
+    /// startup ladder compares snapshots to tell a slow-but-fetching
+    /// AVPlayer from one whose loader pipeline died.
+    var servedRequestCount: UInt64? {
+        segmentServer?.servedRequestCount
+    }
+
+    /// Replaces this session's access token wherever it appears, so a
+    /// loopback URL cannot carry the secret into a support bundle. Without a
+    /// server there is no token and the line passes through.
+    func redactLog(_ value: String) -> String {
+        segmentServer?.redactingAccessToken(in: value) ?? value
+    }
+
+    /// The URL AVPlayer should point at for an already-published resource
+    /// when external playback starts or stops. Nil means "no address the
+    /// receiver can reach" — the caller keeps playback on this device.
+    ///
+    /// Nil-without-a-server folds into the same answer on purpose: a bind
+    /// failure retires the server before any writer runs, so no resource has
+    /// been published and no caller has a name to ask for.
+    func resourceURL(
+        forPublishedResource resourceName: String,
+        reachableFromExternalDevice: Bool
+    ) -> URL? {
+        segmentServer?.resourceURL(
+            for: resourceName,
+            reachableFromExternalDevice: reachableFromExternalDevice
+        )
+    }
+
+    /// Opens or closes the listener to off-device clients for an AirPlay
+    /// handoff that started or ended mid-session.
+    func setAcceptsExternalClients(_ accepts: Bool) {
+        segmentServer?.setAcceptsExternalClients(accepts)
+    }
+
+    /// Selects the bitmap subtitle stream the producer decodes, applying it
+    /// to the running writer and to every writer a restart builds after it.
+    func selectBitmapSubtitleStream(_ streamIndex: Int?) {
+        selectedBitmapSubtitleStream = streamIndex
+        segmentWriter?.setBitmapSubtitleTapStream(streamIndex)
+    }
+
     // MARK: - Teardown
 
     /// Releases the producer, the server, the store and the session
@@ -546,7 +606,6 @@ final class LocalHLSHost {
     private func releaseCallbacks() {
         isExternalPlaybackActive = nil
         canAttachFirstSegment = nil
-        selectedBitmapSubtitleTapStream = nil
         hasDetectedHDR10Plus = nil
         onFirstSegmentReady = nil
         onSegmentPlanResolved = nil

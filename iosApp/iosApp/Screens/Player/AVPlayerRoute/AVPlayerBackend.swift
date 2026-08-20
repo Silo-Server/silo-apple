@@ -396,14 +396,14 @@ final class AVPlayerBackend {
         let position = currentTime()
         let bufferedAhead = playableAheadSeconds(for: item, referenceTime: position)
         let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
-            ?? segmentStore?.stats().generatedMediaSeconds
+            ?? loopbackHost?.storeStats()?.generatedMediaSeconds
             ?? 0
         return PlayheadSample(
             position: position,
             timeControl: Self.timeControl(for: avPlayer.timeControlStatus),
             bufferedAhead: bufferedAhead,
             generatedAhead: max(0, generatedEnd - position),
-            secondsSinceLastServe: segmentStore?.secondsSinceLastSegmentServe() ?? .infinity,
+            secondsSinceLastServe: loopbackHost?.secondsSinceLastSegmentServe() ?? .infinity,
             userPaused: isUserPaused,
             playbackEstablished: didFireFileLoaded,
             pendingSeekMediaTarget: vodPendingSeekMediaTarget
@@ -500,11 +500,10 @@ final class AVPlayerBackend {
     /// restarts and reanchors reuse the store; a new source resets it.
     private var loopbackSubtitleTap: LoopbackSubtitleTap?
     private var loopbackSubtitleTapSourceURL: URL?
-    /// Bitmap (PGS/DVD) streams the loopback writer's tap can serve, and
-    /// the currently selected one. The selection is re-applied to every
-    /// new writer so it survives producer restarts.
+    /// Bitmap (PGS/DVD) streams the loopback writer's tap can serve. The
+    /// selection itself belongs to the host, which re-applies it to every new
+    /// writer so it survives producer restarts.
     private var bitmapTapAvailableStreams: Set<Int> = []
-    private var selectedBitmapTapStreamIndex: Int?
     private var mediaTimelineOffsetSeconds: Double = 0
     private var serverChapters: [PlayerChapterInfo] = []
     private var currentLoopbackAudioTracks: [PlayerTrack] = []
@@ -564,11 +563,6 @@ final class AVPlayerBackend {
     /// the next producer must be handed the same segment grid instead of
     /// re-harvesting one.
     private var carriedVODPlan: LocalHLSHost.ResolvedVODPlan?
-    /// Read-only views onto the host's pipeline for the stats, ladder, AirPlay
-    /// and subtitle readers that stayed in this adapter.
-    private var segmentWriter: LoopbackSegmentWriter? { loopbackHost?.segmentWriter }
-    private var segmentServer: LoopbackSegmentServer? { loopbackHost?.segmentServer }
-    private var segmentStore: LoopbackSegmentStore? { loopbackHost?.segmentStore }
     private var loopbackPlaylistName: String?
     private var loopbackPlaybackUsesExternalURL = false
     private let loopbackPlaybackClockLock = NSLock()
@@ -836,10 +830,10 @@ final class AVPlayerBackend {
         guard active != loopbackPlaybackUsesExternalURL,
               case .some(.siloLoopback) = currentSourceStrategy,
               let item = currentItem,
-              let server = segmentServer,
+              let host = loopbackHost,
               let playlistName = loopbackPlaylistName else { return }
-        guard let url = server.resourceURL(
-            for: playlistName,
+        guard let url = host.resourceURL(
+            forPublishedResource: playlistName,
             reachableFromExternalDevice: active
         ) else {
             // The item is still pointed at 127.0.0.1, which the receiver
@@ -851,7 +845,7 @@ final class AVPlayerBackend {
 
         let position = currentTime()
         loopbackPlaybackUsesExternalURL = active
-        server.setAcceptsExternalClients(active)
+        host.setAcceptsExternalClients(active)
         reloadEstablishedLoopbackItem(
             item,
             at: position.isFinite ? max(0, position) : 0,
@@ -1679,9 +1673,6 @@ final class AVPlayerBackend {
             guard let self, let host, self.loopbackHost === host else { return false }
             return !self.isDisposed && self.currentItem == nil
         }
-        host.selectedBitmapSubtitleTapStream = { [weak self] in
-            self?.selectedBitmapTapStreamIndex ?? nil
-        }
         host.hasDetectedHDR10Plus = { [weak self] in
             self?.loopbackHDR10PlusDetected ?? false
         }
@@ -1704,7 +1695,7 @@ final class AVPlayerBackend {
             // bitrates); re-route it to the tap now that the writer
             // has declared its bitmap streams.
             if let trackId = self.selectedControlledSubtitleTrackId,
-               self.selectedBitmapTapStreamIndex == nil,
+               host.selectedBitmapSubtitleStream == nil,
                self.bitmapTapServesEmbeddedTrack(trackId) {
                 self.embeddedSubtitleExtractor?.stopFeeding(slot: .primary)
                 self.activateBitmapTapSubtitleTrack(trackId: trackId)
@@ -1995,21 +1986,19 @@ final class AVPlayerBackend {
     private func activateBitmapTapSubtitleTrack(trackId: Int64) {
         guard let session = subtitleSession else { return }
         let streamIndex = Int(SubtitleTrackIdSpace.avPlayerEmbeddedStreamIndex(from: trackId))
-        selectedBitmapTapStreamIndex = streamIndex
         // Wide window: the tap feeds from the producer's read head, which
         // the produce-ahead byte gate bounds ~48-100 s ahead of the
         // playhead. 300 s of retention keeps those early-decoded cues alive
         // until playback reaches them; 512 cues bounds worst-case memory
         // (~25 MB) while covering dense dialogue across the whole window.
         session.openBitmapTrack(slot: .primary, retentionSeconds: 300, maxCueCount: 512)
-        segmentWriter?.setBitmapSubtitleTapStream(streamIndex)
+        loopbackHost?.selectBitmapSubtitleStream(streamIndex)
         cmpLog("[CMP-TAP] bitmap activated stream=\(streamIndex)")
     }
 
     private func clearBitmapTapSelection() {
-        guard selectedBitmapTapStreamIndex != nil else { return }
-        selectedBitmapTapStreamIndex = nil
-        segmentWriter?.setBitmapSubtitleTapStream(nil)
+        guard let host = loopbackHost, host.selectedBitmapSubtitleStream != nil else { return }
+        host.selectBitmapSubtitleStream(nil)
         cmpLog("[CMP-TAP] bitmap deactivated")
     }
 
@@ -2228,7 +2217,7 @@ final class AVPlayerBackend {
         // The backend publishes only what it measures itself; the route's
         // download rate is the composer's call.
         stats.demuxReadRateBps = loopbackDemuxReadBitrateBps
-        if let segmentStats = segmentStore?.stats() {
+        if let segmentStats = loopbackHost?.storeStats() {
             stats.generatedAheadSeconds = max(0, segmentStats.generatedMediaSeconds - referenceTime)
             stats.generatedSegmentCount = segmentStats.segmentCount
             stats.generatedSpilledSegmentCount = segmentStats.spilledSegmentCount
@@ -2538,7 +2527,7 @@ final class AVPlayerBackend {
         let timeControl = Self.timeControl(for: avPlayer.timeControlStatus)
         let bufferedAhead = playableAheadSeconds(for: item, referenceTime: position)
         let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
-            ?? segmentStore?.stats().generatedMediaSeconds
+            ?? loopbackHost?.storeStats()?.generatedMediaSeconds
             ?? 0
         let generatedAhead = max(0, generatedEnd - position)
         let statusLabel = timeControl.rawValue
@@ -2566,7 +2555,7 @@ final class AVPlayerBackend {
                     timeControl: timeControl,
                     bufferedAhead: bufferedAhead,
                     generatedAhead: generatedAhead,
-                    secondsSinceLastServe: segmentStore?.secondsSinceLastSegmentServe() ?? .infinity,
+                    secondsSinceLastServe: loopbackHost?.secondsSinceLastSegmentServe() ?? .infinity,
                     userPaused: isUserPaused,
                     playbackEstablished: didFireFileLoaded,
                     pendingSeekMediaTarget: vodPendingSeekMediaTarget
@@ -3073,7 +3062,7 @@ final class AVPlayerBackend {
             if case .edgeWatchdog = cause { logEdgeWatchdogTrigger() }
             let bufferedAhead = playableAheadSeconds(for: item, referenceTime: playerSeconds)
             let generatedEnd = latestLoopbackGeneratedStats?.playlistVisibleEndSeconds
-                ?? segmentStore?.stats().generatedMediaSeconds
+                ?? loopbackHost?.storeStats()?.generatedMediaSeconds
                 ?? 0
             Self.logger.info(
                 "[CMP-AVP] local loopback \(cause.token, privacy: .public) reanchor media=\(mediaSeconds, privacy: .public) player=\(playerSeconds, privacy: .public) generatedAhead=\(generatedEnd - playerSeconds, privacy: .public) bufferedAhead=\(bufferedAhead, privacy: .public)"
@@ -3197,7 +3186,7 @@ final class AVPlayerBackend {
         cancelLoopbackStartupWatchdog()
         // The ladder's stage, its backstop clock, its progress clock and its
         // served-request baseline live in `RecoveryContext.StartupState` now.
-        onStartupLadderArmed?(segmentServer?.servedRequestCount ?? 0)
+        onStartupLadderArmed?(loopbackHost?.servedRequestCount ?? 0)
         let timer = Timer(
             timeInterval: Self.loopbackStartupWatchdogTickSeconds,
             repeats: true
@@ -3224,7 +3213,7 @@ final class AVPlayerBackend {
         // absolute backstop are all `RecoveryPolicy.decideStartupTick`'s.
         emitRecoveryObservation(
             .startupTick(
-                servedRequests: segmentServer?.servedRequestCount ?? 0,
+                servedRequests: loopbackHost?.servedRequestCount ?? 0,
                 displayModeSwitchInProgress: isTVDisplayModeSwitchInProgress()
             )
         )
@@ -3906,7 +3895,7 @@ final class AVPlayerBackend {
         currentLoopbackAudioTracks = []
         selectedControlledSubtitleTrackId = nil
         selectedSecondaryControlledSubtitleTrackId = nil
-        selectedBitmapTapStreamIndex = nil
+        // The bitmap stream selection retires with the host below.
         bitmapTapAvailableStreams = []
         sidecarDescriptorsByTrackId.removeAll()
         // Stop live forwarding; the cue STORE survives so a reanchor of the
@@ -3968,7 +3957,7 @@ final class AVPlayerBackend {
     }
 
     private func redactedLogText(_ value: String) -> String {
-        segmentServer?.redactingAccessToken(in: value) ?? value
+        loopbackHost?.redactLog(value) ?? value
     }
 
     private func reportFailure(_ failure: PlaybackFailure) {
