@@ -1,3 +1,6 @@
+Last verified against the code: 2026-08-20 (template only; the Stage 2
+control-plane extraction did not change what a record must carry).
+
 # Apple Validation Record Template
 
 Use this template for any Apple-player route validation that could become a

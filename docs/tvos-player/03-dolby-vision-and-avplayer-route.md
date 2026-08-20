@@ -1,4 +1,4 @@
-Last verified against the code: 2026-08-18
+Last verified against the code: 2026-08-20
 
 # Dolby Vision And The SiloPlayer Loopback
 
@@ -62,29 +62,50 @@ Two behaviors worth knowing:
   budgets from
   [`HDRDisplayCriteriaPolicy`](../../iosApp/iosApp/Screens/Player/HDRDisplayCriteriaPolicy.swift).
 - `shouldPreserveTVDisplayCriteriaDuringReload(...)` keeps the negotiated mode
-  across an in-place item reload, which is why
-  `PlayerViewModel.prepareBackend(for:)` reuses the backend when the route
-  kind is unchanged. Renegotiating HDMI mid-session is visible and slow.
+  across an in-place item reload — which only helps because the backend itself
+  survives that reload: `Effect.loadEngine(…, reuseEngine: true)` builds the
+  replacement `PlaybackEngineSession` around the *same* `AVPlayerBackend`
+  instance when the route kind is unchanged. Renegotiating HDMI mid-session is
+  visible and slow.
 
 The old `applyDvGatedDisplayCriteria(...)` Profile 5 gate documented here
 previously lived in `PlayerCore` and went away with it.
 
 ## 4. What the loopback actually does
 
-The SiloPlayer route is not "AVPlayer on the original URL". `AVPlayerBackend`:
+The SiloPlayer route is not "AVPlayer on the original URL". The work splits
+across two owners: [`LocalHLSHost`](../../iosApp/iosApp/Screens/Player/Engine/LocalHLSHost.swift)
+is the local HLS pipeline's whole lifecycle, and `AVPlayerBackend` is the
+AVFoundation adapter that consumes it.
 
-1. requires [`PlaybackSourceProxy`](../../iosApp/iosApp/Screens/Player/PlaybackSourceProxy.swift)
-   for remote HTTP(S) direct Silo sources
-2. rewrites `LoopbackSessionSpec.sourceURL` to the local proxy URL
-3. creates a loopback generation and a
-   [`LoopbackSegmentStore`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentStore.swift)
-4. configures the generated-HLS temp spill policy
-5. starts [`LoopbackSegmentServer`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentServer.swift)
-   on `127.0.0.1:<random-port>`
-6. starts [`LoopbackSegmentWriter`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentWriter.swift)
-7. waits for the first playlist/segment runway to be ready
-8. creates an `AVURLAsset` pointed at the local playlist
-9. builds an `AVPlayerItem`, attaches observers, and plays
+Before the route starts, the load's `PlaybackEngineSession` requires a
+[`PlaybackSourceProxy`](../../iosApp/iosApp/Screens/Player/PlaybackSourceProxy.swift)
+for remote HTTP(S) direct Silo sources, and `LoopbackSessionSpec.sourceURL` is
+rewritten to that local proxy URL. Then `AVPlayerBackend.startSiloLoopback`:
+
+1. mints a session directory and constructs one `LocalHLSHost` for the spec,
+   with the store memory budget, the generated-HLS temp spill policy, the VOD
+   retention budget, the server exposure (LAN on iOS for AirPlay, loopback-only
+   elsewhere) and any VOD plan carried over from a retiring host
+2. arms the loopback playhead watchdog and installs the host's callbacks —
+   every one of which re-checks `loopbackHost === host`, which is what the
+   retired `activeLoopbackSessionID` string compare used to mean
+3. calls `host.start()`, which stands up the
+   [`LoopbackSegmentStore`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentStore.swift),
+   the [`LoopbackSegmentServer`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentServer.swift)
+   on `127.0.0.1:<random-port>` and the
+   [`LoopbackSegmentWriter`](../../iosApp/iosApp/Screens/Player/AVPlayerRoute/LoopbackSegmentWriter.swift),
+   and owns the writer's demand-driven restarts
+4. on `onFirstSegmentReady`, the adapter creates an `AVURLAsset` pointed at the
+   local playlist, builds an `AVPlayerItem`, attaches observers, and plays
+
+The subtitle cue tap deliberately stays with the adapter rather than the host:
+its cue store is keyed to the *source*, so it outlives a session and a reanchor
+of the same title re-enables subtitles instantly.
+
+`LocalHLSHost.teardown()` is the whole loopback teardown — store, server,
+writer, timers, the session directory (unless `SILO_KEEP_DV_HLS=1`, read once
+at host creation). The backend owns exactly one live host at a time.
 
 `AVPlayerSurface` is only the render layer: a `UIViewRepresentable` hosting an
 `AVPlayerLayer` with a black background and `.resizeAspect`.
@@ -240,3 +261,19 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
   gate, was `PlayerCore` code and no longer exists.
 - corrected: AVPlayer-backed playback is not a DV-specific fallback. It is the
   only playback stack; DV is one `VideoMode` on the loopback route.
+- corrected (2026-08-20): the loopback lifecycle is `LocalHLSHost`, not
+  `AVPlayerBackend`. The backend constructs exactly one host per loopback load,
+  identifies it by object identity (`loopbackHost === host`) instead of the
+  retired `activeLoopbackSessionID` string, and `LocalHLSHost.teardown()` is the
+  whole teardown.
+- verified (2026-08-20): the display-criteria write → settle → attach ordering,
+  the initial-video-display gate and `shouldPreserveTVDisplayCriteriaDuringReload`
+  are unchanged by the control-plane extraction; what changed is that the
+  backend instance survives an in-place reload through
+  `Effect.loadEngine(…, reuseEngine: true)` rather than a view-model
+  `prepareBackend(for:)` check.
+- verified (2026-08-20): device evidence for the HDR10 loopback path on the
+  post-extraction build is in
+  [`validations/2026-08-19-tvos-stage2-wave2b-bedroom-hdr10-loopback.yaml`](validations/2026-08-19-tvos-stage2-wave2b-bedroom-hdr10-loopback.yaml)
+  and, for Dolby Vision plus an origin outage,
+  [`validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml).

@@ -23,7 +23,13 @@ Repo snapshot date: 2026-04-29 (HEAD `6c2b4af`)
 >
 > Source links below that point at `Screens/Player/CoreMedia/` or `DVSegment*`
 > are **intentionally left broken**: they are citations of what the code looked
-> like on 2026-04-29, not navigation.
+> like on 2026-04-29, not navigation. The same now applies to every
+> `PlayerViewModel.swift` line citation: the Stage 2 control-plane extraction
+> (2026-08-20) moved the load, replan, recovery and track code out of that file
+> into `ControlPlane/`, `Recovery/`, `Engine/` and `Tracks/`, so the line
+> numbers below are historical. In particular, the "`PlayerViewModel` owns the
+> fallback ladder / progress task / session state" framing throughout this
+> review is **superseded** — see the ownership table in [README](README.md).
 >
 > For current truth see [README](README.md),
 > [01](01-overview-and-entrypoints.md),

@@ -1,4 +1,4 @@
-Last verified against the code: 2026-08-18
+Last verified against the code: 2026-08-20
 
 # tvOS Controls And Current Behavior
 
@@ -243,3 +243,10 @@ The shell no longer branches on backend identity:
   `SubtitleAppearanceDialog` in its own file (pure moves, no behavior change).
 - corrected: earlier revisions described route-specific Audio-pane behavior for
   `PlayerCore`. That backend no longer exists.
+- verified (2026-08-20): the tvOS shell is unchanged by the Stage 2
+  control-plane extraction. `showControls`, `scheduleHideControls()`,
+  `isHUDPresented`, `backendCapabilities` / `withSubtitleControls(_:)`,
+  `routeStatusRows` and the `.setHDREnabled` no-op all still live on
+  `PlayerViewModel` under the same names — what moved behind them is where the
+  values come from (a projected `Presentation`, and `TrackSelectionCoordinator`
+  for the track lists), not what the views read.
