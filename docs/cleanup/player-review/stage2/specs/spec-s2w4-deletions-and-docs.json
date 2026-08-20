@@ -1,40 +1,24 @@
 {
- "_status": "DRAFT \u2014 after wave 3",
+ "_status": "binding; re-anchored 2026-08-20 against waves 1+2a+2b+3 as merged (tip ecf1770). File-disjointness note: PlaybackProtocolV3Tests.swift belongs to s2w4-track-selection-model (all six A.5 rewrites live THERE); this package touches AVPlayerBackend.swift, docs, and only test files its own deletions force -- if a deletion breaks a test in a file the sibling owns, STOP that deletion and report it under skipped instead.",
  "design_ref": [
-  "docs/cleanup/player-review/2026-08-19-stage2-design.md \u00a73 wave 4, review \u00a79 Stage 2 'Safe deletion points'",
-  "docs/cleanup/player-review/stage2/inventory-4-tests-views-platform.md A.5 (the six rewrites), A.3",
-  "docs/cleanup/player-review/stage2/inventory-3-backend-bridge-loopback.md timer #11 (8\u00d7200 ms initial seek retry), \u00a74.1 step 4 (SILO_KEEP_DV_HLS leftovers), [CMP-MEM] block B:454-482 region"
+  "docs/cleanup/player-review/2026-08-19-stage2-design.md section 3 wave 4, section 7 item 5, review section 9 'Safe deletion points'",
+  "docs/cleanup/player-review/stage2/inventory-3-backend-bridge-loopback.md timer #11 (the 8x200 ms initial-seek retry), the [CMP-MEM] block (anchors pre-wave-2 -- re-grep)",
+  "docs/cleanup/player-review/stage2/inventory-4-tests-views-platform.md A.3"
  ],
- "brief": "Delete what Stage 2 made dead: [CMP-MEM] temporary block, remaining SILO_KEEP_DV_HLS threading outside LocalHLSHost, the 8\u00d7200 ms initial-seek retry (SeekRequest deadline covers it), dead online-unreachable rungs' remnants, any leftover mirrors; rewrite PlaybackProtocolV3Tests rows 1\u20133 of inventory-4 A.5 as reducer/actor tests; retarget the ~15 mechanical sites; docs/tvos-player 01\u201309 truth pass for the new ownership (names: PlaybackSessionActor, PlaybackEngineSession, LocalHLSHost, RecoveryPolicy, TrackSelectionCoordinator); backlog \u00a70 + HANDOFF rows; validation records linked.",
+ "brief": "CURRENT SHAPE (verified at ecf1770): [CMP-MEM] lives only in AVPlayerBackend.swift; the initial-seek retry (initialSeekRetry*) lives only in AVPlayerBackend.swift; SILO_KEEP_DV_HLS is ALREADY confined to Engine/LocalHLSHost.swift (wave 2a did the threading cleanup -- verify with the grep and record the confirmation, do not hunt for more).\n\nTHE PACKAGE, three halves:\n1. DELETIONS in AVPlayerBackend.swift: the [CMP-MEM] temporary memory-telemetry block (log-only -- confirm no test/diagnostics parser consumes the lines: grep iosApp/Tests and iosApp/TopShelf first, report the counts); the 8x200 ms initial-seek retry (design section 7 item 5: the wave-3 SeekRequest 15 s deadline covers it -- trace the retry's trigger sites and show each is covered before deleting); any dead code those two leave behind. Mechanical retargets in test files ONLY where these deletions force them (name each).\n2. DOCS TRUTH PASS, docs/tvos-player/ 01-09 + README: correct ownership names to the as-built Stage 2 world -- PlaybackSessionActor (control plane, runs PlaybackReducer), PlaybackEngineSession (owns backend+proxy per load), LocalHLSHost (loopback lifecycle under AVPlayerBackend), RecoveryPolicy/RecoveryDriver (one decision owner), TrackSelectionCoordinator. The code is the source of truth: every claim you change must be re-derived from the tip, and pages whose mechanics did not change get date-stamped verification notes, not rewrites. Update 10-playback-continuity.md for the new recovery ownership (ride-through carry, visible recovery reload) and link the 2026-08-19/20 validation records. No committed doc may contain local absolute paths or transient worktree/branch IDs.\n3. LEDGER: backlog section 0 wave-4 row + HANDOFF state updates come from the ORCHESTRATOR after merge -- do NOT edit docs/cleanup/HANDOFF.md or docs/cleanup/app-cleanup-backlog.md (they change under you while you run).\n\nTESTS: full suite on a cloned simulator (clone 51D3BB39-CB87-4EE7-9494-DF81446BF416 -- the old shared template is gone) + same-host control at the base SHA; all three schemes. A changed total must be explained by the named retargets only.\n\nHARD BOUNDARIES: no control-plane/policy/engine/tracks edits; nothing in the sibling package's files (Tracks/*, PlayerViewModel.swift, PlaybackPrefsResolver.swift, ApplePlaybackRoutePlanner.swift, PlaybackProtocolV3Tests.swift); deletions are real deletions; docs edits are truth-only (no plans, no speculation).",
  "deliverables": [
-  {
-   "id": "deletions",
-   "where": "as found"
-  },
-  {
-   "id": "test rewrites/retargets",
-   "where": "iosApp/Tests/"
-  },
-  {
-   "id": "docs truth pass",
-   "where": "docs/tvos-player/, docs/cleanup/"
-  }
+  {"id": "AVPlayerBackend deletions ([CMP-MEM] block, 8x200ms initial-seek retry, dead remnants)", "where": "iosApp/iosApp/Screens/Player/AVPlayerRoute/AVPlayerBackend.swift"},
+  {"id": "forced test retargets (named)", "where": "iosApp/Tests/ (excluding PlaybackProtocolV3Tests.swift)"},
+  {"id": "docs/tvos-player 01-09 + README + 10-playback-continuity truth pass", "where": "docs/tvos-player/"}
  ],
  "invariants": [
-  "I1",
-  "suite green"
+  "I1 except the deleted log-only [CMP-MEM] lines; suite green; SeekRequest deadline coverage traced for every deleted retry trigger",
+  "Committed docs: no absolute paths, no worktree/branch IDs, code-derived claims only"
  ],
- "tests_required": [
-  "the rewrites named in inventory-4 A.5"
- ],
+ "tests_required": ["only the retargets the deletions force (named per file)"],
  "deletions": [
-  {
-   "grep": "CMP-MEM|initialSeekRetryCount",
-   "scope": "iosApp/iosApp",
-   "expected": "0 hits"
-  }
+  {"grep": "CMP-MEM|initialSeekRetry", "scope": "iosApp/iosApp", "expected": "0 hits"},
+  {"grep": "SILO_KEEP_DV_HLS", "scope": "iosApp/iosApp (excluding Engine/LocalHLSHost.swift)", "expected": "0 hits (verification only -- wave 2a already did this)"}
  ],
- "behavior_changes_allowed": [
-  "design \u00a77.5"
- ]
+ "behavior_changes_allowed": ["design section 7 item 5 (the 8x200 ms initial-seek retry is replaced by the existing SeekRequest 15 s deadline)", "the [CMP-MEM] log lines disappear (log-only; confirm nothing parses them)"]
 }

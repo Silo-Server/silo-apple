@@ -1,39 +1,25 @@
 {
- "_status": "DRAFT \u2014 after wave 3",
+ "_status": "binding; re-anchored 2026-08-20 against waves 1+2a+2b+3 as merged (tip ecf1770; design section 2.3's wave-1E AND wave-3 as-built blocks and section 2.7's wave-1C as-built block are BINDING). File-disjointness note: this package owns PlaybackProtocolV3Tests.swift outright -- ALL SIX inventory-4 A.5 rewrites happen here (rows 1-3 may already be partially rewritten by wave 3: one characterization test became testStaleLoadEventIsIgnored -- verify each row's current shape before rewriting), because rows 4-6 die with this package's deletions and two packages may not share a file.",
  "design_ref": [
-  "docs/cleanup/player-review/2026-08-19-stage2-design.md \u00a72.7 last paragraph (TrackSelection enum replaces the eight pending* fields), review \u00a78 'Track selection' paragraph",
-  "docs/cleanup/player-review/stage2/inventory-2-vm-track-half.md \u00a71b, \u00a72"
+  "docs/cleanup/player-review/2026-08-19-stage2-design.md section 2.7 INCLUDING the 'As built (wave 1C)' block and the last paragraph (TrackSelection replaces the eight pending*), section 2.3 wave-3 as-built block (the shell keeps TrackResumeSelections current incl. the -1 sentinel; the coordinator ports read actor snapshots), review section 8 'Track selection' paragraph",
+  "docs/cleanup/player-review/stage2/inventory-2-vm-track-half.md sections 1b, 2 (anchors are pre-wave-3 -- re-grep everything)",
+  "docs/cleanup/player-review/stage2/inventory-4-tests-views-platform.md A.5 (all six rewrite rows)"
  ],
- "brief": "Replace the pending* optionals + hasExplicitSubtitleChoice + pendingRecovered* snapshots inside TrackSelectionCoordinator with `struct TrackSelection { audio: AudioSelection; primary: SubtitleSelection; secondary: SubtitleSelection; origin: SelectionOrigin }` per review \u00a78; `hasExplicitSubtitleChoice == (origin == .user)`; `srcId` disappears from the coordinator's decisions (each case names its index space); all decision sites keep their order and reason strings; TrackSelectionTests; rewrite the three pending*-shaped tests in PlaybackProtocolV3Tests (inventory-4 A.5 rows 4\u20136).",
+ "brief": "CURRENT SHAPE (re-grep; anchors drifted): the eight pending* fields plus hasExplicitSubtitleChoice and the pendingRecovered* snapshots live on TrackSelectionCoordinator (Tracks/TrackSelectionCoordinator.swift, wave-1C extraction, NOT @MainActor, ports in Tracks/TrackSelectionPorts.swift whose backend closure must keep returning the live concrete AVPlayerBackend). pendingAudioFfIndex is ALSO named in PlayerViewModel.swift, PlaybackPrefsResolver.swift and ApplePlaybackRoutePlanner.swift (parameters/pass-throughs); hasExplicitSubtitleChoice is read from PlayerViewModel.swift; ProtocolV3SidecarRestoreIntent lives in PlayerViewModel.swift. After wave 3 the coordinator is fed from actor snapshots and the shell re-arms TrackResumeSelections' resolvers at each adopt (armAdoptedProtocolV3TrackIntent) -- do not disturb that wiring.\n\nTHE PACKAGE: replace the pending* optionals + hasExplicitSubtitleChoice + pendingRecovered* snapshots with `struct TrackSelection` per review section 8 -- `audio: AudioSelection; primary: SubtitleSelection; secondary: SubtitleSelection; origin: SelectionOrigin` (each Selection case names its index space, so the bare `srcId` int disappears from decisions; `hasExplicitSubtitleChoice == (origin == .user)`). All decision sites keep their ORDER and REASON STRINGS (I1); the resolver fallbacks the wave-3 as-built block names (contract note (c)) keep reading from the adopted plan. Callers in PlayerViewModel/PlaybackPrefsResolver/ApplePlaybackRoutePlanner are retargeted mechanically -- no behaviour change, no new abstraction beyond the one struct and its two selection enums. ProtocolV3SidecarRestoreIntent is deleted with its pendingRecovered* consumers (the TrackSelection origin/case carries what it carried).\n\nTESTS: TrackSelectionTests (new, over the struct's resolution rules); the THREE pending*-shaped PlaybackProtocolV3Tests (A.5 rows 4-6) rewritten against TrackSelection; A.5 rows 1-3 verified -- if any still pin the pre-wave-3 legacy mechanism, rewrite them as reducer/actor-shaped tests HERE (this package owns the file); every rewrite named in the report, never a silent deletion. Full suite on a cloned simulator (clone 51D3BB39-CB87-4EE7-9494-DF81446BF416 -- the old shared template is gone) + same-host control at the base SHA. Build all three schemes.\n\nHARD BOUNDARIES: no reducer/actor/policy/engine-session edits; no view file changes; the coordinator's port surface may change shape only as far as the struct swap forces; decision order and reason strings byte-identical (the reviewer diffs each decision site).",
  "deliverables": [
-  {
-   "id": "TrackSelection model",
-   "where": "iosApp/iosApp/Screens/Player/Tracks/TrackSelection.swift"
-  },
-  {
-   "id": "coordinator on TrackSelection",
-   "where": "iosApp/iosApp/Screens/Player/Tracks/TrackSelectionCoordinator.swift"
-  },
-  {
-   "id": "TrackSelectionTests + 3 rewrites",
-   "where": "iosApp/Tests/"
-  }
+  {"id": "TrackSelection model (struct + AudioSelection/SubtitleSelection/SelectionOrigin)", "where": "iosApp/iosApp/Screens/Player/Tracks/TrackSelection.swift"},
+  {"id": "coordinator on TrackSelection (pending*/hasExplicitSubtitleChoice/pendingRecovered* gone)", "where": "iosApp/iosApp/Screens/Player/Tracks/TrackSelectionCoordinator.swift"},
+  {"id": "callers retargeted (mechanical)", "where": "iosApp/iosApp/Screens/Player/PlayerViewModel.swift + PlaybackPrefsResolver.swift + ApplePlaybackRoutePlanner.swift"},
+  {"id": "TrackSelectionTests + the A.5 rewrites (rows 4-6 mandatory; rows 1-3 verified/rewritten as found)", "where": "iosApp/Tests/"}
  ],
  "invariants": [
-  "I1",
-  "decision order and reasons unchanged"
+  "I1; decision order and reason strings unchanged at every selection site",
+  "TrackSelectionPorts.backend keeps returning the live concrete backend; the wave-3 adopt re-arm wiring untouched",
+  "No view file changes"
  ],
- "tests_required": [
-  "TrackSelectionTests"
- ],
+ "tests_required": ["TrackSelectionTests", "PlaybackProtocolV3Tests A.5 rows 4-6 rewrites"],
  "deletions": [
-  {
-   "grep": "pendingAudioFfIndex|pendingSubtitleFfIndex|pendingSidecarSubtitleTrackId|pendingServerRenderedSubtitleTrackId|pendingRecoveredAudioSelection|pendingRecoveredSubtitleSelection|pendingRecoveredSecondarySubtitleId|ProtocolV3SidecarRestoreIntent",
-   "scope": "iosApp/iosApp",
-   "expected": "0 hits"
-  }
+  {"grep": "pendingAudioFfIndex|pendingSubtitleFfIndex|pendingSidecarSubtitleTrackId|pendingServerRenderedSubtitleTrackId|pendingRecoveredAudioSelection|pendingRecoveredSubtitleSelection|pendingRecoveredSecondarySubtitleId|ProtocolV3SidecarRestoreIntent|hasExplicitSubtitleChoice", "scope": "iosApp/iosApp", "expected": "0 hits"}
  ],
- "behavior_changes_allowed": [
-  "none"
- ]
+ "behavior_changes_allowed": ["none"]
 }
