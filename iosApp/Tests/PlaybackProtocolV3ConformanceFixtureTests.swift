@@ -22,7 +22,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         )
         XCTAssertEqual(matrix.schemaVersion, 1)
         XCTAssertEqual(matrix.plannerScenarios.count, 17)
-        XCTAssertEqual(matrix.replanScenarios.count, 9)
+        XCTAssertEqual(matrix.replanScenarios.count, 10)
         XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
         let categories = Set(
@@ -41,6 +41,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 "available_qualities",
                 "track_change_replan",
                 "quality_change_replan",
+                "output_change_replan",
                 "idempotent_replan",
                 "concurrent_replan",
                 "mid_seek_replan",

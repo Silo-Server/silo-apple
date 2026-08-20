@@ -226,8 +226,17 @@ enum ApplePlaybackV3PlanAdapter {
         case "original_http":
             // The V3 direct slot describes delivery, while the existing Apple
             // planner chooses the concrete local executor for that source.
-            engine = basePlan.engine
-            loopbackSession = basePlan.loopbackSession
+            // The source descriptor is authoritative for the granted plan and
+            // can be more complete than the catalog item used by the legacy
+            // planner. High 10 must never fall back to AVPlayer when catalog
+            // video tracks are absent or stale.
+            if requiresSoftwareH264Decode(plan.source) {
+                engine = .playerCoreDirect
+                loopbackSession = nil
+            } else {
+                engine = basePlan.engine
+                loopbackSession = basePlan.loopbackSession
+            }
         case "server_remux_progressive":
             engine = .avPlayerNativeDirect
             loopbackSession = nil
@@ -260,7 +269,9 @@ enum ApplePlaybackV3PlanAdapter {
             dolbyVisionProfile: plan.source.dolbyVisionProfile,
             // Prefer the server's probed source fact. Catalog metadata remains
             // the compatibility fallback for plans that omit color_range.
-            colorRange: plan.source.colorRange ?? basePlan.sourceMetadata.colorRange
+            colorRange: plan.source.colorRange ?? basePlan.sourceMetadata.colorRange,
+            frameRate: plan.source.frameRate,
+            bitrateKbps: plan.source.bitrateKbps
         )
         let transformationTokens = plan.transformations.map {
             "v3_transform_\($0.executor)_\($0.name)_\($0.recipeVersion)"
@@ -299,6 +310,22 @@ enum ApplePlaybackV3PlanAdapter {
             sourceMetadata: sourceMetadata,
             normalizationSummary: normalization
         )
+    }
+
+    private static func requiresSoftwareH264Decode(
+        _ source: PlaybackV3SourceDescriptor
+    ) -> Bool {
+        let codec = source.videoCodec?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard codec == "h264" || codec == "avc" || codec == "avc1" else { return false }
+        if let bitDepth = source.bitDepth, bitDepth > 8 { return true }
+        let profile = source.videoProfile?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        return profile == "high 10" || profile == "high10" || profile == "high 10 intra"
     }
 
     private static func forcedLoopbackSession(

@@ -260,7 +260,17 @@ struct ApplePlaybackRoutePlanner {
                     servingMode: input.siloPlayerPrimaryEnabled ? .vodPlan : .event
                 )
             }
-            if let directDolbyVisionProfile, let directDolbyVisionResolution,
+            let requiresSoftwareH264 = Self.requiresSoftwareH264Decode(
+                for: selectedVersion,
+                fallbackCodec: session.playbackInfo?.videoCodec
+            )
+            if requiresSoftwareH264 {
+                directLoopbackSession = nil
+                engine = .playerCoreDirect
+                parityBlockers = []
+                routeCapabilities = .playerCoreDirect
+                reason = "h264_high10_software_decode"
+            } else if let directDolbyVisionProfile, let directDolbyVisionResolution,
                [5, 7, 8].contains(directDolbyVisionProfile), directLoopbackSession != nil {
                 engine = .siloPlayerLoopback
                 parityBlockers = []
@@ -525,6 +535,23 @@ private struct SiloRouteAssessment {
 }
 
 extension ApplePlaybackRoutePlanner {
+    static func requiresSoftwareH264Decode(
+        for version: FileVersion,
+        fallbackCodec: String? = nil
+    ) -> Bool {
+        let sourceCodec = version.videoTracks?.first?.codec ?? version.codecVideo ?? fallbackCodec
+        let codec = sourceCodec?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard codec == "h264" || codec == "avc" || codec == "avc1" else { return false }
+        guard let track = version.videoTracks?.first else { return false }
+        if let bitDepth = track.bitDepth, bitDepth > 8 { return true }
+        let profile = track.profile?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        return profile == "high 10" || profile == "high10" || profile == "high 10 intra"
+    }
+
     static func hevcLoopbackVideoRange(for version: FileVersion) -> String {
         videoRange(for: .passthroughHEVC, source: version)
     }
@@ -578,6 +605,13 @@ private extension ApplePlaybackRoutePlanner {
         if let videoCodec {
             if !nativeDirectVideoCodecs.contains(videoCodec) {
                 blockers.append("video_codec_not_allowlisted")
+            }
+            if requiresSoftwareH264Decode(
+                for: selectedVersion,
+                fallbackCodec: session.playbackInfo?.videoCodec
+            ) {
+                blockers.append("video_profile_requires_software_decode")
+                trace.append("video_h264_high10_software")
             }
         } else {
             blockers.append("video_codec_unknown")
@@ -789,13 +823,16 @@ private extension ApplePlaybackRoutePlanner {
         for version: FileVersion,
         session: PlaybackSessionResponse
     ) -> PlaybackSourceMetadata {
-        PlaybackSourceMetadata(
+        let videoTrack = version.videoTracks?.first
+        return PlaybackSourceMetadata(
             container: normalizedContainer(for: version),
             videoCodec: normalizedVideoCodec(version.codecVideo ?? session.playbackInfo?.videoCodec),
             audioCodec: normalizedAudioCodec(version.codecAudio ?? session.playbackInfo?.audioCodec),
             subtitleCodecs: embeddedSubtitleCodecs(for: version),
             dolbyVisionProfile: dolbyVisionProfile(for: version),
-            colorRange: unambiguousColorRange(for: version)
+            colorRange: unambiguousColorRange(for: version),
+            frameRate: parseLoopbackFrameRate(videoTrack?.frameRate).map(Double.init),
+            bitrateKbps: videoTrack?.bitrate ?? version.bitrate
         )
     }
 

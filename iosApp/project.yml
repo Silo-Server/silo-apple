@@ -348,6 +348,8 @@ targets:
         buildPhase: resources
       - path: Tests/Fixtures/PlaybackV3/SOURCE
         buildPhase: none
+      - path: Tests/Fixtures/PlaybackV3/server-fixture-corpus.patch
+        buildPhase: none
     dependencies:
       - target: Silo
       # PacketQueueTests allocates real AVPackets, so the test bundle needs

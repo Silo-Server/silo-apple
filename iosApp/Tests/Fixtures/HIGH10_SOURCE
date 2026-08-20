@@ -1,0 +1,17 @@
+Purpose: reproducible H.264 High 10 / 10-bit decoder, audio, geometry, and bound fixtures.
+Generator: FFmpeg 9.0.1 (Homebrew), libavcodec 63.1.101, libx264 enabled.
+Source pattern: FFmpeg lavfi testsrc2; audio fixture also uses lavfi sine at 48000 Hz.
+
+Semantic regeneration recipe (run from iosApp/Tests/Fixtures). Encoder output is
+not byte-stable across builds; the hashes below identify the exact reviewed corpus.
+
+ffmpeg -f lavfi -i testsrc2=size=320x180:rate=24 -f lavfi -i sine=frequency=1000:sample_rate=48000 -t 1 -c:v libx264 -profile:v high10 -level:v 5.1 -pix_fmt yuv420p10le -c:a aac -shortest -movflags +faststart v3_h264_high10_aac.mp4
+ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=24 -t 1 -c:v libx264 -profile:v high10 -level:v 5.1 -pix_fmt yuv420p10le -b:v 4096k -maxrate 4096k -bufsize 8192k -an -movflags +faststart v3_h264_high10_720p24.mp4
+ffmpeg -f lavfi -i testsrc2=size=320x180:rate=24 -t 1 -c:v libx264 -profile:v high10 -level:v 5.1 -pix_fmt yuv420p10le -an -metadata:s:v:0 rotate=90 -movflags +faststart v3_h264_high10_rotated90.mp4
+ffmpeg -f lavfi -i testsrc2=size=320x180:rate=24 -t 1 -vf setsar=4/3 -c:v libx264 -profile:v high10 -level:v 5.1 -pix_fmt yuv420p10le -an -movflags +faststart v3_h264_high10_sar4x3.mp4
+
+Fixture SHA-256:
+- v3_h264_high10_720p24.mp4 8dc29c6a3736bd41f57cf9b90c5ea22bcb3aa9ca4831e990d5fb6ab901c9c197
+- v3_h264_high10_aac.mp4 44aa72608ef0bcc4240436ea906e951a821670eaafd1052f7a2a319b1238ac0c
+- v3_h264_high10_rotated90.mp4 d1d1c702eea173c4f9be3a56277870f9187d0d6db083a076143f60ce9ab1eb7e
+- v3_h264_high10_sar4x3.mp4 40e29e05f1c06a26582a566d9d34a5332c21a4bd33759d8c9c9dd3aecc490e9b

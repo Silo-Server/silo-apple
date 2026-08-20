@@ -904,6 +904,8 @@ actor PlaybackSessionBridge {
             return PlaybackProtocolV3.ReplanOperation.trackChange
         case "quality_changed":
             return PlaybackProtocolV3.ReplanOperation.qualityChange
+        case "output_route_changed":
+            return PlaybackProtocolV3.ReplanOperation.outputChange
         default:
             return PlaybackProtocolV3.ReplanOperation.failureRecovery
         }
@@ -984,9 +986,13 @@ actor PlaybackSessionBridge {
         classification: String,
         message: String
     ) -> PlaybackV3Failure? {
+        if classification == "output_route_changed" {
+            return nil
+        }
         switch operation {
         case PlaybackProtocolV3.ReplanOperation.trackChange,
              PlaybackProtocolV3.ReplanOperation.qualityChange,
+             PlaybackProtocolV3.ReplanOperation.outputChange,
              PlaybackProtocolV3.ReplanOperation.seekReanchor:
             return nil
         default:
@@ -996,6 +1002,10 @@ actor PlaybackSessionBridge {
                 decoderName: nil
             )
         }
+    }
+
+    static func supportsOutputChangeReplan(serverFeatures: [String]) -> Bool {
+        serverFeatures.contains(PlaybackProtocolV3.outputChangeFeature)
     }
 
     func replanProtocolV3(
@@ -1015,6 +1025,10 @@ actor PlaybackSessionBridge {
             return nil
         }
         let expectedAttempt = ProtocolV3AttemptIdentity(active)
+        if operation == PlaybackProtocolV3.ReplanOperation.outputChange,
+           !Self.supportsOutputChangeReplan(serverFeatures: active.serverFeatures) {
+            return nil
+        }
         guard active.attemptCount < 8 else {
             await emitProtocolV3Terminal(
                 active: active,
@@ -1077,17 +1091,11 @@ actor PlaybackSessionBridge {
             qualityOverride: qualityPreference,
             fallbackBitrateKbps: active.bandwidthCapKbps
         )
-        let eventName = isSeekReanchor
-            ? "seek_reanchor_requested"
-            : (invalidatesIntent ? "plan_invalidated" : "plan_failed")
+        let replanRequestId = "apple-replan:\(UUID().uuidString.lowercased())"
         #if os(iOS) || os(tvOS)
-        // The server-side route event below is the authoritative record, but
-        // it only exists if the report POST succeeds and it lands in the
-        // server's telemetry, not the user's bundle. This is the client-side
-        // counterpart: a replan is a route change the user experiences as a
-        // reload, so the bundle needs to show that one happened, why, and
-        // where in the timeline — without the free-text `message`, which is
-        // user-facing prose the classification already summarises.
+        // Failure recovery is persisted by the server from the accepted
+        // replan request. This local breadcrumb keeps the same transition in
+        // the user's diagnostics bundle without racing a separate event POST.
         DiagTrace.breadcrumb(
             .essential,
             category: .playback,
@@ -1101,9 +1109,17 @@ actor PlaybackSessionBridge {
             ]
         )
         #endif
-        // Telemetry is best-effort and must not hold the route transition on
-        // a separate HTTP round-trip. The immutable prior-attempt identity is
-        // captured here so a later replan cannot change what the event names.
+        let eventName = isSeekReanchor
+            ? "seek_reanchor_requested"
+            : (invalidatesIntent ? "plan_invalidated" : "plan_failed")
+        let eventDiagnostics = [
+            "error_cause": String(message.prefix(512)),
+            "replan_request_id": replanRequestId,
+        ]
+        // Emit the breadcrumb for every server generation. New servers replace
+        // it with the authoritative failure synthesized from the accepted
+        // replan request; older V3 servers still retain the client event instead
+        // of silently losing failure telemetry.
         let eventActive = active
         Task {
             await emitProtocolV3Event(
@@ -1112,7 +1128,7 @@ actor PlaybackSessionBridge {
                 event: eventName,
                 classification: classification,
                 fallbackReason: nil,
-                diagnostics: ["error_cause": String(message.prefix(512))]
+                diagnostics: eventDiagnostics
             )
         }
         guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
@@ -1124,7 +1140,7 @@ actor PlaybackSessionBridge {
             clientFeatures: ApplePlaybackV3Capabilities.features,
             operation: operation,
             playbackAttemptId: active.playbackAttemptId,
-            replanRequestId: "apple-replan:\(UUID().uuidString.lowercased())",
+            replanRequestId: replanRequestId,
             failedPlanId: active.plan.planId,
             planAttemptId: active.planAttemptId,
             planAttemptKey: active.planAttemptKey,

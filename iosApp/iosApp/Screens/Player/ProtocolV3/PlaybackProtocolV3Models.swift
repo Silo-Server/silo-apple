@@ -56,7 +56,10 @@ enum PlaybackProtocolV3 {
         static let seekFailureRecovery = "seek_failure_recovery"
         static let trackChange = "track_change"
         static let qualityChange = "quality_change"
+        static let outputChange = "output_change"
     }
+
+    static let outputChangeFeature = "output_change_v1"
 }
 
 struct PlaybackV3HDRCapabilities: Codable, Equatable {
@@ -102,7 +105,8 @@ struct PlaybackV3CodecCapabilities: Codable, Equatable {
     /// How this client knows what it can decode. Apple attests through
     /// VideoToolbox rather than enumerating a decoder registry, so it claims
     /// `platform_attested`: codec, bit depth and dimension bounds are real,
-    /// profile/level are not enumerable and the server skips matching them.
+    /// profile/level are skipped only for hardware entries. Explicit bounded
+    /// software entries are matched strictly.
     let videoEvidence: String
     let audioEvidence: String
     let codecsVideo: [String]
@@ -158,6 +162,9 @@ struct PlaybackV3DeliveryCapability: Codable, Equatable {
     let failureReason: String?
     let containers: [String]
     let videoCodecs: [String]
+    /// Optional for decoding contexts captured from older protocol-v3 clients.
+    /// Current Apple snapshots always encode an explicit delivery subset.
+    let videoDecode: [PlaybackV3VideoDecodeCapability]?
     let audioDecodeCodecs: [String]
     let audioPassthroughCodecs: [String]
     let maxChannels: Int?

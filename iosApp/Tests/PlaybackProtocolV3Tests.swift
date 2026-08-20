@@ -199,6 +199,10 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             PlaybackSessionBridge.replanOperation(forClassification: "decoder_failed"),
             PlaybackProtocolV3.ReplanOperation.failureRecovery
         )
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(forClassification: "output_route_changed"),
+            PlaybackProtocolV3.ReplanOperation.outputChange
+        )
         XCTAssertNil(
             PlaybackSessionBridge.replanFailure(
                 operation: PlaybackProtocolV3.ReplanOperation.seekReanchor,
@@ -214,6 +218,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             )?.classification,
             "decoder_failed"
         )
+        XCTAssertNil(
+            PlaybackSessionBridge.replanFailure(
+                operation: PlaybackProtocolV3.ReplanOperation.failureRecovery,
+                classification: "output_route_changed",
+                message: "new output"
+            )
+        )
 
         let request = makeReplanRequest(
             planAttemptKey: "v3:intent",
@@ -227,6 +238,14 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testOutputRouteReplanRequiresChangedOutputContextIdentity() {
+        XCTAssertFalse(
+            PlaybackSessionBridge.supportsOutputChangeReplan(serverFeatures: [])
+        )
+        XCTAssertTrue(
+            PlaybackSessionBridge.supportsOutputChangeReplan(
+                serverFeatures: [PlaybackProtocolV3.outputChangeFeature]
+            )
+        )
         XCTAssertFalse(
             PlaybackSessionBridge.isMaterialOutputRouteChange(
                 activeOutputContextId: "apple:bedroom",
@@ -369,6 +388,20 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
 
         XCTAssertFalse(adapted.supportsDirectStreamResume)
+    }
+
+    func testOriginalHigh10PlanOverridesSparseCatalogAVPlayerChoice() throws {
+        let streamRequest = makeStreamRequest()
+        let base = makeBaseExecutionPlan(
+            streamRequest: streamRequest,
+            engine: .avPlayerNativeDirect
+        )
+        let plan = makePlan(videoProfile: "high 10", bitDepth: 10)
+
+        let adapted = try adaptedPlan(plan, base: base, streamRequest: streamRequest)
+
+        XCTAssertEqual(adapted.engine, .playerCoreDirect)
+        XCTAssertNil(adapted.loopbackSession)
     }
 
     func testUnsupportedPlanRequirementsAreRejected() {
@@ -749,7 +782,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(snapshot.capabilities.videoDecode.first?.levels, [])
         XCTAssertEqual(
             snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.progressive]?.videoCodecs,
-            AppleDecodeCapabilities.videoCodecs
+            snapshot.capabilities.codecsVideoHardware
         )
         XCTAssertNil(snapshot.capabilities.audioPassthrough)
         XCTAssertNil(snapshot.context.output.audioPassthrough)
@@ -775,12 +808,24 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testAVPlayerDeliveriesExcludeSoftwareOnlyVideoCodecs() throws {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let high10 = ApplePlaybackV3Capabilities.h264High10SoftwareDecodeCapability
+        let original = try XCTUnwrap(
+            snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP]
+        )
+        XCTAssertEqual(
+            original.videoDecode?.contains(high10) == true,
+            ApplePlaybackV3Capabilities.supportsValidatedH264High10DeviceClass()
+                && !AppleDecodeCapabilities.isSimulator
+        )
         for deliveryClass in [
             PlaybackProtocolV3.DeliveryClass.progressive,
             PlaybackProtocolV3.DeliveryClass.hls
         ] {
             let delivery = try XCTUnwrap(snapshot.context.deliveries[deliveryClass])
-            XCTAssertEqual(delivery.videoCodecs, AppleDecodeCapabilities.videoCodecs)
+            XCTAssertEqual(delivery.videoCodecs, snapshot.capabilities.codecsVideoHardware)
+            let deliveryDecoders = try XCTUnwrap(delivery.videoDecode)
+            XCTAssertTrue(deliveryDecoders.allSatisfy(\.hardware))
+            XCTAssertFalse(deliveryDecoders.contains(high10))
             XCTAssertFalse(delivery.videoCodecs.contains(AppleDecodeCapabilities.mpeg2VideoCodec))
         }
     }
@@ -1132,10 +1177,33 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    func testAudiobookFeaturesDoNotClaimSeekReanchor() {
+    func testFeaturesMatchImplementedRouteEventAndReplanPaths() {
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.routeDiagnosticsFeature
+            )
+        )
+        #if os(macOS)
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.outputChangeFeature
+            )
+        )
+        #else
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.outputChangeFeature
+            )
+        )
+        #endif
         XCTAssertFalse(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
                 PlaybackProtocolV3.seekReanchorFeature
+            )
+        )
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(
+                PlaybackProtocolV3.outputChangeFeature
             )
         )
         XCTAssertTrue(
@@ -1349,6 +1417,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         streamProtocol: String = "http_progressive",
         container: String = "mp4",
         videoCodec: String = "h264",
+        videoProfile: String = "high",
+        bitDepth: Int? = nil,
         audioCodec: String = "aac",
         width: Int = 1_920,
         height: Int = 1_080,
@@ -1453,9 +1523,9 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 durationSeconds: sourceDurationSeconds,
                 container: container,
                 videoCodec: videoCodec,
-                videoProfile: "high",
+                videoProfile: videoProfile,
                 videoLevel: 41,
-                bitDepth: dynamicRange == "sdr" ? 8 : 10,
+                bitDepth: bitDepth ?? (dynamicRange == "sdr" ? 8 : 10),
                 colorRange: "tv",
                 width: width,
                 height: height,

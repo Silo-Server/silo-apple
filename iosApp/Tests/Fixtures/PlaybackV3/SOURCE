@@ -1,6 +1,15 @@
 Source: silo-server docs/design/schemas/playback-v3/v3/fixtures/valid and internal/playback/testdata/protocol_v3
-Server ref: codex/playback-v3-neutral-server
-Server commit: ce2f3e6df084f52c62595db8e3011f55c3a925ef
-Vendored: 2026-08-10
+Server ref: suspense/fix-h264-high10-playback
+Server base commit: d285d0c223ae9ffe0f870dbda49c32fafcd66a45
+Source patch: server-fixture-corpus.patch
+Source patch SHA-256: 256883858a339dd1e6ed1937627fb13a52c7b16055529742a3b3ae15b9ad2b59
+Vendored: 2026-08-19
 
-Refresh these files from the exact server commit above, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.
+Changed corpus SHA-256:
+- capability_response.json 6b58843fed70967208c7f1e8c6cabdb1269741d460cc6c7a198140d57f53de0f
+- conformance_matrix.json 0fe27bb04707fadf17f80fb46060e08aefda052cb95618269ac450675a314b99
+- decision_response.json 5e097b4433f63ea3024ff7a2392cd2ab633a16fd7fe6685bbd499d207576fe11
+
+Reconstruct by checking out the server base commit, applying the source patch,
+and copying the named corpus files. Then regenerate Silo.xcodeproj with
+cd iosApp && xcodegen generate.

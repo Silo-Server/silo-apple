@@ -804,6 +804,10 @@ class PlayerViewModel {
     private var freshLoadTask: Task<Void, Never>?
     private var freshLoadGeneration: UInt64 = 0
     private var protocolV3ReplanTask: Task<Void, Never>?
+    /// Ownership token for `protocolV3ReplanTask`. Cancellation is cooperative,
+    /// so a stale task may reach its defer after a replacement has already been
+    /// installed; only the current generation may clear the shared handle.
+    private var protocolV3ReplanGeneration: UInt64 = 0
     private var nextUpLookupTask: Task<Void, Never>?
     private var nextUpOnDeckTask: Task<Void, Never>?
     private var nextUpCountdownTask: Task<Void, Never>?
@@ -972,6 +976,7 @@ class PlayerViewModel {
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
     private var activePreparedProtocolV3: PreparedPlaybackV3?
+    private var pendingProtocolV3OutputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot?
     private var activePlaybackSessionId: String?
     private var autoSkippedIntroKey: String?
     private var autoSkippedCreditsKey: String?
@@ -1239,26 +1244,30 @@ class PlayerViewModel {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self,
-                  let activeProtocolV3 = self.activePreparedProtocolV3,
-                  !self.isDisposed,
-                  !self.isLoading else { return }
+            guard let self, !self.isDisposed else { return }
             let observedSnapshot = ApplePlaybackV3Capabilities.snapshot()
-            guard PlaybackSessionBridge.isMaterialOutputRouteChange(
-                activeOutputContextId: activeProtocolV3.outputContextId,
-                observedOutputContextId: observedSnapshot.outputContextId
+            // Retain the latest physical route even before the initial plan is
+            // adopted. The load/replan completion path reconciles this snapshot
+            // against the plan it actually accepted, which also covers A→B→A
+            // changes while an A→B request is in flight.
+            self.pendingProtocolV3OutputRouteSnapshot = observedSnapshot
+            // Preserve route changes during postroll so Keep Watching can
+            // renegotiate before it resumes the old pipeline.
+            guard !self.hasReachedEndOfFile else { return }
+            guard let activeProtocolV3 = self.activePreparedProtocolV3 else { return }
+            guard PlaybackSessionBridge.supportsOutputChangeReplan(
+                serverFeatures: activeProtocolV3.serverFeatures
             ) else {
+                self.pendingProtocolV3OutputRouteSnapshot = nil
                 Self.logger.debug(
-                    "Ignoring AVAudioSession route notification with unchanged Playback V3 output context"
+                    "Ignoring output-route change because this server does not support in-place output replanning"
                 )
                 return
             }
-            self.attemptProtocolV3Replan(
-                position: self.currentTime,
-                classification: "output_route_changed",
-                message: "The Apple audio output route changed.",
-                outputRouteSnapshot: observedSnapshot
-            )
+            if self.isLoading || self.protocolV3ReplanTask != nil {
+                return
+            }
+            _ = self.reconcilePendingProtocolV3OutputRouteChange()
         }
         #endif
         settingsRefreshTask = Task { @MainActor [weak self] in
@@ -1271,6 +1280,10 @@ class PlayerViewModel {
         let callbacks = makeCallbacks()
         applyCallbacks(callbacks, to: core)
         wireSubtitleCallbacks(to: core)
+        core.setAuthoritativeH264SoftwareDecodeBounds(
+            frameRate: activeExecutionPlan?.sourceMetadata.frameRate,
+            bitrateKbps: activeExecutionPlan?.sourceMetadata.bitrateKbps
+        )
         // Route rejection from PlayerCore is reported here and converted into
         // a typed fallback plan by the view model rather than by the decode
         // core.
@@ -1678,6 +1691,12 @@ class PlayerViewModel {
             requiresForwardProgress: false
         )
         isLoading = false
+        if reconcilePendingProtocolV3OutputRouteChange() {
+            // Reconciliation has already cancelled obsolete progress work and
+            // entered replacement loading. Do not restart completion side
+            // effects for the route that just became stale.
+            return
+        }
         isPlaying = true
         applySettingsToPlayer()
         Self.logger.info(
@@ -1757,6 +1776,7 @@ class PlayerViewModel {
         )
     }
 
+    @discardableResult
     private func attemptProtocolV3Replan(
         position: Double,
         classification: String,
@@ -1765,22 +1785,27 @@ class PlayerViewModel {
         qualityPreference: String? = nil,
         completesQualitySwitch: Bool = false,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
-    ) {
+    ) -> Bool {
         guard protocolV3ReplanTask == nil,
               let watchDetail = currentWatchDetail else {
             if completesQualitySwitch { isQualitySwitching = false }
-            return
+            return false
         }
         let selectedSubtitleSnapshot = selectedSubtitleId
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
         bufferingProgress = nil
+        protocolV3ReplanGeneration &+= 1
+        let replanGeneration = protocolV3ReplanGeneration
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             defer {
-                self.protocolV3ReplanTask = nil
-                if completesQualitySwitch { self.isQualitySwitching = false }
+                if self.protocolV3ReplanGeneration == replanGeneration {
+                    self.protocolV3ReplanTask = nil
+                    if completesQualitySwitch { self.isQualitySwitching = false }
+                    _ = self.reconcilePendingProtocolV3OutputRouteChange()
+                }
             }
             do {
                 guard let prepared = try await self.sessionBridge.replanProtocolV3(
@@ -1794,6 +1819,11 @@ class PlayerViewModel {
                     subtitleTrackIndex: self.resolvedProtocolV3SubtitleIndexForResume(),
                     outputRouteSnapshot: outputRouteSnapshot
                 ) else {
+                    if self.shouldSupersedeFailedOutputReplan(
+                        requestedSnapshot: outputRouteSnapshot
+                    ) {
+                        return
+                    }
                     self.finalizeTerminalPlaybackError(message)
                     return
                 }
@@ -1862,9 +1892,55 @@ class PlayerViewModel {
                    ) {
                     return
                 }
+                if self.shouldSupersedeFailedOutputReplan(
+                    requestedSnapshot: outputRouteSnapshot
+                ) {
+                    return
+                }
                 self.finalizeTerminalPlaybackError(error.localizedDescription)
             }
         }
+        return true
+    }
+
+    @discardableResult
+    private func shouldSupersedeFailedOutputReplan(
+        requestedSnapshot: ApplePlaybackV3CapabilitySnapshot?
+    ) -> Bool {
+        guard let pendingSnapshot = pendingProtocolV3OutputRouteSnapshot else { return false }
+        let requestedOutputContextId = requestedSnapshot?.outputContextId
+            ?? activePreparedProtocolV3?.outputContextId
+        guard let requestedOutputContextId,
+              requestedOutputContextId != pendingSnapshot.outputContextId else { return false }
+        // The defer block will clear the task handle and reconcile the retained
+        // latest route. Release loading state first so reconciliation is not
+        // blocked by the obsolete request's own flag.
+        isLoading = false
+        isBuffering = false
+        bufferingProgress = nil
+        return true
+    }
+
+    private func reconcilePendingProtocolV3OutputRouteChange(position: Double? = nil) -> Bool {
+        guard let observedSnapshot = pendingProtocolV3OutputRouteSnapshot,
+              !isDisposed,
+              !hasReachedEndOfFile,
+              !isLoading,
+              protocolV3ReplanTask == nil,
+              let activeProtocolV3 = activePreparedProtocolV3 else { return false }
+        pendingProtocolV3OutputRouteSnapshot = nil
+        guard PlaybackSessionBridge.supportsOutputChangeReplan(
+            serverFeatures: activeProtocolV3.serverFeatures
+        ), PlaybackSessionBridge.isMaterialOutputRouteChange(
+            activeOutputContextId: activeProtocolV3.outputContextId,
+            observedOutputContextId: observedSnapshot.outputContextId
+        ) else { return false }
+        return attemptProtocolV3Replan(
+            position: position ?? currentTime,
+            classification: "output_route_changed",
+            message: "The Apple audio output route changed while playback was loading.",
+            outputRouteSnapshot: observedSnapshot
+        )
     }
 
     private func protocolV3FailureClassification(_ message: String) -> String {
@@ -2288,6 +2364,10 @@ class PlayerViewModel {
             // postroll again. Replay a short tail of the current episode.
             hasReachedEndOfFile = false
             let target = max(0, duration - 10)
+            if reconcilePendingProtocolV3OutputRouteChange(position: target) {
+                scheduleHideControls()
+                return true
+            }
             let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
             if !reloadsPlaybackPipeline {
                 activePlayer.play()
@@ -2621,7 +2701,10 @@ class PlayerViewModel {
         // preserve. Fresh loads and recovery paths may have disposed their
         // ActivePlayer while the coordinator still owns the wrapper, so they
         // must install a new implementation even when the route kind matches.
-        let installed = reusingActiveEngine && !activePlayer.isNone
+        // PlayerCore owns native FFmpeg contexts and decoded-frame queues that
+        // are load-scoped. Replace it on a V3 replan; only AVFoundation-backed
+        // engines are safe to reload in place.
+        let installed = reusingActiveEngine && !activePlayer.isNone && loadPlan.engine != .playerCoreDirect
             ? playbackCoordinator.prepareEngine(for: loadPlan.engine)
             : playbackCoordinator.installEngine(for: loadPlan.engine)
         activePlayer = ActivePlayer(renderTarget: installed.renderTarget)
@@ -3509,6 +3592,7 @@ class PlayerViewModel {
         currentWatchDetail = nil
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
+        pendingProtocolV3OutputRouteSnapshot = nil
         autoSkippedIntroKey = nil
         autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
@@ -3696,6 +3780,7 @@ class PlayerViewModel {
         )
 
         freshLoadTask?.cancel()
+        protocolV3ReplanGeneration &+= 1
         protocolV3ReplanTask?.cancel()
         protocolV3ReplanTask = nil
         freshLoadGeneration &+= 1
@@ -3726,6 +3811,7 @@ class PlayerViewModel {
             await self.realtimeClient.unbind()
             guard !Task.isCancelled, !self.isDisposed else { return }
 
+            var requestedOutputContextId: String?
             do {
                 try await self.disposeActivePlayerForFreshLoad(
                     timeout: origin == .userInitiated ? nil : Self.autoplayPlayerDisposeTimeout
@@ -3767,6 +3853,7 @@ class PlayerViewModel {
                     // annoying but doesn't wedge the UI; a hung autoplay does
                     // (the user is stuck on a half-cross-faded Next Up screen
                     // with no obvious way out).
+                    requestedOutputContextId = ApplePlaybackV3Capabilities.snapshot().outputContextId
                     prepared = try await self.runStartSession(
                         request: request,
                         resumePosition: resumePositionOverride,
@@ -3872,6 +3959,26 @@ class PlayerViewModel {
             } catch let error {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error("Load failed: \(String(describing: error), privacy: .public)")
+                if request.offlineDownloadId == nil,
+                   let pendingSnapshot = self.pendingProtocolV3OutputRouteSnapshot,
+                   let requestedOutputContextId,
+                   pendingSnapshot.outputContextId != requestedOutputContextId {
+                    // The failed response was planned for an output route that
+                    // is no longer current. Consume the marker and issue a new
+                    // start using a freshly sampled capability snapshot rather
+                    // than letting the obsolete request terminate playback.
+                    self.pendingProtocolV3OutputRouteSnapshot = nil
+                    self.beginFreshLoad(
+                        request: request,
+                        progressPosition: snapshotPosition,
+                        finalizeCurrentSession: finalizeCurrentSession,
+                        resumePositionOverride: resumePositionOverride,
+                        allowNearEndResume: allowNearEndResume,
+                        preserveInterruptionState: preserveInterruptionState,
+                        origin: origin
+                    )
+                    return
+                }
                 self.handleBeginFreshLoadFailure(error: error, origin: origin)
             }
         }
@@ -4135,6 +4242,7 @@ class PlayerViewModel {
         sourceProxy = nil
         activePlaybackSessionId = nil
         activePreparedProtocolV3 = nil
+        pendingProtocolV3OutputRouteSnapshot = nil
         activeExecutionPlan = nil
         error = message
         isLoading = false
@@ -6588,6 +6696,7 @@ class PlayerViewModel {
         settingsRefreshTask?.cancel()
         settingsRefreshTask = nil
         freshLoadTask?.cancel()
+        protocolV3ReplanGeneration &+= 1
         protocolV3ReplanTask?.cancel()
         protocolV3ReplanTask = nil
         if let outputRouteObserverToken {
@@ -7017,6 +7126,13 @@ class PlayerViewModel {
         if let videoCodec {
             if !Self.nativeDirectVideoCodecs.contains(videoCodec) {
                 blockers.append("video_codec_not_allowlisted")
+            }
+            if ApplePlaybackRoutePlanner.requiresSoftwareH264Decode(
+                for: selectedVersion,
+                fallbackCodec: session.playbackInfo?.videoCodec
+            ) {
+                blockers.append("video_profile_requires_software_decode")
+                trace.append("video_h264_high10_software")
             }
         } else {
             blockers.append("video_codec_unknown")

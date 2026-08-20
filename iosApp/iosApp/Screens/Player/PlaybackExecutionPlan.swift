@@ -373,6 +373,28 @@ struct PlaybackSourceMetadata: Equatable {
     let subtitleCodecs: [String]
     let dolbyVisionProfile: Int?
     let colorRange: String?
+    let frameRate: Double?
+    let bitrateKbps: Int?
+
+    init(
+        container: String?,
+        videoCodec: String?,
+        audioCodec: String?,
+        subtitleCodecs: [String],
+        dolbyVisionProfile: Int?,
+        colorRange: String?,
+        frameRate: Double? = nil,
+        bitrateKbps: Int? = nil
+    ) {
+        self.container = container
+        self.videoCodec = videoCodec
+        self.audioCodec = audioCodec
+        self.subtitleCodecs = subtitleCodecs
+        self.dolbyVisionProfile = dolbyVisionProfile
+        self.colorRange = colorRange
+        self.frameRate = frameRate
+        self.bitrateKbps = bitrateKbps
+    }
 
     static let unknown = PlaybackSourceMetadata(
         container: nil,

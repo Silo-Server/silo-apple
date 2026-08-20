@@ -23,6 +23,7 @@
 
 import AVFoundation
 import AVKit
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -132,6 +133,9 @@ final class PlayerCore: NSObject {
     private(set) var videoPresentationSize: CGSize = .zero
     /// Fires on main whenever `videoPresentationSize` changes.
     var onVideoPresentationSizeChange: ((CGSize) -> Void)?
+    #if DEBUG
+    var onSoftwareVideoFrameDecodedForTesting: ((CVPixelBuffer) -> Void)?
+    #endif
 
     // MARK: - Master clock
 
@@ -204,6 +208,10 @@ final class PlayerCore: NSObject {
     private var videoDecodeMode: VideoDecodeMode = .videoToolbox
     private var videoCodecCtx: UnsafeMutablePointer<AVCodecContext>?
     private var videoSwsCtx: OpaquePointer?
+    private let softwareVideoCIContext = CIContext(options: [.cacheIntermediates: false])
+    private var softwareVideoDisplayTransform = CGAffineTransform.identity
+    private var authoritativeH264SoftwareFrameRate: Double?
+    private var authoritativeH264SoftwareBitrateKbps: Int?
     private var videoDecodeOutputDimensions: CMVideoDimensions?
     private var useUntimedCompressedVideoSamples = false
     /// Set when PlayerCore detects it can't decode the stream. Signals
@@ -596,6 +604,7 @@ final class PlayerCore: NSObject {
     private var dynamicRange: SpikeDynamicRange = .sdr
     private var sourceColorRangeHint: String?
     private var resolvedVideoColorRange: String?
+    private var softwareVideoPixelAspectRatio: (horizontal: Int32, vertical: Int32)?
     /// Parsed Dolby Vision config record from the stream's `AV_PKT_DATA_DOVI_CONF`
     /// side data. `nil` when the source is not DV. Set during
     /// `buildVideoFormatDescription`.
@@ -2028,6 +2037,27 @@ final class PlayerCore: NSObject {
         // Compare-and-assign on main: `PlayerSurfaceHostView.attach` reads
         // the property from the UI thread, so keep it main-confined rather
         // than writing from the demux/control path.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, size != self.videoPresentationSize else { return }
+            self.videoPresentationSize = size
+            self.onVideoPresentationSizeChange?(size)
+        }
+    }
+
+    private func publishSoftwareVideoPresentationSize(
+        _ codecpar: AVCodecParameters,
+        stream: UnsafeMutablePointer<AVStream>
+    ) {
+        let aspect = resolvedSoftwareVideoSampleAspectRatio(stream: stream, frame: nil)
+        softwareVideoDisplayTransform = Self.softwareVideoDisplayTransform(stream: stream)
+        softwareVideoPixelAspectRatio = aspect.num > 0 && aspect.den > 0
+            ? (aspect.num, aspect.den)
+            : nil
+        let size = Self.softwareVideoPresentationSize(
+            codecpar,
+            sampleAspectRatio: aspect,
+            displayTransform: softwareVideoDisplayTransform
+        )
         DispatchQueue.main.async { [weak self] in
             guard let self, size != self.videoPresentationSize else { return }
             self.videoPresentationSize = size
@@ -3774,6 +3804,32 @@ final class PlayerCore: NSObject {
             ?? sourceColorRangeHint
         videoDecodeOutputDimensions = nil
         useUntimedCompressedVideoSamples = false
+        softwareVideoDisplayTransform = .identity
+        softwareVideoPixelAspectRatio = nil
+        doviConfig = nil
+        requiresDolbyVisionDisplay = false
+        shouldStripHevcEnhancement = false
+        strippedNalCount = 0
+
+        if Self.h264RequiresSoftwareDecode(codecpar) {
+            guard Self.h264SoftwareDecodeWithinAdvertisedBounds(
+                codecpar,
+                stream: stream.pointee,
+                authoritativeFrameRate: authoritativeH264SoftwareFrameRate,
+                authoritativeBitrateKbps: authoritativeH264SoftwareBitrateKbps
+            ) else {
+                Self.logger.warning("video: H.264 software decode exceeds advertised 720p24/4096Kbps/level-5.1 bounds")
+                return false
+            }
+            videoDecodeMode = .software
+            dynamicRange = VideoColorMetadata.dynamicRange(forTransfer: codecpar.color_trc)
+            videoPixelFormat = kCVPixelFormatType_32BGRA
+            publishSoftwareVideoPresentationSize(codecpar, stream: stream)
+            Self.logger.info(
+                "video: codec=h264 profile=\(codecpar.profile) bitDepth=\(Self.codecParameterBitDepth(codecpar)) \(codecpar.width)x\(codecpar.height) mode=software"
+            )
+            return setupSoftwareVideoDecoder(codecpar: codecpar, codecparPtr: codecparPtr)
+        }
 
         let codecType: CMVideoCodecType
         let atomKey: String?
@@ -3800,6 +3856,7 @@ final class PlayerCore: NSObject {
             videoDecodeMode = .software
             dynamicRange = VideoColorMetadata.dynamicRange(forTransfer: codecpar.color_trc)
             videoPixelFormat = kCVPixelFormatType_32BGRA
+            publishSoftwareVideoPresentationSize(codecpar, stream: stream)
             let codecName = Self.codecName(for: codecpar.codec_id) ?? "unknown"
             Self.logger.info(
                 "video: codec=\(codecpar.codec_id.rawValue) \(codecpar.width)x\(codecpar.height) fps=\(self.refreshRate) dr=\(self.dynamicRange.rawValue) mode=software"
@@ -3829,6 +3886,7 @@ final class PlayerCore: NSObject {
             videoDecodeMode = .software
             dynamicRange = VideoColorMetadata.dynamicRange(forTransfer: codecpar.color_trc)
             videoPixelFormat = kCVPixelFormatType_32BGRA
+            publishSoftwareVideoPresentationSize(codecpar, stream: stream)
             let codecName = Self.codecName(for: codecpar.codec_id) ?? "unknown"
             Self.logger.info(
                 "video: codec=\(codecpar.codec_id.rawValue) \(codecpar.width)x\(codecpar.height) fps=\(self.refreshRate) dr=\(self.dynamicRange.rawValue) mode=software (codec-tail)"
@@ -3847,10 +3905,6 @@ final class PlayerCore: NSObject {
         dynamicRange = VideoColorMetadata.dynamicRange(forTransfer: codecpar.color_trc)
 
         // Dolby Vision detection + routing. See MARK: Dolby Vision.
-        doviConfig = nil
-        requiresDolbyVisionDisplay = false
-        shouldStripHevcEnhancement = false
-        strippedNalCount = 0
         var doviAtom: (key: String, data: Data)?
         if let dovi = DolbyVisionFormat.readConfig(stream: stream, codecpar: codecpar) {
             doviConfig = dovi
@@ -4058,6 +4112,167 @@ final class PlayerCore: NSObject {
         let codedHeight = alignToH264Macroblock(codecpar.height)
         guard codedWidth != codecpar.width || codedHeight != codecpar.height else { return nil }
         return CMVideoDimensions(width: codedWidth, height: codedHeight)
+    }
+
+    static func h264RequiresSoftwareDecode(_ codecpar: AVCodecParameters) -> Bool {
+        guard codecpar.codec_id == AV_CODEC_ID_H264 else { return false }
+        // FF_PROFILE_H264_INTRA is 2048 and is ORed into the base profile.
+        // High 10 itself is 110. Keep the numeric normalization local because
+        // these FFmpeg C macros are not imported consistently by Swift.
+        let baseProfile = codecpar.profile & ~Int32(2_048)
+        return baseProfile == 110 || codecParameterBitDepth(codecpar) > 8
+    }
+
+    static func h264SoftwareDecodeWithinAdvertisedBounds(
+        _ codecpar: AVCodecParameters,
+        stream: AVStream,
+        authoritativeFrameRate: Double? = nil,
+        authoritativeBitrateKbps: Int? = nil
+    ) -> Bool {
+        guard codecpar.width > 0, codecpar.height > 0,
+              codecpar.width <= 1_280, codecpar.height <= 720 else { return false }
+        if codecpar.level > 0 && codecpar.level > 51 { return false }
+        let containerBitrateKbps = codecpar.bit_rate > 0 ? Double(codecpar.bit_rate) / 1_000 : nil
+        let knownBitrates = [containerBitrateKbps, authoritativeBitrateKbps.map(Double.init)]
+            .compactMap { $0 }
+        guard !knownBitrates.isEmpty, knownBitrates.allSatisfy({ $0 > 0 && $0 <= 4_096 }) else {
+            return false
+        }
+        let declaredRate = stream.avg_frame_rate.den > 0 && stream.avg_frame_rate.num > 0
+            ? stream.avg_frame_rate
+            : stream.r_frame_rate
+        let containerRate = declaredRate.den > 0
+            ? Double(declaredRate.num) / Double(declaredRate.den)
+            : nil
+        let knownRates = [containerRate, authoritativeFrameRate].compactMap { $0 }
+        return !knownRates.isEmpty && knownRates.allSatisfy { $0 > 0 && $0 <= 24.001 }
+    }
+
+    func setAuthoritativeH264SoftwareDecodeBounds(frameRate: Double?, bitrateKbps: Int?) {
+        authoritativeH264SoftwareFrameRate = frameRate
+        authoritativeH264SoftwareBitrateKbps = bitrateKbps
+    }
+
+    static func softwareVideoPresentationSize(_ codecpar: AVCodecParameters) -> CGSize {
+        softwareVideoPresentationSize(codecpar, sampleAspectRatio: codecpar.sample_aspect_ratio)
+    }
+
+    static func softwareVideoPresentationSize(
+        _ codecpar: AVCodecParameters,
+        sampleAspectRatio aspect: AVRational,
+        rotationDegrees: Int = 0
+    ) -> CGSize {
+        let radians = CGFloat(rotationDegrees) * .pi / 180
+        return softwareVideoPresentationSize(
+            codecpar,
+            sampleAspectRatio: aspect,
+            displayTransform: CGAffineTransform(rotationAngle: radians)
+        )
+    }
+
+    static func softwareVideoPresentationSize(
+        _ codecpar: AVCodecParameters,
+        sampleAspectRatio aspect: AVRational,
+        displayTransform: CGAffineTransform
+    ) -> CGSize {
+        guard codecpar.width > 0, codecpar.height > 0 else { return .zero }
+        let pixelAspect = aspect.num > 0 && aspect.den > 0
+            ? CGFloat(aspect.num) / CGFloat(aspect.den)
+            : 1
+        return boundedSoftwareVideoOutputSize(
+            sourceWidth: Int(codecpar.width),
+            sourceHeight: Int(codecpar.height),
+            pixelAspect: pixelAspect,
+            displayTransform: displayTransform
+        ) ?? .zero
+    }
+
+    static func boundedSoftwareVideoOutputSize(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        pixelAspect: CGFloat,
+        displayTransform: CGAffineTransform
+    ) -> CGSize? {
+        guard sourceWidth > 0, sourceHeight > 0,
+              pixelAspect.isFinite, pixelAspect > 0,
+              [displayTransform.a, displayTransform.b, displayTransform.c, displayTransform.d,
+               displayTransform.tx, displayTransform.ty].allSatisfy(\.isFinite) else { return nil }
+        let transform = CGAffineTransform(scaleX: pixelAspect, y: 1).concatenating(displayTransform)
+        let bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(sourceWidth),
+            height: CGFloat(sourceHeight)
+        ).applying(transform).standardized
+        // Cardinal rotations commonly produce values such as
+        // 180.00000000000003. Snap values that are effectively integral
+        // before rounding outward so a 320x180 frame does not become 181x320.
+        func outwardDimension(_ value: CGFloat) -> CGFloat {
+            let nearest = value.rounded()
+            return abs(value - nearest) < 0.0001 ? nearest : ceil(value)
+        }
+        let width = outwardDimension(bounds.width)
+        let height = outwardDimension(bounds.height)
+        let maxDimension: CGFloat = 4_096
+        let maxPixels: CGFloat = 3_840 * 2_160
+        guard width.isFinite, height.isFinite,
+              width >= 1, height >= 1,
+              width <= maxDimension, height <= maxDimension,
+              width * height <= maxPixels else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
+    static func softwareVideoDisplayTransform(
+        stream: UnsafeMutablePointer<AVStream>
+    ) -> CGAffineTransform {
+        var sideDataSize = 0
+        guard let bytes = av_stream_get_side_data(
+            stream,
+            AV_PKT_DATA_DISPLAYMATRIX,
+            &sideDataSize
+        ), sideDataSize >= 9 * MemoryLayout<Int32>.size else {
+            return .identity
+        }
+        return bytes.withMemoryRebound(to: Int32.self, capacity: 9) { matrix in
+            let fixedScale = CGFloat(1 << 16)
+            return CGAffineTransform(
+                a: CGFloat(matrix[0]) / fixedScale,
+                b: CGFloat(matrix[1]) / fixedScale,
+                c: CGFloat(matrix[3]) / fixedScale,
+                d: CGFloat(matrix[4]) / fixedScale,
+                tx: CGFloat(matrix[6]) / fixedScale,
+                ty: CGFloat(matrix[7]) / fixedScale
+            )
+        }
+    }
+
+    static func softwareVideoRotationDegrees(stream: UnsafeMutablePointer<AVStream>) -> Int {
+        var sideDataSize = 0
+        guard let bytes = av_stream_get_side_data(
+            stream,
+            AV_PKT_DATA_DISPLAYMATRIX,
+            &sideDataSize
+        ), sideDataSize >= 9 * MemoryLayout<Int32>.size else {
+            return 0
+        }
+        let angle = bytes.withMemoryRebound(to: Int32.self, capacity: 9) {
+            av_display_rotation_get($0)
+        }
+        guard angle.isFinite else { return 0 }
+        let rounded = Int(angle.rounded())
+        let normalized = ((rounded % 360) + 360) % 360
+        switch normalized {
+        case 90: return 90
+        case 180: return 180
+        case 270: return -90
+        default: return 0
+        }
+    }
+
+    private static func codecParameterBitDepth(_ codecpar: AVCodecParameters) -> Int32 {
+        let format = AVPixelFormat(rawValue: codecpar.format)
+        guard format != AV_PIX_FMT_NONE else { return 0 }
+        return VideoColorMetadata.sourceBitDepth(format)
     }
 
     private static func alignToH264Macroblock(_ value: Int32) -> Int32 {
@@ -4710,7 +4925,7 @@ final class PlayerCore: NSObject {
     /// Shared by the per-packet decode and the end-of-file drain; loops until
     /// `avcodec_receive_frame` reports empty (EAGAIN or EOF).
     private func receiveSoftwareVideoFrames(from ctx: UnsafeMutablePointer<AVCodecContext>) {
-        while true {
+        while !isCancelled {
             guard let frame = av_frame_alloc() else { return }
             let recvR = avcodec_receive_frame(ctx, frame)
             if recvR < 0 {
@@ -4770,14 +4985,12 @@ final class PlayerCore: NSObject {
         // paths below: a degraded picture beats a black screen.
         if VideoColorMetadata.sourceBitDepth(AVPixelFormat(rawValue: frame.pointee.format)) > 8,
            let pixelBuffer = makeHighBitDepthBiPlanarPixelBuffer(from: frame, width: width, height: height) {
-            attachSoftwareVideoColorMetadata(to: pixelBuffer, frame: frame)
-            handleDecodedVideoFrame(pixelBuffer, pts: pts)
+            enqueuePreparedSoftwareVideoBuffer(pixelBuffer, frame: frame, pts: pts)
             return
         }
 
         if let pixelBuffer = makePlanarYUVPixelBuffer(from: frame, width: width, height: height) {
-            attachSoftwareVideoColorMetadata(to: pixelBuffer, frame: frame)
-            handleDecodedVideoFrame(pixelBuffer, pts: pts)
+            enqueuePreparedSoftwareVideoBuffer(pixelBuffer, frame: frame, pts: pts)
             return
         }
 
@@ -4859,8 +5072,92 @@ final class PlayerCore: NSObject {
             return
         }
 
+        enqueuePreparedSoftwareVideoBuffer(pixelBuffer, frame: frame, pts: pts)
+    }
+
+    private func enqueuePreparedSoftwareVideoBuffer(
+        _ pixelBuffer: CVPixelBuffer,
+        frame: UnsafeMutablePointer<AVFrame>,
+        pts: CMTime
+    ) {
         attachSoftwareVideoColorMetadata(to: pixelBuffer, frame: frame)
-        handleDecodedVideoFrame(pixelBuffer, pts: pts)
+        let displayBuffer = rotatedSoftwareVideoBuffer(pixelBuffer) ?? pixelBuffer
+        handleDecodedVideoFrame(displayBuffer, pts: pts)
+        #if DEBUG
+        onSoftwareVideoFrameDecodedForTesting?(displayBuffer)
+        #endif
+    }
+
+    /// MP4 display matrices are container metadata and are not applied by the
+    /// raw FFmpeg decoder. Physically rotate software-decoded buffers before
+    /// they reach AVSampleBufferDisplayLayer so High 10 sources keep the same
+    /// orientation AVPlayer would have applied on a hardware route.
+    private func rotatedSoftwareVideoBuffer(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        guard !softwareVideoDisplayTransform.isIdentity else { return source }
+        let sourceWidth = CVPixelBufferGetWidth(source)
+        let sourceHeight = CVPixelBufferGetHeight(source)
+        let pixelAspect = softwareVideoPixelAspectRatioFromAttachment(source)
+        let renderTransform = CGAffineTransform(scaleX: pixelAspect, y: 1)
+            .concatenating(softwareVideoDisplayTransform)
+        guard let outputSize = Self.boundedSoftwareVideoOutputSize(
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            pixelAspect: pixelAspect,
+            displayTransform: softwareVideoDisplayTransform
+        ) else {
+            Self.logger.error("software display transform exceeds bounded output dimensions")
+            return nil
+        }
+        let outputWidth = Int(outputSize.width)
+        let outputHeight = Int(outputSize.height)
+        let attrs: CFDictionary = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true,
+        ] as CFDictionary
+        var destination: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            outputWidth,
+            outputHeight,
+            CVPixelBufferGetPixelFormatType(source),
+            attrs,
+            &destination
+        )
+        guard status == kCVReturnSuccess, let destination else {
+            Self.logger.error("software rotation buffer create failed: \(status)")
+            return nil
+        }
+
+        let image = CIImage(cvPixelBuffer: source).transformed(by: renderTransform)
+        let normalized = image.transformed(by: CGAffineTransform(
+            translationX: -image.extent.origin.x,
+            y: -image.extent.origin.y
+        ))
+        softwareVideoCIContext.render(
+            normalized,
+            to: destination,
+            bounds: CGRect(x: 0, y: 0, width: outputWidth, height: outputHeight),
+            colorSpace: nil
+        )
+        CVBufferPropagateAttachments(source, destination)
+        // The frame-resolved pixel aspect ratio is baked into the render
+        // transform, so the output buffer has square pixels.
+        CVBufferRemoveAttachment(destination, kCVImageBufferPixelAspectRatioKey)
+        return destination
+    }
+
+    private func softwareVideoPixelAspectRatioFromAttachment(_ buffer: CVPixelBuffer) -> CGFloat {
+        guard let value = CVBufferCopyAttachment(
+            buffer,
+            kCVImageBufferPixelAspectRatioKey,
+            nil
+        ) as? [CFString: Any],
+        let horizontal = value[kCVImageBufferPixelAspectRatioHorizontalSpacingKey] as? NSNumber,
+        let vertical = value[kCVImageBufferPixelAspectRatioVerticalSpacingKey] as? NSNumber,
+        vertical.doubleValue > 0 else {
+            return 1
+        }
+        return CGFloat(horizontal.doubleValue / vertical.doubleValue)
     }
 
     /// Convert a >8-bit decoded frame (e.g. dav1d/libvpx emit 10-bit as
@@ -5036,6 +5333,17 @@ final class PlayerCore: NSObject {
         to pixelBuffer: CVPixelBuffer,
         frame: UnsafeMutablePointer<AVFrame>
     ) {
+        let resolvedAspect = resolvedSoftwareVideoSampleAspectRatio(frame: frame)
+        let aspect = resolvedAspect.num > 0 && resolvedAspect.den > 0
+            ? (resolvedAspect.num, resolvedAspect.den)
+            : softwareVideoPixelAspectRatio
+        if let aspect, aspect.horizontal != aspect.vertical {
+            let value: CFDictionary = [
+                kCVImageBufferPixelAspectRatioHorizontalSpacingKey: Int(aspect.horizontal),
+                kCVImageBufferPixelAspectRatioVerticalSpacingKey: Int(aspect.vertical),
+            ] as CFDictionary
+            CVBufferSetAttachment(pixelBuffer, kCVImageBufferPixelAspectRatioKey, value, .shouldPropagate)
+        }
         if let cp = VideoColorMetadata.colorPrimariesString(frame.pointee.color_primaries) {
             CVBufferSetAttachment(
                 pixelBuffer,
@@ -5060,6 +5368,23 @@ final class PlayerCore: NSObject {
                 .shouldPropagate
             )
         }
+    }
+
+    private func resolvedSoftwareVideoSampleAspectRatio(
+        stream explicitStream: UnsafeMutablePointer<AVStream>? = nil,
+        frame: UnsafeMutablePointer<AVFrame>?
+    ) -> AVRational {
+        guard let formatCtx else { return AVRational(num: 0, den: 1) }
+        let stream: UnsafeMutablePointer<AVStream>?
+        if let explicitStream {
+            stream = explicitStream
+        } else if videoStreamIndex >= 0 {
+            stream = formatCtx.pointee.streams?[Int(videoStreamIndex)]
+        } else {
+            stream = nil
+        }
+        guard let stream else { return AVRational(num: 0, den: 1) }
+        return av_guess_sample_aspect_ratio(formatCtx, stream, frame)
     }
 
     /// Print a one-liner at exponentially-spaced milestones (1, 30, 100,
@@ -5152,6 +5477,9 @@ final class PlayerCore: NSObject {
         videoDecodeMode = .software
         useUntimedCompressedVideoSamples = false
         let ok = setupSoftwareVideoDecoder(codecpar: codecpar, codecparPtr: codecparPtr)
+        if ok {
+            publishSoftwareVideoPresentationSize(codecpar, stream: stream)
+        }
         #if os(iOS) || os(tvOS)
         // Losing hardware decode is the difference between a smooth 4K
         // session and a thermally throttled one, so the switch is recorded
@@ -6110,6 +6438,8 @@ final class PlayerCore: NSObject {
         }
 
         videoDecodeMode = .videoToolbox
+        softwareVideoPixelAspectRatio = nil
+        softwareVideoDisplayTransform = .identity
         videoFormatDescription = nil
         publishVideoPresentationSize()
         videoDecodeOutputDimensions = nil

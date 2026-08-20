@@ -68,7 +68,9 @@ enum LocalMediaProbe {
                 width: codecpar.width > 0 ? Int(codecpar.width) : nil,
                 height: codecpar.height > 0 ? Int(codecpar.height) : nil,
                 frameRate: frameRateToken(stream.pointee.avg_frame_rate),
-                bitrate: codecpar.bit_rate > 0 ? Int(codecpar.bit_rate) : nil,
+                // VideoTrack follows the server contract and stores kbps;
+                // libavcodec exposes bits/second.
+                bitrate: codecpar.bit_rate > 0 ? Int(codecpar.bit_rate / 1_000) : nil,
                 profile: nil,
                 level: codecpar.level > 0 ? Int(codecpar.level) : nil,
                 bitDepth: bitDepth(of: codecpar),

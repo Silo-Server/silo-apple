@@ -8,6 +8,29 @@ import XCTest
 /// device cannot play ALAC", silently, on two of the three paths.
 final class AppleDecodeCapabilitiesTests: XCTestCase {
 
+    func testHigh10SoftwareCapabilityUsesValidatedDeviceFloor() {
+        XCTAssertTrue(ApplePlaybackV3Capabilities.validatedH264High10DeviceClass(
+            isMac: false,
+            hasUnifiedMemory: true,
+            supportsApple9GPUFamily: true
+        ))
+        XCTAssertFalse(ApplePlaybackV3Capabilities.validatedH264High10DeviceClass(
+            isMac: false,
+            hasUnifiedMemory: true,
+            supportsApple9GPUFamily: false
+        ))
+        XCTAssertTrue(ApplePlaybackV3Capabilities.validatedH264High10DeviceClass(
+            isMac: true,
+            hasUnifiedMemory: true,
+            supportsApple9GPUFamily: false
+        ))
+        XCTAssertFalse(ApplePlaybackV3Capabilities.validatedH264High10DeviceClass(
+            isMac: true,
+            hasUnifiedMemory: false,
+            supportsApple9GPUFamily: true
+        ))
+    }
+
     // MARK: - The surfaces agree
 
     func testV3SnapshotReportsTheSharedVocabulary() {
@@ -97,6 +120,29 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
                 "\(entry.codec) names a decoder its hardware flag contradicts"
             )
         }
+    }
+
+    func testHigh10SoftwareCapabilityIsExplicitlyBounded() {
+        let entry = ApplePlaybackV3Capabilities.h264High10SoftwareDecodeCapability
+        XCTAssertEqual(entry.codec, "h264")
+        XCTAssertEqual(entry.decoderName, "FFmpeg")
+        XCTAssertEqual(entry.profiles, ["high 10", "high 10 intra"])
+        XCTAssertEqual(entry.levels, [
+            9, 10, 11, 12, 13,
+            20, 21, 22,
+            30, 31, 32,
+            40, 41, 42,
+            50, 51
+        ])
+        XCTAssertTrue(entry.levels.contains(31))
+        XCTAssertTrue(entry.levels.contains(41))
+        XCTAssertTrue(entry.levels.contains(51))
+        XCTAssertEqual(entry.bitDepths, [10])
+        XCTAssertEqual(entry.maxWidth, 1_280)
+        XCTAssertEqual(entry.maxHeight, 720)
+        XCTAssertEqual(entry.maxFrameRate, 24)
+        XCTAssertEqual(entry.maxBitrateKbps, 4_096)
+        XCTAssertFalse(entry.hardware)
     }
 
     // MARK: - Simulator claim

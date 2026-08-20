@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import CryptoKit
 import Foundation
+import Metal
 import VideoToolbox
 
 struct ApplePlaybackV3CapabilitySnapshot: Equatable {
@@ -33,25 +34,61 @@ struct ApplePlaybackV3CapabilitySnapshot: Equatable {
 }
 
 enum ApplePlaybackV3Capabilities {
+    /// Standard H.264 levels through the runtime's inclusive 5.1 ceiling.
+    /// Enumerating them keeps this strict software capability truthful for
+    /// consumers that interpret `levels` as a supported set rather than as
+    /// the server planner's current "at least" upper-bound representation.
+    static let h264SoftwareDecodeLevels = [
+        9, 10, 11, 12, 13,
+        20, 21, 22,
+        30, 31, 32,
+        40, 41, 42,
+        50, 51
+    ]
+
+    static let h264High10SoftwareDecodeCapability = PlaybackV3VideoDecodeCapability(
+        codec: "h264",
+        decoderName: "FFmpeg",
+        profiles: ["high 10", "high 10 intra"],
+        levels: h264SoftwareDecodeLevels,
+        bitDepths: [10],
+        maxWidth: 1_280,
+        maxHeight: 720,
+        maxFrameRate: 24,
+        maxBitrateKbps: 4_096,
+        hardware: false
+    )
+
     /// Features this client understands, advertised on every request.
     ///
     /// `layout_aware_passthrough` is deliberately absent: the server grants a
     /// validated passthrough claim only to a client that enumerates real sink
     /// channel layouts at `exact` audio evidence, and Apple attests neither.
     /// Advertising it would be a claim we cannot back.
-    static let features = [
-        PlaybackProtocolV3.planFeature,
-        PlaybackProtocolV3.clientTransformFeature,
-        PlaybackProtocolV3.routeDiagnosticsFeature,
-        PlaybackProtocolV3.deviceQuirksFeature,
-        PlaybackProtocolV3.seekReanchorFeature,
-        PlaybackProtocolV3.directStreamResumeFeature
-    ]
+    static var features: [String] {
+        var values = [
+            PlaybackProtocolV3.planFeature,
+            PlaybackProtocolV3.clientTransformFeature,
+            PlaybackProtocolV3.routeDiagnosticsFeature,
+            PlaybackProtocolV3.deviceQuirksFeature,
+            PlaybackProtocolV3.seekReanchorFeature,
+            PlaybackProtocolV3.directStreamResumeFeature
+        ]
+        #if !os(macOS)
+        // PlayerViewModel installs the AVAudioSession route observer only on
+        // iOS/tvOS. macOS must not negotiate an operation it never initiates.
+        values.append(PlaybackProtocolV3.outputChangeFeature)
+        #endif
+        return values
+    }
 
     /// Audiobooks currently restart sessions at part boundaries and do not
     /// retain enough plan identity to request seek re-anchors in place.
-    static let audiobookFeatures = features.filter {
-        $0 != PlaybackProtocolV3.seekReanchorFeature
+    static var audiobookFeatures: [String] {
+        features.filter {
+            $0 != PlaybackProtocolV3.seekReanchorFeature
+                && $0 != PlaybackProtocolV3.outputChangeFeature
+        }
     }
 
     /// The AVPlayer-backed audiobook engine does not execute PlayerCore or
@@ -76,8 +113,9 @@ enum ApplePlaybackV3Capabilities {
         let output = outputSnapshot(hdrAvailability: hdrAvailability)
         let isSimulator = AppleDecodeCapabilities.isSimulator
         let videoDecode = videoDecodeAttestation()
-        let videoCodecs = videoDecode.map(\.codec)
-        let hardwareVideoCodecs = videoDecode.filter(\.hardware).map(\.codec)
+        let videoCodecs = orderedUnique(videoDecode.map(\.codec))
+        let hardwareVideoCodecs = orderedUnique(videoDecode.filter(\.hardware).map(\.codec))
+        let hardwareVideoDecode = videoDecode.filter(\.hardware)
 
         // Audio is decoded by the bundled FFmpeg demuxer on the loopback route,
         // so the flat list is wider than what AVPlayer alone accepts. The
@@ -158,6 +196,7 @@ enum ApplePlaybackV3Capabilities {
                 failureReason: nil,
                 containers: containers,
                 videoCodecs: videoCodecs,
+                videoDecode: videoDecode,
                 audioDecodeCodecs: audioCodecs,
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -173,7 +212,8 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["mp4", "mov", "m4v"],
-                videoCodecs: AppleDecodeCapabilities.videoCodecs,
+                videoCodecs: hardwareVideoCodecs,
+                videoDecode: hardwareVideoDecode,
                 audioDecodeCodecs: ["aac", "ac3", "eac3", "alac", "mp3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -192,7 +232,8 @@ enum ApplePlaybackV3Capabilities {
                 // HLS always executes through AVPlayer. The locally attested
                 // `videoCodecs` list also contains PlayerCore-only MPEG-2;
                 // the shared AVPlayer list deliberately does not.
-                videoCodecs: AppleDecodeCapabilities.videoCodecs,
+                videoCodecs: hardwareVideoCodecs,
+                videoDecode: hardwareVideoDecode,
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -222,6 +263,11 @@ enum ApplePlaybackV3Capabilities {
         )
     }
 
+    private static func orderedUnique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
+    }
+
     /// Capability evidence for the standalone audiobook engine. The engine
     /// is AVPlayer-only, so every advertised delivery must remain executable
     /// without the video player's PlayerCore or local-loopback adapters.
@@ -242,6 +288,7 @@ enum ApplePlaybackV3Capabilities {
                 failureReason: nil,
                 containers: audiobookOriginalContainers,
                 videoCodecs: [],
+                videoDecode: [],
                 audioDecodeCodecs: audiobookAudioCodecs,
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -258,6 +305,7 @@ enum ApplePlaybackV3Capabilities {
                 failureReason: nil,
                 containers: ["mp4", "mov", "m4v"],
                 videoCodecs: [],
+                videoDecode: [],
                 audioDecodeCodecs: ["aac", "ac3", "eac3", "alac", "mp3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -274,6 +322,7 @@ enum ApplePlaybackV3Capabilities {
                 failureReason: nil,
                 containers: ["hls", "mpegts", "fmp4", "mp4"],
                 videoCodecs: [],
+                videoDecode: [],
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -372,8 +421,42 @@ enum ApplePlaybackV3Capabilities {
             maxBitrateKbps: 50_000,
             hardware: false
         ))
+        // PlayerCore's bounded FFmpeg path can decode the H.264 High 10 family
+        // that VideoToolbox deliberately excludes. This is a local executor,
+        // not permission to consume a server transcode slot.
+        if supportsValidatedH264High10DeviceClass() {
+            capabilities.append(h264High10SoftwareDecodeCapability)
+        }
         #endif
         return capabilities
+    }
+
+    static func validatedH264High10DeviceClass(
+        isMac: Bool,
+        hasUnifiedMemory: Bool,
+        supportsApple9GPUFamily: Bool
+    ) -> Bool {
+        isMac ? hasUnifiedMemory : supportsApple9GPUFamily
+    }
+
+    static func supportsValidatedH264High10DeviceClass() -> Bool {
+        guard let device = MTLCreateSystemDefaultDevice() else { return false }
+        #if os(macOS)
+        return validatedH264High10DeviceClass(
+            isMac: true,
+            hasUnifiedMemory: device.hasUnifiedMemory,
+            supportsApple9GPUFamily: device.supportsFamily(.apple9)
+        )
+        #else
+        // Apple GPU family 9 starts with A17 Pro/M3-class SoCs, including the
+        // reported iPhone 15 Pro. Older mobile/TV devices stay conservative
+        // until their sustained software-decode performance is validated.
+        return validatedH264High10DeviceClass(
+            isMac: false,
+            hasUnifiedMemory: device.hasUnifiedMemory,
+            supportsApple9GPUFamily: device.supportsFamily(.apple9)
+        )
+        #endif
     }
 
     /// Whether the platform routes this codec to an accelerated decoder.
