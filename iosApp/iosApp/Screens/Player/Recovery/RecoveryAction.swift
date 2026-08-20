@@ -136,6 +136,6 @@ enum RecoveryAction: Equatable {
     case waitForServerReady(probeAfter: Duration)
     /// `triggerAutomaticInterruptionRecovery()`.
     case autoRecoverInterruption
-    /// Terminal. `finalizeTerminalPlaybackError(failure.legacyMessage)`.
+    /// Terminal: the shell publishes the failure's legacy message.
     case fail(PlaybackFailure)
 }

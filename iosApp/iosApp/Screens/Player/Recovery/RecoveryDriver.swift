@@ -252,7 +252,7 @@ final class RecoveryDriver {
 
     /// Drops the visible recovery's single-flight without deciding anything.
     ///
-    /// The slot is the policy's form of `activeServerOutageRecoverySessionId`,
+    /// The slot is the policy's form of the outage-recovery session-id echo,
     /// which the failure ladder and the end-of-file gate read and which
     /// `clearServerOutageRecoveryState()` cleared alongside the task that owned
     /// the wait. It is also what an executor that bails on a load-state gate

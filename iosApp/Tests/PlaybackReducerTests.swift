@@ -24,8 +24,8 @@ final class PlaybackReducerTests: XCTestCase {
     private func makeRequest(
         contentId: String = "content-1",
         offlineDownloadId: String? = nil
-    ) -> PlayerViewModel.LoadRequest {
-        PlayerViewModel.LoadRequest(
+    ) -> LoadRequest {
+        LoadRequest(
             contentId: contentId,
             preferredFileId: 7,
             preferredAudioTrackIndex: 1,
@@ -213,7 +213,7 @@ final class PlaybackReducerTests: XCTestCase {
         loadID: LoadID = LoadID(),
         identity: SessionIdentity? = nil,
         plan: ExecutablePlan? = nil,
-        request: PlayerViewModel.LoadRequest? = nil,
+        request: LoadRequest? = nil,
         adoption: PlaybackAdoption = .freshLoad(.userInitiated),
         transport: TransportState = TransportState(positionSeconds: 100, durationSeconds: 1000),
         sub: Sub = .steady,
@@ -1524,7 +1524,7 @@ final class PlaybackReducerTests: XCTestCase {
         let loadID = LoadID()
         let identity = makeIdentity()
         var request = makeRequest(offlineDownloadId: "download-1")
-        request = PlayerViewModel.LoadRequest(
+        request = LoadRequest(
             contentId: request.contentId,
             preferredFileId: request.preferredFileId,
             preferredAudioTrackIndex: request.preferredAudioTrackIndex,

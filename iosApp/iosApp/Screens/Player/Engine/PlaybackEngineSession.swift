@@ -4,8 +4,8 @@
 //  Stage 2 wave 2b — one engine session per `LoadID`.
 //
 //  Before this wave the view model held the backend, the source proxy and 17
-//  callback closures whose lifetime was guarded by a by-value capture of
-//  `streamLoadGeneration`, plus five session-id mirrors. A session owns those
+//  callback closures whose lifetime was guarded by a by-value capture of the
+//  stream-load generation, plus five session-id mirrors. A session owns those
 //  three things together: the callbacks are re-bound to *this* session, the
 //  stream ends when it is disposed, and a late event from a superseded load is
 //  dropped structurally rather than by comparing a number captured when the

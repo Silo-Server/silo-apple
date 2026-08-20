@@ -172,7 +172,7 @@ final class TrackSelectionCoordinator {
         SubtitleAIController(
             mediaFileId: { [weak self] in self?.context.currentSelectedVersion?.fileId },
             currentTime: { [weak self] in self?.context.currentTime ?? 0 },
-            sessionId: { [weak self] in self?.context.activePlaybackSessionId },
+            sessionId: { [weak self] in self?.context.serverSessionId },
             realtimeUnavailable: { [weak self] in !(self?.ports.subtitleAILiveOverlayAvailable() ?? false) },
             liveCoordinator: self.makeLiveSubtitleCoordinator(),
             handoffContext: { [weak self] in self?.makeSubtitleHandoffContext() },
@@ -439,7 +439,7 @@ final class TrackSelectionCoordinator {
     /// touched joins the body's invalidation set (see `TrackSelectionPorts`).
     @MainActor
     var subtitleSearchVisible: Bool {
-        ports.activePlaybackSessionId() != nil
+        ports.serverSessionId() != nil
             && ports.currentSelectedVersion()?.fileId != nil
             && ports.backendCapabilities().supportsExternalPrimarySubtitles
     }
@@ -569,7 +569,7 @@ final class TrackSelectionCoordinator {
             )
             return nil
         }
-        guard let sessionId = context.activePlaybackSessionId, !sessionId.isEmpty else {
+        guard let sessionId = context.serverSessionId, !sessionId.isEmpty else {
             Self.logger.warning("[AI-SUB] no active session id for subtitle handoff")
             return nil
         }
@@ -1561,7 +1561,7 @@ final class TrackSelectionCoordinator {
     /// The track half of `adoptProtocolV3RenewalIntent`: arm the plan's
     /// authoritative selection and, when the choice is a latched manual one,
     /// stop the auto-resolver from revisiting it.
-    func adoptProtocolV3RenewalIntent(plan: PlaybackV3Plan, request: PlayerViewModel.LoadRequest) {
+    func adoptProtocolV3RenewalIntent(plan: PlaybackV3Plan, request: LoadRequest) {
         armAdoptedProtocolV3TrackIntent(plan: plan, request: request)
 
         // Adopting an authoritative server plan does not convert an automatic
@@ -1581,7 +1581,7 @@ final class TrackSelectionCoordinator {
 
     private func armAdoptedProtocolV3TrackIntent(
         plan: PlaybackV3Plan,
-        request: PlayerViewModel.LoadRequest
+        request: LoadRequest
     ) {
         // The V3 plan is authoritative for the tracks actually rendered.
         // Apply it before the new source publishes a track list so container

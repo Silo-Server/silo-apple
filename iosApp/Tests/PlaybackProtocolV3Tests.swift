@@ -664,7 +664,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             url: "/api/v1/playback/session-v3/subtitles/2.sup",
             fontBundleUrl: nil
         )
-        let original = PlayerViewModel.LoadRequest(
+        let original = LoadRequest(
             contentId: "movie-1",
             preferredFileId: 7,
             preferredAudioTrackIndex: 0,
@@ -706,7 +706,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 makeSubtitle(index: 5, codec: "pgs", external: false, path: nil)
             ]
         )
-        let original = PlayerViewModel.LoadRequest(
+        let original = LoadRequest(
             contentId: "movie-1",
             preferredFileId: 7,
             preferredAudioTrackIndex: 0,
@@ -1090,7 +1090,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 makeAudio(index: 1, codec: "ac3", isDefault: false)
             ]
         )
-        let original = PlayerViewModel.LoadRequest(
+        let original = LoadRequest(
             contentId: "movie-1",
             preferredFileId: 42,
             preferredAudioTrackIndex: 0,
@@ -1115,14 +1115,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(intent.sidecarSubtitleTrackId)
     }
 
-    func testStaleStreamGenerationCannotConsumePendingTrackIntent() {
-        XCTAssertTrue(
-            PlayerViewModel.isCurrentStreamCallback(7, currentGeneration: 7)
-        )
-        XCTAssertFalse(
-            PlayerViewModel.isCurrentStreamCallback(6, currentGeneration: 7)
-        )
-    }
+    // `testStaleStreamGenerationCannotConsumePendingTrackIntent` pinned
+    // `PlayerViewModel.isCurrentStreamCallback`, the by-value generation
+    // compare stage 2 wave 3 deleted. Its contract — a superseded load's event
+    // cannot mutate the live one — is rewritten as
+    // `PlaybackSessionActorTests.testStaleLoadEventIsIgnored`, which asserts it
+    // over `LoadID` stamping instead of over a counter.
 
     func testReplacementLoaderCannotMovePlaybackBackwardsWithoutASeek() {
         XCTAssertTrue(

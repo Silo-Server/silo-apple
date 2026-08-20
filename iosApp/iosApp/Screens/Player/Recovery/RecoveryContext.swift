@@ -235,10 +235,10 @@ struct RecoveryContext: Equatable {
     /// `PlayerViewModel.backgroundRenewalTransientFailures`.
     var backgroundRenewalTransientFailures: Int
     /// Whether a silent (background) source renewal is in flight. Replaces the
-    /// `backgroundRenewalSessionId` echo; wave 3 scopes it by `SessionIdentity`.
+    /// background-renewal session-id echo; wave 3 scopes it by `SessionIdentity`.
     var backgroundRenewalInFlight: Bool
     /// Whether the visible (fresh) renewal is in flight. Replaces the
-    /// `staleSessionRecoverySessionId` echo.
+    /// stale-session-recovery session-id echo.
     var freshRenewalInFlight: Bool
     /// `PlayerViewModel.currentDeliveryStrategy == .direct` plus the other
     /// preconditions of `attemptBackgroundSessionRenewal`: not offline, a watch

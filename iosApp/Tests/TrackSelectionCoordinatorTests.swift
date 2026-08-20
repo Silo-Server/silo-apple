@@ -380,7 +380,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                     activePreparedProtocolV3: nil,
                     currentSelectedVersion: nil,
                     currentWatchDetail: nil,
-                    activePlaybackSessionId: nil,
+                    serverSessionId: nil,
                     resolvedServerUrl: "",
                     activeRouteKind: .avPlayerNativeDirect,
                     backendCapabilities: .avFoundation,
@@ -394,7 +394,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                 recorder.narrowReadCount += 1
                 return .avFoundation
             },
-            activePlaybackSessionId: {
+            serverSessionId: {
                 recorder.narrowReadCount += 1
                 return "session-1"
             },

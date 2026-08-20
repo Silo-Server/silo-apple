@@ -12,7 +12,7 @@ struct TrackSelectionContext {
     let activePreparedProtocolV3: PreparedPlaybackV3?
     let currentSelectedVersion: FileVersion?
     let currentWatchDetail: WatchDetail?
-    let activePlaybackSessionId: String?
+    let serverSessionId: String?
     let resolvedServerUrl: String
     let activeRouteKind: PlaybackEngineKind
     let backendCapabilities: PlayerBackendCapabilities
@@ -50,7 +50,7 @@ struct TrackSelectionPorts {
     // Everything else in the coordinator runs from a command or a callback,
     // never inside a body, and keeps using the whole-context snapshot.
     var backendCapabilities: () -> PlayerBackendCapabilities
-    var activePlaybackSessionId: () -> String?
+    var serverSessionId: () -> String?
     var currentSelectedVersion: () -> FileVersion?
     /// Ask the server for a replacement V3 plan. Maps onto
     /// `PlayerViewModel.attemptProtocolV3Replan(position:classification:message:)`
@@ -68,7 +68,7 @@ struct TrackSelectionPorts {
     /// The durable load request whose `preferred*` fields are the fallback for
     /// the resume resolvers. Read-only: the only field the track half writes is
     /// covered by `setLastLoadRequestProtocolV3SubtitleIndex`.
-    var lastLoadRequest: () -> PlayerViewModel.LoadRequest?
+    var lastLoadRequest: () -> LoadRequest?
     var setLastLoadRequestProtocolV3SubtitleIndex: (Int?) -> Void
     var showNotice: @MainActor (_ title: String, _ message: String, _ tone: PlayerNoticeTone, _ duration: TimeInterval) -> Void
     var activeNotice: () -> PlayerNotice?
@@ -95,7 +95,7 @@ extension TrackSelectionContext {
         activePreparedProtocolV3: nil,
         currentSelectedVersion: nil,
         currentWatchDetail: nil,
-        activePlaybackSessionId: nil,
+        serverSessionId: nil,
         resolvedServerUrl: "",
         activeRouteKind: .avPlayerNativeDirect,
         backendCapabilities: PlayerBackendCapabilities(

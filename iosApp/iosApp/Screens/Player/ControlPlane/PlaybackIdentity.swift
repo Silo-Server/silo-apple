@@ -3,8 +3,8 @@ import Foundation
 /// Identity of one engine load.
 ///
 /// Stage 2 replaces the three by-value generation counters the view model
-/// captured into its callbacks (`streamLoadGeneration`, `freshLoadGeneration`,
-/// `serverOutageRecoveryGeneration`) and the backend's `loopbackGeneration` /
+/// captured into its callbacks (the stream-load, fresh-load and
+/// outage-recovery counters) and the backend's `loopbackGeneration` /
 /// `activeLoopbackSessionID` string compare with one minted value that travels
 /// on every effect and every event. A mutation is applied only when the
 /// carried `LoadID` still equals the current one, so a late callback from a
@@ -30,12 +30,10 @@ struct LoadID: Hashable, Sendable {
 
 /// Identity of the server-side playback session a load is bound to.
 ///
-/// Produced by `PlaybackSessionBridge` (wave 1D widens `currentSessionId` into
-/// this type) and carried by every session-scoped effect and event, replacing
-/// the five view-model mirrors/echoes of the bridge's session id
-/// (`activePlaybackSessionId`, `staleSessionRecoverySessionId`,
-/// `backgroundRenewalSessionId`, `activeServerOutageRecoverySessionId`, and the
-/// replan attempt snapshot).
+/// Carried by every session-scoped effect and event, replacing the five
+/// view-model mirrors/echoes of the bridge's session id that wave 3 deleted:
+/// the active-session mirror, the stale-session and background-renewal echoes,
+/// the outage-recovery echo, and the replan attempt snapshot.
 struct SessionIdentity: Equatable, Sendable {
     /// `PlaybackSessionBridge.sessionId`. `nil` for an offline load, which has
     /// no server session at all.
