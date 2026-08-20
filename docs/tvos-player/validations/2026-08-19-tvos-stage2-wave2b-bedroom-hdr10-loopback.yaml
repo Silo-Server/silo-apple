@@ -1,0 +1,66 @@
+# Validation record — Stage 2 wave-2b device pass, partial (bedroom TV): HDR10 loopback row PASSES on the
+# wave-2b build; a startup loopback failure observed earlier the same evening was investigated with a
+# pre-wave-2 control build and ROOT-CAUSED TO SERVER-SIDE ORIGIN LATENCY, not the wave-2 code.
+date: 2026-08-19
+platform: tvOS 26.6
+device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV", D2D0D771-B976-5869-8FA3-1AC5E88E4F16)
+output_path: HDMI (CMP-OUTPUT hdrOutputEligible=true hdr10=true dolbyVision=true dvModes=5,8 sinkType=HDMIOutput)
+app_build: SiloTV Debug from silo-apple player/architecture-remediation @ 52be6ef (Stage 2 waves 1+2a+2b merged)
+control_build: same scheme @ 9756ff4 (wave-1 tip, pre-wave-2)
+server: production (silo-proxy-01.arkyncdn.net) — demonstrably unhealthy in the first capture window (HTTP 404
+  on a transcode segment, -12888 playlist-unchanged stall), healthy in the later windows
+method: devicectl install from the Mini; deep-link silo://play/movie-tmdb-852590 via --payload-url; console
+  captured (timestamped via perl on the later runs); pyatv companion for pause/home
+
+row_3_hdr10_loopback:  # design §6 row 3 on the wave-2b build
+  title_ref: movie-tmdb-852590  # same title/plan as the 08-17/08-18 baselines (1203 segments, 1892 keyframes)
+  result: PASS
+  evidence: >
+    20:03:03 load .siloLoopback anchor=2204.7 → producer anchored seg 449 (+2 s) → startup ready (+2 s) →
+    TTFF/first frame (+6-7 s) → item ready HEVC 3840x2160 HDR10 E-AC-3 5.1. Soak: 6+ min continuous
+    tc=playing rate=1.0, bufAhead 12-20 s, generatedAhead 57-90 s, no stalls, no recovery lines, no
+    suspension lines. Pause/resume via HID play_pause clean (tc=paused → playing). Played far past the
+    bedroom's historical anchor+21 s environmental window with no -11868/-17223.
+  suspend_teardown: >
+    home-press during paused playback: item emits a benign -11868 failedToEnd from the dying pipeline with
+    userPaused=1; no recovery fired (correct — policy respects the pause), display criteria cleared, teardown
+    clean. Full suspend→resume could not be captured programmatically: devicectl --console kills the app when
+    the stream drops at suspend, and the companion-only pyatv pairing cannot read Now Playing state. Resume leg
+    needs the physical remote or MRP credentials.
+
+startup_failure_investigation:  # the reason this record exists; VERDICT: not a wave-2 regression
+  symptom: >
+    Earlier capture (untimestamped): two consecutive loopback attempts at anchor 499.4 s died with
+    "Remuxer failed: prematureSourceEnd(readRC: -1414092869 ['EXIT'], shortfallBytes≈14.46 GB)". Each
+    failure was followed by a correct policy replan to server HLS (suspension on reason=server_replan →
+    replan → suspension off → HDR10 item ready) — the wave-2b recovery machinery behaved as designed.
+  control: pre-wave-2 build (9756ff4) played the same title's loopback cleanly minutes later (different anchor).
+  root_cause: >
+    Code-proven (files byte-identical across both builds): the 'EXIT' + prematureSourceEnd combination can
+    only be produced by the writer's 10 s read-deadline abort (LoopbackIngestEndPolicy.classify requires
+    deadlineAborted=true; every stop()/teardown path is excluded because the mux loop checks cancellation
+    before classification). The failing av_read_frame blocked ≥10 s on a 4 MB origin chunk fetch that was
+    still in flight — no outage flag, no fetch failure. The same capture shows the server 404ing transcode
+    segments. Re-running the wave-2b build after the server recovered: loopback plays perfectly (row_3 above).
+    The apparent determinism was source-cache adoption warming attempt 2 to the same in-flight byte.
+  falsifier_run: wave-2b build re-run with timestamps — anchor 2204.7 s, producer anchor +2 s, no failure.
+  follow_ups:  # none block the wave-2b gate; tracked in the cleanup backlog
+    - "LoopbackSegmentWriter: phase-aware startup read deadline (30 s pre-first-segment) + one retry on a
+       deadline abort, so a single slow chunk is a hiccup, not a route kill"
+    - "PlaybackSourceProxy: mirror the decisive transport lines (get end cause / window claim diverted /
+       chunk gave up / window gave up / origin retargeted) to cmpLog — they are OSLog-only and invisible in
+       every console capture, which made this investigation slower than it needed to be"
+    - "TrackSelectionCoordinator: automatic (non-user) subtitle re-selection can request a route-changing
+       replan right after a recovery replan (observed: sti:2/subrip → sti:-1/srt), amplifying one loopback
+       failure into a loopback⇄HLS oscillation; add a cooldown guard (pre-existing behaviour, unchanged by
+       Stage 2)"
+
+rows_pending:  # remaining wave-2b device rows; tooling limits, need the owner or server-side action
+  - "row 7 seek-heavy: companion HID arrows do not reach the player's controls and set_position needs MRP
+     credentials — owner-driven seeks with the physical remote (a few long jumps both directions)"
+  - "rows 12/13 renewal + server restart → ride-through → replan → resume: needs a production (or dev)
+     server restart mid-stream — owner go/no-go; this is the row the wave-2b carry-owner fix lives on
+     (watch suspended=[…] clear after the replan)"
+  - "row 1 DV P7+TrueHD / P8 passthrough: DV title deep links (ids not yet gathered); DV rows were
+     hardware-validated 08-18 on Living Room at the pre-Stage-2 code"
+  - "suspend→resume (resume leg) and player-exit teardown: physical remote"
