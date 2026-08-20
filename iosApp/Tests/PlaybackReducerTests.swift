@@ -329,7 +329,7 @@ final class PlaybackReducerTests: XCTestCase {
         guard case .publish(let overlay) = effects[3] else {
             return XCTFail("expected the loading publish")
         }
-        XCTAssertTrue(overlay.isLoading)
+        XCTAssertEqual(overlay.isLoading, true)
         XCTAssertNil(overlay.error)
         XCTAssertEqual(overlay.currentTime, 100, "the load keeps the playhead it resumes from")
         XCTAssertEqual(overlay.duration, 1000, "and the duration it already published")
@@ -1098,7 +1098,7 @@ final class PlaybackReducerTests: XCTestCase {
         }
         XCTAssertFalse(postroll.isBuffering)
         XCTAssertFalse(postroll.isPlaying)
-        XCTAssertFalse(postroll.isLoading)
+        XCTAssertEqual(postroll.isLoading, false)
 
         // The EOF latch drops later time reports, as `onTimeChange` does.
         let (afterTime, timeEffects) = PlaybackReducer.reduce(
@@ -1362,7 +1362,7 @@ final class PlaybackReducerTests: XCTestCase {
         guard case .publish(let replanPresentation) = replan.1[1] else {
             return XCTFail("expected the loading publish")
         }
-        XCTAssertTrue(replanPresentation.isLoading)
+        XCTAssertEqual(replanPresentation.isLoading, true)
         XCTAssertFalse(replanPresentation.isBuffering, "setBuffering(false, cause: \"replan\")")
         XCTAssertEqual(
             replan.1.last,
@@ -1716,9 +1716,8 @@ final class PlaybackReducerTests: XCTestCase {
         guard case .replanning(intent) = playing(replanning)?.sub else {
             return XCTFail("the startup failure has to own the replan slot")
         }
-        // And the answer lands: `.replanned` is `.playing`-scoped, which is the
-        // reason the promotion happens at the rung rather than at the answer.
-        XCTAssertTrue(PlaybackReducer.holdsLoadingOverlay(replanning))
+        // The answer lands because `.replanned` is `.playing`-scoped — which is
+        // the reason the promotion happens at the rung rather than at the answer.
     }
 
     /// The offline/legacy half of the same rule: rungs 9 and 10 are the route
@@ -2453,7 +2452,7 @@ final class PlaybackReducerTests: XCTestCase {
             return XCTFail("expected a publish")
         }
         XCTAssertFalse(suspendPresentation.isPlaying)
-        XCTAssertFalse(suspendPresentation.isLoading)
+        XCTAssertEqual(suspendPresentation.isLoading, false)
         XCTAssertFalse(suspendPresentation.isBuffering)
         XCTAssertEqual(suspendPresentation.currentTime, 100)
         XCTAssertLessThan(
@@ -2476,7 +2475,7 @@ final class PlaybackReducerTests: XCTestCase {
         }) else {
             return XCTFail("expected the suspend publish")
         }
-        XCTAssertFalse(fromLoadPresentation.isLoading)
+        XCTAssertEqual(fromLoadPresentation.isLoading, false)
     }
 
     /// `makeSuspendedPlaybackContext` (PVM:3645-3651) rebuilds the request
@@ -2594,7 +2593,7 @@ final class PlaybackReducerTests: XCTestCase {
         guard case .publish(let presentation) = tvEffects.first else {
             return XCTFail("expected the loading publish")
         }
-        XCTAssertTrue(presentation.isLoading, "isLoading = true; error = nil")
+        XCTAssertEqual(presentation.isLoading, true, "isLoading = true; error = nil")
         XCTAssertNil(presentation.error)
         XCTAssertEqual(tvEffects[1], .transport(.play, loadID))
         XCTAssertEqual(tvEffects[2], .schedule(.interruptionRecovery, after: .seconds(3), loadID))
@@ -2886,7 +2885,7 @@ final class PlaybackReducerTests: XCTestCase {
         guard case .publish(let presentation) = activeEffects.first else {
             return XCTFail("expected the loading publish")
         }
-        XCTAssertTrue(presentation.isLoading)
+        XCTAssertEqual(presentation.isLoading, true)
         XCTAssertNil(presentation.error)
         XCTAssertEqual(activeEffects.count, 3)
         XCTAssertEqual(activeEffects[1], .transport(.play, loadID))
@@ -3093,12 +3092,13 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(resumeEffects, [.transport(.play, loadID)])
     }
 
-    /// `onPauseChange` wrote `isPlaying` and nothing else (base PVM:1039-1063).
-    /// `applyPresentation` turns a published `isLoading: false` into
-    /// `clearLoadingOverlay(reason: "")`, so the pause publish has to carry the
-    /// overlay the state already owns — otherwise a pause arriving while a
-    /// replan holds the overlay up takes it down under an empty reason.
-    func testAPauseDuringAReplanDoesNotDropTheLoadingOverlay() {
+    /// `onPauseChange` wrote `isPlaying` and nothing else (base PVM:1039-1063),
+    /// so the pause publish carries NO overlay decision: `isLoading == nil`
+    /// means "leave it where it is". Deriving the overlay from state here
+    /// missed the tvOS interruption-resume overlay (an interruption is a
+    /// field, not a `Sub` case) and over-raised during a quality-restart
+    /// replan, whose overlay is raised at the adopt (contract note (d)).
+    func testAPauseDoesNotCarryAnOverlayDecision() {
         let loadID = LoadID()
         let replanning = makePlaying(
             loadID: loadID,
@@ -3115,9 +3115,34 @@ final class PlaybackReducerTests: XCTestCase {
             return XCTFail("expected a publish")
         }
         XCTAssertFalse(presentation.isPlaying)
-        XCTAssertTrue(presentation.isLoading, "the replan still owns the overlay")
+        XCTAssertNil(presentation.isLoading, "the pause leaves the replan's overlay alone")
 
-        // A steady load publishes the pause with the overlay down, as before.
+        // The tvOS interruption-resume: the `.active` re-arm raises the
+        // overlay from `.playing(.steady)` (the interruption is a field), and
+        // the paired `.transport(.play)`'s `pauseChanged` echo must not take
+        // it down.
+        let resuming = makePlaying(
+            loadID: loadID,
+            interruption: Playing.Interruption(
+                wasPlaying: true,
+                positionSeconds: 100,
+                recoveryDeadline: now.addingTimeInterval(10),
+                didAutoRecover: false,
+                isPending: true
+            )
+        )
+        let (_, resumeEffects) = PlaybackReducer.reduce(
+            resuming,
+            event: .engine(.pauseChanged(false), loadID),
+            now: now
+        )
+        guard case .publish(let resume) = resumeEffects.last else {
+            return XCTFail("expected a publish")
+        }
+        XCTAssertNil(resume.isLoading, "the resume echo leaves the interruption overlay alone")
+
+        // A steady load's pause also leaves the overlay alone — base never
+        // touched `isLoading` from this callback in any state.
         let (_, steadyEffects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID),
             event: .engine(.pauseChanged(true), loadID),
@@ -3126,7 +3151,7 @@ final class PlaybackReducerTests: XCTestCase {
         guard case .publish(let steady) = steadyEffects.last else {
             return XCTFail("expected a publish")
         }
-        XCTAssertFalse(steady.isLoading)
+        XCTAssertNil(steady.isLoading)
     }
 
     func testDismissCancelsEveryTimerStopsTheSessionAndDisposes() {

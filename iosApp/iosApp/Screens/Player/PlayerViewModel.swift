@@ -1013,10 +1013,14 @@ class PlayerViewModel {
         currentServerSessionId = presentation.serverSessionId
         interruptionRecoveryDeadline = presentation.interruptionRecoveryDeadline
         setBuffering(presentation.isBuffering, cause: presentation.bufferingCause)
-        if presentation.isLoading {
-            isLoading = true
-        } else {
-            clearLoadingOverlay(reason: presentation.loadingReason)
+        // `nil` = the publishing arm owns no overlay decision (the pause
+        // change) — leave the overlay exactly where it is.
+        if let loading = presentation.isLoading {
+            if loading {
+                isLoading = true
+            } else {
+                clearLoadingOverlay(reason: presentation.loadingReason)
+            }
         }
         applySuspendedState(presentation.isBackgroundSuspended)
         applyReconnectingState(presentation.isReconnecting)

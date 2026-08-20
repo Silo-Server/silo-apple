@@ -844,7 +844,10 @@ struct Presentation: Equatable {
     var isPlaying: Bool = false
     var currentTime: Double = 0
     var duration: Double = 0
-    var isLoading: Bool = false
+    /// `nil` means "leave the shell's overlay where it is" — a publish whose
+    /// arm owns no overlay decision (the pause change) must not clear or raise
+    /// it. `false` clears, `true` raises, exactly as before.
+    var isLoading: Bool? = false
     var isBuffering: Bool = false
     /// Today's `error` string (the view renders the full-screen failure).
     var error: String?
@@ -889,7 +892,7 @@ struct Presentation: Equatable {
         isPlaying: Bool = false,
         currentTime: Double = 0,
         duration: Double = 0,
-        isLoading: Bool = false,
+        isLoading: Bool? = false,
         isBuffering: Bool = false,
         error: String? = nil,
         isReconnecting: Bool = false,

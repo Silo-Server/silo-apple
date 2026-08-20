@@ -1032,14 +1032,16 @@ enum PlaybackReducer {
             playing.transport.isPaused = isPaused
             let next = PlaybackState.playing(playing)
             // `onPauseChange` is the sole writer of `isPlaying` — and it wrote
-            // nothing else (base PVM:1039-1063). `applyPresentation` turns a
-            // published `isLoading: false` into
-            // `clearLoadingOverlay(reason: "")`, so this publish has to carry
-            // whatever overlay the state already owns or a pause arriving
-            // mid-replan would take the overlay down under an empty reason.
+            // nothing else (base PVM:1039-1063). Base's `onPauseChange` wrote
+            // `isPlaying` and never touched the loading overlay, so this
+            // publish carries no overlay decision at all: `isLoading: nil`
+            // means "leave it where it is". Deriving it from state here
+            // under-reported the tvOS interruption-resume overlay (a field,
+            // not a `Sub` case) and over-reported the quality-restart replan
+            // (whose overlay is raised at the adopt, contract note (d)).
             return (
                 next,
-                [.publish(presentation(for: next, isLoading: holdsLoadingOverlay(next)))]
+                [.publish(presentation(for: next, isLoading: nil))]
             )
 
         case .buffering(let isBuffering):
@@ -2104,29 +2106,9 @@ enum PlaybackReducer {
         return interruption.recoveryDeadline
     }
 
-    /// Whether the loading overlay is up, by the reducer's own publishes.
-    ///
-    /// `.preparing` always publishes `isLoading: true`, and the one `.playing`
-    /// sub-state that raises it is `.replanning` — `requestReplan` publishes
-    /// `isLoading: true` for the whole round trip. Everything else either
-    /// leaves the overlay alone (it publishes nothing) or publishes its own
-    /// reason. It exists so an arm that has to publish something *unrelated*
-    /// to the overlay can leave it where it is.
-    static func holdsLoadingOverlay(_ state: PlaybackState) -> Bool {
-        switch state {
-        case .preparing:
-            return true
-        case .playing(let playing):
-            if case .replanning = playing.sub { return true }
-            return false
-        case .idle, .suspended, .failed, .disposed:
-            return false
-        }
-    }
-
     static func presentation(
         for state: PlaybackState,
-        isLoading: Bool = false,
+        isLoading: Bool? = false,
         isReconnecting: Bool = false,
         loadingReason: String = "",
         bufferingCause: String = ""
