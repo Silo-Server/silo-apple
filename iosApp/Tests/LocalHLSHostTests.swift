@@ -154,6 +154,59 @@ final class LocalHLSHostTests: XCTestCase {
         XCTAssertFalse(unavailable.abandonsExternalHandoff)
     }
 
+    // MARK: - Producer coverage (requestProducerRestart's ride-the-march guard)
+
+    /// The one piece of arithmetic in this class that has regressed on device
+    /// twice. `requestProducerRestart` can't be driven into it from a test
+    /// (it needs a running producer), so the predicate itself is pinned.
+    func testCoverageRequiresTheTargetAtOrAheadOfTheProducerBase() {
+        // Behind the base: the running producer will never reach it.
+        XCTAssertFalse(
+            LocalHLSHost.coversTarget(
+                target: 4, base: 5, head: 9, coverageWindow: 8, marchAllowance: 2
+            )
+        )
+        // The base itself is covered even before the first segment lands
+        // (head nil ⇒ base - 1, and base <= base - 1 + 2).
+        XCTAssertTrue(
+            LocalHLSHost.coversTarget(
+                target: 5, base: 5, head: nil, coverageWindow: 8, marchAllowance: 2
+            )
+        )
+    }
+
+    func testCoverageStopsAtTheWindowEdge() {
+        XCTAssertTrue(
+            LocalHLSHost.coversTarget(
+                target: 13, base: 5, head: 12, coverageWindow: 8, marchAllowance: 2
+            ),
+            "base + window is still covered"
+        )
+        XCTAssertFalse(
+            LocalHLSHost.coversTarget(
+                target: 14, base: 5, head: 13, coverageWindow: 8, marchAllowance: 2
+            ),
+            "one past the window needs a restart however close the head is"
+        )
+    }
+
+    func testCoverageRequiresTheTargetNearTheProducedHead() {
+        // Inside the coverage window but three heavy segments past the
+        // produced head: waiting for the march would burn the miss deadline
+        // and 404 (living-room frozen-video seeks), so this must restart.
+        XCTAssertFalse(
+            LocalHLSHost.coversTarget(
+                target: 10, base: 2, head: 7, coverageWindow: 8, marchAllowance: 2
+            )
+        )
+        XCTAssertTrue(
+            LocalHLSHost.coversTarget(
+                target: 9, base: 2, head: 7, coverageWindow: 8, marchAllowance: 2
+            ),
+            "head + marchAllowance is the last index the march delivers in time"
+        )
+    }
+
     // MARK: - VOD plan continuity
 
     func testCarriedVODPlanSeedsTheHostAndIsHandedBackAtTeardown() throws {

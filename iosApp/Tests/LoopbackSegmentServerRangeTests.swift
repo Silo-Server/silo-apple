@@ -111,7 +111,7 @@ final class LoopbackSegmentServerRangeTests: XCTestCase {
             Thread.sleep(forTimeInterval: LoopbackSegmentServer.vodEarlyResponseDelaySeconds + 0.75)
             store.beginProgressiveSegment(named: segmentName)
             store.appendProgressiveSegment(named: segmentName, bytes: payload.prefix(4_096))
-            _ = store.putSegment(name: segmentName, data: payload, duration: 4)
+            store.putSegment(name: segmentName, data: payload, duration: 4)
             return store.resource(path: segmentName, waitForNearFuture: false)
         }
 

@@ -79,6 +79,9 @@ final class LocalHLSHost {
 
     // MARK: - Pulled from the backend by the writer/server
 
+    /// AVPlayer's current local playlist time, supplied by the adapter.
+    /// Nothing in the producer reads it: the writer paces on the store's
+    /// consumer window instead.
     private let playbackPositionProvider: () -> Double?
     private let isSourceOutageActive: () -> Bool
     /// The backend's source-keyed subtitle cue tap. Handed to every producer,
@@ -192,15 +195,14 @@ final class LocalHLSHost {
         let sessionDir = sessionDirectory
 
         let debugDirectory = keepArtifacts ? sessionDir : nil
+        cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(vodRetentionBudgetBytes)")
         let store = LoopbackSegmentStore(
             generation: generation,
             memoryBudgetBytes: storeMemoryBudgetBytes,
             spillPolicy: storeSpillPolicy,
+            vodRetentionBudgetBytes: vodRetentionBudgetBytes,
             debugDirectory: debugDirectory
         )
-        let retentionBudget = vodRetentionBudgetBytes
-        cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
-        store.configureVODRetention(budgetBytes: retentionBudget)
         segmentStore = store
         if keepArtifacts {
             cmpLog("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
@@ -217,7 +219,7 @@ final class LocalHLSHost {
                 self?.requestProducerRestart(atSegmentIndex: index)
             }
             return store.waitForSegment(
-                named: String(format: "seg_%06d.m4s", index),
+                named: LoopbackSegmentStore.segmentName(index),
                 deadline: Date().addingTimeInterval(Self.vodSegmentMissWaitSeconds)
             )
         }
@@ -346,7 +348,6 @@ final class LocalHLSHost {
                 self.onFinished?(error)
             }
         }
-        writer.playbackPositionProvider = playbackPositionProvider
         writer.onSourceDownloadStats = { [weak self] bitsPerSecond, totalBytesRead in
             DispatchQueue.main.async {
                 guard let self, !self.isTornDown else { return }
@@ -400,23 +401,15 @@ final class LocalHLSHost {
               plan.segmentCount > 0,
               segmentStore != nil else { return }
         let target = max(0, min(index, plan.segmentCount - 1))
-        if let base = activeVODWriterBaseIndex,
-           segmentWriter != nil,
-           target >= base,
-           target <= base + Self.vodProducerCoverageWindow,
-           target <= max(activeVODWriterHeadIndex ?? (base - 1), base - 1)
-                        + Self.vodProducerMarchAllowance {
-            // The running producer covers it AND is close enough that its
-            // forward march delivers before the fetch's miss deadline. The
-            // head-proximity bound matters on long-GOP sources: a seek
-            // landing 3+ heavy segments past the produced head used to ride
-            // "covered by base+8" into an 8 s wait and a 404. This applies
-            // to recovery re-bases too: restarting a covering producer
-            // discards its march and re-produces the same span — the
-            // recovery ladder's player-side nudge/reload is the tool for a
-            // consumer wedge, not producer churn. A genuinely wedged
-            // producer surfaces separately (source stall → premature EOF /
-            // mux failures) and escalates through the watchdog budget.
+        if segmentWriter != nil,
+           let base = activeVODWriterBaseIndex,
+           Self.coversTarget(
+               target: target,
+               base: base,
+               head: activeVODWriterHeadIndex,
+               coverageWindow: Self.vodProducerCoverageWindow,
+               marchAllowance: Self.vodProducerMarchAllowance
+           ) {
             return
         }
         var next: Int? = target
@@ -464,6 +457,30 @@ final class LocalHLSHost {
         )
     }
 
+    /// Whether the producer anchored at `base` (having finalized up to `head`,
+    /// nil before its first segment lands) both covers `target` and is close
+    /// enough that its forward march delivers it before the fetch's miss
+    /// deadline — i.e. whether a restart would be pure churn.
+    ///
+    /// The head-proximity bound matters on long-GOP sources: a seek landing
+    /// 3+ heavy segments past the produced head used to ride "covered by
+    /// base+8" into an 8 s wait and a 404. This applies to recovery re-bases
+    /// too: restarting a covering producer discards its march and re-produces
+    /// the same span — the recovery ladder's player-side nudge/reload is the
+    /// tool for a consumer wedge, not producer churn. A genuinely wedged
+    /// producer surfaces separately (source stall → premature EOF / mux
+    /// failures) and escalates through the watchdog budget.
+    static func coversTarget(
+        target: Int,
+        base: Int,
+        head: Int?,
+        coverageWindow: Int,
+        marchAllowance: Int
+    ) -> Bool {
+        guard target >= base, target <= base + coverageWindow else { return false }
+        return target <= max(head ?? (base - 1), base - 1) + marchAllowance
+    }
+
     /// Starting up with AirPlay already engaged: prefer the LAN address, but
     /// a session that cannot reach one still plays here rather than failing.
     static func playlistURLDecision(
@@ -493,17 +510,15 @@ final class LocalHLSHost {
     /// Releases the producer, the server, the store and the session
     /// directory, and drops every closure so a draining writer's late
     /// callbacks land nowhere. A host is never restarted after this.
+    ///
+    /// The writer's own callbacks are deliberately left alone: `isTornDown`
+    /// latches first and every closure this host installs on the writer bails
+    /// on it (directly, or through `handleFirstSegmentReady`), so a draining
+    /// producer's late callbacks are already inert.
     func teardown() {
         isTornDown = true
         let writer = segmentWriter
         segmentWriter = nil
-        writer?.onFirstSegmentReady = nil
-        writer?.onSegmentAppended = nil
-        writer?.onSourceDownloadStats = nil
-        writer?.onGeneratedMediaStats = nil
-        writer?.onHDR10PlusMetadataDetected = nil
-        writer?.onBridgedAudioAnchored = nil
-        writer?.onFinished = nil
         segmentServer?.stop()
         segmentServer = nil
         segmentStore = nil

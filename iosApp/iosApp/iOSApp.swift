@@ -538,9 +538,20 @@ private enum DVLoopbackFixtureRunner {
             print("[DVFixture] audio=none")
         }
 
+        // The store is the writer's only artifact sink; its debug mirror is
+        // what lands the HLS bundle in `--output`. There is no consumer here
+        // to declare fetch targets, so the appended index stands in for one —
+        // otherwise the producer parks against the forward window and the
+        // startup-wedge escape fails the run.
+        let store = LoopbackSegmentStore(
+            generation: 1,
+            spillPolicy: .enabled(reason: "dv-fixture", maxBytes: 8 << 30),
+            debugDirectory: options.outputDirectory
+        )
         let writer = LoopbackSegmentWriter(
             sessionSpec: session,
-            outputDirectory: options.outputDirectory
+            outputDirectory: options.outputDirectory,
+            segmentStore: store
         )
         let semaphore = DispatchSemaphore(value: 0)
         final class ResultBox {
@@ -552,6 +563,7 @@ private enum DVLoopbackFixtureRunner {
             print("[DVFixture] firstSegmentReady=\(playlist)")
         }
         writer.onSegmentAppended = { index, duration in
+            store.declareVODTarget(index)
             print("[DVFixture] segment=\(index) totalDuration=\(String(format: "%.1f", duration))")
         }
         writer.onFinished = { error in

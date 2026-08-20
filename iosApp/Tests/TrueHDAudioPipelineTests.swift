@@ -21,9 +21,19 @@ final class TrueHDAudioPipelineTests: XCTestCase {
             .appending(path: "truehd-loopback-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
 
+        // A 1 s fixture only clears the plan's keyframe-coverage gate with a
+        // sub-second target duration; without a trustworthy plan the writer
+        // fails the session by design. The store is the artifact sink — its
+        // debug mirror is what puts the bundle in `outputDirectory`.
         let writer = LoopbackSegmentWriter(
             sessionSpec: makeSpec(sourceURL: sourceURL),
-            outputDirectory: outputDirectory
+            outputDirectory: outputDirectory,
+            segmentStore: LoopbackSegmentStore(
+                generation: 1,
+                spillPolicy: .disabled(reason: "test"),
+                debugDirectory: outputDirectory
+            ),
+            targetSegmentDuration: 0.5
         )
         let completion = expectation(description: "loopback writer completed")
         let lock = NSLock()
