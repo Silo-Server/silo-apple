@@ -1,10 +1,10 @@
 # Validation record — server planner fix (client_audio_track_selection_v1) + Apple progressive-delivery drop, and an
-# unresolved HDR10 loopback -17223 failure at anchor+21 s seen on the bedroom Apple TV on 2026-08-18.
+# unresolved HDR10 loopback -17223 failure at anchor+21 s seen on the AppleTV14,1 unit on 2026-08-18.
 date: 2026-08-18
 platform: tvOS 26.6
-device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV"), signed into PRODUCTION
-app_build: SiloTV Debug from silo-apple player/architecture-remediation @ 22259bc (+ bisect variants, see below)
-server_fix_under_test: silo-server fix/v3-dv-original-http @ bc52478e, deployed to SHARED DEV (make dev-deploy; central node healthy)
+device: Apple TV 4K (3rd generation) — AppleTV14,1, signed into PRODUCTION
+app_build: SiloTV Debug from silo-apple PR #172 @ 22259bc (+ bisect variants, see below)
+server_fix_under_test: silo-server @ bc52478e (V3 planner original_http fix), deployed to SHARED DEV (make dev-deploy; central node healthy)
 
 part_1_server_planner_on_dev:  # API replay of the captured Apple V3 start request, Sonnet validator, 9/9 as expected
   - {file: 741 (DV P5), original_http_feature: true,  result: "original_http / validated_original_playback, audio idx 1"}
@@ -17,7 +17,7 @@ part_1_server_planner_on_dev:  # API replay of the captured Apple V3 start reque
   root_cause_recap: "profile audio preference 'en' selects a non-default track on the DV titles; the direct branch required the container default (plan_v3.go:341). Not Dolby-Vision related."
   side_finding: "dev distributed nodes silo-dev-ns12/ns17 transcode+proxy are enabled=false/healthy=false, last health check 2026-08-16 23:5xZ (pre-existing); only the integrated node serves."
 
-part_2_client_on_bedroom_tv_prod:  # Sonnet validator, build 22259bc
+part_2_client_on_appletv14_1_prod:  # Sonnet validator, build 22259bc
   - run: DV P8 4K MKV movie-tmdb-1117126
     result: "first and only plan wireDelivery=server_remux_hls (progressive rung GONE, no -11850/-12939); item ready HEVC 3840x1600 HDR10 (DV stripped by prod — server fix not on prod)"
   - run: DV P5 1080p MKV movie-tmdb-513347
@@ -27,7 +27,7 @@ part_2_client_on_bedroom_tv_prod:  # Sonnet validator, build 22259bc
   - run: HDR10 4K 29.97fps MKV movie-tmdb-974663 (loopback)
     result: "same as above at 20.8 s"
 
-part_3_bisect_of_the_21s_failure:  # all on the bedroom TV, prod, title movie-tmdb-852590 unless noted
+part_3_bisect_of_the_21s_failure:  # all on the AppleTV14,1 unit, prod, title movie-tmdb-852590 unless noted
   - {build: "ed761e3 (yesterday's good build)", result: "cannot log in today — brand migration is one-way (old keys gone) → needsServerSetup; UNTESTABLE without re-login"}
   - {build: "71df75b (R2 + brand migration)", result: "BAD at 21.0 s"}
   - {build: "22259bc with bridge-delete merge reverted", result: "BAD at anchor+21.0 s (resumed at 336.8 → failed 357.8)"}
@@ -40,6 +40,6 @@ part_3_bisect_of_the_21s_failure:  # all on the bedroom TV, prod, title movie-tm
   leading_hypothesis: "environmental — the display path (TV/AVR HDMI mode / tvOS display matching) drops the mode ~21 s after the loopback item is created; the app-authored AVDisplayCriteria route is exposed where AVPlayer's automatic matching on the server-HLS route is not"
   alternative: "the brand-migration commit (b770f5d) via some non-obvious path — cannot be separated from 'environment' until a pristine pre-migration build (ed761e3) can run again on this device"
   next_discriminators:
-    - "sign the bedroom TV back in (allows running pristine ed761e3 as the control) — and/or into DEV for the DV loopback rows"
-    - "check what changed on the bedroom TV/AVR/HDMI since 2026-08-17 evening (input, cable, Match Dynamic Range / frame rate, AVR power)"
-    - "run the same title on the Living Room Apple TV (paired to the Mini, but asleep and not companion-paired for pyatv wake)"
+    - "sign the AppleTV14,1 unit back in (allows running pristine ed761e3 as the control) — and/or into DEV for the DV loopback rows"
+    - "check what changed on that unit's TV/AVR/HDMI path since 2026-08-17 evening (input, cable, Match Dynamic Range / frame rate, AVR power)"
+    - "run the same title on the second unit, AppleTV11,1 (paired to the Mini, but asleep and not companion-paired for pyatv wake)"

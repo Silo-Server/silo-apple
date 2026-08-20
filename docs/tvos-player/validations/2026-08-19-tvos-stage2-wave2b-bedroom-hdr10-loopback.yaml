@@ -1,13 +1,13 @@
-# Validation record — Stage 2 wave-2b device pass, partial (bedroom TV): HDR10 loopback row PASSES on the
+# Validation record — Stage 2 wave-2b device pass, partial (the AppleTV14,1 unit): HDR10 loopback row PASSES on the
 # wave-2b build; a startup loopback failure observed earlier the same evening was investigated with a
 # pre-wave-2 control build and ROOT-CAUSED TO SERVER-SIDE ORIGIN LATENCY, not the wave-2 code.
 date: 2026-08-19
 platform: tvOS 26.6
-device: Apple TV 4K (3rd generation) — AppleTV14,1 ("bedroom TV", D2D0D771-B976-5869-8FA3-1AC5E88E4F16)
+device: Apple TV 4K (3rd generation) — AppleTV14,1
 output_path: HDMI (CMP-OUTPUT hdrOutputEligible=true hdr10=true dolbyVision=true dvModes=5,8 sinkType=HDMIOutput)
-app_build: SiloTV Debug from silo-apple player/architecture-remediation @ 52be6ef (Stage 2 waves 1+2a+2b merged)
+app_build: SiloTV Debug from silo-apple PR #172 @ 52be6ef (Stage 2 waves 1+2a+2b merged)
 control_build: same scheme @ 9756ff4 (wave-1 tip, pre-wave-2)
-server: production (silo-proxy-01.arkyncdn.net) — demonstrably unhealthy in the first capture window (HTTP 404
+server: production — demonstrably unhealthy in the first capture window (HTTP 404
   on a transcode segment, -12888 playlist-unchanged stall), healthy in the later windows
 method: devicectl install from the Mini; deep-link silo://play/movie-tmdb-852590 via --payload-url; console
   captured (timestamped via perl on the later runs); pyatv companion for pause/home
@@ -20,7 +20,7 @@ row_3_hdr10_loopback:  # design §6 row 3 on the wave-2b build
     TTFF/first frame (+6-7 s) → item ready HEVC 3840x2160 HDR10 E-AC-3 5.1. Soak: 6+ min continuous
     tc=playing rate=1.0, bufAhead 12-20 s, generatedAhead 57-90 s, no stalls, no recovery lines, no
     suspension lines. Pause/resume via HID play_pause clean (tc=paused → playing). Played far past the
-    bedroom's historical anchor+21 s environmental window with no -11868/-17223.
+    unit's historical anchor+21 s environmental window with no -11868/-17223.
   suspend_teardown: >
     home-press during paused playback: item emits a benign -11868 failedToEnd from the dying pipeline with
     userPaused=1; no recovery fired (correct — policy respects the pause), display criteria cleared, teardown
@@ -72,10 +72,10 @@ server_restart_quick_bounce:  # design §6 row 13, partial: restart ridden out; 
     throughout, zero outage/recovery lines. Valid restart result; does NOT exercise the ride-through/probe
     machinery — the deep-outage variant (stop, 60-90 s, start) is deferred (owner call, other live users).
 
-bonus_route_fallback_on_environmental_failure:  # not a planned row; the bedroom display path provided it
+bonus_route_fallback_on_environmental_failure:  # not a planned row; this unit's display path provided it
   result: PASS (ladder correct)
   evidence: >
-    21:06:02 the loopback item died with the bedroom path's known -11868 while paused (same signature as the
+    21:06:02 the loopback item died with this display path's known -11868 while paused (same signature as the
     08-18 environmental record). Recovery walked the designed rungs: fresh loopback session first (21:06:08,
     played, HDR criteria applied) → second -11868 within seconds → server replan (suspension on/off clean) →
     server remux HLS (tc=copy/tca=copy — repackage, not re-encode) stable. Correct escalation, no stuck
@@ -86,5 +86,5 @@ rows_pending:  # remaining wave-2b device rows; owner deferred tonight — fold 
      server restart mid-stream — owner go/no-go; this is the row the wave-2b carry-owner fix lives on
      (watch suspended=[…] clear after the replan)"
   - "row 1 DV P7+TrueHD / P8 passthrough: DV title deep links (ids not yet gathered); DV rows were
-     hardware-validated 08-18 on Living Room at the pre-Stage-2 code"
+     hardware-validated 08-18 on the AppleTV11,1 unit at the pre-Stage-2 code"
   - "suspend→resume (resume leg) and player-exit teardown: physical remote"
