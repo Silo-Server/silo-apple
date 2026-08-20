@@ -429,13 +429,6 @@ final class LoopbackSegmentWriter {
     /// playhead watchdog owns the decision to reanchor or fall back; the writer
     /// only refuses to run unbounded ahead of a clock that is not advancing.
     private static let parkedPlayheadHoldThresholdSeconds: Double = 3.0
-    /// Upper bound on how long the mux thread will park waiting for the store
-    /// to free spill capacity. Capacity only frees as the playhead advances
-    /// past retired segments; if the position provider wedges, the wait would
-    /// otherwise spin forever. On timeout the writer proceeds and lets the
-    /// store evict, trading a possible over-budget blip for guaranteed
-    /// forward progress.
-    private static let maxSegmentStoreCapacityWaitSeconds: Double = 30
 
     // MARK: - Lifecycle callbacks (fired on muxQueue)
     /// Fires exactly once, after the init segment + initial media runway are
@@ -600,7 +593,6 @@ final class LoopbackSegmentWriter {
     private let startupWallTime = CFAbsoluteTimeGetCurrent()
     private var lastSourceStatsWallTime: CFAbsoluteTime?
     private var lastSourceStatsBytesRead: Int64?
-    private var lastSpillCapacityBackpressureLogWall: CFAbsoluteTime = 0
     private var lastGeneratedAheadBackpressureLogWall: CFAbsoluteTime = 0
     /// Last playback position observed by `waitForGeneratedAheadIfNeeded`, and
     /// the wall-clock time it last advanced. Tracked across calls (the throttle
@@ -5586,8 +5578,7 @@ final class LoopbackSegmentWriter {
 
     private func writeMediaSegment(_ data: Data, name: String, duration: Double) throws {
         if let segmentStore {
-            let result = segmentStore.putSegment(name: name, data: data, duration: duration)
-            removeEvictedSegmentsFromPlaylist(result.evictedSegmentNames)
+            segmentStore.putSegment(name: name, data: data, duration: duration)
         } else {
             try data.write(to: outputDirectory.appendingPathComponent(name), options: .atomic)
         }
@@ -5929,7 +5920,7 @@ final class LoopbackSegmentWriter {
         let duration = parsedDuration ?? targetSegmentDuration
         lastSegmentDurationSource = parsedDuration == nil ? "target_duration_fallback" : "fragment_timing"
         waitForGeneratedAheadIfNeeded()
-        waitForSegmentStoreCapacityIfNeeded(nextSegmentBytes: segSize)
+        makeSegmentStoreRoomForAppend(nextSegmentBytes: segSize)
         guard !isCancelled else {
             pendingSegmentBytes = Data()
             pendingSegmentHasVideo = false
@@ -6101,45 +6092,14 @@ final class LoopbackSegmentWriter {
         return Double(byteCount) * 8 / duration
     }
 
-    private func waitForSegmentStoreCapacityIfNeeded(nextSegmentBytes: Int) {
+    /// VOD reclamation lives in the disk-first store: the coupled
+    /// segment-count window (`vodProducerMayAppend`) bounds production, and
+    /// byte retention may prune history but never refuses the append. There is
+    /// nothing to wait for — prune opportunistically and let the segment land.
+    private func makeSegmentStoreRoomForAppend(nextSegmentBytes: Int) {
         guard let segmentStore else { return }
-        let waitDeadline = CFAbsoluteTimeGetCurrent() + Self.maxSegmentStoreCapacityWaitSeconds
-        while !isCancelled {
-            retireSegmentsBehindPlaybackIfNeeded()
-            if vodActive {
-                // VOD reclamation lives in the disk-first store. The coupled
-                // segment-count window bounds production; byte retention may
-                // prune history but never blocks the active forward window.
-                _ = segmentStore.makeRoomForAppend(byteCount: nextSegmentBytes)
-            }
-            guard !segmentStore.canAppendSegment(byteCount: nextSegmentBytes) else { return }
-            // Defensive escape: capacity only frees as the playhead advances
-            // past retired segments. If the position provider is wedged the
-            // loop would spin the mux thread indefinitely, so bound it and
-            // proceed — the store evicts to satisfy the append rather than
-            // livelocking the writer (and, with the live-playlist policy, the
-            // evicted segments leave the manifest cleanly).
-            if CFAbsoluteTimeGetCurrent() >= waitDeadline {
-                cmpLog(
-                    "[CMP-HLS-STORE] spill-capacity wait exceeded \(Int(Self.maxSegmentStoreCapacityWaitSeconds))s; proceeding to avoid mux-thread livelock nextBytes=\(nextSegmentBytes)"
-                )
-                return
-            }
-            let now = CFAbsoluteTimeGetCurrent()
-            if now - lastSpillCapacityBackpressureLogWall >= 5 {
-                lastSpillCapacityBackpressureLogWall = now
-                let playbackPosition = playbackPositionProvider?() ?? 0
-                let stats = segmentStore.stats()
-                // playhead is on the session axis; runGenerated is this
-                // producer run's cumulative output — they are different
-                // axes, so log them separately (the old "generatedAhead"
-                // subtraction printed nonsense like -3196s).
-                cmpLog(
-                    "[CMP-HLS-STORE] spill-capacity backpressure nextBytes=\(nextSegmentBytes) playhead=\(String(format: "%.1f", playbackPosition))s runGenerated=\(String(format: "%.1f", totalMediaDuration))s tempSpillBytes=\(stats.tempSpillBytes)"
-                )
-            }
-            Thread.sleep(forTimeInterval: 0.1)
-        }
+        retireSegmentsBehindPlaybackIfNeeded()
+        _ = segmentStore.makeRoomForAppend(byteCount: nextSegmentBytes)
     }
 
     private func retireSegmentsBehindPlaybackIfNeeded() {

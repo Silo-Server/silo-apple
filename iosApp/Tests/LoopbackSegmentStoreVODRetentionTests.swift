@@ -67,13 +67,14 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
     // MARK: - Store behavior
 
     private func makeVODStore(budget: Int64) -> LoopbackSegmentStore {
-        let store = LoopbackSegmentStore(
+        LoopbackSegmentStore(
             generation: 1,
             memoryBudgetBytes: 64 * 1024 * 1024,
-            spillPolicy: .enabled(reason: "test", maxBytes: 64 * 1024 * 1024)
+            spillPolicy: .enabled(reason: "test", maxBytes: 64 * 1024 * 1024),
+            vodRetentionBudgetBytes: budget,
+            vodForwardWindow: 3,
+            vodBackwardWindow: 2
         )
-        store.configureVODRetention(budgetBytes: budget, forwardWindow: 3, backwardWindow: 2)
-        return store
     }
 
     private func segName(_ index: Int) -> String {
@@ -84,7 +85,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         let store = makeVODStore(budget: 64)  // window + almost nothing
         let payload = Data(repeating: 0xAB, count: 16)
         for index in 0...10 {
-            _ = store.putSegment(name: segName(index), data: payload, duration: 4)
+            store.putSegment(name: segName(index), data: payload, duration: 4)
         }
         // Fetching far forward prunes the backward tail beyond the budget.
         store.declareVODTarget(10)
@@ -99,7 +100,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         // server's order), moving the window to cover it; the restarted
         // producer's re-put is then protected from the stale window.
         store.declareVODTarget(0)
-        _ = store.putSegment(name: segName(0), data: payload, duration: 4)
+        store.putSegment(name: segName(0), data: payload, duration: 4)
         guard case .found = store.resource(path: segName(0), waitForNearFuture: false) else {
             return XCTFail("re-produced segment must serve")
         }
@@ -118,17 +119,15 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         let store = LoopbackSegmentStore(
             generation: 1,
             memoryBudgetBytes: 64 * 1024 * 1024,
-            spillPolicy: .enabled(reason: "test", maxBytes: 64 * 1024 * 1024)
-        )
-        store.configureVODRetention(
-            budgetBytes: 10_000_000,
-            forwardWindow: 10,
-            backwardWindow: 2
+            spillPolicy: .enabled(reason: "test", maxBytes: 64 * 1024 * 1024),
+            vodRetentionBudgetBytes: 10_000_000,
+            vodForwardWindow: 10,
+            vodBackwardWindow: 2
         )
         store.declareVODTarget(0)
         let bigPayload = Data(repeating: 0xEF, count: 600 * 1024)
         for index in 0...9 {
-            _ = store.putSegment(name: segName(index), data: bigPayload, duration: 4)
+            store.putSegment(name: segName(index), data: bigPayload, duration: 4)
         }
         XCTAssertTrue(store.vodProducerMayAppend(segmentIndex: 10))
         XCTAssertFalse(store.vodProducerMayAppend(segmentIndex: 11))
@@ -148,7 +147,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
 
         let payload = Data(repeating: 0xA5, count: 4_096)
-        _ = store.putSegment(name: segName(0), data: payload, duration: 4)
+        store.putSegment(name: segName(0), data: payload, duration: 4)
 
         guard case .found(let resource) = store.resource(
             path: segName(0), waitForNearFuture: false
@@ -167,7 +166,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         let store = makeVODStore(budget: 10_000)
         let payload = Data(repeating: 0xCD, count: 8)
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
-            _ = store.putSegment(name: self.segName(4), data: payload, duration: 4)
+            store.putSegment(name: self.segName(4), data: payload, duration: 4)
         }
         let result = store.waitForSegment(
             named: segName(4),
@@ -214,7 +213,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
             store.declareVODTarget(12)
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-            _ = store.putSegment(name: self.segName(10), data: payload, duration: 4)
+            store.putSegment(name: self.segName(10), data: payload, duration: 4)
         }
         let result = store.waitForSegment(
             named: segName(10),
@@ -242,7 +241,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
             store.declareVODTarget(10)
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
-            _ = store.putSegment(name: self.segName(10), data: payload, duration: 4)
+            store.putSegment(name: self.segName(10), data: payload, duration: 4)
         }
         let result = store.waitForSegment(
             named: segName(10),
@@ -278,7 +277,7 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         XCTAssertFalse(store.vodConsumerHasFetchedSegment(),
                        "no fetch declared yet — producer park must be escapable")
         // Producing segments does NOT count as consumption.
-        _ = store.putSegment(name: segName(0), data: Data(repeating: 1, count: 8), duration: 4)
+        store.putSegment(name: segName(0), data: Data(repeating: 1, count: 8), duration: 4)
         XCTAssertFalse(store.vodConsumerHasFetchedSegment())
         store.declareVODTarget(0)
         XCTAssertTrue(store.vodConsumerHasFetchedSegment(),

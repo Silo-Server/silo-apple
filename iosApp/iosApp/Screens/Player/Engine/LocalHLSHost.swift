@@ -192,15 +192,14 @@ final class LocalHLSHost {
         let sessionDir = sessionDirectory
 
         let debugDirectory = keepArtifacts ? sessionDir : nil
+        cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(vodRetentionBudgetBytes)")
         let store = LoopbackSegmentStore(
             generation: generation,
             memoryBudgetBytes: storeMemoryBudgetBytes,
             spillPolicy: storeSpillPolicy,
+            vodRetentionBudgetBytes: vodRetentionBudgetBytes,
             debugDirectory: debugDirectory
         )
-        let retentionBudget = vodRetentionBudgetBytes
-        cmpLog("[CMP-HLS-STORE] vod retention budgetBytes=\(retentionBudget)")
-        store.configureVODRetention(budgetBytes: retentionBudget)
         segmentStore = store
         if keepArtifacts {
             cmpLog("[CMP-AVP] preserving local DV artifacts due to SILO_KEEP_DV_HLS=1 dir=\(sessionDir.path)")
