@@ -32,9 +32,9 @@ is over, §2).
 
 | Item | State |
 |---|---|
-| Branch / PR | `player/architecture-remediation` @ `2bc8db9` (round 6 + tail, Stage 2 waves 1 + 2a + 2b + 3 + 4 merged — Stage 2 implementation complete), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
+| Branch / PR | `player/architecture-remediation` @ `3e06f77` (round 6 + tail, Stage 2 waves 1 + 2a + 2b + 3 + 4 merged — Stage 2 implementation complete), pushed to `origin` (GitHub `Silo-Server/silo-apple`); PR #172 `MERGEABLE / CLEAN` |
 | Size vs `main` | ~150 commits, ~530 files, roughly +20k / −32k raw |
-| Suite (iOS `SiloTests`, only test target) | `Executed 1804 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `2bc8db9` (1539 + 180 wave-1 + 11 wave-2a + 27 wave-2b + 38 wave-3 + 9 wave-4 tests, net) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
+| Suite (iOS `SiloTests`, only test target) | `Executed 1804 tests, with 3 tests skipped and 0 failures (0 unexpected)` at `3e06f77` (1539 + 180 wave-1 + 11 wave-2a + 27 wave-2b + 38 wave-3 + 9 wave-4 tests, net) — **genuinely green since 2026-08-18** (the 14 environment failures are fixed, §4.6 of the backlog); the 3 skips are keychain-migration tests when the sim host cannot write the keychain; any failure at all is now a regression |
 | Builds | `Silo` (iOS), `SiloTV` (tvOS), `SiloMac` all green at the tip, `CODE_SIGNING_ALLOWED=NO` |
 | Hardware | HDR10 loopback + display criteria validated (bedroom gen-3 08-17, Living Room gen-2 08-18); DV rows validated 08-18 on Living Room (P8.1 passthrough, P7→8.1 + TrueHD→FLAC); §8 anomaly **closed as environmental** |
 | Sibling PRs to sequence after #172 | #171 (release launch paths / deep links), #169 + #107 (subtitles) — they overlap touched files |
