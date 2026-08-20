@@ -6,8 +6,8 @@ import Foundation
 /// policy.
 ///
 /// The body is the mapping `PlaybackSessionBridge.initialProtocolV3SubtitleIntent`
-/// builds before it calls the resolver; the bridge still carries its own copy
-/// and is repointed here in a later wave of this remediation.
+/// builds before it calls the resolver, which is the one caller of
+/// `playerTracks(from:)`.
 enum SubtitleTrackCandidates {
     /// Resolver candidates paired with the ordinal of the `SubtitleTrack` each
     /// came from, so a resolved pick can be mapped back to the payload entry.

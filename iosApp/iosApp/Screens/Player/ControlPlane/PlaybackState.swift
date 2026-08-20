@@ -442,7 +442,7 @@ struct LoadOptions: Equatable {
 }
 
 /// Which pipeline produced the engine load. Mirrors the parts of
-/// `PlayerViewModel.PlaybackAdoptionOrigin` the control plane decides with —
+/// `PlaybackAdoptionOrigin` the control plane decides with —
 /// its other payloads (subtitle snapshots, sidecar fallbacks) are track-half
 /// state and stay with the track coordinator.
 enum PlaybackAdoption: Equatable {

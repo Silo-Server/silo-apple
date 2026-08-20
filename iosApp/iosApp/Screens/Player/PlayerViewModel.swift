@@ -618,13 +618,6 @@ class PlayerViewModel {
     /// the reclaim sheet — the same way an online session would.
     private static let offlineWatchedFraction: Double = 0.9
 
-    /// Bounded fallback timer that closes a deferred live track if the persisted
-    /// selection never lands. Cancelled when the seamless close fires or on
-    /// cleanup.
-    private var deferredLiveSubtitleCloseTask: Task<Void, Never>? {
-        get { tasks[.deferredLiveSubtitleClose] }
-        set { tasks[.deferredLiveSubtitleClose] = newValue }
-    }
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
@@ -2064,73 +2057,6 @@ class PlayerViewModel {
     /// remux/transcode instead.
     static func needsServerReplanBeforeLoad(plan: PlaybackExecutionPlan) -> Bool {
         plan.engine == .avPlayerHLS && plan.delivery == .direct
-    }
-
-    /// Origin-specific inputs for `adoptPreparedPlayback`.
-    ///
-    /// The three pipelines that adopt a prepared playback (`beginFreshLoad`,
-    /// `attemptProtocolV3Replan`, `restartCurrentTranscodeHLS`) publish the
-    /// same session/track/quality state and then run the identical
-    /// `makeStreamRequest` → `makeExecutionPlan` → `logExecutionPlan` →
-    /// `loadStream` tail. Everything they genuinely disagree about is spelled
-    /// out here rather than being silently unified.
-    enum PlaybackAdoptionOrigin {
-        /// A brand-new item. Owns the fields nothing else republishes — title,
-        /// metadata, chapters, marker ranges, the subtitle-policy snapshot —
-        /// and binds realtime unconditionally because there is no prior
-        /// session to keep.
-        case freshLoad(FreshLoad)
-        /// An in-place V3 plan replacement (error recovery, output-route
-        /// change, quality-switch completion). The only origin that keeps the
-        /// outgoing backend alive across the reload.
-        case protocolV3Replan(Replan)
-        /// An in-place stream restart for a seek reanchor or a quality change.
-        case transcodeRestart(TranscodeRestart)
-
-        struct FreshLoad {
-            /// Offline playback has no server session: no realtime channel, no
-            /// catalog artwork, no Next Up lookup.
-            let isOffline: Bool
-            /// `resumePositionOverride`; feeds `timelineOffset(for:session:requestedStart:)`.
-            let requestedStart: Double?
-        }
-
-        struct Replan {
-            /// Subtitle selection captured before the replan started, used to
-            /// re-establish a sidecar / server-rendered choice afterwards.
-            let selectedSubtitleSnapshot: Int64?
-        }
-
-        struct TranscodeRestart {
-            let target: Double
-            let isQualitySwitch: Bool
-            let selectedSubtitleSnapshot: Int64?
-            /// The restart keeps the previous sidecar list when the replacement
-            /// session omits one; the other two origins reset to empty.
-            let subtitleUrlFallback: [SubtitleUrl]
-            let recoveredEmbeddedSubtitleSelection: TrackSelectionSnapshot?
-            let recoveredSecondarySubtitleId: Int64?
-            let selectionOrigin: SelectionOrigin
-        }
-
-        var subtitleUrlFallback: [SubtitleUrl] {
-            if case .transcodeRestart(let restart) = self { return restart.subtitleUrlFallback }
-            return []
-        }
-
-        /// Only a live protocol replan has a known-good outgoing backend worth
-        /// preserving across the reload.
-        var reusesActiveEngine: Bool {
-            if case .protocolV3Replan = self { return true }
-            return false
-        }
-
-        var invalidStreamURLMessage: String {
-            if case .protocolV3Replan = self {
-                return "The replacement V3 plan returned an invalid stream URL."
-            }
-            return "Invalid stream URL"
-        }
     }
 
     /// `adoptPreparedPlayback`'s shell half: everything the prepared session
@@ -4264,7 +4190,7 @@ class PlayerViewModel {
                     resolvedServerUrl: self.resolvedServerUrl,
                     activeRouteKind: self.activeRouteKind,
                     backendCapabilities: self.backendCapabilities,
-                    offlinePlaybackContext: self.offlinePlaybackContext,
+                    isOfflinePlayback: self.offlinePlaybackContext != nil,
                     currentTime: self.currentTime,
                     isBackgroundSuspended: self.isBackgroundSuspended,
                     isPlaying: self.isPlaying
@@ -4279,11 +4205,7 @@ class PlayerViewModel {
             },
             serverSessionId: { [weak self] in self?.currentServerSessionId ?? nil },
             currentSelectedVersion: { [weak self] in self?.currentSelectedVersion ?? nil },
-            // The subtitle index the third parameter carries is diagnostic
-            // only: the durable write already happened through
-            // `setLastLoadRequestProtocolV3SubtitleIndex` at the one site that
-            // has a value, and the replan intent takes no such argument.
-            requestReplan: { [weak self] classification, message, _ in
+            requestReplan: { [weak self] classification, message in
                 guard let self else { return }
                 self.requestReplan(
                     ReplanIntent(
@@ -4315,12 +4237,6 @@ class PlayerViewModel {
             },
             subtitleAILiveOverlayAvailable: { [weak self] in
                 self?.subtitleAILiveOverlayAvailable ?? false
-            },
-            deferredLiveSubtitleCloseTask: { [weak self] in
-                self?.deferredLiveSubtitleCloseTask ?? nil
-            },
-            setDeferredLiveSubtitleCloseTask: { [weak self] task in
-                self?.deferredLiveSubtitleCloseTask = task
             }
         )
     }
@@ -4373,14 +4289,6 @@ class PlayerViewModel {
     @MainActor
     func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> Bool {
         await trackSelection.downloadSearchedSubtitle(result)
-    }
-
-    static func protocolV3DownloadedSubtitleBaseTrackCount(
-        _ inventory: [PlaybackV3SubtitleInventoryItem]
-    ) -> Int {
-        inventory.filter {
-            $0.source.caseInsensitiveCompare("downloaded") != .orderedSame
-        }.count
     }
 
     func cycleAudioTrack() { trackSelection.cycleAudioTrack() }
@@ -5166,11 +5074,6 @@ extension PlayerViewModel {
                 throw SiloControlPlayerError.invalidVideoGravity
             }
             setVideoGravity(gravity)
-        case .setHDREnabled:
-            // Deprecated: no route exposes an HDR passthrough toggle any
-            // more. Accepted (and ignored) so an older remote peer does not
-            // see a command failure.
-            break
         case .setSubtitleSyncMs:
             guard let milliseconds = command.milliseconds else {
                 throw SiloControlPlayerError.missingMilliseconds

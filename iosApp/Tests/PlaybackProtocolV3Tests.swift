@@ -1041,7 +1041,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testEmptySubtitleInventoryStartsDownloadedIdentityAtZero() {
-        XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
+        XCTAssertEqual(TrackSelectionCoordinator.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
     }
 
     /// Rewritten in wave 4 against `SubtitleSelection` (it pinned

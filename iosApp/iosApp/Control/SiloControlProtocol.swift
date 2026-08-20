@@ -103,12 +103,15 @@ struct SiloControlPlaybackState: Codable, Equatable, Sendable {
     let isQualitySwitching: Bool
     let playbackSpeed: Double
     let videoGravity: String
-    /// Deprecated: no route surfaces an HDR passthrough toggle any more.
-    /// Retained on the wire so older peers can still decode this payload;
-    /// current senders always publish `false`.
+    /// Deprecated: no route surfaces an HDR passthrough toggle any more, so
+    /// current senders always publish `false` for this and for
+    /// `supportsHDRToggle`. Both stay on the wire, and stay non-optional:
+    /// an older peer decodes this payload with both keys required, so omitting
+    /// either one would fail its decode of the whole envelope and drop the
+    /// pairing.
     let hdrEnabled: Bool
     let supportsVideoGravity: Bool
-    /// Deprecated: see `hdrEnabled`. Always `false` from current senders.
+    /// Deprecated: see `hdrEnabled`.
     let supportsHDRToggle: Bool
     var subtitleSyncMs: Int? = nil
     var subtitlePosition: String? = nil
@@ -133,8 +136,6 @@ struct SiloControlCommand: Codable, Equatable, Sendable {
         case setPlaybackSpeed = "set_playback_speed"
         case setQuality = "set_quality"
         case setVideoGravity = "set_video_gravity"
-        /// Deprecated: accepted from older remote peers and ignored.
-        case setHDREnabled = "set_hdr_enabled"
         case setSubtitleSyncMs = "set_subtitle_sync_ms"
         case setSubtitlePosition = "set_subtitle_position"
         case setVolume = "set_volume"
