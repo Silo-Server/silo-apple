@@ -79,9 +79,9 @@ final class LocalHLSHost {
 
     // MARK: - Pulled from the backend by the writer/server
 
-    /// AVPlayer's current local playlist time. Kept on the `AVPlayerBackend`
-    /// seam (the adapter supplies it) — nothing in the producer consumes it
-    /// since the writer paced on the store's consumer window.
+    /// AVPlayer's current local playlist time, supplied by the adapter.
+    /// Nothing in the producer reads it: the writer paces on the store's
+    /// consumer window instead.
     private let playbackPositionProvider: () -> Double?
     private let isSourceOutageActive: () -> Bool
     /// The backend's source-keyed subtitle cue tap. Handed to every producer,
@@ -219,7 +219,7 @@ final class LocalHLSHost {
                 self?.requestProducerRestart(atSegmentIndex: index)
             }
             return store.waitForSegment(
-                named: String(format: "seg_%06d.m4s", index),
+                named: LoopbackSegmentStore.segmentName(index),
                 deadline: Date().addingTimeInterval(Self.vodSegmentMissWaitSeconds)
             )
         }
@@ -510,17 +510,15 @@ final class LocalHLSHost {
     /// Releases the producer, the server, the store and the session
     /// directory, and drops every closure so a draining writer's late
     /// callbacks land nowhere. A host is never restarted after this.
+    ///
+    /// The writer's own callbacks are deliberately left alone: `isTornDown`
+    /// latches first and every closure this host installs on the writer bails
+    /// on it (directly, or through `handleFirstSegmentReady`), so a draining
+    /// producer's late callbacks are already inert.
     func teardown() {
         isTornDown = true
         let writer = segmentWriter
         segmentWriter = nil
-        writer?.onFirstSegmentReady = nil
-        writer?.onSegmentAppended = nil
-        writer?.onSourceDownloadStats = nil
-        writer?.onGeneratedMediaStats = nil
-        writer?.onHDR10PlusMetadataDetected = nil
-        writer?.onBridgedAudioAnchored = nil
-        writer?.onFinished = nil
         segmentServer?.stop()
         segmentServer = nil
         segmentStore = nil

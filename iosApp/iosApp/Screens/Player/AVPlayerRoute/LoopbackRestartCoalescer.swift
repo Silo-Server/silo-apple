@@ -5,9 +5,10 @@ import Foundation
 /// (see `docs/tvos-player/03-dolby-vision-and-avplayer-route.md`).
 ///
 /// Not thread-safe: callers serialize access under their own lock. The
-/// in-flight signal is exposed so segment fetches can ride a progressing
-/// restart instead of burning their own retry budget or firing a stale
-/// restart of their own.
+/// in-flight signal is exposed for observation only (the host's tests read
+/// it); nothing in the fetch path consults it. Whether a segment fetch rides
+/// a progressing producer instead of firing its own restart is decided by
+/// `LocalHLSHost.coversTarget` from the producer's base and produced head.
 struct LoopbackRestartCoalescer {
     private(set) var isInFlight = false
     private var pending: Int?

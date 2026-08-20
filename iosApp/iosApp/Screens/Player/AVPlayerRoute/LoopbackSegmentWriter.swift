@@ -384,9 +384,9 @@ final class LoopbackSegmentWriter {
     let sourceHeaders: [String: String]
     let sourceStartTimeSeconds: Double
     let outputDirectory: URL
-    /// Where every artifact this session produces lands. The only sink there
-    /// is: `outputDirectory` is the session directory the store mirrors into
-    /// when artifact retention is on.
+    /// The only sink for everything this session produces — init segment,
+    /// media segments and playlists. `outputDirectory` is the session
+    /// directory the store mirrors into when artifact retention is on.
     let segmentStore: LoopbackSegmentStore
     let selectedAudioTrackIndex: Int
     let videoMode: LoopbackSessionSpec.VideoMode
@@ -5470,7 +5470,7 @@ final class LoopbackSegmentWriter {
     private func publishProgressivePartial() {
         guard pendingSegmentHasVideo else { return }
         let store = segmentStore
-        let name = String(format: "seg_%06d.m4s", vodOpenSegmentIndex)
+        let name = LoopbackSegmentStore.segmentName(vodOpenSegmentIndex)
         if vodProgressiveActiveName != name {
             vodProgressiveActiveName = name
             vodProgressivePublishedBytes = 0
@@ -5647,7 +5647,7 @@ final class LoopbackSegmentWriter {
         // segment the cutter was filling when the cut fired (or the currently
         // open one, for the trailer's final flush).
         currentSegmentIndex = vodClosingSegmentIndex ?? vodOpenSegmentIndex
-        let name = String(format: "seg_%06d.m4s", currentSegmentIndex)
+        let name = LoopbackSegmentStore.segmentName(currentSegmentIndex)
         let parsedDuration = segmentMediaDuration(in: pendingSegmentBytes)
         let duration = parsedDuration ?? targetSegmentDuration
         lastSegmentDurationSource = parsedDuration == nil ? "target_duration_fallback" : "fragment_timing"
@@ -5921,7 +5921,7 @@ final class LoopbackSegmentWriter {
         lines.append("#EXT-X-MAP:URI=\"init.mp4\"")
         for index in 0..<plan.segmentCount {
             lines.append(String(format: "#EXTINF:%.3f,", plan.duration(ofSegment: index)))
-            lines.append(String(format: "seg_%06d.m4s", index))
+            lines.append(LoopbackSegmentStore.segmentName(index))
         }
         lines.append("#EXT-X-ENDLIST")
         let body = lines.joined(separator: "\n") + "\n"

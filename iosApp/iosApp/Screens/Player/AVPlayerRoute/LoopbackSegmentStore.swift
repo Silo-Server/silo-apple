@@ -305,6 +305,13 @@ final class LoopbackSegmentStore {
     /// target exists" apart from the fresh-store default of index 0.
     private var vodTargetDeclarationCount: UInt64 = 0
 
+    /// The producer, the store and the server must agree on this name or a
+    /// request misses forever, so the format lives in exactly one place —
+    /// here, next to the parser that has to undo it.
+    static func segmentName(_ index: Int) -> String {
+        String(format: "seg_%06d.m4s", index)
+    }
+
     static func segmentIndex(fromName name: String) -> Int? {
         guard name.hasPrefix("seg_"), name.hasSuffix(".m4s") else { return nil }
         return Int(name.dropFirst(4).dropLast(4))
@@ -544,7 +551,7 @@ final class LoopbackSegmentStore {
         guard !victims.isEmpty else { return [] }
         var doomed: [URL] = []
         for index in victims {
-            let name = String(format: "seg_%06d.m4s", index)
+            let name = Self.segmentName(index)
             if let segment = segments.removeValue(forKey: name) {
                 memoryBytes -= segment.data.count
             }
