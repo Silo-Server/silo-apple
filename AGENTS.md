@@ -40,10 +40,15 @@ single refresh; `SiloAPI` is the typed facade over the native `/api/v1` endpoint
 `/api/v1/playback/start`; `PlaybackSessionBridge` turns the response into a prepared playback;
 `ApplePlaybackRoutePlanner` picks the route (`avPlayerNativeDirect`, `siloPlayerLoopback`, or
 `avPlayerHLS`) from the server's play method, the source's codecs, and the device's
-capabilities; `PlayerViewModel` drives `AVPlayerBackend` — every route is AVPlayer, and what
-varies is what AVPlayer is pointed at. The loopback route re-muxes the source on device into
-fragmented-MP4 HLS served from `127.0.0.1` (`LoopbackSegmentWriter`/`LoopbackSegmentServer`).
-The full player story is in `docs/tvos-player/`.
+capabilities. From there playback is a control plane over an execution plane:
+`PlaybackSessionActor` runs the pure `PlaybackReducer`, which owns every load, seek, replan
+and scene-phase decision; `RecoveryPolicy` owns every recovery decision; `PlaybackEngineSession`
+owns the backend and the source proxy for one `LoadID`; `AVPlayerBackend` owns AVFoundation;
+and `PlayerViewModel` is the presentation shell (overlays, notices, settings, Now Playing,
+next-up). Every route is AVPlayer, and what varies is what AVPlayer is pointed at: the
+loopback route re-muxes the source on device into fragmented-MP4 HLS served from `127.0.0.1`
+(`LocalHLSHost` over `LoopbackSegmentWriter`/`LoopbackSegmentServer`). The ownership table and
+the full player story are in `docs/tvos-player/README.md`.
 
 ## Glossary
 
