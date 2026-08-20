@@ -55,9 +55,15 @@ startup_failure_investigation:  # the reason this record exists; VERDICT: not a 
        failure into a loopback⇄HLS oscillation; add a cooldown guard (pre-existing behaviour, unchanged by
        Stage 2)"
 
+row_7_seek_heavy:  # design §6 row 7 on the wave-2b build; owner-driven with the physical remote
+  result: PASS
+  evidence: >
+    21:00 session, same title/build. Owner seeks 2616→2911→3240→2608(back)→4580, several 5-8 s apart
+    (quick-succession case). Every seek: vod producer restart + producer anchored within the same second,
+    playhead back to tc=playing rate=1.0 at the new position. Zero ERRORs, zero expired seek deadlines,
+    zero recovery lines, no suspensions; playback continued clean afterwards.
+
 rows_pending:  # remaining wave-2b device rows; tooling limits, need the owner or server-side action
-  - "row 7 seek-heavy: companion HID arrows do not reach the player's controls and set_position needs MRP
-     credentials — owner-driven seeks with the physical remote (a few long jumps both directions)"
   - "rows 12/13 renewal + server restart → ride-through → replan → resume: needs a production (or dev)
      server restart mid-stream — owner go/no-go; this is the row the wave-2b carry-owner fix lives on
      (watch suspended=[…] clear after the replan)"
