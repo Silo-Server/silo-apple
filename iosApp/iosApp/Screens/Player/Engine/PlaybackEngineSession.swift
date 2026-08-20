@@ -154,7 +154,6 @@ final class PlaybackEngineSession {
     func stopTransport() {
         transport?.stop()
         transport = nil
-        backend.proxyStatsProvider = nil
         backend.sourceOutageStateProvider = nil
     }
 
@@ -402,7 +401,6 @@ final class PlaybackEngineSession {
         backend.onRecoveryObservation = { [weak self] observation in
             self?.observe(observation)
         }
-        backend.proxyStatsProvider = { [weak self] in self?.transport?.stats() }
         backend.sourceOutageStateProvider = { [weak self] in
             self?.transport?.isOriginOutageActive ?? false
         }
@@ -443,7 +441,6 @@ final class PlaybackEngineSession {
         backend.onExternalPlaybackUnavailable = nil
         backend.onSidecarTracksRegistered = nil
         backend.onRecoveryObservation = nil
-        backend.proxyStatsProvider = nil
         backend.sourceOutageStateProvider = nil
         if let concrete = surfaceBackend {
             concrete.onEngineReloaded = nil

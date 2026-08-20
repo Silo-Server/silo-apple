@@ -553,7 +553,6 @@ final class PlaybackEngineSessionTests: XCTestCase {
         XCTAssertNil(session.transport)
         session.stopTransport()
         XCTAssertNil(session.transport)
-        XCTAssertNil(backend.proxyStatsProvider)
         XCTAssertNil(backend.sourceOutageStateProvider)
     }
 

@@ -107,6 +107,5 @@ protocol PlaybackBackend: AnyObject {
     // MARK: - Inbound providers (inventory-3 §1.6)
 
     var isPictureInPictureActiveProvider: (() -> Bool)? { get set }
-    var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)? { get set }
     var sourceOutageStateProvider: (() -> Bool)? { get set }
 }

@@ -573,14 +573,9 @@ final class AVPlayerBackend {
     /// here so transport KVO can reconcile those changes into Silo's intent.
     var isPictureInPictureActiveProvider: (() -> Bool)?
     var onSidecarTracksRegistered: (([SidecarSubtitleDescriptor]) -> Void)?
-    /// Source-proxy cache stats. Declared by `PlaybackBackend` and wired by
-    /// the engine session; the proxy is owned outside this backend, so it
-    /// arrives as a closure rather than a reference. Nothing in this file
-    /// reads it.
-    var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
     /// Live query into the source proxy's outage state; handed to writers so
-    /// their blocking source reads can park through a flagged outage. Owned
-    /// by PlayerViewModel like `proxyStatsProvider`.
+    /// their blocking source reads can park through a flagged outage. Wired by
+    /// the engine session, which owns the proxy.
     var sourceOutageStateProvider: (() -> Bool)?
     /// Every in-route recovery signal, emitted where the ladder used to decide.
     /// `RecoveryDriver` turns these into `RecoveryAction`s through the one

@@ -290,7 +290,10 @@ extension SubtitleSelection {
     /// leaves the client only the picker row, and anything else (`off`, absent)
     /// selects nothing.
     static func planned(selectedSubtitleIndex: Int?, subtitleMode: String?) -> SubtitleSelection {
-        guard let selectedSubtitleIndex else { return .unset }
+        // A negative plan index is not a sidecar ordinal (the id space masks it
+        // into a meaningless value); the legacy comparison never matched one
+        // either, so it selects nothing rather than a mis-masked sidecar.
+        guard let selectedSubtitleIndex, selectedSubtitleIndex >= 0 else { return .unset }
         let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: selectedSubtitleIndex)
         switch subtitleMode {
         case "render":

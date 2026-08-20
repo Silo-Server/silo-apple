@@ -258,8 +258,9 @@ loopback route from renegotiating HDMI around the replacement item.
 Dropping the engine session *is* the teardown: it disposes the backend (which
 tears the AVPlayer item down, tears down its `LocalHLSHost` — writer, store,
 server, session directory — and releases the tvOS display criteria), stops the
-source proxy, and cancels the load's timers. There is no hand-written field
-reset left.
+source proxy, and cancels the load's timers. The view model no longer
+hand-resets the load's playback fields; the backend's own `dispose()` still
+clears its per-item state (selection state, track lists, the display gate).
 
 Scene transitions are `PlayerIntent.scenePhase(phase)`, reduced against the
 reducer's per-platform scene-phase table. The shell resolves only what it

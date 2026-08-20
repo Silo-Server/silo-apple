@@ -1610,6 +1610,9 @@ final class TrackSelectionCoordinator {
             selection.primary = selection.primary
                 .settingRecovered(restart.recoveredEmbeddedSubtitleSelection)
             selection.origin = restart.selectionOrigin == .user ? .user : .recovered
+            // The secondary axis reuses `.sidecar(trackId:)` as a space-agnostic
+            // id carrier: the recovered secondary id may be an embedded track id
+            // (the reads below match it against the embedded list too).
             selection.secondary = restart.recoveredSecondarySubtitleId
                 .map { .sidecar(trackId: $0) } ?? .unset
         }
@@ -1702,6 +1705,7 @@ final class TrackSelectionCoordinator {
         knownExternalSubtitles = snapshot.externalSubtitles
         selection.audio = selection.audio.settingRecovered(snapshot.audioSelection)
         selection.primary = selection.primary.settingRecovered(snapshot.subtitleSelection)
+        // Space-agnostic carrier — see the restart path above.
         selection.secondary = snapshot.secondarySubtitleId
             .map { .sidecar(trackId: $0) } ?? .unset
         selection.origin = snapshot.origin == .user ? .user : .recovered

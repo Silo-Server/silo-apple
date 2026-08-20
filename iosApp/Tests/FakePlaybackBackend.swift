@@ -179,7 +179,6 @@ final class FakePlaybackBackend: PlaybackBackend {
     // MARK: - Inbound providers
 
     var isPictureInPictureActiveProvider: (() -> Bool)?
-    var proxyStatsProvider: (() -> PlaybackSourceProxyStats?)?
     var sourceOutageStateProvider: (() -> Bool)?
 
     // MARK: - Firing helpers
