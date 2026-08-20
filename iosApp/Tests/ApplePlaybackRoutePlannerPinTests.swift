@@ -881,7 +881,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             for: version,
             selectedAudioTrackIndex: 1,
             selectedAudioTrackId: nil,
-            pendingAudioFfIndex: nil,
+            planAudioSelectionIndex: nil,
             preferredAudioTrackIndex: nil,
             streamRequest: StreamRequest(url: Self.streamURL, headers: [:], serverUrl: ""),
             videoMode: .passthroughHEVC,
@@ -919,7 +919,7 @@ final class ApplePlaybackRoutePlannerPinTests: XCTestCase {
             for: version,
             selectedAudioTrackIndex: nil,
             selectedAudioTrackId: nil,
-            pendingAudioFfIndex: nil,
+            planAudioSelectionIndex: nil,
             preferredAudioTrackIndex: nil,
             streamRequest: StreamRequest(url: Self.streamURL, headers: [:], serverUrl: ""),
             videoMode: .passthroughProfile5

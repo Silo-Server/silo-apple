@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 
 /// The player's track half: the published audio/subtitle lists and selection
-/// ids, the eight `pending*` restore intents, the subtitle-preference
+/// ids, the `TrackSelection` restore intent, the subtitle-preference
 /// resolution funnels, the provider-search + AI-subtitle surface, and the live
 /// AI-subtitle bridge.
 ///
@@ -40,7 +40,7 @@ final class TrackSelectionCoordinator {
     /// language group to the top of the displayed track lists.
     private var subtitleOrderingLanguage: String?
 
-    // MARK: - Pending restore intents
+    // MARK: - Restore intent
 
     /// Cached external subtitle URLs returned by the server; added to the
     /// player once the file has loaded.
@@ -50,66 +50,13 @@ final class TrackSelectionCoordinator {
     /// registration so route recovery can re-register sidecars later.
     private(set) var knownExternalSubtitles: [SubtitleUrl] = []
 
-    struct TrackSelectionSnapshot {
-        let normalizedTitle: String?
-        let normalizedLanguageCode: String?
-        let normalizedCodec: String?
-        let normalizedAudioLayout: String?
-        let isForced: Bool
-        let isExternal: Bool
-        let isHearingImpaired: Bool
-
-        init(track: PlayerTrack) {
-            normalizedTitle = track.normalizedTitle?.lowercased()
-            normalizedLanguageCode = track.normalizedLanguageCode?.lowercased()
-            normalizedCodec = Self.normalized(track.codec)
-            normalizedAudioLayout = Self.normalized(track.audioChannelsLayout)
-            isForced = track.isForced
-            isExternal = track.isExternal
-            isHearingImpaired = track.isHearingImpaired
-        }
-
-        func score(against track: PlayerTrack) -> Int {
-            var score = 0
-            if normalizedTitle == track.normalizedTitle?.lowercased() { score += 4 }
-            if normalizedLanguageCode == track.normalizedLanguageCode?.lowercased() { score += 3 }
-            if normalizedCodec == Self.normalized(track.codec) { score += 2 }
-            if normalizedAudioLayout == Self.normalized(track.audioChannelsLayout) { score += 2 }
-            if isForced == track.isForced { score += 1 }
-            if isExternal == track.isExternal { score += 1 }
-            if isHearingImpaired == track.isHearingImpaired { score += 1 }
-            return score
-        }
-
-        private static func normalized(_ value: String?) -> String? {
-            value?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-        }
-    }
-
-    private var pendingRecoveredAudioSelection: TrackSelectionSnapshot?
-    private var pendingRecoveredSubtitleSelection: TrackSelectionSnapshot?
-    private var pendingRecoveredSecondarySubtitleId: Int64?
-
-    /// Server-supplied preferred track indices (ffmpeg stream indices). Kept
-    /// until we've observed a matching track in the core's track-list and
-    /// applied it, or until the user makes a manual selection.
-    private(set) var pendingAudioFfIndex: Int?
-    private var pendingSubtitleFfIndex: Int?
-    /// True when the most recent `loadAndPlay` came in with an explicit
-    /// subtitle index from the caller (route arg / detail screen). The
-    /// auto-resolver yields to the user in that case.
-    private(set) var hasExplicitSubtitleChoice: Bool = false
-    /// External subtitle picks don't have an FFmpeg stream index, so a
-    /// reload/resume has to remember the synthesised sidecar `trackId`
-    /// and re-apply it once `subtitle_urls` have been registered again.
-    private var pendingSidecarSubtitleTrackId: Int64?
-    /// A protocol-v3 subtitle can remain represented by a sidecar picker row
-    /// even when the replacement plan renders it on the server (for example,
-    /// bitmap PGS subtitles burned into HLS). Preserve that picker selection
-    /// across the backend rebuild without also opening the sidecar locally.
-    private var pendingServerRenderedSubtitleTrackId: Int64?
+    /// What this load or rebuild is still trying to land on, per axis, plus
+    /// who decided it. Each axis holds the rungs waiting for a matching track
+    /// to appear: the track-list funnel consumes the audio and embedded rungs,
+    /// the sidecar-append funnel the sidecar and server-rendered rungs, and
+    /// either may consume the fuzzy-restore rung. `origin == .user` is the
+    /// latch every automatic subtitle decision yields to.
+    private(set) var selection = TrackSelection()
     /// M5 seamless live→persisted swap: the synthetic AI-live track id whose
     /// row + libass track must be closed AFTER the handed-off persisted track is
     /// selected. Set by `armDeferredLiveSubtitleClose` when a live job completes;
@@ -236,7 +183,7 @@ final class TrackSelectionCoordinator {
 
     func selectAudio(_ track: PlayerTrack) {
         guard !context.isBackgroundSuspended else { return }
-        pendingAudioFfIndex = nil
+        selection.audio = selection.audio.settingPlanIndex(nil)
         selectedAudioId = track.trackId
         persistAudioSelection(track)
         reapplySystemSubtitlePolicy()
@@ -262,8 +209,8 @@ final class TrackSelectionCoordinator {
 
     func selectSubtitle(_ track: PlayerTrack) {
         guard !context.isBackgroundSuspended else { return }
-        hasExplicitSubtitleChoice = true
-        pendingSubtitleFfIndex = nil
+        selection.origin = .user
+        selection.primary = selection.primary.settingEmbedded(ffIndex: nil)
         if selectedSecondarySubtitleId == track.trackId {
             selectedSecondarySubtitleId = nil
             applySecondarySubtitleTrackSelection(nil)
@@ -295,8 +242,8 @@ final class TrackSelectionCoordinator {
 
     func disableSubtitles() {
         guard !context.isBackgroundSuspended else { return }
-        hasExplicitSubtitleChoice = true
-        pendingSubtitleFfIndex = nil
+        selection.origin = .user
+        selection.primary = selection.primary.settingEmbedded(ffIndex: nil)
         if selectedSecondarySubtitleId != nil {
             selectedSecondarySubtitleId = nil
             applySecondarySubtitleTrackSelection(nil)
@@ -595,7 +542,7 @@ final class TrackSelectionCoordinator {
     /// Android's `SubtitleTrackMerge` does. Here we (1) record it in
     /// `knownExternalSubtitles` as a `SubtitleUrl` so a later route/quality
     /// switch re-registers it like any other sidecar (de-dupes on index),
-    /// (2) seed `pendingSidecarSubtitleTrackId` so `appendSidecarTracks`
+    /// (2) arm the selection's sidecar rung so `appendSidecarTracks`
     /// auto-selects it once registered, and (3) call the active backend's
     /// `registerSidecarSubtitles`, which fires `onSidecarTracksRegistered` →
     /// `appendSidecarTracks`. No new selection plumbing.
@@ -630,7 +577,7 @@ final class TrackSelectionCoordinator {
         // track as selectable WITHOUT hijacking the viewer's current choice.
         let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
         if autoSelect {
-            pendingSidecarSubtitleTrackId = trackId
+            selection.primary = selection.primary.settingSidecar(trackId: trackId)
         }
 
         Self.logger.info(
@@ -883,11 +830,13 @@ final class TrackSelectionCoordinator {
 
     private func subtitleUrlsForCurrentRoute(_ urls: [SubtitleUrl]) -> [SubtitleUrl] {
         let context = self.context
-        let filtered = PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+        let filtered = SubtitleSelection.subtitleUrlsForCurrentRoute(
             urls,
             routeUsesEmbeddedExtraction: activeRouteUsesEmbeddedAVPlayerSubtitleExtraction,
-            selectedSubtitleIndex: context.activePreparedProtocolV3?.plan.selectedTracks.subtitle?.index,
-            subtitleMode: context.activePreparedProtocolV3?.plan.subtitle.mode
+            planned: SubtitleSelection.planned(
+                selectedSubtitleIndex: context.activePreparedProtocolV3?.plan.selectedTracks.subtitle?.index,
+                subtitleMode: context.activePreparedProtocolV3?.plan.subtitle.mode
+            )
         )
         if filtered.count != urls.count {
             Self.logger.info(
@@ -1130,8 +1079,8 @@ final class TrackSelectionCoordinator {
         )
 
         var restoredPrimarySidecar = false
-        if let pendingTrackId = pendingSidecarSubtitleTrackId {
-            pendingSidecarSubtitleTrackId = nil
+        if let pendingTrackId = selection.primary.sidecarTrackId {
+            selection.primary = selection.primary.settingSidecar(trackId: nil)
             if subtitleTracks.contains(where: { $0.trackId == pendingTrackId }) {
                 restoredPrimarySidecar = true
                 if selectedSubtitleId != pendingTrackId {
@@ -1144,17 +1093,17 @@ final class TrackSelectionCoordinator {
                 performDeferredLiveSubtitleCloseIfNeeded()
             }
         }
-        if let pendingTrackId = pendingServerRenderedSubtitleTrackId {
-            pendingServerRenderedSubtitleTrackId = nil
+        if let pendingTrackId = selection.primary.serverRenderedTrackId {
+            selection.primary = selection.primary.settingServerRendered(trackId: nil)
             if subtitleTracks.contains(where: { $0.trackId == pendingTrackId }) {
                 restoredPrimarySidecar = true
                 selectedSubtitleId = pendingTrackId
             }
         }
 
-        if let pendingTrackId = pendingRecoveredSecondarySubtitleId,
+        if let pendingTrackId = selection.secondary.sidecarTrackId,
            subtitleTracks.contains(where: { $0.trackId == pendingTrackId }) {
-            pendingRecoveredSecondarySubtitleId = nil
+            selection.secondary = .unset
             if pendingTrackId != selectedSubtitleId {
                 selectedSecondarySubtitleId = pendingTrackId
                 applySecondarySubtitleTrackSelection(pendingTrackId)
@@ -1162,7 +1111,7 @@ final class TrackSelectionCoordinator {
         }
 
         if restoredPrimarySidecar,
-           !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
+           !settings.subtitleMatchesSystemAppearance || selection.origin == .user {
             return
         }
 
@@ -1171,17 +1120,17 @@ final class TrackSelectionCoordinator {
         // `subtitle_urls` (direct → transcode switch). If the embedded
         // snapshot is still pending — no embedded track matched it in
         // `applyTrackList` — fuzzy-match it against the sidecar rows.
-        if let snapshot = pendingRecoveredSubtitleSelection,
+        if let snapshot = selection.primary.recoveredSnapshot,
            let match = bestTrackMatch(
                for: snapshot,
                in: subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) }
            ) {
-            pendingRecoveredSubtitleSelection = nil
+            selection.primary = selection.primary.settingRecovered(nil)
             if selectedSubtitleId != match.trackId {
                 selectedSubtitleId = match.trackId
                 applySubtitleTrackSelection(match.trackId, reason: "restored_selection_as_sidecar")
             }
-            if !settings.subtitleMatchesSystemAppearance || hasExplicitSubtitleChoice {
+            if !settings.subtitleMatchesSystemAppearance || selection.origin == .user {
                 return
             }
         }
@@ -1193,7 +1142,7 @@ final class TrackSelectionCoordinator {
         // routes every sidecar through Apple's ordered language policy,
         // including Forced Only.
         if !settings.subtitleMatchesSystemAppearance,
-           !hasExplicitSubtitleChoice,
+           selection.origin != .user,
            selectedSubtitleId == nil,
            let forced = descriptors.first(where: { $0.forced == true }) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: forced.index)
@@ -1256,54 +1205,57 @@ final class TrackSelectionCoordinator {
             selectedSubtitleId = live
         }
 
-        if let wantedFf = pendingAudioFfIndex,
+        if let wantedFf = selection.audio.planIndex,
            let match = audioTracks.first(where: { ApplePlaybackRoutePlanner.audioSelectionIndex(for: $0) == wantedFf }) {
-            pendingAudioFfIndex = nil
+            selection.audio = selection.audio.settingPlanIndex(nil)
             if selectedAudioId != match.trackId {
                 selectedAudioId = match.trackId
                 applyAudioTrackSelection(match.trackId, reason: "pending_audio_index")
             }
         }
 
-        if let wantedFf = pendingSubtitleFfIndex {
-            if wantedFf < 0 {
-                // Explicit "Off" from the detail screen — disable subs so
-                // a file-default or forced track doesn't surprise the user.
-                pendingSubtitleFfIndex = nil
-                if selectedSubtitleId != nil {
-                    selectedSubtitleId = nil
-                    applySubtitleTrackSelection(nil, reason: "pending_subtitle_off")
-                }
-            } else if let match = embeddedSubs.first(where: { $0.ffIndex == wantedFf }) {
-                pendingSubtitleFfIndex = nil
+        switch selection.primary.embeddedRung {
+        case .off:
+            // Explicit "Off" from the detail screen — disable subs so
+            // a file-default or forced track doesn't surprise the user.
+            selection.primary = selection.primary.settingEmbedded(ffIndex: nil)
+            if selectedSubtitleId != nil {
+                selectedSubtitleId = nil
+                applySubtitleTrackSelection(nil, reason: "pending_subtitle_off")
+            }
+        case .embedded(let wantedFf):
+            if let match = embeddedSubs.first(where: { $0.ffIndex == wantedFf }) {
+                selection.primary = selection.primary.settingEmbedded(ffIndex: nil)
                 if selectedSubtitleId != match.trackId {
                     selectedSubtitleId = match.trackId
                     applySubtitleTrackSelection(match.trackId, reason: "pending_subtitle_index")
                 }
             }
+        default:
+            break
         }
 
-        if let snapshot = pendingRecoveredAudioSelection,
+        if let snapshot = selection.audio.recoveredSnapshot,
            let match = bestTrackMatch(for: snapshot, in: audioTracks) {
-            pendingRecoveredAudioSelection = nil
+            selection.audio = selection.audio.settingRecovered(nil)
             if selectedAudioId != match.trackId {
                 selectedAudioId = match.trackId
                 applyAudioTrackSelection(match.trackId, reason: "restored_selection")
             }
         }
 
-        if let snapshot = pendingRecoveredSubtitleSelection,
+        if let snapshot = selection.primary.recoveredSnapshot,
            let match = bestTrackMatch(for: snapshot, in: embeddedSubs) {
-            pendingRecoveredSubtitleSelection = nil
+            selection.primary = selection.primary.settingRecovered(nil)
             if selectedSubtitleId != match.trackId {
                 selectedSubtitleId = match.trackId
                 applySubtitleTrackSelection(match.trackId, reason: "restored_selection")
             }
         }
 
-        if let pendingTrackId = pendingRecoveredSecondarySubtitleId,
+        if let pendingTrackId = selection.secondary.sidecarTrackId,
            embeddedSubs.contains(where: { $0.trackId == pendingTrackId }) {
-            pendingRecoveredSecondarySubtitleId = nil
+            selection.secondary = .unset
             if pendingTrackId != selectedSubtitleId {
                 selectedSecondarySubtitleId = pendingTrackId
                 applySecondarySubtitleTrackSelection(pendingTrackId)
@@ -1333,7 +1285,7 @@ final class TrackSelectionCoordinator {
     }
 
     private func applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: Bool = false) {
-        guard !hasExplicitSubtitleChoice, let prefs = prefsForCurrentItem else { return }
+        guard selection.origin != .user, let prefs = prefsForCurrentItem else { return }
         if prefsResolvedForCurrentItem && !forceReevaluation {
             return
         }
@@ -1367,7 +1319,7 @@ final class TrackSelectionCoordinator {
     }
 
     private func reapplySystemSubtitlePolicy() {
-        guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        guard settings.subtitleMatchesSystemAppearance, selection.origin != .user else { return }
         subtitleOrderingLanguage = settings.subtitleSystemSelectionPreferences
             .preferredLanguages.first
         prefsForCurrentItem = systemCaptionPrefsSnapshot()
@@ -1488,7 +1440,7 @@ final class TrackSelectionCoordinator {
         subtitleOrderingLanguage = enabled
             ? settings.subtitleSystemSelectionPreferences.preferredLanguages.first
             : context.currentWatchDetail?.effectiveSubtitleLanguage
-        hasExplicitSubtitleChoice = false
+        selection.origin = .autoPolicy
         prefsForCurrentItem = enabled
             ? systemCaptionPrefsSnapshot()
             : context.currentWatchDetail.map(serverSubtitlePrefsSnapshot)
@@ -1503,7 +1455,7 @@ final class TrackSelectionCoordinator {
     func applySystemCaptionSettingsChange() {
         subtitleOrderingLanguage = settings
             .subtitleSystemSelectionPreferences.preferredLanguages.first
-        guard !hasExplicitSubtitleChoice else { return }
+        guard selection.origin != .user else { return }
         prefsForCurrentItem = systemCaptionPrefsSnapshot()
         prefsResolvedForCurrentItem = false
         applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
@@ -1567,7 +1519,7 @@ final class TrackSelectionCoordinator {
         // Adopting an authoritative server plan does not convert an automatic
         // system/server policy into a user choice. Manual choices stay latched;
         // automatic choices remain eligible for later policy changes.
-        if hasExplicitSubtitleChoice {
+        if selection.origin == .user {
             prefsForCurrentItem = nil
             prefsResolvedForCurrentItem = true
         }
@@ -1583,14 +1535,7 @@ final class TrackSelectionCoordinator {
         plan: PlaybackV3Plan,
         request: LoadRequest
     ) {
-        // The V3 plan is authoritative for the tracks actually rendered.
-        // Apply it before the new source publishes a track list so container
-        // defaults and the post-open Auto resolver cannot drift away from the
-        // selection the server will preserve through replans and renewals.
-        let intent = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: request)
-        pendingAudioFfIndex = intent.audioIndex
-        pendingSubtitleFfIndex = intent.embeddedSubtitleIndex
-        pendingSidecarSubtitleTrackId = intent.sidecarSubtitleTrackId
+        selection.armAdoptedProtocolV3Intent(plan: plan, request: request)
     }
 
     /// Re-establish the subtitle selection the caller snapshotted before the
@@ -1602,21 +1547,23 @@ final class TrackSelectionCoordinator {
         snapshot: Int64?,
         prepared: PreparedPlayback
     ) {
-        switch PlayerViewModel.protocolV3SidecarRestoreIntent(
+        switch SubtitleSelection.sidecarRestore(
             snapshot: snapshot,
             selectedSubtitleIndex: prepared.protocolV3?.plan.selectedTracks.subtitle?.index,
             subtitleMode: prepared.protocolV3?.plan.subtitle.mode
         ) {
-        case .renderLocally(let trackId):
-            pendingSidecarSubtitleTrackId = trackId
-            pendingServerRenderedSubtitleTrackId = nil
+        case .sidecar(let trackId):
+            selection.primary = selection.primary
+                .settingSidecar(trackId: trackId)
+                .settingServerRendered(trackId: nil)
         case .serverRendered(let trackId):
-            pendingSidecarSubtitleTrackId = nil
-            pendingServerRenderedSubtitleTrackId = trackId
-        case nil:
+            selection.primary = selection.primary
+                .settingSidecar(trackId: nil)
+                .settingServerRendered(trackId: trackId)
+        default:
             // `armAdoptedProtocolV3TrackIntent` already carries the
             // replacement plan's authoritative local selection.
-            pendingServerRenderedSubtitleTrackId = nil
+            selection.primary = selection.primary.settingServerRendered(trackId: nil)
         }
     }
 
@@ -1635,7 +1582,7 @@ final class TrackSelectionCoordinator {
             ? settings.subtitleSystemSelectionPreferences.preferredLanguages.first
             : watchDetail.effectiveSubtitleLanguage
 
-        if !hasExplicitSubtitleChoice {
+        if selection.origin != .user {
             prefsForCurrentItem = settings.subtitleMatchesSystemAppearance
                 ? systemCaptionPrefsSnapshot()
                 : serverSubtitlePrefsSnapshot(watchDetail)
@@ -1660,9 +1607,11 @@ final class TrackSelectionCoordinator {
             // the backend rebuild (ids aren't stable), and after a switch to
             // transcode the same stream may resurface as a sidecar instead, so
             // it restores by fuzzy attribute match.
-            pendingRecoveredSubtitleSelection = restart.recoveredEmbeddedSubtitleSelection
-            hasExplicitSubtitleChoice = restart.hasExplicitSubtitleChoice
-            pendingRecoveredSecondarySubtitleId = restart.recoveredSecondarySubtitleId
+            selection.primary = selection.primary
+                .settingRecovered(restart.recoveredEmbeddedSubtitleSelection)
+            selection.origin = restart.selectionOrigin == .user ? .user : .recovered
+            selection.secondary = restart.recoveredSecondarySubtitleId
+                .map { .sidecar(trackId: $0) } ?? .unset
         }
     }
 
@@ -1689,17 +1638,21 @@ final class TrackSelectionCoordinator {
         selectedSubtitleId = nil
         selectedSecondarySubtitleId = nil
         knownExternalSubtitles = []
-        pendingRecoveredAudioSelection = nil
-        pendingRecoveredSubtitleSelection = nil
-        pendingRecoveredSecondarySubtitleId = nil
-        pendingServerRenderedSubtitleTrackId = nil
-        pendingAudioFfIndex = preferredAudioTrackIndex
-        pendingSubtitleFfIndex = preferredSubtitleTrackIndex
-        pendingSidecarSubtitleTrackId = preferredSidecarSubtitleTrackId
-        hasExplicitSubtitleChoice =
+        // A whole-value assignment: every rung this load was not asked to
+        // restore (the three recovery rungs and the server-rendered rung) is
+        // dropped by construction.
+        let isExplicitChoice =
             preferredSubtitleTrackIndex != nil
             || preferredSidecarSubtitleTrackId != nil
             || preferredProtocolV3SubtitleIndex != nil
+        selection = TrackSelection(
+            audio: AudioSelection.unset.settingPlanIndex(preferredAudioTrackIndex),
+            primary: SubtitleSelection.unset
+                .settingEmbedded(ffIndex: preferredSubtitleTrackIndex)
+                .settingSidecar(trackId: preferredSidecarSubtitleTrackId),
+            secondary: .unset,
+            origin: isExplicitChoice ? .user : .autoPolicy
+        )
         prefsForCurrentItem = nil
         prefsResolvedForCurrentItem = false
     }
@@ -1710,10 +1663,11 @@ final class TrackSelectionCoordinator {
         knownExternalSubtitles = []
         subtitleAI.reset()
         pendingLiveSubtitleCloseTrackId = nil
-        pendingRecoveredAudioSelection = nil
-        pendingRecoveredSubtitleSelection = nil
-        pendingRecoveredSecondarySubtitleId = nil
-        pendingServerRenderedSubtitleTrackId = nil
+        selection.audio = selection.audio.settingRecovered(nil)
+        selection.primary = selection.primary
+            .settingRecovered(nil)
+            .settingServerRendered(trackId: nil)
+        selection.secondary = .unset
     }
 
     // MARK: - Route-recovery snapshot
@@ -1726,7 +1680,7 @@ final class TrackSelectionCoordinator {
         let audioSelection: TrackSelectionSnapshot?
         let subtitleSelection: TrackSelectionSnapshot?
         let secondarySubtitleId: Int64?
-        let hasExplicitSubtitleChoice: Bool
+        let origin: SelectionOrigin
     }
 
     func snapshotForRecovery() -> RecoverySnapshot {
@@ -1738,7 +1692,7 @@ final class TrackSelectionCoordinator {
                 .map(TrackSelectionSnapshot.init),
             subtitleSelection: embeddedSubtitleSelectionSnapshot(),
             secondarySubtitleId: selectedSecondarySubtitleId,
-            hasExplicitSubtitleChoice: hasExplicitSubtitleChoice
+            origin: selection.origin
         )
     }
 
@@ -1746,10 +1700,11 @@ final class TrackSelectionCoordinator {
         prefsForCurrentItem = snapshot.prefs
         pendingExternalSubtitles = snapshot.externalSubtitles
         knownExternalSubtitles = snapshot.externalSubtitles
-        pendingRecoveredAudioSelection = snapshot.audioSelection
-        pendingRecoveredSubtitleSelection = snapshot.subtitleSelection
-        pendingRecoveredSecondarySubtitleId = snapshot.secondarySubtitleId
-        hasExplicitSubtitleChoice = snapshot.hasExplicitSubtitleChoice
+        selection.audio = selection.audio.settingRecovered(snapshot.audioSelection)
+        selection.primary = selection.primary.settingRecovered(snapshot.subtitleSelection)
+        selection.secondary = snapshot.secondarySubtitleId
+            .map { .sidecar(trackId: $0) } ?? .unset
+        selection.origin = snapshot.origin == .user ? .user : .recovered
     }
 
     /// Attribute snapshot of the current embedded subtitle selection, for fuzzy

@@ -1044,42 +1044,67 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
     }
 
+    /// Rewritten in wave 4 against `SubtitleSelection` (it pinned
+    /// `PlayerViewModel.ProtocolV3SidecarRestoreIntent`, whose two cases the
+    /// selection model's own `.sidecar`/`.serverRendered` replaced). Same
+    /// truth table, same index space.
     func testV3ReplanRestoresServerRenderedSubtitleAsDisplayOnlySelection() {
         let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
 
         XCTAssertEqual(
-            PlayerViewModel.protocolV3SidecarRestoreIntent(
+            SubtitleSelection.sidecarRestore(
                 snapshot: sidecarId,
                 selectedSubtitleIndex: 3,
                 subtitleMode: "render"
             ),
-            .renderLocally(sidecarId)
+            .sidecar(trackId: sidecarId)
         )
         XCTAssertEqual(
-            PlayerViewModel.protocolV3SidecarRestoreIntent(
+            SubtitleSelection.sidecarRestore(
                 snapshot: sidecarId,
                 selectedSubtitleIndex: 3,
                 subtitleMode: "burn_in"
             ),
-            .serverRendered(sidecarId)
+            .serverRendered(trackId: sidecarId)
         )
-        XCTAssertNil(PlayerViewModel.protocolV3SidecarRestoreIntent(
-            snapshot: sidecarId,
-            selectedSubtitleIndex: 3,
-            subtitleMode: "off"
-        ))
-        XCTAssertNil(PlayerViewModel.protocolV3SidecarRestoreIntent(
-            snapshot: sidecarId,
-            selectedSubtitleIndex: 4,
-            subtitleMode: "burn_in"
-        ))
-        XCTAssertNil(PlayerViewModel.protocolV3SidecarRestoreIntent(
-            snapshot: sidecarId,
-            selectedSubtitleIndex: 4,
-            subtitleMode: "render"
-        ))
+        XCTAssertEqual(
+            SubtitleSelection.sidecarRestore(
+                snapshot: sidecarId,
+                selectedSubtitleIndex: 3,
+                subtitleMode: "off"
+            ),
+            .unset
+        )
+        XCTAssertEqual(
+            SubtitleSelection.sidecarRestore(
+                snapshot: sidecarId,
+                selectedSubtitleIndex: 4,
+                subtitleMode: "burn_in"
+            ),
+            .unset
+        )
+        XCTAssertEqual(
+            SubtitleSelection.sidecarRestore(
+                snapshot: sidecarId,
+                selectedSubtitleIndex: 4,
+                subtitleMode: "render"
+            ),
+            .unset
+        )
+        // An embedded or AI-live snapshot is never restored through this path.
+        XCTAssertEqual(
+            SubtitleSelection.sidecarRestore(
+                snapshot: SubtitleTrackIdSpace.makeAVPlayerEmbeddedTrackId(streamIndex: 3),
+                selectedSubtitleIndex: 3,
+                subtitleMode: "render"
+            ),
+            .unset
+        )
     }
 
+    /// Rewritten in wave 4 against `TrackSelection` (it pinned
+    /// `PlayerViewModel.protocolV3PendingTrackIntent`, which wrote three of the
+    /// eight `pending*` fields). Same plan, same adopted request, same intent.
     func testV3AudioIntentOverridesBackendDefaultAfterReplan() {
         let version = makeVersion(
             container: "mkv",
@@ -1104,15 +1129,26 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             activeQualityId: "original"
         )
 
-        let intent = PlayerViewModel.protocolV3PendingTrackIntent(
+        var selection = TrackSelection()
+        selection.armAdoptedProtocolV3Intent(
             plan: makePlan(selectedAudioIndex: 1),
             request: adopted
         )
 
         XCTAssertEqual(adopted.preferredAudioTrackIndex, 1)
-        XCTAssertEqual(intent.audioIndex, 1)
-        XCTAssertEqual(intent.embeddedSubtitleIndex, -1)
-        XCTAssertNil(intent.sidecarSubtitleTrackId)
+        XCTAssertEqual(selection.audio, .planIndex(1))
+        // A plan that does not render subtitles locally arms explicit "Off"
+        // (the legacy `-1` sentinel) and no sidecar.
+        XCTAssertEqual(selection.primary, .off)
+        XCTAssertNil(selection.primary.sidecarTrackId)
+        // Adopting a plan is not a user choice — and never demotes one.
+        XCTAssertEqual(selection.origin, .serverPlan)
+        var latched = TrackSelection(audio: .unset, primary: .unset, secondary: .unset, origin: .user)
+        latched.armAdoptedProtocolV3Intent(
+            plan: makePlan(selectedAudioIndex: 1),
+            request: adopted
+        )
+        XCTAssertEqual(latched.origin, .user)
     }
 
     // `testStaleStreamGenerationCannotConsumePendingTrackIntent` pinned
@@ -1177,6 +1213,10 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
+    /// Rewritten in wave 4 against `SubtitleSelection`: the filter's
+    /// "which subtitle did the plan select, and in whose index space" input is
+    /// now the selection model's `planned(...)` value rather than a loose
+    /// `(index, mode)` pair.
     func testV3RouteSubtitleFilteringRetainsOnlySelectedEmbeddedSidecar() {
         let external = makeSubtitleUrl(index: 3, source: "external")
         let selectedEmbedded = makeSubtitleUrl(index: 9, source: "embedded")
@@ -1184,31 +1224,37 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let urls = [external, selectedEmbedded, redundantEmbedded]
 
         XCTAssertEqual(
-            PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: true,
-                selectedSubtitleIndex: 9,
-                subtitleMode: "render"
+                planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "render")
             ).map(\.index),
             [3, 9]
         )
         XCTAssertEqual(
-            PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: true,
-                selectedSubtitleIndex: 9,
-                subtitleMode: "burn_in"
+                planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "burn_in")
             ).map(\.index),
             [3]
         )
         XCTAssertEqual(
-            PlayerViewModel.protocolV3SubtitleUrlsForCurrentRoute(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: false,
-                selectedSubtitleIndex: 9,
-                subtitleMode: "render"
+                planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "render")
             ),
             urls
+        )
+        // A plan with no subtitle selected keeps nothing embedded.
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: true,
+                planned: .planned(selectedSubtitleIndex: nil, subtitleMode: "render")
+            ).map(\.index),
+            [3]
         )
     }
 

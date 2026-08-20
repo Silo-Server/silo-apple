@@ -84,7 +84,7 @@ struct ApplePlaybackPlannerInput {
     let streamRequest: StreamRequest
     let routeRequirements: PlaybackRouteRequirements
     let selectedAudioTrackId: Int64?
-    let pendingAudioFfIndex: Int?
+    let planAudioSelectionIndex: Int?
     let preferredAudioTrackIndex: Int?
     let selectedPrimarySubtitleTrackId: Int64?
     let selectedSecondarySubtitleTrackId: Int64?
@@ -173,7 +173,7 @@ struct ApplePlaybackRoutePlanner {
                 nativeAssessment: directAssessment,
                 sourceMetadata: sourceMetadata,
                 selectedAudioTrackId: input.selectedAudioTrackId,
-                pendingAudioFfIndex: input.pendingAudioFfIndex,
+                planAudioSelectionIndex: input.planAudioSelectionIndex,
                 preferredAudioTrackIndex: input.preferredAudioTrackIndex,
                 selectedPrimarySubtitleTrackId: input.selectedPrimarySubtitleTrackId,
                 selectedSecondarySubtitleTrackId: input.selectedSecondarySubtitleTrackId
@@ -186,7 +186,7 @@ struct ApplePlaybackRoutePlanner {
                     for: selectedVersion,
                     selectedAudioTrackIndex: session.audioTrackIndex,
                     selectedAudioTrackId: input.selectedAudioTrackId,
-                    pendingAudioFfIndex: input.pendingAudioFfIndex,
+                    planAudioSelectionIndex: input.planAudioSelectionIndex,
                     preferredAudioTrackIndex: input.preferredAudioTrackIndex,
                     streamRequest: input.streamRequest,
                     videoMode: videoMode,
@@ -332,7 +332,7 @@ struct ApplePlaybackRoutePlanner {
         for version: FileVersion,
         selectedAudioTrackIndex: Int?,
         selectedAudioTrackId: Int64?,
-        pendingAudioFfIndex: Int?,
+        planAudioSelectionIndex: Int?,
         preferredAudioTrackIndex: Int?,
         streamRequest: StreamRequest,
         videoMode: LoopbackSessionSpec.VideoMode,
@@ -342,14 +342,14 @@ struct ApplePlaybackRoutePlanner {
         let tracks = normalizedLoopbackAudioTracks(
             for: version,
             selectedAudioTrackId: selectedAudioTrackId,
-            pendingAudioFfIndex: pendingAudioFfIndex,
+            planAudioSelectionIndex: planAudioSelectionIndex,
             preferredAudioTrackIndex: preferredAudioTrackIndex
         )
         let selectedTrack = tracks.first(where: { $0.srcId == selectedAudioTrackIndex })
             ?? resolveLoopbackSelectedAudioTrack(
                 from: tracks,
                 selectedAudioTrackId: selectedAudioTrackId,
-                pendingAudioFfIndex: pendingAudioFfIndex,
+                planAudioSelectionIndex: planAudioSelectionIndex,
                 preferredAudioTrackIndex: preferredAudioTrackIndex
             )
         let selectedAudio: LoopbackSessionSpec.SelectedAudio
@@ -582,7 +582,7 @@ extension ApplePlaybackRoutePlanner {
         nativeAssessment: NativeDirectAssessment,
         sourceMetadata: PlaybackSourceMetadata,
         selectedAudioTrackId: Int64?,
-        pendingAudioFfIndex: Int?,
+        planAudioSelectionIndex: Int?,
         preferredAudioTrackIndex: Int?,
         selectedPrimarySubtitleTrackId: Int64?,
         selectedSecondarySubtitleTrackId: Int64?
@@ -673,7 +673,7 @@ extension ApplePlaybackRoutePlanner {
         let audioMode = normalizedLoopbackAudioTracks(
             for: selectedVersion,
             selectedAudioTrackId: selectedAudioTrackId,
-            pendingAudioFfIndex: pendingAudioFfIndex,
+            planAudioSelectionIndex: planAudioSelectionIndex,
             preferredAudioTrackIndex: preferredAudioTrackIndex
         ).first(where: { $0.isSelected }).map(loopbackAudioOutputMode)
         if audioMode == .transcodeAAC || audioMode == .transcodeAC3 || audioMode == .transcodeEC3 {
@@ -1011,7 +1011,7 @@ extension ApplePlaybackRoutePlanner {
     static func normalizedLoopbackAudioTracks(
         for version: FileVersion,
         selectedAudioTrackId: Int64?,
-        pendingAudioFfIndex: Int?,
+        planAudioSelectionIndex: Int?,
         preferredAudioTrackIndex: Int?
     ) -> [PlayerTrack] {
         let sourceTracks = makeLoopbackAudioTracks(for: version)
@@ -1019,7 +1019,7 @@ extension ApplePlaybackRoutePlanner {
         let selectedFfIndex = resolveLoopbackSelectedAudioTrack(
             from: sourceTracks,
             selectedAudioTrackId: selectedAudioTrackId,
-            pendingAudioFfIndex: pendingAudioFfIndex,
+            planAudioSelectionIndex: planAudioSelectionIndex,
             preferredAudioTrackIndex: preferredAudioTrackIndex
         )?.ffIndex
         return sourceTracks.map { $0.selecting($0.ffIndex == selectedFfIndex) }
@@ -1028,15 +1028,15 @@ extension ApplePlaybackRoutePlanner {
     static func resolveLoopbackSelectedAudioTrack(
         from tracks: [PlayerTrack],
         selectedAudioTrackId: Int64?,
-        pendingAudioFfIndex: Int?,
+        planAudioSelectionIndex: Int?,
         preferredAudioTrackIndex: Int?
     ) -> PlayerTrack? {
         if let selectedAudioTrackId,
            let track = tracks.first(where: { $0.trackId == selectedAudioTrackId }) {
             return track
         }
-        if let pendingAudioFfIndex,
-           let track = tracks.first(where: { audioSelectionIndex(for: $0) == pendingAudioFfIndex }) {
+        if let planAudioSelectionIndex,
+           let track = tracks.first(where: { audioSelectionIndex(for: $0) == planAudioSelectionIndex }) {
             return track
         }
         if let preferredAudioTrackIndex,
