@@ -1143,21 +1143,21 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(nudge.1, [.runRecovery(.nudgeStartup, loadID)])
         XCTAssertEqual(playing(nudge.0)?.sub, .steady)
 
-        let reanchor = run(.reanchor(atMediaSeconds: 120, reason: "vod_stall_nudge"))
+        let reanchor = run(.reanchor(atMediaSeconds: 120, cause: .vodStallNudge))
         XCTAssertEqual(
             reanchor.1,
-            [.runRecovery(.reanchor(atMediaSeconds: 120, reason: "vod_stall_nudge"), loadID)]
+            [.runRecovery(.reanchor(atMediaSeconds: 120, cause: .vodStallNudge), loadID)]
         )
         XCTAssertEqual(playing(reanchor.0)?.sub, .steady)
 
-        let reload = run(.reloadItem(atMediaSeconds: 120, reason: "playhead_watchdog"))
+        let reload = run(.reloadItem(atMediaSeconds: 120, cause: .vodStall))
         XCTAssertEqual(
             reload.1,
-            [.runRecovery(.reloadItem(atMediaSeconds: 120, reason: "playhead_watchdog"), loadID)]
+            [.runRecovery(.reloadItem(atMediaSeconds: 120, cause: .vodStall), loadID)]
         )
         XCTAssertEqual(playing(reload.0)?.sub, .recovering(.reloadingItem))
 
-        let rebuild = run(.rebuildLocalSession(atMediaSeconds: 120, reason: "loopback_starvation"))
+        let rebuild = run(.rebuildLocalSession(atMediaSeconds: 120, cause: .starvation))
         XCTAssertEqual(playing(rebuild.0)?.sub, .recovering(.rebuildingLocalSession))
 
         // `attemptProtocolV3Replan` PVM:1614-1616: heartbeat off, overlay on,
@@ -1250,7 +1250,6 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(playing(startupReload.0)?.sub, .recovering(.reloadingItem))
 
         for action: RecoveryAction in [
-            .restartProducer(atSegmentIndex: 12, authoritative: true),
             .deferUntilPlay(mediaSeconds: 120),
             .resumePlayback,
         ] {
@@ -1304,7 +1303,7 @@ final class PlaybackReducerTests: XCTestCase {
         // Exit hands the kick back to the engine session.
         let (ended, endedEffects) = PlaybackReducer.reduce(
             state,
-            event: .recovery(.endOutageRideThrough(kick: true), loadID),
+            event: .recovery(.endOutageRideThrough, loadID),
             now: now
         )
         XCTAssertEqual(playing(ended)?.sub, .steady)
@@ -1313,7 +1312,7 @@ final class PlaybackReducerTests: XCTestCase {
         // and the cancel is what clears that latch (`endOutageRideThrough` read
         // it before `clearSourceOutageRideThroughState()`).
         XCTAssertEqual(endedEffects, [
-            .runRecovery(.endOutageRideThrough(kick: true), loadID),
+            .runRecovery(.endOutageRideThrough, loadID),
             .cancelTimer(.sourceOutageRideThrough),
         ])
 
@@ -1323,12 +1322,12 @@ final class PlaybackReducerTests: XCTestCase {
         // session would adopt its `origin_outage` hold with no releaser left.
         let (steadyEnded, steadyEffects) = PlaybackReducer.reduce(
             makePlaying(loadID: loadID),
-            event: .recovery(.endOutageRideThrough(kick: true), loadID),
+            event: .recovery(.endOutageRideThrough, loadID),
             now: now
         )
         XCTAssertEqual(playing(steadyEnded)?.sub, .steady)
         XCTAssertEqual(steadyEffects, [
-            .runRecovery(.endOutageRideThrough(kick: true), loadID),
+            .runRecovery(.endOutageRideThrough, loadID),
             .cancelTimer(.sourceOutageRideThrough),
         ])
     }

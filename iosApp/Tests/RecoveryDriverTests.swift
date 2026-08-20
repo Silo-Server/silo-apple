@@ -1,7 +1,7 @@
 import XCTest
 @testable import Silo
 
-/// Wave 2b — `RecoveryDriver` is the only runtime caller of
+/// `RecoveryDriver` is the only runtime caller of
 /// `RecoveryPolicy.decide`, so what it owes is narrow and testable: it threads
 /// the context between observations, mirrors the live inputs the pure policy
 /// cannot read for itself, and holds the suspension latch the retired
@@ -72,7 +72,7 @@ final class RecoveryDriverTests: XCTestCase {
         XCTAssertTrue(driver.context.suspendedReasons.isEmpty)
         XCTAssertEqual(
             driver.observe(.playbackStalled),
-            .reanchor(atMediaSeconds: 100, reason: "stall")
+            .reanchor(atMediaSeconds: 100, cause: .stall)
         )
     }
 
@@ -115,12 +115,12 @@ final class RecoveryDriverTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(actions[0], .reanchor(atMediaSeconds: 100, reason: "vod_stall_nudge"))
-        XCTAssertEqual(actions[1], .reloadItem(atMediaSeconds: 100, reason: "vod_stall"))
-        XCTAssertEqual(actions[2], .reloadItem(atMediaSeconds: 100, reason: "vod_stall"))
+        XCTAssertEqual(actions[0], .reanchor(atMediaSeconds: 100, cause: .vodStallNudge))
+        XCTAssertEqual(actions[1], .reloadItem(atMediaSeconds: 100, cause: .vodStall))
+        XCTAssertEqual(actions[2], .reloadItem(atMediaSeconds: 100, cause: .vodStall))
         XCTAssertEqual(
             actions[3],
-            .rebuildLocalSession(atMediaSeconds: 100, reason: "playhead_watchdog")
+            .rebuildLocalSession(atMediaSeconds: 100, cause: .playheadWatchdogExhausted)
         )
         XCTAssertEqual(driver.context.playhead.reanchorCount, 0)
         XCTAssertEqual(driver.context.rebuildBudget.used, 1)
@@ -136,7 +136,7 @@ final class RecoveryDriverTests: XCTestCase {
         driver.note(playheadSample: sample(position: 100, bufferedAhead: 0, generatedAhead: 40))
         XCTAssertEqual(
             driver.observe(.playbackStalled),
-            .reanchor(atMediaSeconds: 130, reason: "stall")
+            .reanchor(atMediaSeconds: 130, cause: .stall)
         )
     }
 
@@ -168,7 +168,7 @@ final class RecoveryDriverTests: XCTestCase {
 
     // MARK: - The startup ladder and its `-15628` direct entry
 
-    /// Wave-1B obligation (a): the item error log's `-15628` loader-poison
+    /// The item error log's `-15628` loader-poison
     /// signature drives the *startup* ladder directly, and it must still be
     /// able to do so after the 1 Hz timer was cancelled — `status.readyToPlay`
     /// cancels the tick while `didFireFileLoaded` is still false, and the

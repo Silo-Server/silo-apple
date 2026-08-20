@@ -91,6 +91,10 @@ final class FakePlaybackBackend: PlaybackBackend {
     var recoveryPlayheadSample: PlayheadSample? { recoveryPlayheadSampleValue }
 
     var onRecoveryObservation: ((RecoveryObservation) -> Void)?
+    var onEngineReloaded: (() -> Void)?
+    var onStartupLadderArmed: ((UInt64) -> Void)?
+    var suspendedRecoveryReasons: Set<String> = []
+    var recoveryStationarySecondsProvider: (() -> Double)?
 
     /// Every action the system under test performed, in order.
     private(set) var performedRecoveryActions: [RecoveryAction] = []

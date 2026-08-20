@@ -264,8 +264,8 @@ final class PlaybackEngineSessionTests: XCTestCase {
         XCTAssertEqual(
             backend.performedRecoveryActions,
             [
-                .endOutageRideThrough(kick: true),
-                .reanchor(atMediaSeconds: 100, reason: "stall")
+                .endOutageRideThrough,
+                .reanchor(atMediaSeconds: 100, cause: .stall)
             ]
         )
         _ = await drain(second)
@@ -331,8 +331,8 @@ final class PlaybackEngineSessionTests: XCTestCase {
     /// downstream (the reducer's playhead, the seek targets it is compared
     /// against, the position `Effect.reportProgress` puts on the wire) is movie
     /// time. The view model used to convert at its callback
-    /// (`seconds + playbackTimelineOffset`, base PVM:998); the session does it
-    /// now, so there is exactly one conversion site.
+    /// (`seconds + playbackTimelineOffset`); the session does it now, so there
+    /// is exactly one conversion site.
     func testTimeEventsAreEmittedOnTheMovieTimeAxis() async {
         let backend = FakePlaybackBackend()
         let session = makeSession(plan: localHLSPlan(), backend: backend)
@@ -419,7 +419,7 @@ final class PlaybackEngineSessionTests: XCTestCase {
 
         XCTAssertEqual(
             backend.performedRecoveryActions,
-            [.reanchor(atMediaSeconds: 100, reason: "stall")]
+            [.reanchor(atMediaSeconds: 100, cause: .stall)]
         )
         XCTAssertFalse(session.isDisposed)
     }
@@ -483,7 +483,7 @@ final class PlaybackEngineSessionTests: XCTestCase {
     /// Origin-outage entry holds the in-route suppression *synchronously*, so
     /// no rung can act in the window before the shell picks the ride-through
     /// action up off the stream — and re-feeds the runway gate when the player
-    /// was already buffering (wave-1B obligation (c)).
+    /// was already buffering.
     func testOriginOutageEntryHoldsSuppressionAndRefeedsTheRunwayGate() async {
         let backend = FakePlaybackBackend()
         let session = makeSession(plan: localHLSPlan(), backend: backend)
@@ -536,10 +536,10 @@ final class PlaybackEngineSessionTests: XCTestCase {
         XCTAssertTrue(session.driver.context.suspendedReasons.isEmpty)
         XCTAssertEqual(
             backend.performedRecoveryActions,
-            [.endOutageRideThrough(kick: true)]
+            [.endOutageRideThrough]
         )
         let events = await drain(session)
-        XCTAssertTrue(events.contains(.recoveryAction(.endOutageRideThrough(kick: true))))
+        XCTAssertTrue(events.contains(.recoveryAction(.endOutageRideThrough)))
     }
 
     // MARK: - Source proxy ownership

@@ -1,17 +1,17 @@
 //
 //  RecoveryDriver.swift
 //
-//  Stage 2 wave 2b — the ONE runtime caller of `RecoveryPolicy.decide`.
+//  The ONE runtime caller of `RecoveryPolicy.decide`.
 //
-//  Before this wave a recovery decision could be taken in nine places (six
-//  in-route ladders inside `AVPlayerBackend`, `handlePlaybackError`, the
-//  origin-outage ride-through and the two session renewals in
-//  `PlayerViewModel`), coordinated by a two-owner handshake. Wave 1B lifted
-//  every constant and every rung into the pure `RecoveryPolicy`; this class is
-//  the only thing that feeds it. One driver exists per `PlaybackEngineSession`,
-//  i.e. per `LoadID`, which is what makes the context — and therefore every
-//  latch, budget and rolling window that used to live as a mutable field on the
-//  backend or the view model — load-scoped without a generation counter.
+//  A recovery decision used to be taken in nine places (six in-route ladders
+//  inside `AVPlayerBackend`, `handlePlaybackError`, the origin-outage
+//  ride-through and the two session renewals in `PlayerViewModel`), coordinated
+//  by a two-owner handshake. Every constant and every rung is `RecoveryPolicy`'s
+//  now, and this class is the only thing that feeds it. One driver exists per
+//  `PlaybackEngineSession`, i.e. per `LoadID`, which is what makes the context —
+//  and therefore every latch, budget and rolling window that used to live as a
+//  mutable field on the backend or the view model — load-scoped without a
+//  generation counter.
 //
 //  The driver decides nothing. It threads the context, mirrors a handful of
 //  live inputs the policy cannot read for itself (`note…`), and reproduces the
@@ -24,8 +24,8 @@
 import Foundation
 import OSLog
 
-/// Isolation mirrors the code it replaces (and `LocalHLSHost` from wave 2a):
-/// a plain `final class`, because every ladder it absorbed was entered from a
+/// Isolation mirrors the code it replaces (and `LocalHLSHost`): a plain
+/// `final class`, because every ladder it absorbed was entered from a
 /// nonisolated context — the backend's notification observers, its `RunLoop`
 /// timers and the view model, none of which are actor isolated. Every caller
 /// still drives it from the main queue, exactly as the ladders were driven.
@@ -211,7 +211,7 @@ final class RecoveryDriver {
         context.playhead.lastStallRecoveryAt = nil
         context.playhead.lastSample = nil
         context.edge = nil
-        // B:4312-4313 `teardownMediaPipeline`.
+        // `teardownMediaPipeline`.
         context.itemDeath.reset()
         context.itemDeathConfirmation.reset()
     }
@@ -290,20 +290,25 @@ final class RecoveryDriver {
         case .reloadStartupItem:
             cmpLog("[CMP-AVP] startup watchdog stage=reload trigger=\(startupTrigger(for: observation))")
 
-        case let .reanchor(_, reason) where reason == "vod_stall_nudge":
+        case .reanchor(_, .vodStallNudge):
             logPlayheadWatchdogTrigger(observation, before: before, now: now)
 
-        case let .reloadItem(atMediaSeconds, reason):
-            if reason == "vod_stall" {
+        case let .reloadItem(atMediaSeconds, cause):
+            if case .vodStall = cause {
                 logPlayheadWatchdogTrigger(observation, before: before, now: now)
-            } else {
-                logItemDeathReload(observation, reason: reason, atMediaSeconds: atMediaSeconds)
+            } else if case let .itemDeath(trigger, attempt) = cause {
+                logItemDeathReload(
+                    observation,
+                    trigger: trigger,
+                    attempt: attempt,
+                    atMediaSeconds: atMediaSeconds
+                )
             }
 
-        case let .rebuildLocalSession(_, reason):
-            logRebuild(observation, reason: reason, before: before, now: now)
+        case let .rebuildLocalSession(_, cause):
+            logRebuild(observation, cause: cause, before: before, now: now)
 
-        case .reanchor, .restartProducer, .deferUntilPlay, .resumePlayback,
+        case .reanchor, .deferUntilPlay, .resumePlayback,
              .treatAsNaturalEnd, .requestServerReplan, .switchRoute,
              .renewSourceInBackground, .renewSessionFresh, .rideThroughOutage,
              .endOutageRideThrough, .recoverFromServerOutage, .waitForServerReady,
@@ -332,16 +337,10 @@ final class RecoveryDriver {
 
     private func logItemDeathReload(
         _ observation: RecoveryObservation,
-        reason: String,
+        trigger: String,
+        attempt: Int,
         atMediaSeconds: Double
     ) {
-        // `reason` is `item_death_<trigger>_<attempt>` — the two values the
-        // legacy line names, so they are read back out of it rather than
-        // re-derived.
-        let body = reason.dropFirst("item_death_".count)
-        guard let separator = body.lastIndex(of: "_") else { return }
-        let trigger = String(body[body.startIndex..<separator])
-        let attempt = String(body[body.index(after: separator)...])
         let (statusCode, position) = itemDeathEvidenceFields(observation, fallback: atMediaSeconds)
         cmpLog(
             "[CMP-AVP] loopback item-death confirmed; reloading item trigger=\(trigger) status=\(statusCode) attempt=\(attempt) pos=\(position)"
@@ -350,12 +349,12 @@ final class RecoveryDriver {
 
     private func logRebuild(
         _ observation: RecoveryObservation,
-        reason: String,
+        cause: RecoveryAction.Cause,
         before: RecoveryContext,
         now: Date
     ) {
-        switch reason {
-        case "loopback_item_death":
+        switch cause {
+        case .itemDeathRepeated:
             let (statusCode, position) = itemDeathEvidenceFields(observation, fallback: 0)
             let trigger: String
             if case let .itemDeathEvidence(code, _, _, _, _) = observation {
@@ -366,11 +365,11 @@ final class RecoveryDriver {
             cmpLog(
                 "[CMP-AVP] loopback item-death repeated at same position; rebuilding Silo loopback trigger=\(trigger) status=\(statusCode) pos=\(position)"
             )
-        case "loopback_starvation":
+        case .starvation:
             cmpLog(
                 "[CMP-AVP] loopback starvation: playhead frozen \(Int(stationaryFor(before: before, now: now)))s with empty buffer and no segment serves; rebuilding Silo loopback"
             )
-        case "playhead_watchdog":
+        case .playheadWatchdogExhausted:
             guard let sample = context.playhead.lastSample else { return }
             let reanchors = before.playhead.reanchorCount
             let stationary = stationaryFor(before: before, now: now)
@@ -393,7 +392,7 @@ final class RecoveryDriver {
         let attempt = context.playhead.reanchorCount
         let stationary = stationaryFor(before: before, now: now)
         Self.logger.error(
-            "[CMP-AVP] local loopback playhead_watchdog trigger attempt=\(attempt, privacy: .public) pos=\(sample.position, privacy: .public) tc=\(Self.label(for: sample.timeControl), privacy: .public) bufAhead=\(sample.bufferedAhead, privacy: .public) generatedAhead=\(sample.generatedAhead, privacy: .public) stationaryFor=\(stationary, privacy: .public)"
+            "[CMP-AVP] local loopback playhead_watchdog trigger attempt=\(attempt, privacy: .public) pos=\(sample.position, privacy: .public) tc=\(sample.timeControl.rawValue, privacy: .public) bufAhead=\(sample.bufferedAhead, privacy: .public) generatedAhead=\(sample.generatedAhead, privacy: .public) stationaryFor=\(stationary, privacy: .public)"
         )
     }
 
@@ -432,14 +431,5 @@ final class RecoveryDriver {
     private func startupTrigger(for observation: RecoveryObservation) -> String {
         if case .itemDeathEvidence = observation { return "errorLog_-15628" }
         return "fetches_frozen"
-    }
-
-    private static func label(for timeControl: PlayheadSample.TimeControl) -> String {
-        switch timeControl {
-        case .paused: return "paused"
-        case .waiting: return "waiting"
-        case .playing: return "playing"
-        case .unknown: return "unknown"
-        }
     }
 }
