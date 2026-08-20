@@ -113,7 +113,7 @@ Consequences, surfaced honestly in the UI:
 - The cast state echoes the *applied* gain value, which on a passthrough AVPlayer
   route may not correspond to an audible change.
 
-## HDR toggle — removed (wire compatibility retained)
+## HDR toggle — removed (state payload kept, command name dropped)
 
 The remote used to expose an HDR passthrough toggle. It only ever did anything
 on the `PlayerCore` route, which was deleted on 2026-08-16 (see
@@ -122,17 +122,27 @@ negotiated from the stream's own colour signalling by
 [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift),
 so the toggle had nothing to act on.
 
-The wire shape is unchanged so older peers keep decoding:
+The **state** payload is unchanged so older peers keep decoding it; the
+**command name** is gone:
 
-- `SiloCastControlCommand.Name.setHDREnabled` (`set_hdr_enabled`) is still a
-  valid command name, marked *"Deprecated: accepted from older remote peers and
-  ignored."* `PlayerViewModel.applySiloControlCommand(_:)` handles it with an
-  explicit `break` — a **no-op**, not an error — so an older phone does not see
-  a command failure.
-- `SiloCastPlaybackState.hdrEnabled` and `.supportsHDRToggle` remain on the
-  payload and are **always `false`** from current senders
+- `set_hdr_enabled` is **no longer in `SiloControlCommand.Name`** (removed
+  2026-08-20 with its no-op `PlayerViewModel` arm). An envelope carrying it now
+  fails `SiloControlMessage`'s decode, and `FramedJSONSession` treats a decode
+  error as terminal — it tears the session down and drops the pairing rather
+  than ignoring the frame. This is unreachable in practice: every Silo receiver
+  publishes `supportsHDRToggle: false`, and a remote only offers the control
+  when that flag is `true` — the current iOS remote has no HDR control at all,
+  an older shipped one gated its button on `state.supportsHDRToggle`, and the
+  Android remote does the same (`SiloCastRemoteScreen.kt:799`). silo-android's
+  shared module does still carry the `SetHdrEnabled` sender constant
+  (`SiloCastMessage.kt:259`, factory at `:293`) — dead there for the same
+  reason; the matching removal belongs in that repo.
+- `SiloControlPlaybackState.hdrEnabled` and `.supportsHDRToggle` remain on the
+  payload, **non-optional**, and are **always `false`** from current senders
   (`TVControlReceiver` and `PlayerViewModel` both publish `false`), so an
-  updated phone hides the control.
+  updated phone hides the control. Dropping either key would fail an older
+  peer's required-key decode of the whole envelope and drop its pairing, so
+  they stay.
 
 ## Security — known limitation (deferred)
 

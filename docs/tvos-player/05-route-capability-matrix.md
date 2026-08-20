@@ -88,7 +88,8 @@ ever advertise `h264`/`hevc`). Decided once, in
   is negotiated from the stream's own colour signalling by
   [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift).
   `PlayerSettings.setHDREnabled(_:)` survives for settings-wire compatibility
-  only, and the cast command is an explicit no-op.
+  only, and the cast channel no longer accepts a `set_hdr_enabled` command
+  (see [cast-remote.md](cast-remote.md)).
 - `avPlayerNativeDirect` is intentionally narrow. It applies only to direct
   assets whose container, codecs, and embedded subtitle shape all match the
   client-side allowlist.

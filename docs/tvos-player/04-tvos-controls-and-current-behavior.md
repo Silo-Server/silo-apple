@@ -165,9 +165,9 @@ CompatibilityPlayer backend in `f1b1bba`:
   [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift)
   from the stream's own colour signalling, so a user toggle had nothing to act
   on. `PlayerSettings.setHDREnabled(_:)` and the `hdrEnabled` preference still
-  exist for settings-wire compatibility, but no player UI reads them and
-  `PlayerViewModel`'s cast-command handler treats `.setHDREnabled` as an
-  explicit no-op (see [cast-remote.md](cast-remote.md)).
+  exist for settings-wire compatibility, but no player UI reads them, and the
+  cast channel no longer accepts a `set_hdr_enabled` command at all (see
+  [cast-remote.md](cast-remote.md)).
 - **Audio delay.** Never implemented on AVPlayer;
   `ApplePlaybackRouteCapabilities.audioDelay` is `.unsupported` on all four
   capability profiles, so the control had no route to appear on.
@@ -228,8 +228,11 @@ The shell no longer branches on backend identity:
 - verified: `TVPlayerInfoHUD.Tab` is `{info, stats, video, audio, subtitles,
   chapters}`; `VideoPane` exposes Quality / Speed / Aspect / Subtitle delay /
   Auto-play next and nothing else.
-- verified: no HDR toggle exists anywhere in `tvOS/TVPlayerInfoHUD.swift`;
-  `PlayerViewModel`'s `.setHDREnabled` case is a documented no-op.
+- verified: no HDR toggle exists anywhere in `tvOS/TVPlayerInfoHUD.swift`.
+  corrected 2026-08-20: the `.setHDREnabled` cast-command case and its no-op
+  `PlayerViewModel` arm were removed; the name is no longer accepted on the
+  wire (see [cast-remote.md](cast-remote.md)). The unrelated and still-live
+  `PlayerSettings.setHDREnabled(_:)` settings API is untouched.
 - verified: `audioDelay` is `.unsupported` on `avPlayerHLS`,
   `avPlayerNativeDirect`, `siloPlayerLoopback`, and `macAVFoundation`; the only
   surviving surface is the read-only `Audio delay` status row in the macOS
@@ -246,7 +249,8 @@ The shell no longer branches on backend identity:
 - verified (2026-08-20): the tvOS shell is unchanged by the Stage 2
   control-plane extraction. `showControls`, `scheduleHideControls()`,
   `isHUDPresented`, `backendCapabilities` / `withSubtitleControls(_:)`,
-  `routeStatusRows` and the `.setHDREnabled` no-op all still live on
-  `PlayerViewModel` under the same names — what moved behind them is where the
-  values come from (a projected `Presentation`, and `TrackSelectionCoordinator`
-  for the track lists), not what the views read.
+  and `routeStatusRows` all still live on `PlayerViewModel` under the same
+  names — what moved behind them is where the values come from (a projected
+  `Presentation`, and `TrackSelectionCoordinator` for the track lists), not
+  what the views read. (The `.setHDREnabled` cast-command no-op, listed here in
+  an earlier revision, was deleted later the same day.)
