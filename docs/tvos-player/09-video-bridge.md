@@ -13,9 +13,7 @@ Last verified against the code: 2026-08-20
 > codec it was not offered (`capabilities_v3.go` `videoEligibleV3`), so no
 > `original_http` plan could ever name a bridge codec. Offline,
 > `DownloadCaps.current()` reports the same two codecs, so no bridgeable
-> artifact could be downloaded either. See
-> `docs/cleanup/player-review/2026-08-17-architecture-review.md`
-> §3 row 13, §7 Option B, §9 Stage 3.1 and §10 P4.
+> artifact could be downloaded either.
 >
 > The non-copyable codec tail is the server's job again: the planner blocks
 > the silo route with `video_not_copyable` and the source comes back as

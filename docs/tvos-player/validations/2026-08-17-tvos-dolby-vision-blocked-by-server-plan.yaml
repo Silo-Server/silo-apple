@@ -26,7 +26,7 @@ runs:
       - file 223792 (DV P8 HEVC MKV) -> outcome=adaptation_unavailable (terminal)
       - file 741 (DV P5 HEVC MKV) -> outcome=adaptation_unavailable (terminal)
 conclusion:
-  - Dolby Vision loopback rows (review §11 rows 1, 2) cannot be validated until the server planner grants original_http for DV 5/8 sources to a client that advertises them; root cause is being traced in silo-server (see docs/cleanup/player-review follow-ups).
+  - Dolby Vision loopback rows (review §11 rows 1, 2) cannot be validated until the server planner grants original_http for DV 5/8 sources to a client that advertises them; root cause is being traced in silo-server.
   - Additional server-side findings from the same runs: server_remux_progressive is never playable by AVPlayer on tvOS (-12939 every attempt) — a wasted rung; the transcode proxy returned 502 for one HLS remux.
 addendum_2026-08-17_evening:
   - The first dev API replay used mis-keyed deliveries (server_remux_* instead of original_http/progressive/hls), which is why it returned adaptation_unavailable. With correctly keyed deliveries dev reproduces production exactly: DV P8 (223792) and DV P5 (741) -> server_remux_progressive / container_normalization with claims.video.dolby_vision=true (native_profile_supported); HDR10 (223805) -> original_http / validated_original_playback. Same request, same audio-default and subtitle shapes on all three rows.
