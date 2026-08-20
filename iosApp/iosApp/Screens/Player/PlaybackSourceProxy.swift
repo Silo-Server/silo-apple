@@ -270,7 +270,7 @@ final class PlaybackSourceCache {
     func forwardCachedByteCount() -> Int64 {
         lock.lock()
         defer { lock.unlock() }
-        return lastReadEnd == nil ? Int64(cachedBytes) : forwardCachedBytesLocked()
+        return (lastReadPosition ?? lastReadEnd) == nil ? Int64(cachedBytes) : forwardCachedBytesLocked()
     }
 
     /// Bytes consumption must drain between the park (high water) and the
@@ -573,9 +573,14 @@ final class PlaybackSourceCache {
         return min(abs(span.start - playhead), abs(span.end - playhead))
     }
 
+    /// Anchored at the actual recent read position, like `shouldPrefetch` and
+    /// disk eviction: monotonic `lastReadEnd` is pinned near EOF for the whole
+    /// session on the loopback route (the writer harvests the MKV cue index
+    /// from the tail of the file at every start), which made the stats row
+    /// "Downloaded ahead" read 0 s forever.
     private func forwardCachedBytesLocked() -> Int64 {
-        guard let readEnd = lastReadEnd else { return 0 }
-        return forwardCachedBytesLocked(from: readEnd + 1)
+        guard let anchor = lastReadPosition ?? lastReadEnd else { return 0 }
+        return forwardCachedBytesLocked(from: anchor + 1)
     }
 
     private func forwardCachedBytesLocked(from start: Int64) -> Int64 {
