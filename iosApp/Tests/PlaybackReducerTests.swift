@@ -517,6 +517,70 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(presentation.activeQualityId, "4k")
     }
 
+    /// One axis for the playhead, end to end, with a non-zero timeline offset.
+    ///
+    /// A server-remux resume (`playMethod == "remux"` → `avPlayerHLS` +
+    /// `startOfManifest`) publishes a manifest that starts at the resume point,
+    /// so `timelineOffsetSeconds` is non-zero and AVPlayer's own clock restarts
+    /// near zero. The adopted position is movie time (`movieTime(for:)` =
+    /// position + offset, base PVM:2613/3130-3134); the ticks are movie time
+    /// because `PlaybackEngineSession` converts once at the boundary; and the
+    /// wire position `Effect.reportProgress` carries is the same value — which
+    /// is base's `reportProgress(position: currentTime)` (base PVM:5860).
+    /// Mixing the two axes froze the scrubber at the resume point and wrote the
+    /// frozen position to the server every 10 s.
+    func testThePlayheadAndTheProgressReportShareTheMovieTimeAxis() throws {
+        let loadID = LoadID()
+        let identity = makeIdentity()
+        let plan = makePlan(engine: .avPlayerHLS)
+        let (adopted, _) = PlaybackReducer.reduce(
+            makePreparing(loadID: loadID, identity: identity, phase: .resolvingSession, plan: plan),
+            event: .session(
+                .prepared(
+                    try makePreparedRef(position: 60, timelineOffsetSeconds: 540),
+                    plan,
+                    for: loadID
+                ),
+                identity
+            ),
+            now: now
+        )
+        XCTAssertEqual(
+            preparing(adopted)?.transport.positionSeconds,
+            600,
+            "the adopt is on the movie axis"
+        )
+
+        let (started, _) = PlaybackReducer.reduce(
+            adopted,
+            event: .engine(.fileLoaded(reason: "status_ready"), loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(started)?.transport.positionSeconds, 600)
+
+        // The session already added the offset, so the tick is 612 on the
+        // movie axis (AVPlayer would have reported 72 on its own clock). A
+        // player-axis value would be *behind* the adopted 600 and
+        // `isUnexpectedBackwardPlaybackTime` would reject every tick.
+        let (ticked, tickEffects) = PlaybackReducer.reduce(
+            started,
+            event: .engine(.time(seconds: 612), loadID),
+            now: now
+        )
+        XCTAssertEqual(playing(ticked)?.transport.positionSeconds, 612, "the tick was accepted")
+        XCTAssertTrue(tickEffects.isEmpty)
+
+        let (_, progressEffects) = PlaybackReducer.reduce(
+            ticked,
+            event: .timer(.progress, loadID),
+            now: now
+        )
+        XCTAssertEqual(progressEffects, [
+            .reportProgress(identity, position: 612, isPaused: false),
+            .schedule(.progress, after: .seconds(10), loadID),
+        ])
+    }
+
     /// `adoptPreparedPlayback`'s per-origin rule: a fresh load and a V3 replan
     /// report plan execution, the in-place transcode restart deliberately
     /// never has (PVM:2696-2715).
@@ -1463,6 +1527,27 @@ final class PlaybackReducerTests: XCTestCase {
         ])
     }
 
+    /// The ride-through continuation that lands while a replan is negotiating
+    /// the replacement stream re-arms the poll **and** runs the shell's half:
+    /// an outage ENTRY (`probeAfter == .zero`) detected between `.loadEngine`
+    /// and the first `fileLoaded` would otherwise skip the
+    /// `[CMP-OUTAGE] ride-through started` breadcrumb, the once-per-outage
+    /// notice reset and the out-of-runway notice re-feed.
+    func testTheRideThroughEntryRunsTheShellHalfFromALoadInFlight() {
+        let loadID = LoadID()
+        let state = makePreparing(loadID: loadID)
+        let (next, effects) = PlaybackReducer.reduce(
+            state,
+            event: .recovery(.rideThroughOutage(probeAfter: .zero), loadID),
+            now: now
+        )
+        XCTAssertEqual(next, state, "a state that is not `.playing` is left alone")
+        XCTAssertEqual(effects, [
+            .runRecovery(.rideThroughOutage(probeAfter: .zero), loadID),
+            .pollServerHealth(.sourceOutageRideThrough, after: .zero, loadID),
+        ])
+    }
+
     /// The visible server-outage recovery drops the engine, probes immediately
     /// (`waitForServerReady` PVM:4493-4504 probes before its first sleep) and
     /// shows the reconnecting projection while it waits.
@@ -1581,6 +1666,93 @@ final class PlaybackReducerTests: XCTestCase {
                 identity
             )
         )
+    }
+
+    /// A startup failure — one that arrives before the load's first
+    /// `fileLoaded` — still reaches the ladder.
+    ///
+    /// `AVPlayerBackend` fires `onFileLoaded` only from the initial-display
+    /// gate (AVPlayerBackend:3904), so an engine failure during startup is
+    /// reduced while the state is `.preparing(.startingEngine)` — with
+    /// `hasProtocolV3` already set by the adopt, which is what makes
+    /// `RecoveryPolicy.decideEngineFailed` rung 4 answer `.requestServerReplan`.
+    /// Base `handlePlaybackError` had no load-state gate (base PVM:1214-1231:
+    /// only `hasReachedEndOfFile` and `engineSession != nil`), so the rung ran.
+    /// Dropping it strands the player on the loading overlay for ever.
+    func testAStartupEngineFailureStillReachesTheMidLadderRungs() {
+        let loadID = LoadID()
+        let identity = makeIdentity()
+        let (reported, reportedEffects) = PlaybackReducer.reduce(
+            makePreparing(loadID: loadID, identity: identity),
+            event: .engine(.failed(PlaybackFailure(legacyMessage: "boom")), loadID),
+            now: now
+        )
+        XCTAssertTrue(reportedEffects.isEmpty)
+        XCTAssertEqual(
+            preparing(reported)?.lastFailureMessage,
+            "boom",
+            "the text the fallback rung replans with is recorded before the first frame too"
+        )
+
+        let (replanning, effects) = PlaybackReducer.reduce(
+            reported,
+            event: .recovery(
+                .requestServerReplan(classification: "player_error", message: "boom"),
+                loadID
+            ),
+            now: now
+        )
+        let intent = ReplanIntent(
+            kind: .serverReplan,
+            position: 0,
+            classification: "player_error",
+            message: "boom"
+        )
+        XCTAssertEqual(effects, [
+            .cancelTimer(.progress),
+            .publish(PlaybackReducer.presentation(for: replanning, isLoading: true, bufferingCause: "replan")),
+            .replan(intent, identity),
+        ])
+        guard case .replanning(intent) = playing(replanning)?.sub else {
+            return XCTFail("the startup failure has to own the replan slot")
+        }
+        // And the answer lands: `.replanned` is `.playing`-scoped, which is the
+        // reason the promotion happens at the rung rather than at the answer.
+        XCTAssertTrue(PlaybackReducer.holdsLoadingOverlay(replanning))
+    }
+
+    /// The offline/legacy half of the same rule: rungs 9 and 10 are the route
+    /// fallbacks, and a native-direct startup failure is exactly the case they
+    /// exist for (§6 device row 14).
+    func testAStartupEngineFailureCanStillFallBackOntoAnotherRoute() {
+        let loadID = LoadID()
+        let (next, effects) = PlaybackReducer.reduce(
+            makePreparing(loadID: loadID, hasProtocolV3: false),
+            event: .recovery(.switchRoute(.loopbackFallback), loadID),
+            now: now
+        )
+        XCTAssertEqual(effects, [
+            .cancelTimer(.progress),
+            .runRecovery(.switchRoute(.loopbackFallback), loadID),
+        ])
+        XCTAssertEqual(playing(next)?.sub, .recovering(.switchingRoute))
+    }
+
+    /// A load that has not resolved its session yet has no engine, so nothing
+    /// can have failed for it — the promotion is scoped to `.startingEngine`.
+    func testARecoveryActionBeforeTheEngineExistsIsStillDropped() {
+        let loadID = LoadID()
+        let state = makePreparing(loadID: loadID, phase: .resolvingSession)
+        let (next, effects) = PlaybackReducer.reduce(
+            state,
+            event: .recovery(
+                .requestServerReplan(classification: "player_error", message: "boom"),
+                loadID
+            ),
+            now: now
+        )
+        XCTAssertEqual(next, state)
+        XCTAssertTrue(effects.isEmpty)
     }
 
     /// The rung's console trace names a replan that was actually minted:
@@ -2856,6 +3028,35 @@ final class PlaybackReducerTests: XCTestCase {
         }
     }
 
+    /// The tvOS suspend keeps the source proxy running (`.retainProxy`) and the
+    /// **resume** is what stashes its cached prefix and stops it — base's
+    /// `disposeActivePlayerForFreshLoad`, which ran unconditionally inside
+    /// `beginFreshLoad`. `PlaybackState.loadID` is deliberately `nil` while
+    /// suspended, so the load the suspend retained travels on the context.
+    func testTheResumeStashesTheProxyTheSuspendDeliberatelyRetained() {
+        let loadID = LoadID()
+        let (suspended, suspendEffects) = PlaybackReducer.scenePhase(
+            makePlaying(loadID: loadID),
+            phase: .background,
+            platform: .tvOS,
+            now: now
+        )
+        XCTAssertTrue(suspendEffects.contains(.disposeEngine(loadID, sourceCache: .retainProxy)))
+        guard case .suspended(let context) = suspended else { return XCTFail("expected suspended") }
+        XCTAssertEqual(context.retainedLoadID, loadID)
+        XCTAssertNil(suspended.loadID, "nothing may be scheduled against a suspended load")
+
+        let (_, resumeEffects) = PlaybackReducer.reduce(
+            suspended,
+            intent: .resumeSuspended,
+            now: now
+        )
+        XCTAssertTrue(
+            resumeEffects.contains(.disposeEngine(loadID, sourceCache: .stash)),
+            "the retained proxy's prefix is handed to the replacement load"
+        )
+    }
+
     // MARK: - Transport and dismissal
 
     /// `togglePlayPause` documents the rule this pins (PVM:4573-4576):
@@ -2890,6 +3091,42 @@ final class PlaybackReducerTests: XCTestCase {
         )
         XCTAssertEqual(afterToggle, paused)
         XCTAssertEqual(resumeEffects, [.transport(.play, loadID)])
+    }
+
+    /// `onPauseChange` wrote `isPlaying` and nothing else (base PVM:1039-1063).
+    /// `applyPresentation` turns a published `isLoading: false` into
+    /// `clearLoadingOverlay(reason: "")`, so the pause publish has to carry the
+    /// overlay the state already owns — otherwise a pause arriving while a
+    /// replan holds the overlay up takes it down under an empty reason.
+    func testAPauseDuringAReplanDoesNotDropTheLoadingOverlay() {
+        let loadID = LoadID()
+        let replanning = makePlaying(
+            loadID: loadID,
+            sub: .replanning(
+                ReplanIntent(kind: .serverReplan, position: 100, classification: "c", message: "m")
+            )
+        )
+        let (_, effects) = PlaybackReducer.reduce(
+            replanning,
+            event: .engine(.pauseChanged(true), loadID),
+            now: now
+        )
+        guard case .publish(let presentation) = effects.last else {
+            return XCTFail("expected a publish")
+        }
+        XCTAssertFalse(presentation.isPlaying)
+        XCTAssertTrue(presentation.isLoading, "the replan still owns the overlay")
+
+        // A steady load publishes the pause with the overlay down, as before.
+        let (_, steadyEffects) = PlaybackReducer.reduce(
+            makePlaying(loadID: loadID),
+            event: .engine(.pauseChanged(true), loadID),
+            now: now
+        )
+        guard case .publish(let steady) = steadyEffects.last else {
+            return XCTFail("expected a publish")
+        }
+        XCTAssertFalse(steady.isLoading)
     }
 
     func testDismissCancelsEveryTimerStopsTheSessionAndDisposes() {

@@ -102,6 +102,61 @@ final class PlaybackSessionActorTests: XCTestCase {
         XCTAssertEqual(playing.loadID, loadID)
     }
 
+    /// A failure that arrives before the load's first `fileLoaded`.
+    ///
+    /// `AVPlayerBackend` fires `onFileLoaded` only from the initial-display
+    /// gate, so a startup failure is ingested while the state is
+    /// `.preparing(.startingEngine)` — and the adopt that precedes
+    /// `.loadEngine` already set `hasProtocolV3`, which is what makes
+    /// `RecoveryPolicy.decideEngineFailed` rung 4 answer `.requestServerReplan`.
+    /// Base ran the whole ladder regardless of load state; the rung has to be
+    /// reachable from here or the player sits on the loading overlay for ever.
+    func testAnEngineFailureBeforeTheFirstFrameStillMintsTheReplan() async throws {
+        let actor = try makeActor()
+        await actor.send(.load(makeRequest(), origin: .userInitiated, options: LoadOptions()))
+        let loadID = try unwrap(await actor.currentState().loadID)
+        let identity = makeIdentity()
+        await actor.ingest(
+            .session(
+                .prepared(try makePreparedRef(), makePlan(), for: loadID),
+                identity
+            )
+        )
+        guard case .preparing(let starting) = await actor.currentState() else {
+            return XCTFail("expected .preparing")
+        }
+        XCTAssertEqual(starting.phase, .startingEngine)
+        XCTAssertTrue(starting.hasProtocolV3)
+        await actor.clearRecordedEffects()
+
+        await actor.ingestEngineEvent(
+            .failed(PlaybackFailure(legacyMessage: "startup boom")),
+            loadID: loadID
+        )
+        guard case .preparing(let failed) = await actor.currentState() else {
+            return XCTFail("the failure itself decides nothing")
+        }
+        XCTAssertEqual(failed.lastFailureMessage, "startup boom")
+
+        // What `RecoveryPolicy` answers for a V3 load, routed back in.
+        await actor.ingest(
+            .recovery(
+                .requestServerReplan(classification: "player_error", message: "startup boom"),
+                loadID
+            )
+        )
+        guard case .playing(let replanning) = await actor.currentState(),
+              case .replanning(let intent) = replanning.sub else {
+            return XCTFail("the startup failure has to own the replan slot")
+        }
+        XCTAssertEqual(intent.classification, "player_error")
+        let routed = await effects(actor)
+        XCTAssertTrue(routed.contains { effect in
+            if case .replan(_, let effectIdentity) = effect { return effectIdentity == identity }
+            return false
+        })
+    }
+
     // MARK: - Replan
 
     func testInPlaceReplanKeepsTheEngineAndMintsANewLoadID() async throws {

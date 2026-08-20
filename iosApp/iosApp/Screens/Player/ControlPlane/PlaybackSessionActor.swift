@@ -158,11 +158,16 @@ actor PlaybackSessionActor {
               case .recoverFromServerOutage = action else {
             return
         }
-        if carriedOutage != nil {
-            // The ride-through's own escalation point. Legacy logged it from
-            // the poll loop, which is where the policy answered it; here the
-            // answer arrives on the session's stream, and a live carry is what
-            // says the escalation came from an exhausted ride-through.
+        if let carried = carriedOutage,
+           Date().timeIntervalSince(carried.rideThroughStart)
+            >= RecoveryPolicy.serverOutageRecoveryTimeout {
+            // The ride-through's own escalation point, and *only* that one.
+            // Legacy logged this line from the poll loop's expiry branch;
+            // `RecoveryPolicy.beginServerOutageRecovery` has two other entries
+            // that are reachable during a live ride-through (the failure
+            // ladder's premature-source-end rung and `.sourceInterrupted`), and
+            // neither is a budget expiry — so the deadline, not the mere
+            // presence of a carry, is what qualifies the line.
             Self.logger.error(
                 "[CMP-OUTAGE] ride-through budget exhausted; escalating to visible recovery"
             )

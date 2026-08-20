@@ -826,7 +826,11 @@ class PlayerViewModel {
             // set: the postroll owns the surface and Now Playing is already
             // parked at the end.
             guard !hasEndedStream else { return }
-            let movieTime = seconds + playbackTimelineOffset
+            // Already movie time: `PlaybackEngineSession` converts once, at the
+            // boundary (`EngineEvent.time`). Base converted here because the
+            // engine handed the view model AVPlayer's own clock; adding the
+            // offset a second time would double it.
+            let movieTime = seconds
             guard reduction.accepted else {
                 // Still stale — the scrubber keeps the optimistic target, but
                 // Now Playing is kept fresh so the remote widget does not
@@ -2496,8 +2500,17 @@ class PlayerViewModel {
         switch sourceCache {
         case .retainProxy:
             // The tvOS background suspend disposes the engine and deliberately
-            // leaves the proxy — and its cache — running for the resume.
+            // leaves the proxy — and its cache — running for the resume, and it
+            // **keeps the session**: `suspendForBackground` (base PVM:6010) did
+            // `engineSession?.dispose(retainingTransport: true)` and never
+            // cleared `engineSession`. `sourceProxy` is `engineSession?.transport`,
+            // so nilling it here would strand the proxy this disposition exists
+            // to retain — the resume's `.disposeEngine(…, .stash)` would find no
+            // session, hand no cached prefix to the replacement, and leave
+            // nothing for `cleanup()` to stop if the user exits from the wake
+            // screen (see `PlaybackEngineSession.dispose`'s own note).
             session.dispose(reason: "background_suspend", retainingTransport: true)
+            return
         case .stash, .discard:
             // Tearing an `AVPlayerBackend` down off the main thread is safe and
             // deliberate: a slow `dispose()` must not stall the replacement

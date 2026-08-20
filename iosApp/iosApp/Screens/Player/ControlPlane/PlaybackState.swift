@@ -167,6 +167,11 @@ struct Preparing: Equatable {
     /// `completeInterruptionRecoveryIfNeeded` (PVM:3976-3996) can still clear
     /// it — and the loading overlay — once the replacement stream advances.
     var interruption: Playing.Interruption?
+    /// The text of the last engine failure this load reported, for the same
+    /// reason `Playing.lastFailureMessage` exists — and it is needed *here*
+    /// because an engine that fails before its first frame fails while the
+    /// load is still `.preparing`.
+    var lastFailureMessage: String?
 }
 
 /// A load whose engine is live.
@@ -339,15 +344,26 @@ struct SuspendedContext: Equatable {
     /// enum case cannot be both `.failed` and `.suspended`, so the failure
     /// travels here and the projection keeps publishing it.
     let failure: PlaybackFailure?
+    /// The load whose source proxy the suspend deliberately kept running
+    /// (`SourceCacheDisposition.retainProxy`).
+    ///
+    /// `PlaybackState.loadID` is deliberately `nil` while suspended — no timer,
+    /// transport command or report may target a load whose engine is gone — but
+    /// the resume still has to stash that proxy's cached prefix and stop it,
+    /// which is what `disposeActivePlayerForFreshLoad` did unconditionally at
+    /// base. `beginLoad` reads it through `previousEngineLoadID(_:)`.
+    let retainedLoadID: LoadID?
 
     init(
         request: LoadRequest,
         resumePosition: Double,
-        failure: PlaybackFailure? = nil
+        failure: PlaybackFailure? = nil,
+        retainedLoadID: LoadID? = nil
     ) {
         self.request = request
         self.resumePosition = resumePosition
         self.failure = failure
+        self.retainedLoadID = retainedLoadID
     }
 }
 
@@ -657,6 +673,11 @@ enum PlayerEvent: Equatable {
 enum EngineEvent: Equatable {
     case fileLoaded(reason: String)
     case firstFrame(ms: Int)
+    /// **Movie time.** `PlaybackEngineSession` converts the backend's player
+    /// clock once, on the way out (see its `mediaTimelineOffsetSeconds`), so
+    /// the playhead the reducer stores, the seek targets it compares against
+    /// and the position `Effect.reportProgress` puts on the wire are all on
+    /// one axis.
     case time(seconds: Double)
     case duration(seconds: Double)
     case pauseChanged(Bool)
