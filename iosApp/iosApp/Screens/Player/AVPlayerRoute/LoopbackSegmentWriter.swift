@@ -393,42 +393,7 @@ final class LoopbackSegmentWriter {
     /// in the playlist; actual per-fragment duration is driven by source
     /// keyframe cadence (`+frag_keyframe`).
     let targetSegmentDuration: Double
-    /// Minimum generated media duration before AVPlayer is allowed to attach
-    /// to the local playlist. H.264 loopback starts more smoothly with a
-    /// slightly larger runway; starting earlier can show one frame and then
-    /// trip AVPlayer's buffering state while the writer catches up.
-    let minimumStartupMediaDuration: Double
-    /// EVENT playlists need enough visible runway before AVPlayer attaches.
-    /// If we publish too early, AVPlayer reads the head of the playlist,
-    /// drains those fragments, then waits roughly one target-duration refresh
-    /// before it asks for the newly-written tail — a stall right after the
-    /// first frame. AVPlayer treats the growing playlist like a live stream,
-    /// so the initial window follows the HLS live-start rule of three target
-    /// durations, plus one fragment of reload slack. The window is media
-    /// time, not a segment count, so it tracks the source's keyframe
-    /// cadence: short-GOP sources publish after a few seconds while long-GOP
-    /// sources still wait for a safe run of fragments.
-    private static let startupLiveEdgeTargetDurations = 3.0
-    private static let minimumStartupPlaylistSegments = 3
-    /// Keep a generous runway behind current playback before retiring local HLS
-    /// spill files. This turns the spill budget into a current-cache budget
-    /// without removing media AVPlayer may still retry during normal playback.
-    private static let spillRetirementPlaybackSafetyWindowSeconds: Double = 45
-    private static let minimumPlaylistSegmentsToKeep = 8
-    private static let generatedAheadThrottleConstrainedSeconds: Double = 60
-    private static let generatedAheadThrottleDefaultSeconds: Double = 90
     private static let generatedBitrateWindowSeconds: Double = 30
-    private static let maxGeneratedAheadThrottleWaitSeconds: Double = 2
-    /// Once the playhead has been stationary for at least this long while we are
-    /// already beyond the generated-ahead cap, stop soft-releasing and HOLD
-    /// generation until the playhead moves again or the session is torn down.
-    /// This keeps a paused — or wedged — player from generating hundreds of
-    /// seconds of HLS ahead of a stationary playhead and exhausting the spill
-    /// budget. The short soft-release is preserved below this threshold so brief
-    /// playlist-reload stalls do not deadlock the mux thread. The backend's
-    /// playhead watchdog owns the decision to reanchor or fall back; the writer
-    /// only refuses to run unbounded ahead of a clock that is not advancing.
-    private static let parkedPlayheadHoldThresholdSeconds: Double = 3.0
 
     // MARK: - Lifecycle callbacks (fired on muxQueue)
     /// Fires exactly once, after the init segment + initial media runway are
@@ -466,10 +431,6 @@ final class LoopbackSegmentWriter {
     /// Fires after every playlist publish with generated HLS facts. The
     /// backend uses this for AVPlayer buffer sizing and live-edge diagnostics.
     var onGeneratedMediaStats: ((GeneratedMediaStats) -> Void)?
-    /// Returns AVPlayer's current local playlist time. Used to keep the remuxer
-    /// from producing minutes of HLS ahead of the player and forcing store
-    /// eviction of segments that AVPlayer may still request.
-    var playbackPositionProvider: (() -> Double?)?
     /// Fires once the muxer reaches EOF or errors irrecoverably. `error` nil
     /// means natural EOF + trailer written.
     var onFinished: ((_ error: Error?) -> Void)?
@@ -558,13 +519,7 @@ final class LoopbackSegmentWriter {
     /// Running total of media duration written to the playlist so we don't
     /// rescan `segmentEntries` on every append.
     private var totalMediaDuration: Double = 0
-    /// Media sequence number of the first segment currently in
-    /// `segmentEntries`. Bumped each time the head is evicted; emitted as
-    /// `#EXT-X-MEDIA-SEQUENCE` so AVPlayer's EVENT-style refetch sees a
-    /// monotonic sliding window.
-    private var firstMediaSequence: Int = 0
-    /// Set to true once the trailer is written. Playlist then emits
-    /// EXT-X-ENDLIST so AVPlayer treats it as VOD.
+    /// Set to true once the trailer is written.
     private var finished = false
     private var loggedMasterManifest = false
     /// AVPlayer entry playlist. Apple grants premium-format claims (Dolby
@@ -593,13 +548,6 @@ final class LoopbackSegmentWriter {
     private let startupWallTime = CFAbsoluteTimeGetCurrent()
     private var lastSourceStatsWallTime: CFAbsoluteTime?
     private var lastSourceStatsBytesRead: Int64?
-    private var lastGeneratedAheadBackpressureLogWall: CFAbsoluteTime = 0
-    /// Last playback position observed by `waitForGeneratedAheadIfNeeded`, and
-    /// the wall-clock time it last advanced. Tracked across calls (the throttle
-    /// runs once per appended segment) so we can tell a momentarily-stale clock
-    /// from a genuinely stationary playhead.
-    private var generatedAheadObservedPlayback: Double = -1
-    private var generatedAheadObservedPlaybackWall: CFAbsoluteTime = 0
     private var totalGeneratedSegmentBytes: Int64 = 0
     private var recentGeneratedSegments: [(bytes: Int, duration: Double)] = []
     private var lastSegmentDurationSource = "unknown"
@@ -709,7 +657,6 @@ final class LoopbackSegmentWriter {
     /// When the loopback starts from a resume point, FFmpeg seeks the source
     /// but source packet timestamps remain absolute. Subtract the first video
     /// timestamp so the generated localhost playlist begins at player time 0.
-    private var outputTimestampBaseSeconds: Double?
     /// Packets we prefetch during bootstrap (to parse VPS/SPS/PPS from the
     /// first keyframe before writeHeader runs). Replayed to the muxer after
     /// writeHeader so the first keyframe isn't lost.
@@ -908,7 +855,6 @@ final class LoopbackSegmentWriter {
         outputDirectory: URL,
         segmentStore: LoopbackSegmentStore? = nil,
         targetSegmentDuration: Double = 4.0,
-        minimumStartupMediaDuration: Double? = nil,
         vodPlan: LoopbackSegmentPlan? = nil,
         vodBaseIndex: Int = 0,
         recycledInputHandoff: LoopbackInputHandoff? = nil
@@ -928,20 +874,15 @@ final class LoopbackSegmentWriter {
         self.vodPlan = vodPlan
         self.vodPlanProvidedAtInit = vodPlan != nil
         self.vodBaseIndex = max(0, vodBaseIndex)
-        self.minimumStartupMediaDuration = max(
-            0,
-            minimumStartupMediaDuration
-                ?? Self.defaultMinimumStartupMediaDuration(for: sessionSpec.videoMode)
-        )
     }
 
     // MARK: - VOD serving mode (loopback-primary plan, Stage 1c)
 
-    /// Static-plan serving state. Populated only when the session spec asks
-    /// for `.vodPlan` AND a plan could be resolved; the EVENT path never
-    /// touches these. The plan is resolved once per player item — a
-    /// restarted producer receives the already-resolved plan via init and
-    /// must reproduce the same segment grid.
+    /// Static-plan serving state, resolved before the first byte is muxed —
+    /// a session that cannot resolve one fails (`resolveVODPlanIfNeeded`). The
+    /// plan is resolved once per player item: a restarted producer receives
+    /// the already-resolved plan via init and must reproduce the same segment
+    /// grid.
     private var vodPlan: LoopbackSegmentPlan?
     private let vodPlanProvidedAtInit: Bool
     private let vodBaseIndex: Int
@@ -970,10 +911,6 @@ final class LoopbackSegmentWriter {
     private var vodClosingSegmentIndex: Int?
     private var vodHasRoutedVideo = false
     private var vodDidFlushFirstFragment = false
-    /// True once the VOD pipeline is actually engaged for this session.
-    /// Resolution can fail (unknown duration, degenerate index); the writer
-    /// then degrades to the EVENT path instead of failing the load.
-    private var vodActive = false
     /// Fired once, on the session that resolves the plan, so the backend can
     /// hand the same plan to restarted producers.
     var onSegmentPlanResolved: ((LoopbackSegmentPlan) -> Void)?
@@ -1008,16 +945,22 @@ final class LoopbackSegmentWriter {
     /// Refusing the plan here — before `onSegmentPlanResolved` fires — is what
     /// keeps a restarted producer from ever being handed an untrusted plan, so
     /// the provided-plan branch of `resolveVODPlanIfNeeded` needs no check of
-    /// its own. The session then serves the growing EVENT playlist instead,
-    /// which names segments from the cutter's own index and cannot hole.
+    /// its own. The session fails instead, and the route ladder falls back to
+    /// an engine that can play the file.
     static func shouldServeVODPlan(_ plan: LoopbackSegmentPlan) -> Bool {
         plan.usedKeyframeIndex
     }
 
     /// Resolves (or installs) the segment plan and cutter. Runs after
     /// `openInput` — the keyframe index needs `find_stream_info` plus the
-    /// cue-prewarm seek — and before `openOutput`/`writeHeader`, which pick
-    /// muxer flags off `vodActive`.
+    /// cue-prewarm seek — and before `openOutput`/`writeHeader`.
+    ///
+    /// A plan is mandatory: the local presentation is a static VOD playlist
+    /// built from it, and the server, host and backend are shaped for nothing
+    /// else. An unresolvable or untrusted plan therefore fails the session —
+    /// the posture `vodMoovBlocked` and `vodStartupConsumerWedge` already take
+    /// — so the route ladder falls back immediately instead of publishing a
+    /// presentation the rest of the pipeline cannot serve.
     private func resolveVODPlanIfNeeded() throws {
         if vodPlan == nil {
             if var plan = harvestVODPlan() {
@@ -1025,21 +968,12 @@ final class LoopbackSegmentWriter {
                 // published — the playlist and every restarted producer are
                 // built from whatever goes out here.
                 plan = resumeAnchorValidatedPlan(plan)
-                if Self.shouldServeVODPlan(plan) {
-                    vodPlan = plan
-                    onSegmentPlanResolved?(plan)
-                } else {
-                    cmpLog("[CMP-AVP] vod plan untrusted keyframe index in copy mode; degrading to EVENT serving")
-                    if resumeAnchorProbeMovedCursor,
-                       sourceStartTimeSeconds <= 0,
-                       let inCtx = inputCtx {
-                        // The shared degrade guard below only re-seeks when
-                        // there IS a start time. A probe that consumed
-                        // packets still has to hand the EVENT path a cursor
-                        // at the head (harvestVODPlan's own rewind contract).
-                        _ = avformat_seek_file(inCtx, -1, Int64.min, 0, Int64.max, AVSEEK_FLAG_BACKWARD)
-                    }
+                guard Self.shouldServeVODPlan(plan) else {
+                    cmpLog("[CMP-AVP] vod plan untrusted keyframe index in copy mode; failing session for route fallback")
+                    throw LoopbackWriterError.bootstrapFailed("vod_plan_untrusted_keyframe_index")
                 }
+                vodPlan = plan
+                onSegmentPlanResolved?(plan)
             }
         } else {
             // Restarted (plan-provided) session: this demuxer's cue index is
@@ -1051,13 +985,8 @@ final class LoopbackSegmentWriter {
             prewarmVODCueIndexAndReseek()
         }
         guard let plan = vodPlan, plan.segmentCount > 0 else {
-            cmpLog("[CMP-AVP] vod plan unavailable; degrading to EVENT serving")
-            // A failed harvest may have bailed before its rewind/start seek
-            // (openInput no longer seeks for vodPlan sessions).
-            if let inCtx = inputCtx {
-                try? seekInputToStartTimeIfNeeded(inCtx)
-            }
-            return
+            cmpLog("[CMP-AVP] vod plan unavailable; failing session for route fallback")
+            throw LoopbackWriterError.bootstrapFailed("vod_plan_unavailable")
         }
         // The effective anchor: an explicit restart passes its base, but a
         // FIRST session resuming mid-title arrives with base 0 and a
@@ -1105,7 +1034,6 @@ final class LoopbackSegmentWriter {
         vodAwaitingRestartKeyframe = effectiveBase > 0
         vodPrerollDroppedVideo = 0
         vodPrerollDroppedAudio = 0
-        vodActive = true
         if selectedAudioOutputMode != .copy {
             // Bridged audio re-encodes on a synthesized clock; the encoder
             // counter is seeded from the first emitted frame's session-axis
@@ -1186,7 +1114,7 @@ final class LoopbackSegmentWriter {
         pkt: UnsafeMutablePointer<AVPacket>,
         inputIdx: Int
     ) -> Bool {
-        guard vodActive, let plan = vodPlan else { return false }
+        guard let plan = vodPlan else { return false }
         if inputIdx == videoInputStreamIndex {
             if vodAwaitingRestartKeyframe {
                 let isKeyframe = (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0
@@ -1253,7 +1181,7 @@ final class LoopbackSegmentWriter {
         pkt: UnsafeMutablePointer<AVPacket>,
         inputIdx: Int
     ) -> Bool {
-        let isRestart = vodActive && vodEffectiveBaseIndex > 0
+        let isRestart = vodEffectiveBaseIndex > 0
         let isSelectedAudio = inputIdx == selectedAudioStreamIndex
         let waiting = vodAwaitingRestartKeyframe && vodFirstRoutedVideoDts == nil
         let packetBytes = max(0, Int(pkt.pointee.size))
@@ -1442,8 +1370,7 @@ final class LoopbackSegmentWriter {
     /// timestamps, so the early-delivered sample still presents at its real
     /// time.
     private func prefeedVODLateStartAudioIfNeeded() throws {
-        guard vodActive,
-              vodEffectiveBaseIndex == 0,
+        guard vodEffectiveBaseIndex == 0,
               vodAudioNeedsParsedPacketForMoov,
               shouldIncludeAudio,
               selectedAudioOutputMode == .copy,
@@ -1688,7 +1615,7 @@ final class LoopbackSegmentWriter {
     /// `rewritePacketForOutput` changes the packet to the output axis, so the
     /// caller captures source PTS/keyframe state first and passes them here.
     private func vodCutBeforeVideoPacketIfNeeded(sourcePTS: Int64, isKeyframe: Bool) throws {
-        guard vodActive, vodCutter != nil else { return }
+        guard vodCutter != nil else { return }
         let target = vodCutter!.index(pts: sourcePTS, isKeyframe: isKeyframe)
         // Progressive anchor: request an interim fragment flush roughly
         // every 1.5 s of routed video. The look-behind path performs the
@@ -1720,9 +1647,8 @@ final class LoopbackSegmentWriter {
     /// not the transfer), so 20 s is generous even for high-RTT remotes.
     private static let vodStartupParkWedgeSeconds: Double = 20.0
 
-    /// Producer pacing for the VOD mode: block before filling a segment past
-    /// the consumer's window (`target + forwardWindow`). Replaces the EVENT
-    /// generated-ahead throttle — and inherently parks when the playhead
+    /// Producer pacing: block before filling a segment past the consumer's
+    /// window (`target + forwardWindow`). Inherently parks when the playhead
     /// wedges, since a frozen consumer stops advancing the target.
     ///
     /// Wedge escape (AE #65/#93-parity): a park is healthy backpressure only
@@ -1736,7 +1662,7 @@ final class LoopbackSegmentWriter {
     /// hours), but the periodic re-log keeps a genuine steady-state wedge
     /// diagnosable from device logs.
     private func waitForVODWindowIfNeeded(nextSegmentIndex: Int) throws {
-        guard vodActive, let store = segmentStore else { return }
+        guard let store = segmentStore else { return }
         var parkedSince: CFAbsoluteTime?
         var nextLogAtSeconds: Double = 0
         while !isCancelled, !store.vodProducerMayAppend(segmentIndex: nextSegmentIndex) {
@@ -1823,29 +1749,6 @@ final class LoopbackSegmentWriter {
         }
     }
 
-    private static func defaultMinimumStartupMediaDuration(
-        for videoMode: LoopbackSessionSpec.VideoMode
-    ) -> Double {
-        switch videoMode {
-        case .passthroughH264:
-            // H264 startup is historically flakier — keep a longer runway.
-            return 12.0
-        default:
-            // Was 8.0s. Lowered to 4.0s after measuring 4K DV P7 resume
-            // seeks: the muxer outpaces playback at >2.7× realtime, the
-            // 4K HEVC GOP keeps the first segment naturally large
-            // (typically 12–14s of media in a single seg), and AVPlayer
-            // already requests `preferredForwardBufferDuration=4.0s`
-            // ahead. The 8s floor was forcing the gate to wait for a
-            // second segment in the rare case seg 0 was a partial GOP
-            // (after a mid-GOP seek), adding wall time without buying
-            // any underflow safety. 4.0 remains the media-duration floor;
-            // the separate EVENT-playlist gate below still waits for a
-            // complete live-start window before AVPlayer attaches.
-            return 4.0
-        }
-    }
-
     // MARK: - Public API
 
     func start() {
@@ -1895,7 +1798,7 @@ final class LoopbackSegmentWriter {
             // Prefetch + filter until we have a complete hvcC in extradata.
             // Filtered packets are stashed in pendingVideoPackets and replayed
             // below.
-            if vodActive, vodPlanProvidedAtInit {
+            if vodPlanProvidedAtInit {
                 // Restarted VOD session: output extradata comes from codecpar
                 // (the same source the first session already validated). The
                 // bootstrap scan otherwise swallows up to a GOP of packets it
@@ -1987,7 +1890,7 @@ final class LoopbackSegmentWriter {
                     continue
                 }
 
-                if vodActive, vodShouldDropPacket(pkt: pkt, inputIdx: inputIdx) {
+                if vodShouldDropPacket(pkt: pkt, inputIdx: inputIdx) {
                     continue
                 }
 
@@ -2046,10 +1949,8 @@ final class LoopbackSegmentWriter {
             if !isCancelled {
                 try finishTranscodedAudio()
                 try flushPendingMuxVideoPacket(nextDTS: nil)
-                if vodActive {
-                    // The trailer flushes the final open fragment; name it.
-                    vodClosingSegmentIndex = vodOpenSegmentIndex
-                }
+                // The trailer flushes the final open fragment; name it.
+                vodClosingSegmentIndex = vodOpenSegmentIndex
                 let trailerRC = av_write_trailer(outputCtx)
                 try throwIfFatalIOError()
                 if trailerRC < 0 {
@@ -2094,7 +1995,7 @@ final class LoopbackSegmentWriter {
         }
         var reachedPlanSeconds: Double?
         var plannedTotalSeconds: Double?
-        if vodActive, let plan = vodPlan, plan.segmentCount > 0 {
+        if let plan = vodPlan, plan.segmentCount > 0 {
             plannedTotalSeconds = plan.totalDurationSeconds
             reachedPlanSeconds = plan.startSeconds[min(currentSegmentIndex, plan.segmentCount - 1)]
         }
@@ -3193,7 +3094,7 @@ final class LoopbackSegmentWriter {
                 av_packet_free(&free)
             }
             guard let outIdx = streamMap[inIdx] else { continue }
-            if vodActive, vodShouldDropPacket(pkt: pending, inputIdx: inIdx) { continue }
+            if vodShouldDropPacket(pkt: pending, inputIdx: inIdx) { continue }
             do {
                 if inIdx == videoInputStreamIndex {
                     try routeVideoPacketToMux(
@@ -3305,7 +3206,7 @@ final class LoopbackSegmentWriter {
     }
 
     private func performMuxPostWriteActions() throws {
-        if vodActive, !initSegmentWritten {
+        if !initSegmentWritten {
             try primeVODMoovAfterFirstAudioIfNeeded()
         }
         if vodInterimFlushRequested {
@@ -4307,7 +4208,7 @@ final class LoopbackSegmentWriter {
         from decodedFrame: UnsafeMutablePointer<AVFrame>,
         encoderCtx: UnsafeMutablePointer<AVCodecContext>
     ) {
-        guard vodActive, !vodSeededBridgedAudioPTS else { return }
+        guard !vodSeededBridgedAudioPTS else { return }
         guard let inCtx = inputCtx,
               selectedAudioStreamIndex >= 0,
               selectedAudioStreamIndex < Int(inCtx.pointee.nb_streams),
@@ -4382,7 +4283,7 @@ final class LoopbackSegmentWriter {
         encoderCtx: UnsafeMutablePointer<AVCodecContext>,
         swr: OpaquePointer
     ) {
-        guard vodActive, vodSeededBridgedAudioPTS else { return }
+        guard vodSeededBridgedAudioPTS else { return }
         guard let inCtx = inputCtx,
               selectedAudioStreamIndex >= 0,
               selectedAudioStreamIndex < Int(inCtx.pointee.nb_streams),
@@ -5098,22 +4999,18 @@ final class LoopbackSegmentWriter {
         // experimental TrueHD-in-MP4 path; without it, write_header rejects
         // the stream.
         var opts: OpaquePointer?
-        if vodActive {
-            // VOD serving mode (plan M3): `frag_custom` hands cut control to
-            // the plan cutter instead of `frag_keyframe`'s implicit cuts;
-            // `frag_discont` with `avoid_negative_ts=disabled` keeps each
-            // fragment's tfdt on the producer's absolute output timestamps,
-            // so a restart-produced segment continues the session timeline
-            // instead of zero-basing; `use_editlist=0` keeps init.mp4
-            // restart-invariant (AVPlayer fetches EXT-X-MAP once per item —
-            // a per-restart elst would drift lipsync). `delay_moov` stays
-            // for the Dolby-family sample-entry parsing described above.
-            av_dict_set(&opts, "movflags", "+empty_moov+default_base_moof+frag_custom+delay_moov+frag_discont", 0)
-            av_dict_set(&opts, "use_editlist", "0", 0)
-            av_dict_set(&opts, "avoid_negative_ts", "disabled", 0)
-        } else {
-            av_dict_set(&opts, "movflags", "+frag_keyframe+delay_moov+default_base_moof", 0)
-        }
+        // Plan-cut serving (M3): `frag_custom` hands cut control to the plan
+        // cutter instead of `frag_keyframe`'s implicit cuts; `frag_discont`
+        // with `avoid_negative_ts=disabled` keeps each fragment's tfdt on the
+        // producer's absolute output timestamps, so a restart-produced segment
+        // continues the session timeline instead of zero-basing;
+        // `use_editlist=0` keeps init.mp4 restart-invariant (AVPlayer fetches
+        // EXT-X-MAP once per item — a per-restart elst would drift lipsync).
+        // `delay_moov` stays for the Dolby-family sample-entry parsing
+        // described above.
+        av_dict_set(&opts, "movflags", "+empty_moov+default_base_moof+frag_custom+delay_moov+frag_discont", 0)
+        av_dict_set(&opts, "use_editlist", "0", 0)
+        av_dict_set(&opts, "avoid_negative_ts", "disabled", 0)
         av_dict_set(&opts, "strict", "-2", 0)
 
         let rc = avformat_write_header(outCtx, &opts)
@@ -5170,76 +5067,21 @@ final class LoopbackSegmentWriter {
 
         let inTB = inStream.pointee.time_base
         let outTB = outStream.pointee.time_base
-        if vodActive {
-            // Plan-anchored shift (M3): the session timeline is the plan's
-            // 0-based playlist axis. The anchor is a plan constant, so a
-            // restarted producer applies the identical shift and its tfdt
-            // continues the session timeline — no per-session zero-basing.
-            applyVODAnchorShift(pkt: pkt, inputTimeBase: inTB)
-        } else {
-            captureOutputTimestampBaseIfNeeded(
-                pkt: pkt,
-                inputStreamIndex: inputStreamIndex,
-                inputTimeBase: inTB
-            )
-        }
+        // Plan-anchored shift (M3): the session timeline is the plan's
+        // 0-based playlist axis. The anchor is a plan constant, so a
+        // restarted producer applies the identical shift and its tfdt
+        // continues the session timeline — no per-session zero-basing.
+        applyVODAnchorShift(pkt: pkt, inputTimeBase: inTB)
         pkt.pointee.stream_index = outStreamIndex
         // `av_packet_rescale_ts` handles AV_NOPTS_VALUE, duration rescaling,
         // and the pos reset in one call — same result as av_rescale_q_rnd
         // triplet but terser and less error-prone.
         av_packet_rescale_ts(pkt, inTB, outTB)
-        if !vodActive {
-            normalizeSeekedTimelineIfNeeded(pkt: pkt, outStream: outStream)
-        }
         normalizeMuxerTimestampsIfNeeded(pkt: pkt, outStream: outStream)
-        if vodActive, inputStreamIndex != videoInputStreamIndex, pkt.pointee.pts != Int64.min {
+        if inputStreamIndex != videoInputStreamIndex, pkt.pointee.pts != Int64.min {
             vodAudioPacketRouted = true
         }
         pkt.pointee.pos = -1
-    }
-
-    private func captureOutputTimestampBaseIfNeeded(
-        pkt: UnsafeMutablePointer<AVPacket>,
-        inputStreamIndex: Int,
-        inputTimeBase: AVRational
-    ) {
-        guard outputTimestampBaseSeconds == nil,
-              inputStreamIndex == videoInputStreamIndex else {
-            return
-        }
-        let timestamp = pkt.pointee.dts != Int64.min ? pkt.pointee.dts : pkt.pointee.pts
-        guard timestamp != Int64.min,
-              inputTimeBase.num > 0,
-              inputTimeBase.den > 0 else {
-            return
-        }
-        outputTimestampBaseSeconds = Double(timestamp)
-            * Double(inputTimeBase.num)
-            / Double(inputTimeBase.den)
-        if let base = outputTimestampBaseSeconds, base.isFinite, base >= 0 {
-            Self.logger.info(
-                "[CMP-AVP] loopback timeline anchor requested=\(self.sourceStartTimeSeconds, privacy: .public) actual=\(base, privacy: .public)"
-            )
-        }
-    }
-
-    private func normalizeSeekedTimelineIfNeeded(
-        pkt: UnsafeMutablePointer<AVPacket>,
-        outStream: UnsafeMutablePointer<AVStream>
-    ) {
-        guard let base = outputTimestampBaseSeconds, base > 0 else { return }
-        let baseTicks = ticks(forSeconds: base, timeBase: outStream.pointee.time_base)
-        guard baseTicks > 0 else { return }
-
-        if pkt.pointee.dts != Int64.min {
-            pkt.pointee.dts = max(0, pkt.pointee.dts - baseTicks)
-        }
-        if pkt.pointee.pts != Int64.min {
-            let normalizedPTS = pkt.pointee.pts - baseTicks
-            pkt.pointee.pts = normalizedPTS < 0
-                ? max(0, pkt.pointee.dts)
-                : normalizedPTS
-        }
     }
 
     private func ticks(forSeconds seconds: Double, timeBase: AVRational) -> Int64 {
@@ -5596,19 +5438,6 @@ final class LoopbackSegmentWriter {
         }
     }
 
-    private func removeEvictedSegmentsFromPlaylist(_ names: [String]) {
-        guard !names.isEmpty else { return }
-        let evictedIndexes = Set(names.compactMap { name -> Int? in
-            guard name.hasPrefix("seg_"), name.hasSuffix(".m4s") else { return nil }
-            let body = name.dropFirst(4).dropLast(4)
-            return Int(body)
-        })
-        guard !evictedIndexes.isEmpty else { return }
-        let before = segmentEntries.count
-        segmentEntries.removeAll { evictedIndexes.contains($0.index) }
-        firstMediaSequence += before - segmentEntries.count
-    }
-
     private func writeInitSegment() {
         // FFmpeg's mp4 muxer in our build doesn't emit a Dolby Vision
         // configuration box even when the video codec_tag is `dvh1` and DOVI
@@ -5721,7 +5550,6 @@ final class LoopbackSegmentWriter {
     /// segment finalized yet this session, and no cut in flight.
     private var vodProgressiveAccumulating: Bool {
         progressiveAnchorServingEnabled
-            && vodActive
             && segmentEntries.isEmpty
             && vodClosingSegmentIndex == nil
     }
@@ -5777,8 +5605,7 @@ final class LoopbackSegmentWriter {
     /// cannot produce moov (unparseable audio) is not retried per packet —
     /// the first cut's post-flush check escalates that case.
     private func primeVODMoovAfterFirstAudioIfNeeded() throws {
-        guard vodActive,
-              vodAudioNeedsParsedPacketForMoov,
+        guard vodAudioNeedsParsedPacketForMoov,
               !initSegmentWritten,
               vodAudioPacketRouted,
               vodHasRoutedVideo,
@@ -5909,17 +5736,14 @@ final class LoopbackSegmentWriter {
             return
         }
 
-        if vodActive {
-            // Plan-indexed naming: the fragment that just closed belongs to
-            // the segment the cutter was filling when the cut fired (or the
-            // currently open one, for the trailer's final flush).
-            currentSegmentIndex = vodClosingSegmentIndex ?? vodOpenSegmentIndex
-        }
+        // Plan-indexed naming: the fragment that just closed belongs to the
+        // segment the cutter was filling when the cut fired (or the currently
+        // open one, for the trailer's final flush).
+        currentSegmentIndex = vodClosingSegmentIndex ?? vodOpenSegmentIndex
         let name = String(format: "seg_%06d.m4s", currentSegmentIndex)
         let parsedDuration = segmentMediaDuration(in: pendingSegmentBytes)
         let duration = parsedDuration ?? targetSegmentDuration
         lastSegmentDurationSource = parsedDuration == nil ? "target_duration_fallback" : "fragment_timing"
-        waitForGeneratedAheadIfNeeded()
         makeSegmentStoreRoomForAppend(nextSegmentBytes: segSize)
         guard !isCancelled else {
             pendingSegmentBytes = Data()
@@ -5944,7 +5768,7 @@ final class LoopbackSegmentWriter {
         // where playback crosses producer sessions. Computed while
         // `pendingSegmentBytes` is still intact.
         var vodTfdtSummary: String?
-        if vodActive, segmentEntries.count < 3 {
+        if segmentEntries.count < 3 {
             var tfdts: [String] = []
             var firstVideoTfdt: UInt64?
             for moof in ISOBoxSurgery.boxes(in: pendingSegmentBytes, from: 0, to: pendingSegmentBytes.count)
@@ -5977,25 +5801,20 @@ final class LoopbackSegmentWriter {
             vodTfdtSummary = tfdts.joined(separator: ",")
         }
 
-        // In VOD mode stats live on the plan axis (== the item timeline), so
-        // the playhead watchdog compares like with like after a restart.
-        let entryStart = vodActive
-            ? (vodPlan.map { $0.startSeconds[min(currentSegmentIndex, $0.segmentCount - 1)] } ?? totalMediaDuration)
-            : totalMediaDuration
+        // Stats live on the plan axis (== the item timeline), so the playhead
+        // watchdog compares like with like after a restart.
+        let entryStart = vodPlan
+            .map { $0.startSeconds[min(currentSegmentIndex, $0.segmentCount - 1)] }
+            ?? totalMediaDuration
         segmentEntries.append(SegmentEntry(index: currentSegmentIndex, start: entryStart, duration: duration))
         totalMediaDuration += duration
         recordGeneratedSegment(bytes: segSize, duration: duration)
         let idx = currentSegmentIndex
-        if vodActive {
-            vodClosingSegmentIndex = nil
-        } else {
-            currentSegmentIndex += 1
-        }
+        vodClosingSegmentIndex = nil
         pendingSegmentBytes = Data()
         pendingSegmentHasVideo = false
         pendingSegmentHasMoof = false
-        retireSegmentsBehindPlaybackIfNeeded()
-        emitPlaylists(isFinal: false)
+        emitPlaylists()
         if shouldLogSegmentProgress(index: idx) {
             cmpLog("[CMP-AVP] seg \(idx) written (\(segSize) bytes, video=\(segmentHasVideo ? 1 : 0), dur=\(String(format: "%.3f", duration))s), total dur=\(String(format: "%.1f", totalMediaDuration))s)")
         }
@@ -6008,70 +5827,11 @@ final class LoopbackSegmentWriter {
         if segmentHasVideo {
             hasWrittenVideoSegment = true
         }
-        markStartupRunwayReadyIfNeeded(force: false)
+        markStartupRunwayReadyIfNeeded()
     }
 
     private func shouldLogSegmentProgress(index: Int) -> Bool {
         Self.verboseSegmentLogging || index < 4 || index.isMultiple(of: 20)
-    }
-
-    private var generatedAheadThrottleSeconds: Double {
-        PlaybackSourceCache.isConstrainedMemoryDevice
-            ? Self.generatedAheadThrottleConstrainedSeconds
-            : Self.generatedAheadThrottleDefaultSeconds
-    }
-
-    private func waitForGeneratedAheadIfNeeded() {
-        // VOD mode paces via the store's consumer window instead
-        // (`waitForVODWindowIfNeeded`), on the plan axis.
-        guard !vodActive else { return }
-        guard firstSegmentReadyFired else { return }
-        let cap = generatedAheadThrottleSeconds
-        let waitStarted = CFAbsoluteTimeGetCurrent()
-        let targetDuration = Double(
-            publishedPlaylistTargetDuration > 0
-                ? publishedPlaylistTargetDuration
-                : max(1, Int(targetSegmentDuration.rounded()))
-        )
-        let waitBudget = Self.generatedAheadThrottleWaitBudgetSeconds(targetDuration: targetDuration)
-        while !isCancelled {
-            retireSegmentsBehindPlaybackIfNeeded()
-            guard let playbackPosition = playbackPositionProvider?(),
-                  playbackPosition.isFinite else { return }
-            let generatedAhead = totalMediaDuration - max(0, playbackPosition)
-            let now = CFAbsoluteTimeGetCurrent()
-            if generatedAheadObservedPlayback < 0
-                || playbackPosition > generatedAheadObservedPlayback + 0.05 {
-                generatedAheadObservedPlayback = playbackPosition
-                generatedAheadObservedPlaybackWall = now
-            }
-            guard generatedAhead > cap else { return }
-            let stationaryFor = now - generatedAheadObservedPlaybackWall
-            // Hold (instead of soft-releasing) once the playhead has clearly
-            // stopped. Below the threshold the short soft-release still applies
-            // so a brief playlist-reload stall cannot deadlock the mux thread.
-            let playheadParked = stationaryFor >= Self.parkedPlayheadHoldThresholdSeconds
-            if now - waitStarted >= waitBudget, !playheadParked {
-                cmpLog(
-                    "[CMP-HLS-STORE] generated-ahead throttle soft-release ahead=\(String(format: "%.1f", generatedAhead))s cap=\(String(format: "%.0f", cap))s wait=\(String(format: "%.1f", now - waitStarted))s targetDuration=\(String(format: "%.1f", targetDuration))s reason=playlist_reload_budget"
-                )
-                return
-            }
-            if now - lastGeneratedAheadBackpressureLogWall >= 5 {
-                lastGeneratedAheadBackpressureLogWall = now
-                cmpLog(
-                    "[CMP-HLS-STORE] generated-ahead throttle ahead=\(String(format: "%.1f", generatedAhead))s cap=\(String(format: "%.0f", cap))s playback=\(String(format: "%.1f", playbackPosition))s generated=\(String(format: "%.1f", totalMediaDuration))s stationaryFor=\(String(format: "%.1f", stationaryFor))s hold=\(playheadParked ? 1 : 0) reason=\(playheadParked ? "parked_playhead" : "generated_ahead")"
-                )
-            }
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-    }
-
-    static func generatedAheadThrottleWaitBudgetSeconds(targetDuration: Double) -> Double {
-        guard targetDuration.isFinite, targetDuration > 0 else {
-            return maxGeneratedAheadThrottleWaitSeconds
-        }
-        return min(maxGeneratedAheadThrottleWaitSeconds, max(0.5, targetDuration * 0.5))
     }
 
     private func recordGeneratedSegment(bytes: Int, duration: Double) {
@@ -6098,33 +5858,7 @@ final class LoopbackSegmentWriter {
     /// nothing to wait for — prune opportunistically and let the segment land.
     private func makeSegmentStoreRoomForAppend(nextSegmentBytes: Int) {
         guard let segmentStore else { return }
-        retireSegmentsBehindPlaybackIfNeeded()
         _ = segmentStore.makeRoomForAppend(byteCount: nextSegmentBytes)
-    }
-
-    private func retireSegmentsBehindPlaybackIfNeeded() {
-        // VOD retention is byte-budgeted and target-anchored in the store;
-        // playback-position retirement is EVENT policy.
-        guard !vodActive else { return }
-        guard let segmentStore,
-              let playbackPosition = playbackPositionProvider?(),
-              playbackPosition.isFinite,
-              segmentEntries.count > Self.minimumPlaylistSegmentsToKeep else {
-            return
-        }
-
-        let retireBefore = max(0, playbackPosition - Self.spillRetirementPlaybackSafetyWindowSeconds)
-        guard retireBefore > 0 else { return }
-
-        let maxRetirable = segmentEntries.count - Self.minimumPlaylistSegmentsToKeep
-        let candidates = segmentEntries
-            .prefix(maxRetirable)
-            .prefix { $0.end < retireBefore }
-        let names = candidates.map { String(format: "seg_%06d.m4s", $0.index) }
-        guard !names.isEmpty else { return }
-
-        let retired = segmentStore.retireSegments(names: names)
-        removeEvictedSegmentsFromPlaylist(retired)
     }
 
     private struct TrackFragmentTiming {
@@ -6243,110 +5977,30 @@ final class LoopbackSegmentWriter {
         return duration
     }
 
-    private func markStartupRunwayReadyIfNeeded(force: Bool) {
+    /// The static playlist already advertises the whole title and AVPlayer
+    /// buffers against it on its own, so the first produced video segment is
+    /// enough to attach. Start AVPlayer from the master playlist (see
+    /// `masterStartEnabled`): premium-format claims (Atmos MAT output) are
+    /// granted at master-variant level only.
+    private func markStartupRunwayReadyIfNeeded() {
         guard !firstSegmentReadyFired,
               initSegmentWritten,
               hasWrittenVideoSegment,
               !segmentEntries.isEmpty else { return }
-        if vodActive {
-            // The static playlist already advertises the whole title and
-            // AVPlayer buffers against it on its own; the EVENT runway
-            // heuristics (segment count + live-start window) don't apply.
-            // The first produced video segment is enough to attach.
-            firstSegmentReadyFired = true
-            cmpLog("[CMP-AVP] startup ready (vod plan) startPlaylist=\(startupPlaylistName) producedSegments=\(segmentEntries.count)")
-            onFirstSegmentReady?(startupPlaylistName)
-            return
-        }
-        let startupReason = force ? "forced" : "minimum_runway"
-        let longestSegmentDuration = segmentEntries.map(\.duration).max() ?? targetSegmentDuration
-        let playlistTargetDuration = Double(playlistTargetDurationForEmit())
-        let minimumPlayableWindow = max(
-            minimumStartupMediaDuration,
-            playlistTargetDuration * Self.startupLiveEdgeTargetDurations + longestSegmentDuration
-        )
-        let hasEnoughSegments = segmentEntries.count >= Self.minimumStartupPlaylistSegments
-        guard force || (hasEnoughSegments && totalMediaDuration >= minimumPlayableWindow) else {
-            return
-        }
         firstSegmentReadyFired = true
         let elapsed = max(0, CFAbsoluteTimeGetCurrent() - startupWallTime)
         let mediaRate = elapsed > 0
             ? String(format: "%.2fx", totalMediaDuration / elapsed)
             : "unknown"
-        // Start AVPlayer from the master playlist (see `masterStartEnabled`):
-        // premium-format claims (Atmos MAT output) are granted at
-        // master-variant level only. The historical iOS rejection of this
-        // surface was the missing RESOLUTION/FRAME-RATE attributes and the
-        // High-tier CODECS declaration, both since fixed.
-        cmpLog("[CMP-AVP] startup runway ready startPlaylist=\(startupPlaylistName) generated=\(String(format: "%.1f", totalMediaDuration))s threshold=\(String(format: "%.1f", minimumPlayableWindow))s segments=\(segmentEntries.count) targetDuration=\(String(format: "%.1f", playlistTargetDuration))s elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) reason=\(startupReason) masterStart=\(masterStartEnabled ? 1 : 0)")
+        cmpLog("[CMP-AVP] startup ready (vod plan) startPlaylist=\(startupPlaylistName) producedSegments=\(segmentEntries.count) elapsed=\(String(format: "%.2f", elapsed))s mediaRate=\(mediaRate) masterStart=\(masterStartEnabled ? 1 : 0)")
         onFirstSegmentReady?(startupPlaylistName)
     }
 
     // MARK: - Playlist
 
-    /// Largest EXT-X-TARGETDURATION published so far. Derived from observed
-    /// fragment durations (the spec requires TARGETDURATION >= every
-    /// segment's duration rounded to the nearest integer) so AVPlayer's
-    /// live-edge window and playlist-reload cadence track the source's real
-    /// keyframe cadence instead of the configured hint. Monotonic: the tag
-    /// must never shrink while a client is reloading the playlist, including
-    /// after the sliding window evicts the longest head segment.
-    private var publishedPlaylistTargetDuration = 0
-
-    private func playlistTargetDurationForEmit() -> Int {
-        let observed = segmentEntries.map { max(1, Int($0.duration.rounded())) }.max()
-        let fallback = max(1, Int(targetSegmentDuration.rounded()))
-        publishedPlaylistTargetDuration = max(publishedPlaylistTargetDuration, observed ?? fallback)
-        return publishedPlaylistTargetDuration
-    }
-
-    private func emitPlaylists(isFinal: Bool) {
-        emitMediaPlaylist(isFinal: isFinal)
+    private func emitPlaylists() {
+        emitMediaPlaylist()
         emitMasterPlaylist()
-    }
-
-    private func emitMediaPlaylist(isFinal: Bool) {
-        if vodActive, let plan = vodPlan {
-            emitVODMediaPlaylist(plan: plan)
-            return
-        }
-        var lines: [String] = []
-        lines.append("#EXTM3U")
-        lines.append("#EXT-X-VERSION:7")
-        lines.append("#EXT-X-INDEPENDENT-SEGMENTS")
-        if LocalHLSPlaylistPolicy.shouldEmitStartTag(firstMediaSequence: firstMediaSequence) {
-            lines.append("#EXT-X-START:TIME-OFFSET=0,PRECISE=YES")
-        }
-        let targetDuration = playlistTargetDurationForEmit()
-        lines.append("#EXT-X-TARGETDURATION:\(targetDuration)")
-        lines.append("#EXT-X-MEDIA-SEQUENCE:\(firstMediaSequence)")
-        if let playlistTypeTag = LocalHLSPlaylistPolicy.playlistType(isFinal: isFinal).hlsTag {
-            lines.append(playlistTypeTag)
-        }
-        lines.append("#EXT-X-MAP:URI=\"init.mp4\"")
-        for segment in segmentEntries {
-            lines.append(String(format: "#EXTINF:%.3f,", segment.duration))
-            lines.append(String(format: "seg_%06d.m4s", segment.index))
-        }
-        if isFinal {
-            lines.append("#EXT-X-ENDLIST")
-        }
-        let body = lines.joined(separator: "\n") + "\n"
-        do {
-            try measure(\.playlistWriteMs, \.playlistWrites) {
-                try writePlaylistArtifact(body, name: "playlist.m3u8")
-            }
-        } catch {
-            Self.logger.error("playlist write failed: \(String(describing: error), privacy: .public)")
-            fatalIOError = .fileWriteFailed("playlist.m3u8", error)
-        }
-        emitGeneratedMediaStats(
-            playlistBodyBytes: body.utf8.count,
-            playlistBodyHash: Self.stablePlaylistHash(body),
-            playlistKind: isFinal ? "vod" : "live_sliding",
-            targetDuration: targetDuration
-        )
     }
 
     /// The whole title, advertised up front: every plan segment with its
@@ -6354,7 +6008,8 @@ final class LoopbackSegmentWriter {
     /// changes across the session (segment *bytes* come and go in the store;
     /// the manifest does not), so re-emits are idempotent and only refresh
     /// the generated-media stats the playhead watchdog samples.
-    private func emitVODMediaPlaylist(plan: LoopbackSegmentPlan) {
+    private func emitMediaPlaylist() {
+        guard let plan = vodPlan else { return }
         var lines: [String] = []
         lines.append("#EXTM3U")
         lines.append("#EXT-X-VERSION:7")
@@ -6396,7 +6051,7 @@ final class LoopbackSegmentWriter {
         let storeStats = segmentStore?.stats()
         let visibleStart = segmentEntries.first?.start ?? totalMediaDuration
         let visibleEnd = segmentEntries.last?.end ?? totalMediaDuration
-        let lastMediaSequence = firstMediaSequence + max(0, segmentEntries.count - 1)
+        let lastMediaSequence = max(0, segmentEntries.count - 1)
         let longestSegmentDuration = segmentEntries.map(\.duration).max() ?? self.targetSegmentDuration
         onGeneratedMediaStats?(GeneratedMediaStats(
             generation: storeStats?.generation ?? segmentStore?.generation ?? 0,
@@ -6404,7 +6059,7 @@ final class LoopbackSegmentWriter {
             totalGeneratedBytes: totalGeneratedSegmentBytes,
             playlistVisibleStartSeconds: visibleStart,
             playlistVisibleEndSeconds: visibleEnd,
-            firstMediaSequence: firstMediaSequence,
+            firstMediaSequence: 0,
             lastMediaSequence: lastMediaSequence,
             targetDuration: targetDuration,
             longestSegmentDuration: longestSegmentDuration,
@@ -6483,8 +6138,8 @@ final class LoopbackSegmentWriter {
         if !pendingSegmentBytes.isEmpty {
             finalizeCurrentSegment()
         }
-        emitPlaylists(isFinal: true)
-        markStartupRunwayReadyIfNeeded(force: true)
+        emitPlaylists()
+        markStartupRunwayReadyIfNeeded()
         finished = true
     }
 
@@ -6622,11 +6277,11 @@ enum LoopbackWriterError: Error {
     case writeHeader(Int32)
     case unsupportedSelectedAudioCodec(String)
     case audioTranscodeSetup(String)
-    /// The pre-mux bootstrap could not produce a decodable stream head — no
-    /// IRAP keyframe within the scan caps, or no parameter sets anywhere.
-    /// Muxing anyway yields a presentation AVPlayer freezes on; failing the
-    /// session lets the route fall back immediately instead of waiting out
-    /// the startup watchdog.
+    /// The pre-mux setup could not produce a servable session — no IRAP
+    /// keyframe within the scan caps, no parameter sets anywhere, or no
+    /// trustworthy segment plan to advertise. Muxing anyway yields a
+    /// presentation AVPlayer freezes on; failing the session lets the route
+    /// fall back immediately instead of waiting out the startup watchdog.
     case bootstrapFailed(String)
     case profile81ConversionFailed(String)
     /// A Profile 5 session reached mux setup without a usable DOVI

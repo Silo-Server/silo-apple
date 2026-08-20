@@ -79,6 +79,9 @@ final class LocalHLSHost {
 
     // MARK: - Pulled from the backend by the writer/server
 
+    /// AVPlayer's current local playlist time. Kept on the `AVPlayerBackend`
+    /// seam (the adapter supplies it) — nothing in the producer consumes it
+    /// since the writer paced on the store's consumer window.
     private let playbackPositionProvider: () -> Double?
     private let isSourceOutageActive: () -> Bool
     /// The backend's source-keyed subtitle cue tap. Handed to every producer,
@@ -345,7 +348,6 @@ final class LocalHLSHost {
                 self.onFinished?(error)
             }
         }
-        writer.playbackPositionProvider = playbackPositionProvider
         writer.onSourceDownloadStats = { [weak self] bitsPerSecond, totalBytesRead in
             DispatchQueue.main.async {
                 guard let self, !self.isTornDown else { return }
