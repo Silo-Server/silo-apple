@@ -83,9 +83,16 @@ final class LoopbackSegmentWriterVODContinuityTests: XCTestCase {
     ) -> WriterRun {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("vod-continuity-\(UUID().uuidString)", isDirectory: true)
+        // The store is the writer's artifact sink; its debug mirror is what
+        // puts the produced bundle on disk for these assertions.
         let writer = LoopbackSegmentWriter(
             sessionSpec: spec,
             outputDirectory: dir,
+            segmentStore: LoopbackSegmentStore(
+                generation: 1,
+                spillPolicy: .disabled(reason: "test"),
+                debugDirectory: dir
+            ),
             vodPlan: vodPlan,
             vodBaseIndex: vodBaseIndex
         )

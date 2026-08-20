@@ -384,7 +384,10 @@ final class LoopbackSegmentWriter {
     let sourceHeaders: [String: String]
     let sourceStartTimeSeconds: Double
     let outputDirectory: URL
-    let segmentStore: LoopbackSegmentStore?
+    /// Where every artifact this session produces lands. The only sink there
+    /// is: `outputDirectory` is the session directory the store mirrors into
+    /// when artifact retention is on.
+    let segmentStore: LoopbackSegmentStore
     let selectedAudioTrackIndex: Int
     let videoMode: LoopbackSessionSpec.VideoMode
     let selectedAudioOutputMode: LoopbackSessionSpec.AudioOutputMode
@@ -853,7 +856,7 @@ final class LoopbackSegmentWriter {
     init(
         sessionSpec: LoopbackSessionSpec,
         outputDirectory: URL,
-        segmentStore: LoopbackSegmentStore? = nil,
+        segmentStore: LoopbackSegmentStore,
         targetSegmentDuration: Double = 4.0,
         vodPlan: LoopbackSegmentPlan? = nil,
         vodBaseIndex: Int = 0,
@@ -1662,7 +1665,7 @@ final class LoopbackSegmentWriter {
     /// hours), but the periodic re-log keeps a genuine steady-state wedge
     /// diagnosable from device logs.
     private func waitForVODWindowIfNeeded(nextSegmentIndex: Int) throws {
-        guard let store = segmentStore else { return }
+        let store = segmentStore
         var parkedSince: CFAbsoluteTime?
         var nextLogAtSeconds: Double = 0
         while !isCancelled, !store.vodProducerMayAppend(segmentIndex: nextSegmentIndex) {
@@ -1810,9 +1813,9 @@ final class LoopbackSegmentWriter {
             }
             try writeHeader()
             // writeHeader's `av_write_header` synchronously calls our AVIO
-            // sink, which writes init.mp4 to disk via writeInitSegment. If
-            // that disk write failed it set fatalIOError; surface it now
-            // rather than continuing with no init segment.
+            // sink, which publishes init.mp4 via writeInitSegment. If the sink
+            // latched a fatal error there, surface it now rather than
+            // continuing with no init segment.
             try throwIfFatalIOError()
 
             // Replay packets consumed during bootstrap. Video first so the
@@ -2023,11 +2026,10 @@ final class LoopbackSegmentWriter {
         )
     }
 
-    /// Throws any fatal disk-write error captured by the AVIO write callback
-    /// path (`writeInitSegment`, `finalizeCurrentSegment`, `emitPlaylists`,
-    /// `emitMasterPlaylist`). Those run synchronously from the muxer's write
-    /// callback so they cannot throw directly — this helper drains the
-    /// captured error at the next safe point.
+    /// Throws any fatal error captured by the AVIO write callback path (the
+    /// box sink's `initSegmentMissing` latch). That path runs synchronously
+    /// from the muxer's write callback so it cannot throw directly — this
+    /// helper drains the captured error at the next safe point.
     private func throwIfFatalIOError() throws {
         if let fatalIOError {
             throw fatalIOError
@@ -2044,8 +2046,8 @@ final class LoopbackSegmentWriter {
     }
 
     /// Centralizes the post-`av_interleaved_write_frame` bookkeeping. If the
-    /// write callback set `fatalIOError` (init/segment/playlist write to disk
-    /// failed), rethrow immediately. Otherwise track consecutive failures and
+    /// write callback latched `fatalIOError`, rethrow immediately. Otherwise
+    /// track consecutive failures and
     /// throw `LoopbackWriterError.muxWriteFailures` when the threshold is reached
     /// (or immediately for unambiguously-fatal codes).
     private func evaluateMuxWriteResult(_ rc: Int32) throws {
@@ -5329,33 +5331,21 @@ final class LoopbackSegmentWriter {
 
     // MARK: - Segment output
 
-    private func writeArtifact(_ data: Data, name: String) throws {
-        if let segmentStore {
-            if name == "init.mp4" {
-                segmentStore.putInitSegment(data)
-            }
-        } else {
-            try data.write(to: outputDirectory.appendingPathComponent(name), options: .atomic)
+    private func writeArtifact(_ data: Data, name: String) {
+        if name == "init.mp4" {
+            segmentStore.putInitSegment(data)
         }
     }
 
-    private func writeMediaSegment(_ data: Data, name: String, duration: Double) throws {
-        if let segmentStore {
-            segmentStore.putSegment(name: name, data: data, duration: duration)
-        } else {
-            try data.write(to: outputDirectory.appendingPathComponent(name), options: .atomic)
-        }
+    private func writeMediaSegment(_ data: Data, name: String, duration: Double) {
+        segmentStore.putSegment(name: name, data: data, duration: duration)
     }
 
-    private func writePlaylistArtifact(_ body: String, name: String) throws {
-        if let segmentStore {
-            if name == "playlist.m3u8" {
-                segmentStore.putMediaPlaylist(body)
-            } else if name == "master.m3u8" {
-                segmentStore.putMasterPlaylist(body)
-            }
-        } else {
-            try body.write(to: outputDirectory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+    private func writePlaylistArtifact(_ body: String, name: String) {
+        if name == "playlist.m3u8" {
+            segmentStore.putMediaPlaylist(body)
+        } else if name == "master.m3u8" {
+            segmentStore.putMasterPlaylist(body)
         }
     }
 
@@ -5399,16 +5389,11 @@ final class LoopbackSegmentWriter {
                 Self.logger.error("dec3 JOC extension append failed — Atmos will present as plain E-AC-3 5.1")
             }
         }
-        do {
-            try measure(\.segmentWriteMs, \.segmentWrites) {
-                try writeArtifact(bytes, name: "init.mp4")
-            }
-            initSegmentWritten = true
-            cmpLog("[CMP-AVP] init.mp4 written (\(bytes.count) bytes)")
-        } catch {
-            Self.logger.error("writeInitSegment failed: \(String(describing: error), privacy: .public)")
-            fatalIOError = .fileWriteFailed("init.mp4", error)
+        measure(\.segmentWriteMs, \.segmentWrites) {
+            writeArtifact(bytes, name: "init.mp4")
         }
+        initSegmentWritten = true
+        cmpLog("[CMP-AVP] init.mp4 written (\(bytes.count) bytes)")
         initSegmentBytes = Data()
         // Do NOT fire onFirstSegmentReady here — the playlist has no media
         // segments yet, and an empty VOD playlist confuses AVPlayer. Wait
@@ -5483,7 +5468,8 @@ final class LoopbackSegmentWriter {
     /// once the segment contains video — an audio-only prefix could belong
     /// to a segment the pre-video gate later discards.
     private func publishProgressivePartial() {
-        guard let store = segmentStore, pendingSegmentHasVideo else { return }
+        guard pendingSegmentHasVideo else { return }
+        let store = segmentStore
         let name = String(format: "seg_%06d.m4s", vodOpenSegmentIndex)
         if vodProgressiveActiveName != name {
             vodProgressiveActiveName = name
@@ -5672,17 +5658,8 @@ final class LoopbackSegmentWriter {
             pendingSegmentHasMoof = false
             return
         }
-        do {
-            try measure(\.segmentWriteMs, \.segmentWrites) {
-                try writeMediaSegment(pendingSegmentBytes, name: name, duration: duration)
-            }
-        } catch {
-            Self.logger.error("segment write failed: \(String(describing: error), privacy: .public)")
-            fatalIOError = .fileWriteFailed(name, error)
-            pendingSegmentBytes = Data()
-            pendingSegmentHasVideo = false
-            pendingSegmentHasMoof = false
-            return
+        measure(\.segmentWriteMs, \.segmentWrites) {
+            writeMediaSegment(pendingSegmentBytes, name: name, duration: duration)
         }
         // Session-head ground truth (first 3 segments per session): the tfdt
         // each fragment carries, for diagnosing render stalls at the seam
@@ -5778,7 +5755,6 @@ final class LoopbackSegmentWriter {
     /// byte retention may prune history but never refuses the append. There is
     /// nothing to wait for — prune opportunistically and let the segment land.
     private func makeSegmentStoreRoomForAppend(nextSegmentBytes: Int) {
-        guard let segmentStore else { return }
         _ = segmentStore.makeRoomForAppend(byteCount: nextSegmentBytes)
     }
 
@@ -5949,12 +5925,7 @@ final class LoopbackSegmentWriter {
         }
         lines.append("#EXT-X-ENDLIST")
         let body = lines.joined(separator: "\n") + "\n"
-        do {
-            try writePlaylistArtifact(body, name: "playlist.m3u8")
-        } catch {
-            Self.logger.error("vod playlist write failed: \(String(describing: error), privacy: .public)")
-            fatalIOError = .fileWriteFailed("playlist.m3u8", error)
-        }
+        writePlaylistArtifact(body, name: "playlist.m3u8")
         emitGeneratedMediaStats(
             playlistBodyBytes: body.utf8.count,
             playlistBodyHash: Self.stablePlaylistHash(body),
@@ -5969,13 +5940,13 @@ final class LoopbackSegmentWriter {
         playlistKind: String,
         targetDuration: Int
     ) {
-        let storeStats = segmentStore?.stats()
+        let storeStats = segmentStore.stats()
         let visibleStart = segmentEntries.first?.start ?? totalMediaDuration
         let visibleEnd = segmentEntries.last?.end ?? totalMediaDuration
         let lastMediaSequence = max(0, segmentEntries.count - 1)
         let longestSegmentDuration = segmentEntries.map(\.duration).max() ?? self.targetSegmentDuration
         onGeneratedMediaStats?(GeneratedMediaStats(
-            generation: storeStats?.generation ?? segmentStore?.generation ?? 0,
+            generation: storeStats.generation,
             rollingBitrateBps: rollingGeneratedBitrateBps,
             totalGeneratedBytes: totalGeneratedSegmentBytes,
             playlistVisibleStartSeconds: visibleStart,
@@ -5988,8 +5959,8 @@ final class LoopbackSegmentWriter {
             playlistBodyBytes: playlistBodyBytes,
             playlistBodyHash: playlistBodyHash,
             playlistKind: playlistKind,
-            tempSpillBytes: storeStats?.tempSpillBytes ?? 0,
-            tempSpillBudgetBytes: storeStats?.tempSpillBudgetBytes ?? 0,
+            tempSpillBytes: storeStats.tempSpillBytes,
+            tempSpillBudgetBytes: storeStats.tempSpillBudgetBytes,
             durationSource: lastSegmentDurationSource
         ))
     }
@@ -6042,13 +6013,8 @@ final class LoopbackSegmentWriter {
             "playlist.m3u8",
             ""
         ].joined(separator: "\n")
-        do {
-            try measure(\.playlistWriteMs, \.playlistWrites) {
-                try writePlaylistArtifact(body, name: "master.m3u8")
-            }
-        } catch {
-            Self.logger.error("master playlist write failed: \(String(describing: error), privacy: .public)")
-            fatalIOError = .fileWriteFailed("master.m3u8", error)
+        measure(\.playlistWriteMs, \.playlistWrites) {
+            writePlaylistArtifact(body, name: "master.m3u8")
         }
     }
 
