@@ -175,13 +175,7 @@ struct OfflineSeriesBrowseView: View {
     }
 
     private func play(_ record: DownloadRecord) {
-        guard record.isPlayableOffline else { return }
-        let leafId = record.leafMediaItemId
-        router.presentOfflinePlayer(
-            downloadId: record.id,
-            contentId: leafId,
-            resumePosition: manager.localProgress(forMediaItemId: leafId)?.position
-        )
+        router.presentOfflinePlayer(for: record, manager: manager)
     }
 }
 
@@ -474,22 +468,11 @@ struct OfflineDownloadDetailView: View {
     }
 
     private func play(_ record: DownloadRecord) {
-        guard record.isPlayableOffline else { return }
-        let leafId = record.leafMediaItemId
-        router.presentOfflinePlayer(
-            downloadId: record.id,
-            contentId: leafId,
-            resumePosition: manager.localProgress(forMediaItemId: leafId)?.position
-        )
+        router.presentOfflinePlayer(for: record, manager: manager)
     }
 
     private func playFromStart(_ record: DownloadRecord) {
-        guard record.isPlayableOffline else { return }
-        router.presentOfflinePlayer(
-            downloadId: record.id,
-            contentId: record.leafMediaItemId,
-            resumePosition: 0
-        )
+        router.presentOfflinePlayer(for: record, manager: manager, fromStart: true)
     }
 }
 

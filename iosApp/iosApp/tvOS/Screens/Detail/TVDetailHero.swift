@@ -263,7 +263,7 @@ private struct TVHeroTitle: View {
     let title: String
 
     var body: some View {
-        let parts = splitHeroTitle(title)
+        let parts = HeroMetadata.splitTitle(title)
         VStack(alignment: .leading, spacing: 4) {
             Text(parts.primary.uppercased())
                 .font(primaryFont)
@@ -294,28 +294,12 @@ private struct TVHeroTitle: View {
     }
 }
 
-/// Split a display title into title + subtitle on the first separator it
-/// contains — e.g. "Monarch: Legacy of Monsters".
-private func splitHeroTitle(_ raw: String) -> (primary: String, subtitle: String?) {
-    let separators: [String] = [": ", " — ", " – ", " - "]
-    for sep in separators {
-        if let range = raw.range(of: sep) {
-            let head = String(raw[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-            let tail = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-            if !head.isEmpty, !tail.isEmpty {
-                return (head, tail)
-            }
-        }
-    }
-    return (raw, nil)
-}
-
 private struct TVEpisodeHierarchyTitle: View {
     let seriesTitle: String
     let episodeTitle: String
 
     var body: some View {
-        let parts = splitHeroTitle(episodeTitle)
+        let parts = HeroMetadata.splitTitle(episodeTitle)
         VStack(alignment: .leading, spacing: 10) {
             Text(seriesTitle.uppercased())
                 .font(seriesFont)
