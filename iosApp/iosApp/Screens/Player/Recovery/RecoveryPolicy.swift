@@ -841,7 +841,12 @@ enum RecoveryPolicy {
         // state and the engine does not report failures into recovery at all
         // (`PlaybackState` carries the `.ended` sub-state).
 
-        // Rung 2 — a visible outage recovery already owns the load.
+        // Rung 2 — a visible outage recovery already owns the load. The wider
+        // window is `PlaybackSessionActor.suppressesEngineFailuresAfterOutage`,
+        // which reaches into the *replacement* load and so cannot live in a
+        // per-load context; this rung catches the failures already queued on
+        // the engine's stream when the recovery was decided, which the actor
+        // dequeues before it raises that window.
         guard context.serverOutageRecovery == nil else { return (nil, context) }
 
         // Rung 3 — `shouldTreatPlaybackErrorAsNaturalEnd`.
@@ -969,8 +974,12 @@ enum RecoveryPolicy {
         // A silent renewal only exists on a proxied direct
         // source that is online and has a watch detail loaded.
         if context.canRenewSourceInBackground {
-            // Single-flight — an in-flight renewal counts as
-            // handled and takes no new action.
+            // The decide-time half of the single-flight: an already-decided
+            // renewal counts as handled and takes no new action. It covers the
+            // window `Sub.renewingSource` cannot — this decision to the
+            // reduction that records it — and is released by the driver's
+            // renewal notes, always *after* the reduction that clears the
+            // sub-state (`PlaybackSessionActor.renewSource`).
             if context.backgroundRenewalInFlight { return (nil, context) }
             // `failBackgroundRenewal`: once the
             // transient budget is spent, escalate to the visible renewal with

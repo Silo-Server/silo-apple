@@ -309,7 +309,11 @@ enum Sub: Equatable {
     case recovering(RecoveryStep)
     case replanning(ReplanIntent)
     case renewingSource(SourceRenewal)
-    case ridingOutOutage(OutageRideThrough)
+    /// The marker only: an origin-outage ride-through owns the load. Its
+    /// numbers — the 90 s budget's origin, the probe backoff, the
+    /// once-per-outage notice latch — are `RecoveryContext.OutageState`'s,
+    /// which is the one thing that writes them.
+    case ridingOutOutage
     case ended
 }
 
@@ -537,8 +541,11 @@ enum TranscodeRestartOrigin: Equatable {
 }
 
 /// A silent direct-session renewal in flight (`attemptBackgroundSessionRenewal`).
-/// The sub-state *is* the single-flight guard the two `*SessionId` echoes
-/// provided.
+///
+/// The sub-state is the *structural* half of the single-flight the two
+/// `*SessionId` echoes provided: at reduce time it refuses a second renewal, or
+/// one that would overwrite an in-flight replan. The decide-time half is
+/// `RecoveryContext.backgroundRenewalInFlight`; the two windows are disjoint.
 struct SourceRenewal: Equatable {
     let reason: String
     let observedPosition: Double
@@ -548,15 +555,6 @@ struct SourceRenewal: Equatable {
     /// answer; the active session id is re-checked against the stale one before
     /// the answer is adopted, and this is that check's data.
     let issuedFor: SessionIdentity
-}
-
-/// An origin-outage ride-through in flight (`handleOriginOutageChanged`).
-struct OutageRideThrough: Equatable {
-    let startedAt: Date
-    /// The next `probeServerHealthOnce` delay (1 → ×2 → capped).
-    let nextProbeDelay: Duration
-    /// Whether the "Reconnecting" notice has already been shown.
-    let noticeShown: Bool
 }
 
 // MARK: - Seeking

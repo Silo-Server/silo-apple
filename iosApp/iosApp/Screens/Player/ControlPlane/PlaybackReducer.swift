@@ -1577,8 +1577,12 @@ enum PlaybackReducer {
 
         case .renewSourceInBackground(let reason):
             guard case .playing(var playing) = state else { return (state, []) }
-            // Single-flight: the sub-state is the guard the `*SessionId` echo
-            // used to provide.
+            // The structural half of the single-flight the `*SessionId` echo
+            // provided, and the only half that can state it: a renewal must
+            // not overwrite an in-flight **replan** either, which
+            // `RecoveryPolicy` does not model on the `.sessionMissing` path.
+            // The policy's `backgroundRenewalInFlight` closes the other window
+            // — decision to reduction — which this switch cannot see.
             switch playing.sub {
             case .renewingSource, .replanning:
                 return (state, [])
@@ -1724,24 +1728,12 @@ enum PlaybackReducer {
             // on `context.outage == nil`) and then re-emits `.rideThroughOutage`
             // after every health probe as the CONTINUATION of the loop (the
             // 0, 1, 2, 4, 8, 8 s sequence). The reducer therefore
-            // accepts the action whether or not it is already riding: a
-            // continuation keeps `startedAt`/`noticeShown` and only moves the
-            // next delay, and ALWAYS schedules the one-shot poll again.
-            let outage: OutageRideThrough
-            if case .ridingOutOutage(let existing) = playing.sub {
-                outage = OutageRideThrough(
-                    startedAt: existing.startedAt,
-                    nextProbeDelay: probeAfter,
-                    noticeShown: existing.noticeShown
-                )
-            } else {
-                outage = OutageRideThrough(
-                    startedAt: now,
-                    nextProbeDelay: probeAfter,
-                    noticeShown: false
-                )
-            }
-            playing.sub = .ridingOutOutage(outage)
+            // accepts the action whether or not it is already riding, and
+            // ALWAYS schedules the one-shot poll again. The budget's origin,
+            // the backoff and the once-per-outage notice latch are
+            // `RecoveryContext.OutageState`'s — the sub-state is the marker,
+            // not a second copy of them.
+            playing.sub = .ridingOutOutage
             return (
                 .playing(playing),
                 [
