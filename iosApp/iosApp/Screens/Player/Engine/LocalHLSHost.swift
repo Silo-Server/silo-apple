@@ -401,23 +401,15 @@ final class LocalHLSHost {
               plan.segmentCount > 0,
               segmentStore != nil else { return }
         let target = max(0, min(index, plan.segmentCount - 1))
-        if let base = activeVODWriterBaseIndex,
-           segmentWriter != nil,
-           target >= base,
-           target <= base + Self.vodProducerCoverageWindow,
-           target <= max(activeVODWriterHeadIndex ?? (base - 1), base - 1)
-                        + Self.vodProducerMarchAllowance {
-            // The running producer covers it AND is close enough that its
-            // forward march delivers before the fetch's miss deadline. The
-            // head-proximity bound matters on long-GOP sources: a seek
-            // landing 3+ heavy segments past the produced head used to ride
-            // "covered by base+8" into an 8 s wait and a 404. This applies
-            // to recovery re-bases too: restarting a covering producer
-            // discards its march and re-produces the same span — the
-            // recovery ladder's player-side nudge/reload is the tool for a
-            // consumer wedge, not producer churn. A genuinely wedged
-            // producer surfaces separately (source stall → premature EOF /
-            // mux failures) and escalates through the watchdog budget.
+        if segmentWriter != nil,
+           let base = activeVODWriterBaseIndex,
+           Self.coversTarget(
+               target: target,
+               base: base,
+               head: activeVODWriterHeadIndex,
+               coverageWindow: Self.vodProducerCoverageWindow,
+               marchAllowance: Self.vodProducerMarchAllowance
+           ) {
             return
         }
         var next: Int? = target
@@ -463,6 +455,30 @@ final class LocalHLSHost {
         onFirstSegmentReady?(
             (url: url, playlistName: playlistName, usesExternalURL: decision.usesExternalURL)
         )
+    }
+
+    /// Whether the producer anchored at `base` (having finalized up to `head`,
+    /// nil before its first segment lands) both covers `target` and is close
+    /// enough that its forward march delivers it before the fetch's miss
+    /// deadline — i.e. whether a restart would be pure churn.
+    ///
+    /// The head-proximity bound matters on long-GOP sources: a seek landing
+    /// 3+ heavy segments past the produced head used to ride "covered by
+    /// base+8" into an 8 s wait and a 404. This applies to recovery re-bases
+    /// too: restarting a covering producer discards its march and re-produces
+    /// the same span — the recovery ladder's player-side nudge/reload is the
+    /// tool for a consumer wedge, not producer churn. A genuinely wedged
+    /// producer surfaces separately (source stall → premature EOF / mux
+    /// failures) and escalates through the watchdog budget.
+    static func coversTarget(
+        target: Int,
+        base: Int,
+        head: Int?,
+        coverageWindow: Int,
+        marchAllowance: Int
+    ) -> Bool {
+        guard target >= base, target <= base + coverageWindow else { return false }
+        return target <= max(head ?? (base - 1), base - 1) + marchAllowance
     }
 
     /// Starting up with AirPlay already engaged: prefer the LAN address, but
