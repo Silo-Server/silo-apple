@@ -330,13 +330,13 @@ class AppRouter {
         popToRoot()
         let auth = AuthService.shared
         if !auth.hasServer {
-            authState = .needsServerSetup
+            setAuthState(.needsServerSetup, reason: "refreshAuthState")
         } else if !auth.isLoggedIn {
-            authState = .needsLogin
+            setAuthState(.needsLogin, reason: "refreshAuthState")
         } else if !auth.hasProfile {
-            authState = .needsProfile
+            setAuthState(.needsProfile, reason: "refreshAuthState")
         } else {
-            authState = .authenticated
+            setAuthState(.authenticated, reason: "refreshAuthState")
         }
     }
 

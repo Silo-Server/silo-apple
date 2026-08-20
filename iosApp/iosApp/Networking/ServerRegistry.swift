@@ -490,64 +490,22 @@ final class ServerRegistry {
     /// log back in. If `serverId` is the active server, the legacy
     /// `profileId` UserDefaults key is cleared too.
     ///
-    /// The registry-wide diagnostics purge always runs: it clears reports and
-    /// consent stored under *older* `server_instance_id`s recorded for this
-    /// registry URL (e.g. after a server restore/reinstall at the same URL),
-    /// which a current-binding-only purge would leave behind. Pass
-    /// `purgeCurrentBinding: false` when the caller already purged the active
-    /// binding while still authenticated (AuthService.signOut does, so the
-    /// binding resolves against a live session) to avoid duplicate current work.
-    func signOut(
-        serverId: String,
-        purgeCurrentBinding: Bool = true,
-        purgeRegistryBindings: Bool = true
-    ) async {
-        #if os(iOS) || os(tvOS)
-        if purgeCurrentBinding, serverId == activeServerId {
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
-        }
-        if purgeRegistryBindings {
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
-        }
-        #endif
+    /// Diagnostics erasure is not done here. `AuthService.signOut` owns both
+    /// purges — the current binding while the session is still live, and the
+    /// registry-wide one that also catches diagnostics recorded under older
+    /// `server_instance_id`s for the same URL — because the current binding can
+    /// only be resolved before `/logout` invalidates the session.
+    func signOut(serverId: String) async {
         await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         // Read *after* the awaits above, not snapshotted at entry: the legacy
         // `profileId` key always describes whichever server is active right
         // now. If a switch lands during those suspensions, this server is no
         // longer the one the key belongs to and clearing it would erase the
-        // destination server's profile selection. The breadcrumb below reuses
-        // the same value so the recorded reason always names the branch that
-        // actually ran.
-        let signsOutActiveServer = serverId == activeServerId
-        if signsOutActiveServer {
+        // destination server's profile selection.
+        if serverId == activeServerId {
             defaults.removeObject(forKey: SharedStorage.profileIdKey)
         }
-        // Deliberately after the purge above, matching `remove`: the purge
-        // wipes the whole journal, so a line written before it is lost, while
-        // one written after explains why the journal starts empty. It is still
-        // consent-gated — the journal re-checks capture on every append.
-        // Signing out a *non-active* server leaves the UI unchanged, so the
-        // two cases are distinguished to keep a later "why am I still signed
-        // in" report answerable.
-        //
-        // Whether this appends depends on the caller, and only one of them can
-        // ever see it. `AuthService.signOut` passes both purge flags false
-        // precisely because it already purged the current binding itself —
-        // and that purge cleared the breadcrumb consent context along with the
-        // last-known status snapshot behind it, so nothing resolves a context
-        // and this line is dropped on the whole active sign-out path. What
-        // survives is the direct caller that never touched the current binding:
-        // a non-active sign-out, where `otherServer` still records. The
-        // `activeServer` reason is kept rather than deleted because the purge
-        // flags are parameters — a future caller that signs out an active
-        // server without pre-purging would land here with the gate open, and
-        // that is the case the reason names.
-        recordRegistryEvent(
-            phase: "signOutServer",
-            outcome: "succeeded",
-            reason: signsOutActiveServer ? "activeServer" : "otherServer"
-        )
     }
 
     /// Remove a server entirely (entry + tokens). If it was active, the
@@ -559,8 +517,7 @@ final class ServerRegistry {
     /// boundary: no `activeProfileWillChange()` runs, the capture gate stays
     /// open, and every outcome below is recorded normally. The registry-wide
     /// purge that does run empties the journal but leaves the consent context
-    /// intact, so a line written after it still appends — the same position
-    /// `signOut` takes, and for the same reason.
+    /// intact, so a line written after it still appends.
     ///
     /// Removing the *active* server cannot record any outcome. The boundary at
     /// the top of that branch closes the capture gate synchronously, and its
