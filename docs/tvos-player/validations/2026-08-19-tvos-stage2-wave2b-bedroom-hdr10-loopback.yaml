@@ -63,7 +63,25 @@ row_7_seek_heavy:  # design §6 row 7 on the wave-2b build; owner-driven with th
     playhead back to tc=playing rate=1.0 at the new position. Zero ERRORs, zero expired seek deadlines,
     zero recovery lines, no suspensions; playback continued clean afterwards.
 
-rows_pending:  # remaining wave-2b device rows; tooling limits, need the owner or server-side action
+server_restart_quick_bounce:  # design §6 row 13, partial: restart ridden out; deep outage deferred by owner
+  result: PASS (invisible ride-out)
+  evidence: >
+    21:03:27-29 owner-approved `compose restart silo` on production while the TV streamed loopback. The
+    ~2 s container gap fell between the backpressure-driven producer's source fetches; the playback session
+    survived (session store not restarted); by 21:05 the producer was 24 segments further along, tc=playing
+    throughout, zero outage/recovery lines. Valid restart result; does NOT exercise the ride-through/probe
+    machinery — the deep-outage variant (stop, 60-90 s, start) is deferred (owner call, other live users).
+
+bonus_route_fallback_on_environmental_failure:  # not a planned row; the bedroom display path provided it
+  result: PASS (ladder correct)
+  evidence: >
+    21:06:02 the loopback item died with the bedroom path's known -11868 while paused (same signature as the
+    08-18 environmental record). Recovery walked the designed rungs: fresh loopback session first (21:06:08,
+    played, HDR criteria applied) → second -11868 within seconds → server replan (suspension on/off clean) →
+    server remux HLS (tc=copy/tca=copy — repackage, not re-encode) stable. Correct escalation, no stuck
+    holds, playback survived on the fallback route.
+
+rows_pending:  # remaining wave-2b device rows; owner deferred tonight — fold into the post-wave-3 §6 full gate
   - "rows 12/13 renewal + server restart → ride-through → replan → resume: needs a production (or dev)
      server restart mid-stream — owner go/no-go; this is the row the wave-2b carry-owner fix lives on
      (watch suspended=[…] clear after the replan)"
