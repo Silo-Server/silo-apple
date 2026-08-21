@@ -65,6 +65,46 @@ enum ApplePlaybackV3Capabilities {
     private static let audiobookOriginalContainers = ["mp4"] + AppleDecodeCapabilities.audioContainers
     private static let commonClaims = ["apple_execution_plan_v1", "authenticated_stream_headers"]
 
+    /// The one descriptor registry for client-executed transformations: the
+    /// exact recipe version and validated claims this build advertises and can
+    /// execute.
+    ///
+    /// Both sides of the contract read this table — `snapshot()` advertises it,
+    /// and `ApplePlaybackV3PlanAdapter.validate` rejects any planned
+    /// transformation whose recipe version differs or whose claims are not a
+    /// subset of the advertised ones. A future recipe version therefore fails
+    /// the plan instead of executing under today's behaviour.
+    static let clientTransformationDescriptors: [PlaybackV3Transformation] = [
+        PlaybackV3Transformation(
+            name: "client_dv7_to_dv81",
+            executor: "client",
+            recipeVersion: "1",
+            validatedClaims: [
+                "profile7_rpu_converted_to_profile81",
+                "hdr10_base_layer_preserved",
+                "enhancement_layer_discarded"
+            ]
+        ),
+        PlaybackV3Transformation(
+            name: "client_dv7_to_hdr10",
+            executor: "client",
+            recipeVersion: "1",
+            validatedClaims: [
+                "dolby_vision_metadata_removed",
+                "hdr10_base_layer_preserved",
+                "enhancement_layer_discarded"
+            ]
+        )
+    ]
+
+    /// The advertised descriptor for a client transformation name, or nil when
+    /// this build claims no such transformation.
+    static func clientTransformationDescriptor(
+        named name: String
+    ) -> PlaybackV3Transformation? {
+        clientTransformationDescriptors.first { $0.name == name }
+    }
+
     /// Containers the `original_http` delivery may be handed, which is a
     /// narrower question than "what can this client demux".
     ///
@@ -125,28 +165,10 @@ enum ApplePlaybackV3Capabilities {
             videoDecode: videoDecode
         )
 
-        let clientTransformations: [PlaybackV3Transformation] = isSimulator ? [] : [
-            PlaybackV3Transformation(
-                name: "client_dv7_to_dv81",
-                executor: "client",
-                recipeVersion: "1",
-                validatedClaims: [
-                    "profile7_rpu_converted_to_profile81",
-                    "hdr10_base_layer_preserved",
-                    "enhancement_layer_discarded"
-                ]
-            ),
-            PlaybackV3Transformation(
-                name: "client_dv7_to_hdr10",
-                executor: "client",
-                recipeVersion: "1",
-                validatedClaims: [
-                    "dolby_vision_metadata_removed",
-                    "hdr10_base_layer_preserved",
-                    "enhancement_layer_discarded"
-                ]
-            )
-        ]
+        // The simulator has no Dolby Vision executor, so it advertises none of
+        // the descriptors; every other device advertises the registry verbatim.
+        let clientTransformations: [PlaybackV3Transformation] =
+            isSimulator ? [] : clientTransformationDescriptors
 
         // The loopback executor demuxes and renders subtitles itself; AVPlayer
         // only carries what the stream already presents as a media selection.
@@ -189,7 +211,7 @@ enum ApplePlaybackV3Capabilities {
                 // non-default audio selection to the loopback, whose writer
                 // maps exactly the selected track; native-direct AVPlayer
                 // cannot apply a catalog index and is blocked for that case.
-                features: ["apple_native_direct", "apple_local_loopback", "apple_playercore", "client_audio_track_selection_v1"],
+                features: ["apple_native_direct", "apple_local_loopback", "client_audio_track_selection_v1"],
                 authHeaderRefresh: true,
                 validatedClaims: commonClaims + ["client_subtitle_overlay"],
                 transformations: clientTransformations

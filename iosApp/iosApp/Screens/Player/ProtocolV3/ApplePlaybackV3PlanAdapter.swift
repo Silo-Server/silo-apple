@@ -33,7 +33,6 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
 }
 
 enum ApplePlaybackV3PlanAdapter {
-    private static let clientTransformations = ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
     private static let runtimeCorrections = [
         "client_dv8_hdr10plus_sanitizer_v1",
         "client_post_resume_video_recovery_v1",
@@ -63,12 +62,10 @@ enum ApplePlaybackV3PlanAdapter {
         } else {
             throw ApplePlaybackV3PlanError.invalidTransport("unsupported protocol \(plan.stream.protocol)")
         }
-        if let unsupported = plan.transformations.first(where: {
-            $0.executor == "client" && !clientTransformations.contains($0.name)
-        }) {
-            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(unsupported.name)
-        }
         let selectedClientTransformations = plan.transformations.filter { $0.executor == "client" }
+        for transformation in selectedClientTransformations {
+            try validateAgainstAdvertisedDescriptor(transformation)
+        }
         if selectedClientTransformations.count > 1 {
             throw ApplePlaybackV3PlanError.invalidClientTransformation(
                 "multiple mutually exclusive client transformations"
@@ -81,6 +78,37 @@ enum ApplePlaybackV3PlanAdapter {
         }
         if let unsupported = plan.runtimeCorrections.first(where: { !runtimeCorrections.contains($0) }) {
             throw ApplePlaybackV3PlanError.unsupportedRuntimeCorrection(unsupported)
+        }
+    }
+
+    /// A client transformation is executable only when the plan echoes exactly
+    /// the descriptor this client advertised: the same recipe version, and no
+    /// claim outside the advertised set.
+    ///
+    /// `ApplePlaybackV3Capabilities.clientTransformationDescriptors` is the one
+    /// registry both the advertisement and this check read, so a server that
+    /// bumps a recipe or adds a claim fails the plan here instead of having the
+    /// old executor silently run under the new contract.
+    private static func validateAgainstAdvertisedDescriptor(
+        _ transformation: PlaybackV3Transformation
+    ) throws {
+        guard let advertised = ApplePlaybackV3Capabilities.clientTransformationDescriptor(
+            named: transformation.name
+        ) else {
+            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(transformation.name)
+        }
+        guard transformation.recipeVersion == advertised.recipeVersion else {
+            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(
+                "\(transformation.name) recipe version \(transformation.recipeVersion)"
+            )
+        }
+        let advertisedClaims = Set(advertised.validatedClaims)
+        if let unadvertised = transformation.validatedClaims.first(where: {
+            !advertisedClaims.contains($0)
+        }) {
+            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(
+                "\(transformation.name) claim \(unadvertised)"
+            )
         }
     }
 
