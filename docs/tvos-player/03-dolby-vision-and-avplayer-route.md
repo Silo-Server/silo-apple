@@ -274,6 +274,6 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
   `prepareBackend(for:)` check.
 - verified (2026-08-20): device evidence for the HDR10 loopback path on the
   post-extraction build is in
-  [`validations/2026-08-19-tvos-stage2-wave2b-bedroom-hdr10-loopback.yaml`](validations/2026-08-19-tvos-stage2-wave2b-bedroom-hdr10-loopback.yaml)
+  [`validations/2026-08-19-tvos-stage2-wave2b-appletv14-1-hdr10-loopback.yaml`](validations/2026-08-19-tvos-stage2-wave2b-appletv14-1-hdr10-loopback.yaml)
   and, for Dolby Vision plus an origin outage,
-  [`validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml).
+  [`validations/2026-08-20-tvos-stage2-wave3-appletv11-1-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-appletv11-1-dv-outage.yaml).

@@ -2,7 +2,7 @@ import XCTest
 @testable import Silo
 
 /// Investigation harness for the ~12 Mbps producer ingest ceiling observed on
-/// device (2026-07-05, HDR10 MKV, silo.arkyncdn.net): a loopback origin that
+/// device (2026-07-05, HDR10 MKV, a production origin): a loopback origin that
 /// serves at line rate, a control read hitting it directly, and the same
 /// sequential read through PlaybackSourceProxy. If the proxy path collapses
 /// here too, the ceiling is in the fill/serve path, not the network.
