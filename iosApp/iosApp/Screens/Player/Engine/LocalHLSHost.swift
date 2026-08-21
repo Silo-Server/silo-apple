@@ -18,11 +18,13 @@ import Foundation
 /// server fires keeps the hop it had (the writer's mux thread and the
 /// server's resolver queue still hop to main in the same place).
 ///
-/// Identity is the host itself. There is no session-id string to compare:
-/// the backend owns exactly one live host, `teardown()` latches
-/// `isTornDown` and nils every closure so a draining writer's late callbacks
-/// land nowhere, and the backend re-checks `loopbackHost === host` in each
-/// closure it installs.
+/// Identity runs on two levels. The host's own is the object: the backend
+/// owns exactly one live host and re-checks `loopbackHost === host` in each
+/// closure it installs, and `teardown()` latches `isTornDown` and nils every
+/// closure. Inside the host it is the producer generation `adoptProducer`
+/// mints: a restart stops the retiring writer by flag without joining its mux
+/// thread, so only the tag each callback carries can tell that writer's late
+/// events from the successor's.
 final class LocalHLSHost {
     /// A VOD plan together with the source it was resolved for.
     ///
@@ -154,6 +156,17 @@ final class LocalHLSHost {
     /// restart builds after it carry the same selection.
     private(set) var selectedBitmapSubtitleStream: Int?
     private(set) var isTornDown = false
+    /// Producer identity. Every writer `adoptProducer` takes on is tagged
+    /// with the value this counter holds after its start, and a writer
+    /// callback acts only while its tag is still current. Bumped for every
+    /// producer AND once more at teardown, so a retiring writer — stopped by
+    /// flag, never joined — matches nothing.
+    ///
+    /// Lock-held because writer callbacks arrive on the mux thread as well as
+    /// on main: `onVODProducerAnchored` re-seeds the store synchronously,
+    /// before its hop, and the bitmap cue tap never hops at all.
+    private let producerGenerationLock = NSLock()
+    private var producerGeneration: UInt64 = 0
 
     init(
         sessionSpec: LoopbackSessionSpec,
@@ -262,18 +275,47 @@ final class LocalHLSHost {
     @MainActor
     private func startWriter(vodBaseIndex: Int = 0, recycledInput: LoopbackInputHandoff? = nil) {
         guard let segmentStore else { return }
-        let sessionSpec = writerSpec
-        let sessionDir = sessionDirectory
+        let spec = writerSpec
         let writer = LoopbackSegmentWriter(
-            sessionSpec: sessionSpec,
-            outputDirectory: sessionDir,
+            sessionSpec: spec,
+            outputDirectory: sessionDirectory,
             segmentStore: segmentStore,
-            vodPlan: vodPlanForCurrentSource(spec: sessionSpec),
+            vodPlan: vodPlanForCurrentSource(spec: spec),
             vodBaseIndex: vodBaseIndex,
             recycledInputHandoff: recycledInput
         )
-        let tap = subtitleTap(sessionSpec.sourceURL)
+        adoptProducer(writer, spec: spec, vodBaseIndex: vodBaseIndex)
+        writer.start()
+    }
+
+    /// Makes `writer` the producer this host listens to, and installs its
+    /// callbacks.
+    ///
+    /// Producer identity is minted here and nowhere else: every callback
+    /// below carries the generation this call opens and acts only while that
+    /// generation is still current. It has to. `requestProducerRestart` stops
+    /// the retiring writer by flag and does not join its mux thread, so that
+    /// thread keeps emitting for a while — untagged, its events would drag
+    /// the store's consumer window back to the retired base, overwrite the
+    /// successor's coverage bookkeeping or plan, and fail the successor's
+    /// session with the error its own cancellation produced. The tag is the
+    /// single owner of that decision; there is no second latch.
+    ///
+    /// Kept apart from the writer's construction so the tests can drive the
+    /// callbacks with writers they never start.
+    @MainActor
+    func adoptProducer(
+        _ writer: LoopbackSegmentWriter,
+        spec: LoopbackSessionSpec,
+        vodBaseIndex: Int
+    ) {
+        let generation = beginProducerGeneration()
+        let store = segmentStore
+        let tap = subtitleTap(spec.sourceURL)
         writer.isSourceOutageActive = isSourceOutageActive
+        // The text tap is source-keyed and deliberately outlives a producer:
+        // it dedups the region a restart re-reads, so a draining writer's
+        // cues are cues this source's store already wants. No tag needed.
         writer.onSubtitleTapTracks = { [weak tap] infos in
             tap?.registerTracks(infos)
         }
@@ -282,15 +324,19 @@ final class LocalHLSHost {
         }
         writer.onBitmapSubtitleTapTracks = { [weak self] indices in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.onBitmapSubtitleTapTracks?(indices)
             }
         }
         // Mux thread; the writer only decodes (and therefore only emits)
         // while a stream is selected, and SubtitleSession serialises feeds
         // on its own queue — same pattern as the extractor's decode thread.
+        // Tagged on that thread: bitmap cues carry a positional trim, so a
+        // retired producer's would rewrite the plane under the successor.
         writer.onBitmapSubtitleTapCue = { [weak self] streamIndex, cues, trimActiveAt in
-            self?.onBitmapSubtitleTapCue?(streamIndex, cues, trimActiveAt)
+            guard let self, self.isCurrentProducer(generation) else { return }
+            self.onBitmapSubtitleTapCue?(streamIndex, cues, trimActiveAt)
         }
         // Selection survives producer restarts: every new writer inherits it.
         writer.setBitmapSubtitleTapStream(selectedBitmapSubtitleStream)
@@ -299,15 +345,18 @@ final class LocalHLSHost {
         // Seed the consumer window at the producer's base so a resumed
         // or restarted session isn't parked by backpressure before the
         // player's first fetch declares a real target.
-        segmentStore.declareVODTarget(vodBaseIndex)
+        store?.declareVODTarget(vodBaseIndex)
         // A resume-first session anchors itself once the plan resolves;
         // re-seed from the writer's TRUE base or the producer parks
         // against a window still sitting at 0 while AVPlayer's resume
-        // fetches strand (the living-room resume startup timeout).
-        writer.onVODProducerAnchored = { [weak self, weak segmentStore] base in
-            segmentStore?.declareVODTarget(base)
+        // fetches strand (the living-room resume startup timeout). The seed
+        // is synchronous on the mux thread, so the tag is checked there too.
+        writer.onVODProducerAnchored = { [weak self, weak store] base in
+            guard let self, self.isCurrentProducer(generation) else { return }
+            store?.declareVODTarget(base)
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.activeVODWriterBaseIndex = base
                 self.activeVODWriterHeadIndex = base - 1
             }
@@ -317,7 +366,8 @@ final class LocalHLSHost {
         // vodProducerMarchAllowance of what has actually been written.
         writer.onSegmentAppended = { [weak self] segmentIndex, _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.activeVODWriterHeadIndex = max(
                     self.activeVODWriterHeadIndex ?? segmentIndex,
                     segmentIndex
@@ -326,10 +376,11 @@ final class LocalHLSHost {
         }
         writer.onSegmentPlanResolved = { [weak self] plan in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.resolvedVODPlan = ResolvedVODPlan(
                     plan: plan,
-                    sourceURL: sessionSpec.sourceURL
+                    sourceURL: spec.sourceURL
                 )
                 self.segmentServer?.setVODSegmentCount(plan.segmentCount)
                 // The item timeline's origin is the plan anchor; the initial
@@ -340,49 +391,80 @@ final class LocalHLSHost {
         }
         writer.onFirstSegmentReady = { [weak self] playlistName in
             DispatchQueue.main.async {
-                self?.handleFirstSegmentReady(playlistName: playlistName)
+                guard let self, self.isCurrentProducer(generation) else { return }
+                self.handleFirstSegmentReady(playlistName: playlistName)
             }
         }
         writer.onFinished = { [weak self] error in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.onFinished?(error)
             }
         }
         writer.onSourceDownloadStats = { [weak self] bitsPerSecond, totalBytesRead in
             DispatchQueue.main.async {
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.onSourceDownloadStats?(bitsPerSecond, totalBytesRead)
             }
         }
         writer.onGeneratedMediaStats = { [weak self] generatedStats in
             DispatchQueue.main.async {
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.onGeneratedMediaStats?(generatedStats)
             }
         }
         writer.onBridgedAudioAnchored = { [weak self] seconds in
             DispatchQueue.main.async {
-                guard let self, !self.isTornDown else { return }
+                guard let self, !self.isTornDown,
+                      self.isCurrentProducer(generation) else { return }
                 self.onBridgedAudioAnchored?(seconds)
             }
         }
         // HDR10+ badge: install the one-shot SEI scan only for plain HEVC PQ
         // sessions whose label currently reads "HDR10" and has not flipped.
         // DV Profile 8 sources keep their validated labels (scan not installed).
-        if sessionSpec.videoMode == .passthroughHEVC,
-           sessionSpec.manifestMetadata.videoRange != "HLG",
-           sessionSpec.manifestMetadata.videoRange != "SDR",
+        if spec.videoMode == .passthroughHEVC,
+           spec.manifestMetadata.videoRange != "HLG",
+           spec.manifestMetadata.videoRange != "SDR",
            !(hasDetectedHDR10Plus?() ?? false) {
             writer.onHDR10PlusMetadataDetected = { [weak self] in
                 DispatchQueue.main.async {
-                    guard let self, !self.isTornDown else { return }
+                    guard let self, !self.isTornDown,
+                          self.isCurrentProducer(generation) else { return }
                     self.onHDR10PlusMetadataDetected?()
                 }
             }
         }
         segmentWriter = writer
-        writer.start()
+    }
+
+    /// Opens a producer generation, retiring every older one, and returns the
+    /// tag the new producer's callbacks carry.
+    private func beginProducerGeneration() -> UInt64 {
+        producerGenerationLock.lock()
+        defer { producerGenerationLock.unlock() }
+        producerGeneration &+= 1
+        return producerGeneration
+    }
+
+    /// Retires the running producer without starting another — teardown's
+    /// half of the same tag.
+    private func retireProducerGeneration() {
+        producerGenerationLock.lock()
+        producerGeneration &+= 1
+        producerGenerationLock.unlock()
+    }
+
+    /// Whether the producer tagged `generation` is still the one this host
+    /// listens to. Read from the mux thread as well as from main, hence the
+    /// lock.
+    private func isCurrentProducer(_ generation: UInt64) -> Bool {
+        producerGenerationLock.lock()
+        defer { producerGenerationLock.unlock() }
+        return producerGeneration == generation
     }
 
     /// The segment plan resolved for THIS source. Restarted producers receive
@@ -572,11 +654,13 @@ final class LocalHLSHost {
     /// callbacks land nowhere. A host is never restarted after this.
     ///
     /// The writer's own callbacks are deliberately left alone: `isTornDown`
-    /// latches first and every closure this host installs on the writer bails
-    /// on it (directly, or through `handleFirstSegmentReady`), so a draining
-    /// producer's late callbacks are already inert.
+    /// latches first and the producer generation is retired with it, so every
+    /// closure this host installed on a writer bails — including the two that
+    /// never reach main (the anchored store seed and the bitmap cue tap),
+    /// which `isTornDown` alone could not gate.
     func teardown() {
         isTornDown = true
+        retireProducerGeneration()
         let writer = segmentWriter
         segmentWriter = nil
         segmentServer?.stop()

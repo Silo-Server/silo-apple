@@ -8,8 +8,9 @@ import XCTest
 /// that has to outlive a session, and a teardown that releases everything.
 ///
 /// No producer is ever started here: `LoopbackSegmentWriter` needs a real
-/// FFmpeg input, and every behaviour these tests pin is reachable before the
-/// first writer exists.
+/// FFmpeg input. The producer-generation cases do construct writers — the
+/// host installs its callbacks on them and the test fires those callbacks
+/// exactly as a live mux thread would — but none of them is ever `start()`ed.
 final class LocalHLSHostTests: XCTestCase {
     // MARK: - Harness
 
@@ -93,6 +94,34 @@ final class LocalHLSHostTests: XCTestCase {
             subtitleTap: { _ in tap }
         )
     }
+
+    /// A writer the host can adopt. Never started: its callbacks are what
+    /// these tests drive, and starting it would need a real FFmpeg input.
+    private func makeWriter(
+        spec: LoopbackSessionSpec,
+        vodBaseIndex: Int
+    ) -> LoopbackSegmentWriter {
+        LoopbackSegmentWriter(
+            sessionSpec: spec,
+            outputDirectory: makeSessionDirectory(),
+            segmentStore: LoopbackSegmentStore(
+                generation: 1,
+                spillPolicy: .disabled(reason: "test")
+            ),
+            vodBaseIndex: vodBaseIndex
+        )
+    }
+
+    /// The host's writer callbacks hop to main before they touch its state.
+    /// `wait` spins the run loop, and the main queue is FIFO, so everything
+    /// enqueued before this block has run by the time it returns.
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+    }
+
+    private struct RetiredProducerError: Error {}
 
     // MARK: - Playlist URL choice (handleFirstSegmentReady's first half)
 
@@ -295,6 +324,84 @@ final class LocalHLSHostTests: XCTestCase {
 
         XCTAssertNil(host.activeVODWriterBaseIndex)
         XCTAssertFalse(host.restartCoalescer.isInFlight)
+    }
+
+    // MARK: - Producer generation
+
+    /// `requestProducerRestart` stops the retiring writer by flag and never
+    /// joins its mux thread, so that thread keeps firing at the host after
+    /// its successor is already producing. None of those events may be
+    /// observed: they would drag the store's consumer window back to the
+    /// retired base, overwrite the successor's coverage bookkeeping or its
+    /// plan, or fail the successor's session with the error the retiring
+    /// writer's own cancellation produced.
+    @MainActor
+    func testRetiredProducerCallbacksAreIgnoredAndTheLiveOnesApply() throws {
+        let spec = makeSpec()
+        let host = makeHost(spec: spec)
+        defer { host.teardown() }
+
+        let retiring = makeWriter(spec: spec, vodBaseIndex: 0)
+        host.adoptProducer(retiring, spec: spec, vodBaseIndex: 0)
+        let live = makeWriter(spec: spec, vodBaseIndex: 6)
+        host.adoptProducer(live, spec: spec, vodBaseIndex: 6)
+
+        // Adopting the successor is what publishes its base; the head sits
+        // one behind until it finalizes a segment.
+        XCTAssertEqual(host.activeVODWriterBaseIndex, 6)
+        XCTAssertEqual(host.activeVODWriterHeadIndex, 5)
+
+        var publishedPlans: [Int] = []
+        host.onSegmentPlanResolved = { publishedPlans.append($0.segmentCount) }
+        var finishes: [String] = []
+        host.onFinished = { finishes.append($0.map { String(describing: $0) } ?? "eof") }
+        var bitmapTracks: [[Int]] = []
+        host.onBitmapSubtitleTapTracks = { bitmapTracks.append($0) }
+
+        // The live producer's events are the ones that count...
+        live.onVODProducerAnchored?(7)
+        live.onSegmentAppended?(9, 36)
+        live.onSegmentPlanResolved?(makePlan(segmentCount: 12))
+        live.onBitmapSubtitleTapTracks?([2])
+        live.onFinished?(nil)
+        // ...and then the retired producer's mux thread catches up.
+        retiring.onVODProducerAnchored?(0)
+        retiring.onSegmentAppended?(99, 400)
+        retiring.onSegmentPlanResolved?(makePlan(segmentCount: 3))
+        retiring.onBitmapSubtitleTapTracks?([5])
+        retiring.onFinished?(RetiredProducerError())
+        drainMainQueue()
+
+        XCTAssertEqual(host.activeVODWriterBaseIndex, 7)
+        XCTAssertEqual(host.activeVODWriterHeadIndex, 9)
+        XCTAssertEqual(host.resolvedVODPlan?.plan.segmentCount, 12)
+        XCTAssertEqual(host.resolvedVODPlan?.sourceURL, spec.sourceURL)
+        XCTAssertEqual(publishedPlans, [12])
+        XCTAssertEqual(finishes, ["eof"], "a retired producer must not fail the live session")
+        XCTAssertEqual(bitmapTracks, [[2]])
+    }
+
+    /// The bitmap cue tap fires on the mux thread and never hops, so its tag
+    /// is checked there — the same check that keeps a retired producer's
+    /// anchor from re-seeding the store's consumer window.
+    @MainActor
+    func testRetiredProducerBitmapCuesAreIgnoredOnTheMuxThread() throws {
+        let spec = makeSpec()
+        let host = makeHost(spec: spec)
+        defer { host.teardown() }
+
+        let retiring = makeWriter(spec: spec, vodBaseIndex: 0)
+        host.adoptProducer(retiring, spec: spec, vodBaseIndex: 0)
+        let live = makeWriter(spec: spec, vodBaseIndex: 6)
+        host.adoptProducer(live, spec: spec, vodBaseIndex: 6)
+
+        var fedStreams: [Int] = []
+        host.onBitmapSubtitleTapCue = { streamIndex, _, _ in fedStreams.append(streamIndex) }
+
+        live.onBitmapSubtitleTapCue?(2, [], nil)
+        retiring.onBitmapSubtitleTapCue?(5, [], 12)
+
+        XCTAssertEqual(fedStreams, [2])
     }
 
     // MARK: - The narrow operations the adapter reaches for
