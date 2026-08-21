@@ -1135,6 +1135,19 @@ struct SubtitleUrl: Codable, Identifiable, Hashable {
         self.fontBundleUrl = fontBundleUrl
         self.url = url
     }
+
+    /// A bitmap subtitle codec (PGS/DVD/DVB/XSUB). Bitmap subtitles are only
+    /// renderable by the bitmap pipeline — the embedded writer/tap on the
+    /// loopback and native-direct routes, or a bitmap-capable path on server
+    /// HLS. They can never be drawn by the text (libass) sidecar route, so a
+    /// `.sup` sidecar must not be treated as a text sidecar.
+    var isBitmapCodec: Bool {
+        guard let codec = codec?.lowercased() else { return false }
+        return codec.contains("pgs") || codec.contains("hdmv")
+            || codec.contains("dvdsub") || codec.contains("dvd_sub")
+            || codec.contains("dvbsub") || codec.contains("dvb_sub")
+            || codec.contains("xsub")
+    }
 }
 
 // MARK: - Watch Detail

@@ -184,8 +184,20 @@ extension SubtitleSelection {
         let selectedRenderedSidecarIndex = planned.sidecarTrackId
             .flatMap(SubtitleTrackIdSpace.sidecarIndex(from:))
         return urls.filter { subtitle in
-            subtitle.source?.localizedCaseInsensitiveCompare("embedded") != .orderedSame
-                || subtitle.index == selectedRenderedSidecarIndex
+            guard subtitle.source?.localizedCaseInsensitiveCompare("embedded") == .orderedSame else {
+                return true
+            }
+            // This route renders embedded tracks natively (loopback/native
+            // bitmap tap or text extractor), so the server's embedded-source
+            // sidecars are redundant — drop them. The one exception is a text
+            // sidecar the plan explicitly rendered server-side, kept so a
+            // user's chosen server-rendered copy survives the route.
+            //
+            // A bitmap (PGS/DVD/DVB) embedded sidecar is never kept, even when
+            // planned: the text sidecar path cannot draw a `.sup`, and keeping
+            // it shadowed the natively-renderable embedded row and stranded the
+            // picker on an unrenderable sidecar (blank subtitles on loopback).
+            return subtitle.index == selectedRenderedSidecarIndex && !subtitle.isBitmapCodec
         }
     }
 }

@@ -323,7 +323,25 @@ struct TVDetailActionRow<MoreMenu: View>: View {
             guard initialFocusSeasonKey == seasonKey else { return }
         }
         didResetInitialPlayFocus = true
-        resetFocus(in: focusNamespace)
+        // The geometry callback runs inside the layout pass, where the focus
+        // engine may not have attached the freshly laid-out Play pill yet — a
+        // reset issued here can resolve to the geometrically higher synopsis
+        // and the one-shot used to be consumed regardless. Defer out of the
+        // transaction and verify the reset actually landed, retrying a few
+        // ticks before giving up.
+        Task { @MainActor in
+            for attempt in 0..<3 {
+                if playFocused.wrappedValue { return }
+                // The user beat the reset onto another button in this row —
+                // that's deliberate; don't yank focus back to Play.
+                if rowFocused.wrappedValue { return }
+                if attempt > 0 {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                resetFocus(in: focusNamespace)
+                await Task.yield()
+            }
+        }
     }
 }
 

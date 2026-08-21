@@ -1258,6 +1258,52 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
+    /// A bitmap (PGS) embedded-source sidecar is dropped on an embedded-
+    /// extraction route even when the plan selected it: the text sidecar path
+    /// cannot render a `.sup`, and keeping it shadowed the natively-rendered
+    /// embedded bitmap tap, leaving the picker on an unrenderable track (the
+    /// "no subtitles on loopback" bug). Text embedded sidecars are unaffected.
+    func testV3RouteSubtitleFilteringDropsSelectedBitmapEmbeddedSidecar() {
+        let external = makeSubtitleUrl(index: 3, source: "external")
+        let selectedBitmapEmbedded = makeSubtitleUrl(
+            index: 8, source: "embedded", codec: "hdmv_pgs_subtitle"
+        )
+        let urls = [external, selectedBitmapEmbedded]
+
+        // Loopback/native route: the planned PGS embedded sidecar is dropped,
+        // so the embedded bitmap tap owns rendering.
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: true,
+                planned: .planned(selectedSubtitleIndex: 8, subtitleMode: "render")
+            ).map(\.index),
+            [3]
+        )
+
+        // A planned TEXT embedded sidecar at the same index is still kept.
+        let selectedTextEmbedded = makeSubtitleUrl(index: 8, source: "embedded", codec: "ass")
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                [external, selectedTextEmbedded],
+                routeUsesEmbeddedExtraction: true,
+                planned: .planned(selectedSubtitleIndex: 8, subtitleMode: "render")
+            ).map(\.index),
+            [3, 8]
+        )
+
+        // Server-HLS route (no embedded extraction) keeps the PGS sidecar —
+        // it needs the server's `.sup` there.
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: false,
+                planned: .planned(selectedSubtitleIndex: 8, subtitleMode: "render")
+            ).map(\.index),
+            [3, 8]
+        )
+    }
+
     func testAudiobookFeaturesDoNotClaimSeekReanchor() {
         XCTAssertFalse(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
@@ -1759,11 +1805,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
-    private func makeSubtitleUrl(index: Int, source: String) -> SubtitleUrl {
+    private func makeSubtitleUrl(index: Int, source: String, codec: String = "srt") -> SubtitleUrl {
         SubtitleUrl(
             index: index,
             language: "en",
-            codec: "srt",
+            codec: codec,
             label: "English",
             source: source,
             forced: false,
