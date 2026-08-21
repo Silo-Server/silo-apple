@@ -590,7 +590,12 @@ final class PlaybackReducerTests: XCTestCase {
         XCTAssertEqual(effects, [
             .seek(request, loadID),
             .schedule(.seekFilterTimeout, after: .seconds(5), loadID),
+            .publish(PlaybackReducer.presentation(for: next, isLoading: nil)),
         ])
+        guard case .publish(let presentation) = effects[2] else {
+            return XCTFail("expected the optimistic jump to publish")
+        }
+        XCTAssertEqual(presentation.currentTime, 300, "the seek target reaches the scrubber on the actor hop, not on the next engine tick")
     }
 
     /// `beginReanchorSeekUI` (PVM:5063-5076) arms the origin/target filter and
@@ -609,7 +614,10 @@ final class PlaybackReducerTests: XCTestCase {
         // no timeout — and *cancels* the one an earlier plain seek may have
         // left running, because the re-anchor filter is released by the
         // rebuild that follows, not by a clock.
-        XCTAssertEqual(effects, [.cancelTimer(.seekFilterTimeout)])
+        XCTAssertEqual(effects, [
+            .cancelTimer(.seekFilterTimeout),
+            .publish(PlaybackReducer.presentation(for: next, isLoading: nil)),
+        ])
         guard let request = playing(next)?.seek else {
             return XCTFail("expected the filter to be armed")
         }
@@ -655,12 +663,15 @@ final class PlaybackReducerTests: XCTestCase {
             )
         )
 
-        let (_, effects) = PlaybackReducer.reduce(
+        let (reanchored, effects) = PlaybackReducer.reduce(
             seeking,
             intent: .seek(targetSeconds: 900, origin: .reanchor),
             now: now.addingTimeInterval(1)
         )
-        XCTAssertEqual(effects, [.cancelTimer(.seekFilterTimeout)])
+        XCTAssertEqual(effects, [
+            .cancelTimer(.seekFilterTimeout),
+            .publish(PlaybackReducer.presentation(for: reanchored, isLoading: nil)),
+        ])
     }
 
     /// The `onTimeChange` filter: reports still closer to the pre-seek

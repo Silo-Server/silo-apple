@@ -670,10 +670,15 @@ enum PlaybackReducer {
             // the rebuild window and drop the filter early, letting the
             // outgoing item's drainage frames drag the scrubber back off the
             // anchor.
-            return (.playing(playing), [.cancelTimer(.seekFilterTimeout)])
+            let next = PlaybackState.playing(playing)
+            return (next, [
+                .cancelTimer(.seekFilterTimeout),
+                .publish(presentation(for: next, isLoading: nil)),
+            ])
         }
+        let next = PlaybackState.playing(playing)
         return (
-            .playing(playing),
+            next,
             [
                 .seek(request, playing.loadID),
                 // `commitSeek`'s safety valve: drop the filter if no post-seek
@@ -683,6 +688,14 @@ enum PlaybackReducer {
                     after: .seconds(seekFilterTimeoutSeconds),
                     playing.loadID
                 ),
+                // The optimistic jump has to reach the scrubber *now*: the
+                // backend mutes its periodic observer while the seek is
+                // pending, so the coalesced transport publish that normally
+                // carries `positionSeconds` would not run until the seek
+                // completes — and the shell drops the scrub preview on
+                // commit, which left the dot parked at the pre-seek position
+                // for the whole seek latency.
+                .publish(presentation(for: next, isLoading: nil)),
             ]
         )
     }

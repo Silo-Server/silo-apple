@@ -3787,6 +3787,14 @@ class PlayerViewModel {
         }
 
         send(.seek(targetSeconds: target, origin: seekOrigin(for: source)))
+        // Echo the reducer's optimistic jump before the scrub preview comes
+        // down. `send` is an actor hop, so for at least one run-loop turn the
+        // published `currentTime` still holds the pre-seek playhead; showing
+        // it made the dot snap back on every skip, and a follow-up tap in
+        // that window rebased on the stale position and lost the first skip.
+        // The reducer's publish carries the same value, so the merge is a
+        // no-op when it lands.
+        currentTime = target
         isScrubbing = false
         Self.logger.info(
             "[CMP-SEEK] commit dispatched source=\(source, privacy: .public) origin=\(self.currentTime, privacy: .public) target=\(target, privacy: .public)"
