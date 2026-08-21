@@ -1732,8 +1732,7 @@ final class PlaybackReducerTests: XCTestCase {
                 contentId: "content-1",
                 position: 100,
                 duration: 1000,
-                forceOverwrite: true,
-                loadID
+                forceOverwrite: true
             )
         )
         // A recovery load keeps the outage timer and the interruption timer.
@@ -3160,5 +3159,149 @@ final class PlaybackReducerTests: XCTestCase {
 
         XCTAssertNotEqual(original, ControlPlaneFixtures.makeRequest())
         XCTAssertEqual(ControlPlaneFixtures.makeRequest(), ControlPlaneFixtures.makeRequest())
+    }
+
+    // MARK: - Outgoing-session writes
+
+    /// Every load boundary owes the session it is leaving one last write, and
+    /// every one of them is emitted while the state has already been rebound to
+    /// the replacement load — `.preparing(identity: nil, newLoadID)`.
+    ///
+    /// That is the whole reason `PlaybackSessionActor` runs these two effects
+    /// against the identity they carry (compared with the session the *bridge*
+    /// is holding) instead of against `state`: a check against the state could
+    /// only ever refuse them, which is what silently cost every next-episode,
+    /// retry and tvOS resume up to one heartbeat of resume position, and lost
+    /// the visible renewal its force-overwrite write entirely. The ordering
+    /// claim is the other half: each write precedes the `.startSession` that
+    /// mints the replacement session, so the bridge still holds the outgoing
+    /// one when the actor gets there.
+    func testEveryLoadBoundaryWritesTheOutgoingPositionBeforeStartingTheNextSession() {
+        let identity = ControlPlaneFixtures.makeIdentity()
+        let loadID = LoadID()
+        let playing = makePlaying(loadID: loadID, identity: identity)
+        let outgoingReport = Effect.reportProgress(identity, position: 100, isPaused: true)
+
+        // A reload and the next episode differ only in origin.
+        for origin in [LoadOrigin.userInitiated, .autoplay] {
+            let (next, effects) = PlaybackReducer.reduce(
+                playing,
+                intent: .load(
+                    ControlPlaneFixtures.makeRequest(contentId: "content-2"),
+                    origin: origin,
+                    options: LoadOptions(progressPosition: 100)
+                ),
+                now: now
+            )
+            XCTAssertNil(
+                next.identity,
+                "\(origin): the replacement load has no session yet, so the state cannot answer for the outgoing one"
+            )
+            assertPrecedesStartSession(outgoingReport, in: effects, on: "\(origin) load")
+        }
+
+        // Retry from the error screen: the terminal path let the session lapse
+        // rather than stopping it, so the bridge still has it.
+        let (failed, _) = PlaybackReducer.reduce(
+            playing,
+            event: .recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID),
+            now: now
+        )
+        let (_, retryEffects) = PlaybackReducer.reduce(failed, intent: .retry, now: now)
+        assertPrecedesStartSession(outgoingReport, in: retryEffects, on: "retry")
+
+        // The visible renewal writes against the *content*: the session it
+        // would otherwise report to is the one that vanished.
+        let (_, renewalEffects) = PlaybackReducer.reduce(
+            playing,
+            event: .recovery(.renewSessionFresh(reason: "progress"), loadID),
+            now: now
+        )
+        assertPrecedesStartSession(
+            .syncProgress(contentId: "content-1", position: 100, duration: 1000, forceOverwrite: true),
+            in: renewalEffects,
+            on: "visible renewal"
+        )
+    }
+
+    /// The fresh-load slot has one owner, and every batch that cancels it hands
+    /// the load on: it either installs the replacement in the same batch or
+    /// leaves `.preparing` altogether. Without that pairing a cancelled load
+    /// task leaves the player behind the loading overlay with nothing left to
+    /// finish it — which is precisely the state a superseded effect batch used
+    /// to be able to force.
+    func testEveryFreshLoadCancelEitherStartsAReplacementOrLeavesPreparing() {
+        let loadID = LoadID()
+        let preparing = makePreparing(loadID: loadID, phase: .resolvingSession)
+        let playingState = makePlaying(loadID: loadID)
+        let (failed, _) = PlaybackReducer.reduce(
+            playingState,
+            event: .recovery(.fail(PlaybackFailure(legacyMessage: "boom")), loadID),
+            now: now
+        )
+        let suspended = PlaybackState.suspended(
+            SuspendedContext(request: ControlPlaneFixtures.makeRequest(), resumePosition: 617)
+        )
+
+        let outcomes: [(String, (PlaybackState, [Effect]))] = [
+            ("a second load while preparing", PlaybackReducer.reduce(
+                preparing,
+                intent: .load(ControlPlaneFixtures.makeRequest(), origin: .userInitiated, options: LoadOptions()),
+                now: now
+            )),
+            ("retry", PlaybackReducer.reduce(failed, intent: .retry, now: now)),
+            ("resume from suspend", PlaybackReducer.reduce(suspended, intent: .resumeSuspended, now: now)),
+            ("tvOS background suspend", PlaybackReducer.scenePhase(
+                preparing, phase: .background, platform: .tvOS, now: now
+            )),
+            ("dismiss", PlaybackReducer.reduce(preparing, intent: .dismiss, now: now)),
+            ("visible renewal", PlaybackReducer.reduce(
+                playingState,
+                event: .recovery(.renewSessionFresh(reason: "progress"), loadID),
+                now: now
+            )),
+        ]
+
+        var covered = 0
+        for (name, (next, effects)) in outcomes {
+            guard effects.contains(.cancelTimer(.freshLoad)) else { continue }
+            covered += 1
+            let startsReplacement = effects.contains { effect in
+                if case .startSession = effect { return true }
+                return false
+            }
+            var stillPreparing = false
+            if case .preparing = next { stillPreparing = true }
+            XCTAssertTrue(
+                startsReplacement || !stillPreparing,
+                "\(name) cancelled the fresh-load task and left the state in .preparing with nothing to finish it"
+            )
+        }
+        XCTAssertEqual(covered, outcomes.count, "every listed path is supposed to take the fresh-load slot")
+    }
+
+    private func assertPrecedesStartSession(
+        _ effect: Effect,
+        in effects: [Effect],
+        on path: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let writeIndex = effects.firstIndex(of: effect) else {
+            return XCTFail("\(path): the outgoing write was never emitted", file: file, line: line)
+        }
+        guard let startIndex = effects.firstIndex(where: { candidate in
+            if case .startSession = candidate { return true }
+            return false
+        }) else {
+            return XCTFail("\(path): no replacement session was started", file: file, line: line)
+        }
+        XCTAssertLessThan(
+            writeIndex,
+            startIndex,
+            "\(path): the outgoing write must complete before the replacement session is minted",
+            file: file,
+            line: line
+        )
     }
 }
