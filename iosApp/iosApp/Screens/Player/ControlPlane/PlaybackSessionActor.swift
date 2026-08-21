@@ -1,30 +1,32 @@
 //
 //  PlaybackSessionActor.swift
 //
-//  Stage 2 wave 3 — the playback control plane's one owner.
-//
-//  Before this wave `PlayerViewModel` *was* the control plane: it held the
-//  load/replan/renewal/outage/scene-phase decisions, three generation counters
-//  and five session-id mirrors, and made each decision inline in whichever
-//  method observed the trigger. This actor replaces that with the shape
-//  design §1 specifies: it holds `PlaybackState`, it is the only caller of
-//  `PlaybackReducer`, and it runs the reducer's `[Effect]` with every effect
-//  conditional on the `LoadID` / `SessionIdentity` it carries (design §4 I2).
+//  The playback control plane's one owner: it holds `PlaybackState`, it is the
+//  only caller of `PlaybackReducer`, and it runs the reducer's `[Effect]`.
 //
 //  What is *not* here is any decision. Load/seek/replan/scene-phase decisions
 //  are `PlaybackReducer`'s; recovery decisions are `RecoveryPolicy`'s, reached
-//  only through the load's `RecoveryDriver` (design §4 I3). The actor routes and
-//  runs, and hands the *presentation* half of every event to the view-model
-//  shell so the console breadcrumbs, Now Playing pushes, next-up presentation
-//  and track application stay exactly where they were.
+//  only through the load's `RecoveryDriver`. The actor routes and runs, and
+//  hands the *presentation* half of every event to the view-model shell so the
+//  console breadcrumbs, Now Playing pushes, next-up presentation and track
+//  application stay exactly where they were.
 //
-//  Isolation: a real `actor`. Its collaborators are not — `PlayerViewModel`,
+//  **Effect identity.** Every effect is conditional on the identity it carries:
+//  a `LoadID`, a `SessionIdentity`, or — for the four that carry neither of
+//  those and mutate the shell, the registry or this actor's own state
+//  (`.publish`, `.cancelTimer`, `.disposeEngine`, `.startSession`) — the
+//  `transitionEpoch` of the transition that produced the batch. A batch is a
+//  consequence of exactly one committed transition, and Swift actors are
+//  re-entrant at every `await`, so a batch that suspends can find a newer
+//  transition already committed and executed. It then stops where it is; it
+//  never undoes what the newer one did. See `transitionEpoch`.
+//
+//  Isolation: a real `actor`. Its collaborators are not —
+//  `PlaybackControlPlaneShell`'s one production conformer (`PlayerViewModel`),
 //  `PlaybackEngineSession` and `AVPlayerBackend` are nonisolated, main-queue
-//  affine classes (design §2.8 wave-2b as-built) — so every shell entry point
-//  the actor calls is `@MainActor` and the `await` performs the hop. That hop is
-//  the one behaviour difference this wave adds beyond design §7: a view command
-//  reaches the engine a run-loop turn later than when the view model called the
-//  backend inline.
+//  affine classes — so every shell entry point the actor calls is `@MainActor`
+//  and the `await` performs the hop. A view command therefore reaches the
+//  engine a run-loop turn later than an inline backend call would.
 //
 //  Ordering between two shell commands is preserved by *where they are
 //  enqueued*, not by the actor: an actor serialises execution, it does not
@@ -50,6 +52,74 @@ struct EngineEventReduction: Sendable, Equatable {
     var wasPlaying: Bool
 }
 
+/// Everything the control plane needs from its presentation shell.
+///
+/// `PlayerViewModel` is the only production conformer and the seam exists for
+/// one reason: the actor's lifecycle rules are about *when* a shell call may
+/// still be made, and the only way to pin "may not" is a shell whose calls can
+/// be held open across a second transition
+/// (`PlaybackSessionActorLifecycleTests`). It adds no indirection at runtime —
+/// the actor calls the same methods it called before.
+///
+/// Every requirement is `async`: the shell is a main-queue-affine class, the
+/// actor always pays the hop, and a synchronous `@MainActor` witness satisfies
+/// an `async` requirement unchanged.
+protocol PlaybackControlPlaneShell: AnyObject {
+
+    // Presentation
+    @MainActor func applyPresentation(_ presentation: Presentation, transportOnly: Bool) async
+    @MainActor func applyEngineEventToPresentation(
+        _ event: EngineEvent,
+        reduction: EngineEventReduction
+    ) async
+
+    // Session lifecycle
+    @MainActor func prepareFreshSession(
+        request: LoadRequest,
+        options: LoadOptions,
+        origin: LoadOrigin
+    ) async throws -> (prepared: PreparedPlayback, plan: PlaybackExecutionPlan, identity: SessionIdentity)
+    @MainActor func presentLoadFailure(_ error: Error, origin: LoadOrigin) async -> String?
+    @MainActor func recordOfflineProgressIfOffline() async -> Bool
+
+    // Engine lifecycle
+    @MainActor func installEngine(
+        plan: PlaybackExecutionPlan,
+        loadID: LoadID,
+        reuseEngine: Bool,
+        adoptingOutage outage: RecoveryContext.OutageState?
+    ) async -> (events: AsyncStream<EngineEvent>?, failure: String?)
+    @MainActor func teardownEngine(
+        loadID: LoadID,
+        sourceCache: SourceCacheDisposition,
+        engineOnly: Bool
+    ) async
+    @MainActor func engineSeek(to seconds: Double) async
+    @MainActor func engineTransport(_ command: TransportCommand) async
+
+    // Recovery
+    @MainActor func performEngineRecovery(_ action: RecoveryAction) async
+    @MainActor func observeRecovery(_ observation: RecoveryObservation) async
+    @MainActor func liveOutageState() async -> RecoveryContext.OutageState?
+    @MainActor func clearOutageNoticeLatch() async
+    @MainActor func clearServerOutageRecoverySlot() async
+    @MainActor func probeServerHealthOnce(reporting timerID: TimerID) async -> Bool
+    @MainActor func reprobeOrigin() async
+
+    // Replan and silent renewal
+    @MainActor func prepareReplan(
+        _ intent: ReplanIntent
+    ) async throws -> (prepared: PreparedPlayback, plan: PlaybackExecutionPlan, identity: SessionIdentity)?
+    @MainActor func releaseReplanSuspension(completingQualitySwitch: Bool) async
+    @MainActor func prepareRenewal(
+        _ renewal: SourceRenewal
+    ) async throws -> (prepared: PreparedPlayback, identity: SessionIdentity)?
+    @MainActor func noteRenewalSucceeded() async
+    @MainActor func noteRenewalFailure(_ error: Error, reason: String) async -> Bool
+}
+
+extension PlayerViewModel: PlaybackControlPlaneShell {}
+
 actor PlaybackSessionActor {
 
     private static let logger = Logger(
@@ -65,11 +135,31 @@ actor PlaybackSessionActor {
     private let bridge: PlaybackSessionBridge
     /// The presentation model. Weak, because `PlayerView` replaces a disposed
     /// view model and a live effect must not resurrect one.
-    private weak var shell: PlayerViewModel?
+    private weak var shell: (any PlaybackControlPlaneShell)?
 
-    /// The control-plane half of `PlayerTaskRegistry` (design §2.3 `TimerID`
+    /// The control-plane half of `PlayerTaskRegistry` (one key per `TimerID`,
     /// plus the engine-event loop). UI timers stay on the shell's own registry.
     private let tasks = PlayerTaskRegistry()
+
+    /// Which transition an effect batch belongs to.
+    ///
+    /// `send`/`ingest` commit the reduced state and *then* run its effects, and
+    /// an actor is re-entrant at every `await`: while a batch is parked in a
+    /// main-actor hop or a server round trip, another intent or event can be
+    /// reduced, committed and fully executed. The parked batch then resumes
+    /// holding a picture of the world that has been superseded — and before
+    /// this counter it went on to publish that picture, cancel the newer load's
+    /// task in `startSession` and install its own, stranding the state in
+    /// `.preparing` with nothing left to finish it.
+    ///
+    /// The epoch is bumped by exactly the transitions that supersede a batch:
+    /// one that binds the state to a different load, or moves it to a different
+    /// phase of the player's life (see `supersedes`). A mutation *within* a
+    /// load — a time frame, a buffering edge, a pause, a sub-state change —
+    /// deliberately does not bump it: those interleave constantly with the
+    /// heartbeat and the load prologue, and invalidating a batch on one would
+    /// drop the `.startSession` that load is waiting for.
+    private var transitionEpoch: UInt64 = 0
 
     /// The load `Effect.loadEngine` installed, or is installing. It is the
     /// second half of the engine-event identity: a newer load mints it where
@@ -111,20 +201,21 @@ actor PlaybackSessionActor {
     private(set) var suppressesEngineFailuresAfterOutage = false
 
     #if DEBUG
-    /// Every effect the actor ran, in order.
+    /// Every effect the actor ran, in order — and only those: an effect a
+    /// superseded batch never reached is absent, which is how
+    /// `PlaybackSessionActorLifecycleTests` reads the epoch guard.
     ///
-    /// `PlayerViewModel` is the only shell there is and the suite has never
-    /// been able to build one (inventory-4 A.0: `PlayerViewModel(` is 0 hits),
-    /// so `PlaybackSessionActorTests` drives an actor with `shell: nil` — the
-    /// reducer and the whole effect-routing path run, the main-actor arms are
-    /// no-ops, and this is the record it asserts over.
+    /// `PlaybackSessionActorTests` drives an actor with `shell: nil`, where the
+    /// reducer and the whole effect-routing path run and the main-actor arms
+    /// are no-ops; the lifecycle tests drive one with a fake
+    /// `PlaybackControlPlaneShell` whose calls they can hold open.
     private(set) var recordedEffects: [Effect] = []
 
     /// Drop everything recorded so far, so a test can assert on one step.
     func clearRecordedEffects() { recordedEffects.removeAll() }
     #endif
 
-    init(bridge: PlaybackSessionBridge, shell: PlayerViewModel?) {
+    init(bridge: PlaybackSessionBridge, shell: (any PlaybackControlPlaneShell)?) {
         self.bridge = bridge
         self.shell = shell
     }
@@ -134,17 +225,49 @@ actor PlaybackSessionActor {
     /// A view (or the platform) asked for something.
     func send(_ intent: PlayerIntent) async {
         let (next, effects) = PlaybackReducer.reduce(state, intent: intent, now: Date())
-        state = next
-        await run(effects)
+        let epoch = commit(next)
+        await run(effects, epoch: epoch)
     }
 
     /// Something happened. `event` already carries the identity it happened for.
     func ingest(_ event: PlayerEvent) async {
         noteBeforeReducing(event)
         let (next, effects) = PlaybackReducer.reduce(state, event: event, now: Date())
-        state = next
+        let epoch = commit(next)
         await noteAfterReducing(event)
-        await run(effects)
+        await run(effects, epoch: epoch)
+    }
+
+    /// Commit one reduction and answer the epoch its effects belong to.
+    ///
+    /// The epoch is captured here rather than at the top of `run` on purpose:
+    /// `ingest` awaits the shell between the commit and the effects, and a
+    /// transition that lands in *that* window supersedes the batch just as much
+    /// as one that lands inside it.
+    private func commit(_ next: PlaybackState) -> UInt64 {
+        if Self.supersedes(next, state) { transitionEpoch &+= 1 }
+        state = next
+        return transitionEpoch
+    }
+
+    /// Whether moving from `previous` to `next` invalidates every effect batch
+    /// still in flight.
+    ///
+    /// Two things do: binding the state to a different load (or to none), and
+    /// moving to a different phase of the player's life. Both mean the premises
+    /// an in-flight batch was computed from — which load it is preparing, which
+    /// engine it is retiring, which surface it is publishing — no longer hold.
+    /// Everything else is a mutation *inside* the same load and leaves those
+    /// premises intact.
+    private static func supersedes(_ next: PlaybackState, _ previous: PlaybackState) -> Bool {
+        if next.loadID != previous.loadID { return true }
+        switch (previous, next) {
+        case (.idle, .idle), (.preparing, .preparing), (.playing, .playing),
+             (.suspended, .suspended), (.failed, .failed), (.disposed, .disposed):
+            return false
+        default:
+            return true
+        }
     }
 
     /// Read-only snapshot for the shell's synchronous projections.
@@ -218,13 +341,20 @@ actor PlaybackSessionActor {
 
     // MARK: - Effect runner
 
-    private func run(_ effects: [Effect]) async {
+    /// Run one batch. It stops at the first effect a newer transition has
+    /// superseded — it does not skip that effect and carry on, because the rest
+    /// of the batch is the same superseded picture of the world.
+    private func run(_ effects: [Effect], epoch: UInt64) async {
         for effect in effects {
-            await perform(effect)
+            guard epoch == transitionEpoch else { return }
+            await perform(effect, epoch: epoch)
         }
     }
 
-    private func perform(_ effect: Effect) async {
+    private func perform(_ effect: Effect, epoch: UInt64) async {
+        // Re-checked here as well as in `run` because `loadEngine`,
+        // `abandonLoad` and `reloadEngine` reach single effects directly.
+        guard epoch == transitionEpoch else { return }
         #if DEBUG
         recordedEffects.append(effect)
         #endif
@@ -236,7 +366,7 @@ actor PlaybackSessionActor {
             await stopSession(identity, position: position, isPaused: isPaused)
 
         case let .loadEngine(plan, loadID, reuseEngine):
-            await loadEngine(plan.value, loadID: loadID, reuseEngine: reuseEngine)
+            await loadEngine(plan.value, loadID: loadID, reuseEngine: reuseEngine, epoch: epoch)
 
         case let .disposeEngine(loadID, sourceCache):
             await disposeEngine(loadID, sourceCache: sourceCache)
@@ -267,11 +397,17 @@ actor PlaybackSessionActor {
         case let .reportProgress(identity, position, isPaused):
             await reportProgress(identity, position: position, isPaused: isPaused)
 
-        case let .syncProgress(contentId, position, duration, forceOverwrite, loadID):
+        case let .syncProgress(contentId, position, duration, forceOverwrite):
             // Awaited here, not dispatched: it must complete *before* the
             // `.startSession` that follows it in the same effect list, which is
             // the `await` ordering inside the legacy stale-session task.
-            guard state.loadID == loadID else { return }
+            //
+            // It carries no identity to check because it has none to check
+            // against: it is a *content*-scoped write about the load being left
+            // behind, emitted by the same transition that binds the state to
+            // the replacement. Comparing it with `state.loadID` — which that
+            // transition has already moved on — is what dropped it. Staleness
+            // is the batch epoch's job.
             _ = await bridge.syncProgress(
                 contentId: contentId,
                 position: position,
@@ -300,7 +436,13 @@ actor PlaybackSessionActor {
     }
 
     /// A session-scoped report only runs against the session the state is bound
-    /// to (design §4 I2 — a value compare, not a `*SessionId` echo).
+    /// to — a value compare, not a `*SessionId` echo.
+    ///
+    /// It answers for effects that report *about the current load*
+    /// (`.reportFirstFrame`, `.reportPlanExecutionStarted`). The progress
+    /// reports are deliberately not among them: theirs is the **outgoing**
+    /// session at a load boundary, so they are checked against the session the
+    /// bridge is holding instead (see `reportProgress`).
     private func identityIsCurrent(_ identity: SessionIdentity) -> Bool {
         guard let current = state.identity else { return false }
         return identity.belongsToSameSession(as: current)
@@ -341,6 +483,12 @@ actor PlaybackSessionActor {
     /// emitted as effects (its timer cancels, the outgoing progress report and
     /// the outgoing engine dispose).
     private func startSession(request: LoadRequest, options: LoadOptions, loadID: LoadID) {
+        // The one slot every fresh load competes for, so the load that owns the
+        // state is the only one allowed to take it. The batch epoch already
+        // stops a superseded batch before it gets here; this is the same rule
+        // stated over the value the effect carries, and it is what keeps the
+        // *cancel* below from ever retiring a newer load's task.
+        guard loadID == state.loadID else { return }
         // The origin travels on the state the reducer just produced: only a
         // `.freshLoad` adoption ever emits `.startSession`.
         var origin = LoadOrigin.userInitiated
@@ -398,8 +546,9 @@ actor PlaybackSessionActor {
             event: .recovery(.fail(failure), loadID),
             now: Date()
         )
-        state = next
+        let epoch = commit(next)
         for effect in effects {
+            guard epoch == transitionEpoch else { return }
             if case let .publish(presentation) = effect, message == nil {
                 var recoverable = presentation
                 recoverable.error = nil
@@ -412,7 +561,7 @@ actor PlaybackSessionActor {
                 await publish(recoverable)
                 continue
             }
-            await perform(effect)
+            await perform(effect, epoch: epoch)
         }
     }
 
@@ -425,13 +574,26 @@ actor PlaybackSessionActor {
         )
     }
 
+    /// The 10 s heartbeat, the transcode restart's parting write — and the one
+    /// the load prologue owes the session it is *leaving*.
+    ///
+    /// That last one is why the identity is compared with the bridge's session
+    /// rather than with `state.identity`: `beginLoad` emits it carrying the
+    /// outgoing identity from the same transition that commits
+    /// `.preparing(identity: nil)`, so a check against the state could only
+    /// ever refuse it — which is exactly what used to happen, and it cost every
+    /// next-episode, retry and tvOS resume the last heartbeat's worth of
+    /// resume position. The bridge still holds the outgoing session at this
+    /// point (`.startSession` runs after this effect and mints the next one),
+    /// so its own session id is both the right question and the final gate.
     private func reportProgress(
         _ identity: SessionIdentity,
         position: Double,
         isPaused: Bool
     ) async {
-        guard identityIsCurrent(identity), let shell else { return }
+        guard let shell else { return }
         if await shell.recordOfflineProgressIfOffline() { return }
+        guard await bridge.currentSessionId == identity.serverSessionId else { return }
         let result = await bridge.reportProgress(position: position, isPaused: isPaused)
         guard result == .missingSession else { return }
         // Which renewal this heartbeat's missing session deserves — silent,
@@ -445,7 +607,8 @@ actor PlaybackSessionActor {
     private func loadEngine(
         _ plan: PlaybackExecutionPlan,
         loadID: LoadID,
-        reuseEngine: Bool
+        reuseEngine: Bool,
+        epoch: UInt64
     ) async {
         pendingLoadID = loadID
         if let carried = carriedOutage {
@@ -458,7 +621,8 @@ actor PlaybackSessionActor {
                     .sourceOutageRideThrough,
                     after: .seconds(carried.nextProbeDelay),
                     loadID
-                )
+                ),
+                epoch: epoch
             )
         }
         guard let shell else { return }
@@ -905,8 +1069,8 @@ actor PlaybackSessionActor {
     func requestReplan(_ intent: ReplanIntent) async {
         guard case let .playing(playing) = state else { return }
         let (next, effects) = PlaybackReducer.requestReplan(playing, intent: intent)
-        state = next
-        await run(effects)
+        let epoch = commit(next)
+        await run(effects, epoch: epoch)
     }
 
     /// Re-install the engine for the load that is already playing, under a
@@ -926,8 +1090,8 @@ actor PlaybackSessionActor {
         guard case var .playing(playing) = state else { return }
         let replacement = ExecutionPlanRef(plan)
         playing.plan = replacement
-        state = .playing(playing)
-        await perform(.loadEngine(replacement, playing.loadID, reuseEngine: false))
+        let epoch = commit(.playing(playing))
+        await perform(.loadEngine(replacement, playing.loadID, reuseEngine: false), epoch: epoch)
     }
 
     // MARK: - Teardown
