@@ -4,19 +4,17 @@ import Foundation
 /// store, the loopback HTTP server, the producing writer (plus its
 /// demand-driven restarts) and the session directory they share.
 ///
-/// Stage 2 wave 2a moved this lifecycle glue out of `AVPlayerBackend`
-/// (inventory-3 §4.1–4.5, §4.7) with the bodies intact. What stayed in the
-/// adapter: items and observers, the display-criteria write → settle → attach
+/// This host owns that lifecycle glue and nothing else. `AVPlayerBackend`
+/// keeps items and observers, the display-criteria write → settle → attach
 /// ordering, the initial-video-display gate, audio session, PiP/AirPlay
 /// policy, seek deadlines, every recovery ladder, and the subtitle plane —
-/// the tap this host hands the writer belongs to the backend because its cue
-/// store is keyed to the SOURCE and deliberately outlives a session.
+/// the cue tap this host hands the writer belongs to the backend because its
+/// cue store is keyed to the SOURCE and deliberately outlives a session.
 ///
-/// Isolation mirrors the adapter it came from: the class is not actor
-/// isolated, `requestProducerRestart` is `@MainActor` exactly as
-/// `requestVODProducerRestart` was, and every callback the writer, store or
-/// server fires keeps the hop it had (the writer's mux thread and the
-/// server's resolver queue still hop to main in the same place).
+/// Isolation matches the adapter's: the class is not actor isolated,
+/// `requestProducerRestart` is `@MainActor`, and the writer's mux thread and
+/// the server's resolver queue hop to main inside this host, so a callback
+/// never crosses an isolation boundary the backend did not already expect.
 ///
 /// Identity runs on two levels. The host's own is the object: the backend
 /// owns exactly one live host and re-checks `loopbackHost === host` in each
@@ -61,7 +59,7 @@ final class LocalHLSHost {
     private static var nextStoreGeneration: UInt64 = 0
 
     /// `SILO_KEEP_DV_HLS` as the environment has it. Read once per host, at
-    /// creation (Stage 2 design §7.2) — nothing mutates the environment.
+    /// creation — nothing mutates the environment.
     static var keepArtifactsFromEnvironment: Bool {
         let raw = ProcessInfo.processInfo.environment["SILO_KEEP_DV_HLS"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)

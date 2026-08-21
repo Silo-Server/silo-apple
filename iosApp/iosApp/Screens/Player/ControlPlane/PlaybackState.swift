@@ -5,7 +5,7 @@ import SwiftUI
 // the events the engine/session/transport report, and the effects the session
 // actor runs. Every effect carries the identity it is conditional on
 // (`LoadID` or `SessionIdentity`), so a late result from a superseded load or
-// session is dropped structurally (design §4 I2).
+// session is dropped structurally.
 
 // MARK: - State
 
@@ -192,17 +192,15 @@ struct Playing: Equatable {
     var sub: Sub
     /// The outstanding seek, if any.
     ///
-    /// Deliberately a field rather than a `Sub` case (design §2.3 sketched it
-    /// as `Sub.seeking`): in the view model `seekOriginTime`/`seekTargetTime`
-    /// are independent of `protocolV3ReplanTask`,
-    /// the renewal's session-id echo and the EOF latch, so a seek that
-    /// arrives while a replan owns the load is performed *and* the replan
-    /// still lands. Modelling it as a `Sub` case made the two mutually
-    /// exclusive, which dropped whichever arrived second — a user seek during
-    /// a quality switch stranded the load behind the loading overlay because
-    /// the server's `.replanned` answer no longer matched `.replanning`.
-    /// A new `LoadID` still drops it structurally (design §4 I5): the field
-    /// lives on `Playing`, and every engine load builds a new one.
+    /// Deliberately a field rather than a `Sub` case: an outstanding seek is
+    /// independent of whatever else owns the load, so a seek that arrives
+    /// while a replan is running is performed *and* the replan still lands.
+    /// As a `Sub` case the two would be mutually exclusive and whichever
+    /// arrived second would be dropped — a user seek during a quality switch
+    /// would strand the load behind the loading overlay, because the server's
+    /// `.replanned` answer would no longer match `.replanning`.
+    /// A new `LoadID` still drops it structurally: the field lives on
+    /// `Playing`, and every engine load builds a new one.
     var seek: SeekRequest?
     /// `activeQualityId` — set by the adopt from `prepared.activeQualityId`
     /// and *not* re-derived per publish: a replan that is not a
@@ -257,7 +255,7 @@ struct Playing: Equatable {
 /// `beginLoad` (which is what `resetPublishedLoadState` + those resolvers
 /// produce while a load is in flight: the lists are empty, so each resolver
 /// falls back to `lastLoadRequest`'s preferred value) and from
-/// `prepared.selectedVersion.fileId` at the adopt. **Wave 3 contract:** the
+/// `prepared.selectedVersion.fileId` at the adopt. **Contract:** the
 /// shell/track coordinator must keep `audioTrackIndex`, `subtitleTrackIndex`
 /// and `sidecarSubtitleTrackId` current as the user changes selection — the
 /// `-1` "Off" sentinel included — exactly as the three resolvers do today.
@@ -395,8 +393,8 @@ struct TransportState: Equatable {
 
 /// Where a load came from. It determines (a) whether the session start is
 /// bounded by a timeout and (b) how a load failure is surfaced to the user.
-/// Wave 1E declared it here because `PlayerViewModel.LoadOrigin` was `private`
-/// and therefore unreachable; wave 3 deleted that copy, so this is the only one.
+/// This is the only declaration of it: nothing outside the control plane may
+/// keep a parallel copy.
 enum LoadOrigin: Equatable {
     /// User picked an item — unbounded start, full-screen error on failure.
     case userInitiated
@@ -486,13 +484,12 @@ struct ReplanIntent: Equatable {
         /// `restartCurrentTranscodeHLS` — always reloads the engine.
         ///
         /// Its prologue reports progress against the outgoing session,
-        /// which the reducer emits. Two further obligations
-        /// are wave 3's, because they happen outside the request:
-        /// the outgoing engine is disposed — implied here by
+        /// which the reducer emits. Two further obligations fall outside the
+        /// request: the outgoing engine is disposed — implied here by
         /// `reuseEngine == false`, which `.replanned` always computes for this
         /// kind — and a quality restart raises the loading overlay and clears
-        /// the buffering flag at the *adopt*, i.e. from the
-        /// `.replanned` arm rather than from `requestReplan`.
+        /// the buffering flag at the *adopt*, i.e. from the `.replanned` arm
+        /// rather than from `requestReplan`.
         case transcodeRestart(TranscodeRestartOrigin)
     }
 
@@ -583,7 +580,8 @@ enum SeekOrigin: Equatable {
     /// replan, a fresh load, or a re-anchored loopback `loadStream`), which is
     /// also what raises the loading overlay and clears the buffering flag.
     ///
-    /// **Wave-3 obligation:** the rebuild is *not* modelled by this reducer —
+    /// **Obligation on the caller:** the rebuild is *not* modelled by this
+    /// reducer —
     /// `commitSeek`'s first branch (`reloadServerBackedHLSForSeek`,
     /// `reloadLocalLoopbackForSeekBeforeAnchor`) chooses it before either
     /// `.seek` path below. Wiring a plain
@@ -674,11 +672,12 @@ enum EngineEvent: Equatable {
     case externalPlaybackUnavailable
     case sidecarTracksRegistered([SidecarSubtitleDescriptor])
     /// A `RecoveryAction` the load's `RecoveryDriver` decided whose execution
-    /// belongs to the shell, not to the engine (wave 2b). The engine session
-    /// performs the in-route arms itself and forwards these on the same stream
-    /// so a superseded load's decision dies with its session — it is the reason
-    /// the shell no longer needs a generation guard around its ladders.
-    /// Wave 3 delivers it to the actor as `PlayerEvent.recovery` instead.
+    /// belongs to the shell, not to the engine. The engine session performs
+    /// the in-route arms itself and forwards these on the same stream, so a
+    /// superseded load's decision dies with its session — which is why the
+    /// shell needs no generation guard around its ladders. The actor unwraps
+    /// it into `PlayerEvent.recovery(action, loadID)`; the reducer never
+    /// handles this case directly.
     case recoveryAction(RecoveryAction)
 }
 
@@ -802,8 +801,8 @@ enum SourceCacheDisposition: Equatable {
     /// calls `avPlayerBackend?.dispose()` and deliberately never touches
     /// `sourceProxy`, so the tvOS background suspend keeps the live proxy —
     /// and its cache — and the resume's own `beginLoad` is what finally stashes
-    /// and stops it. Wave 3's `PlaybackEngineSession` owns both halves, so this
-    /// case is what stops it tearing the proxy down on every Apple TV suspend.
+    /// and stops it. `PlaybackEngineSession` owns both halves, so this case is
+    /// what stops it tearing the proxy down on every Apple TV suspend.
     case retainProxy
 }
 
@@ -953,5 +952,3 @@ struct PreparedPlaybackRef: Equatable {
             && lhs.value.protocolV3 == rhs.value.protocolV3
     }
 }
-// `LoadRequest`'s hand-written `Equatable` moved with the type to
-// `ControlPlane/LoadRequest.swift` in wave 3.
