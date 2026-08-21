@@ -76,13 +76,15 @@ the view surface and the settings appliers.
    - if the server chose `remux` or `transcode`, posts
      `/api/v1/playback/transcode/start`
 5. Still inside that effect, the shell turns the returned `streamUrl` into an
-   absolute URL, adds a Bearer token header if one exists, and builds a
-   `PlaybackExecutionPlan` through
+   absolute URL and builds a `PlaybackExecutionPlan` through
    `ApplePlaybackRoutePlanner.makeExecutionPlan(input:)` (plan-building is
    adapter work, not reducer work). The prepared result comes back as
    `SessionEvent.prepared`, and the reducer answers with
    `Effect.loadEngine(plan, LoadID, reuseEngine:)` — that is what actually
-   starts the engine.
+   starts the engine. A server URL carrying the signed `st` playback capability
+   gets no account `Authorization` header: AVPlayer cannot refresh asset headers,
+   and the shorter-lived account token must not end a valid long playback.
+   Unsigned non-file URLs retain the Bearer-header fallback.
 
 Two details matter:
 

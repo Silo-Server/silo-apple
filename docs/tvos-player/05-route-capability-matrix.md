@@ -115,14 +115,13 @@ Historical detail in [09 - On-device video bridge (retired)](09-video-bridge.md)
   window.
 - AirPlay video hands the receiver a URL and nothing else: the receiver opens
   its own HTTP connection without the asset's `AVURLAssetHTTPHeaderFieldsKey`
-  headers. Two things make a NativePlayer URL unfetchable from a receiver, and a
-  direct-play session can hit either: the URL is authenticated by an
-  `Authorization` header (`/api/v1/...` sits behind `RequireAuth`, so the fetch
-  answers 401), or `prepareSourceProxy` rewrote it to the on-device caching
-  proxy at 127.0.0.1, which drops the headers but is unreachable off-device.
-  External playback and the route picker are enabled only for assets that
-  survive both checks — offline `file://` downloads and unauthenticated origin
-  URLs.
+  headers. NativePlayer assets are receiver-fetchable when their server URL
+  carries the signed `st` playback capability, because the client deliberately
+  omits the shorter-lived account `Authorization` header. They remain
+  unfetchable when `prepareSourceProxy` rewrites the URL to the on-device
+  caching proxy at 127.0.0.1. External playback and the route picker are enabled
+  only for assets that survive that reachability check; unsigned legacy server
+  URLs still use account-header auth and therefore remain device-local.
 - On iOS, SiloPlayer publishes its generated HLS through a LAN URL carrying a
   per-session access token, so the selected receiver can fetch the playlist and
   segments. The server binds to the LAN but refuses off-device connections until

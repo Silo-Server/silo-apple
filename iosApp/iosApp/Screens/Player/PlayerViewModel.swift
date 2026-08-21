@@ -4929,11 +4929,26 @@ class PlayerViewModel {
         }
 
         var headers = additionalHeaders
-        if let token, !token.isEmpty, !url.isFileURL {
+        if let token, !token.isEmpty, Self.shouldAttachAccountAuthorization(to: url) {
             headers["Authorization"] = "Bearer \(token)"
         }
 
         return StreamRequest(url: url, headers: headers, serverUrl: serverUrl)
+    }
+
+    /// Signed playback URLs are their own bounded capability. Attaching the
+    /// account bearer as well makes AVPlayer freeze that shorter-lived token
+    /// into the asset and fail an otherwise-valid stream when it expires.
+    /// Unsigned URLs retain the legacy account-auth path.
+    static func shouldAttachAccountAuthorization(to url: URL) -> Bool {
+        guard !url.isFileURL else { return false }
+        let hasStreamToken = URLComponents(
+            url: url,
+            resolvingAgainstBaseURL: false
+        )?.queryItems?.contains { item in
+            item.name == "st" && !(item.value ?? "").isEmpty
+        } ?? false
+        return !hasStreamToken
     }
 
     /// Turns a server-supplied URL (absolute or API-relative) into an absolute URL.

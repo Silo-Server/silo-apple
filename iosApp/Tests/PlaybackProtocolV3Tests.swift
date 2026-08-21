@@ -884,6 +884,18 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         }
     }
 
+    func testAVPlayerDeliveriesDoNotClaimFrozenAssetHeaderRefresh() {
+        let video = ApplePlaybackV3Capabilities.snapshot()
+        let audiobook = ApplePlaybackV3Capabilities.audiobookSnapshot()
+
+        for delivery in video.context.deliveries.values {
+            XCTAssertFalse(delivery.authHeaderRefresh)
+        }
+        for delivery in audiobook.context.deliveries.values {
+            XCTAssertFalse(delivery.authHeaderRefresh)
+        }
+    }
+
     func testStartRequestUsesOnlyNeutralSnakeCaseContract() throws {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         let request = PlaybackV3StartRequest(

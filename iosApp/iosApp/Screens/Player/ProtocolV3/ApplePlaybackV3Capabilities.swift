@@ -212,7 +212,7 @@ enum ApplePlaybackV3Capabilities {
                 // maps exactly the selected track; native-direct AVPlayer
                 // cannot apply a catalog index and is blocked for that case.
                 features: ["apple_native_direct", "apple_local_loopback", "client_audio_track_selection_v1"],
-                authHeaderRefresh: true,
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims + ["client_subtitle_overlay"],
                 transformations: clientTransformations
             ),
@@ -234,7 +234,7 @@ enum ApplePlaybackV3Capabilities {
                 hdrDetails: output.hdrDetails,
                 subtitles: avPlayerSubtitles,
                 features: ["apple_avplayer_progressive"],
-                authHeaderRefresh: true,
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             ),
@@ -250,7 +250,7 @@ enum ApplePlaybackV3Capabilities {
                 hdrDetails: output.hdrDetails,
                 subtitles: avPlayerSubtitles,
                 features: ["apple_avplayer_hls"],
-                authHeaderRefresh: true,
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             )
@@ -299,7 +299,7 @@ enum ApplePlaybackV3Capabilities {
                 hdrDetails: nil,
                 subtitles: noSubtitles,
                 features: ["apple_native_direct"],
-                authHeaderRefresh: true,
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             ),
@@ -315,7 +315,7 @@ enum ApplePlaybackV3Capabilities {
                 hdrDetails: nil,
                 subtitles: noSubtitles,
                 features: ["apple_avplayer_progressive"],
-                authHeaderRefresh: true,
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             ),
@@ -331,7 +331,7 @@ enum ApplePlaybackV3Capabilities {
                 hdrDetails: nil,
                 subtitles: noSubtitles,
                 features: ["apple_avplayer_hls"],
-                authHeaderRefresh: true,
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             )
