@@ -132,7 +132,7 @@ enum ApplePlaybackQuality {
                 id: id,
                 label: playbackLabel(id: id, height: height, isOriginal: isOriginal),
                 resolution: isOriginal || height <= 0 ? "" : "\(height)p",
-                bitrateKbps: max(0, quality.bitrateKbps),
+                bitrateKbps: max(0, quality.bitrateKbps ?? 0),
                 isOriginal: isOriginal,
                 isAuto: false
             )

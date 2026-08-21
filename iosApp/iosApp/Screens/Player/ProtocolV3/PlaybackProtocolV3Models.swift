@@ -426,7 +426,11 @@ struct PlaybackV3AvailableQuality: Codable, Equatable {
     let label: String
     /// Audio-only quality rungs have no meaningful video height.
     let height: Int?
-    let bitrateKbps: Int
+    /// Only `label` and `preserves_source` are required on the wire. The
+    /// Original rung copies the source's probed bitrate, so a source whose
+    /// bitrate the server could not determine omits the key entirely; a
+    /// non-Optional property here would fail the whole decision response.
+    let bitrateKbps: Int?
     let preservesSource: Bool
 }
 

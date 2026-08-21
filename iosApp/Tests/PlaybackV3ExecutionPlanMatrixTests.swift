@@ -270,12 +270,14 @@ final class PlaybackV3ExecutionPlanMatrixTests: XCTestCase {
     // MARK: - Client transformations
 
     func testClientDolbyVisionTransformForcesTheLoopbackExecutor() throws {
+        // The recipe version and claims are the ones this client advertises;
+        // anything else is now rejected before an engine is chosen.
         let v3Plan = try plan(mutating: [
             "transformations": [[
                 "name": "client_dv7_to_dv81",
                 "executor": "client",
-                "recipe_version": "v1",
-                "validated_claims": ["dolby_vision"]
+                "recipe_version": "1",
+                "validated_claims": ["profile7_rpu_converted_to_profile81"]
             ]]
         ])
         let base = basePlan(engine: .avPlayerNativeDirect, loopbackSession: loopbackSpec())
@@ -288,7 +290,7 @@ final class PlaybackV3ExecutionPlanMatrixTests: XCTestCase {
         XCTAssertEqual(result.loopbackSession?.manifestMetadata.compatibilityBrand, "db1p")
         XCTAssertEqual(
             result.decisionTrace.last,
-            "v3_transform_client_client_dv7_to_dv81_v1"
+            "v3_transform_client_client_dv7_to_dv81_1"
         )
     }
 
@@ -297,7 +299,7 @@ final class PlaybackV3ExecutionPlanMatrixTests: XCTestCase {
             "transformations": [[
                 "name": "client_dv7_to_dv81",
                 "executor": "client",
-                "recipe_version": "v1",
+                "recipe_version": "1",
                 "validated_claims": []
             ]]
         ])
