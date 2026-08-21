@@ -429,6 +429,29 @@ class PlayerViewModel {
     /// `PlayerIntent`s and projects what it publishes back.
     @ObservationIgnored
     private var controlPlane: PlaybackSessionActor!
+
+    /// One command on the shell's single ordered ingress to the control plane.
+    ///
+    /// Three of the actor's entry points are shell commands — the intents, the
+    /// replans this shell mints and the same-load engine reload — and all three
+    /// have to reach it in the order they were issued, so all three travel on
+    /// one queue.
+    private enum ControlPlaneCommand {
+        case intent(PlayerIntent)
+        case replan(ReplanIntent)
+        case reloadEngine(PlaybackExecutionPlan)
+    }
+    /// The ingress queue's continuation: `enqueue` appends synchronously, so a
+    /// command's place in line is decided at the call site rather than by the
+    /// executor that would have run a per-command task.
+    @ObservationIgnored
+    private let commandStream: AsyncStream<ControlPlaneCommand>.Continuation
+    /// The one task draining `commandStream`. It awaits each command before it
+    /// takes the next, which is what makes "the seek reaches the actor before
+    /// the reload that carries it" a property of the code rather than of
+    /// main-executor enqueue order plus actor FIFO.
+    @ObservationIgnored
+    private var commandPump: Task<Void, Never>?
     /// `Sub.ended`, mirrored from the last publish. It replaces the stored
     /// `hasReachedEndOfFile` latch: the postroll guard on every transport
     /// command reads the control plane's answer instead of a second copy.
@@ -691,7 +714,28 @@ class PlayerViewModel {
 
     init() {
         activeRouteKind = .avPlayerNativeDirect
-        controlPlane = PlaybackSessionActor(bridge: sessionBridge, shell: self)
+        let commands = AsyncStream<ControlPlaneCommand>.makeStream(bufferingPolicy: .unbounded)
+        commandStream = commands.continuation
+        let plane = PlaybackSessionActor(bridge: sessionBridge, shell: self)
+        controlPlane = plane
+        // The one ordered ingress. Each command is awaited before the next is
+        // taken, so the control plane sees them in the order the view issued
+        // them. It holds the actor rather than the view model — the actor's
+        // reference back to the shell is weak — so `cleanup()` can drop its own
+        // reference and still drain what was already queued; finishing the
+        // queue is what ends this task.
+        commandPump = Task { @MainActor in
+            for await command in commands.stream {
+                switch command {
+                case .intent(let intent):
+                    await plane.send(intent)
+                case .replan(let intent):
+                    await plane.requestReplan(intent)
+                case .reloadEngine(let executionPlan):
+                    await plane.reloadEngine(with: executionPlan)
+                }
+            }
+        }
         realtimeClient = PlaybackRealtimeClient(
             commandHandler: { [weak self] command in
                 guard let self else {
@@ -972,9 +1016,9 @@ class PlayerViewModel {
         // backend's raw snapshot names the loopback host behind the proxy, so
         // the composed stats — origin host swapped in, proxy/cache rows added —
         // are written by the `.stats` arm of `applyEngineEventToPresentation`
-        // via `PlaybackStatsComposer`, which is the single owner (design §2.3
-        // contract note (f)). Two owners made the Source row flicker between
-        // 127.0.0.1 and the real server every tick.
+        // via `PlaybackStatsComposer`, which is their single owner. Two owners
+        // made the Source row flicker between 127.0.0.1 and the real server
+        // every tick.
         guard !transportOnly else { return }
 
         isPlaying = presentation.isPlaying
@@ -1913,13 +1957,11 @@ class PlayerViewModel {
         trackSelection.restoreAfterRecovery(trackSnapshot)
         engineSession?.disposeEngineOnly(reason: "native_direct_fallback")
         logExecutionPlan(fallbackPlan)
-        guard let controlPlane else { return }
         // A replacement item inside the same load: the server session is
         // untouched, only the local execution route changes. The control plane
         // takes the replacement plan, so the route it believes is running is
         // the route that is running.
-        // Main-actor-isolated for the ordering reason `send(_:)` documents.
-        Task { @MainActor in await controlPlane.reloadEngine(with: fallbackPlan) }
+        enqueue(.reloadEngine(fallbackPlan))
     }
 
     /// Retarget a route onto server HLS. Every remaining engine is
@@ -2267,6 +2309,16 @@ class PlayerViewModel {
 
     /// `loadStream`, driven by `Effect.loadEngine`.
     ///
+    /// Prepare, then commit. The replacement is built and validated first —
+    /// source proxy, rewritten plan, executable plan — and nothing belonging to
+    /// the outgoing load is touched until the commit half below, which cannot
+    /// fail. An install that ends in the prepare half (the proxy refuses to
+    /// start, the plan is not executable, a newer load superseded this one)
+    /// therefore leaves the live session exactly as it found it, still playing:
+    /// the reducer decides what the player shows next, and the `.disposeEngine`
+    /// its `.fail` emits is what retires that session — `teardownEngine` states
+    /// the one ownership rule that makes it land on the right one.
+    ///
     /// Returns the new session's event stream for the actor to consume, or
     /// `nil` plus a failure message when the source proxy or the plan could not
     /// be executed.
@@ -2278,23 +2330,31 @@ class PlayerViewModel {
         adoptingOutage outage: RecoveryContext.OutageState?
     ) async -> (events: AsyncStream<EngineEvent>?, failure: String?) {
         pendingLoadID = loadID
-        // Stop presentation while the replacement proxy is prepared, but retain
-        // the backend. If the implementation route is unchanged, the replacement
-        // session adopts that backend in place so tvOS can preserve identical
-        // display criteria and the active audio session.
-        avPlayerBackend?.pause()
-        // Re-arm the authoritative V3 intent for the replacement stream. A final
-        // track callback from the outgoing session may have consumed the first
-        // copy between replan adoption and this point; that session's stream is
-        // about to end, so it cannot consume this one.
-        trackSelection.rearmAdoptedProtocolV3TrackIntent()
-        stashSourceCacheHandoff()
-        engineSession?.stopTransport()
 
-        let outgoing = engineSession
+        // MARK: Prepare — read-only with respect to the outgoing session.
+
+        // The outgoing proxy's cache is *offered* to the replacement rather than
+        // handed over: a handoff lives for exactly one load attempt, and the
+        // attempt is only over at commit, so that is where the slot is emptied.
+        //
+        // Offering it means the live proxy keeps serving from the same
+        // `PlaybackSourceCache` instance while the replacement prepares, and an
+        // adopting replacement may prefetch into it before the commit. The
+        // cache is `NSLock`-guarded, so the overlap costs at worst a re-fetch:
+        // its read anchors and prefetch/eviction water marks are driven by two
+        // consumers at once, and an eviction can drop a span the still-playing
+        // proxy is about to re-read. The window is bounded by `prepareSource` —
+        // a local `NWListener` bind with a 2 s deadline, no origin round trip —
+        // and, because the offer is derived from the live proxy on each attempt
+        // rather than consumed from a one-shot slot, a superseded install can
+        // briefly leave the same cache behind more than one prepared proxy.
+        let handoff = PlaybackEngineSession.stashSourceCache(
+            from: sourceProxy,
+            fileId: sourceProxyFileId
+        ) ?? sourceCacheHandoff
         let prepared: PlaybackEngineSession.SourcePreparation
         do {
-            prepared = try await prepareSource(for: plan, loadID: loadID)
+            prepared = try await prepareSource(for: plan, handoff: handoff)
         } catch {
             guard loadID == pendingLoadID, !isDisposed else { return (nil, nil) }
             return (
@@ -2309,7 +2369,6 @@ class PlayerViewModel {
         // The plan the control plane handed over, with the source proxy's URLs
         // written into it — the one rewrite the install owns.
         let loadPlan = prepared.plan
-        activeExecutionPlan = loadPlan
         let installable: ExecutablePlan
         do {
             installable = try ExecutablePlan(loadPlan, request: loadPlan.streamRequest)
@@ -2317,6 +2376,32 @@ class PlayerViewModel {
             prepared.proxy?.stop()
             return (nil, error.localizedDescription)
         }
+
+        // MARK: Commit — nothing below can fail, so the outgoing load ends here.
+
+        let outgoing = engineSession
+        // Stop presentation on the outgoing engine but retain the backend. If
+        // the implementation route is unchanged, the replacement session adopts
+        // that backend in place so tvOS can preserve identical display criteria
+        // and the active audio session.
+        outgoing?.surfaceBackend?.pause()
+        // Re-arm the authoritative V3 intent for the replacement stream. A final
+        // track callback from the outgoing session may have consumed the first
+        // copy between replan adoption and this point; that session's stream is
+        // about to end, so it cannot consume this one.
+        trackSelection.rearmAdoptedProtocolV3TrackIntent()
+        // Before the replacement session binds the backend: `stopTransport`
+        // clears the backend's outage-state provider, and on a reused backend
+        // that is the very instance the new session's `bindBackend` is about to
+        // set it on.
+        outgoing?.stopTransport()
+        if handoff != nil, !PlaybackEngineSession.usesSourceProxy(for: plan) {
+            // No adopter on this load — released rather than holding its disk
+            // spans for the rest of playback.
+            Self.logger.info("[CMP-SOURCE-CACHE] handoff released")
+        }
+        sourceCacheHandoff = nil
+        activeExecutionPlan = loadPlan
         // Only a live protocol replan has a known-good outgoing backend to
         // preserve, and only when the implementation route is unchanged: a route
         // change has to renegotiate the audio session and the display criteria
@@ -2384,6 +2469,40 @@ class PlayerViewModel {
         return (events, nil)
     }
 
+    /// Whether the teardown for `teardownLoadID` retires the installed session.
+    ///
+    /// One owner, one rule. `engineSession` is retired by the teardown for the
+    /// load that installed it — and by the teardown for the load
+    /// `installEngine` is minting, when that install never reached its commit
+    /// half. In that second case the state has already moved on to
+    /// `pendingLoadID`, so no effect will ever name the installed session's own
+    /// id again and this is the only teardown it will get; before the rule was
+    /// stated this way, a replan whose install failed left a paused `AVPlayer`
+    /// and its loopback graph alive behind the error wall.
+    ///
+    /// The second arm is for a *terminal* teardown only. `engineOnly` is the
+    /// visible server-outage recovery, which means "keep THIS load's session
+    /// alive as its recovery owner": a session belonging to an older load is
+    /// never that, and `disposeEngineOnly` deliberately leaves the session
+    /// un-`isDisposed`, so letting the arm through would let an outage
+    /// escalation that lands *during* an install dispose the very backend the
+    /// commit is about to adopt through `relinquishBackend()` — a live-looking
+    /// but dead `AVPlayer` under the new load.
+    ///
+    /// After a *successful* install the two arms coincide (`pendingLoadID` is
+    /// the installed session's id), and a teardown for a load the shell has
+    /// already replaced matches neither, which is what protects a newer
+    /// session from an older load's dispose.
+    static func teardownRetiresInstalledSession(
+        installedLoadID: LoadID,
+        teardownLoadID: LoadID,
+        pendingLoadID: LoadID?,
+        engineOnly: Bool
+    ) -> Bool {
+        if installedLoadID == teardownLoadID { return true }
+        return !engineOnly && pendingLoadID == teardownLoadID
+    }
+
     /// Tear one load's engine down. `engineOnly` is the visible server-outage
     /// recovery, which keeps the session alive as that load's recovery owner
     /// while it waits the server out.
@@ -2401,7 +2520,15 @@ class PlayerViewModel {
         case .retainProxy:
             break
         }
-        guard let session = engineSession, session.loadID == loadID else { return }
+        guard let session = engineSession,
+              Self.teardownRetiresInstalledSession(
+                  installedLoadID: session.loadID,
+                  teardownLoadID: loadID,
+                  pendingLoadID: pendingLoadID,
+                  engineOnly: engineOnly
+              ) else {
+            return
+        }
         if engineOnly {
             session.stopTransport()
             session.disposeEngineOnly(reason: "server_outage")
@@ -2411,14 +2538,13 @@ class PlayerViewModel {
         case .retainProxy:
             // The tvOS background suspend disposes the engine and deliberately
             // leaves the proxy — and its cache — running for the resume, and it
-            // **keeps the session**: `suspendForBackground` (base PVM:6010) did
-            // `engineSession?.dispose(retainingTransport: true)` and never
-            // cleared `engineSession`. `sourceProxy` is `engineSession?.transport`,
-            // so nilling it here would strand the proxy this disposition exists
-            // to retain — the resume's `.disposeEngine(…, .stash)` would find no
-            // session, hand no cached prefix to the replacement, and leave
-            // nothing for `cleanup()` to stop if the user exits from the wake
-            // screen (see `PlaybackEngineSession.dispose`'s own note).
+            // **keeps the session**. `sourceProxy` is `engineSession?.transport`,
+            // so nilling the session here would strand the proxy this
+            // disposition exists to retain — the resume's
+            // `.disposeEngine(…, .stash)` would find no session, hand no cached
+            // prefix to the replacement, and leave nothing for `cleanup()` to
+            // stop if the user exits from the wake screen (see
+            // `PlaybackEngineSession.dispose`'s own note).
             session.dispose(reason: "background_suspend", retainingTransport: true)
             return
         case .stash, .discard:
@@ -2461,21 +2587,17 @@ class PlayerViewModel {
         sourceCacheHandoff = nil
     }
 
-    /// Builds (or declines to build) the source proxy for a plan, resolving the
-    /// handoff slot against it. A handoff lives for exactly one load attempt,
-    /// so the slot is emptied either way.
+    /// Builds (or declines to build) the source proxy for a plan.
+    ///
+    /// The handoff is offered, never consumed here: this runs in the prepare
+    /// half of `installEngine`, and a prepare that never commits has to leave
+    /// the slot for the next attempt. `PlaybackEngineSession.prepareSource`
+    /// ignores it on a plan that runs without a proxy, which is where the
+    /// commit's release comes from.
     private func prepareSource(
         for plan: PlaybackExecutionPlan,
-        loadID: LoadID
+        handoff: PlaybackEngineSession.SourceCacheHandoff?
     ) async throws -> PlaybackEngineSession.SourcePreparation {
-        let handoff = sourceCacheHandoff
-        if PlaybackEngineSession.usesSourceProxy(for: plan) {
-            sourceCacheHandoff = nil
-        } else {
-            // No adopter on this load — release it rather than hold its disk
-            // spans for the rest of playback.
-            discardSourceCacheHandoff()
-        }
         return try await PlaybackEngineSession.prepareSource(
             for: plan,
             handoff: handoff,
@@ -3378,16 +3500,22 @@ class PlayerViewModel {
     /// intent: the reducer decides what it means, the actor runs the effects,
     /// and whatever moved comes back as a `Presentation`.
     ///
-    /// The hop is `@MainActor`-isolated on purpose. An actor serialises
-    /// execution but does not order two distinct unstructured tasks, and this
-    /// shell issues commands in pairs that must not invert — the re-anchor seek
-    /// before the reload that carries it, `commitSeek` before `.play`. Every
-    /// forwarding site (this, `requestReplan`, `reloadEngine`) enqueues
-    /// on the one serial executor the callers already run on, so the tasks start
-    /// in call order and reach the control plane in that order.
+    /// Ordering is the ingress queue's, not the executor's. This shell issues
+    /// commands in pairs that must not invert — the re-anchor seek before the
+    /// reload that carries it, `commitSeek` before `.play` — and an actor
+    /// serialises execution without ordering two distinct unstructured tasks,
+    /// so one task per command left the order to main-executor scheduling. A
+    /// command is now appended to `commandStream` synchronously and drained by
+    /// the one pump in `commandPump`, which is call order by construction.
     private func send(_ intent: PlayerIntent) {
-        guard !isDisposed, let controlPlane else { return }
-        Task { @MainActor in await controlPlane.send(intent) }
+        enqueue(.intent(intent))
+    }
+
+    /// Append one command to the single ordered ingress. Synchronous, so two
+    /// commands issued from one call site queue in the order they were written.
+    private func enqueue(_ command: ControlPlaneCommand) {
+        guard !isDisposed, controlPlane != nil else { return }
+        commandStream.yield(command)
     }
 
     func loadAndPlay(
@@ -3928,24 +4056,23 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-SEEK] local loopback reanchor seek target=\(clampedTarget, privacy: .public) origin=\(origin, privacy: .public) previousOffset=\(plan.loopbackSession?.sourceStartTimeSeconds ?? -1, privacy: .public)"
         )
-        guard let controlPlane else { return true }
         // A replacement item inside the *same* load, which is exactly what the
         // reducer's `fileLoaded` `.playing` arm models: the server session is
-        // untouched, only the local remux is re-anchored.
-        // Main-actor-isolated so it cannot overtake `beginReanchorSeekUI`'s
-        // `.seek(.reanchor)` (see `send(_:)`).
-        Task { @MainActor in await controlPlane.reloadEngine(with: updatedPlan) }
+        // untouched, only the local remux is re-anchored. It queues behind
+        // `beginReanchorSeekUI`'s `.seek(.reanchor)`, which is what arms the
+        // filter this reload then releases (see `send(_:)`).
+        enqueue(.reloadEngine(updatedPlan))
         return true
     }
 
     /// Mint a replan the reducer did not decide for itself: the two seek
     /// re-anchor paths and, historically, the in-place transcode restart.
     ///
-    /// Main-actor-isolated for the ordering reason `send(_:)` documents: it is
-    /// always preceded by `beginReanchorSeekUI`'s `.seek(.reanchor)`.
+    /// On the same ingress as the intents for the ordering reason `send(_:)`
+    /// documents: it is always preceded by `beginReanchorSeekUI`'s
+    /// `.seek(.reanchor)`.
     private func requestReplan(_ intent: ReplanIntent) {
-        guard !isDisposed, let controlPlane else { return }
-        Task { @MainActor in await controlPlane.requestReplan(intent) }
+        enqueue(.replan(intent))
     }
 
     func seek(to fraction: Double) {
@@ -4471,19 +4598,25 @@ class PlayerViewModel {
         }
 
         let finalPosition = currentTime
-        // `.dismiss` cancels every control-plane timer, disposes the engine
-        // (discarding the source-cache handoff) and stops the server session.
-        // The stop below is the one the bridge still owes for a *non-offline*
-        // load; `PlaybackReducer.dismiss` emits its own `.stopSession` only when
-        // the state still holds an identity, and both are identity-guarded, so
-        // whichever lands second is a no-op.
+        // One teardown, one owner, one thing to await. `.dismiss` cancels every
+        // control-plane timer, disposes the engine (discarding the source-cache
+        // handoff) and stops the server session; the bridge stop below is the
+        // one it still owes for a *non-offline* load whose state no longer held
+        // an identity. Both run inside `cleanupCompletionTask`, in that order,
+        // so `waitForCleanupCompletion` covers the control plane's shutdown as
+        // well as the bridge's — and the second stop is a settled no-op rather
+        // than the loser of a race.
+        //
+        // The ingress is closed and drained first: a command the view issued
+        // just before dismissal still reaches the control plane, and nothing
+        // issued after it can. The drain is bounded (below) so dismissal is
+        // never held behind a command whose effect is waiting on a server that
+        // stopped answering.
         let controlPlane = self.controlPlane
         self.controlPlane = nil
-        if let controlPlane {
-            // Main-actor-isolated with the rest of the forwarding path, so the
-            // teardown cannot overtake an intent the view issued just before it.
-            Task { @MainActor in await controlPlane.shutdown() }
-        }
+        commandStream.finish()
+        let commandPump = self.commandPump
+        self.commandPump = nil
         engineSession?.dispose(reason: "cleanup")
         // Drop the disposed session so any post-teardown call is an explicit
         // no-op rather than relying on the backend's own `isDisposed` guard.
@@ -4505,6 +4638,30 @@ class PlayerViewModel {
                 await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
             }
             await realtimeClient.unbind()
+            // The queued commands, then the control plane's own shutdown, then
+            // the stop the bridge still owes. Awaited in that order rather than
+            // launched beside this task, so the caller that awaits cleanup is
+            // waiting for all of it.
+            //
+            // The drain gets a grace window, not an open-ended wait: the pump
+            // runs each command's effects to completion, and an effect can be a
+            // round trip to a server that has stopped answering (15 s per
+            // request), so `waitForCleanupCompletion` — the tvOS handoff's gate
+            // — would otherwise inherit it. Cancelling the pump cancels the
+            // request in flight and drops whatever is still queued; the
+            // `.dismiss` below supersedes all of it, and the bridge stop after
+            // it is what writes the final position.
+            if let commandPump {
+                let drainDeadline = Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    commandPump.cancel()
+                }
+                await commandPump.value
+                drainDeadline.cancel()
+            }
+            if let controlPlane {
+                await controlPlane.shutdown()
+            }
             if stopServerSessionOnTeardown {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }
@@ -4536,6 +4693,12 @@ class PlayerViewModel {
             NotificationCenter.default.removeObserver(outputRouteObserverToken)
         }
         tasks.cancelAll(in: .teardown)
+        // The ingress pump holds the control plane, not this view model, so it
+        // has to be closed here as well as in `cleanup()` — otherwise a view
+        // model that never reached `cleanup()` leaves it parked on an open
+        // queue forever.
+        commandStream.finish()
+        commandPump?.cancel()
         engineSession?.dispose(reason: "deinit")
         let realtimeClient = self.realtimeClient
         Task {

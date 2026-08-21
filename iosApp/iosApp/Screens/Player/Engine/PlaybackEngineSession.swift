@@ -1,15 +1,13 @@
 //
 //  PlaybackEngineSession.swift
 //
-//  Stage 2 wave 2b — one engine session per `LoadID`.
+//  One engine session per `LoadID`.
 //
-//  Before this wave the view model held the backend, the source proxy and 17
-//  callback closures whose lifetime was guarded by a by-value capture of the
-//  stream-load generation, plus five session-id mirrors. A session owns those
-//  three things together: the callbacks are re-bound to *this* session, the
+//  The backend, the source proxy and the callbacks that bind them belong to one
+//  load and are owned together: the callbacks are bound to *this* session, the
 //  stream ends when it is disposed, and a late event from a superseded load is
-//  dropped structurally rather than by comparing a number captured when the
-//  closure was created (design §4 I2).
+//  dropped structurally rather than by comparing a generation number captured
+//  when the closure was created.
 //
 //  It also owns the load's `RecoveryDriver`, which makes every recovery latch,
 //  budget and rolling window load-scoped for free. Backend-originated
@@ -18,13 +16,12 @@
 //  the ladder ran. Session- and transport-level actions ride the event stream
 //  as `EngineEvent.recoveryAction`, because the shell owns their execution.
 //
-//  Isolation: a plain `final class`, for the reason `LocalHLSHost` is one
-//  (design §2.8 as-built) — `AVPlayerBackend` and `PlayerViewModel` are both
-//  nonisolated, and every producer already ran on the main queue (the backend's
-//  notification observers, its `RunLoop.main` timers, the proxy's
-//  `Task { @MainActor }` callbacks). Annotating the class would have forced a
-//  hop into every one of them and deferred each in-route recovery by a run-loop
-//  turn.
+//  Isolation: a plain `final class`, for the reason `LocalHLSHost` is one —
+//  `AVPlayerBackend` and `PlayerViewModel` are both nonisolated, and every
+//  producer already runs on the main queue (the backend's notification
+//  observers, its `RunLoop.main` timers, the proxy's `Task { @MainActor }`
+//  callbacks). Annotating the class would force a hop into every one of them
+//  and defer each in-route recovery by a run-loop turn.
 //
 
 import Foundation
@@ -41,7 +38,8 @@ final class PlaybackEngineSession {
     let loadID: LoadID
     /// What this session was asked to execute.
     let plan: ExecutablePlan
-    /// The AVFoundation adapter. Survives an in-place replan (design §4 I4).
+    /// The AVFoundation adapter. Survives an in-place replan: the successor
+    /// session adopts this instance rather than building one.
     private(set) var backend: any PlaybackBackend
     /// The concrete backend for the view surface (`AVPlayerSurface` binds to
     /// `AVPlayer`, which is not on the protocol) and for the track coordinator's
@@ -129,7 +127,7 @@ final class PlaybackEngineSession {
 
     /// Hands this session's backend to its successor and closes this session
     /// down without disposing the engine. Used by the in-place replan, which
-    /// must keep the live `AVPlayer` (design §4 I4).
+    /// must keep the live `AVPlayer`.
     private func relinquishBackend() -> (any PlaybackBackend)? {
         guard !isDisposed else { return nil }
         unbindBackend()
@@ -178,7 +176,7 @@ final class PlaybackEngineSession {
     ///
     /// - Parameter retainingTransport: the tvOS background suspend disposes the
     ///   engine and deliberately leaves the source proxy — and its cache —
-    ///   running for the resume (wave 1E `SourceCacheDisposition.retainProxy`).
+    ///   running for the resume (`SourceCacheDisposition.retainProxy`).
     func dispose(reason: String, retainingTransport: Bool = false) {
         guard !isDisposed else {
             // A `retainingTransport` dispose latches `isDisposed` while
