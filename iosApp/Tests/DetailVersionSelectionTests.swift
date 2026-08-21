@@ -527,6 +527,128 @@ final class DetailVersionSelectionTests: XCTestCase {
     }
 
 
+    // MARK: - Auto version precedence
+    //
+    // One owner (`DetailVersionSelection.autoVersion`) resolves both the
+    // detail label and the version `PlaybackSessionBridge` asks the server
+    // for. The rungs, in silo-android's order
+    // (`selectTvDetailDisplayVersion` → `selectPlaybackVersion`):
+    // explicit pick → last-played file → quality preference → best rank.
+
+    private static let precedenceVersionsJSON = """
+    [
+      { "file_id": 1, "resolution": "720p" },
+      { "file_id": 2, "resolution": "1080p" },
+      { "file_id": 3, "resolution": "2160p" }
+    ]
+    """
+
+    private static let sdrContext = VersionDynamicRangePreference.Context(
+        supportsDolbyVision: false, supportsHDR: false, dolbyVisionEnabled: false
+    )
+
+    func testExplicitVersionPickOutranksHistoryAndTheQualityPreference() {
+        let versions = decodedVersions(Self.precedenceVersionsJSON)
+
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: 1,
+                lastFileId: 2,
+                preferredQualityId: "2160p",
+                dynamicRange: Self.sdrContext
+            )?.fileId,
+            1,
+            "this visit's Version pick is the top rung"
+        )
+    }
+
+    func testLastPlayedFileOutranksTheQualityPreference() {
+        let versions = decodedVersions(Self.precedenceVersionsJSON)
+
+        // Parity with silo-android, whose `selectPlaybackVersion` returns the
+        // remembered file before it looks at the preference at all.
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: nil,
+                lastFileId: 1,
+                preferredQualityId: "original",
+                dynamicRange: Self.sdrContext
+            )?.fileId,
+            1
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.selectVersion(
+                from: versions,
+                lastFileId: 1,
+                preferredQuality: "original",
+                dynamicRange: Self.sdrContext
+            ).fileId,
+            1,
+            "playback start must not out-rank history where the label does not"
+        )
+    }
+
+    func testQualityPreferenceCapsTheAutoPickWhenThereIsNoHistory() {
+        let versions = decodedVersions(Self.precedenceVersionsJSON)
+
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: nil,
+                lastFileId: nil,
+                preferredQualityId: "1080p",
+                dynamicRange: Self.sdrContext
+            )?.fileId,
+            2,
+            "a 1080p preference must not display the 4K file"
+        )
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: nil,
+                lastFileId: nil,
+                preferredQualityId: "auto",
+                dynamicRange: Self.sdrContext
+            )?.fileId,
+            3
+        )
+    }
+
+    func testQualityPreferenceFallsBackToTheBestRankWhenNothingFitsUnderIt() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 3, "resolution": "2160p" },
+          { "file_id": 4, "resolution": "1080p" }
+        ]
+        """)
+
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: nil,
+                lastFileId: nil,
+                preferredQualityId: "480p",
+                dynamicRange: Self.sdrContext
+            )?.fileId,
+            3,
+            "no version fits under 480p, so the best-ranked one is still offered"
+        )
+    }
+
+    func testAutoDisplayReturnsNilForAnItemWithNoVersions() {
+        XCTAssertNil(
+            DetailVersionSelection.displayVersion(
+                versions: [],
+                selectedFileId: 7,
+                lastFileId: 7,
+                preferredQualityId: "1080p",
+                dynamicRange: Self.sdrContext
+            )
+        )
+    }
+
     // MARK: - Dolby Vision tiebreak (equal-resolution version ranking)
 
     private static let dvVersionsJSON = """

@@ -227,6 +227,112 @@ final class PlaybackSessionBridgeReplanContractTests: XCTestCase {
         }
     }
 
+    // MARK: - Auto version selection agrees with the detail label
+
+    /// `PlaybackSessionBridge.selectVersion` and
+    /// `DetailVersionSelection.displayVersion` must resolve to the same file
+    /// for the same inputs — otherwise the detail screen labels one version's
+    /// tracks and format while Play starts another, and picking a labelled
+    /// track pins the version that was never going to play.
+    ///
+    /// The sweep covers every rung: no history / a remembered file at each
+    /// resolution / a remembered file that is gone, crossed with Auto, an
+    /// explicit ceiling above and below the available files, Original, and the
+    /// 4K rung.
+    func testAutoVersionAgreesBetweenTheDetailLabelAndPlaybackStart() {
+        let versions = Self.decodedVersions("""
+        [
+          { "file_id": 1, "resolution": "720p" },
+          { "file_id": 2, "resolution": "1080p", "hdr": true },
+          { "file_id": 3, "resolution": "2160p", "hdr": true,
+            "video_tracks": [ { "index": 0, "codec": "hevc", "dolby_vision": "profile 8" } ] },
+          { "file_id": 4, "resolution": null }
+        ]
+        """)
+        let contexts: [VersionDynamicRangePreference.Context] = [
+            .init(supportsDolbyVision: false, supportsHDR: false, dolbyVisionEnabled: false),
+            .init(supportsDolbyVision: true, supportsHDR: true, dolbyVisionEnabled: true)
+        ]
+        let storedQualityIds: [String?] = [
+            nil, "", "auto", "original", "2160p", "4K", "1080p-high", "1080p", "720p", "480p", "328p"
+        ]
+
+        for context in contexts {
+            for storedQualityId in storedQualityIds {
+                for lastFileId in [nil, 1, 2, 3, 4, 99] as [Int?] {
+                    let detail = DetailVersionSelection.displayVersion(
+                        versions: versions,
+                        selectedFileId: nil,
+                        lastFileId: lastFileId,
+                        preferredQualityId: storedQualityId,
+                        dynamicRange: context
+                    )
+                    let bridge = PlaybackSessionBridge.selectVersion(
+                        from: versions,
+                        lastFileId: lastFileId,
+                        // What `PlaybackSessionBridge.prepare` hands its own
+                        // selector: the stored id through the closed catalog,
+                        // with Auto collapsed to nil.
+                        preferredQuality: Self.bridgeQualityPreference(storedQualityId),
+                        dynamicRange: context
+                    )
+                    XCTAssertEqual(
+                        detail?.fileId,
+                        bridge.fileId,
+                        "quality=\(storedQualityId ?? "nil") lastFileId=\(lastFileId?.description ?? "nil") dv=\(context.supportsDolbyVision)"
+                    )
+                }
+            }
+        }
+    }
+
+    /// The bridge never asks its selector for a version the detail screen
+    /// could not have labelled: an explicit Version pick is resolved before
+    /// the selector runs, on both sides.
+    func testAnExplicitVersionPickBypassesTheSharedSelectorOnBothSides() {
+        let versions = Self.decodedVersions("""
+        [
+          { "file_id": 1, "resolution": "720p" },
+          { "file_id": 2, "resolution": "2160p" }
+        ]
+        """)
+        let context = VersionDynamicRangePreference.Context(
+            supportsDolbyVision: false, supportsHDR: false, dolbyVisionEnabled: false
+        )
+
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: 1,
+                lastFileId: 2,
+                preferredQualityId: "original",
+                dynamicRange: context
+            )?.fileId,
+            1
+        )
+        XCTAssertEqual(
+            DetailVersionSelection.autoVersion(
+                versions: versions,
+                selectedFileId: 1,
+                lastFileId: 2,
+                preferredQuality: ApplePlaybackQuality.originalId,
+                dynamicRange: context
+            )?.fileId,
+            1
+        )
+    }
+
+    private static func bridgeQualityPreference(_ storedQualityId: String?) -> String? {
+        let normalized = ApplePlaybackQuality.normalizeStoredId(storedQualityId)
+        return normalized == ApplePlaybackQuality.autoId ? nil : normalized
+    }
+
+    private static func decodedVersions(_ json: String) -> [FileVersion] {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try! decoder.decode([FileVersion].self, from: Data(json.utf8))
+    }
+
     // MARK: - Fixture plumbing
 
     private func goldenPlan(
