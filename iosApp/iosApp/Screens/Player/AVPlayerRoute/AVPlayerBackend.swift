@@ -2674,10 +2674,23 @@ final class AVPlayerBackend {
         }
     }
 
+    /// Installs everything scoped to one AVPlayerItem (plus the two
+    /// player-level observations `detachPerItemObservers` re-creates).
+    ///
+    /// Item identity is `currentItem`, and every per-item handler that
+    /// mutates or reports re-checks it *inside* the main hop. KVO here is
+    /// delivered off-main and hopped with `DispatchQueue.main.async`, while
+    /// `detachPerItemObservers()` invalidates on main: invalidation cannot
+    /// retract blocks already enqueued, so without the re-check a retired
+    /// item — the one an in-place reload (`reloadEstablishedLoopbackItem`) or
+    /// a fresh load just replaced — could still report terminal failure, flip
+    /// buffering, change duration or fire end-of-file for its successor.
+    /// Every attach site assigns `currentItem` first, so the `.initial`
+    /// deliveries pass.
     private func attachItemObservers(_ item: AVPlayerItem) {
         statusObs = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
+                guard let self, !self.isDisposed, item === self.currentItem else { return }
                 switch item.status {
                 case .readyToPlay:
                     if self.ttffReadyMs == nil { self.ttffReadyMs = self.ttffElapsedMs() }
@@ -2728,7 +2741,7 @@ final class AVPlayerBackend {
 
         bufferEmptyObs = item.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] item, _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
+                guard let self, !self.isDisposed, item === self.currentItem else { return }
                 if item.isPlaybackBufferEmpty {
                     // A seek empties the decode buffer by definition, and so
                     // does the initial fill before the first frame; counting
@@ -2753,7 +2766,7 @@ final class AVPlayerBackend {
 
         bufferFullObs = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] item, _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
+                guard let self, !self.isDisposed, item === self.currentItem else { return }
                 if item.isPlaybackLikelyToKeepUp {
                     self.onBufferingChange?(false)
                     self.emitPlaybackStats(referenceTime: self.currentTime(), force: true)
@@ -2766,14 +2779,14 @@ final class AVPlayerBackend {
             let duration = item.duration.seconds
             guard duration.isFinite, duration > 0 else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
+                guard let self, !self.isDisposed, item === self.currentItem else { return }
                 self.onDurationChange?(duration)
             }
         }
 
         loadedRangesObs = item.observe(\.loadedTimeRanges, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isDisposed else { return }
+                guard let self, !self.isDisposed, item === self.currentItem else { return }
                 self.emitBufferedAhead(referenceTime: self.currentTime())
                 self.attemptInitialPlaybackStart(for: item, trigger: "loadedTimeRanges")
                 self.sampleLoopbackAutoResume(for: item, trigger: "loaded_ranges")
@@ -2787,12 +2800,15 @@ final class AVPlayerBackend {
             }
         }
 
+        // Block observers with a queue are ENQUEUED, and `removeObserver`
+        // does not cancel what is already in flight — so this one carries the
+        // same identity check as the KVO hops above.
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
         ) { [weak self] _ in
-            guard let self, !self.isDisposed else { return }
+            guard let self, !self.isDisposed, item === self.currentItem else { return }
             self.hasReachedItemEnd = true
             self.onEndOfFile?()
         }
