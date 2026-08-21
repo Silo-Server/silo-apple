@@ -2027,7 +2027,8 @@ final class LoopbackSegmentWriter {
     }
 
     /// Throws any fatal error captured by the AVIO write callback path (the
-    /// box sink's `initSegmentMissing` latch). That path runs synchronously
+    /// box sink's `initSegmentMissing` and pending-segment-ceiling latches).
+    /// That path runs synchronously
     /// from the muxer's write callback so it cannot throw directly — this
     /// helper drains the captured error at the next safe point.
     private func throwIfFatalIOError() throws {
@@ -4436,12 +4437,29 @@ final class LoopbackSegmentWriter {
         }
 
         outFrame.pointee.nb_samples = converted
-        let requiredFrameSize = encoderCtx.pointee.frame_size
-        if requiredFrameSize > 0 {
-            try applyPendingSeamSilenceFillIfNeeded(encoderCtx: encoderCtx)
-            try writeConvertedAudioToFifo(outFrame, sampleCount: converted)
-            drainPendingSeamTrimFromFifoIfNeeded()
+        do {
+            try deliverConvertedAudio(outFrame, sampleCount: converted, encoderCtx: encoderCtx)
+        } catch {
             av_frame_free(&convertedFrame)
+            throw error
+        }
+        av_frame_free(&convertedFrame)
+    }
+
+    /// Hands one converted frame to the encoder: the FIFO path (with the
+    /// producer-seam stitch) for the fixed-`frame_size` codecs we bridge, a
+    /// direct send otherwise. Shared by the per-frame conversion above and
+    /// the end-of-stream resampler drain, so the tail samples take exactly
+    /// the same route as every sample before them.
+    private func deliverConvertedAudio(
+        _ outFrame: UnsafeMutablePointer<AVFrame>,
+        sampleCount: Int32,
+        encoderCtx: UnsafeMutablePointer<AVCodecContext>
+    ) throws {
+        if encoderCtx.pointee.frame_size > 0 {
+            try applyPendingSeamSilenceFillIfNeeded(encoderCtx: encoderCtx)
+            try writeConvertedAudioToFifo(outFrame, sampleCount: sampleCount)
+            drainPendingSeamTrimFromFifoIfNeeded()
             try drainAudioSampleFifo(final: false)
             return
         }
@@ -4452,15 +4470,54 @@ final class LoopbackSegmentWriter {
         vodPendingSeamSilenceFillSamples = 0
         vodPendingSeamTrimSamples = 0
         outFrame.pointee.pts = nextEncodedAudioPTS
-        nextEncodedAudioPTS += Int64(converted)
+        nextEncodedAudioPTS += Int64(sampleCount)
         let sendR = avcodec_send_frame(encoderCtx, outFrame)
-        av_frame_free(&convertedFrame)
         if sendR == avErrorAgain {
             noteSendEagainDrop(stage: "audio-encoder-send-direct")
         } else if sendR < 0 {
             throw LoopbackWriterError.audioTranscodeSetup("audio encoder send failed rc=\(sendR)")
         }
         try drainEncodedPackets()
+    }
+
+    /// End-of-stream resampler drain. `swr_convert` holds up to its filter
+    /// delay internally whenever the bridge rate-converts (96 kHz -> 48 kHz
+    /// is the common case; `swr_get_delay` is already consulted for drift),
+    /// and only a NULL-input conversion pulls those samples out. Without it
+    /// the last few milliseconds of every transcoded track are dropped at
+    /// EOF.
+    private func drainResamplerDelay() throws {
+        guard let encoderCtx = audioEncoderCtx, let swr = audioSwrCtx else { return }
+        let outCapacity = swr_get_out_samples(swr, 0)
+        guard outCapacity > 0 else { return }
+
+        var drainFrame = av_frame_alloc()
+        guard let outFrame = drainFrame else {
+            throw LoopbackWriterError.allocOutput
+        }
+        outFrame.pointee.nb_samples = outCapacity
+        outFrame.pointee.format = encoderCtx.pointee.sample_fmt.rawValue
+        outFrame.pointee.sample_rate = encoderCtx.pointee.sample_rate
+        outFrame.pointee.ch_layout = encoderCtx.pointee.ch_layout
+        if av_frame_get_buffer(outFrame, 0) < 0 {
+            av_frame_free(&drainFrame)
+            throw LoopbackWriterError.audioTranscodeSetup("resampler drain frame buffer alloc failed")
+        }
+
+        let converted = swr_convert(swr, outFrame.pointee.extended_data, outCapacity, nil, 0)
+        guard converted > 0 else {
+            av_frame_free(&drainFrame)
+            return
+        }
+        outFrame.pointee.nb_samples = converted
+        do {
+            try deliverConvertedAudio(outFrame, sampleCount: converted, encoderCtx: encoderCtx)
+        } catch {
+            av_frame_free(&drainFrame)
+            throw error
+        }
+        av_frame_free(&drainFrame)
+        cmpLog("[CMP-AVP] resampler delay drained at audio EOF samples=\(converted)")
     }
 
     private func audioResampler(
@@ -4713,6 +4770,7 @@ final class LoopbackSegmentWriter {
             av_frame_unref(decodedFrame)
         }
 
+        try drainResamplerDelay()
         try drainAudioSampleFifo(final: true)
         _ = avcodec_send_frame(encoderCtx, nil)
         try drainEncodedPackets()
@@ -5181,6 +5239,7 @@ final class LoopbackSegmentWriter {
             // Capture this box's byte range.
             let boxRange = cursor ..< (cursor + total)
             handleTopLevelBox(type: type, range: boxRange)
+            enforcePendingSegmentCeiling()
             cursor += total
         }
         // Discard consumed prefix. Left-over tail (partial next box) stays
@@ -5576,6 +5635,44 @@ final class LoopbackSegmentWriter {
         pendingSegmentBytes = fresh
         pendingSegmentHasMoof = hasMoof
         pendingSegmentHasVideo = hasVideo
+    }
+
+    /// Hard ceiling on the writer's OWN copy of the open segment. Segments
+    /// are cut at plan boundaries only, and a boundary is only taken at a
+    /// keyframe — so a source that stops emitting keyframes (or a plan whose
+    /// final boundary is minutes of media away) grows `pendingSegmentBytes`
+    /// until jetsam kills the process with no error anyone can act on. The
+    /// tier mirrors `progressivePublishCeilingBytes`, the ceiling on the
+    /// SECOND resident copy: ~2.5× it, which clears the largest segments real
+    /// titles produce (30–60 MB on 4K long-GOP anchors) several times over
+    /// while still tripping long before the device is in trouble.
+    private static let pendingSegmentCeilingBytes = 256 * 1024 * 1024
+    /// Constrained tvOS devices (the same <= 3.5 GB tier
+    /// `generatedAheadThrottleSeconds` detects) get the same 3:1 haircut the
+    /// progressive ceiling takes.
+    private static let pendingSegmentCeilingConstrainedBytes = 96 * 1024 * 1024
+    private var pendingSegmentCeilingBytes: Int {
+        PlaybackSourceCache.isConstrainedMemoryDevice
+            ? Self.pendingSegmentCeilingConstrainedBytes
+            : Self.pendingSegmentCeilingBytes
+    }
+
+    /// Fails the session once the open segment blows the ceiling. Runs from
+    /// the AVIO write callback, so it latches `fatalIOError` (the
+    /// `initSegmentMissing` mechanism) and the mux loop rethrows at its next
+    /// `av_interleaved_write_frame` check — one fragment later at most.
+    private func enforcePendingSegmentCeiling() {
+        guard fatalIOError == nil,
+              pendingSegmentBytes.count > pendingSegmentCeilingBytes else { return }
+        let ceilingMiB = pendingSegmentCeilingBytes / (1024 * 1024)
+        let pendingMiB = pendingSegmentBytes.count / (1024 * 1024)
+        Self.logger.error(
+            "open segment exceeded the writer ceiling: \(pendingMiB, privacy: .public) MiB > \(ceilingMiB, privacy: .public) MiB"
+        )
+        cmpLog("[CMP-AVP] pending segment ceiling exceeded segment=\(vodOpenSegmentIndex) bytes=\(pendingSegmentBytes.count) ceiling=\(pendingSegmentCeilingBytes); failing session for route fallback")
+        fatalIOError = .bootstrapFailed(
+            "pending_segment_ceiling_exceeded segment=\(vodOpenSegmentIndex) mib=\(pendingMiB) ceilingMib=\(ceilingMiB)"
+        )
     }
 
     private func appendToCurrentSegment(_ slice: Data) {
@@ -6169,6 +6266,9 @@ enum LoopbackWriterError: Error {
     /// trustworthy segment plan to advertise. Muxing anyway yields a
     /// presentation AVPlayer freezes on; failing the session lets the route
     /// fall back immediately instead of waiting out the startup watchdog.
+    /// Also carries the mid-mux variant of the same verdict: an open segment
+    /// past the writer's pending-segment ceiling, which is a plan that cannot
+    /// be produced within this device's memory.
     case bootstrapFailed(String)
     case profile81ConversionFailed(String)
     /// A Profile 5 session reached mux setup without a usable DOVI
