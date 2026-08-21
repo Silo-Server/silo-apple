@@ -164,11 +164,11 @@ final class PlayerErrorClassifierPinTests: XCTestCase {
     /// The typed case answers directly, so a writer whose description someday
     /// stops spelling the token still routes into server-outage recovery.
     func testPrematureSourceEndIsDecidedByTheTypedCaseNotTheSpelling() {
-        let typed = PlaybackFailure.writerFailed(kind: .prematureSourceEnd, detail: "readRC: -1")
+        let typed = PlaybackFailure.writerPrematureSourceEnd(detail: "readRC: -1")
         XCTAssertTrue(typed.isPrematureSourceEnd)
         XCTAssertFalse(PlaybackFailure.isPrematureSourceEnd(legacyMessage: typed.legacyMessage))
 
-        let otherWriterFailure = PlaybackFailure.writerFailed(kind: .remux, detail: "vodMoovBlocked")
+        let otherWriterFailure = PlaybackFailure.writerFailed(detail: "vodMoovBlocked")
         XCTAssertFalse(otherWriterFailure.isPrematureSourceEnd)
     }
 

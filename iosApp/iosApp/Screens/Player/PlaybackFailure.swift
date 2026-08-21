@@ -55,23 +55,6 @@ enum PlaybackFailure: Equatable {
         }
     }
 
-    /// What the loopback writer failed at. Mapped from `LoopbackWriterError`
-    /// cases at the reporting site — never parsed out of a description.
-    enum WriterFailureKind: Equatable {
-        /// Ingest ended clearly short of the known content: an origin outage,
-        /// not an engine defect. Routes into server-outage recovery.
-        case prematureSourceEnd
-        /// Media was muxed before any `moov`, so no init segment exists.
-        case initSegmentMissing
-        /// The selected audio codec has no route into fMP4.
-        case unsupportedSelectedAudioCodec
-        /// The source could not be opened, seeked, or probed at all.
-        case sourceUnavailable
-        /// The mux side produced no usable output.
-        case remux
-        case other
-    }
-
     /// The AVPlayer item failed.
     case itemFailed(ItemFailure)
     /// The local HLS segment server could not bind.
@@ -86,8 +69,13 @@ enum PlaybackFailure: Equatable {
     case loopbackStartupStalled(trigger: String)
     /// The loopback startup ladder wanted to reload the item but had no URL.
     case loopbackStartupItemUnreloadable
-    /// The loopback writer finished with an error.
-    case writerFailed(kind: WriterFailureKind, detail: String)
+    /// The loopback writer ended ingest clearly short of the known content:
+    /// an origin outage, not an engine defect. Decided at the reporting site
+    /// from `LoopbackWriterError.prematureSourceEnd` — never parsed out of a
+    /// description. Routes into server-outage recovery.
+    case writerPrematureSourceEnd(detail: String)
+    /// The loopback writer finished with any other error.
+    case writerFailed(detail: String)
     /// A failure that only ever existed as text. The escape hatch for callers
     /// (and tests) that still hold a legacy string.
     case unknown(String)
@@ -129,7 +117,7 @@ enum PlaybackFailure: Equatable {
             return "Local loopback startup stalled after nudge and item reload (trigger=\(trigger))"
         case .loopbackStartupItemUnreloadable:
             return "Local loopback startup stalled with no reloadable item URL"
-        case .writerFailed(_, let detail):
+        case .writerPrematureSourceEnd(let detail), .writerFailed(let detail):
             return "Remuxer failed: \(detail)"
         case .unknown(let message):
             return message
@@ -157,7 +145,7 @@ enum PlaybackFailure: Equatable {
     /// Ingest ended short of the known content. Typed when the writer said so;
     /// the substring fallback covers failures that arrived as raw text.
     var isPrematureSourceEnd: Bool {
-        if case .writerFailed(.prematureSourceEnd, _) = self { return true }
+        if case .writerPrematureSourceEnd = self { return true }
         return Self.isPrematureSourceEnd(legacyMessage: legacyMessage)
     }
 

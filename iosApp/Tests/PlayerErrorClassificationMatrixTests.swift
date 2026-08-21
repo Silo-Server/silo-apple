@@ -88,12 +88,12 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
             .loopbackStartupBackstop(seconds: 45, requestsServed: 0, stage: "reloaded"),
             .loopbackStartupStalled(trigger: "fetches_frozen"),
             .loopbackStartupItemUnreloadable,
-            .writerFailed(kind: .prematureSourceEnd, detail: "prematureSourceEnd(readRC: -541478725, shortfallBytes: Optional(4096), shortfallSeconds: Optional(12.5))"),
-            .writerFailed(kind: .initSegmentMissing, detail: "initSegmentMissing"),
-            .writerFailed(kind: .unsupportedSelectedAudioCodec, detail: "unsupportedSelectedAudioCodec(\"dts\")"),
-            .writerFailed(kind: .sourceUnavailable, detail: "openInput(-2)"),
-            .writerFailed(kind: .remux, detail: "vodMoovBlocked(closingSegment: 7, audioRouted: true)"),
-            .writerFailed(kind: .other, detail: "someFutureWriterError"),
+            .writerPrematureSourceEnd(detail: "prematureSourceEnd(readRC: -541478725, shortfallBytes: Optional(4096), shortfallSeconds: Optional(12.5))"),
+            .writerFailed(detail: "initSegmentMissing"),
+            .writerFailed(detail: "unsupportedSelectedAudioCodec(\"dts\")"),
+            .writerFailed(detail: "openInput(-2)"),
+            .writerFailed(detail: "vodMoovBlocked(closingSegment: 7, audioRouted: true)"),
+            .writerFailed(detail: "someFutureWriterError"),
             .unknown("Something else entirely")
         ]
     }
@@ -162,8 +162,14 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
                 "Local loopback startup stalled with no reloadable item URL"
             ),
             (
-                .writerFailed(kind: .remux, detail: "vodMoovBlocked"),
+                .writerFailed(detail: "vodMoovBlocked"),
                 "Remuxer failed: vodMoovBlocked"
+            ),
+            (
+                // The premature-source-end case is reported as the same
+                // "Remuxer failed:" string it always was.
+                .writerPrematureSourceEnd(detail: "prematureSourceEnd(readRC: -1)"),
+                "Remuxer failed: prematureSourceEnd(readRC: -1)"
             ),
             (.unknown("raw text"), "raw text")
         ]
@@ -196,7 +202,7 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
             // `isPrematureSourceEnd` is the one decision the typed case is
             // allowed to answer on its own — and for the writer's real
             // description it agrees with the old substring match anyway.
-            if case .writerFailed(.prematureSourceEnd, _) = failure {
+            if case .writerPrematureSourceEnd = failure {
                 XCTAssertTrue(failure.isPrematureSourceEnd)
                 XCTAssertTrue(oracleIsPrematureSourceEnd(message))
             } else {
@@ -280,7 +286,7 @@ final class PlayerErrorClassificationMatrixTests: XCTestCase {
             "playback_error"
         )
         XCTAssertEqual(
-            PlaybackFailure.writerFailed(kind: .prematureSourceEnd, detail: "prematureSourceEnd(readRC: -1, shortfallBytes: nil, shortfallSeconds: nil)").classification,
+            PlaybackFailure.writerPrematureSourceEnd(detail: "prematureSourceEnd(readRC: -1, shortfallBytes: nil, shortfallSeconds: nil)").classification,
             "playback_error"
         )
     }

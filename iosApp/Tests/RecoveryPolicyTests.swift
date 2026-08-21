@@ -1329,7 +1329,7 @@ final class RecoveryPolicyTests: XCTestCase {
 
     func testEngineFailed_ProtocolV3_RequestsAServerReplan() {
         // V3 owns delivery, so every rung below is unreachable online.
-        let failure = PlaybackFailure.writerFailed(kind: .prematureSourceEnd, detail: "short read")
+        let failure = PlaybackFailure.writerPrematureSourceEnd(detail: "short read")
         let (action, _) = RecoveryPolicy.decide(
             .engineFailed(failure),
             context: onlineContext(),
@@ -1379,7 +1379,7 @@ final class RecoveryPolicyTests: XCTestCase {
     func testEngineFailed_PrematureSourceEnd_EntersServerOutageRecovery() {
         let context = offlineContext(route: .siloPlayerLoopback)
         let (action, next) = RecoveryPolicy.decide(
-            .engineFailed(.writerFailed(kind: .prematureSourceEnd, detail: "short read")),
+            .engineFailed(.writerPrematureSourceEnd(detail: "short read")),
             context: context,
             now: t0
         )
