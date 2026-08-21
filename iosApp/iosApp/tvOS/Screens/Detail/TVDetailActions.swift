@@ -194,8 +194,9 @@ struct TVCircleActionButton: View {
 ///
 /// Focus ownership (docs/tvos-focus.md): every control here is an ordinary
 /// focusable button in the native focus graph. The row adds only the
-/// container binding its screen scrolls from and one full-width
-/// `.focusSection()` — it never moves focus in response to a direction.
+/// container binding its screen scrolls from, one full-width
+/// `.focusSection()`, and a passive per-button focus observation used by the
+/// page-entry one-shot — it never moves focus in response to a direction.
 struct TVDetailActionRow<MoreMenu: View>: View {
     /// Which page-entry focus rule applies. `.page` fires the one-shot as
     /// soon as Play is laid out; `.season` gates it on the season key the
@@ -203,6 +204,20 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     enum InitialFocusScope: Equatable {
         case page
         case season(key: String?)
+    }
+
+    /// Identity of the action child that currently owns focus. Purely
+    /// observational — the native focus graph still owns movement. The
+    /// page-entry one-shot needs it because `rowFocused` is true for *any*
+    /// button in the row and so cannot tell a landing on Play apart from a
+    /// landing on Start Over or one of the circles.
+    private enum ActionID: Hashable {
+        case play
+        case startOver
+        case favorite
+        case watchlist
+        case watched
+        case more
     }
 
     /// Label for the primary pill. `nil` renders no play region at all.
@@ -234,6 +249,8 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     @Environment(\.resetFocus) private var resetFocus
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
+    @State private var initialPlayFocusTask: Task<Void, Never>?
+    @FocusState private var focusedAction: ActionID?
 
     var body: some View {
         HStack(spacing: 36) {
@@ -244,6 +261,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                     action: onPlay,
                     focused: playFocused
                 )
+                .focused($focusedAction, equals: .play)
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width > 0 && proxy.size.height > 0
                 } action: { isLaidOut in
@@ -257,6 +275,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                         title: "Start Over",
                         action: onStartOver
                     )
+                    .focused($focusedAction, equals: .startOver)
                 }
             }
 
@@ -267,6 +286,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
                 action: onToggleFavorite
             )
+            .focused($focusedAction, equals: .favorite)
 
             TVCircleActionButton(
                 icon: "bookmark",
@@ -275,6 +295,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
                 action: onToggleWatchlist
             )
+            .focused($focusedAction, equals: .watchlist)
 
             TVCircleActionButton(
                 icon: "checkmark.circle",
@@ -283,8 +304,10 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
                 action: onToggleWatched
             )
+            .focused($focusedAction, equals: .watched)
 
             moreMenu()
+                .focused($focusedAction, equals: .more)
         }
         // Container binding — flips true when any button in the row has
         // focus, driving the scroll-to-top in `detailFocusScroll`.
@@ -302,9 +325,15 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 initialFocusSeasonKey = seasonKey
             } else if initialFocusSeasonKey != seasonKey {
                 // Choosing another season is explicit navigation. Consume
-                // the entry one-shot even if its Play button never arrived.
+                // the entry one-shot even if its Play button never arrived,
+                // and drop any retry still running for the previous season —
+                // its resets belong to an item the user has left.
                 didResetInitialPlayFocus = true
+                cancelInitialPlayFocusRetry()
             }
+        }
+        .onDisappear {
+            cancelInitialPlayFocusRetry()
         }
     }
 
@@ -327,21 +356,41 @@ struct TVDetailActionRow<MoreMenu: View>: View {
         // engine may not have attached the freshly laid-out Play pill yet — a
         // reset issued here can resolve to the geometrically higher synopsis
         // and the one-shot used to be consumed regardless. Defer out of the
-        // transaction and verify the reset actually landed, retrying a few
-        // ticks before giving up.
-        Task { @MainActor in
+        // transaction and verify the reset actually landed on *Play*, retrying
+        // a few ticks before giving up. The task is stored so it dies with the
+        // page instead of resetting focus on whatever came next.
+        let actionFocus = $focusedAction
+        initialPlayFocusTask = Task { @MainActor in
+            var lastFocusedAction = actionFocus.wrappedValue
             for attempt in 0..<3 {
+                if Task.isCancelled { return }
+                // Success is Play specifically. `rowFocused` is the whole
+                // row's binding, so it is also true when the engine parked on
+                // Start Over or one of the circles — those are the landings
+                // this retry exists to correct.
                 if playFocused.wrappedValue { return }
-                // The user beat the reset onto another button in this row —
-                // that's deliberate; don't yank focus back to Play.
-                if rowFocused.wrappedValue { return }
+                let focusedNow = actionFocus.wrappedValue
+                if lastFocusedAction != nil, focusedNow != lastFocusedAction {
+                    // Focus moved from one action child to another (or out of
+                    // the row) while the retry was still running. The reset
+                    // itself can only land on Play, so this is the user — that
+                    // is deliberate; don't yank focus back.
+                    return
+                }
+                lastFocusedAction = focusedNow
                 if attempt > 0 {
                     try? await Task.sleep(nanoseconds: 50_000_000)
+                    if Task.isCancelled { return }
                 }
                 resetFocus(in: focusNamespace)
                 await Task.yield()
             }
         }
+    }
+
+    private func cancelInitialPlayFocusRetry() {
+        initialPlayFocusTask?.cancel()
+        initialPlayFocusTask = nil
     }
 }
 
