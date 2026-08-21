@@ -628,9 +628,22 @@ actor PlaybackSessionActor {
         // the install prepares its replacement without touching the live
         // session, so until it commits that session is still the one playing
         // and its stream is still its own. `pumpEngineEvents` cancels the old
-        // pump as it installs the new one; in between, `pendingLoadID` (moved
-        // above) is already what `ingestEngineEvent` refuses the outgoing
-        // stream's events against.
+        // pump as it installs the new one.
+        //
+        // In between, `pendingLoadID` (moved above) is what `ingestEngineEvent`
+        // refuses the outgoing stream's events against — but only when the
+        // replacement carries a *new* `LoadID`. The two same-`LoadID` reloads
+        // (the loopback seek-before-anchor rebuild and the native-direct ->
+        // loopback fallback) keep the id by design, so an event the retired
+        // session had already buffered can still be ingested under the live id
+        // after the commit: `disposeEngineOnly` stops the *source* of new
+        // events, not the unbounded buffer behind the stream, and it must not
+        // finish that stream — the visible outage recovery keeps a
+        // disposed-engine session alive precisely so its `RecoveryDriver` can
+        // go on emitting `.recoveryAction` through it. `.time` is absorbed by
+        // the re-anchor seek filter; a buffered `.failed` costs the replacement
+        // engine one extra rung of a ladder that was already climbing, since
+        // both reloads are themselves failure- or seek-driven.
         let outage = carriedOutage
         let installed = await shell.installEngine(
             plan: plan,

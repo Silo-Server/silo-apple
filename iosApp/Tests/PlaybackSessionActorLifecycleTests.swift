@@ -284,7 +284,8 @@ final class PlaybackSessionActorLifecycleTests: XCTestCase {
             PlayerViewModel.teardownRetiresInstalledSession(
                 installedLoadID: outgoingLoadID,
                 teardownLoadID: replanLoadID,
-                pendingLoadID: replanLoadID
+                pendingLoadID: replanLoadID,
+                engineOnly: false
             ),
             "the outgoing session would be stranded: nothing else names its load again"
         )
@@ -304,7 +305,8 @@ final class PlaybackSessionActorLifecycleTests: XCTestCase {
             PlayerViewModel.teardownRetiresInstalledSession(
                 installedLoadID: installed,
                 teardownLoadID: installed,
-                pendingLoadID: installed
+                pendingLoadID: installed,
+                engineOnly: false
             )
         )
         // An install that never committed: the state has moved on to `pending`,
@@ -313,7 +315,8 @@ final class PlaybackSessionActorLifecycleTests: XCTestCase {
             PlayerViewModel.teardownRetiresInstalledSession(
                 installedLoadID: installed,
                 teardownLoadID: pending,
-                pendingLoadID: pending
+                pendingLoadID: pending,
+                engineOnly: false
             )
         )
         // A retired load's dispose must never reach the session that replaced
@@ -322,7 +325,8 @@ final class PlaybackSessionActorLifecycleTests: XCTestCase {
             PlayerViewModel.teardownRetiresInstalledSession(
                 installedLoadID: installed,
                 teardownLoadID: unrelated,
-                pendingLoadID: installed
+                pendingLoadID: installed,
+                engineOnly: false
             )
         )
         // And nothing at all is retired before the first install.
@@ -330,7 +334,30 @@ final class PlaybackSessionActorLifecycleTests: XCTestCase {
             PlayerViewModel.teardownRetiresInstalledSession(
                 installedLoadID: installed,
                 teardownLoadID: unrelated,
-                pendingLoadID: nil
+                pendingLoadID: nil,
+                engineOnly: false
+            )
+        )
+        // The server-outage arm keeps its own load's session alive as that
+        // load's recovery owner, so it still names it.
+        XCTAssertTrue(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: installed,
+                teardownLoadID: installed,
+                pendingLoadID: pending,
+                engineOnly: true
+            )
+        )
+        // But it must never reach a session from an older load while an install
+        // is still in its prepare half: `disposeEngineOnly` disposes the backend
+        // without latching `isDisposed`, so the commit would adopt a dead
+        // `AVPlayer` through `relinquishBackend()`.
+        XCTAssertFalse(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: installed,
+                teardownLoadID: pending,
+                pendingLoadID: pending,
+                engineOnly: true
             )
         )
     }

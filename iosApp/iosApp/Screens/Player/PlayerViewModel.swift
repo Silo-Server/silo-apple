@@ -2336,6 +2336,18 @@ class PlayerViewModel {
         // The outgoing proxy's cache is *offered* to the replacement rather than
         // handed over: a handoff lives for exactly one load attempt, and the
         // attempt is only over at commit, so that is where the slot is emptied.
+        //
+        // Offering it means the live proxy keeps serving from the same
+        // `PlaybackSourceCache` instance while the replacement prepares, and an
+        // adopting replacement may prefetch into it before the commit. The
+        // cache is `NSLock`-guarded, so the overlap costs at worst a re-fetch:
+        // its read anchors and prefetch/eviction water marks are driven by two
+        // consumers at once, and an eviction can drop a span the still-playing
+        // proxy is about to re-read. The window is bounded by `prepareSource` —
+        // a local `NWListener` bind with a 2 s deadline, no origin round trip —
+        // and, because the offer is derived from the live proxy on each attempt
+        // rather than consumed from a one-shot slot, a superseded install can
+        // briefly leave the same cache behind more than one prepared proxy.
         let handoff = PlaybackEngineSession.stashSourceCache(
             from: sourceProxy,
             fileId: sourceProxyFileId
@@ -2468,6 +2480,15 @@ class PlayerViewModel {
     /// stated this way, a replan whose install failed left a paused `AVPlayer`
     /// and its loopback graph alive behind the error wall.
     ///
+    /// The second arm is for a *terminal* teardown only. `engineOnly` is the
+    /// visible server-outage recovery, which means "keep THIS load's session
+    /// alive as its recovery owner": a session belonging to an older load is
+    /// never that, and `disposeEngineOnly` deliberately leaves the session
+    /// un-`isDisposed`, so letting the arm through would let an outage
+    /// escalation that lands *during* an install dispose the very backend the
+    /// commit is about to adopt through `relinquishBackend()` — a live-looking
+    /// but dead `AVPlayer` under the new load.
+    ///
     /// After a *successful* install the two arms coincide (`pendingLoadID` is
     /// the installed session's id), and a teardown for a load the shell has
     /// already replaced matches neither, which is what protects a newer
@@ -2475,9 +2496,11 @@ class PlayerViewModel {
     static func teardownRetiresInstalledSession(
         installedLoadID: LoadID,
         teardownLoadID: LoadID,
-        pendingLoadID: LoadID?
+        pendingLoadID: LoadID?,
+        engineOnly: Bool
     ) -> Bool {
-        installedLoadID == teardownLoadID || pendingLoadID == teardownLoadID
+        if installedLoadID == teardownLoadID { return true }
+        return !engineOnly && pendingLoadID == teardownLoadID
     }
 
     /// Tear one load's engine down. `engineOnly` is the visible server-outage
@@ -2501,7 +2524,8 @@ class PlayerViewModel {
               Self.teardownRetiresInstalledSession(
                   installedLoadID: session.loadID,
                   teardownLoadID: loadID,
-                  pendingLoadID: pendingLoadID
+                  pendingLoadID: pendingLoadID,
+                  engineOnly: engineOnly
               ) else {
             return
         }
@@ -4585,7 +4609,9 @@ class PlayerViewModel {
         //
         // The ingress is closed and drained first: a command the view issued
         // just before dismissal still reaches the control plane, and nothing
-        // issued after it can.
+        // issued after it can. The drain is bounded (below) so dismissal is
+        // never held behind a command whose effect is waiting on a server that
+        // stopped answering.
         let controlPlane = self.controlPlane
         self.controlPlane = nil
         commandStream.finish()
@@ -4616,7 +4642,23 @@ class PlayerViewModel {
             // the stop the bridge still owes. Awaited in that order rather than
             // launched beside this task, so the caller that awaits cleanup is
             // waiting for all of it.
-            await commandPump?.value
+            //
+            // The drain gets a grace window, not an open-ended wait: the pump
+            // runs each command's effects to completion, and an effect can be a
+            // round trip to a server that has stopped answering (15 s per
+            // request), so `waitForCleanupCompletion` — the tvOS handoff's gate
+            // — would otherwise inherit it. Cancelling the pump cancels the
+            // request in flight and drops whatever is still queued; the
+            // `.dismiss` below supersedes all of it, and the bridge stop after
+            // it is what writes the final position.
+            if let commandPump {
+                let drainDeadline = Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    commandPump.cancel()
+                }
+                await commandPump.value
+                drainDeadline.cancel()
+            }
             if let controlPlane {
                 await controlPlane.shutdown()
             }
