@@ -37,48 +37,82 @@ final class LoopbackSegmentPlanTests: XCTestCase {
 
     func testCoverageBoundaryIsInclusive() {
         // Exactly one target duration of coverage is trustworthy; a hair
-        // under is not.
+        // under is not. Durations keep the tail inside the gap cap so this
+        // case tests the coverage witness alone.
         let exactly = [pts(0), pts(1), pts(2), pts(3), pts(4.0)]
         XCTAssertTrue(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
             keyframePts: exactly,
             timeBaseNum: num, timeBaseDen: den,
-            sourceDurationSeconds: 100
+            sourceDurationSeconds: 30
         ))
 
         let justUnder = [pts(0), pts(1), pts(2), pts(3), pts(3.999)]
         XCTAssertFalse(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
             keyframePts: justUnder,
             timeBaseNum: num, timeBaseDen: den,
-            sourceDurationSeconds: 100
+            sourceDurationSeconds: 30
         ))
     }
 
     func testGapBoundaryIsInclusive() {
-        // With target 4.0 the trusted-gap cap is max(16, 30) = 30 s.
+        // With target 4.0 the trusted-gap cap is max(16, 30) = 30 s. The
+        // 80 s duration keeps the 20 s tail inside that cap so this case
+        // tests the interior-gap witness alone.
         let exactly = [pts(0), pts(30), pts(60)]
         XCTAssertTrue(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
             keyframePts: exactly,
             timeBaseNum: num, timeBaseDen: den,
-            sourceDurationSeconds: 100
+            sourceDurationSeconds: 80
         ))
 
         let justOver = [pts(0), pts(30.001), pts(60)]
         XCTAssertFalse(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
             keyframePts: justOver,
             timeBaseNum: num, timeBaseDen: den,
-            sourceDurationSeconds: 100
+            sourceDurationSeconds: 80
         ))
     }
 
-    func testTailGapToEOFIsNotCounted() {
-        // Coverage and gaps are measured between keyframes only. A dense
-        // index that stops well before the end of the title stays trusted —
-        // the tail is the producer's problem, not the planner's.
+    func testTailGapToEOFCountsAsAGap() {
+        // The partial-index shape: a dense index covering the first 10 s of a
+        // two-hour title. Interior gaps are 1 s and coverage clears one
+        // target duration, but the keyframe plan would close its final
+        // segment at the 7200 s end fence — a 7192 s segment the writer
+        // buffers whole in RAM. The tail is a gap like any other.
+        let keyframes = (0...10).map { pts(Double($0)) }
+        XCTAssertFalse(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
+            keyframePts: keyframes,
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 7200
+        ))
+
+        // And the plan really does fall back to the uniform stride.
+        let plan = LoopbackSegmentPlan.build(
+            keyframePts: keyframes,
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 7200
+        )
+        XCTAssertFalse(plan.usedKeyframeIndex)
+        XCTAssertEqual(plan.segmentCount, 1800)
+    }
+
+    func testTailGapWithinTheLimitStaysTrusted() {
+        // An index that stops 30 s short of the end (the trusted-gap cap for
+        // target 4.0) is still a plan whose final segment is bounded — a
+        // producer that keeps emitting keyframes past the index is the
+        // normal case for a Cues read that stopped early but not badly.
         let keyframes = (0...10).map { pts(Double($0)) }
         XCTAssertTrue(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
             keyframePts: keyframes,
             timeBaseNum: num, timeBaseDen: den,
-            sourceDurationSeconds: 7200
+            sourceDurationSeconds: 40
+        ))
+
+        // A hair over the cap is not.
+        XCTAssertFalse(LoopbackSegmentPlan.keyframeIndexIsTrustworthy(
+            keyframePts: keyframes,
+            timeBaseNum: num, timeBaseDen: den,
+            sourceDurationSeconds: 40.001
         ))
     }
 
