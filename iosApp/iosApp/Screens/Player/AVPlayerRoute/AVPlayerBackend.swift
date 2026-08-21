@@ -1714,10 +1714,13 @@ final class AVPlayerBackend {
         host.onFinished = { [weak self, weak host] error in
             guard let self, let host, self.loopbackHost === host, !self.isDisposed else { return }
             if let error {
-                self.reportFailure(.writerFailed(
-                    kind: Self.writerFailureKind(for: error),
-                    detail: String(describing: error)
-                ))
+                let detail = String(describing: error)
+                if let writerError = error as? LoopbackWriterError,
+                   case .prematureSourceEnd = writerError {
+                    self.reportFailure(.writerPrematureSourceEnd(detail: detail))
+                } else {
+                    self.reportFailure(.writerFailed(detail: detail))
+                }
             }
         }
         host.onSourceDownloadStats = { [weak self, weak host] bitsPerSecond, totalBytesRead in
@@ -3963,28 +3966,6 @@ final class AVPlayerBackend {
     private func reportFailure(_ failure: PlaybackFailure) {
         cmpLog("[CMP-AVP] ERROR: \(failure.legacyMessage)")
         onError?(failure)
-    }
-
-    /// Triage a `LoopbackWriterError` into the typed failure channel. Switching
-    /// over the writer's own cases keeps the view model out of the business of
-    /// re-reading a reflected description.
-    private static func writerFailureKind(for error: Error) -> PlaybackFailure.WriterFailureKind {
-        guard let writerError = error as? LoopbackWriterError else { return .other }
-        switch writerError {
-        case .prematureSourceEnd:
-            return .prematureSourceEnd
-        case .initSegmentMissing:
-            return .initSegmentMissing
-        case .unsupportedSelectedAudioCodec:
-            return .unsupportedSelectedAudioCodec
-        case .allocInput, .allocOutput, .allocPacket, .openInput, .seekInput,
-             .findStreamInfo, .noStreams:
-            return .sourceUnavailable
-        case .writeHeader, .audioTranscodeSetup, .bootstrapFailed,
-             .profile81ConversionFailed, .profile5ConfigUnusable, .muxWriteFailures,
-             .fileWriteFailed, .vodMoovBlocked, .vodStartupConsumerWedge:
-            return .remux
-        }
     }
 
     private func logReadyItemFormat(_ item: AVPlayerItem) {
