@@ -281,7 +281,7 @@ enum RecoveryPolicy {
         case .escalate:
             return escalateStartupRecovery(trigger: "fetches_frozen", context: &context, now: now)
         case .failBackstop:
-            // PINNED QUIRK (design §2.4): this arm does **not**
+            // PINNED QUIRK: this arm does **not**
             // check suspension, unlike `escalateLoopbackStartupRecovery`
             // A backstop can therefore fire and report while a server
             // replan or an origin-outage ride-through holds the latch. Kept as
@@ -359,8 +359,7 @@ enum RecoveryPolicy {
         }
         let stationaryFor = context.playhead.stationarySince.map { now.timeIntervalSince($0) } ?? 0
 
-        // Rung 1 is telemetry only and stays at the observation source
-        // (design §7 item 3).
+        // Rung 1 is telemetry only and stays at the observation source.
 
         // Rung 2 — item-death confirmation. Runs BEFORE the suspension
         // gate but takes suppression as an input, so it degrades to `.none`.
@@ -754,9 +753,9 @@ enum RecoveryPolicy {
         likely: Bool,
         context: inout RecoveryContext
     ) -> (RecoveryAction?, RecoveryContext) {
-        // `!hasReachedItemEnd` is review §3 #15: a buffer KVO
-        // arriving after end-of-file must not restart transport behind the
-        // hand-off.
+        // The `!reachedEnd` term (the backend's `hasReachedItemEnd`) is
+        // load-bearing: a buffer KVO arriving after end-of-file must not
+        // restart transport behind the hand-off.
         guard context.route == .siloPlayerLoopback,
               context.playbackEstablished,
               !context.userPaused,

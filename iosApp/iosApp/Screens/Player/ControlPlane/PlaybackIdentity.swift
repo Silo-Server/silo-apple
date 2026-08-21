@@ -2,18 +2,14 @@ import Foundation
 
 /// Identity of one engine load.
 ///
-/// Stage 2 replaces the three by-value generation counters the view model
-/// captured into its callbacks (the stream-load, fresh-load and
-/// outage-recovery counters) and the backend's `loopbackGeneration` /
-/// `activeLoopbackSessionID` string compare with one minted value that travels
-/// on every effect and every event. A mutation is applied only when the
-/// carried `LoadID` still equals the current one, so a late callback from a
-/// superseded load is dropped structurally instead of by comparing numbers
-/// captured when the closure was created.
+/// One minted value travels on every effect and every event. A mutation is
+/// applied only when the carried `LoadID` still equals the current one, so a
+/// late callback from a superseded load is dropped structurally rather than by
+/// comparing generation numbers captured when the closure was created.
 ///
 /// A new `LoadID` is minted for **every** engine load — including an in-place
-/// server replan that deliberately keeps the live `AVPlayerBackend` instance
-/// (design §4 I4): the engine survives, its callback binding does not.
+/// server replan that deliberately keeps the live `AVPlayerBackend` instance:
+/// the engine survives, its callback binding does not.
 struct LoadID: Hashable, Sendable {
     let raw: UUID
 
@@ -21,8 +17,8 @@ struct LoadID: Hashable, Sendable {
         self.raw = UUID()
     }
 
-    /// Replays a known id (tests, and the wave-3 actor binding an event stream
-    /// to the load it was created for).
+    /// Replays a known id: tests, and the actor binding an event stream to the
+    /// load it was created for.
     init(raw: UUID) {
         self.raw = raw
     }
@@ -30,10 +26,11 @@ struct LoadID: Hashable, Sendable {
 
 /// Identity of the server-side playback session a load is bound to.
 ///
-/// Carried by every session-scoped effect and event, replacing the five
-/// view-model mirrors/echoes of the bridge's session id that wave 3 deleted:
-/// the active-session mirror, the stale-session and background-renewal echoes,
-/// the outage-recovery echo, and the replan attempt snapshot.
+/// Carried by every session-scoped effect and event. It is the control plane's
+/// only copy of the bridge's session id — the view model's
+/// `currentServerSessionId` is a read-only projection of it — so a
+/// session-scoped mutation is applied only when the identity the effect was
+/// issued against still names the current session.
 struct SessionIdentity: Equatable, Sendable {
     /// `PlaybackSessionBridge.sessionId`. `nil` for an offline load, which has
     /// no server session at all.

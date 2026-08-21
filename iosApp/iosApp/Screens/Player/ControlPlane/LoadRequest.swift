@@ -4,9 +4,7 @@ import Foundation
 /// quality preferences, and — for a local download — the offline record it must
 /// be prepared from.
 ///
-/// It used to be nested on `PlayerViewModel` and referenced as
-/// `PlayerViewModel.LoadRequest`. Wave 3 moves it here because the control
-/// plane, not the view model, is what carries it now: it rides
+/// The control plane, not the view model, carries it: it rides
 /// `PlayerIntent.load`, `Effect.startSession`, `Preparing.request`,
 /// `Playing.request` and `SuspendedContext.request`, and it is the replay
 /// intent every recovery rebuilds a fresh load from.

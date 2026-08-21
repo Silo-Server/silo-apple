@@ -2,25 +2,21 @@ import Foundation
 
 /// The typed failure channel out of `AVPlayerBackend`.
 ///
-/// Review §4 item 4: `String` used to be the *only* failure channel out of the
-/// backend (`onError: (String) -> Void`), and `PlayerViewModel` re-derived four
-/// separate decisions from that string with unanchored substring matches. The
-/// case now carries the failure's identity, so the backend states what happened
-/// instead of describing it and hoping the view model reads the description the
-/// same way.
+/// The case carries the failure's identity, so the backend states what
+/// happened instead of describing it and hoping the reader parses the
+/// description the same way. Nothing downstream may re-derive a decision from
+/// the text when a case answers it.
 ///
-/// The legacy strings did not go away, because they are load-bearing in two
-/// places that are not ours to change here:
+/// Strings stay load-bearing in two places:
 ///
 /// * `legacyMessage` is the text shown to the user by
 ///   `finalizeTerminalPlaybackError`, and it is the `message` field sent to the
 ///   server on a Protocol V3 replan (`PlaybackSessionBridge.replanProtocolV3`).
 /// * `classification` and `stableToken` are the wire classification and the
-///   diagnostics token. Both are still derived by the *same ordered substring
-///   ladders* that lived in `PlayerViewModel`, run over `legacyMessage`, so this
-///   migration is provably behaviour-preserving: identical inputs produce
-///   identical wire output. Those ladders now have exactly one owner (this
-///   file) instead of being open-coded in the view model.
+///   diagnostics token, both derived by ordered substring ladders run over
+///   `legacyMessage`. This file is the only owner of those ladders, so
+///   identical inputs produce identical wire output no matter where the
+///   failure was raised.
 ///
 /// Where the typed case makes a decision unambiguous — `isPrematureSourceEnd`
 /// for a writer that reported `LoopbackWriterError.prematureSourceEnd` — the
@@ -61,7 +57,10 @@ enum PlaybackFailure: Equatable {
     case loopbackServerBindFailed(detail: String)
     /// The local HLS segment server bound but produced no playable URL.
     case loopbackPlaylistURLUnavailable
-    /// The session rebuild ladder ran out of budget (review §3 #15).
+    /// The loopback session-rebuild ladder ran out of budget:
+    /// `RecoveryContext.rebuildBudget` is spent. Every rebuild resets the
+    /// latches that asked for it, so without the budget the same wedge would
+    /// rebuild forever; the ladder fails the load instead.
     case loopbackRebuildBudgetExhausted(reason: String, rebuilds: Int)
     /// The loopback startup absolute backstop expired.
     case loopbackStartupBackstop(seconds: Int, requestsServed: UInt64, stage: String)

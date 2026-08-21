@@ -411,7 +411,7 @@ final class AVPlayerBackend {
     }
 
     /// Injected so a test can hand the backend a player it controls; the
-    /// default keeps every production call site unchanged (review §9 stage 1).
+    /// initializer defaults it, so production call sites never name a player.
     let avPlayer: AVPlayer
     private let subtitleOverlayAttachments = SubtitleOverlayAttachmentRegistry()
     var subtitleOverlay: SubtitleOverlayView? {

@@ -11,7 +11,7 @@ import SwiftUI
 /// owner. Recovery decisions
 /// are *not* made here — `RecoveryPolicy` decides, the session actor feeds the
 /// decision back as `PlayerEvent.recovery(action, loadID)`, and the reducer
-/// maps that action to state and effects (design §4 I3).
+/// maps that action to state and effects.
 enum PlaybackReducer {
 
     // MARK: - Constants (each equals today's literal)
@@ -31,9 +31,8 @@ enum PlaybackReducer {
     /// discriminator: the token form of
     /// `PlaybackSourceInterruptionReason.sourceEntityChanged`, which is what
     /// picks `discardSourceCacheHandoff()` over `stashSourceCacheHandoff()`.
-    /// Spelled here rather than imported from
-    /// `RecoveryPolicy.token(for:)` because that lives in wave 1B; the two are
-    /// pinned to the same literal by that package's
+    /// Spelled here rather than imported from `RecoveryPolicy.token(for:)`;
+    /// the two are pinned to the same literal by
     /// `testInterruptionReason_TokensKeepTheEntityChangedDiscriminator`.
     static let sourceEntityChangedReason = "source_entity_changed"
 
@@ -711,8 +710,9 @@ enum PlaybackReducer {
     // MARK: - Replan
 
     /// The single entry point both replan pipelines take. `internal` rather
-    /// than `private` because no intent mints a `.transcodeRestart` yet —
-    /// wave 3 does — so `PlaybackReducerTests` reaches that branch here.
+    /// than `private` because no production intent mints a
+    /// `.transcodeRestart`; `PlaybackReducerTests` reaches that branch by
+    /// calling this entry point directly.
     static func requestReplan(
         _ playing: Playing,
         intent: ReplanIntent
@@ -950,9 +950,9 @@ enum PlaybackReducer {
     ) -> (PlaybackState, [Effect]) {
         switch phase {
         case .background:
-            // Still "pause on background" (design §7 item 6: recorded, not
-            // changed — changing it is a product call). issues
-            // the pause and leaves `isPlaying` to `onPauseChange`.
+            // macOS pauses on background. Deliberate — changing it is a
+            // product call. The reducer issues the pause and leaves
+            // `isPlaying` to `onPauseChange`.
             guard case .playing(let playing) = state, !playing.transport.isPaused else {
                 return (state, [])
             }
@@ -1136,7 +1136,7 @@ enum PlaybackReducer {
             return (state, [])
 
         case .recoveryAction:
-            // Wave 2b's shell-executed recovery arm. The actor unwraps it into
+            // The shell-executed recovery arm. The actor unwraps it into
             // `PlayerEvent.recovery(action, loadID)` and re-enters through
             // `recovery(_:action:loadID:)`, which is where the decision is
             // turned into state — never here.
@@ -1492,9 +1492,9 @@ enum PlaybackReducer {
         case .renewalFailed:
             guard case .playing(var playing) = state,
                   case .renewingSource(let renewal) = playing.sub,
-                  // Same guard as `.renewed`, for the same reason (design §4
-                  // I2: every mutation is conditional on the identity the
-                  // effect was issued against). A load can cycle
+                  // Same guard as `.renewed`, for the same reason: every
+                  // mutation is conditional on the identity the effect was
+                  // issued against. A load can cycle
                   // `.playing` → `.preparing` → `.playing` → a second
                   // `.renewingSource` while the first renewal's failure is
                   // still in flight; without this, that stale answer would
@@ -1862,9 +1862,9 @@ enum PlaybackReducer {
         // Single-shot in-route actions: executed by the engine session, the
         // load stays `.steady` — exactly as the backend ladders behave today.
         //
-        // Listed explicitly rather than caught by `default:` **because wave 2
-        // owns `RecoveryAction`**: under a `default:` a case it adds would
-        // silently become a bare `.runRecovery` that leaves the load steady,
+        // Listed explicitly rather than caught by `default:`: under a
+        // `default:` a newly added `RecoveryAction` case would silently
+        // become a bare `.runRecovery` that leaves the load steady,
         // with no compiler signal — which is precisely wrong for a multi-step
         // action (`.reloadItem` / `.rebuildLocalSession` both needed
         // `.recovering(step)`). This way a new case fails to compile until
@@ -2054,8 +2054,7 @@ enum PlaybackReducer {
         // It deliberately does **not** stop the server session: it drops
         // the view model's active-session-id mirror and lets the
         // session lapse. Emitting a `.stopSession` here would be a new server
-        // call on a wire-visible path (design §4 I1), so the reducer does not
-        // synthesise one.
+        // call on a wire-visible path, and the reducer never synthesises one.
         //
         // The identity is nevertheless carried on `.failed`: the bridge is
         // still holding that session, and the two things that follow on the
@@ -2113,9 +2112,6 @@ enum PlaybackReducer {
 
     // MARK: - Projection
 
-    /// The UI projection for a state. Wave 3 widens it as the view model's
-    /// stored projections move; the fields the control plane does not own
-    /// (metadata, stats composition, notices) keep their defaults here.
     /// `shouldAutoRecoverFromInterruption()`'s inputs, minus the clock: the
     /// deadline is published only while an interruption is still pending and
     /// has not already auto-recovered, so the shell's comparison against `now`
@@ -2129,6 +2125,8 @@ enum PlaybackReducer {
         return interruption.recoveryDeadline
     }
 
+    /// The UI projection for a state. The fields the control plane does not
+    /// own (metadata, stats composition, notices) keep their defaults here.
     static func presentation(
         for state: PlaybackState,
         isLoading: Bool? = false,
