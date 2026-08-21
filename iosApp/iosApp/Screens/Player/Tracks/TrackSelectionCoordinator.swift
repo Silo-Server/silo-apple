@@ -166,7 +166,10 @@ final class TrackSelectionCoordinator {
     /// the `.sup` the server publishes for every embedded PGS track — installs
     /// a track that is checked in the picker and blank on screen. Such a row
     /// stays in the inventory so a V3 plan can burn it in after a replan, and
-    /// is kept out of every path that would open it locally.
+    /// is refused by each path that would otherwise open it locally: the
+    /// primary and secondary user picks, both sidecar-restore rungs, the
+    /// forced-sidecar auto-select, and the automatic caption resolver's
+    /// local fallback.
     private static func isBitmapSidecar(_ track: PlayerTrack) -> Bool {
         SubtitleTrackIdSpace.isSidecar(track.trackId)
             && SubtitleSelection.isBitmapCodec(track.codec)
@@ -217,9 +220,9 @@ final class TrackSelectionCoordinator {
     func selectSubtitle(_ track: PlayerTrack) {
         guard !context.isBackgroundSuspended else { return }
         // A bitmap sidecar is selectable only while a V3 plan is live to be
-        // replanned into a server burn-in (the branch below). With no plan the
-        // only remaining path is a local open, which cannot draw it — so the
-        // row is inert rather than checked-and-blank.
+        // replanned into a server burn-in (the branch below). With no plan
+        // this function's only remaining path is a local open, which cannot
+        // draw it — so the row is inert rather than checked-and-blank.
         if context.activePreparedProtocolV3 == nil, Self.isBitmapSidecar(track) {
             Self.logger.info(
                 "[CMP-SUB] ignoring bitmap sidecar pick with no plan to burn it in trackId=\(track.trackId, privacy: .public) codec=\(track.codec ?? "nil", privacy: .public)"
@@ -1454,6 +1457,17 @@ final class TrackSelectionCoordinator {
             }
         case .select(let track):
             if replanAutomaticProtocolV3SubtitleSelection(track) { return }
+            // The replan above is the only way a bitmap sidecar can be shown
+            // (the server burns it in). It declines whenever there is no plan
+            // to replan, one is already in flight, or the live plan already
+            // names this track — and every one of those falls through to a
+            // local open, which cannot draw a `.sup`. Drop the pick instead.
+            guard !Self.isBitmapSidecar(track) else {
+                Self.logger.info(
+                    "[CMP-SUB] ignoring automatic bitmap sidecar pick with no replan to burn it in trackId=\(track.trackId, privacy: .public) codec=\(track.codec ?? "nil", privacy: .public)"
+                )
+                return
+            }
             if selectedSubtitleId != track.trackId {
                 selectedSubtitleId = track.trackId
                 applySubtitleTrackSelection(track.trackId, reason: "auto_preference")

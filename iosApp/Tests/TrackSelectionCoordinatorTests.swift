@@ -357,6 +357,42 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         XCTAssertNil(forced.selectedSubtitleId)
     }
 
+    /// The automatic caption resolver scores the raw subtitle list, so it can
+    /// legitimately pick the bitmap row a live V3 plan keeps selectable. Its
+    /// replan short-circuit is what makes that safe — and it declines whenever
+    /// a replan is already in flight (here: the system caption settings change
+    /// mid quality-switch). The fallback must not then open the `.sup` locally.
+    func testAutomaticSubtitlePickNeverOpensABitmapSidecarLocally() throws {
+        let recorder = PortRecorder()
+        let prepared = try preparedPlayback(subtitleMode: "burn_in", selectedSubtitleIndex: 1)
+        let coordinator = makeCoordinator(
+            recorder,
+            matchesSystemAppearance: true,
+            routeKind: .avPlayerHLS,
+            protocolV3: try XCTUnwrap(prepared.protocolV3),
+            isReplanInFlight: true,
+            systemPreferences: SystemCaptionSelectionPreferences(
+                displayMode: .alwaysOn,
+                preferredLanguages: ["eng"],
+                prefersAccessibilityTracks: false
+            )
+        )
+        coordinator.appendSidecarTracks([descriptor(index: 1, codec: "hdmv_pgs_subtitle")])
+        XCTAssertEqual(
+            coordinator.subtitleTracks.count,
+            1,
+            "the row stays selectable so a replan can still burn it in"
+        )
+
+        coordinator.applySystemCaptionSettingsChange()
+
+        XCTAssertNil(
+            coordinator.selectedSubtitleId,
+            "the automatic pick fell through to a local open of a bitmap sidecar"
+        )
+        XCTAssertTrue(recorder.replans.isEmpty, "a replan was already in flight")
+    }
+
     // MARK: - Suspension gate + user commands
 
     func testUserCommandsAreDroppedWhileBackgroundSuspended() {
@@ -498,7 +534,13 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         matchesSystemAppearance: Bool = false,
         routeKind: PlaybackEngineKind = .avPlayerNativeDirect,
         protocolV3: PreparedPlaybackV3? = nil,
-        backend: AVPlayerBackend? = nil
+        backend: AVPlayerBackend? = nil,
+        isReplanInFlight: Bool = false,
+        systemPreferences: SystemCaptionSelectionPreferences = SystemCaptionSelectionPreferences(
+            displayMode: .automatic,
+            preferredLanguages: [],
+            prefersAccessibilityTracks: false
+        )
     ) -> TrackSelectionCoordinator {
         var ports = TrackSelectionPorts(
             backend: { backend },
@@ -531,7 +573,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
                 return nil
             },
             requestReplan: { _, _ in },
-            isReplanInFlight: { false },
+            isReplanInFlight: { isReplanInFlight },
             lastLoadRequest: { nil },
             setLastLoadRequestProtocolV3SubtitleIndex: { _ in },
             showNotice: { _, _, _, _ in },
@@ -541,13 +583,7 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             resolveServerUrl: { raw, _ in URL(string: raw) },
             subtitleAILiveOverlayAvailable: { false },
             subtitleMatchesSystemAppearance: { matchesSystemAppearance },
-            systemSelectionPreferences: {
-                SystemCaptionSelectionPreferences(
-                    displayMode: .automatic,
-                    preferredLanguages: [],
-                    prefersAccessibilityTracks: false
-                )
-            }
+            systemSelectionPreferences: { systemPreferences }
         )
         ports.requestReplan = { classification, message in
             recorder.replans.append((classification, message))
