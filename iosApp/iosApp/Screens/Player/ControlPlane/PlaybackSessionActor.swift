@@ -733,6 +733,13 @@ actor PlaybackSessionActor {
                         renewed.identity
                     )
                 )
+                // Sub-state first, policy flag second, exactly as the failure
+                // arm below — and for the same reason. The success note used to
+                // be `prepareRenewal`'s own last statement, two awaits (the
+                // realtime unbind/bind) and an actor hop before this reduction,
+                // so every silent renewal left the same stranding window open
+                // on the path that runs far more often.
+                await shell.noteRenewalSucceeded()
             } catch is CancellationError {
                 return
             } catch {

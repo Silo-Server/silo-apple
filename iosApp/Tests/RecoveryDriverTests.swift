@@ -294,6 +294,50 @@ final class RecoveryDriverTests: XCTestCase {
         XCTAssertEqual(driver.context.backgroundRenewalTransientFailures, 0)
     }
 
+    /// The release order `PlaybackSessionActor.renewSource` enforces on both
+    /// arms, seen from the driver's side: the reducer clears
+    /// `Sub.renewingSource` first and the shell clears this flag second, so an
+    /// observation landing between the two releases finds the policy gate still
+    /// closed and decides nothing at all. Releasing this flag first — which the
+    /// success path did, inside `prepareRenewal`, two awaits before the
+    /// `.renewed` reduction — let that observation be decided into a
+    /// `.renewSourceInBackground` the reducer then swallowed against the
+    /// sub-state it had not cleared yet, re-latching the flag with no renewal
+    /// left to release it and killing every later silent renewal for the rest
+    /// of the load.
+    func testSessionMissingInTheRenewalReleaseWindowDecidesNothing() {
+        let driver = RecoveryDriver(route: .avPlayerNativeDirect)
+        driver.note(
+            isProtocolV3Active: false,
+            isReplanInFlight: false,
+            hasWatchDetail: true,
+            canRenewSourceInBackground: true,
+            canAutoRecoverInterruption: false,
+            canBuildLoopbackFallback: false,
+            nearEnd: nil
+        )
+        XCTAssertEqual(
+            driver.observe(.sessionMissing(source: .proxy404)),
+            .renewSourceInBackground(reason: "source_404")
+        )
+        XCTAssertTrue(driver.context.backgroundRenewalInFlight)
+
+        // The 10 s progress heartbeat fires in the window between the
+        // `.renewed` reduction and the success note.
+        XCTAssertNil(driver.observe(.sessionMissing(source: .progressHeartbeat)))
+        XCTAssertTrue(driver.context.backgroundRenewalInFlight)
+        XCTAssertEqual(driver.context.backgroundRenewalTransientFailures, 0)
+
+        // Nothing was stranded: the note releases the flag and the next trigger
+        // renews again.
+        driver.noteBackgroundRenewalSucceeded()
+        XCTAssertFalse(driver.context.backgroundRenewalInFlight)
+        XCTAssertEqual(
+            driver.observe(.sessionMissing(source: .progressHeartbeat)),
+            .renewSourceInBackground(reason: "progress")
+        )
+    }
+
     // MARK: - Visible server-outage recovery
 
     /// The visible recovery's single-flight is the policy's form of

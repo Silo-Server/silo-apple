@@ -3208,7 +3208,6 @@ class PlayerViewModel {
         }
         session.retargetSource(url: streamRequest.url, headers: streamRequest.headers)
         currentWatchDetailAdopt(renewed)
-        session.driver.noteBackgroundRenewalSucceeded()
         await realtimeClient.unbind()
         try Task.checkCancellation()
         await realtimeClient.bind(sessionId: renewed.session.sessionId)
@@ -3233,6 +3232,19 @@ class PlayerViewModel {
             serverQualities: renewed.protocolV3?.plan.availableQualities ?? [],
             fallbackVersion: renewed.selectedVersion
         )
+    }
+
+    /// Record a successful silent renewal on the load's recovery owner: it
+    /// clears both renewal single-flights and the transient budget.
+    ///
+    /// It is deliberately *not* `prepareRenewal`'s last statement.
+    /// `PlaybackSessionActor.renewSource` calls it after the `.renewed`
+    /// reduction has cleared `Sub.renewingSource`, so the two releases of the
+    /// silent renewal's single-flight happen in the same order as on the
+    /// failure path — see the ordering comment there.
+    @MainActor
+    func noteRenewalSucceeded() {
+        engineSession?.driver.noteBackgroundRenewalSucceeded()
     }
 
     /// Record a failed silent renewal on the load's recovery owner and report

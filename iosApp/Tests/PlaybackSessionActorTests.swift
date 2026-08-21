@@ -260,6 +260,51 @@ final class PlaybackSessionActorTests: XCTestCase {
         XCTAssertEqual(playing.identity, identity)
     }
 
+    /// The renewal single-flight is released in two places, and
+    /// `PlaybackSessionActor.renewSource` releases them in one order on both
+    /// arms: the `.renewed`/`.renewalFailed` reduction clears
+    /// `Sub.renewingSource` first, and only then does the shell clear the
+    /// policy's `backgroundRenewalInFlight`. This is the half the actor can
+    /// prove with `shell: nil` — that the reducer gate stays closed until the
+    /// renewal is reduced, and opens exactly there. The other half (an
+    /// observation landing in the window finds the policy flag still latched,
+    /// so it decides nothing instead of minting a renewal this gate would
+    /// swallow) is `RecoveryDriverTests`'.
+    func testSuccessfulRenewalReleasesTheReducerGateOnTheRenewedReduction() async throws {
+        let actor = try makeActor()
+        let loadID = try await startPlaying(actor)
+        let issuedFor = try unwrap(await actor.currentState().identity)
+
+        await actor.ingest(.recovery(.renewSourceInBackground(reason: "progress"), loadID))
+        guard case .playing(let renewing) = await actor.currentState(),
+              case .renewingSource = renewing.sub else {
+            return XCTFail("expected .renewingSource")
+        }
+
+        let renewedIdentity = ControlPlaneFixtures.makeIdentity(session: "session-2")
+        await actor.ingest(
+            .session(
+                .renewed(try ControlPlaneFixtures.makeProtocolV3PreparedRef(), replacing: issuedFor),
+                renewedIdentity
+            )
+        )
+        guard case .playing(let renewed) = await actor.currentState() else {
+            return XCTFail("expected .playing")
+        }
+        XCTAssertEqual(renewed.sub, .steady)
+        XCTAssertEqual(renewed.identity, renewedIdentity)
+
+        // The gate is open again the moment the reduction lands: the next
+        // trigger mints a renewal instead of being swallowed.
+        await actor.clearRecordedEffects()
+        await actor.ingest(.recovery(.renewSourceInBackground(reason: "source_404"), loadID))
+        let afterRelease = await effects(actor)
+        XCTAssertTrue(afterRelease.contains { effect in
+            if case .renewSource = effect { return true }
+            return false
+        })
+    }
+
     // MARK: - Outage ride-through (design §2.8 wave-2b gap (b))
 
     func testOutageRideThroughKeepsItsDeadlineAcrossARouteChangeReplan() async throws {
