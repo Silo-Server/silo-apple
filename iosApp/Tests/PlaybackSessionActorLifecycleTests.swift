@@ -235,6 +235,106 @@ final class PlaybackSessionActorLifecycleTests: XCTestCase {
         XCTAssertEqual(writes.first?.2, true)
     }
 
+    // MARK: - A failed engine install
+
+    /// A replan whose install never commits. The install answers with a
+    /// message instead of a stream, and the teardown that follows the failure
+    /// has to be the one that retires the session still installed — which is
+    /// the *outgoing* one, because a prepare that failed never swapped in a
+    /// replacement. Before this, the failure was stamped with the replan's new
+    /// `LoadID`, the shell compared it with the installed session's own id and
+    /// no-oped, and the paused `AVPlayer` (plus its loopback graph) stayed
+    /// alive behind the error wall until the next install or `cleanup()`.
+    func testAFailedReplanInstallTearsDownTheSessionItLeftInstalled() async throws {
+        let (actor, shell, _) = try makeActor()
+        defer { shell.releaseAll() }
+        let outgoingLoadID = try await startPlaying(actor, shell)
+        shell.resetCounters()
+        shell.replanResolves = true
+        shell.nextInstallFailure = "SiloPlayer local source proxy failed to start"
+
+        await actor.requestReplan(
+            ReplanIntent(
+                kind: .serverReplan,
+                position: 0,
+                classification: "test",
+                message: "test",
+                operation: "test"
+            )
+        )
+        await expectEntry(shell, to: .teardownEngine)
+
+        let replanLoadID = try unwrap(shell.installedLoadIDs.last)
+        XCTAssertNotEqual(
+            replanLoadID,
+            outgoingLoadID,
+            "a replan mints a new load, which is what made the teardown miss"
+        )
+        XCTAssertEqual(
+            shell.torndownLoadIDs,
+            [replanLoadID],
+            "exactly one teardown, and it names the load whose install failed"
+        )
+        guard case .failed(_, let failedLoadID, _, _, _, _) = await actor.currentState() else {
+            return XCTFail("expected the failed install to reach .failed")
+        }
+        XCTAssertEqual(failedLoadID, replanLoadID)
+        // The shell resolves that id onto the session it is still holding.
+        XCTAssertTrue(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: outgoingLoadID,
+                teardownLoadID: replanLoadID,
+                pendingLoadID: replanLoadID
+            ),
+            "the outgoing session would be stranded: nothing else names its load again"
+        )
+    }
+
+    /// The ownership rule itself. `installEngine` sets `pendingLoadID` before it
+    /// prepares anything, so an install that never commits leaves the shell
+    /// holding a session older than that id — and the teardown for it is the
+    /// only one that session will ever be named in.
+    func testTeardownOwnershipRule() {
+        let installed = LoadID()
+        let pending = LoadID()
+        let unrelated = LoadID()
+
+        // The ordinary case: the load that installed the session retires it.
+        XCTAssertTrue(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: installed,
+                teardownLoadID: installed,
+                pendingLoadID: installed
+            )
+        )
+        // An install that never committed: the state has moved on to `pending`,
+        // so the teardown under that id is the stranded session's only owner.
+        XCTAssertTrue(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: installed,
+                teardownLoadID: pending,
+                pendingLoadID: pending
+            )
+        )
+        // A retired load's dispose must never reach the session that replaced
+        // it — the guard this rule widened.
+        XCTAssertFalse(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: installed,
+                teardownLoadID: unrelated,
+                pendingLoadID: installed
+            )
+        )
+        // And nothing at all is retired before the first install.
+        XCTAssertFalse(
+            PlayerViewModel.teardownRetiresInstalledSession(
+                installedLoadID: installed,
+                teardownLoadID: unrelated,
+                pendingLoadID: nil
+            )
+        )
+    }
+
     // MARK: - Harness
 
     private func makeActor() throws
@@ -331,6 +431,14 @@ private final class GatedControlPlaneShell: PlaybackControlPlaneShell {
     private(set) var installedLoadIDs: [LoadID] = []
     private(set) var torndownLoadIDs: [LoadID] = []
     private(set) var offlineProgressChecks = 0
+
+    /// The message the next install answers with instead of a stream — the
+    /// shape of a real install whose source proxy or plan could not be
+    /// executed.
+    var nextInstallFailure: String?
+    /// Whether `prepareReplan` resolves. `nil` is `.replanUnavailable`, which
+    /// is what every test that does not drive a replan wants.
+    var replanResolves = false
 
     private let prepared: PreparedPlayback
     private let plan: PlaybackExecutionPlan
@@ -465,6 +573,13 @@ private final class GatedControlPlaneShell: PlaybackControlPlaneShell {
     ) async -> (events: AsyncStream<EngineEvent>?, failure: String?) {
         installedLoadIDs.append(loadID)
         await enter(.installEngine)
+        if let failure = nextInstallFailure {
+            nextInstallFailure = nil
+            // The prepare half refused. A real shell has not touched the
+            // outgoing session at this point, so the session still installed is
+            // the one the *previous* load put there.
+            return (nil, failure)
+        }
         // No stream and no message: "the load was already superseded, so there
         // is nothing to fail" — the arm that leaves the state alone.
         return (nil, nil)
@@ -488,7 +603,8 @@ private final class GatedControlPlaneShell: PlaybackControlPlaneShell {
     func prepareReplan(
         _ intent: ReplanIntent
     ) async throws -> (prepared: PreparedPlayback, plan: PlaybackExecutionPlan, identity: SessionIdentity)? {
-        nil
+        guard replanResolves else { return nil }
+        return (prepared, plan, identity)
     }
 
     func releaseReplanSuspension(completingQualitySwitch: Bool) async {}

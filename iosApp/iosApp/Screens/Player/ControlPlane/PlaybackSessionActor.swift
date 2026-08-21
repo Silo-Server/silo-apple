@@ -28,13 +28,13 @@
 //  and the `await` performs the hop. A view command therefore reaches the
 //  engine a run-loop turn later than an inline backend call would.
 //
-//  Ordering between two shell commands is preserved by *where they are
-//  enqueued*, not by the actor: an actor serialises execution, it does not
-//  order distinct unstructured tasks. Every shell forwarding site
-//  (`PlayerViewModel.send`, `requestReplan`, `reloadEngine`) therefore
-//  wraps its hop in `Task { @MainActor in … }`, so two commands issued from one
-//  main-thread call run their first job in call order on the main serial
-//  executor and reach this actor in that order.
+//  Ordering between two shell commands is the *shell's* to guarantee, not this
+//  actor's: an actor serialises execution, it does not order distinct
+//  unstructured tasks. `PlayerViewModel` therefore has one ingress queue for
+//  all three of its entry points here (`send`, `requestReplan`,
+//  `reloadEngine`), drained by one task that awaits each command before it
+//  takes the next — so a pair that must not invert, like the re-anchor seek and
+//  the reload that carries it, arrives in the order it was issued.
 //
 
 import Foundation
@@ -171,33 +171,31 @@ actor PlaybackSessionActor {
     /// publish can skip a tick that changed nothing.
     private var lastPublished = Presentation()
 
-    // MARK: - Actor-scoped outage state (design §2.8 wave-2b disclosed gaps)
+    // MARK: - Actor-scoped outage state
 
     /// The origin-outage ride-through, scoped to the *player* rather than to a
     /// single engine session.
     ///
-    /// Wave 2b carried `RecoveryContext.outage` across an in-place replan (the
-    /// reused backend adopted it together with its `origin_outage` hold), but a
-    /// **route-change** replan builds a fresh backend, so the ride-through died
-    /// with the retired one: a still-failing origin restarted it on a fresh 90 s
-    /// budget instead of escalating at the original deadline, and re-entry
-    /// stopped being a no-op. Legacy's `sourceOutageActive` was view-model state
-    /// and had neither problem. Holding it here restores that — every session
-    /// this actor installs adopts the live ride-through together with the hold
-    /// that releases it, which is the rule design §2.8 states.
+    /// A session-scoped ride-through survives an in-place replan (the reused
+    /// backend adopts it together with its `origin_outage` hold) but not a
+    /// **route-change** one, which builds a fresh backend: the ride-through
+    /// would die with the retired session, so a still-failing origin would
+    /// restart it on a fresh 90 s budget instead of escalating at the original
+    /// deadline, and re-entry would stop being a no-op. It is held here so that
+    /// every session this actor installs adopts the live ride-through together
+    /// with the hold that releases it — a hold is never adopted without its
+    /// releaser.
     private(set) var carriedOutage: RecoveryContext.OutageState?
 
     /// The post-outage-reload engine-failure suppression window.
     ///
-    /// Legacy gated `handlePlaybackError` (and `handleEndOfFile`) on
-    /// the outage-recovery session-id echo, which was view-model state: it
-    /// survived into the *replacement* load and was released by that load's
-    /// `handleFileLoaded`. Wave 2b moved the gate onto the session's
-    /// `RecoveryContext.serverOutageRecovery`, which the replacement session
-    /// does not have — so the errors a reconnecting server emits while the
-    /// replacement stream starts stopped being suppressed. This is that window,
-    /// released with the `.serverOutageRecovery` timer, which `fileLoaded`
-    /// cancels.
+    /// It has to outlive the session that raised the outage: the visible
+    /// recovery owns the load until the *replacement* stream reports
+    /// `fileLoaded`, and every engine failure in between is the server coming
+    /// back, not a playback fault. A gate on the session's own
+    /// `RecoveryContext.serverOutageRecovery` cannot answer for that window,
+    /// because the replacement session does not have one. It is released with
+    /// the `.serverOutageRecovery` timer, which `fileLoaded` cancels.
     private(set) var suppressesEngineFailuresAfterOutage = false
 
     #if DEBUG
@@ -425,8 +423,8 @@ actor PlaybackSessionActor {
 
         case let .transport(command, loadID):
             // Fire and forget: the resulting `EngineEvent.pauseChanged` comes
-            // back through the reducer, and the actor must never synthesise one
-            // (design §2.3 contract note (h)).
+            // back through the reducer, and the actor must never synthesise
+            // one.
             guard pendingLoadID == loadID else { return }
             await shell?.engineTransport(command)
 
@@ -455,13 +453,13 @@ actor PlaybackSessionActor {
         await shell?.applyPresentation(presentation, transportOnly: false)
     }
 
-    /// The coalesced transport publish design §2.3 contract note (g) owes.
+    /// The one publish the high-frequency arms owe the UI.
     ///
     /// The high-frequency arms (`.time`, `.duration`, `.bufferedAhead`,
     /// `.stats`) emit no `.publish` of their own, so one merge per ingested tick
     /// carries the playhead — including `commitSeek`'s optimistic jump — and the
-    /// buffer gauges to the UI. It is a **merge**, never an assign (note (f)):
-    /// the shell owns metadata, notices and everything `Presentation` stubs.
+    /// buffer gauges to the UI. It is a **merge**, never an assign: the shell
+    /// owns metadata, notices and everything `Presentation` stubs.
     private func publishTransportIfChanged() async {
         let next = PlaybackReducer.presentation(for: state)
         guard next.currentTime != lastPublished.currentTime
@@ -626,10 +624,13 @@ actor PlaybackSessionActor {
             )
         }
         guard let shell else { return }
-        // Supersede the outgoing load's event stream here, where the legacy
-        // code bumped the stream-load generation — before the outgoing engine
-        // is paused and before the V3 track intent is re-armed.
-        tasks[.engineEvents]?.cancel()
+        // The outgoing load's event pump is retired at the *commit*, not here:
+        // the install prepares its replacement without touching the live
+        // session, so until it commits that session is still the one playing
+        // and its stream is still its own. `pumpEngineEvents` cancels the old
+        // pump as it installs the new one; in between, `pendingLoadID` (moved
+        // above) is already what `ingestEngineEvent` refuses the outgoing
+        // stream's events against.
         let outage = carriedOutage
         let installed = await shell.installEngine(
             plan: plan,
@@ -656,7 +657,7 @@ actor PlaybackSessionActor {
         guard let shell else { return }
         // `disposeEngineOnly`: the visible server-outage recovery keeps the
         // session alive as this load's recovery owner while it waits out the
-        // server (design §2.8 wave-2b). Every other site retires the session.
+        // server. Every other site retires the session.
         var engineOnly = false
         if case let .playing(playing) = state,
            playing.loadID == loadID,
@@ -674,10 +675,12 @@ actor PlaybackSessionActor {
 
     /// One registered task per `LoadID`, consuming that session's event stream.
     ///
-    /// It replaces the view model's `consumeEngineEvents`/`apply` pair: the
-    /// stream belongs to one `PlaybackEngineSession`, ends when that session is
-    /// disposed, and every element is stamped with the load it belongs to before
-    /// the reducer sees it (design §4 I2).
+    /// The stream belongs to one `PlaybackEngineSession`, ends when that session
+    /// is disposed, and every element is stamped with the load it belongs to
+    /// before the reducer sees it — which is why a late event from a superseded
+    /// load is dropped structurally rather than by a captured generation
+    /// number. Installing the new pump retires the old one, and it happens at
+    /// the install's commit, never before it.
     private func pumpEngineEvents(_ events: AsyncStream<EngineEvent>, loadID: LoadID) {
         tasks[.engineEvents]?.cancel()
         tasks[.engineEvents] = Task { [weak self] in
@@ -694,9 +697,8 @@ actor PlaybackSessionActor {
     func ingestEngineEvent(_ event: EngineEvent, loadID: LoadID) async {
         guard pendingLoadID == loadID else { return }
 
-        // Wave 2b's shell-executed recovery arm. The load's `RecoveryDriver`
-        // already decided, so it enters as `.recovery` — never as an engine
-        // event (design §2.3 as-built item 9).
+        // The shell-executed recovery arm. The load's `RecoveryDriver` already
+        // decided, so it enters as `.recovery` — never as an engine event.
         if case let .recoveryAction(action) = event {
             await ingest(.recovery(action, loadID))
             return
@@ -803,8 +805,8 @@ actor PlaybackSessionActor {
 
     /// Feed one shell-owned observation to the live load's `RecoveryDriver` and
     /// route whatever it decides back through the reducer. The driver is the
-    /// only runtime caller of `RecoveryPolicy.decide` (design §4 I3); this is
-    /// the actor's single entry to it.
+    /// only runtime caller of `RecoveryPolicy.decide`; this is the actor's
+    /// single entry to it.
     private func observeOnLiveSession(_ observation: RecoveryObservation) async {
         guard let shell, state.loadID != nil else { return }
         await shell.observeRecovery(observation)
@@ -967,9 +969,8 @@ actor PlaybackSessionActor {
         case .sourceOutageRideThrough:
             // `clearSourceOutageRideThroughState()`. Dropping the carried
             // ride-through *is* the release of the `origin_outage` hold for
-            // every session installed after this point — wave-3 obligation 3,
-            // which wave 2b had to perform inline because the engine session now
-            // survives an outage recovery.
+            // every session installed after this point — the engine session
+            // survives an outage recovery, so nothing else would release it.
             carriedOutage = nil
             await shell?.clearOutageNoticeLatch()
         case .serverOutageRecovery:
