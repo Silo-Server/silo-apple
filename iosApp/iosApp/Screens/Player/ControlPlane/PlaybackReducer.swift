@@ -982,10 +982,10 @@ enum PlaybackReducer {
         }
     }
 
-    /// `suspendForBackground`'s sweep: the interruption, ride-through and
-    /// outage-recovery state it clears by hand plus
-    /// `tasks.cancelAll(in: .interaction, .activeStream, .sessionRecovery)`,
-    /// restricted to the control-plane keys.
+    /// `suspendForBackground`'s sweep, restricted to the control-plane keys:
+    /// the interruption, ride-through and outage-recovery timers. The shell's
+    /// half of the same suspend is `tasks.cancelAll(in: .interaction)`, which
+    /// covers only the UI-affordance tasks.
     private static func suspendTimerCancellations() -> [Effect] {
         [
             .cancelTimer(.interruptionRecovery),

@@ -126,10 +126,10 @@ starting cold:
 
 ## Device evidence
 
-- [`validations/2026-08-19-tvos-stage2-wave2b-bedroom-hdr10-loopback.yaml`](validations/2026-08-19-tvos-stage2-wave2b-bedroom-hdr10-loopback.yaml)
+- [`validations/2026-08-19-tvos-stage2-wave2b-appletv14-1-hdr10-loopback.yaml`](validations/2026-08-19-tvos-stage2-wave2b-appletv14-1-hdr10-loopback.yaml)
   — HDR10 loopback on the one-recovery-owner build, with a control run against
   the pre-extraction build.
-- [`validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml)
+- [`validations/2026-08-20-tvos-stage2-wave3-appletv11-1-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-appletv11-1-dv-outage.yaml)
   — Dolby Vision P7 + TrueHD on the reducer/actor build, with a 76 s production
   outage absorbed by the runway with no user-visible impact. Note what that
   record does *not* claim: because the runway absorbed everything, the visible

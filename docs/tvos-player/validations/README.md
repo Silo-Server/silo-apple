@@ -19,3 +19,5 @@ Follow the template in
 including its no-device-identifiers rule: this directory is published, so a
 record carries the model identifier (`AppleTV14,1`) and a PR number plus commit
 SHA — never a device UUID, room nickname, production hostname or branch name.
+The same rule governs the filename: when a record needs to name the unit it ran
+on, use the model identifier (`appletv14-1`), not a room nickname.

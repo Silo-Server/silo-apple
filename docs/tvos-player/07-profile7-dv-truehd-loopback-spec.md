@@ -11,7 +11,7 @@ pipeline's *lifecycle*, from `AVPlayerBackend` into
 read "the backend starts the writer/store/server" below as "the backend's
 `LocalHLSHost` does". Device evidence for the P7 + TrueHD row on the extracted
 build is in
-[`validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-livingroom-dv-outage.yaml).
+[`validations/2026-08-20-tvos-stage2-wave3-appletv11-1-dv-outage.yaml`](validations/2026-08-20-tvos-stage2-wave3-appletv11-1-dv-outage.yaml).
 
 # Profile 7 Dolby Vision And TrueHD Loopback Spec
 
