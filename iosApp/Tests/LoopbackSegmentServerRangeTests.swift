@@ -144,6 +144,146 @@ final class LoopbackSegmentServerRangeTests: XCTestCase {
         XCTAssertEqual(result.data, payload)
     }
 
+    // MARK: - Progressive stream termination
+
+    // The progressive response streams a segment whose final length is
+    // unknown when the headers go out, so it is chunk-framed: the terminating
+    // 0-length chunk is the only statement that the segment is complete. Only
+    // a genuinely complete stored segment may send it — otherwise a
+    // superseded or timed-out prefix is indistinguishable from a whole
+    // segment and AVPlayer caches a truncated fMP4 instead of refetching.
+
+    func testCompleteProgressiveStreamTerminatesTheChunkedBody() async throws {
+        let store = LoopbackSegmentStore(generation: 912)
+        let server = LoopbackSegmentServer(segmentStore: store)
+        let segmentName = "seg_000003.m4s"
+        store.beginProgressiveSegment(named: segmentName)
+        store.appendProgressiveSegment(named: segmentName, bytes: Data(repeating: 0x5A, count: 16))
+        try await server.start()
+        defer { server.stop() }
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+            store.putSegment(name: segmentName, data: Data(repeating: 0x5A, count: 32), duration: 4)
+        }
+
+        let wire = await Self.rawResponse(port: server.port, path: segmentName, timeout: 6)
+        XCTAssertTrue(wire.closed, "the response must end")
+        XCTAssertTrue(
+            Self.headers(of: wire.bytes).contains("Transfer-Encoding: chunked"),
+            "an open-ended segment body needs framing to be completable"
+        )
+        XCTAssertTrue(
+            Self.endsWithChunkedTerminator(wire.bytes),
+            "a complete segment terminates its body"
+        )
+    }
+
+    func testSupersededProgressiveStreamEndsWithoutTerminatingTheBody() async throws {
+        let store = LoopbackSegmentStore(generation: 913)
+        let server = LoopbackSegmentServer(segmentStore: store)
+        let segmentName = "seg_000003.m4s"
+        store.beginProgressiveSegment(named: segmentName)
+        store.appendProgressiveSegment(named: segmentName, bytes: Data(repeating: 0x5A, count: 16))
+        try await server.start()
+        defer { server.stop() }
+
+        // A restarted producer republishes the same name from zero while the
+        // response is mid-flight: the prefix already on the wire can never be
+        // completed.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+            store.beginProgressiveSegment(named: segmentName)
+        }
+
+        let wire = await Self.rawResponse(port: server.port, path: segmentName, timeout: 6)
+        XCTAssertTrue(wire.closed, "a superseded stream must be dropped, not left open")
+        XCTAssertFalse(
+            Self.endsWithChunkedTerminator(wire.bytes),
+            "a superseded prefix must not be declared a complete segment"
+        )
+    }
+
+    func testProgressiveStreamDeadlineEndsWithoutTerminatingTheBody() async throws {
+        let store = LoopbackSegmentStore(generation: 914)
+        let server = LoopbackSegmentServer(segmentStore: store)
+        server.progressiveStreamMaxSeconds = 0.7
+        let segmentName = "seg_000004.m4s"
+        store.beginProgressiveSegment(named: segmentName)
+        store.appendProgressiveSegment(named: segmentName, bytes: Data(repeating: 0x6B, count: 16))
+        try await server.start()
+        defer { server.stop() }
+
+        // The producer stalls forever: the response gives up with the segment
+        // still incomplete.
+        let wire = await Self.rawResponse(port: server.port, path: segmentName, timeout: 6)
+        XCTAssertTrue(wire.closed, "the deadline must drop the stream")
+        XCTAssertFalse(
+            Self.endsWithChunkedTerminator(wire.bytes),
+            "a timed-out prefix must not be declared a complete segment"
+        )
+    }
+
+    // MARK: Raw HTTP client
+    //
+    // URLSession is not usable to pin this: it accepts a body truncated by a
+    // close as complete (measured, both for an unframed body and for a
+    // chunked body cut short). What the server puts on the wire is the
+    // contract, so these tests read the bytes.
+
+    private static func headers(of response: Data) -> String {
+        guard let range = response.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) else {
+            return String(decoding: response, as: UTF8.self)
+        }
+        return String(decoding: response[..<range.lowerBound], as: UTF8.self)
+    }
+
+    private static func endsWithChunkedTerminator(_ response: Data) -> Bool {
+        response.suffix(5) == Data("0\r\n\r\n".utf8)
+    }
+
+    private static func rawResponse(
+        port: UInt16,
+        path: String,
+        timeout: TimeInterval
+    ) async -> (bytes: Data, closed: Bool) {
+        let collector = RawResponseCollector()
+        let connection = NWConnection(
+            host: .ipv4(.loopback),
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: .tcp
+        )
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                let request = "GET /\(path) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+                connection.send(content: Data(request.utf8), completion: .contentProcessed { _ in })
+                receiveAll(connection, into: collector)
+            case .failed, .cancelled:
+                collector.close()
+            default:
+                break
+            }
+        }
+        connection.start(queue: .global())
+        let deadline = Date().addingTimeInterval(timeout)
+        while !collector.isClosed, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let closed = collector.isClosed
+        connection.cancel()
+        return (collector.bytes, closed)
+    }
+
+    private static func receiveAll(_ connection: NWConnection, into collector: RawResponseCollector) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
+            if let data { collector.append(data) }
+            guard !isComplete, error == nil else {
+                collector.close()
+                return
+            }
+            receiveAll(connection, into: collector)
+        }
+    }
+
     func testParsesClosedByteRangeForPartialContent() {
         XCTAssertEqual(
             LoopbackSegmentServer.parseByteRange("bytes=4-9", totalLength: 20),
@@ -243,5 +383,35 @@ private final class SegmentResponseTimingDelegate: NSObject, URLSessionDataDeleg
                 )
             )
         }
+    }
+}
+
+private final class RawResponseCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedBytes = Data()
+    private var closed = false
+
+    var bytes: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedBytes
+    }
+
+    var isClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
+    }
+
+    func append(_ data: Data) {
+        lock.lock()
+        storedBytes.append(data)
+        lock.unlock()
+    }
+
+    func close() {
+        lock.lock()
+        closed = true
+        lock.unlock()
     }
 }

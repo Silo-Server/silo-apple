@@ -38,9 +38,10 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
     }
 
     func testBackwardJumpKeepsForwardSpanViaHighWater() {
-        // Producer reached 50; a transient backward fetch declares target 5.
-        // The high-water anchor keeps the produced forward span in-window so
-        // the jump can't evict forward progress.
+        // The pure decision protects whatever anchor it is handed: with a
+        // high-water of 50 the produced forward span stays in-window. Who
+        // owns that anchor is the store's business — it re-anchors it on a
+        // seek (see testBackwardSeekReleasesTheOldForwardSpan).
         let victims = LoopbackSegmentStore.vodEvictionVictims(
             indicesWithBytes: inventory(Array(0...50)),
             targetIndex: 5,
@@ -103,6 +104,61 @@ final class LoopbackSegmentStoreVODRetentionTests: XCTestCase {
         store.putSegment(name: segName(0), data: payload, duration: 4)
         guard case .found = store.resource(path: segName(0), waitForNearFuture: false) else {
             return XCTFail("re-produced segment must serve")
+        }
+    }
+
+    func testBackwardSeekReleasesTheOldForwardSpan() {
+        // Forward watch to 20, then seek back to 5. The hard window follows
+        // the new target, so the abandoned span around 20 is ordinary history
+        // and evicts once the re-anchored producer's own output puts the
+        // store over budget. A lifetime-monotonic high-water mark would
+        // protect [3, 20] entirely and blow the budget instead.
+        let store = makeVODStore(budget: 96)  // 6 x 16-byte segments
+        let payload = Data(repeating: 0xAB, count: 16)
+        for index in 0...20 {
+            store.declareVODTarget(index)
+            store.putSegment(name: segName(index), data: payload, duration: 4)
+        }
+        guard case .found = store.resource(path: segName(20), waitForNearFuture: false) else {
+            return XCTFail("the watched head must be resident before the seek")
+        }
+
+        store.declareVODTarget(5)
+        for index in 5...8 {  // the re-anchored producer refills [target, target+forward]
+            store.putSegment(name: segName(index), data: payload, duration: 4)
+        }
+
+        for index in 5...8 {
+            guard case .found = store.resource(path: segName(index), waitForNearFuture: false) else {
+                return XCTFail("segment \(index) is inside the new hard window")
+            }
+        }
+        for index in 17...20 {
+            if case .found = store.resource(path: segName(index), waitForNearFuture: false) {
+                XCTFail("segment \(index) is stale forward span and must be evictable")
+            }
+        }
+    }
+
+    func testForwardPlaybackKeepsTheProducersForwardSpanProtected() {
+        // The re-anchor must not fire on ordinary forward playback: each
+        // target advance stays inside the producer band, so what the writer
+        // has produced ahead of the playhead stays protected.
+        let store = makeVODStore(budget: 32)  // 2 x 16-byte segments
+        let payload = Data(repeating: 0xCD, count: 16)
+        for index in 0...10 {
+            store.putSegment(name: segName(index), data: payload, duration: 4)
+        }
+        for index in 0...2 {
+            store.declareVODTarget(index)
+        }
+        // target(2) + forward(3) = 5, so 6...10 are protected only by the
+        // producer high-water mark — dropping it on every declare would evict
+        // the writer's live output.
+        for index in 6...10 {
+            guard case .found = store.resource(path: segName(index), waitForNearFuture: false) else {
+                return XCTFail("produced segment \(index) is ahead of the playhead, not history")
+            }
         }
     }
 

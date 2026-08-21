@@ -672,13 +672,19 @@ final class LoopbackSegmentServer {
         }
     }
 
-    /// Streams a segment the producer is still writing: 200 with no
-    /// Content-Length and `Connection: close` (read-until-close body), bytes
-    /// forwarded as the store publishes fragments. Cuts seek latency — the
-    /// player parses the anchor segment while the tail is still being
-    /// produced instead of waiting for the complete 30–60 MB file. Range
-    /// headers are deliberately ignored (an origin MAY serve 200 to a Range
-    /// request; AVPlayer sends none against this server today).
+    /// Streams a segment the producer is still writing: 200 with chunked
+    /// framing, bytes forwarded as the store publishes fragments. Cuts seek
+    /// latency — the player parses the anchor segment while the tail is still
+    /// being produced instead of waiting for the complete 30–60 MB file.
+    /// Range headers are deliberately ignored (an origin MAY serve 200 to a
+    /// Range request; AVPlayer sends none against this server today).
+    ///
+    /// The framing is what makes an aborted stream an error: the final length
+    /// is unknown when the headers go out, and an unframed read-until-close
+    /// body would let any close — supersede, deadline, a dead producer — read
+    /// as a complete segment. Measured, not assumed: with no framing a client
+    /// accepts the truncated prefix as a successful 200 whether the server
+    /// closes gracefully (`cancel()`) or abortively (`forceCancel()`).
     private func respondWithProgressiveStream(
         name: String,
         mime: String,
@@ -691,6 +697,7 @@ final class LoopbackSegmentServer {
         var header = "HTTP/1.1 200 OK\r\n"
         header += "Content-Type: \(mime)\r\n"
         header += "Cache-Control: no-store\r\n"
+        header += "Transfer-Encoding: chunked\r\n"
         header += "Connection: close\r\n\r\n"
         guard method == .get else {
             logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
@@ -699,7 +706,7 @@ final class LoopbackSegmentServer {
         }
         logRequest(method: method, path: requestPath, status: 200, bytes: 0, range: rangeHeader, started: started)
         let store = segmentStore
-        let overallDeadline = Date().addingTimeInterval(Self.progressiveStreamMaxSeconds)
+        let overallDeadline = Date().addingTimeInterval(progressiveStreamMaxSeconds)
         send(Data(header.utf8), on: connection, andClose: false) { [weak self] in
             self?.pumpProgressiveStream(
                 name: name,
@@ -718,6 +725,12 @@ final class LoopbackSegmentServer {
     /// overall deadline passes, or the connection dies. Runs off the store's
     /// condition variable on a background queue; sends are chained through
     /// NWConnection completions so the socket applies backpressure.
+    ///
+    /// Only a genuinely complete stored segment terminates the chunked body;
+    /// a superseded buffer (the entry is gone, or a restarted producer
+    /// replaced the prefix this reader already sent) and the overall deadline
+    /// close without the terminator, so the consumer sees a truncated body
+    /// and refetches instead of caching a partial fMP4 as a whole segment.
     private func pumpProgressiveStream(
         name: String,
         offset: Int,
@@ -729,26 +742,55 @@ final class LoopbackSegmentServer {
     ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let (delta, complete) = store.readProgressiveSegment(
+            let read = store.readProgressiveSegment(
                 named: name,
                 from: offset,
                 deadline: min(overallDeadline, Date().addingTimeInterval(0.25)),
                 waitForStart: offset == 0
             )
+            let delta: Data
+            let complete: Bool
+            switch read {
+            case .chunk(let bytes, let isComplete):
+                delta = bytes
+                complete = isComplete
+            case .waiting:
+                delta = Data()
+                complete = false
+            case .superseded:
+                cmpLog("[CMP-HLS] progressive stream aborted path=\(requestPath) reason=superseded sent=\(offset)")
+                connection.cancel()
+                return
+            }
             let nextOffset = offset + delta.count
             let finish: () -> Void = { [weak self] in
                 self?.logRequest(
                     method: .get, path: requestPath + " (progressive)",
                     status: 200, bytes: nextOffset, range: nil, started: started
                 )
+                // The terminating chunk belongs to the same (still open)
+                // message as the deltas; the empty final message is what
+                // half-closes the send side afterwards.
                 connection.send(
-                    content: nil, contentContext: .finalMessage, isComplete: true,
-                    completion: .contentProcessed { _ in connection.cancel() }
+                    content: Self.chunkedStreamTerminator,
+                    contentContext: .defaultMessage, isComplete: false,
+                    completion: .contentProcessed { _ in
+                        connection.send(
+                            content: nil, contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { _ in connection.cancel() }
+                        )
+                    }
                 )
+            }
+            // Closing without the terminating chunk is what tells the
+            // consumer the body is truncated.
+            let abort: () -> Void = {
+                cmpLog("[CMP-HLS] progressive stream aborted path=\(requestPath) reason=deadline-or-closed sent=\(nextOffset)")
+                connection.cancel()
             }
             let continuePump: () -> Void = { [weak self] in
                 guard Date() < overallDeadline, connection.state == .ready else {
-                    finish()
+                    abort()
                     return
                 }
                 self?.pumpProgressiveStream(
@@ -762,7 +804,7 @@ final class LoopbackSegmentServer {
                 return
             }
             connection.send(
-                content: delta, contentContext: .defaultMessage, isComplete: false,
+                content: Self.chunkedFrame(delta), contentContext: .defaultMessage, isComplete: false,
                 completion: .contentProcessed { error in
                     if error != nil {
                         connection.cancel()
@@ -774,7 +816,19 @@ final class LoopbackSegmentServer {
         }
     }
 
-    private static let progressiveStreamMaxSeconds: TimeInterval = 45
+    /// Lifetime of one progressive response, after which the stream is
+    /// aborted. One owner: the instance value the responder reads (tests
+    /// shorten it).
+    var progressiveStreamMaxSeconds: TimeInterval = 45
+
+    private static let chunkedStreamTerminator = Data("0\r\n\r\n".utf8)
+
+    private static func chunkedFrame(_ payload: Data) -> Data {
+        var framed = Data(String(format: "%lX\r\n", payload.count).utf8)
+        framed.append(payload)
+        framed.append(contentsOf: [0x0D, 0x0A])
+        return framed
+    }
 
     private func respondWithData(
         _ data: Data,
@@ -1087,7 +1141,14 @@ final class LoopbackSegmentServer {
         }
         let nextRemaining = remaining - chunk.count
         let isLast = nextRemaining <= 0
-        send(chunk, on: connection, andClose: isLast) { [weak self] in
+        // A failed send means the consumer is gone: stop reading the file
+        // instead of paging the rest of a 30 MB segment into a dead socket.
+        send(
+            chunk,
+            on: connection,
+            andClose: isLast,
+            onFailure: { handle.closeFile() }
+        ) { [weak self] in
             if isLast {
                 handle.closeFile()
             } else {
@@ -1096,8 +1157,21 @@ final class LoopbackSegmentServer {
         }
     }
 
-    private func send(_ data: Data, on connection: NWConnection, andClose close: Bool, completion: (() -> Void)? = nil) {
-        connection.send(content: data, completion: .contentProcessed { _ in
+    /// A send that fails has torn the response: the continuation would write
+    /// into a dead socket, so it never runs and the connection is closed.
+    private func send(
+        _ data: Data,
+        on connection: NWConnection,
+        andClose close: Bool,
+        onFailure: (() -> Void)? = nil,
+        completion: (() -> Void)? = nil
+    ) {
+        connection.send(content: data, completion: .contentProcessed { error in
+            guard error == nil else {
+                onFailure?()
+                connection.cancel()
+                return
+            }
             completion?()
             if close { connection.cancel() }
         })
