@@ -110,11 +110,15 @@ at host creation). The backend owns exactly one live host at a time.
 `AVPlayerSurface` is only the render layer: a `UIViewRepresentable` hosting an
 `AVPlayerLayer` with a black background and `.resizeAspect`.
 
-The loopback normally serves a static VOD playlist built from a load-time segment
-plan. Its explicit EVENT serving mode and
-`player.apple.siloplayer_primary_enabled` kill switch were retired on 2026-08-17;
-the key is no longer read. The writer still falls back internally to a growing
-EVENT playlist when no safe VOD plan is available.
+The loopback serves a static VOD playlist built from a load-time segment plan,
+and only that: `emitMediaPlaylist` always writes `#EXT-X-PLAYLIST-TYPE:VOD` and
+`#EXT-X-ENDLIST`. Its explicit EVENT serving mode and
+`player.apple.siloplayer_primary_enabled` kill switch were retired on
+2026-08-17 (the key is no longer read), and the writer's internal growing-EVENT
+degrade went on 2026-08-20 (`0921dad`): `resolveVODPlanIfNeeded` now throws
+`bootstrapFailed("vod_plan_unavailable")` or
+`bootstrapFailed("vod_plan_untrusted_keyframe_index")` and the route ladder
+replans.
 
 ## 5. Why the loopback exists
 
@@ -140,8 +144,12 @@ The writer file is explicit about the design:
 The goal has always been to get Dolby Vision through AVPlayer's own
 DV-capable pipeline. What changed with the one-player consolidation is that this
 is no longer a *special* path for DV: it is the primary direct-play path for
-almost everything, with DV as one `VideoMode` among several (the orthogonal
-`VideoOutputMode` axis went away with the [video bridge](09-video-bridge.md)).
+almost everything, with DV as one `VideoMode` among several. There is no second
+video axis: the orthogonal `VideoOutputMode` enum and
+`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)` were deleted on
+2026-08-18 (`c87dc6e`), a day after the [video bridge](09-video-bridge.md) tier
+left them with a single `.copy` case. `assessSiloRoute` now tests
+`siloVideoCopyCodecs` directly.
 
 ## 6. Loopback server and ATS
 
@@ -246,9 +254,11 @@ For the loopback route (`ApplePlaybackRoutePlanner.loopbackAudioOutputMode`):
 - corrected 2026-08-17, superseded: `loopbackVideoOutputMode` returned
   `video_not_copyable` for any non-copy codec (the DV-specific
   `dv_not_bridgeable` arm went with the bridge tier). That function and the
-  whole `VideoOutputMode` axis have since been deleted; `assessSiloRoute` now
-  tests `siloVideoCopyCodecs` directly and appends the same
-  `video_not_copyable` blocker.
+  whole `VideoOutputMode` axis were deleted on 2026-08-18 (`c87dc6e`);
+  `assessSiloRoute` now tests `siloVideoCopyCodecs` directly and appends the
+  same `video_not_copyable` blocker. Verified again 2026-08-20: neither symbol
+  exists anywhere in `iosApp`, and
+  [05](05-route-capability-matrix.md) no longer describes the axis either.
 - verified: the Profile 7 → 8.1 base-layer conversion, its `db1p` brand, and the
   `preferProfile7HDR10Fallback` escape hatch are unchanged by the one-player
   consolidation.

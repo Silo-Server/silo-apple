@@ -45,7 +45,7 @@ names the three routes, and `PlaybackRouteFamily` groups them:
 | Engine kind | Route family | What AVPlayer consumes |
 | --- | --- | --- |
 | `avPlayerNativeDirect` | `nativePlayer` | The remote asset itself, when the container / codecs / embedded subtitles match a narrow Apple allowlist (`mp4` / `mov` / `m4v`, h264 or hevc, aac/ac3/eac3/alac/mp3). |
-| `siloPlayerLoopback` | `siloPlayer` | A fragmented-MP4 HLS presentation this device produces, served from `127.0.0.1`. Remux for h264/hevc/Dolby Vision; on-device decode → VideoToolbox re-encode for the codecs AVPlayer cannot take. |
+| `siloPlayerLoopback` | `siloPlayer` | A fragmented-MP4 HLS presentation this device produces, served from `127.0.0.1`. Video is always a remux: `h264`, `hevc`, and every Dolby Vision `VideoMode` copy through untouched (`ApplePlaybackRoutePlanner.siloVideoCopyCodecs`), and anything else is blocked with `video_not_copyable`. Audio may be re-encoded — `LoopbackSessionSpec.AudioOutputMode` copies AAC/AC-3/E-AC-3 and transcodes the rest to FLAC or AAC (`loopbackAudioOutputMode(for:)`). |
 | `avPlayerHLS` | `nativePlayer` | A server-produced HLS manifest (remux or transcode). The terminal rung. |
 
 There is no longer a second decoder, so "fall back" no longer means "swap
@@ -67,8 +67,8 @@ to point it at is the server.
   Siri Remote handling, overlay auto-hide, scrubber behavior, HUD tabs, and
   what the tvOS shell exposes today.
 - **[05 - Apple route capability matrix](05-route-capability-matrix.md)**
-  Route-by-route truth for subtitles, chapters, PiP, external playback, the
-  loopback video output mode, and premium-media claims.
+  Route-by-route truth for subtitles, chapters, PiP, external playback,
+  loopback source eligibility, and premium-media claims.
 - **[06 - Apple validation record template](06-validation-record-template.md)**
   The validation fields required before Dolby Vision, Atmos, PiP, or external
   playback claims can be treated as real.
@@ -125,7 +125,9 @@ to point it at is the server.
   codec, any video codec outside the copy set (`video_not_copyable`), a
   container outside the native-direct and silo source lists
   (`container_not_normalizable`), DVB subtitles, plus any runtime loopback
-  failure.
+  failure — including a source whose keyframe index will not yield a
+  trustworthy VOD plan (`vod_plan_unavailable` /
+  `vod_plan_untrusted_keyframe_index`).
 - **Is HDR mode matching public API?**
   Yes. tvOS uses `AVDisplayCriteria(refreshRate:formatDescription:)` (tvOS 17+)
   via [`TVDisplayCriteria`](../../iosApp/iosApp/Screens/Player/Shared/TVDisplayCriteria.swift),
@@ -166,6 +168,13 @@ to point it at is the server.
 - corrected: the AVPlayer HLS route is no longer feature-flag gated. The
   planner's `.remux` / `.transcode` arm always selects `.avPlayerHLS`, and the
   vestigial flag plumbing has been removed.
+- corrected (2026-08-20): the route table said the loopback did "on-device
+  decode → VideoToolbox re-encode for the codecs AVPlayer cannot take",
+  contradicting the video-bridge answer four rows down. Video is copy-only
+  (`ApplePlaybackRoutePlanner.siloVideoCopyCodecs` = `h264`/`hevc`, plus the DV
+  `VideoMode`s); audio is the one thing the writer re-encodes
+  (`LoopbackSessionSpec.AudioOutputMode`, chosen by
+  `loopbackAudioOutputMode(for:)`).
 - corrected: earlier revisions of this suite described a hybrid backend and
   quoted stale `mpv` comments. Neither the second backend nor those comments
   remain in the player tree.

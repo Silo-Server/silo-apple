@@ -126,7 +126,7 @@ mode-dependent, and the planner calls it **after** resolving the video mode.
 | --- | --- | --- |
 | Dynamic range | SDR only (`transferKind(for:) ?? "SDR"` must be `"SDR"`) | A PQ/HLG re-encode needs the full 10-bit colour chain — P010 buffers, Main10 profile, explicit primaries/transfer/matrix, mastering-display side data — and missing any one paints washed-out or over-bright |
 | Resolution | ≤ 1920 × 1080 (`bridgeResolutionIsSupported`) | Software decode of 4K VP9/AV1 is CPU-bound even threaded and would stutter ahead of the playhead on Apple TV. An **unknown** resolution passes: the server's metadata is missing, not large, and the runtime watchdog is the backstop |
-| Serving mode | VOD plan only | The retired bridge cut segments by forcing encoder keyframes at plan boundaries and therefore needed a resolved plan. The surviving copy path can still fall back internally to a growing EVENT playlist when no safe VOD plan is available. |
+| Serving mode | VOD plan only | The retired bridge cut segments by forcing encoder keyframes at plan boundaries and therefore needed a resolved plan. The surviving copy path needs one too: since 2026-08-20 a session with no trustworthy plan fails and the route ladder replans, rather than degrading to a growing EVENT playlist. |
 
 ### Blockers and trace tokens
 
