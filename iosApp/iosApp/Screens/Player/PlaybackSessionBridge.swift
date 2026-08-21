@@ -1617,59 +1617,29 @@ actor PlaybackSessionBridge {
         "file:\(fileId):\(kind):\(index)"
     }
 
-    /// Pick the best version for the user's preferred quality. The server does
-    /// the compatibility filtering from the reported capability snapshot and
-    /// may answer with a different `effective_media_file_id`; this ranking step
-    /// only decides which version the request asks for.
+    /// Pick the version the start request asks for. The precedence itself
+    /// lives in `DetailVersionSelection` — the one owner the detail screens
+    /// label from — so the version a screen shows is the version Play starts.
+    /// The server still does the compatibility filtering from the reported
+    /// capability snapshot and may answer with a different
+    /// `effective_media_file_id`; this step only decides what the request asks
+    /// for.
     static func selectVersion(
         from versions: [FileVersion],
         lastFileId: Int?,
         preferredQuality: String?,
         dynamicRange: VersionDynamicRangePreference.Context = .current
     ) -> FileVersion {
-        // Deterministic: score descending, then fileId ascending, so a
-        // same-resolution / same-dynamic-range tie is never resolved by array
-        // order.
-        let ranked = versions.sorted { lhs, rhs in
-            let ls = score(for: lhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
-            let rs = score(for: rhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
-            return ls != rs ? ls > rs : lhs.fileId < rhs.fileId
-        }
-
-        if let preferredQuality,
-           let matchingQuality = ranked.first(where: {
-               qualityMatches($0.resolution, preferredQuality: preferredQuality)
-           }) {
-            return matchingQuality
-        }
-
-        if let lastFileId,
-           let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
-            return lastUsed
-        }
-
-        return ranked.first ?? versions[0]
-    }
-
-    private static func score(
-        for version: FileVersion,
-        preferredQuality: String?,
-        dynamicRange: VersionDynamicRangePreference.Context = .current
-    ) -> Int {
-        var score = resolutionRank(version.resolution) * 10
-
-        if let preferredQuality {
-            if preferredQuality == "original" {
-                score += 5
-            } else if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
-                score += 100
-            } else if resolutionRank(version.resolution) > resolutionRank(preferredQuality) {
-                score -= 50
-            }
-        }
-
-        score += VersionDynamicRangePreference.bonus(for: version, context: dynamicRange)
-        return score
+        // An explicit pick never reaches here: `prepare` resolves
+        // `preferredFileId` itself and only falls back to automatic selection
+        // when the user left the selector on Auto.
+        DetailVersionSelection.autoVersion(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: lastFileId,
+            preferredQuality: preferredQuality,
+            dynamicRange: dynamicRange
+        ) ?? versions[0]
     }
 
     private func requestedQualityPreference(
@@ -1682,33 +1652,6 @@ actor PlaybackSessionBridge {
         }
 
         return selectedVersion.resolution ?? preferredQuality ?? "original"
-    }
-
-    private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
-        let versionRank = resolutionRank(resolution)
-        if preferredQuality == ApplePlaybackQuality.originalId {
-            return versionRank > 0
-        }
-        let requestedRank = resolutionRank(preferredQuality)
-        return versionRank > 0 && versionRank <= requestedRank
-    }
-
-    private static func resolutionRank(_ value: String?) -> Int {
-        guard let value = value?.lowercased() else { return 0 }
-
-        if value.contains("2160") || value.contains("4k") {
-            return 4
-        }
-        if value.contains("1080") {
-            return 3
-        }
-        if value.contains("720") {
-            return 2
-        }
-        if value.contains("480") {
-            return 1
-        }
-        return 0
     }
 
 }

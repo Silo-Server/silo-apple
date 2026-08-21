@@ -1,13 +1,47 @@
 import Foundation
 
+/// The single owner of automatic version precedence.
+///
+/// Both the detail screens (which version's tracks/format to label) and
+/// `PlaybackSessionBridge` (which version Play actually asks the server for)
+/// resolve through `autoVersion`, so the label can never describe a file
+/// other than the one that starts. The precedence matches silo-android's
+/// `selectTvDetailDisplayVersion` / `selectPlaybackVersion` pair:
+///
+/// 1. this visit's explicit Version pick,
+/// 2. the item's last-played file,
+/// 3. the user's quality preference,
+/// 4. the best-ranked version (resolution first, dynamic range as tiebreak).
 enum DetailVersionSelection {
-    private static let autoId = "auto"
 
+    /// Detail-screen entry point: takes the raw stored quality id and
+    /// normalizes it through the same closed catalog the bridge uses.
     static func displayVersion(
         versions: [FileVersion],
         selectedFileId: Int?,
         lastFileId: Int?,
         preferredQualityId: String? = nil,
+        dynamicRange: VersionDynamicRangePreference.Context = .current
+    ) -> FileVersion? {
+        autoVersion(
+            versions: versions,
+            selectedFileId: selectedFileId,
+            lastFileId: lastFileId,
+            preferredQuality: normalizedQualityPreference(preferredQualityId),
+            dynamicRange: dynamicRange
+        )
+    }
+
+    /// The precedence itself. `preferredQuality` is already normalized —
+    /// `nil` means Auto. Callers that hold a raw stored id go through
+    /// `displayVersion`; callers that hold a server-owned rung id (an
+    /// in-player quality override) pass it verbatim so an additive rung the
+    /// local catalog does not know is not silently coerced to Auto.
+    static func autoVersion(
+        versions: [FileVersion],
+        selectedFileId: Int?,
+        lastFileId: Int?,
+        preferredQuality: String?,
         dynamicRange: VersionDynamicRangePreference.Context = .current
     ) -> FileVersion? {
         if let selectedFileId,
@@ -20,48 +54,53 @@ enum DetailVersionSelection {
             return lastUsed
         }
 
-        let preferredQuality = normalizedQualityPreference(preferredQualityId)
-        // Deterministic max: higher score wins; a score tie breaks toward the
-        // lower fileId so equal-resolution / equal-dynamic-range versions never
-        // depend on array order.
-        return versions.max { lhs, rhs in
+        let rankedVersions = ranked(versions, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
+
+        // The quality rung. `score` already puts every version inside the
+        // requested ceiling above every version outside it, so this is the
+        // head of `rankedVersions` whenever anything matches; stating it keeps the
+        // precedence readable and independent of the scoring weights.
+        if let preferredQuality,
+           let matchingQuality = rankedVersions.first(where: {
+               qualityMatches($0.resolution, preferredQuality: preferredQuality)
+           }) {
+            return matchingQuality
+        }
+
+        return rankedVersions.first
+    }
+
+    /// Deterministic: score descending, then fileId ascending, so an
+    /// equal-resolution / equal-dynamic-range tie is never resolved by array
+    /// order.
+    private static func ranked(
+        _ versions: [FileVersion],
+        preferredQuality: String?,
+        dynamicRange: VersionDynamicRangePreference.Context
+    ) -> [FileVersion] {
+        versions.sorted { lhs, rhs in
             let ls = score(for: lhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
             let rs = score(for: rhs, preferredQuality: preferredQuality, dynamicRange: dynamicRange)
-            return ls != rs ? ls < rs : lhs.fileId > rhs.fileId
+            return ls != rs ? ls > rs : lhs.fileId < rhs.fileId
         }
     }
 
     private static func normalizedQualityPreference(_ quality: String?) -> String? {
-        let normalized = normalizeStoredQualityId(quality)
-        return normalized == autoId ? nil : normalized
-    }
-
-    private static func normalizeStoredQualityId(_ raw: String?) -> String {
-        let value = raw?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        switch value {
-        case "", autoId, "original", "2160p", "4k", "uhd":
-            return autoId
-        case "420p":
-            return "328p"
-        case "1080p-high", "1080p-medium", "1080p", "1080p-8",
-             "720p-high", "720p-medium", "720p", "480p", "328p":
-            return value
-        default:
-            return autoId
-        }
+        let normalized = ApplePlaybackQuality.normalizeStoredId(quality)
+        return normalized == ApplePlaybackQuality.autoId ? nil : normalized
     }
 
     private static func score(
         for version: FileVersion,
         preferredQuality: String?,
-        dynamicRange: VersionDynamicRangePreference.Context = .current
+        dynamicRange: VersionDynamicRangePreference.Context
     ) -> Int {
         var score = resolutionRank(version.resolution) * 10
 
         if let preferredQuality {
-            if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
+            if preferredQuality == ApplePlaybackQuality.originalId {
+                score += 5
+            } else if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
                 score += 100
             } else if resolutionRank(version.resolution) > resolutionRank(preferredQuality) {
                 score -= 50
@@ -74,6 +113,9 @@ enum DetailVersionSelection {
 
     private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
         let versionRank = resolutionRank(resolution)
+        if preferredQuality == ApplePlaybackQuality.originalId {
+            return versionRank > 0
+        }
         let requestedRank = resolutionRank(preferredQuality)
         return versionRank > 0 && versionRank <= requestedRank
     }

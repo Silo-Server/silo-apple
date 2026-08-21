@@ -1542,7 +1542,13 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
-    func testInitialOriginalSelectionIgnoresARememberedLowerResolutionSource() throws {
+    /// The remembered file is the rung above the quality preference — see
+    /// `DetailVersionSelection`, the one owner both the detail label and
+    /// playback start resolve through, and silo-android's
+    /// `selectPlaybackVersion`, which orders it the same way. Widening to
+    /// Original mid-playback does not run through here: that path carries an
+    /// explicit `preferredFileId` from the adopted plan.
+    func testInitialSelectionKeepsARememberedSourceAheadOfTheQualityPreference() throws {
         let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
         let fourK = Self.version(fileId: 2, resolution: "2160p", bitrateKbps: 30_000)
         let versions = [sevenTwenty, fourK]
@@ -1553,7 +1559,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
                 lastFileId: sevenTwenty.fileId,
                 preferredQuality: "original"
             ).fileId,
-            fourK.fileId
+            sevenTwenty.fileId
         )
         XCTAssertEqual(
             PlaybackSessionBridge.selectVersion(
@@ -1563,6 +1569,15 @@ final class PlayerSettingsFlushTests: XCTestCase {
             ).fileId,
             sevenTwenty.fileId,
             "Auto must retain the remembered-version fallback"
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.selectVersion(
+                from: versions,
+                lastFileId: nil,
+                preferredQuality: "original"
+            ).fileId,
+            fourK.fileId,
+            "with nothing remembered, Original still opens the ceiling"
         )
     }
 
