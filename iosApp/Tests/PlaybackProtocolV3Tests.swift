@@ -1227,6 +1227,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: true,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "render")
             ).map(\.index),
             [3, 9]
@@ -1235,6 +1236,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: true,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "burn_in")
             ).map(\.index),
             [3]
@@ -1243,6 +1245,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: false,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "render")
             ),
             urls
@@ -1252,6 +1255,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: true,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: nil, subtitleMode: "render")
             ).map(\.index),
             [3]
@@ -1263,6 +1267,10 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     /// cannot render a `.sup`, and keeping it shadowed the natively-rendered
     /// embedded bitmap tap, leaving the picker on an unrenderable track (the
     /// "no subtitles on loopback" bug). Text embedded sidecars are unaffected.
+    ///
+    /// On server HLS the same `.sup` is kept as an inventory row while a V3
+    /// plan is live — the row is what a burn-in selection is shown and restored
+    /// through — and dropped when there is no plan to replan.
     func testV3RouteSubtitleFilteringDropsSelectedBitmapEmbeddedSidecar() {
         let external = makeSubtitleUrl(index: 3, source: "external")
         let selectedBitmapEmbedded = makeSubtitleUrl(
@@ -1276,6 +1284,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: true,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 8, subtitleMode: "render")
             ).map(\.index),
             [3]
@@ -1287,20 +1296,36 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 [external, selectedTextEmbedded],
                 routeUsesEmbeddedExtraction: true,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 8, subtitleMode: "render")
             ).map(\.index),
             [3, 8]
         )
 
-        // Server-HLS route (no embedded extraction) keeps the PGS sidecar —
-        // it needs the server's `.sup` there.
+        // Server-HLS route (no embedded extraction) keeps the PGS *row* while a
+        // V3 plan is live — not because anything here can draw the `.sup`, but
+        // because the picker needs the row to show the selection and to replan
+        // it into a server burn-in. Nothing opens it locally.
         XCTAssertEqual(
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: false,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 8, subtitleMode: "render")
             ).map(\.index),
             [3, 8]
+        )
+
+        // With no plan there is no replan and no burn-in, so the row would only
+        // ever be a checked-but-blank local open: it is dropped.
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                urls,
+                routeUsesEmbeddedExtraction: false,
+                protocolV3PlanActive: false,
+                planned: .unset
+            ).map(\.index),
+            [3]
         )
     }
 

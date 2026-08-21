@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 @testable import Silo
@@ -84,13 +85,16 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
 
     // MARK: - Fuzzy recovery match (TrackSelectionSnapshot threshold)
 
-    func testFuzzyRestoreAcceptsAScoreOfExactlyThree() {
+    /// The restore needs a positive anchor. "English AC3 5.1 Director" shares
+    /// nothing with "French AAC stereo Other" except three `false` booleans,
+    /// which used to add up to the `>= 3` floor and silently switch the user's
+    /// language; now the candidate scores nothing and the engine's own reported
+    /// selection stands.
+    func testFuzzyRestoreRejectsFlagOnlyAgreement() {
         let recorder = PortRecorder()
         let coordinator = makeCoordinator(recorder)
         coordinator.restoreAfterRecovery(recoverySnapshot(audio: previousAudioTrack))
 
-        // Differs in title (4), language (3), codec (2) and layout (2);
-        // agrees only on forced + external + hearing-impaired = 3.
         coordinator.applyTrackList([
             audioTrack(
                 trackId: 30,
@@ -102,28 +106,53 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
             )
         ])
 
-        XCTAssertEqual(coordinator.selectedAudioId, 30, "score 3 is the accepted floor")
+        XCTAssertNil(coordinator.selectedAudioId, "no anchor, no restore")
+        XCTAssertNotNil(
+            coordinator.selection.audio.recovered,
+            "an unmatched snapshot stays armed for the next track list"
+        )
     }
 
-    func testFuzzyRestoreRejectsAScoreBelowThree() {
+    /// The language on its own is an anchor and clears the floor, so a stream
+    /// that re-encodes the track (new codec, new layout, no title) still
+    /// restores it.
+    func testFuzzyRestoreAcceptsAMatchAnchoredOnLanguageAlone() {
         let recorder = PortRecorder()
         let coordinator = makeCoordinator(recorder)
         coordinator.restoreAfterRecovery(recoverySnapshot(audio: previousAudioTrack))
 
-        // Same as above but the forced flag differs too, dropping the score to 2.
         coordinator.applyTrackList([
             audioTrack(
                 trackId: 30,
                 srcId: 0,
-                title: "Other",
-                lang: "fra",
+                title: nil,
+                lang: "eng",
                 codec: "aac",
-                layout: "stereo",
-                isForced: true
+                layout: "stereo"
             )
         ])
 
-        XCTAssertNil(coordinator.selectedAudioId, "score 2 is below the threshold")
+        XCTAssertEqual(coordinator.selectedAudioId, 30)
+        XCTAssertNil(coordinator.selection.audio.recovered, "a landed snapshot is consumed")
+    }
+
+    /// Attributes neither track reports are not agreement: two tracks that both
+    /// omit the title and the layout must not restore onto each other on the
+    /// strength of a shared codec.
+    func testFuzzyRestoreRejectsAgreementOnAbsentMetadata() {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder)
+        coordinator.restoreAfterRecovery(
+            recoverySnapshot(
+                audio: audioTrack(trackId: 99, srcId: 0, title: nil, lang: "eng", layout: nil)
+            )
+        )
+
+        coordinator.applyTrackList([
+            audioTrack(trackId: 30, srcId: 0, title: nil, lang: "fra", layout: nil)
+        ])
+
+        XCTAssertNil(coordinator.selectedAudioId)
     }
 
     // MARK: - appendSidecarTracks
@@ -218,6 +247,114 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         )
         systemMode.appendSidecarTracks([descriptor(index: 1, forced: true)])
         XCTAssertNil(systemMode.selectedSubtitleId, "system appearance mode skips the forced auto-select")
+    }
+
+    // MARK: - Bitmap sidecars are rows, never local opens
+
+    /// The secondary slot has no server plan behind it — it is always opened
+    /// locally — so a bitmap sidecar (the `.sup` the server publishes for every
+    /// embedded PGS track) must not be offered on any route. Selecting one
+    /// anyway is a no-op.
+    func testBitmapSidecarIsNeverASecondarySubtitleCandidateOnAnyRoute() throws {
+        let bitmapId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1)
+        for route in [
+            PlaybackEngineKind.avPlayerNativeDirect,
+            .siloPlayerLoopback,
+            .avPlayerHLS,
+        ] {
+            let backend = AVPlayerBackend(player: AVPlayer())
+            defer { backend.dispose() }
+            let coordinator = makeCoordinator(
+                PortRecorder(),
+                routeKind: route,
+                backend: backend
+            )
+            coordinator.appendSidecarTracks([
+                descriptor(index: 0),
+                descriptor(index: 1, codec: "hdmv_pgs_subtitle"),
+            ])
+
+            XCTAssertEqual(
+                coordinator.subtitleTracks.count,
+                2,
+                "the row stays in the inventory on \(route.label)"
+            )
+            XCTAssertEqual(
+                coordinator.availableSecondarySubtitleTracks.map(\.trackId),
+                [SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0)],
+                "bitmap sidecar offered as a secondary candidate on \(route.label)"
+            )
+
+            let bitmapRow = try XCTUnwrap(
+                coordinator.subtitleTracks.first(where: { $0.trackId == bitmapId })
+            )
+            coordinator.selectSecondarySubtitle(bitmapRow)
+            XCTAssertNil(
+                coordinator.selectedSecondarySubtitleId,
+                "bitmap sidecar selected into the secondary slot on \(route.label)"
+            )
+        }
+    }
+
+    /// Without a live V3 plan there is no replan and no server burn-in, so the
+    /// only thing a bitmap sidecar pick could do is open a `.sup` through the
+    /// text sidecar path — a checked-but-blank track. The pick is refused.
+    func testBitmapSidecarPrimaryPickIsRefusedWithoutAProtocolV3Plan() throws {
+        let recorder = PortRecorder()
+        let coordinator = makeCoordinator(recorder, routeKind: .avPlayerHLS)
+        coordinator.appendSidecarTracks([descriptor(index: 1, codec: "hdmv_pgs_subtitle")])
+        let row = try XCTUnwrap(coordinator.subtitleTracks.first)
+
+        coordinator.selectSubtitle(row)
+
+        XCTAssertNil(coordinator.selectedSubtitleId)
+        XCTAssertNotEqual(coordinator.selection.origin, .user, "a refused pick decides nothing")
+        XCTAssertTrue(recorder.replans.isEmpty)
+    }
+
+    /// With a plan the same row is selectable: the pick goes up as a replan and
+    /// the server burns the bitmap into the stream. Nothing is opened locally.
+    func testBitmapSidecarPrimaryPickReplansWhenAProtocolV3PlanIsActive() throws {
+        let recorder = PortRecorder()
+        let prepared = try preparedPlayback(subtitleMode: "burn_in", selectedSubtitleIndex: 1)
+        let coordinator = makeCoordinator(
+            recorder,
+            routeKind: .avPlayerHLS,
+            protocolV3: try XCTUnwrap(prepared.protocolV3)
+        )
+        coordinator.appendSidecarTracks([descriptor(index: 1, codec: "hdmv_pgs_subtitle")])
+        let row = try XCTUnwrap(coordinator.subtitleTracks.first)
+
+        coordinator.selectSubtitle(row)
+
+        XCTAssertEqual(coordinator.selectedSubtitleId, row.trackId)
+        XCTAssertEqual(recorder.replans.map(\.classification), ["subtitle_track_changed"])
+    }
+
+    /// A resumed sidecar intent that lands on a bitmap row is not restored —
+    /// that rung opens the sidecar locally. The forced-sidecar auto-select
+    /// skips bitmap rows for the same reason.
+    func testBitmapSidecarIsNotRestoredOrForcedAutoSelected() {
+        let bitmapId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+        let restore = makeCoordinator(PortRecorder())
+        restore.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: bitmapId,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+        restore.appendSidecarTracks([descriptor(index: 2, codec: "hdmv_pgs_subtitle")])
+        XCTAssertNil(restore.selectedSubtitleId)
+
+        let forced = makeCoordinator(PortRecorder())
+        forced.resetForLoad(
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            preferredProtocolV3SubtitleIndex: nil
+        )
+        forced.appendSidecarTracks([descriptor(index: 1, forced: true, codec: "dvd_subtitle")])
+        XCTAssertNil(forced.selectedSubtitleId)
     }
 
     // MARK: - Suspension gate + user commands
@@ -358,19 +495,22 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         _ recorder: PortRecorder,
         isBackgroundSuspended: Bool = false,
-        matchesSystemAppearance: Bool = false
+        matchesSystemAppearance: Bool = false,
+        routeKind: PlaybackEngineKind = .avPlayerNativeDirect,
+        protocolV3: PreparedPlaybackV3? = nil,
+        backend: AVPlayerBackend? = nil
     ) -> TrackSelectionCoordinator {
         var ports = TrackSelectionPorts(
-            backend: { nil },
+            backend: { backend },
             context: {
                 recorder.contextCount += 1
                 return TrackSelectionContext(
-                    activePreparedProtocolV3: nil,
+                    activePreparedProtocolV3: protocolV3,
                     currentSelectedVersion: nil,
                     currentWatchDetail: nil,
                     serverSessionId: nil,
                     resolvedServerUrl: "",
-                    activeRouteKind: .avPlayerNativeDirect,
+                    activeRouteKind: routeKind,
                     backendCapabilities: .avFoundation,
                     isOfflinePlayback: false,
                     currentTime: 0,
@@ -491,11 +631,15 @@ final class TrackSelectionCoordinatorTests: XCTestCase {
         )
     }
 
-    private func descriptor(index: Int, forced: Bool = false) -> SidecarSubtitleDescriptor {
+    private func descriptor(
+        index: Int,
+        forced: Bool = false,
+        codec: String = "srt"
+    ) -> SidecarSubtitleDescriptor {
         SidecarSubtitleDescriptor(
             index: index,
             language: "eng",
-            codec: "srt",
+            codec: codec,
             label: "Sidecar \(index)",
             source: "external",
             forced: forced,

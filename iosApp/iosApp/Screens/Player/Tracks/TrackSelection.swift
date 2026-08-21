@@ -5,9 +5,9 @@ import Foundation
 /// Track ids are not stable across a stream swap (a quality switch, a route
 /// fallback, a transcode restart), so a selection that cannot be re-established
 /// by id is re-established by scoring the replacement list against these
-/// normalized attributes. Moved here from `TrackSelectionCoordinator` unchanged
-/// — `score(against:)`'s weights and `bestTrackMatch`'s `>= 3` threshold are
-/// the ones that were there before.
+/// normalized attributes. `TrackSelectionCoordinator.bestTrackMatch` takes the
+/// best-scoring candidate at `>= 3`; `score(against:)` owns which agreements
+/// can reach that floor.
 struct TrackSelectionSnapshot: Equatable {
     let normalizedTitle: String?
     let normalizedLanguageCode: String?
@@ -27,16 +27,49 @@ struct TrackSelectionSnapshot: Equatable {
         isHearingImpaired = track.isHearingImpaired
     }
 
+    /// How well `track` matches the snapshotted attributes, or `0` when it is
+    /// not a candidate at all. Two rules make the result safe to restore from:
+    ///
+    /// 1. **Absent metadata never scores.** `nil == nil` is not agreement, it
+    ///    is two tracks that both said nothing — which is true of every row in
+    ///    a sparsely described replacement list.
+    /// 2. **A positive anchor is required**: the same language, the same
+    ///    title, or the same codec *and* channel layout. Without one, the
+    ///    three boolean flags on their own reached `bestTrackMatch`'s `>= 3`
+    ///    floor (they are `false` on most tracks), so "English AC3 5.1
+    ///    Director" restored onto "French AAC stereo Other". Language (3) and
+    ///    title (4) each clear that floor by themselves; the flags (1 each)
+    ///    never do, because an unanchored candidate scores nothing at all.
     func score(against track: PlayerTrack) -> Int {
+        let titleMatches = Self.agree(normalizedTitle, track.normalizedTitle?.lowercased())
+        let languageMatches = Self.agree(
+            normalizedLanguageCode,
+            track.normalizedLanguageCode?.lowercased()
+        )
+        let codecMatches = Self.agree(normalizedCodec, Self.normalized(track.codec))
+        let layoutMatches = Self.agree(
+            normalizedAudioLayout,
+            Self.normalized(track.audioChannelsLayout)
+        )
+        guard titleMatches || languageMatches || (codecMatches && layoutMatches) else {
+            return 0
+        }
+
         var score = 0
-        if normalizedTitle == track.normalizedTitle?.lowercased() { score += 4 }
-        if normalizedLanguageCode == track.normalizedLanguageCode?.lowercased() { score += 3 }
-        if normalizedCodec == Self.normalized(track.codec) { score += 2 }
-        if normalizedAudioLayout == Self.normalized(track.audioChannelsLayout) { score += 2 }
+        if titleMatches { score += 4 }
+        if languageMatches { score += 3 }
+        if codecMatches { score += 2 }
+        if layoutMatches { score += 2 }
         if isForced == track.isForced { score += 1 }
         if isExternal == track.isExternal { score += 1 }
         if isHearingImpaired == track.isHearingImpaired { score += 1 }
         return score
+    }
+
+    /// Two normalized attributes agree only when both are present and equal.
+    private static func agree(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return lhs == rhs
     }
 
     private static func normalized(_ value: String?) -> String? {
@@ -47,8 +80,7 @@ struct TrackSelectionSnapshot: Equatable {
 }
 
 /// Who decided the current subtitle selection. `origin == .user` is the latch
-/// the auto-resolver, the appearance funnels and the sidecar restores yield to
-/// — it is what the retired explicit-subtitle-choice flag meant (review §8).
+/// the auto-resolver, the appearance funnels and the sidecar restores yield to.
 /// Every non-user decider (a server plan, the system/server caption policy, a
 /// carried-across rebuild) is interchangeable everywhere that gate is applied,
 /// so they share one case.
@@ -83,11 +115,11 @@ struct AudioSelection: Equatable {
 
 /// Which subtitle a load or a rebuild is still trying to land on.
 ///
-/// One field per index space (review §8): an embedded stream is named by its
-/// ffmpeg stream index, a sidecar row by the synthesized track id over the
-/// server's *combined* ordinal (`SubtitleTrackIdSpace.sidecarBase`), and the
-/// two are never the same number. That is what retires the bare `srcId` int
-/// from every decision site.
+/// One field per index space: an embedded stream is named by its ffmpeg stream
+/// index, a sidecar row by the synthesized track id over the server's
+/// *combined* ordinal (`SubtitleTrackIdSpace.sidecarBase`), and the two are
+/// never the same number. No decision site names a subtitle by a bare `srcId`
+/// int, because that int does not say which space it is in.
 ///
 /// Several fields can be armed at once, in the order the two apply funnels run
 /// them: the embedded field is consumed by the track-list funnel, the sidecar
@@ -175,40 +207,65 @@ extension SubtitleSelection {
     /// same subtitle twice if the server also delivered it as a sidecar; the
     /// one exception is the embedded subtitle the plan selected and asked the
     /// client to render, which reaches the player only as a sidecar artifact.
+    ///
+    /// The second rule is about what the client can *draw*: there is no bitmap
+    /// sidecar renderer on Apple, so a `.sup`/VobSub sidecar is only ever a
+    /// picker row the server burns in after a replan. Without a live V3 plan
+    /// there is no replan to make, so registering it could only produce a
+    /// checked-but-blank track — it is dropped instead of shown.
     static func subtitleUrlsForCurrentRoute(
         _ urls: [SubtitleUrl],
         routeUsesEmbeddedExtraction: Bool,
+        protocolV3PlanActive: Bool,
         planned: SubtitleSelection
     ) -> [SubtitleUrl] {
-        guard routeUsesEmbeddedExtraction else { return urls }
         let selectedRenderedSidecarIndex = planned.sidecarTrackId
             .flatMap(SubtitleTrackIdSpace.sidecarIndex(from:))
         return urls.filter { subtitle in
-            guard subtitle.source?.localizedCaseInsensitiveCompare("embedded") == .orderedSame else {
-                return true
+            let isEmbeddedSource =
+                subtitle.source?.localizedCaseInsensitiveCompare("embedded") == .orderedSame
+            if routeUsesEmbeddedExtraction, isEmbeddedSource {
+                // This route renders embedded tracks natively (loopback/native
+                // bitmap tap or text extractor), so the server's
+                // embedded-source sidecars are redundant — drop them. The one
+                // exception is a text sidecar the plan explicitly rendered
+                // server-side, kept so a user's chosen server-rendered copy
+                // survives the route.
+                //
+                // A bitmap (PGS/DVD/DVB) embedded sidecar is never kept, even
+                // when planned: the text sidecar path cannot draw a `.sup`, and
+                // keeping it shadowed the natively-renderable embedded row and
+                // stranded the picker on an unrenderable sidecar (blank
+                // subtitles on loopback).
+                return subtitle.index == selectedRenderedSidecarIndex && !subtitle.isBitmapCodec
             }
-            // This route renders embedded tracks natively (loopback/native
-            // bitmap tap or text extractor), so the server's embedded-source
-            // sidecars are redundant — drop them. The one exception is a text
-            // sidecar the plan explicitly rendered server-side, kept so a
-            // user's chosen server-rendered copy survives the route.
-            //
-            // A bitmap (PGS/DVD/DVB) embedded sidecar is never kept, even when
-            // planned: the text sidecar path cannot draw a `.sup`, and keeping
-            // it shadowed the natively-renderable embedded row and stranded the
-            // picker on an unrenderable sidecar (blank subtitles on loopback).
-            return subtitle.index == selectedRenderedSidecarIndex && !subtitle.isBitmapCodec
+            // A bitmap sidecar the client cannot draw is worth a row only while
+            // a V3 plan is live: selecting it there replans and the server
+            // burns it into the stream.
+            if subtitle.isBitmapCodec { return protocolV3PlanActive }
+            return true
         }
+    }
+
+    /// True for a bitmap subtitle codec (PGS/DVD/DVB/XSUB). The single owner of
+    /// the "no Apple renderer can draw this" predicate; `SubtitleUrl` and every
+    /// track/descriptor test goes through here.
+    static func isBitmapCodec(_ codec: String?) -> Bool {
+        guard let codec = codec?.lowercased() else { return false }
+        return codec.contains("pgs") || codec.contains("hdmv")
+            || codec.contains("dvdsub") || codec.contains("dvd_sub")
+            || codec.contains("dvbsub") || codec.contains("dvb_sub")
+            || codec.contains("xsub")
     }
 }
 
 /// The player's whole track intent: what audio, primary subtitle and secondary
 /// subtitle this load or rebuild is trying to land on, and who decided it.
 ///
-/// Replaces the eight `pending*` optionals plus the explicit-choice flag
-/// (review §8). Each axis holds the fields still waiting for a matching track
-/// to appear; the two apply funnels consume the field they own and leave the
-/// rest, which is exactly what the separate optionals did.
+/// One value instead of a bag of `pending*` optionals plus an explicit-choice
+/// flag. Each axis holds the fields still waiting for a matching track to
+/// appear; the two apply funnels consume the field they own and leave the
+/// rest.
 struct TrackSelection: Equatable {
     var audio: AudioSelection = .unset
     var primary: SubtitleSelection = .unset
