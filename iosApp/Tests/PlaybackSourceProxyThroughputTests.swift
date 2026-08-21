@@ -199,4 +199,107 @@ final class PlaybackSourceProxyThroughputTests: XCTestCase {
         // arriving between fulfillment and the task cancel taking effect.
         XCTAssertGreaterThanOrEqual(bytes, Self.readTarget, "sequential read did not complete")
     }
+
+    // MARK: - Range framing
+
+    /// Small enough that the whole representation is served in one response,
+    /// so the framing assertions below are about the header arithmetic and
+    /// nothing else.
+    private static let framingFileSize: Int64 = 64 * 1024
+
+    private func framingProxy(_ origin: RangeOriginStub) async throws -> PlaybackSourceProxy {
+        let proxy = PlaybackSourceProxy(originURL: origin.url, originHeaders: [:])
+        try await proxy.start()
+        proxy.startPrefetch(at: 0)
+        return proxy
+    }
+
+    /// An exact range whose last-byte-pos runs past EOF must be clamped to the
+    /// known total: the body writer stops at EOF regardless, so an unclamped
+    /// `Content-Length` promises bytes that never arrive and strands the
+    /// consumer.
+    func testExactRangePastEndIsClampedToTheKnownTotal() async throws {
+        let size = Self.framingFileSize
+        let origin = RangeOriginStub(totalBytes: size)
+        try await origin.start()
+        defer { origin.stop() }
+        let proxy = try await framingProxy(origin)
+        defer { proxy.stop() }
+        let localURL = try XCTUnwrap(proxy.localURL)
+
+        var request = URLRequest(url: localURL)
+        request.setValue("bytes=0-999999", forHTTPHeaderField: "Range")
+        let (body, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+
+        XCTAssertEqual(http.statusCode, 206)
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Range"), "bytes 0-\(size - 1)/\(size)")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Length"), "\(size)")
+        XCTAssertEqual(Int64(body.count), size, "body length must match the framed Content-Length")
+    }
+
+    /// A first-byte-pos at or past the representation length is unsatisfiable:
+    /// the proxy must answer 416 with the unsatisfied-range form rather than a
+    /// 206 with a non-zero `Content-Length` over an empty body.
+    func testRangeStartingPastEndReturns416() async throws {
+        let size = Self.framingFileSize
+        let origin = RangeOriginStub(totalBytes: size)
+        try await origin.start()
+        defer { origin.stop() }
+        let proxy = try await framingProxy(origin)
+        defer { proxy.stop() }
+        let localURL = try XCTUnwrap(proxy.localURL)
+        let session = URLSession(configuration: .ephemeral)
+
+        // Learn the total first — 416 is only decidable against a known
+        // length, and an in-bounds read is how the proxy discovers it.
+        var warm = URLRequest(url: localURL)
+        warm.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+        let (warmBody, warmResponse) = try await session.data(for: warm)
+        XCTAssertEqual((warmResponse as? HTTPURLResponse)?.statusCode, 206)
+        XCTAssertEqual(warmBody.count, 1_024)
+
+        for spec in ["bytes=\(size)-\(size + 1_023)", "bytes=\(size)-", "bytes=\(size + 4_096)-"] {
+            var request = URLRequest(url: localURL)
+            request.setValue(spec, forHTTPHeaderField: "Range")
+            let (body, response) = try await session.data(for: request)
+            let http = try XCTUnwrap(response as? HTTPURLResponse)
+            XCTAssertEqual(http.statusCode, 416, spec)
+            XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Range"), "bytes */\(size)", spec)
+            XCTAssertTrue(body.isEmpty, "416 must carry no body: \(spec)")
+        }
+        XCTAssertFalse(
+            origin.observedOffsets().contains { $0 >= size },
+            "an unsatisfiable range must not be routed to the origin: \(origin.observedRanges())"
+        )
+    }
+
+    /// The clamp must not disturb ranges that already fit: bounded and
+    /// open-ended in-bounds reads keep their exact framing and body length.
+    func testInBoundsRangeFramingIsUnchanged() async throws {
+        let size = Self.framingFileSize
+        let origin = RangeOriginStub(totalBytes: size)
+        try await origin.start()
+        defer { origin.stop() }
+        let proxy = try await framingProxy(origin)
+        defer { proxy.stop() }
+        let localURL = try XCTUnwrap(proxy.localURL)
+        let session = URLSession(configuration: .ephemeral)
+
+        let cases: [(spec: String, range: String, length: Int64)] = [
+            ("bytes=1024-2047", "bytes 1024-2047/\(size)", 1_024),
+            ("bytes=\(size - 1)-\(size - 1)", "bytes \(size - 1)-\(size - 1)/\(size)", 1),
+            ("bytes=\(size - 512)-", "bytes \(size - 512)-\(size - 1)/\(size)", 512),
+        ]
+        for expected in cases {
+            var request = URLRequest(url: localURL)
+            request.setValue(expected.spec, forHTTPHeaderField: "Range")
+            let (body, response) = try await session.data(for: request)
+            let http = try XCTUnwrap(response as? HTTPURLResponse)
+            XCTAssertEqual(http.statusCode, 206, expected.spec)
+            XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Range"), expected.range, expected.spec)
+            XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Length"), "\(expected.length)", expected.spec)
+            XCTAssertEqual(Int64(body.count), expected.length, expected.spec)
+        }
+    }
 }

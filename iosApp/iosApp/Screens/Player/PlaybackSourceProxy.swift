@@ -1128,6 +1128,21 @@ private final class PlaybackSourceResource {
         let resolved = resolveRequest(request, totalLength: total)
         var responseStatus = rangeHeader == nil ? 200 : 206
         let responseEnd = resolved.end
+        if responseStatus == 206, let total, resolved.start >= total {
+            // A first-byte-pos at or past the representation length is
+            // unsatisfiable (RFC 9110 15.4.17). Answering 206 here framed a
+            // non-zero Content-Length over a body the serve loop ends
+            // immediately, leaving the consumer waiting on bytes that do not
+            // exist.
+            Self.logger.warning(
+                "[CMP-SRV] get exit reason=range_not_satisfiable start=\(resolved.start, privacy: .public) total=\(total, privacy: .public)"
+            )
+            let refusal = "HTTP/1.1 416 Range Not Satisfiable\r\n"
+                + "Content-Range: bytes */\(total)\r\n"
+                + "Content-Length: 0\r\nConnection: close\r\n\r\n"
+            _ = await send(Data(refusal.utf8), on: connection, close: true)
+            return
+        }
         if responseStatus == 206, total == nil, responseEnd == nil {
             if resolved.start == 0 {
                 // No total and no finite end: nothing valid to put in a
@@ -1237,7 +1252,12 @@ private final class PlaybackSourceResource {
         case .full:
             return (0, totalLength.map { max(0, $0 - 1) })
         case .exact(let range):
-            return (range.lowerBound, range.upperBound)
+            // The header is framed from this end while the serve loop stops
+            // independently at EOF, so an end past the known length promises
+            // bytes that never arrive. Unknown length stays verbatim: the
+            // `/*` Content-Range form carries it honestly.
+            guard let totalLength else { return (range.lowerBound, range.upperBound) }
+            return (range.lowerBound, min(range.upperBound, totalLength - 1))
         case .openEnded(let start):
             return (start, totalLength.map { max(start, $0 - 1) })
         case .suffix(let length):
