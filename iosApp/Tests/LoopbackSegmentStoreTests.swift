@@ -107,6 +107,99 @@ final class LoopbackSegmentStoreTests: XCTestCase {
         }
     }
 
+    // MARK: - Progressive reads
+
+    // The progressive response has no Content-Length and no chunked framing,
+    // so the server closes the socket to say "segment complete". Every state
+    // that is NOT a complete segment must be distinguishable from one, or a
+    // truncated fMP4 is handed to AVPlayer as a whole segment.
+
+    func testCompleteSegmentReadsAsACompleteChunkAndItsEmptyTail() {
+        let store = makeStore(budgetBytes: 10_000_000)
+        let payload = Data(repeating: 0x11, count: 64)
+        store.putSegment(name: segName(0), data: payload, duration: 4)
+
+        let whole = store.readProgressiveSegment(
+            named: segName(0), from: 0, deadline: Date()
+        )
+        XCTAssertEqual(whole, .chunk(payload, complete: true))
+
+        // The pump that already streamed every byte must still be allowed to
+        // close cleanly: this is the ONLY clean-close case.
+        let tail = store.readProgressiveSegment(
+            named: segName(0), from: payload.count, deadline: Date()
+        )
+        XCTAssertEqual(tail, .chunk(Data(), complete: true))
+    }
+
+    func testOffsetPastTheStoredSegmentIsSupersededNotComplete() {
+        // The reader streamed more bytes than the finished segment holds —
+        // it was reading a predecessor's buffer, so its body can never be
+        // completed.
+        let store = makeStore(budgetBytes: 10_000_000)
+        store.putSegment(name: segName(0), data: Data(repeating: 0x22, count: 16), duration: 4)
+
+        XCTAssertEqual(
+            store.readProgressiveSegment(named: segName(0), from: 32, deadline: Date()),
+            .superseded
+        )
+    }
+
+    func testGrowingProgressiveBufferYieldsIncompleteChunksThenWaits() {
+        let store = makeStore(budgetBytes: 10_000_000)
+        store.beginProgressiveSegment(named: segName(1))
+        store.appendProgressiveSegment(named: segName(1), bytes: Data(repeating: 0x33, count: 8))
+
+        XCTAssertEqual(
+            store.readProgressiveSegment(named: segName(1), from: 0, deadline: Date()),
+            .chunk(Data(repeating: 0x33, count: 8), complete: false)
+        )
+        // Caught up with the producer: re-poll, never close.
+        XCTAssertEqual(
+            store.readProgressiveSegment(named: segName(1), from: 8, deadline: Date()),
+            .waiting
+        )
+    }
+
+    func testRestartedProducerSupersedesAReaderThatAlreadySentBytes() {
+        let store = makeStore(budgetBytes: 10_000_000)
+        store.beginProgressiveSegment(named: segName(1))
+        store.appendProgressiveSegment(named: segName(1), bytes: Data(repeating: 0x44, count: 8))
+        // A restarted producer republishes the same name from zero.
+        store.beginProgressiveSegment(named: segName(1))
+
+        XCTAssertEqual(
+            store.readProgressiveSegment(named: segName(1), from: 8, deadline: Date()),
+            .superseded
+        )
+    }
+
+    func testAbsentSegmentIsSupersededUnlessTheReaderIsWaitingForItsStart() {
+        let store = makeStore(budgetBytes: 10_000_000)
+
+        XCTAssertEqual(
+            store.readProgressiveSegment(named: segName(2), from: 0, deadline: Date()),
+            .superseded
+        )
+        // A first read may wait for the producer to publish anything; a
+        // deadline with nothing published is "keep polling", not "done".
+        XCTAssertEqual(
+            store.readProgressiveSegment(
+                named: segName(2), from: 0, deadline: Date(), waitForStart: true
+            ),
+            .waiting
+        )
+        // A retired name is terminal, so waiting for its start is pointless.
+        store.putSegment(name: segName(2), data: Data(repeating: 0x55, count: 4), duration: 4)
+        _ = store.retireSegments(names: [segName(2)])
+        XCTAssertEqual(
+            store.readProgressiveSegment(
+                named: segName(2), from: 0, deadline: Date(), waitForStart: true
+            ),
+            .superseded
+        )
+    }
+
     func testNonPositiveRetentionBudgetIsFlooredRatherThanDisablingRetention() {
         // There is no "retention off" mode: a degenerate budget floors, so the
         // coupled producer window still bounds how far production may race.

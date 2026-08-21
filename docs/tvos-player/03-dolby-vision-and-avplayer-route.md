@@ -151,6 +151,10 @@ almost everything, with DV as one `VideoMode` among several (the orthogonal
 - supports `GET` and `HEAD`
 - serves `.m3u8`, `.m4s`, and `.mp4` from `LoopbackSegmentStore`
 - supports byte ranges and brief near-future waits
+- streams a segment the producer is still writing with chunked framing, and
+  sends the terminating chunk only when the whole segment is stored — a
+  superseded or timed-out stream is dropped mid-body so AVPlayer refetches
+  instead of caching a truncated fMP4
 - no real auth layer
 
 This is why the `Info.plist` files (iOS, tvOS, macOS, and the extensions) set

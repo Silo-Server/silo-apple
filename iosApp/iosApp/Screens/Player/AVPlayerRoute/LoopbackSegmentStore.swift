@@ -52,7 +52,7 @@ final class LoopbackSegmentStore {
         case memory(data: Data, mimeType: String)
         case disk(url: URL, byteCount: Int, mimeType: String)
         /// A segment the producer is still writing: the server streams it
-        /// read-until-close via `readProgressiveSegment(named:from:deadline:)`.
+        /// incrementally via `readProgressiveSegment(named:from:deadline:)`.
         case progressive(name: String, mimeType: String)
 
         var mimeType: String {
@@ -329,8 +329,20 @@ final class LoopbackSegmentStore {
     /// Consumer fetch high-water: every segment GET declares its index. The
     /// hard retention window follows the newest target (a backward scrub is
     /// a valid non-monotonic move) and pruning re-runs around it.
+    ///
+    /// A target that moves backwards, or forwards past the producer band,
+    /// re-anchors the session: the previous producer's forward span is no
+    /// longer protected work-in-progress, so the high-water mark drops back
+    /// to the target and the hard window becomes
+    /// `[target - backward, target + forward]` again. Without this the mark
+    /// is lifetime-monotonic and everything up to the furthest point ever
+    /// reached stays un-evictable after a backward seek. Segments the
+    /// re-anchored producer writes from here raise it again.
     func declareVODTarget(_ index: Int) {
         lock.lock()
+        if index < vodTargetIndex || index > vodTargetIndex + vodForwardWindow {
+            vodHighWaterIndex = index
+        }
         vodTargetIndex = index
         vodTargetDeclarationCount += 1
         let doomed = vodPruneLocked()
@@ -384,51 +396,64 @@ final class LoopbackSegmentStore {
         lock.unlock()
     }
 
-    /// Blocking incremental read for a streaming response. Returns the
-    /// bytes available at `offset` plus a completion marker:
-    /// - complete segment stored → (remaining bytes, true)
-    /// - more progressive bytes  → (delta, false)
-    /// - nothing new by deadline → (empty, false) — caller re-polls
-    /// - entry gone / offset past a replaced buffer → (empty, true) —
-    ///   caller closes; the consumer refetches and gets the fresh state.
+    /// One step of a streaming response body. The three outcomes are distinct
+    /// on purpose: the reader is publishing bytes whose total length is not
+    /// known yet, so only `.chunk(_, complete: true)` may end the body — the
+    /// other two must not be confused for a finished segment.
+    enum ProgressiveRead: Equatable {
+        /// Bytes at the requested offset. `complete` is true only when the
+        /// segment is fully stored and this delta is its tail (possibly
+        /// empty, when the caller has already streamed all of it).
+        case chunk(Data, complete: Bool)
+        /// Nothing new before the deadline; the caller re-polls.
+        case waiting
+        /// The buffer this reader was streaming is gone or was replaced by a
+        /// restarted producer, so the bytes already sent can never be
+        /// completed. The caller must abort the connection instead of
+        /// closing it — a close would hand the consumer a truncated body as
+        /// a successful one.
+        case superseded
+    }
+
+    /// Blocking incremental read for a streaming response.
     func readProgressiveSegment(
         named name: String,
         from offset: Int,
         deadline: Date,
         waitForStart: Bool = false
-    ) -> (Data, Bool) {
+    ) -> ProgressiveRead {
         lock.lock()
         defer { lock.unlock() }
         while true {
             if let segment = segments[name] {
-                guard offset <= segment.data.count else { return (Data(), true) }
-                return (segment.data.subdata(in: offset..<segment.data.count), true)
+                guard offset <= segment.data.count else { return .superseded }
+                return .chunk(segment.data.subdata(in: offset..<segment.data.count), complete: true)
             }
             // mmap + .uncached: spilled segments are immutable after their
             // atomic write; let the kernel page them instead of the heap.
             if let url = spilledSegments[name],
                let data = try? Data(contentsOf: url, options: [.alwaysMapped, .uncached]) {
-                guard offset <= data.count else { return (Data(), true) }
-                return (data.subdata(in: offset..<data.count), true)
+                guard offset <= data.count else { return .superseded }
+                return .chunk(data.subdata(in: offset..<data.count), complete: true)
             }
             guard let partial = progressiveSegments[name] else {
                 if waitForStart, !evictedResources.contains(name) {
                     guard Date() < deadline else {
-                        return (Data(), false)
+                        return .waiting
                     }
                     lock.wait(until: deadline)
                     continue
                 }
-                return (Data(), true)
+                return .superseded
             }
             if offset > partial.count {
-                return (Data(), true)
+                return .superseded
             }
             if partial.count > offset {
-                return (partial.subdata(in: offset..<partial.count), false)
+                return .chunk(partial.subdata(in: offset..<partial.count), complete: false)
             }
             guard Date() < deadline else {
-                return (Data(), false)
+                return .waiting
             }
             lock.wait(until: deadline)
         }
