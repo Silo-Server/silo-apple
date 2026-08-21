@@ -109,7 +109,7 @@ final class TrackSelectionTests: XCTestCase {
     }
 
     /// A route that does not extract embedded streams itself registers every
-    /// sidecar URL the server delivered, untouched.
+    /// text sidecar URL the server delivered, untouched.
     func testRouteWithoutEmbeddedExtractionKeepsEverySidecarUrl() {
         let urls = [
             subtitleUrl(index: 3, source: "external"),
@@ -119,16 +119,48 @@ final class TrackSelectionTests: XCTestCase {
             SubtitleSelection.subtitleUrlsForCurrentRoute(
                 urls,
                 routeUsesEmbeddedExtraction: false,
+                protocolV3PlanActive: true,
                 planned: .planned(selectedSubtitleIndex: 9, subtitleMode: "burn_in")
             ),
             urls
         )
     }
 
+    /// A bitmap sidecar is never renderable here, so it is worth a picker row
+    /// only while a V3 plan is live to burn it in after a replan. Without a
+    /// plan it is dropped rather than registered as a text sidecar (which
+    /// decodes a `.sup` as VTT and installs a checked-but-blank track).
+    func testBitmapSidecarSurvivesOnlyWhileAProtocolV3PlanCanBurnItIn() {
+        let text = subtitleUrl(index: 3, source: "external")
+        let bitmap = subtitleUrl(index: 4, source: "external", codec: "hdmv_pgs_subtitle")
+
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                [text, bitmap],
+                routeUsesEmbeddedExtraction: false,
+                protocolV3PlanActive: true,
+                planned: .unset
+            ).map(\.index),
+            [3, 4]
+        )
+        XCTAssertEqual(
+            SubtitleSelection.subtitleUrlsForCurrentRoute(
+                [text, bitmap],
+                routeUsesEmbeddedExtraction: false,
+                protocolV3PlanActive: false,
+                planned: .unset
+            ).map(\.index),
+            [3],
+            "no plan means no replan, so an undrawable row is dropped"
+        )
+    }
+
     // MARK: - Fuzzy restore scoring
 
-    /// The weights and the `>= 3` acceptance floor `bestTrackMatch` applies:
-    /// title 4, language 3, codec 2, layout 2, forced/external/HI 1 each.
+    /// The weights, and the two rules that decide whether they are counted at
+    /// all: title 4, language 3, codec 2, layout 2, forced/external/HI 1 each,
+    /// but only for a candidate that agrees on a positive anchor — the same
+    /// language, the same title, or the same codec *and* layout.
     func testSnapshotScoreWeightsEveryComparedAttribute() {
         let snapshot = TrackSelectionSnapshot(track: audioTrack(trackId: 1, srcId: 0))
 
@@ -136,6 +168,13 @@ final class TrackSelectionTests: XCTestCase {
         XCTAssertEqual(
             snapshot.score(against: audioTrack(trackId: 2, srcId: 0, title: "Other")),
             10
+        )
+        XCTAssertEqual(
+            snapshot.score(
+                against: audioTrack(trackId: 2, srcId: 0, title: "Other", codec: "aac", layout: "stereo")
+            ),
+            6,
+            "language alone anchors the candidate and clears the >= 3 floor"
         )
         XCTAssertEqual(
             snapshot.score(
@@ -148,8 +187,31 @@ final class TrackSelectionTests: XCTestCase {
                     layout: "stereo"
                 )
             ),
-            3,
-            "the accepted floor is agreement on forced + external + hearing-impaired alone"
+            0,
+            "agreement on forced + external + hearing-impaired alone is not a match"
+        )
+    }
+
+    /// Absent metadata is not agreement: two tracks that both say nothing about
+    /// their title or layout have said nothing about each other.
+    func testSnapshotScoresNothingForAttributesNeitherTrackReports() {
+        let snapshot = TrackSelectionSnapshot(
+            track: audioTrack(trackId: 1, srcId: 0, title: nil, lang: "eng", layout: nil)
+        )
+
+        XCTAssertEqual(
+            snapshot.score(
+                against: audioTrack(trackId: 2, srcId: 0, title: nil, lang: "eng", layout: nil)
+            ),
+            8,
+            "language (3) + codec (2) + the three flags; the two nil attributes score nothing"
+        )
+        XCTAssertEqual(
+            snapshot.score(
+                against: audioTrack(trackId: 2, srcId: 0, title: nil, lang: "fra", layout: nil)
+            ),
+            0,
+            "a shared codec with no layout on either side is not an anchor"
         )
     }
 
@@ -214,11 +276,11 @@ final class TrackSelectionTests: XCTestCase {
         )
     }
 
-    private func subtitleUrl(index: Int, source: String) -> SubtitleUrl {
+    private func subtitleUrl(index: Int, source: String, codec: String = "subrip") -> SubtitleUrl {
         SubtitleUrl(
             index: index,
             language: "eng",
-            codec: "subrip",
+            codec: codec,
             label: "English",
             source: source,
             forced: false,

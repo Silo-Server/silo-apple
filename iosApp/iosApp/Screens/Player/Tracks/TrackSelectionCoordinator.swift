@@ -145,10 +145,34 @@ final class TrackSelectionCoordinator {
     /// Reads the narrow capability port rather than the whole context: this is
     /// a display member, so its reads are the enclosing SwiftUI body's
     /// invalidation set (see `TrackSelectionPorts`).
+    ///
+    /// A secondary subtitle is always opened locally — there is no server plan
+    /// for the second slot — so the candidates are the sidecars this client can
+    /// actually draw, on every route.
     var availableSecondarySubtitleTracks: [PlayerTrack] {
         guard ports.backendCapabilities().supportsSecondarySubtitles else { return [] }
         guard ports.backend() != nil else { return [] }
-        return orderedSubtitles(subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) })
+        return orderedSubtitles(
+            subtitleTracks.filter {
+                SubtitleTrackIdSpace.isSidecar($0.trackId) && !Self.isBitmapSidecar($0)
+            }
+        )
+    }
+
+    /// A sidecar row this client must never open itself.
+    ///
+    /// The sidecar path is text-only (`SidecarSubtitleFetcher` understands
+    /// ASS/VTT/SRT and falls back to VTT), so text-decoding a bitmap sidecar —
+    /// the `.sup` the server publishes for every embedded PGS track — installs
+    /// a track that is checked in the picker and blank on screen. Such a row
+    /// stays in the inventory so a V3 plan can burn it in after a replan, and
+    /// is refused by each path that would otherwise open it locally: the
+    /// primary and secondary user picks, both sidecar-restore rungs, the
+    /// forced-sidecar auto-select, and the automatic caption resolver's
+    /// local fallback.
+    private static func isBitmapSidecar(_ track: PlayerTrack) -> Bool {
+        SubtitleTrackIdSpace.isSidecar(track.trackId)
+            && SubtitleSelection.isBitmapCodec(track.codec)
     }
 
     private func orderedSubtitles(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
@@ -195,6 +219,16 @@ final class TrackSelectionCoordinator {
 
     func selectSubtitle(_ track: PlayerTrack) {
         guard !context.isBackgroundSuspended else { return }
+        // A bitmap sidecar is selectable only while a V3 plan is live to be
+        // replanned into a server burn-in (the branch below). With no plan
+        // this function's only remaining path is a local open, which cannot
+        // draw it — so the row is inert rather than checked-and-blank.
+        if context.activePreparedProtocolV3 == nil, Self.isBitmapSidecar(track) {
+            Self.logger.info(
+                "[CMP-SUB] ignoring bitmap sidecar pick with no plan to burn it in trackId=\(track.trackId, privacy: .public) codec=\(track.codec ?? "nil", privacy: .public)"
+            )
+            return
+        }
         selection.origin = .user
         selection.primary.embedded = nil
         if selectedSecondarySubtitleId == track.trackId {
@@ -320,6 +354,10 @@ final class TrackSelectionCoordinator {
         // Secondary sub cannot equal the primary sid; guard at the UI layer
         // so the user gets an immediate no-op rather than seeing stale state.
         guard track.trackId != selectedSubtitleId else { return }
+        // The second slot is always opened locally, so a bitmap sidecar can
+        // never land in it — it is not offered by
+        // `availableSecondarySubtitleTracks` either.
+        guard !Self.isBitmapSidecar(track) else { return }
         selectedSecondarySubtitleId = track.trackId
         applySecondarySubtitleTrackSelection(track.trackId)
         ports.scheduleHideControls()
@@ -842,6 +880,7 @@ final class TrackSelectionCoordinator {
         let filtered = SubtitleSelection.subtitleUrlsForCurrentRoute(
             urls,
             routeUsesEmbeddedExtraction: activeRouteUsesEmbeddedAVPlayerSubtitleExtraction,
+            protocolV3PlanActive: context.activePreparedProtocolV3 != nil,
             planned: SubtitleSelection.planned(
                 selectedSubtitleIndex: context.activePreparedProtocolV3?.plan.selectedTracks.subtitle?.index,
                 subtitleMode: context.activePreparedProtocolV3?.plan.subtitle.mode
@@ -849,7 +888,7 @@ final class TrackSelectionCoordinator {
         )
         if filtered.count != urls.count {
             Self.logger.info(
-                "[CMP-SUB] skipped embedded sidecar subtitle urls count=\(urls.count - filtered.count, privacy: .public) route=\(context.activeRouteKind.label, privacy: .public)"
+                "[CMP-SUB] skipped unrenderable sidecar subtitle urls count=\(urls.count - filtered.count, privacy: .public) route=\(context.activeRouteKind.label, privacy: .public)"
             )
         }
         return filtered
@@ -1090,7 +1129,12 @@ final class TrackSelectionCoordinator {
         var restoredPrimarySidecar = false
         if let pendingTrackId = selection.primary.sidecarTrackId {
             selection.primary.sidecarTrackId = nil
-            if subtitleTracks.contains(where: { $0.trackId == pendingTrackId }) {
+            // This rung opens the sidecar locally, so a bitmap row does not
+            // satisfy it: the intent falls through to the automatic resolvers
+            // rather than restoring onto a track nothing here can draw.
+            if subtitleTracks.contains(where: {
+                $0.trackId == pendingTrackId && !Self.isBitmapSidecar($0)
+            }) {
                 restoredPrimarySidecar = true
                 if selectedSubtitleId != pendingTrackId {
                     selectedSubtitleId = pendingTrackId
@@ -1111,7 +1155,9 @@ final class TrackSelectionCoordinator {
         }
 
         if let pendingTrackId = selection.secondary.sidecarTrackId,
-           subtitleTracks.contains(where: { $0.trackId == pendingTrackId }) {
+           subtitleTracks.contains(where: {
+               $0.trackId == pendingTrackId && !Self.isBitmapSidecar($0)
+           }) {
             selection.secondary = .unset
             if pendingTrackId != selectedSubtitleId {
                 selectedSecondarySubtitleId = pendingTrackId
@@ -1132,7 +1178,9 @@ final class TrackSelectionCoordinator {
         if let snapshot = selection.primary.recovered,
            let match = bestTrackMatch(
                for: snapshot,
-               in: subtitleTracks.filter { SubtitleTrackIdSpace.isSidecar($0.trackId) }
+               in: subtitleTracks.filter {
+                   SubtitleTrackIdSpace.isSidecar($0.trackId) && !Self.isBitmapSidecar($0)
+               }
            ) {
             selection.primary.recovered = nil
             if selectedSubtitleId != match.trackId {
@@ -1153,7 +1201,9 @@ final class TrackSelectionCoordinator {
         if !ports.subtitleMatchesSystemAppearance(),
            selection.origin != .user,
            selectedSubtitleId == nil,
-           let forced = descriptors.first(where: { $0.forced == true }) {
+           let forced = descriptors.first(where: {
+               $0.forced == true && !SubtitleSelection.isBitmapCodec($0.codec)
+           }) {
             let trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: forced.index)
             selectedSubtitleId = trackId
             applySubtitleTrackSelection(trackId, reason: "forced_sidecar_auto")
@@ -1279,6 +1329,15 @@ final class TrackSelectionCoordinator {
         applyAutoSubtitlePreferencesIfNeeded()
     }
 
+    /// The replacement track a snapshotted selection restores onto, or nil when
+    /// nothing in `tracks` is close enough.
+    ///
+    /// `>= 3` is the acceptance floor. Every anchor `score(against:)` accepts
+    /// clears it on its own — language 3, title 4, codec + layout 4 — and
+    /// nothing else can reach it, because an unanchored candidate scores 0 and
+    /// the three boolean flags are worth 3 only on top of an anchor.
+    /// `max(by:)` keeps the first of equal scores, so ties break on the
+    /// replacement list's own order.
     private func bestTrackMatch(
         for snapshot: TrackSelectionSnapshot,
         in tracks: [PlayerTrack]
@@ -1398,6 +1457,17 @@ final class TrackSelectionCoordinator {
             }
         case .select(let track):
             if replanAutomaticProtocolV3SubtitleSelection(track) { return }
+            // The replan above is the only way a bitmap sidecar can be shown
+            // (the server burns it in). It declines whenever there is no plan
+            // to replan, one is already in flight, or the live plan already
+            // names this track — and every one of those falls through to a
+            // local open, which cannot draw a `.sup`. Drop the pick instead.
+            guard !Self.isBitmapSidecar(track) else {
+                Self.logger.info(
+                    "[CMP-SUB] ignoring automatic bitmap sidecar pick with no replan to burn it in trackId=\(track.trackId, privacy: .public) codec=\(track.codec ?? "nil", privacy: .public)"
+                )
+                return
+            }
             if selectedSubtitleId != track.trackId {
                 selectedSubtitleId = track.trackId
                 applySubtitleTrackSelection(track.trackId, reason: "auto_preference")
