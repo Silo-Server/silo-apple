@@ -756,16 +756,17 @@ enum Effect: Equatable {
     /// One emitter: `attemptStaleSessionRenewal` force-writes
     /// the resume position against the *content* before it re-loads, because
     /// the session it would otherwise report against is the one that vanished.
-    /// The `LoadID` is the outgoing load's, so the actor can drop a write whose
-    /// load was superseded; the actor must complete it **before** running the
-    /// `.startSession` that follows it in the same effect list, which is the
-    /// `await` ordering inside `staleSessionRecoveryTask`.
+    /// It carries no `LoadID`: it is about the *content* of the load being left
+    /// behind, and the transition that emits it has already bound the state to
+    /// the replacement — so the only identity it could have been compared with
+    /// was guaranteed not to match. The actor must complete it **before**
+    /// running the `.startSession` that follows it in the same effect list,
+    /// which is the `await` ordering inside `staleSessionRecoveryTask`.
     case syncProgress(
         contentId: String,
         position: Double,
         duration: Double,
-        forceOverwrite: Bool,
-        LoadID
+        forceOverwrite: Bool
     )
     case reportFirstFrame(SessionIdentity, ms: Int)
     case reportPlanExecutionStarted(SessionIdentity)

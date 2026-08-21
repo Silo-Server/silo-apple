@@ -1660,8 +1660,7 @@ enum PlaybackReducer {
                         contentId: playing.request.contentId,
                         position: position,
                         duration: durationHint,
-                        forceOverwrite: true,
-                        playing.loadID
+                        forceOverwrite: true
                     ),
                     // `self.progressTask?.cancel()` between the sync and the
                     // reload — the outgoing heartbeat would report
