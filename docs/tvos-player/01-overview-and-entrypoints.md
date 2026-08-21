@@ -287,22 +287,34 @@ auto-resume on wake, and tvOS Picture in Picture is unsupported.
   appears.
 - Cleanup deletes the server playback session even though the player UI itself
   has already been torn down locally.
-- The `siloPlayerLoopback` route normally serves a static VOD plan. The explicit
-  EVENT serving mode and `player.apple.siloplayer_primary_enabled` kill switch
-  were retired on 2026-08-17 (the key is no longer read), but the writer still
-  falls back internally to a growing EVENT playlist when it cannot build a safe
-  VOD plan. Known pre-existing gap: that internal degrade is invisible to the
-  engine session, which keeps its VOD wiring (retention/pruning, in-item-only
-  seeks, VOD-sized runway) for a plan-less session — so such a session can prune
-  live segment names and cannot reanchor an out-of-window seek; a mode-aware
-  signal back to the session would close it. The retired mode also removed
-  the planner blockers that only existed when the gate was off
-  (`h264_loopback_startup_unreliable`, `hevc_sdr_loopback_startup_unreliable`,
-  `video_bridge_requires_vod_plan`).
+- The `siloPlayerLoopback` route serves a static VOD plan and nothing else.
+  `LoopbackSegmentWriter.emitMediaPlaylist` writes every planned segment up
+  front with `#EXT-X-PLAYLIST-TYPE:VOD` and `#EXT-X-ENDLIST`, and the body
+  never changes across a session. A session that cannot resolve a plan, or
+  whose keyframe index is not trustworthy, fails closed:
+  `resolveVODPlanIfNeeded` throws
+  `LoopbackWriterError.bootstrapFailed("vod_plan_unavailable")` or
+  `bootstrapFailed("vod_plan_untrusted_keyframe_index")`, which is a writer
+  failure like any other — the ladder replans, normally onto `avPlayerHLS`.
+  History: the explicit EVENT serving mode and the
+  `player.apple.siloplayer_primary_enabled` kill switch were retired on
+  2026-08-17 (the key is no longer read), taking the planner blockers that only
+  existed when the gate was off (`h264_loopback_startup_unreliable`,
+  `hevc_sdr_loopback_startup_unreliable`, `video_bridge_requires_vod_plan`)
+  with them; the writer's internal growing-EVENT degrade followed on
+  2026-08-20, which is what closed the mismatch between a plan-less session and
+  the engine session's VOD wiring (retention/pruning, in-item-only seeks,
+  VOD-sized runway). `LocalHLSPlaylistPolicy.playlistType(isFinal:)` and its
+  `.liveSliding` case are the last residue and have no production caller.
 
 ## Validation log
 
 - verified: startup begins in `PlayerView.onAppear`, not in the tvOS HUD layer.
+- corrected (2026-08-20): this file described the writer as still degrading to
+  a growing EVENT playlist when it could not build a safe VOD plan, and called
+  the resulting VOD/EVENT wiring mismatch a live gap. Neither survives:
+  `emitMediaPlaylist` is the only media-playlist emitter and is VOD-only, and
+  `resolveVODPlanIfNeeded` throws instead of degrading.
 - corrected (2026-08-18): `ActivePlayer` and `PlaybackCoordinator` no longer
   exist (collapsed in `e458784`); `PlayerViewModel` holds an optional
   `AVPlayerBackend`. There is still no `PlayerCore` type in the tree.

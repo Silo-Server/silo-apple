@@ -34,7 +34,7 @@ was deleted on 2026-08-16 (see
 | Implementation route | Route family | Display label | Current role |
 | --- | --- | --- | --- |
 | `avPlayerNativeDirect` | NativePlayer | Native Player Direct | Narrow native-direct path for allowlisted `mp4` / `mov` / `m4v` assets whose video, audio, and embedded subtitle codecs all match the Apple allowlist |
-| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see the Video output mode sub-rows). Static VOD is the primary serving path. The explicit EVENT mode and its `player.apple.siloplayer_primary_enabled` kill switch were retired, while an internal growing-playlist fallback remains for sources without a safe VOD plan. Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
+| `siloPlayerLoopback` | SiloPlayer | Direct Stream | **Primary** direct playback. Remuxes H.264/HEVC/Dolby Vision and nothing else — the on-device video bridge that once covered the non-copyable codec tail was retired 2026-08-17 (see [09](09-video-bridge.md)). Static VOD is the only serving path: `LoopbackSegmentWriter.emitMediaPlaylist` writes the whole plan up front with `#EXT-X-PLAYLIST-TYPE:VOD` and `#EXT-X-ENDLIST`, and a session whose plan is unresolvable or untrusted throws `bootstrapFailed("vod_plan_unavailable" / "vod_plan_untrusted_keyframe_index")` so the ladder replans instead of degrading. The EVENT serving mode and its `player.apple.siloplayer_primary_enabled` kill switch were retired 2026-08-17; the writer's internal EVENT degrade followed on 2026-08-20. Hardware-validated 2026-07-03 (DV P8 + EAC3 on Apple TV 4K) |
 | `avPlayerHLS` | NativePlayer | Native Player HLS | Server-produced HLS for `remux` / `transcode` deliveries, and the **terminal fallback rung** for anything the loopback cannot normalize. No longer feature-flag gated |
 
 ## Matrix
@@ -61,23 +61,24 @@ was deleted on 2026-08-16 (see
 | AirPlay / external playback | Unsupported | Repo-verified | Validation required, downloads only |
 | Premium HDR / DV / Atmos claims | Validation required | Validation required | Validation required |
 
-### Video output mode (SiloPlayer only)
+### Loopback source eligibility (SiloPlayer only)
 
-`LoopbackSessionSpec.VideoOutputMode` is orthogonal to `VideoMode`: it answers
-"copy the source bitstream or re-encode it". Only the loopback route has one,
-and since 2026-08-17 `.copy` is its only value — the on-device decode →
-VideoToolbox re-encode bridge and `.passthroughAV1` were deleted because no
-plan, online or offline, could reach them (the Apple capability surfaces only
-ever advertise `h264`/`hevc`). Decided once, in
-`ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)`. Historical detail in
-[09 - On-device video bridge (retired)](09-video-bridge.md).
+There is no video output-mode axis any more. The loopback writer copies the
+video bitstream and does nothing else, so eligibility is just "is this codec
+in the copy set, in a container the writer can open": `assessSiloRoute` tests
+`ApplePlaybackRoutePlanner.siloVideoCopyCodecs` and
+`siloContainerIsNormalizable(_:)` directly. `LoopbackSessionSpec.VideoOutputMode`
+and `loopbackVideoOutputMode(for:)` were deleted on 2026-08-18 (`c87dc6e`),
+once the on-device decode → VideoToolbox re-encode bridge and `.passthroughAV1`
+had gone the day before and left the enum with a single `.copy` case.
+Historical detail in [09 - On-device video bridge (retired)](09-video-bridge.md).
 
 | Sub-capability | `siloPlayerLoopback` |
 | --- | --- |
-| Copy (`.copy`) | Repo-verified — `h264`, `hevc`, and every Dolby Vision `VideoMode` |
+| Video codecs copied | Repo-verified — `h264`, `hevc`, and every Dolby Vision `VideoMode` |
 | Every other video codec | Blocked with `video_not_copyable`; the route falls to `avPlayerHLS` and the server transcodes |
 | Containers | Repo-verified — `mkv`/`matroska`, `ts`/`m2ts`/`mts`/`mpegts`, `mp4`/`mov`/`m4v`. Anything else is `container_not_normalizable` |
-| Hardware validation | Apple TV 4K (3rd gen, tvOS 26.6) exposes hardware `hvc1` and `avc1` VideoToolbox encoders at 1080p **and** 4K, and accepts HEVC Main10. No thermal soak validation yet |
+| Audio | Not a copy-only axis: `loopbackAudioOutputMode(for:)` copies `aac`/`ac3`/`eac3` and transcodes everything else to FLAC (>2 channels, or TrueHD) or AAC |
 
 ## Notes
 
@@ -154,6 +155,22 @@ ever advertise `h264`/`hevc`). Decided once, in
 - corrected (2026-08-17): the matrix no longer blocks routes. `blockingReasons`
   and the `needs*` / `keeps*` requirement flags it consumed are gone; the two
   premium-claim flags and the per-route capability entries stay.
+- corrected (2026-08-20): the `siloPlayerLoopback` role cell claimed an
+  internal growing-playlist fallback for sources without a safe VOD plan. There
+  is none. `LoopbackSegmentWriter.emitMediaPlaylist` is the only media-playlist
+  emitter and always writes `#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST`;
+  `resolveVODPlanIfNeeded` throws `bootstrapFailed(...)` when the plan is
+  missing or untrusted, so the route ladder replans. The degrade was removed in
+  `0921dad`, and `LocalHLSPlaylistPolicy.playlistType` / `.liveSliding` survive
+  with no production caller (tests only).
+- corrected (2026-08-20): the "Video output mode" section described
+  `LoopbackSessionSpec.VideoOutputMode` and
+  `ApplePlaybackRoutePlanner.loopbackVideoOutputMode(for:)` in the present
+  tense. Both were deleted on 2026-08-18 (`c87dc6e`); the section is now
+  "Loopback source eligibility" and cites `siloVideoCopyCodecs` /
+  `siloContainerIsNormalizable(_:)`, the symbols `assessSiloRoute` actually
+  reads. Its VideoToolbox-encoder hardware-validation row went with the
+  section — no route encodes video.
 - verified (2026-08-20): the matrix is untouched by the Stage 2 control-plane
   extraction. `ApplePlaybackRouteCapabilities` still has the same four profiles
   and the same per-route entries; route choice is still
