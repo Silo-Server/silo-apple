@@ -80,10 +80,14 @@ struct LoopbackSegmentPlan: Equatable {
     /// keyframe-aligned segments from, or whether the plan must fall back to
     /// a uniform stride. Two witnesses, both required:
     ///
-    /// - gap: the largest gap between consecutive keyframes stays under
-    ///   `max(4 × target, 30 s)`. A clustered MPEG-TS index can gap by
-    ///   thousands of seconds; trusting it plans one enormous segment the
-    ///   muxer buffers whole in RAM before its first cut.
+    /// - gap: the largest gap stays under `max(4 × target, 30 s)`. A
+    ///   clustered MPEG-TS index can gap by thousands of seconds; trusting it
+    ///   plans one enormous segment the muxer buffers whole in RAM before its
+    ///   first cut. The span from the LAST indexed keyframe to the end of the
+    ///   title counts as a gap too: `buildKeyframePlan` closes the final
+    ///   segment at the source's end fence, so an index that covers 0–10 s of
+    ///   a 7200 s title plans [0, 4, 8, 7200] — the same title-sized segment
+    ///   an interior gap would produce, arrived at from the other end.
     /// - coverage: the first→last keyframe span reaches at least one target
     ///   duration. A remote MKV whose Cues tail read failed leaves only the
     ///   open-time keyframes bunched at the head — gaps are tiny (the gap
@@ -115,6 +119,13 @@ struct LoopbackSegmentPlan: Equatable {
                 return false
             }
             previous = pts
+        }
+        // The tail: last indexed keyframe → the end fence the keyframe plan
+        // would close on. Measured on the same axis the plan uses (the anchor
+        // is the first keyframe, the fence is anchor + source duration), so
+        // this is exactly `sourceDurationSeconds - coverage`.
+        if sourceDurationSeconds - coverage > maxTrustedGapSeconds {
+            return false
         }
         return true
     }
