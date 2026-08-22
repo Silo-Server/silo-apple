@@ -757,7 +757,8 @@ class PlayerViewModel {
                 guard item.source == "embedded", item.delivery != "sidecar" else { return nil }
                 return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
                     serverCombinedIndex: item.combinedIndex,
-                    in: selectedVersion
+                    in: selectedVersion,
+                    inventory: plan.subtitle.inventory
                 )
             }
             let sidecarTrackId: Int64? = selectedSubtitle.flatMap { item in
@@ -855,6 +856,9 @@ class PlayerViewModel {
         }
         aetherPlaybackController.onControllerEvent = { [weak self] event in
             self?.handleAetherControllerEvent(event)
+        }
+        aetherPlaybackController.onSystemCaptionRequest = { [weak self] epoch, request in
+            self?.handleSystemCaptionRequest(epoch: epoch, request: request)
         }
         realtimeClient = PlaybackRealtimeClient(
             commandHandler: { [weak self] command in
@@ -2641,7 +2645,12 @@ class PlayerViewModel {
             currentTime: { [weak self] in self?.currentTime ?? 0 },
             // Remote-position events use the source axis published above and
             // must pass through the VM so a bounded V3 transport can replan.
-            seek:        { [weak self] t in self?.seekTo(seconds: t) }
+            seek:        { [weak self] t in self?.seekTo(seconds: t) },
+            // A command answered `.success` while the controller has no load
+            // reports work the system will never observe.
+            hasActiveLoad: { [weak self] in
+                self?.aetherPlaybackController.hasActiveLoad ?? false
+            }
         )
         #if os(iOS) || os(tvOS)
         nowPlaying.attach(
@@ -2773,7 +2782,8 @@ class PlayerViewModel {
         }
         return ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
             for: selected,
-            in: version
+            in: version,
+            inventory: activePreparedProtocolV3?.plan.subtitle.inventory ?? []
         )
     }
 
@@ -3520,6 +3530,60 @@ class PlayerViewModel {
     func pictureInPictureEngagementDidEnd() {
         guard !isPlayerPresentationVisible else { return }
         cleanup()
+    }
+
+    /// Answer AVKit's restore-user-interface request for this session.
+    ///
+    /// Three outcomes, and every one of them has to be truthful: AVKit tears the
+    /// PiP window down regardless, so an optimistic `true` with nothing behind it
+    /// leaves the engine playing to no surface with the server session still open.
+    func restorePictureInPictureUserInterface(_ completion: @escaping (Bool) -> Void) {
+        guard !isDisposed else {
+            completion(false)
+            return
+        }
+        // Auto-PiP from inline never removed the cover, so it is already the
+        // interface AVKit is asking for.
+        if isPlayerPresentationVisible {
+            completion(true)
+            return
+        }
+        guard PlayerPresentationRestoration.reopen(self) else {
+            Self.logger.error("PiP restore found no player presentation owner; ending the session")
+            completion(false)
+            // Nothing can come back, so the deferred teardown happens now rather
+            // than waiting for a stop callback that leaves playback headless.
+            cleanup()
+            return
+        }
+        Self.logger.info("PiP restore re-presenting the full-screen player")
+        completion(true)
+    }
+
+    /// A Picture in Picture start that never happened is invisible to the user —
+    /// AVKit reports both cases to the delegate only, so the tapped button just
+    /// looks inert. Surface it on the same transient notice the player already
+    /// uses for replan rejections.
+    func reportPictureInPictureStartFailure(
+        _ failure: PictureInPictureCoordinator.StartFailure
+    ) {
+        guard !isDisposed else { return }
+        switch failure {
+        case .notReady:
+            showNotice(
+                title: "Picture in Picture not ready",
+                message: "This video isn't ready for Picture in Picture yet. Try again in a moment.",
+                tone: .warning,
+                duration: 4
+            )
+        case .failed:
+            showNotice(
+                title: "Picture in Picture failed",
+                message: "iOS couldn't start Picture in Picture for this video.",
+                tone: .warning,
+                duration: 5
+            )
+        }
     }
     #endif
 
@@ -4874,6 +4938,9 @@ class PlayerViewModel {
         // too rather than risk stranding the whole playback graph. Owner-keyed
         // so a late teardown cannot unbind a newer session's PiP.
         PictureInPictureCoordinator.shared.endSession(owner: self)
+        // A restore that staged this view model but never reached SwiftUI would
+        // otherwise hold the whole playback graph on a static.
+        PlayerPresentationRestoration.discardAdoption(for: self)
         #endif
         activePlaybackSessionId = nil
         staleSessionRecoverySessionId = nil
@@ -5697,6 +5764,48 @@ class PlayerViewModel {
         applyAutoSubtitle(pick)
     }
 
+    /// Answer AetherEngine's `systemCaptionRequest` (upstream api.md, "The
+    /// system asks for captions").
+    ///
+    /// iOS 26's Automatic Subtitles turn captions on with no read API behind
+    /// them, so the engine forwarding the ask is the only observable signal.
+    /// Aether has already deselected its own rendition by the time this lands —
+    /// a fullscreen native caption box would draw over Silo's overlay — so the
+    /// host answers by selecting its own matching track. No match is a no-op:
+    /// the contract is "select a matching track", not "turn something on".
+    private func handleSystemCaptionRequest(
+        epoch: AetherPlaybackController.LoadEpoch,
+        request: SystemCaptionRequest
+    ) {
+        // Track lists and V3 plans are per-load; a request that crossed a
+        // reload seam names a language against inventory that no longer exists.
+        guard epoch == aetherPlaybackController.activeLoadEpoch else { return }
+        guard let language = request.language, !language.isEmpty else { return }
+        guard !subtitleTracks.isEmpty else { return }
+
+        // `.always` because the system already decided captions should be on;
+        // `disableWhenNoLanguageMatch: false` keeps an unmatched language a
+        // no-op rather than clearing a selection the user can see.
+        let pick = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: language,
+            mode: .always,
+            showForced: false,
+            disableWhenNoLanguageMatch: false,
+            trackSignature: nil,
+            availableSubtitles: subtitleTracks,
+            currentAudioLanguage: audioTracks
+                .first(where: { $0.trackId == selectedAudioId })?
+                .lang
+        ))
+        guard case .select(let track) = pick else { return }
+        Self.logger.info(
+            "[CMP-SUB] system caption request answered language=\(language, privacy: .public) trackId=\(track.trackId, privacy: .public)"
+        )
+        // Routed through the shared applier so a V3 session replans server-side
+        // instead of drifting from `selected_tracks`.
+        applyAutoSubtitle(.select(track))
+    }
+
     private func reapplySystemSubtitlePolicy() {
         guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
         subtitleOrderingLanguage = settings.subtitleSystemSelectionPreferences
@@ -5793,7 +5902,11 @@ class PlayerViewModel {
             return false
         }
         let combinedIndex = track.flatMap {
-            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(for: $0, in: version)
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                for: $0,
+                in: version,
+                inventory: activePreparedProtocolV3.plan.subtitle.inventory
+            )
         }
         guard combinedIndex != activePreparedProtocolV3.plan.selectedTracks.subtitle?.index else {
             return false

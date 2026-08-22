@@ -1825,6 +1825,15 @@ struct MainTabView: View {
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL
             )
+            #if os(iOS)
+            // Recorded here rather than rebuilt inside the player: a Picture in
+            // Picture restore has to re-present this exact payload, and
+            // `PlayerView` never receives `returnToContentId`.
+            .onAppear {
+                PlayerPresentationRestoration.presenter = router
+                PlayerPresentationRestoration.recordPresentation(payload)
+            }
+            #endif
         }
         #if os(iOS)
         .sheet(isPresented: Binding(

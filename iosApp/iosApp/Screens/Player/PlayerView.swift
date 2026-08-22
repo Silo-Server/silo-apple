@@ -293,6 +293,18 @@ struct PlayerView: View {
             dismissPlayer()
         }
         .onAppear {
+            #if os(iOS)
+            // A Picture in Picture restore re-presents this cover for a session
+            // that is still playing. Adopt that view model instead of minting a
+            // new one, and skip the load — the session never stopped.
+            if let restored = PlayerPresentationRestoration.consumeAdoption(matching: contentId) {
+                viewModel = restored
+                orientationCoordinator.activatePlayer()
+                restored.playerPresentationDidAppear()
+                bindPictureInPicture(to: restored)
+                return
+            }
+            #endif
             let activeViewModel: PlayerViewModel
             if viewModel.needsReplacementForPresentation {
                 let replacement = PlayerViewModel()
@@ -304,13 +316,7 @@ struct PlayerView: View {
             #if os(iOS)
             orientationCoordinator.activatePlayer()
             activeViewModel.playerPresentationDidAppear()
-            PictureInPictureCoordinator.shared.bind(
-                engine: activeViewModel.aetherEngine,
-                owner: activeViewModel,
-                onEngagementEnded: { [weak activeViewModel] in
-                    activeViewModel?.pictureInPictureEngagementDidEnd()
-                }
-            )
+            bindPictureInPicture(to: activeViewModel)
             #endif
             activeViewModel.applyArtworkURLHints(posterURL: posterURLHint, backdropURL: backdropURLHint)
             activeViewModel.loadAndPlay(
@@ -381,6 +387,32 @@ struct PlayerView: View {
         viewModel.cleanup()
         dismiss()
     }
+
+    #if os(iOS)
+    /// One binding site so the restore and start-failure hooks can never be
+    /// installed on one path and forgotten on the other.
+    private func bindPictureInPicture(to model: PlayerViewModel) {
+        PictureInPictureCoordinator.shared.bind(
+            engine: model.aetherEngine,
+            owner: model,
+            onEngagementEnded: { [weak model] in
+                model?.pictureInPictureEngagementDidEnd()
+            },
+            onRestoreUserInterface: { [weak model] completion in
+                guard let model else {
+                    // The engaged player is gone; AVKit must not be told the
+                    // interface came back.
+                    completion(false)
+                    return
+                }
+                model.restorePictureInPictureUserInterface(completion)
+            },
+            onStartFailure: { [weak model] failure in
+                model?.reportPictureInPictureStartFailure(failure)
+            }
+        )
+    }
+    #endif
 
     #if os(tvOS)
     private func handleTimelinePreviewContactBegan() {
