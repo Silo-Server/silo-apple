@@ -4,6 +4,11 @@ import CoreGraphics
 import Foundation
 import OSLog
 import SwiftUI
+#if os(iOS) || os(tvOS)
+import UIKit
+#else
+import AppKit
+#endif
 
 /// Engine-neutral chapter projection consumed by Silo's controls.
 struct PlayerChapterInfo: Equatable, Identifiable, Sendable {
@@ -195,6 +200,12 @@ class PlayerViewModel {
     private var pendingProtocolV3FirstFrameEpoch: AetherPlaybackController.LoadEpoch?
     @ObservationIgnored
     private var pendingProtocolV3SeekReanchorPosition: Double?
+    /// A user track change that arrived while a replan was already in flight.
+    /// Re-issued when the in-flight replan settles so the local selection the
+    /// UI already shows is actually applied by the server. Position is
+    /// re-read at drain time — playback moved on while we waited.
+    @ObservationIgnored
+    private var pendingProtocolV3TrackChange: QueuedProtocolV3TrackChange?
     @ObservationIgnored
     private var scrubPreviewProvider: AetherScrubPreviewProvider!
     @MainActor var aetherEngine: AetherEngine { aetherPlaybackController.engine }
@@ -211,6 +222,7 @@ class PlayerViewModel {
         committedProtocolV3LoadEpoch = nil
         pendingProtocolV3FirstFrameEpoch = nil
         pendingProtocolV3SeekReanchorPosition = nil
+        pendingProtocolV3TrackChange = nil
         aetherPlaybackController.dispose()
         return previewShutdown
     }
@@ -555,6 +567,12 @@ class PlayerViewModel {
     private var settingsRefreshTask: Task<Void, Never>?
     private var freshLoadTask: Task<Void, Never>?
     private var freshLoadGeneration: UInt64 = 0
+    /// True while `freshLoadTask` is the sole owner of a load failure's
+    /// outcome. Aether publishes its typed failure before the load throws, so
+    /// without this the direct-play and offline paths surface the same
+    /// failure twice — once through `handleAetherFailure` and again through
+    /// the load's own catch.
+    private var freshLoadOwnsFailureHandling = false
     private var protocolV3ReplanTask: Task<Void, Never>?
     private var nextUpLookupTask: Task<Void, Never>?
     private var nextUpOnDeckTask: Task<Void, Never>?
@@ -594,6 +612,10 @@ class PlayerViewModel {
     private var seekOriginTime: Double?
     private var seekTargetTime: Double?
     private var seekFilterTimeoutTask: Task<Void, Never>?
+    /// The in-flight `commitSeek` await. Held so a new load can cancel a seek
+    /// whose `.requiresReplan` answer would otherwise arrive after the item
+    /// it was issued against is gone.
+    private var seekReplanTask: Task<Void, Never>?
     private static let seekFilterNanos: UInt64 = 5_000_000_000 // 5s
     /// Identity of the active offline download when playback was prepared
     /// locally (no server session). While set, watch progress is routed to
@@ -807,6 +829,12 @@ class PlayerViewModel {
     /// Triggers a V3 replan when the audio route the session was planned
     /// against changes. iOS/tvOS only — macOS has no `AVAudioSession`.
     private var outputRouteObserverToken: NSObjectProtocol?
+    /// Flushes the resume point when the app is about to stop getting
+    /// foreground time. The periodic reporter ticks every 10s, so without
+    /// this a backgrounded (or terminated) player loses up to that much
+    /// progress. Deliberately does not stop the session — PiP and background
+    /// audio keep playing after this fires.
+    private var foregroundExitObserverToken: NSObjectProtocol?
 
     init() {
         do {
@@ -882,7 +910,8 @@ class PlayerViewModel {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.settings.subtitleMatchesSystemAppearance else { return }
+                guard let self, !self.isDisposed,
+                      self.settings.subtitleMatchesSystemAppearance else { return }
                 self.settings.refreshSubtitleSystemAppearance()
                 self.applySubtitleAppearanceToPlayer()
                 self.subtitleOrderingLanguage = self.settings
@@ -923,8 +952,42 @@ class PlayerViewModel {
             }
         }
         #endif
+        #if os(iOS) || os(tvOS)
+        let foregroundExitNotification = UIApplication.didEnterBackgroundNotification
+        #else
+        let foregroundExitNotification = NSApplication.willTerminateNotification
+        #endif
+        foregroundExitObserverToken = NotificationCenter.default.addObserver(
+            forName: foregroundExitNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.flushPlaybackProgressNow(reason: "foreground_exit")
+            }
+        }
         settingsRefreshTask = Task { @MainActor [weak self] in
             await self?.refreshSettingsFromServer()
+        }
+    }
+
+    /// Best-effort, non-blocking write of the current resume point, outside
+    /// the 10s reporting cadence. Used when the app loses the foreground and
+    /// on terminal failure, where the next scheduled tick may never run.
+    @MainActor
+    private func flushPlaybackProgressNow(reason: String) {
+        guard !isDisposed else { return }
+        if let offline = offlinePlaybackContext {
+            recordOfflineProgress(context: offline)
+            return
+        }
+        guard activePlaybackSessionId != nil else { return }
+        let position = currentTime
+        guard position.isFinite, position >= 0 else { return }
+        let isPaused = !isPlaying
+        Self.logger.debug("Flushing playback progress (\(reason, privacy: .public))")
+        Task { [sessionBridge] in
+            _ = await sessionBridge.reportProgress(position: position, isPaused: isPaused)
         }
     }
 
@@ -983,8 +1046,17 @@ class PlayerViewModel {
             pushNowPlayingIfDue()
             refreshPlaybackStats()
         case .duration(let reportedDuration):
+            // Aether reports duration on the player/transport axis, while
+            // `currentTime` (and every marker, chapter and progress report
+            // derived from it) is on the source axis. Adopting the raw value
+            // under an HLS reanchor would shorten the scrubber by exactly the
+            // timeline offset, so convert before publishing.
             if duration <= 0, reportedDuration.isFinite, reportedDuration > 0 {
-                duration = reportedDuration
+                if let timeline = aetherPlaybackController.activeSpec?.timeline {
+                    duration = timeline.sourcePosition(forPlayerTime: reportedDuration)
+                } else {
+                    duration = reportedDuration
+                }
             }
         case .buffering(let buffering):
             isBuffering = buffering
@@ -1065,11 +1137,21 @@ class PlayerViewModel {
 
     @MainActor
     private func handleAetherFailure(_ failure: PlaybackErrorInfo) {
+        // Aether deliberately publishes its typed failure *before* the load
+        // throws, so every in-flight load would otherwise be handled twice:
+        // once here and once in the load's own catch. The owning load task is
+        // the single handler on every path — V3, direct play and offline
+        // alike — because only it knows the load's origin, and therefore
+        // whether the failure gets the full-screen wall or the recoverable
+        // Next Up surface.
+        if freshLoadOwnsFailureHandling {
+            return
+        }
         if activePreparedProtocolV3 != nil,
            committedProtocolV3LoadEpoch == nil {
-            // The throwing load path owns provisional-route recovery. Aether
-            // deliberately publishes its typed failure before throwing, so
-            // reacting to both signals would start two competing replans.
+            // Same rule for a replan's load: it owns provisional-route
+            // recovery, and reacting here too would start two competing
+            // replans.
             return
         }
         let serverCanAdapt: Set<PlaybackErrorKind> = [
@@ -1105,7 +1187,7 @@ class PlayerViewModel {
             )
             return
         }
-        handlePlaybackError(failure.message)
+        handlePlaybackError(failure.message, failure: failure)
     }
 
     private func handleFileLoaded() {
@@ -1158,7 +1240,7 @@ class PlayerViewModel {
         }
     }
 
-    private func handlePlaybackError(_ message: String) {
+    private func handlePlaybackError(_ message: String, failure: PlaybackErrorInfo? = nil) {
         let logMessage = MediaLogRedactor.sanitize(message)
         Self.logger.error("Player error: \(logMessage, privacy: .public)")
         guard !hasReachedEndOfFile else {
@@ -1175,7 +1257,7 @@ class PlayerViewModel {
             attemptProtocolV3Recovery(after: message)
             return
         }
-        if isPlaybackSessionMissingMessage(message) || isLikelyExpiredSessionHTTP404(message) {
+        if isPlaybackSessionMissingMessage(message) || isExpiredPlaybackSessionSource(failure) {
             if attemptStaleSessionRenewal(reason: "player_error", observedPosition: currentTime) {
                 return
             }
@@ -1192,6 +1274,14 @@ class PlayerViewModel {
         )
     }
 
+    /// A track change deferred until the in-flight replan settles. Position
+    /// is deliberately absent: it is re-read when the queue drains, because
+    /// playback keeps moving while the earlier replan completes.
+    private struct QueuedProtocolV3TrackChange {
+        let classification: String
+        let message: String
+    }
+
     @discardableResult
     private func attemptProtocolV3Replan(
         position: Double,
@@ -1200,6 +1290,7 @@ class PlayerViewModel {
         operation: String? = nil,
         qualityPreference: String? = nil,
         completesQualitySwitch: Bool = false,
+        requeueWhenBusy: Bool = false,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) -> Bool {
         if protocolV3ReplanTask != nil {
@@ -1207,6 +1298,19 @@ class PlayerViewModel {
                 // Rapid windowed seeks are latest-wins. Re-issue the newest
                 // target after the in-flight route transition settles.
                 pendingProtocolV3SeekReanchorPosition = position
+                return true
+            }
+            if requeueWhenBusy {
+                // A user track change. The UI already shows the new
+                // selection, so dropping the switch here would leave the
+                // player permanently disagreeing with itself. Latest-wins,
+                // same as a seek: re-issued when the in-flight replan
+                // settles, at whatever position playback has reached by then.
+                pendingProtocolV3TrackChange = QueuedProtocolV3TrackChange(
+                    classification: classification,
+                    message: message
+                )
+                return true
             }
             if completesQualitySwitch { isQualitySwitching = false }
             return false
@@ -1253,6 +1357,19 @@ class PlayerViewModel {
                         classification: recovery.classification,
                         message: recovery.message
                     )
+                } else if let queuedTrackChange = self.pendingProtocolV3TrackChange {
+                    // Drained before the queued seek: this replan will pick
+                    // up any still-pending reanchor in its own defer, so both
+                    // user intents survive and the seek lands last.
+                    self.pendingProtocolV3TrackChange = nil
+                    if !self.isDisposed, self.activePreparedProtocolV3 != nil {
+                        self.attemptProtocolV3Replan(
+                            position: self.currentTime,
+                            classification: queuedTrackChange.classification,
+                            message: queuedTrackChange.message,
+                            requeueWhenBusy: true
+                        )
+                    }
                 } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                     self.pendingProtocolV3SeekReanchorPosition = nil
                     if !self.isDisposed, self.activePreparedProtocolV3 != nil {
@@ -2389,6 +2506,17 @@ class PlayerViewModel {
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
     private func handleEndOfFile() {
+        // Once per load. Two callers can land here for the same end — the
+        // `.ended` event and a near-end playback error reclassified as a
+        // natural finish — and running twice would raise the Next Up postroll
+        // twice. Latching the flag up-front (rather than at the bottom, as
+        // before) is what makes the guard airtight; every intentional resume
+        // (`beginFreshLoad`, `keepWatchingCurrentEpisode`, `commitSeek`,
+        // `handleFileLoaded`) already clears it, so a genuine second end
+        // still reports.
+        guard !hasReachedEndOfFile else { return }
+        hasReachedEndOfFile = true
+
         // Detect a premature EOF before the autoplay hand-off. FFmpeg's
         // demuxer reports end-of-stream when the upstream HTTP connection is
         // reset, even if the file's real duration is still seconds away. The
@@ -2453,7 +2581,6 @@ class PlayerViewModel {
         )
         #endif
 
-        hasReachedEndOfFile = true
         hideControlsTask?.cancel()
         hideControlsTask = nil
         aetherPlaybackController.pause()
@@ -2720,6 +2847,20 @@ class PlayerViewModel {
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
+        // Retire the outgoing load's epoch *synchronously*. The actual
+        // dispose happens several awaits down, and until this is nil a late
+        // `.ended` or failure from the item we're replacing still matches
+        // `handleAetherEvent`'s epoch filter — landing end-of-file, or a
+        // terminal error, on the item that is only just starting to load.
+        activeAetherLoadEpoch = nil
+        committedProtocolV3LoadEpoch = nil
+        pendingProtocolV3FirstFrameEpoch = nil
+        // The outgoing item's queued follow-ups must not be replayed against
+        // the incoming one.
+        pendingProtocolV3SeekReanchorPosition = nil
+        pendingProtocolV3TrackChange = nil
+        seekReplanTask?.cancel()
+        seekReplanTask = nil
         cancelNextUpFlow()
         attachNowPlayingIfNeeded()
         resetPublishedLoadState(
@@ -2747,12 +2888,16 @@ class PlayerViewModel {
         // holding it and a later teardown would report the offline item's
         // position against the stale session.
         let shouldFinalizeCurrentSession = finalizeCurrentSession || request.offlineDownloadId != nil
+        // From here until this task exits, its catch is the only handler for
+        // a load failure — see `handleAetherFailure`.
+        freshLoadOwnsFailureHandling = true
         freshLoadTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             var uncommittedPrepared: PreparedPlayback?
             defer {
                 if self.freshLoadGeneration == currentFreshLoadGeneration {
                     self.freshLoadTask = nil
+                    self.freshLoadOwnsFailureHandling = false
                 }
             }
 
@@ -3138,6 +3283,12 @@ class PlayerViewModel {
             ]
         )
         #endif
+        // Pin the resume point before anything is torn down. The periodic
+        // reporter ticks every 10s and is cancelled immediately below, so
+        // without this the user resumes up to ten seconds behind where the
+        // failure actually happened. Best-effort and non-blocking; issued
+        // while `activePlaybackSessionId` is still live.
+        flushPlaybackProgressNow(reason: "terminal_failure")
         progressTask?.cancel()
         progressTask = nil
         staleSessionRecoveryTask?.cancel()
@@ -3212,9 +3363,23 @@ class PlayerViewModel {
 
     /// A signed playback URL can surface a bare 404 through Aether. Renew once
     /// at the current source position before treating it as a missing file.
-    private func isLikelyExpiredSessionHTTP404(_ message: String) -> Bool {
-        let lowered = message.lowercased()
-        return lowered.contains("404") && lowered.contains("not found")
+    ///
+    /// Deliberately typed rather than a substring match on the message. Only
+    /// `sourceRefused` names the *session's own* source request, and only with
+    /// `underlyingDomain == nil` is `underlyingCode` the origin's HTTP status
+    /// rather than some framework's error code. Matching "404" anywhere in
+    /// free text used to tear down a live session over a sidecar or segment
+    /// 404, and could never fire at all on a non-English device — half of
+    /// Aether's messages are `localizedDescription` forwarded from underneath.
+    private func isExpiredPlaybackSessionSource(_ failure: PlaybackErrorInfo?) -> Bool {
+        guard let failure,
+              failure.kind == .sourceRefused,
+              failure.underlyingDomain == nil,
+              failure.underlyingCode == 404 else {
+            return false
+        }
+        // Nothing to renew unless we actually hold a server session.
+        return activePlaybackSessionId != nil
     }
 
     func loadAndPlay(
@@ -3295,14 +3460,20 @@ class PlayerViewModel {
         hideControlsTask?.cancel()
 
         if activePreparedProtocolV3 != nil {
-            attemptProtocolV3Replan(
+            // A rejected replan already cleared `isQualitySwitching`, but
+            // without a message the sheet just silently snapped back to the
+            // old quality with no explanation.
+            if !attemptProtocolV3Replan(
                 position: target,
                 classification: "quality_changed",
                 message: "User selected playback quality \(resolvedQualityId).",
                 operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
                 qualityPreference: resolvedQualityId,
                 completesQualitySwitch: true
-            )
+            ) {
+                isQualitySwitching = false
+                qualitySwitchError = "Couldn't change quality right now. Try again."
+            }
             return
         }
 
@@ -3563,21 +3734,48 @@ class PlayerViewModel {
         isScrubbing = false
         scrubPreviewProvider.endInteraction()
 
-        Task { @MainActor [weak self] in
+        // Snapshotted synchronously, before the seek is even issued. A seek
+        // that resolves `.requiresReplan` after a different item began
+        // loading would otherwise restart that *new* item at this item's
+        // position, because `lastLoadRequest` has already been replaced.
+        let seekFreshLoadGeneration = freshLoadGeneration
+        let seekLoadEpoch = aetherPlaybackController.activeLoadEpoch
+        seekReplanTask?.cancel()
+        seekReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
-            switch await self.aetherPlaybackController.seek(toSourceTime: clampedTarget) {
+            let result = await self.aetherPlaybackController.seek(toSourceTime: clampedTarget)
+            guard !Task.isCancelled,
+                  !self.isDisposed,
+                  self.freshLoadGeneration == seekFreshLoadGeneration,
+                  self.aetherPlaybackController.activeLoadEpoch == seekLoadEpoch else {
+                return
+            }
+            self.seekReplanTask = nil
+            switch result {
             case .completed:
                 break
             case .requiresReplan(let sourceSeconds):
                 if let protocolV3 = self.activePreparedProtocolV3,
                    protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
-                    self.isLoading = true
-                    self.attemptProtocolV3Replan(
+                    // `attemptProtocolV3Replan` raises the spinner itself once
+                    // it commits to a replan. Raising it here first meant an
+                    // early rejection (no watch detail) left the player
+                    // spinning with nothing in flight to ever clear it.
+                    guard self.attemptProtocolV3Replan(
                         position: sourceSeconds,
                         classification: "seek_reanchor",
                         message: "Reanchor the active stream at the requested source position.",
                         operation: PlaybackProtocolV3.ReplanOperation.seekReanchor
-                    )
+                    ) else {
+                        self.isLoading = false
+                        self.showNotice(
+                            title: "Couldn't seek",
+                            message: "Playback couldn't move to that position. Try again.",
+                            tone: .warning,
+                            duration: 5
+                        )
+                        return
+                    }
                 } else if let request = self.lastLoadRequest {
                     self.beginFreshLoad(
                         request: request,
@@ -3842,31 +4040,59 @@ class PlayerViewModel {
     // Aether's media-track id namespace.
 
     func selectAudio(_ track: PlayerTrack) {
-        pendingAudioFfIndex = nil
-        selectedAudioId = track.trackId
-        persistAudioSelection(track)
-        reapplySystemSubtitlePolicy()
         if activePreparedProtocolV3 != nil {
-            // Record only — the server owns the switch on this path, so the
-            // track must not be applied locally before its plan arrives.
+            // The server owns the switch on this path, so the track must not
+            // be applied locally before its plan arrives. The selection is
+            // published optimistically because the replan reads it back, but
+            // nothing is persisted or recorded until the replan is actually
+            // under way — a dropped switch must not be filed as a success.
+            let priorAudioId = selectedAudioId
+            let priorPendingAudioFfIndex = pendingAudioFfIndex
+            pendingAudioFfIndex = nil
+            selectedAudioId = track.trackId
+            reapplySystemSubtitlePolicy()
+            guard attemptProtocolV3Replan(
+                position: currentTime,
+                classification: "audio_track_changed",
+                message: "User selected audio track \(track.title ?? String(track.trackId)).",
+                requeueWhenBusy: true
+            ) else {
+                selectedAudioId = priorAudioId
+                pendingAudioFfIndex = priorPendingAudioFfIndex
+                reapplySystemSubtitlePolicy()
+                showNotice(
+                    title: "Couldn't change audio",
+                    message: "The audio track couldn't be switched. Try again.",
+                    tone: .warning,
+                    duration: 5
+                )
+                scheduleHideControls()
+                return
+            }
+            persistAudioSelection(track)
             recordAudioTrackSelectionBreadcrumb(
                 track.trackId,
                 reason: "user_selection",
                 viaServerReplan: true
             )
-            attemptProtocolV3Replan(
-                position: currentTime,
-                classification: "audio_track_changed",
-                message: "User selected audio track \(track.title ?? String(track.trackId))."
-            )
             scheduleHideControls()
             return
         }
+        pendingAudioFfIndex = nil
+        selectedAudioId = track.trackId
+        persistAudioSelection(track)
+        reapplySystemSubtitlePolicy()
         applyAudioTrackSelection(track.trackId, reason: "user_selection")
         scheduleHideControls()
     }
 
     func selectSubtitle(_ track: PlayerTrack) {
+        // Snapshot for the V3 branch below, which has to undo the optimistic
+        // local selection if the server switch never gets issued.
+        let priorSubtitleId = selectedSubtitleId
+        let priorSecondarySubtitleId = selectedSecondarySubtitleId
+        let priorPendingSubtitleFfIndex = pendingSubtitleFfIndex
+        let priorHasExplicitSubtitleChoice = hasExplicitSubtitleChoice
         hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
         if selectedSecondarySubtitleId == track.trackId {
@@ -3877,28 +4103,51 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-SUB] select primary trackId=\(track.trackId, privacy: .public) title=\(track.title ?? "nil", privacy: .public) external=\(track.isExternal, privacy: .public) codec=\(track.codec ?? "nil", privacy: .public)"
         )
-        persistSubtitleSelection(track)
         if activePreparedProtocolV3 != nil,
            !SubtitleTrackIdSpace.isAILive(track.trackId) {
-            // Record only; the replan below is what actually switches the track.
+            // The replan is what actually switches the track, so nothing is
+            // persisted or recorded until one is under way.
+            guard attemptProtocolV3Replan(
+                position: currentTime,
+                classification: "subtitle_track_changed",
+                message: "User selected subtitle track \(track.title ?? String(track.trackId)).",
+                requeueWhenBusy: true
+            ) else {
+                selectedSubtitleId = priorSubtitleId
+                pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
+                hasExplicitSubtitleChoice = priorHasExplicitSubtitleChoice
+                if selectedSecondarySubtitleId != priorSecondarySubtitleId {
+                    selectedSecondarySubtitleId = priorSecondarySubtitleId
+                    applySecondarySubtitleTrackSelection(priorSecondarySubtitleId)
+                }
+                showNotice(
+                    title: "Couldn't change subtitles",
+                    message: "The subtitle track couldn't be switched. Try again.",
+                    tone: .warning,
+                    duration: 5
+                )
+                scheduleHideControls()
+                return
+            }
+            persistSubtitleSelection(track)
             recordSubtitleTrackSelectionBreadcrumb(
                 track.trackId,
                 reason: "user_selection",
                 viaServerReplan: true
             )
-            attemptProtocolV3Replan(
-                position: currentTime,
-                classification: "subtitle_track_changed",
-                message: "User selected subtitle track \(track.title ?? String(track.trackId))."
-            )
             scheduleHideControls()
             return
         }
+        persistSubtitleSelection(track)
         applySubtitleTrackSelection(track.trackId, reason: "user_selection")
         scheduleHideControls()
     }
 
     func disableSubtitles() {
+        let priorSubtitleId = selectedSubtitleId
+        let priorSecondarySubtitleId = selectedSecondarySubtitleId
+        let priorPendingSubtitleFfIndex = pendingSubtitleFfIndex
+        let priorHasExplicitSubtitleChoice = hasExplicitSubtitleChoice
         hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
         if selectedSecondarySubtitleId != nil {
@@ -3907,22 +4156,41 @@ class PlayerViewModel {
         }
         selectedSubtitleId = nil
         Self.logger.info("[CMP-SUB] disable primary subtitles")
-        persistSubtitleSelection(nil)
         if activePreparedProtocolV3 != nil {
-            // Record only; the replan below is what actually clears the track.
+            // The replan is what actually clears the track, so nothing is
+            // persisted or recorded until one is under way.
+            guard attemptProtocolV3Replan(
+                position: currentTime,
+                classification: "subtitle_track_changed",
+                message: "User disabled subtitles.",
+                requeueWhenBusy: true
+            ) else {
+                selectedSubtitleId = priorSubtitleId
+                pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
+                hasExplicitSubtitleChoice = priorHasExplicitSubtitleChoice
+                if selectedSecondarySubtitleId != priorSecondarySubtitleId {
+                    selectedSecondarySubtitleId = priorSecondarySubtitleId
+                    applySecondarySubtitleTrackSelection(priorSecondarySubtitleId)
+                }
+                showNotice(
+                    title: "Couldn't change subtitles",
+                    message: "Subtitles couldn't be turned off. Try again.",
+                    tone: .warning,
+                    duration: 5
+                )
+                scheduleHideControls()
+                return
+            }
+            persistSubtitleSelection(nil)
             recordSubtitleTrackSelectionBreadcrumb(
                 nil,
                 reason: "user_selection",
                 viaServerReplan: true
             )
-            attemptProtocolV3Replan(
-                position: currentTime,
-                classification: "subtitle_track_changed",
-                message: "User disabled subtitles."
-            )
             scheduleHideControls()
             return
         }
+        persistSubtitleSelection(nil)
         applySubtitleTrackSelection(nil, reason: "user_selection")
         scheduleHideControls()
     }
@@ -4637,12 +4905,23 @@ class PlayerViewModel {
         settingsRefreshTask?.cancel()
         settingsRefreshTask = nil
         freshLoadTask?.cancel()
+        freshLoadOwnsFailureHandling = false
         streamLoadGeneration &+= 1
         protocolV3ReplanTask?.cancel()
         protocolV3ReplanTask = nil
+        seekReplanTask?.cancel()
+        seekReplanTask = nil
         if let outputRouteObserverToken {
             NotificationCenter.default.removeObserver(outputRouteObserverToken)
             self.outputRouteObserverToken = nil
+        }
+        if let systemCaptionObserverToken {
+            NotificationCenter.default.removeObserver(systemCaptionObserverToken)
+            self.systemCaptionObserverToken = nil
+        }
+        if let foregroundExitObserverToken {
+            NotificationCenter.default.removeObserver(foregroundExitObserverToken)
+            self.foregroundExitObserverToken = nil
         }
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
@@ -4689,7 +4968,13 @@ class PlayerViewModel {
             }
         }
 
-        let finalPosition = currentTime
+        // Same completion rule as the offline branch above. Closing from the
+        // Next Up prompt (or after EOF) means the user finished the item, so
+        // the final `stopSession` has to report the duration rather than the
+        // paused position a few seconds short of it — otherwise online
+        // playback never latches watched from that surface, while offline
+        // playback does.
+        let finalPosition = completionProgressPositionForCurrentItem()
         let scrubPreviewShutdown = disposeAetherPlayback()
 
         let connectivityToken = realtimeConnectivityObserverToken
@@ -4739,9 +5024,13 @@ class PlayerViewModel {
             if let outputRouteObserverToken {
                 NotificationCenter.default.removeObserver(outputRouteObserverToken)
             }
+            if let foregroundExitObserverToken {
+                NotificationCenter.default.removeObserver(foregroundExitObserverToken)
+            }
             freshLoadTask?.cancel()
             streamLoadGeneration &+= 1
             protocolV3ReplanTask?.cancel()
+            seekReplanTask?.cancel()
             staleSessionRecoveryTask?.cancel()
             autoSkipIntroCountdownTask?.cancel()
             #if DEBUG
