@@ -13,6 +13,9 @@ import SwiftUI
 /// }
 /// ```
 struct CardOverlays: View {
+    /// Matches the measured poster overlay layer on the web Home carousel.
+    private static let posterReferenceWidth: CGFloat = 185
+
     let data: OverlayData
     let prefs: CardOverlayPrefs
     var variant: Variant = .poster
@@ -26,30 +29,39 @@ struct CardOverlays: View {
 
     var body: some View {
         let preset = OverlayPresets.preset(prefs.preset)
-        ZStack(alignment: .topLeading) {
-            cornerStack(.topLeft, preset: preset)
-            cornerStack(.topRight, preset: preset)
-            cornerStack(.bottomLeft, preset: preset)
-            cornerStack(.bottomRight, preset: preset)
+        GeometryReader { proxy in
+            let scale = variant == .poster
+                ? proxy.size.width / Self.posterReferenceWidth
+                : 1
+            ZStack(alignment: .topLeading) {
+                cornerStack(.topLeft, preset: preset, scale: scale)
+                cornerStack(.topRight, preset: preset, scale: scale)
+                cornerStack(.bottomLeft, preset: preset, scale: scale)
+                cornerStack(.bottomRight, preset: preset, scale: scale)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
     }
 
     @ViewBuilder
-    private func cornerStack(_ position: OverlayPosition, preset: OverlayPreset) -> some View {
+    private func cornerStack(
+        _ position: OverlayPosition,
+        preset: OverlayPreset,
+        scale: CGFloat
+    ) -> some View {
         let badges = OverlayRegistry
             .enabled(at: position, in: prefs)
             .compactMap { OverlayBadgeRenderState.resolve(def: $0, data: data, prefs: prefs, preset: preset) }
         if badges.isEmpty {
             EmptyView()
         } else {
-            VStack(alignment: alignment(for: position), spacing: preset.gap) {
+            VStack(alignment: alignment(for: position), spacing: preset.gap * scale) {
                 ForEach(badges, id: \.id) { state in
-                    OverlayBadgeView(state: state, preset: preset)
+                    OverlayBadgeView(state: state, preset: preset, scale: scale)
                 }
             }
-            .padding(insets(for: position))
+            .padding(insets(for: position, scale: scale))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor(for: position))
         }
     }
@@ -70,18 +82,18 @@ struct CardOverlays: View {
         }
     }
 
-    private func insets(for position: OverlayPosition) -> EdgeInsets {
+    private func insets(for position: OverlayPosition, scale: CGFloat) -> EdgeInsets {
         // `wide` and `hero` variants leave more bottom room because a
         // title block / progress bar typically sits under the image.
         let bottomInset: CGFloat = {
             switch variant {
-            case .poster: return 8
+            case .poster: return 8 * scale
             case .wide:   return 24
             case .hero:   return 16
             }
         }()
-        let sideInset: CGFloat = variant == .hero ? 16 : 8
-        let topInset: CGFloat  = variant == .hero ? 16 : 8
+        let sideInset: CGFloat = variant == .hero ? 16 : 8 * scale
+        let topInset: CGFloat  = variant == .hero ? 16 : 8 * scale
         switch position {
         case .topLeft:
             return EdgeInsets(top: topInset, leading: sideInset, bottom: 0, trailing: 0)
@@ -161,13 +173,14 @@ struct OverlayBadgeRenderState: Equatable {
 struct OverlayBadgeView: View {
     let state: OverlayBadgeRenderState
     let preset: OverlayPreset
+    let scale: CGFloat
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 4 * scale) {
             if let iconId = state.iconId {
                 OverlayIcon(
                     iconId: iconId,
-                    size: preset.iconSize,
+                    size: preset.iconSize * scale,
                     tint: preset.foregroundColor(state.accentColor)
                 )
             }
@@ -175,8 +188,8 @@ struct OverlayBadgeView: View {
                 badgeText
             }
         }
-        .padding(.horizontal, preset.horizontalPadding)
-        .padding(.vertical, preset.verticalPadding)
+        .padding(.horizontal, preset.horizontalPadding * scale)
+        .padding(.vertical, preset.verticalPadding * scale)
         .background(background)
         .overlay(border)
         .clipShape(shape)
@@ -195,8 +208,8 @@ struct OverlayBadgeView: View {
     @ViewBuilder
     private var badgeText: some View {
         let text = Text(state.label)
-            .font(preset.font.weight(preset.textWeight))
-            .tracking(preset.tracking)
+            .font(.system(size: preset.fontSize * scale, weight: preset.textWeight))
+            .tracking(preset.tracking * scale)
             .foregroundColor(preset.foregroundColor(state.accentColor))
         Group {
             if let textCase = preset.textCase {
@@ -205,7 +218,7 @@ struct OverlayBadgeView: View {
                 text
             }
         }
-        .modifier(BadgeShadow(enabled: preset.textShadow))
+        .modifier(BadgeShadow(enabled: preset.textShadow, scale: scale))
     }
 
     @ViewBuilder
@@ -223,7 +236,7 @@ struct OverlayBadgeView: View {
     @ViewBuilder
     private var border: some View {
         if let stroke = preset.borderColor(state.accentColor) {
-            shape.stroke(stroke, lineWidth: 1)
+            shape.stroke(stroke, lineWidth: scale)
         }
     }
 
@@ -236,16 +249,17 @@ struct OverlayBadgeView: View {
         case .capsule:
             return AnyShape(Capsule(style: .continuous))
         case .rounded(let radius):
-            return AnyShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            return AnyShape(RoundedRectangle(cornerRadius: radius * scale, style: .continuous))
         }
     }
 }
 
 private struct BadgeShadow: ViewModifier {
     let enabled: Bool
+    let scale: CGFloat
     func body(content: Content) -> some View {
         if enabled {
-            content.shadow(color: Color.black.opacity(0.85), radius: 1, y: 1)
+            content.shadow(color: Color.black.opacity(0.85), radius: scale, y: scale)
         } else {
             content
         }
