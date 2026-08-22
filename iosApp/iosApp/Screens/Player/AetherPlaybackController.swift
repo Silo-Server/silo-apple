@@ -59,9 +59,21 @@ final class AetherPlaybackController {
     let engine: AetherEngine
     var onEvent: ((ScopedEvent) -> Void)?
     var onControllerEvent: ((ControllerEvent) -> Void)?
+    /// iOS 26's Automatic Subtitles turn captions on with no read API behind
+    /// them, so Aether forwarding the ask is the only observable signal. The
+    /// engine has already deselected its own rendition by the time this fires;
+    /// answering it means selecting a matching app track. Delivered only while
+    /// a load is active, scoped to that load's epoch.
+    var onSystemCaptionRequest: ((LoadEpoch, SystemCaptionRequest) -> Void)?
 
     private(set) var activeSpec: AetherLoadSpec?
     private(set) var activeLoadEpoch: LoadEpoch?
+
+    /// Whether a transport call can reach anything. `play()`, `pause()` and
+    /// `seek` all bail without a load, so a system-media surface that reports
+    /// success regardless is telling the system a lie it cannot detect.
+    var hasActiveLoad: Bool { activeLoadEpoch != nil && activeSpec != nil }
+
     /// The active spec is installed before `AetherEngine.load` so synchronous
     /// publications can be scoped to the new epoch. It is not safe to use that
     /// spec for receiver policy until the corresponding load has committed:
@@ -164,7 +176,7 @@ final class AetherPlaybackController {
             guard let self,
                   let loadEpoch = self.activeLoadEpoch,
                   self.activeSpec != nil else { return }
-            if self.engine.playbackBackend == .none {
+            if self.sessionRequiresRestore {
                 do {
                     try await self.engine.reloadAtCurrentPosition()
                 } catch is CancellationError {
@@ -183,10 +195,24 @@ final class AetherPlaybackController {
                   intentGeneration == self.transportIntentGeneration,
                   loadEpoch == self.activeLoadEpoch,
                   self.activeSpec != nil,
-                  self.engine.playbackBackend != .none else { return }
+                  self.engine.videoRoute != .none else { return }
             self.engine.play()
             self.transportRestoreTask = nil
         }
+    }
+
+    /// The session behind an active load is gone and only a reload can bring
+    /// it back — the state a backgrounded app returns to once Aether has run
+    /// its wedge-safe teardown.
+    ///
+    /// `videoRoute` is the supported surface for "which pipeline is serving",
+    /// and `.none` is documented as teardown; `playbackBackend` answers the
+    /// same question but hosts must not branch on it (api.md). Pairing the
+    /// route with `isSessionReady`, which the README names as the flag hosts
+    /// gate corrective actions on, keeps a transient reroute — where the route
+    /// changes but a session still exists — from being mistaken for teardown.
+    private var sessionRequiresRestore: Bool {
+        engine.videoRoute == .none && !engine.isSessionReady
     }
 
     func pause() {
@@ -384,6 +410,13 @@ final class AetherPlaybackController {
 
         engine.diagnostics.$liveTelemetry
             .sink { [weak self] _ in self?.publish(.telemetryChanged) }
+            .store(in: &subscriptions)
+
+        engine.systemCaptionRequest
+            .sink { [weak self] request in
+                guard let self, let epoch = activeLoadEpoch else { return }
+                onSystemCaptionRequest?(epoch, request)
+            }
             .store(in: &subscriptions)
 
         engine.$currentAVPlayer

@@ -25,13 +25,24 @@ final class AetherVideoNowPlayingCoordinator {
         var stop: (() -> Void)?
         var next: (() -> Void)?
         var isNextEnabled: () -> Bool = { false }
+        /// Whether the transport behind these handlers can act at all.
+        /// `AetherPlaybackController.play()` silently returns once a failed
+        /// load has cleared the active epoch, so a command answered `.success`
+        /// in that state reports work the system will never see happen.
+        /// Defaults to actionable for a host that has not declared otherwise.
+        var hasActiveLoad: () -> Bool = { true }
     }
 
     private enum Destination: Equatable {
         case none
         case shared
         #if os(iOS) || os(tvOS)
-        case session(ObjectIdentifier)
+        /// Deliberately payload-free. Keying this on `ObjectIdentifier` made
+        /// destination equality an address comparison, and a session held only
+        /// weakly can be freed and replaced at the same address, so a
+        /// genuinely different session compared equal and skipped the unbind.
+        /// The bound session is retained and compared by reference instead.
+        case session
         #endif
     }
 
@@ -56,7 +67,10 @@ final class AetherVideoNowPlayingCoordinator {
     private var artworkFetchTask: Task<Void, Never>?
 
     #if os(iOS) || os(tvOS)
-    private weak var session: MPNowPlayingSession?
+    /// Retained, not weak: the binding's identity check is only sound while
+    /// the bound object cannot be deallocated out from under it. Released in
+    /// `unbindCurrentDestination`, so the hold lasts exactly the binding.
+    private var session: MPNowPlayingSession?
 
     /// Rebinds to Aether's native-video session, or to the shared fallback
     /// only for a route for which Aether cannot vend a video session.
@@ -66,8 +80,8 @@ final class AetherVideoNowPlayingCoordinator {
         handlers: Handlers
     ) {
         let nextDestination: Destination
-        if let session {
-            nextDestination = .session(ObjectIdentifier(session))
+        if session != nil {
+            nextDestination = .session
         } else if useSharedFallback {
             nextDestination = .shared
         } else {
@@ -75,7 +89,9 @@ final class AetherVideoNowPlayingCoordinator {
         }
 
         self.handlers = handlers
-        guard destination != nextDestination else {
+        let isSameBinding = destination == nextDestination
+            && (nextDestination != .session || session === self.session)
+        guard !isSameBinding else {
             if let session {
                 // A native host can survive an item reload while another app
                 // temporarily becomes the active system-media owner.
@@ -245,21 +261,24 @@ final class AetherVideoNowPlayingCoordinator {
 
         center.playCommand.isEnabled = true
         addTarget(to: center.playCommand) { [weak self] _ in
-            guard let play = self?.handlers?.play else { return .commandFailed }
-            play()
+            guard let handlers = self?.handlers else { return .commandFailed }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
+            handlers.play()
             return .success
         }
 
         center.pauseCommand.isEnabled = true
         addTarget(to: center.pauseCommand) { [weak self] _ in
-            guard let pause = self?.handlers?.pause else { return .commandFailed }
-            pause()
+            guard let handlers = self?.handlers else { return .commandFailed }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
+            handlers.pause()
             return .success
         }
 
         center.togglePlayPauseCommand.isEnabled = true
         addTarget(to: center.togglePlayPauseCommand) { [weak self] _ in
             guard let handlers = self?.handlers else { return .commandFailed }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
             handlers.isPaused() ? handlers.play() : handlers.pause()
             return .success
         }
@@ -270,6 +289,7 @@ final class AetherVideoNowPlayingCoordinator {
         center.skipForwardCommand.isEnabled = true
         addTarget(to: center.skipForwardCommand) { [weak self] event in
             guard let self, let handlers else { return .commandFailed }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
             let interval = (event as? MPSkipIntervalCommandEvent)?.interval
                 ?? preferredSkipIntervals.forward
             handlers.seek(handlers.currentTime() + interval)
@@ -282,6 +302,7 @@ final class AetherVideoNowPlayingCoordinator {
         center.skipBackwardCommand.isEnabled = true
         addTarget(to: center.skipBackwardCommand) { [weak self] event in
             guard let self, let handlers else { return .commandFailed }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
             let interval = (event as? MPSkipIntervalCommandEvent)?.interval
                 ?? preferredSkipIntervals.backward
             handlers.seek(max(0, handlers.currentTime() - interval))
@@ -294,12 +315,16 @@ final class AetherVideoNowPlayingCoordinator {
                   let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
             handlers.seek(event.positionTime)
             return .success
         }
 
         addTarget(to: center.stopCommand) { [weak self] _ in
-            guard let stop = self?.handlers?.stop else { return .noSuchContent }
+            guard let handlers = self?.handlers, let stop = handlers.stop else {
+                return .noSuchContent
+            }
+            guard handlers.hasActiveLoad() else { return .noActionableNowPlayingItem }
             stop()
             return .success
         }
@@ -332,6 +357,26 @@ final class AetherVideoNowPlayingCoordinator {
         remoteCommandTargets.removeAll()
     }
 
+    /// `MPRemoteCommandCenter.shared()` is process-wide, so a command left
+    /// enabled after its targets are gone keeps advertising a transport this
+    /// coordinator no longer drives. Enabling is part of the binding and has
+    /// to be undone with it. Covers every command `registerRemoteCommands`
+    /// and `updateCommandAvailability` can turn on.
+    private func disableBoundCommands(on center: MPRemoteCommandCenter) {
+        for command in [
+            center.playCommand,
+            center.pauseCommand,
+            center.togglePlayPauseCommand,
+            center.skipForwardCommand,
+            center.skipBackwardCommand,
+            center.changePlaybackPositionCommand,
+            center.stopCommand,
+            center.nextTrackCommand,
+        ] {
+            command.isEnabled = false
+        }
+    }
+
     private func updateCommandAvailability() {
         guard let center = commandCenter else { return }
         center.stopCommand.isEnabled = handlers?.stop != nil
@@ -347,6 +392,9 @@ final class AetherVideoNowPlayingCoordinator {
 
     private func unbindCurrentDestination() {
         unregisterRemoteCommands()
+        if let commandCenter {
+            disableBoundCommands(on: commandCenter)
+        }
         infoCenter?.nowPlayingInfo = nil
         commandCenter = nil
         infoCenter = nil
