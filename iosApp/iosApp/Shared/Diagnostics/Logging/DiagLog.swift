@@ -244,6 +244,16 @@ private enum DiagnosticsRedactor {
         pattern: #"(?i)\b(auth|accessToken|access_token|profileToken|profile_token|refreshToken|refresh_token)\(…?[^)\r\n]*\)"#,
         options: []
     )
+    // URL path components that are opaque handles rather than API vocabulary:
+    // bare 32-hex item ids, dashed UUIDs, and long base64url blobs. Short,
+    // wordy components (`api`, `v1`, `card_overlays`) stay literal so the log
+    // line still says which endpoint was involved.
+    private static let opaqueIdentifierRegex = try! NSRegularExpression(
+        pattern: #"\A(?:[0-9a-f]{32}"#
+            + #"|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#
+            + #"|[A-Za-z0-9_-]{22,})\z"#,
+        options: [.caseInsensitive]
+    )
 
     // The active/remembered server hostnames, registered by ServerRegistry.
     // These are the identifiers most likely to leak as bare text (outside
@@ -342,6 +352,13 @@ private enum DiagnosticsRedactor {
         result = replaceSecretKeyValues(in: result)
         result = replaceMatches(in: result, regex: tokenWrapperRegex, replacement: "$1(…[redacted])")
         result = replaceKnownHosts(in: result)
+        // Filesystem paths and bare media filenames are the one class this
+        // layer never covered on its own, and every DiagTrace, breadcrumb, and
+        // early-boot line lands here. Compose the OSLog boundary's rules for
+        // that class only: its URL and credential rules are deliberately not
+        // reused, because hashing the host while keeping the API path is what
+        // makes these lines correlatable.
+        result = houseStyleMarkers(MediaLogRedactor.sanitizeFilesystemAndMediaIdentity(result))
         return trim(result, maxLength: maxLength)
     }
 
@@ -355,7 +372,38 @@ private enum DiagnosticsRedactor {
         // Loopback hosts carry no PII and stay literal for playback debugging.
         let host = components.host ?? ""
         let renderedHost = host.isEmpty || isLoopbackHost(host.lowercased()) ? host : hostToken(host)
-        return scheme + "://" + renderedHost + components.percentEncodedPath
+        return scheme + "://" + renderedHost + redactedPath(components.percentEncodedPath)
+    }
+
+    /// Hashing the host is not enough: `/Videos/<id>/Movie.Name.2019.mkv` names
+    /// the title and the item outright. Redact per component so the API shape
+    /// of the path survives while media names and opaque handles do not.
+    private static func redactedPath(_ percentEncodedPath: String) -> String {
+        guard percentEncodedPath.contains("/") else { return percentEncodedPath }
+        return percentEncodedPath
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map { component -> String in
+                let text = String(component)
+                if MediaLogRedactor.isMediaFilenameComponent(text) { return "[redacted_media_name]" }
+                if isOpaqueIdentifier(text) { return "[redacted_id]" }
+                return text
+            }
+            .joined(separator: "/")
+    }
+
+    /// `MediaLogRedactor` spells its markers for OSLog (`[redacted-path]`); the
+    /// diagnostics ring and its hosted upload path speak snake case
+    /// (`[redacted_url]`, `[redacted_path]`). Translate at the seam so a line
+    /// carries one vocabulary no matter which layer redacted it.
+    private static func houseStyleMarkers(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "[redacted-path]", with: "[redacted_path]")
+            .replacingOccurrences(of: "[redacted-media-name]", with: "[redacted_media_name]")
+    }
+
+    private static func isOpaqueIdentifier(_ component: String) -> Bool {
+        let range = NSRange(location: 0, length: (component as NSString).length)
+        return opaqueIdentifierRegex.firstMatch(in: component, options: [], range: range) != nil
     }
 
     private static func replaceURLs(in value: String) -> String {

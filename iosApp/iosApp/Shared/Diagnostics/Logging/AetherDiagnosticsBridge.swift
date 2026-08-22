@@ -17,13 +17,13 @@ enum AetherDiagnosticsBridge {
         defer { installLock.unlock() }
         guard !installed else { return }
 
-        EngineLog.handler = makeHandler { line in
+        EngineLog.handler = makeHandler { redactedLine in
             DiagTrace.log(
                 .verbose,
                 level: .debug,
                 category: .playback,
                 tag: "Aether",
-                message: line
+                message: redactedLine()
             )
         }
         installed = true
@@ -32,10 +32,15 @@ enum AetherDiagnosticsBridge {
     /// Injectable composition seam: tests prove the actual handler redacts
     /// before invoking its destination, while `DiagTraceTests` separately pin
     /// the consent and Debug Logging gate used by the production destination.
+    ///
+    /// The sink receives a provider rather than a string so the redaction pass
+    /// lands inside `DiagTrace.log`'s `@autoclosure`. Aether emits verbose host
+    /// lines continuously, and the capture gate rejects nearly all of them; a
+    /// suppressed line must not pay for a full regex sweep it will never use.
     static func makeHandler(
-        sink: @escaping (String) -> Void
+        sink: @escaping (() -> String) -> Void
     ) -> (String) -> Void {
-        { line in sink(sanitizedLine(line)) }
+        { line in sink({ sanitizedLine(line) }) }
     }
 
     static func sanitizedLine(_ line: String) -> String {
