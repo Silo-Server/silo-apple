@@ -378,8 +378,9 @@ server fallback.
   uploaded diagnostics without the existing privacy policy's transformation.
 - Silo sanitizes all projected media failures before public OSLog output.
   AetherEngine 6.34.0 itself still logs request URLs publicly, so the local
-  Aether hardening commit `dddfa478ae84acc82d042ccd8ccd5bdd17b7633e`
-  redacts URLs, credentials, paths, and secrets at its logging boundary. The
+  Aether hardening commit `9d3f291ca7461ae11d4d2f763f9fb36b7a43ea84`
+  redacts URLs, credentials, paths, and secrets at its logging boundary and
+  removes source filenames from known call sites. The
   Apple dependency cannot move to that commit until it is available from an
   accessible remote; no privacy-approved candidate may use the unpatched
   upstream revision.
