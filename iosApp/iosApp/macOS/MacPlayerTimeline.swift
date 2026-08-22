@@ -1,4 +1,5 @@
 #if os(macOS)
+import CoreGraphics
 import SwiftUI
 
 struct MacPlayerTimeline: View {
@@ -87,6 +88,35 @@ struct MacPlayerTimeline: View {
             .font(.system(size: 12, weight: .medium, design: .rounded))
             .monospacedDigit()
         }
+        .overlay(alignment: .top) {
+            if isDragging, let image = viewModel.scrubPreviewImage {
+                scrubPreviewCard(image)
+                    .offset(y: -138)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func scrubPreviewCard(_ image: CGImage) -> some View {
+        VStack(spacing: 5) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 192, height: 108)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .monospacedDigit()
+        }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(Color.black.opacity(0.30))
+        )
+        .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
     }
 
     private var isHoveringOrDragging: Bool {

@@ -7,8 +7,8 @@
 //  authority:
 //
 //    started   → snapshot the current subtitle selection; pause if playing
-//                (remember `wasPlaying`); install + select a synthetic styled
-//                libass track; show "Preparing…"; arm a 30s safety-resume
+//                (remember `wasPlaying`); install + select a synthetic Aether-
+//                clocked overlay track; show "Preparing…"; arm a 30s safety-resume
 //                timer (so a job that never streams a cue can't strand the
 //                viewer paused).
 //    cues      → feed each cue to the live track; on the FIRST batch, cancel
@@ -39,7 +39,7 @@
 //  Everything the coordinator touches the player through is behind the
 //  ``LivePlaybackControls`` and ``LiveSubtitleSink`` seams, and the safety
 //  timer is an injected factory, so the whole machine is unit-tested headless
-//  — no libass, no websocket, no player (see `LiveSubtitleCoordinatorTests`).
+//  — no media engine, websocket, or player (see `LiveSubtitleCoordinatorTests`).
 //
 
 import Foundation
@@ -57,7 +57,7 @@ protocol LivePlaybackControls: AnyObject {
     var isPlaying: Bool { get }
 }
 
-/// The live-track surface the coordinator manipulates: a synthetic libass
+/// The live-track surface the coordinator manipulates: a synthetic overlay
 /// track, its selection, the persisted-track handoff, and the "Preparing…"
 /// notice. Implemented as an adapter over the M2 live-track primitives, the
 /// M3 completion handoff, the VM's selection plumbing, and the notice surface.
@@ -67,9 +67,8 @@ protocol LiveSubtitleSink: AnyObject {
     /// given `trackKey`. The ordinal that backs the track id is derived from
     /// the key by the adapter.
     func installLiveTrack(trackKey: String, label: String?, language: String?)
-    /// Feed one streamed cue (absolute media-time seconds). The adapter owns
-    /// the seconds→milliseconds + transcode-offset conversion and the
-    /// M2 `LiveSubtitleTrack` dedupe.
+    /// Feed one streamed cue in absolute Silo source seconds. The adapter owns
+    /// normalization and `LiveSubtitleTrack` dedupe.
     func feedCue(_ cue: PlaybackRealtimeSubtitleCue)
     /// Select the live track installed for `trackKey`.
     func selectLive(trackKey: String)
@@ -78,7 +77,7 @@ protocol LiveSubtitleSink: AnyObject {
     /// where no persisted track is arriving to take over the caption.
     func closeLiveTrack(trackKey: String)
     /// Close the synthetic live track for `trackKey`, but DEFER the row removal
-    /// + libass teardown until AFTER the handed-off persisted track is selected
+    /// until AFTER the handed-off persisted track is selected
     /// (M5 seamless swap). Used on the success path so there is never a frame
     /// with no subtitle selected between dropping the live row and the persisted
     /// track landing. If the persisted selection never lands (handoff failed),

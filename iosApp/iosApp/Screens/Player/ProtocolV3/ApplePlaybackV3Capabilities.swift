@@ -41,11 +41,11 @@ enum ApplePlaybackV3Capabilities {
     /// Advertising it would be a claim we cannot back.
     static let features = [
         PlaybackProtocolV3.planFeature,
-        PlaybackProtocolV3.clientTransformFeature,
         PlaybackProtocolV3.routeDiagnosticsFeature,
         PlaybackProtocolV3.deviceQuirksFeature,
         PlaybackProtocolV3.seekReanchorFeature,
-        PlaybackProtocolV3.directStreamResumeFeature
+        PlaybackProtocolV3.directStreamResumeFeature,
+        PlaybackProtocolV3.headerAuthenticatedMediaFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
@@ -54,34 +54,24 @@ enum ApplePlaybackV3Capabilities {
         $0 != PlaybackProtocolV3.seekReanchorFeature
     }
 
-    /// The AVPlayer-backed audiobook engine does not execute PlayerCore or
-    /// local-loopback plans. Keep its flat codec/container cross-product to
-    /// combinations AVPlayer opens directly rather than inheriting the video
-    /// player's FFmpeg-only DTS, TrueHD, Vorbis, and Matroska claims.
+    /// The audiobook surface is migrated separately but uses the same Aether
+    /// execution contract. Keep its first-build claim deliberately narrow.
     private static let audiobookAudioCodecs = [
         "aac", "ac3", "eac3", "alac", "mp3", "flac",
         "pcm", "pcm_s16le", "pcm_s24le"
     ]
     private static let audiobookOriginalContainers = ["mp4"] + AppleDecodeCapabilities.audioContainers
-    private static let commonClaims = ["apple_execution_plan_v1", "authenticated_stream_headers"]
-
-    /// Video codecs the Apple playback stack decodes on a direct route. This
-    /// mirrors `ApplePlaybackRoutePlanner`'s native-direct and loopback
-    /// allowlists rather than the wider set FFmpeg can demux: a codec claimed
-    /// here is one the server may hand us untranscoded.
-    private static let directVideoCodecs = ["h264", "hevc", AppleDecodeCapabilities.mpeg2VideoCodec]
+    private static let commonClaims = ["authenticated_stream_headers"]
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
         let output = outputSnapshot(hdrAvailability: hdrAvailability)
-        let isSimulator = AppleDecodeCapabilities.isSimulator
         let videoDecode = videoDecodeAttestation()
         let videoCodecs = videoDecode.map(\.codec)
         let hardwareVideoCodecs = videoDecode.filter(\.hardware).map(\.codec)
 
-        // Audio is decoded by the bundled FFmpeg demuxer on the loopback route,
-        // so the flat list is wider than what AVPlayer alone accepts. The
-        // narrower per-delivery lists below carry that distinction.
+        // Aether owns demux/decode on original HTTP. The narrower packaged
+        // delivery lists below describe the formats the server may emit.
         let audioCodecs = AppleDecodeCapabilities.audioCodecs
         let containers = AppleDecodeCapabilities.containers
         let hdr = output.hdrDetails.map { $0.hdr10 || $0.hlg || !$0.dolbyVisionProfiles.isEmpty } ?? false
@@ -92,7 +82,9 @@ enum ApplePlaybackV3Capabilities {
             // The server skips profile/level matching at this tier and still
             // applies every bound we do supply.
             videoEvidence: PlaybackProtocolV3.Evidence.platformAttested,
-            audioEvidence: PlaybackProtocolV3.Evidence.platformAttested,
+            // These are the exact codecs accepted by the pinned Aether build,
+            // not codecs attested by an Apple audio-decoder probe.
+            audioEvidence: PlaybackProtocolV3.Evidence.declared,
             codecsVideo: videoCodecs,
             codecsVideoHardware: hardwareVideoCodecs,
             codecsAudio: audioCodecs,
@@ -107,43 +99,22 @@ enum ApplePlaybackV3Capabilities {
             videoDecode: videoDecode
         )
 
-        let clientTransformations: [PlaybackV3Transformation] = isSimulator ? [] : [
-            PlaybackV3Transformation(
-                name: "client_dv7_to_dv81",
-                executor: "client",
-                recipeVersion: "1",
-                validatedClaims: [
-                    "profile7_rpu_converted_to_profile81",
-                    "hdr10_base_layer_preserved",
-                    "enhancement_layer_discarded"
-                ]
-            ),
-            PlaybackV3Transformation(
-                name: "client_dv7_to_hdr10",
-                executor: "client",
-                recipeVersion: "1",
-                validatedClaims: [
-                    "dolby_vision_metadata_removed",
-                    "hdr10_base_layer_preserved",
-                    "enhancement_layer_discarded"
-                ]
-            )
-        ]
+        // First Aether-only candidates advertise no client-side recipe. Add a
+        // transformation only after the exact Aether pin and real hardware
+        // fixtures prove that executor end to end.
+        let clientTransformations: [PlaybackV3Transformation] = []
 
-        // The loopback executor demuxes and renders subtitles itself; AVPlayer
-        // only carries what the stream already presents as a media selection.
-        let loopbackSubtitles = PlaybackV3DeliverySubtitleCapabilities(
+        let aetherSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: true,
             sidecarText: true,
-            assStyling: true,
+            // The Silo overlay preserves normalized text and placement, not
+            // the complete authored ASS style contract.
+            assStyling: false,
             embeddedBitmap: true,
-            // SidecarSubtitleFetcher intentionally accepts text payloads only;
-            // bitmap subtitles are supported when embedded in the original
-            // source and decoded by the loopback extractor, not as sidecars.
             sidecarBitmap: false,
-            fontAttachments: true
+            fontAttachments: false
         )
-        let avPlayerSubtitles = PlaybackV3DeliverySubtitleCapabilities(
+        let packagedSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: true,
             sidecarText: true,
             assStyling: false,
@@ -162,9 +133,9 @@ enum ApplePlaybackV3Capabilities {
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
                 hdrDetails: output.hdrDetails,
-                subtitles: loopbackSubtitles,
-                features: ["apple_native_direct", "apple_local_loopback", "apple_playercore"],
-                authHeaderRefresh: true,
+                subtitles: aetherSubtitles,
+                features: [],
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims + ["client_subtitle_overlay"],
                 transformations: clientTransformations
             ),
@@ -178,9 +149,9 @@ enum ApplePlaybackV3Capabilities {
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
                 hdrDetails: output.hdrDetails,
-                subtitles: avPlayerSubtitles,
-                features: ["apple_avplayer_progressive"],
-                authHeaderRefresh: true,
+                subtitles: packagedSubtitles,
+                features: [],
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             ),
@@ -189,17 +160,16 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["hls", "mpegts", "fmp4", "mp4"],
-                // HLS always executes through AVPlayer. The locally attested
-                // `videoCodecs` list also contains PlayerCore-only MPEG-2;
-                // the shared AVPlayer list deliberately does not.
+                // The remote-HLS bypass is intentionally narrower than the
+                // original-source Aether route.
                 videoCodecs: AppleDecodeCapabilities.videoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
                 hdrDetails: output.hdrDetails,
-                subtitles: avPlayerSubtitles,
-                features: ["apple_avplayer_hls"],
-                authHeaderRefresh: true,
+                subtitles: packagedSubtitles,
+                features: [],
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             )
@@ -222,9 +192,8 @@ enum ApplePlaybackV3Capabilities {
         )
     }
 
-    /// Capability evidence for the standalone audiobook engine. The engine
-    /// is AVPlayer-only, so every advertised delivery must remain executable
-    /// without the video player's PlayerCore or local-loopback adapters.
+    /// Capability evidence for Aether's audio-only execution mode. Keep every
+    /// advertised delivery executable without relying on a video surface.
     static func audiobookSnapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let base = snapshot()
         let noSubtitles = PlaybackV3DeliverySubtitleCapabilities(
@@ -247,8 +216,8 @@ enum ApplePlaybackV3Capabilities {
                 maxChannels: 8,
                 hdrDetails: nil,
                 subtitles: noSubtitles,
-                features: ["apple_native_direct"],
-                authHeaderRefresh: true,
+                features: [],
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             ),
@@ -263,8 +232,8 @@ enum ApplePlaybackV3Capabilities {
                 maxChannels: 8,
                 hdrDetails: nil,
                 subtitles: noSubtitles,
-                features: ["apple_avplayer_progressive"],
-                authHeaderRefresh: true,
+                features: [],
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             ),
@@ -279,8 +248,8 @@ enum ApplePlaybackV3Capabilities {
                 maxChannels: 8,
                 hdrDetails: nil,
                 subtitles: noSubtitles,
-                features: ["apple_avplayer_hls"],
-                authHeaderRefresh: true,
+                features: [],
+                authHeaderRefresh: false,
                 validatedClaims: commonClaims,
                 transformations: []
             )
@@ -333,8 +302,8 @@ enum ApplePlaybackV3Capabilities {
             ("h264", kCMVideoCodecType_H264),
             ("hevc", kCMVideoCodecType_HEVC)
         ]
-        var capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
-            guard directVideoCodecs.contains(codec), hardwareDecodeSupported(codecType) else {
+        let capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
+            guard hardwareDecodeSupported(codecType) else {
                 return nil
             }
             return PlaybackV3VideoDecodeCapability(
@@ -356,23 +325,6 @@ enum ApplePlaybackV3Capabilities {
                 hardware: true
             )
         }
-        #if !targetEnvironment(simulator)
-        // PlayerCore carries a bounded FFmpeg software path for MPEG-2. Keep
-        // it out of the hardware list while still advertising the route the
-        // production executor can actually decode.
-        capabilities.append(PlaybackV3VideoDecodeCapability(
-            codec: AppleDecodeCapabilities.mpeg2VideoCodec,
-            decoderName: "FFmpeg",
-            profiles: [],
-            levels: [],
-            bitDepths: [8],
-            maxWidth: 1_920,
-            maxHeight: 1_080,
-            maxFrameRate: 60,
-            maxBitrateKbps: 50_000,
-            hardware: false
-        ))
-        #endif
         return capabilities
     }
 
@@ -406,9 +358,11 @@ enum ApplePlaybackV3Capabilities {
         // decoder evidence, so a hardcoded device-wide claim could select an
         // HDR route for an SDR display chain.
         let hdrCapabilities = hdrDetails(
-            hdr10: hdrAvailability.supportsHDR10,
-            hlg: hdrAvailability.supportsHLG,
-            dolbyVision: hdrAvailability.supportsDolbyVision
+            hdr10: PlayerSettings.shared.hdrEnabled && hdrAvailability.supportsHDR10,
+            hlg: PlayerSettings.shared.hdrEnabled && hdrAvailability.supportsHLG,
+            dolbyVision: PlayerSettings.shared.hdrEnabled
+                && PlayerSettings.shared.dolbyVisionEnabled
+                && hdrAvailability.supportsDolbyVision
         )
 
         let sink: String

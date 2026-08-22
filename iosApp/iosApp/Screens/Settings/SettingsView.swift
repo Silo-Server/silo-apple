@@ -255,6 +255,18 @@ struct SettingsView: View {
                 Text("Version")
                     .foregroundStyle(Color.continuumOnSurface)
             }
+
+            Link("Privacy Policy", destination: SiloLegalLinks.privacyPolicy)
+
+            NavigationLink {
+                OpenSourceAcknowledgementsView()
+            } label: {
+                SettingsRowLabel(
+                    title: "Open Source Licenses",
+                    systemImage: "curlybraces",
+                    color: .indigo
+                )
+            }
         }
     }
 

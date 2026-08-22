@@ -14,12 +14,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         let capabilities = ApplePlaybackV3Capabilities.snapshot().capabilities
         XCTAssertEqual(capabilities.codecsAudio, AppleDecodeCapabilities.audioCodecs)
         XCTAssertEqual(capabilities.containers, AppleDecodeCapabilities.containers)
-        // The snapshot covers every route the plan can land on, so it is the
-        // one surface that claims the software-decoded MPEG-2 unconditionally.
-        XCTAssertEqual(
-            capabilities.codecsVideo,
-            AppleDecodeCapabilities.videoCodecs(includingMPEG2: true)
-        )
+        XCTAssertEqual(capabilities.codecsVideo, AppleDecodeCapabilities.videoCodecs)
     }
 
     func testDownloadCapsReportTheSharedVocabulary() {
@@ -73,20 +68,8 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
     }
 
     func testHardwareCodecsAreASubsetOfClaimedCodecs() {
-        let claimed = Set(AppleDecodeCapabilities.videoCodecs(includingMPEG2: true))
+        let claimed = Set(AppleDecodeCapabilities.videoCodecs)
         XCTAssertTrue(Set(AppleDecodeCapabilities.hardwareVideoCodecs).isSubset(of: claimed))
-        // MPEG-2 runs on PlayerCore's software decoder, never VideoToolbox.
-        XCTAssertFalse(
-            AppleDecodeCapabilities.hardwareVideoCodecs
-                .contains(AppleDecodeCapabilities.mpeg2VideoCodec)
-        )
-    }
-
-    func testMPEG2IsOptInAndNeverClaimedBare() {
-        XCTAssertFalse(
-            AppleDecodeCapabilities.videoCodecs
-                .contains(AppleDecodeCapabilities.mpeg2VideoCodec)
-        )
     }
 
     func testDecodeEntriesNameTheDecoderTheyActuallyUse() {
@@ -103,7 +86,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
 
     func testSimulatorClaimStaysConservative() throws {
         try XCTSkipUnless(AppleDecodeCapabilities.isSimulator)
-        XCTAssertEqual(AppleDecodeCapabilities.videoCodecs(includingMPEG2: true), ["h264"])
+        XCTAssertEqual(AppleDecodeCapabilities.videoCodecs, ["h264"])
         XCTAssertEqual(AppleDecodeCapabilities.maxResolution, "1080p")
         XCTAssertFalse(DownloadCaps.current().hdr)
         XCTAssertEqual(DownloadCaps.current().audioPassthroughCodecs, [])

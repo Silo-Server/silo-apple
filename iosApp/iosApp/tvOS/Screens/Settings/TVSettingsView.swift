@@ -21,6 +21,7 @@ struct TVSettingsView: View {
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
+    @State private var showOpenSourceAcknowledgements = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @State private var activePicker: TVSettingsPickerRequest?
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
@@ -72,6 +73,14 @@ struct TVSettingsView: View {
                     .transition(.opacity)
                     .zIndex(3)
             }
+
+            if showOpenSourceAcknowledgements {
+                TVOpenSourceAcknowledgementsOverlay(
+                    dismiss: dismissOpenSourceAcknowledgements
+                )
+                .transition(.opacity)
+                .zIndex(4)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
@@ -84,6 +93,7 @@ struct TVSettingsView: View {
                activePicker == nil,
                !showSignOutConfirm,
                !showPrivacyPolicy,
+               !showOpenSourceAcknowledgements,
                !isRestoringDetailFocus {
                 preferredFocusOwner = .rail
             }
@@ -104,6 +114,7 @@ struct TVSettingsView: View {
                activePicker == nil,
                !showSignOutConfirm,
                !showPrivacyPolicy,
+               !showOpenSourceAcknowledgements,
                !isRestoringDetailFocus {
                 preferredDetailFocus = focus
                 preferredFocusOwner = .detail
@@ -144,6 +155,7 @@ struct TVSettingsView: View {
                 .disabled(
                     showSignOutConfirm
                         || showPrivacyPolicy
+                        || showOpenSourceAcknowledgements
                         || activePicker != nil
                         || isRestoringDetailFocus
                 )
@@ -159,7 +171,12 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(showSignOutConfirm || showPrivacyPolicy || activePicker != nil)
+                .disabled(
+                    showSignOutConfirm
+                        || showPrivacyPolicy
+                        || showOpenSourceAcknowledgements
+                        || activePicker != nil
+                )
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -326,6 +343,8 @@ struct TVSettingsView: View {
     private func returnFocusToRail() {
         guard activePicker == nil,
               !showSignOutConfirm,
+              !showPrivacyPolicy,
+              !showOpenSourceAcknowledgements,
               !isRestoringDetailFocus else {
             return
         }
@@ -368,6 +387,33 @@ struct TVSettingsView: View {
             resetFocus(in: settingsFocusScope)
             resetFocus(in: detailFocusScope)
             detailFocus = .serverPrivacyPolicy
+            try? await Task.sleep(for: .milliseconds(120))
+            isRestoringDetailFocus = false
+        }
+    }
+
+    private func presentOpenSourceAcknowledgements() {
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .serverOpenSourceLicenses
+        railFocus = nil
+        detailFocus = nil
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            showOpenSourceAcknowledgements = true
+        }
+    }
+
+    private func dismissOpenSourceAcknowledgements() {
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            showOpenSourceAcknowledgements = false
+        }
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .serverOpenSourceLicenses
+        isRestoringDetailFocus = true
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: settingsFocusScope)
+            resetFocus(in: detailFocusScope)
+            detailFocus = .serverOpenSourceLicenses
             try? await Task.sleep(for: .milliseconds(120))
             isRestoringDetailFocus = false
         }
@@ -560,6 +606,21 @@ struct TVSettingsView: View {
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverPrivacyPolicy)
+
+            Button(action: presentOpenSourceAcknowledgements) {
+                HStack(spacing: 16) {
+                    Image(systemName: "curlybraces")
+                        .font(.system(size: 22, weight: .medium))
+                    Text("Open Source Licenses")
+                        .font(.system(size: 26))
+                    Spacer(minLength: 0)
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 18, weight: .semibold))
+                        .opacity(0.55)
+                }
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($detailFocus, equals: .serverOpenSourceLicenses)
         }
     }
 
@@ -614,6 +675,7 @@ enum TVSettingsDetailFocus: Hashable {
     case subtitleBackgroundColor
     case subtitlePosition
     case serverPrivacyPolicy
+    case serverOpenSourceLicenses
 }
 
 // MARK: - Categories

@@ -1,3 +1,4 @@
+import AetherEngine
 import SwiftUI
 
 /// Full-screen video player. Thin shell around `PlayerViewModel` that picks
@@ -29,7 +30,6 @@ struct PlayerView: View {
     @State private var viewModel = PlayerViewModel()
     @State private var didNotifyPlaybackStarted = false
     @Environment(\.dismiss) var dismiss
-    @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     #endif
@@ -188,7 +188,8 @@ struct PlayerView: View {
                         HoldSeekIndicator(
                             rate: viewModel.holdSeekRate,
                             previewTime: viewModel.scrubPreviewTime,
-                            duration: viewModel.duration
+                            duration: viewModel.duration,
+                            previewImage: viewModel.scrubPreviewImage
                         )
                         .transition(.opacity)
                         .allowsHitTesting(false)
@@ -225,11 +226,11 @@ struct PlayerView: View {
                     if let identity = remoteIdentityNotice {
                         RemotePlaybackIdentityNotice(identity: identity)
                             .transition(.opacity)
-                    } else if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
+                    } else if let notice = viewModel.activeNotice {
                         PlayerNoticeOverlay(notice: notice)
                     }
                     #else
-                    if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
+                    if let notice = viewModel.activeNotice {
                         PlayerNoticeOverlay(notice: notice)
                     }
                     #endif
@@ -258,8 +259,6 @@ struct PlayerView: View {
                 }
             } else if viewModel.isHoldSeeking {
                 viewModel.cancelHoldSeek()
-            } else if viewModel.isBackgroundSuspended {
-                dismissPlayer()
             } else if viewModel.isLoading {
                 dismissPlayer()
             } else if viewModel.isHUDPresented {
@@ -275,9 +274,6 @@ struct PlayerView: View {
             }
         }
         #endif
-        .onChange(of: scenePhase) { _, newPhase in
-            viewModel.handleScenePhase(newPhase)
-        }
         .onChange(of: viewModel.isPlaying) { _, isPlaying in
             guard isPlaying, !didNotifyPlaybackStarted else { return }
             didNotifyPlaybackStarted = true
@@ -307,6 +303,14 @@ struct PlayerView: View {
             }
             #if os(iOS)
             orientationCoordinator.activatePlayer()
+            activeViewModel.playerPresentationDidAppear()
+            PictureInPictureCoordinator.shared.bind(
+                engine: activeViewModel.aetherEngine,
+                owner: activeViewModel,
+                onEngagementEnded: { [weak activeViewModel] in
+                    activeViewModel?.pictureInPictureEngagementDidEnd()
+                }
+            )
             #endif
             activeViewModel.applyArtworkURLHints(posterURL: posterURLHint, backdropURL: backdropURLHint)
             activeViewModel.loadAndPlay(
@@ -340,7 +344,11 @@ struct PlayerView: View {
             timelinePreviewHideTask?.cancel()
             timelinePreviewHideTask = nil
             #endif
+            #if os(iOS)
+            viewModel.playerPresentationDidDisappear()
+            #else
             viewModel.cleanup()
+            #endif
             #if os(tvOS)
             TVControlReceiver.shared.unregisterPlayer(viewModel)
             #endif
@@ -440,39 +448,29 @@ struct PlayerView: View {
     /// gestures (tap-to-toggle, pinch, double-tap skip, …) live in
     /// `MobilePlayerGestureLayer`, mounted above this surface.
     ///
-    /// Render the active backend surface directly from the VM's route state.
-    /// AVPlayer now covers HLS, the narrow native-direct allowlist, and the
-    /// Dolby Vision loopback fallback; PlayerCore remains the compatibility
-    /// direct path.
+    /// Aether owns native/software route selection behind this one surface.
     @ViewBuilder
     private func playerSurface(ignoresSafeArea: Bool = true) -> some View {
-        switch viewModel.activePlayer {
-        case .none:
-            if ignoresSafeArea {
-                Color.black.ignoresSafeArea()
-            } else {
-                Color.black
+        let surface = AetherPlayerSurface(engine: viewModel.aetherEngine)
+            .background(Color.black)
+            .overlay {
+                AetherSubtitleOverlay(
+                    engine: viewModel.aetherEngine,
+                    sourceTime: viewModel.currentTime,
+                    livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                        ? viewModel.livePrimarySubtitleCues
+                        : [],
+                    liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                        ? viewModel.liveSecondarySubtitleCues
+                        : [],
+                    appearance: viewModel.settings.effectiveSubtitleAppearance,
+                    subtitleSyncMs: viewModel.settings.subtitleSyncMs
+                )
             }
-        case .avPlayer(let backend):
-            let surface = AVPlayerSurface(
-                backend: backend,
-                videoGravity: viewModel.settings.videoGravity.avGravity
-            )
-            if ignoresSafeArea {
-                surface.ignoresSafeArea()
-            } else {
-                surface
-            }
-        case .coreMedia(let core):
-            let surface = PlayerSurface(
-                player: core,
-                videoGravity: viewModel.settings.videoGravity.avGravity
-            )
-            if ignoresSafeArea {
-                surface.ignoresSafeArea()
-            } else {
-                surface
-            }
+        if ignoresSafeArea {
+            surface.ignoresSafeArea()
+        } else {
+            surface
         }
     }
 

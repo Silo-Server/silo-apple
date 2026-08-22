@@ -6,13 +6,10 @@ import Foundation
 /// `OfflinePlaybackBuilder`.
 ///
 /// The manifest's `index` is the ordinal within its own audio list, while
-/// `AudioTrack.index` means the ffmpeg stream index — it becomes the
-/// `ffIndex` the loopback muxer selects a source stream by. Forwarding one as
-/// the other named the video stream, so the demuxer discarded the audio the
-/// muxer then waited forever to receive, and playback died with a
-/// `vodMoovBlocked` error that named nothing about audio. These lock the
-/// mapping down, and decode through the same `.convertFromSnakeCase` strategy
-/// the API client uses so the wire keys are covered too.
+/// `AudioTrack.index` means a source stream identifier. AetherEngine probes
+/// the delivered file and maps the ordinal at load time. These tests lock down
+/// the stored-manifest boundary and decode through the same
+/// `.convertFromSnakeCase` strategy the API client uses.
 final class OfflinePlaybackMappingTests: XCTestCase {
 
     // MARK: - Factories
@@ -52,44 +49,13 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         )
     }
 
-    private func prepared(
-        _ manifest: OfflineManifest,
-        videoTracks: [VideoTrack] = []
-    ) -> PreparedPlayback {
+    private func prepared(_ manifest: OfflineManifest) -> PreparedPlayback {
         OfflinePlaybackBuilder.makePreparedPlayback(
             leafContentId: "leaf",
             manifest: manifest,
             mediaURL: URL(fileURLWithPath: "/tmp/media.mkv"),
-            videoTracks: videoTracks,
             subtitleURLs: [],
             resumePosition: nil
-        )
-    }
-
-    /// A video track shaped the way `LocalMediaProbe` emits one: a bare DV
-    /// profile number, and `color_transfer` in FFmpeg's spelling.
-    private func probedVideoTrack(
-        dolbyVisionProfile: Int?,
-        colorTransfer: String = "smpte2084"
-    ) -> VideoTrack {
-        VideoTrack(
-            index: 0,
-            codec: "hevc",
-            width: 3840,
-            height: 2160,
-            frameRate: "23.976",
-            bitrate: nil,
-            profile: nil,
-            level: 153,
-            bitDepth: 10,
-            colorRange: "tv",
-            colorSpace: "bt2020nc",
-            colorPrimaries: "bt2020",
-            colorTransfer: colorTransfer,
-            videoRange: nil,
-            dolbyVision: dolbyVisionProfile.map(String.init),
-            title: nil,
-            language: nil
         )
     }
 
@@ -128,8 +94,8 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         XCTAssertEqual(track.language, "eng")
         XCTAssertEqual(track.channels, 6)
         XCTAssertEqual(track.title, "Surround 5.1")
-        // `layout` feeds the detail badge and the loopback's channel handling;
-        // `sample_rate` only survives `.convertFromSnakeCase` if the coding key
+        // `layout` feeds the detail badge; `sample_rate` only survives
+        // `.convertFromSnakeCase` if the coding key
         // is spelled in its converted camelCase form.
         XCTAssertEqual(track.channelLayout, "5.1(side)")
         XCTAssertEqual(track.bitrate, 640_000)
@@ -200,91 +166,5 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         let version = prepared(try manifest(fileSize: nil, durationSeconds: nil)).selectedVersion
 
         XCTAssertNil(version.bitrate)
-    }
-
-    // MARK: - Dolby Vision parity
-
-    /// Route the offline playback through the real planner. The DV helpers are
-    /// fileprivate to the planner, so asserting on the plan it produces both
-    /// exercises them and pins the contract that actually matters.
-    private func plan(
-        dolbyVisionProfile: Int,
-        colorTransfer: String = "smpte2084"
-    ) throws -> PlaybackExecutionPlan {
-        try plan(videoTracks: [probedVideoTrack(
-            dolbyVisionProfile: dolbyVisionProfile,
-            colorTransfer: colorTransfer
-        )])
-    }
-
-    private func plan(videoTracks: [VideoTrack]) throws -> PlaybackExecutionPlan {
-        let playback = prepared(
-            try manifest(audioTracksJSON: singleEAC3Track, selectedAudioTrackIndex: 0),
-            videoTracks: videoTracks
-        )
-        return ApplePlaybackRoutePlanner().makeExecutionPlan(
-            input: ApplePlaybackPlannerInput(
-                session: playback.session,
-                selectedVersion: playback.selectedVersion,
-                streamRequest: StreamRequest(
-                    url: URL(fileURLWithPath: "/tmp/media.mkv"),
-                    headers: [:],
-                    serverUrl: ""
-                ),
-                routeRequirements: .baseline,
-                selectedAudioTrackId: nil,
-                pendingAudioFfIndex: nil,
-                preferredAudioTrackIndex: 0,
-                selectedPrimarySubtitleTrackId: nil,
-                selectedSecondarySubtitleTrackId: nil,
-                hlsRouteFeatureEnabled: true,
-                siloPlayerPrimaryEnabled: true,
-                dolbyVisionPolicy: .default
-            )
-        )
-    }
-
-    func testProbedDolbyVisionRoutesToTheDolbyVisionEngine() throws {
-        for profile in [5, 7, 8] {
-            let plan = try plan(dolbyVisionProfile: profile)
-
-            // The end state asked for: a downloaded DV file reaches the
-            // DV-capable engine with a resolved loopback session, exactly as
-            // the same file does when streamed.
-            XCTAssertEqual(plan.engine, .siloPlayerLoopback, "profile \(profile)")
-            XCTAssertNotNil(plan.loopbackSession, "profile \(profile)")
-            XCTAssertEqual(plan.sourceMetadata.dolbyVisionProfile, profile)
-            XCTAssertTrue(
-                plan.reason.contains("dolby_vision"),
-                "profile \(profile) expected a Dolby Vision reason, got \(plan.reason)"
-            )
-        }
-    }
-
-    func testWithoutAProbedTrackDolbyVisionIsInvisible() throws {
-        // The state this change exists to fix: the manifest describes no video
-        // stream, so with nothing probed off the file a DV download planned as
-        // plain HEVC and lost DV silently.
-        let plan = try plan(videoTracks: [])
-
-        XCTAssertNil(plan.sourceMetadata.dolbyVisionProfile)
-        XCTAssertFalse(plan.reason.contains("dolby_vision"), plan.reason)
-    }
-
-    func testProbedTransferSplitsProfile8BaseLayers() throws {
-        // 8.1 (PQ base) and 8.4 (HLG base) are only distinguishable by
-        // color_transfer, which is exactly what a video track carries.
-        let pq = try plan(dolbyVisionProfile: 8, colorTransfer: "smpte2084")
-        let hlg = try plan(dolbyVisionProfile: 8, colorTransfer: "arib-std-b67")
-
-        XCTAssertEqual(pq.loopbackSession?.manifestMetadata.videoRange, "PQ")
-        XCTAssertEqual(hlg.loopbackSession?.manifestMetadata.videoRange, "HLG")
-    }
-
-    func testProbedColourRangeAndFrameRateReachThePlan() throws {
-        let plan = try plan(dolbyVisionProfile: 8)
-
-        XCTAssertEqual(plan.sourceMetadata.colorRange, "tv")
-        XCTAssertEqual(plan.loopbackSession?.sourceVideoFrameRate, 23.976)
     }
 }

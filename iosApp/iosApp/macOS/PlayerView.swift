@@ -1,4 +1,5 @@
 #if os(macOS)
+import AetherEngine
 import SwiftUI
 
 struct PlayerView: View {
@@ -15,7 +16,6 @@ struct PlayerView: View {
     let offlineDownloadId: String?
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = PlayerViewModel()
     @State private var isOptionsPresented = false
     @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
@@ -47,7 +47,7 @@ struct PlayerView: View {
             } else {
                 playerSurface
 
-                if viewModel.isLoading, viewModel.avPlayerBackend == nil {
+                if viewModel.isLoading {
                     ProgressView()
                         .tint(.white)
                         .scaleEffect(1.5)
@@ -75,7 +75,7 @@ struct PlayerView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
 
-                if let notice = viewModel.activeNotice ?? viewModel.suspendedNotice {
+                if let notice = viewModel.activeNotice {
                     PlayerNoticeOverlay(notice: notice)
                         .padding(.top, 72)
                 }
@@ -90,9 +90,6 @@ struct PlayerView: View {
             if hovering {
                 viewModel.revealControls()
             }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            viewModel.handleScenePhase(newPhase)
         }
         .onChange(of: viewModel.hasTrackSelectionOptions) { _, hasOptions in
             if !hasOptions {
@@ -132,16 +129,22 @@ struct PlayerView: View {
 
     @ViewBuilder
     private var playerSurface: some View {
-        switch viewModel.activePlayer {
-        case .none:
-            Color.black.ignoresSafeArea()
-        case .avPlayer(let backend):
-            AVPlayerSurface(backend: backend)
-                .ignoresSafeArea()
-        case .coreMedia(let core):
-            PlayerSurface(player: core)
-                .ignoresSafeArea()
+        ZStack {
+            AetherPlayerSurface(engine: viewModel.aetherEngine)
+            AetherSubtitleOverlay(
+                engine: viewModel.aetherEngine,
+                sourceTime: viewModel.currentTime,
+                livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                    ? viewModel.livePrimarySubtitleCues
+                    : [],
+                liveSecondaryCues: viewModel.selectedSecondarySubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
+                    ? viewModel.liveSecondarySubtitleCues
+                    : [],
+                appearance: viewModel.settings.effectiveSubtitleAppearance,
+                subtitleSyncMs: viewModel.settings.subtitleSyncMs
+            )
         }
+        .ignoresSafeArea()
     }
 
     private func handleCommand(_ command: MacPlayerCommand) {

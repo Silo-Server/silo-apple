@@ -207,19 +207,9 @@ final class PlayerSettings {
         didSet { defaults.set(preferProfile7HDR10Fallback, forKey: Self.cacheKey(Keys.dvProfile7HDR10Fallback)) }
     }
 
-    /// Plan-time snapshot of the Dolby Vision decision inputs, consumed by
-    /// the route planner and pushed into PlayerCore before each load.
-    var dolbyVisionPolicySnapshot: DolbyVisionPolicy.Snapshot {
-        DolbyVisionPolicy.Snapshot(
-            dolbyVisionEnabled: dolbyVisionEnabled,
-            preferProfile7HDR10Fallback: preferProfile7HDR10Fallback
-        )
-    }
-
-    /// Spill streamed bytes to temporary disk storage during playback so
-    /// large forward/backward seeks are served locally. Governs the source
-    /// cache only; the loopback segment store's spill is load-bearing for the
-    /// DV route and stays on regardless.
+    /// Retained as the cross-client buffering preference. Aether owns the
+    /// cache implementation; the adapter maps this preference without
+    /// constructing a Silo source cache.
     var seekCacheEnabled: Bool {
         didSet { defaults.set(seekCacheEnabled, forKey: Self.cacheKey(Keys.seekCacheEnabled)) }
     }

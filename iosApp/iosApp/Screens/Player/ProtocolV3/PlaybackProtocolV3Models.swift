@@ -8,11 +8,14 @@ enum PlaybackProtocolV3 {
     /// and distinct intent replan operations.
     static let neutralContractFeature = "neutral_playback_v3_contract_v1"
     static let layoutPassthroughFeature = "layout_aware_passthrough"
-    static let clientTransformFeature = "client_video_transformations_v1"
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"
     static let directStreamResumeFeature = "direct_stream_resume_v1"
+    /// API-local media URLs carry no signed credential. The client attaches
+    /// its current Authorization header to the source and every derived media
+    /// or subtitle request.
+    static let headerAuthenticatedMediaFeature = "header_authenticated_media_v1"
     static let planSourceDurationFeature = "plan_source_duration_v1"
 
     /// Delivery classes are the unit a client negotiates in

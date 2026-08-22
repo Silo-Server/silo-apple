@@ -13,7 +13,6 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
     case invalidTransport(String)
     case unsupportedClientTransformation(String)
-    case invalidClientTransformation(String)
     case unsupportedRuntimeCorrection(String)
 
     var errorDescription: String? {
@@ -24,8 +23,6 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
             return "The V3 playback transport is invalid: \(value)."
         case .unsupportedClientTransformation(let value):
             return "The V3 plan requires an unsupported client transformation: \(value)."
-        case .invalidClientTransformation(let value):
-            return "The V3 client transformation cannot be executed as planned: \(value)."
         case .unsupportedRuntimeCorrection(let value):
             return "The V3 plan requires an unsupported runtime correction: \(value)."
         }
@@ -33,13 +30,6 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
 }
 
 enum ApplePlaybackV3PlanAdapter {
-    private static let clientTransformations = ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
-    private static let runtimeCorrections = [
-        "client_dv8_hdr10plus_sanitizer_v1",
-        "client_post_resume_video_recovery_v1",
-        "client_surface_recovery_v1"
-    ]
-
     static func validate(_ plan: PlaybackV3Plan) throws {
         guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
             throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
@@ -63,24 +53,15 @@ enum ApplePlaybackV3PlanAdapter {
         } else {
             throw ApplePlaybackV3PlanError.invalidTransport("unsupported protocol \(plan.stream.protocol)")
         }
-        if let unsupported = plan.transformations.first(where: {
-            $0.executor == "client" && !clientTransformations.contains($0.name)
-        }) {
-            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(unsupported.name)
+        if let transformation = plan.transformations.first(where: { $0.executor == "client" }) {
+            // Aether owns its internal normalization pipeline. The app no
+            // longer exposes or executes named client recipes.
+            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(transformation.name)
         }
-        let selectedClientTransformations = plan.transformations.filter { $0.executor == "client" }
-        if selectedClientTransformations.count > 1 {
-            throw ApplePlaybackV3PlanError.invalidClientTransformation(
-                "multiple mutually exclusive client transformations"
-            )
-        }
-        if !selectedClientTransformations.isEmpty && plan.delivery != "original_http" {
-            throw ApplePlaybackV3PlanError.invalidClientTransformation(
-                "client transformations require the original_http delivery"
-            )
-        }
-        if let unsupported = plan.runtimeCorrections.first(where: { !runtimeCorrections.contains($0) }) {
-            throw ApplePlaybackV3PlanError.unsupportedRuntimeCorrection(unsupported)
+        if let correction = plan.runtimeCorrections.first {
+            // Runtime correction tokens belonged to the removed Silo
+            // playback implementation. Aether performs recovery internally.
+            throw ApplePlaybackV3PlanError.unsupportedRuntimeCorrection(correction)
         }
     }
 
@@ -209,134 +190,6 @@ enum ApplePlaybackV3PlanAdapter {
         let embeddedOrdinal = serverCombinedIndex - externalCount
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }
         return embedded[embeddedOrdinal].index
-    }
-
-    static func makeExecutionPlan(
-        v3: PreparedPlaybackV3,
-        basePlan: PlaybackExecutionPlan,
-        streamRequest: StreamRequest,
-        routeRequirements: PlaybackRouteRequirements
-    ) throws -> PlaybackExecutionPlan {
-        try validate(v3.plan)
-        let plan = v3.plan
-        let delivery = deliveryStrategy(plan.delivery)
-        var engine: PlaybackEngineKind
-        var loopbackSession: LoopbackSessionSpec?
-        switch plan.delivery {
-        case "original_http":
-            // The V3 direct slot describes delivery, while the existing Apple
-            // planner chooses the concrete local executor for that source.
-            engine = basePlan.engine
-            loopbackSession = basePlan.loopbackSession
-        case "server_remux_progressive":
-            engine = .avPlayerNativeDirect
-            loopbackSession = nil
-        case "server_remux_hls", "server_transcode_hls":
-            engine = .avPlayerHLS
-            loopbackSession = nil
-        default:
-            throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
-        }
-
-        if let transformation = plan.transformations.first(where: { $0.executor == "client" }) {
-            guard let baseLoopbackSession = basePlan.loopbackSession else {
-                throw ApplePlaybackV3PlanError.invalidClientTransformation(
-                    "\(transformation.name) requires the Apple loopback executor"
-                )
-            }
-            engine = .siloPlayerLoopback
-            loopbackSession = forcedLoopbackSession(
-                baseLoopbackSession,
-                transformation: transformation.name
-            )
-        }
-
-        let routeCapabilities = engine.routeCapabilities
-        let sourceMetadata = PlaybackSourceMetadata(
-            container: plan.source.container,
-            videoCodec: plan.source.videoCodec,
-            audioCodec: plan.source.audioCodec,
-            subtitleCodecs: basePlan.sourceMetadata.subtitleCodecs,
-            dolbyVisionProfile: plan.source.dolbyVisionProfile,
-            // Prefer the server's probed source fact. Catalog metadata remains
-            // the compatibility fallback for plans that omit color_range.
-            colorRange: plan.source.colorRange ?? basePlan.sourceMetadata.colorRange
-        )
-        let transformationTokens = plan.transformations.map {
-            "v3_transform_\($0.executor)_\($0.name)_\($0.recipeVersion)"
-        }
-        let quirkTokens = plan.appliedQuirks.map { "v3_quirk_\($0.registryRevision)_\($0.id)" }
-        let correctionTokens = plan.runtimeCorrections.map { "v3_runtime_correction_\($0)" }
-        let warnings = plan.degradationWarnings.map { "\($0.code): \($0.message)" }
-        let normalization = PlaybackNormalizationSummary(
-            containerMode: plan.delivery == "original_http" ? basePlan.normalizationSummary.containerMode : plan.delivery,
-            videoMode: plan.effectiveRecipe.videoCodec ?? "copy",
-            audioMode: plan.effectiveRecipe.audioCodec
-                ?? (plan.source.audioCodec == nil ? "none" : "copy"),
-            subtitleMode: plan.subtitle.mode
-        )
-
-        return PlaybackExecutionPlan(
-            delivery: delivery,
-            engine: engine,
-            startMode: .absolutePosition(max(0, plan.timeline.playerStartSeconds)),
-            streamRequest: streamRequest,
-            sourceStreamRequest: streamRequest,
-            loopbackSession: engine == .siloPlayerLoopback ? loopbackSession : nil,
-            capabilities: routeCapabilities.backendCapabilities,
-            routeCapabilities: routeCapabilities,
-            requirements: routeRequirements,
-            featureFlagEnabled: true,
-            parityBlockers: routeCapabilities.blockingReasons(for: routeRequirements),
-            decisionTrace: basePlan.decisionTrace + [
-                "protocol_v3", "v3_plan_\(plan.planId)", "v3_delivery_\(plan.delivery)"
-            ] + transformationTokens + quirkTokens + correctionTokens,
-            degradationWarnings: warnings + routeCapabilities.degradationNotes(for: routeRequirements),
-            reason: "v3_\(plan.decisionReason)",
-            playbackSessionId: plan.sessionId,
-            wireDelivery: plan.delivery,
-            serverFeatures: v3.serverFeatures,
-            sourceMetadata: sourceMetadata,
-            normalizationSummary: normalization
-        )
-    }
-
-    private static func forcedLoopbackSession(
-        _ base: LoopbackSessionSpec,
-        transformation: String
-    ) -> LoopbackSessionSpec {
-        let videoMode: LoopbackSessionSpec.VideoMode
-        let manifestMetadata: LoopbackSessionSpec.ManifestMetadata
-        switch transformation {
-        case "client_dv7_to_dv81":
-            videoMode = .convertProfile7To81
-            manifestMetadata = LoopbackSessionSpec.ManifestMetadata(
-                advertisedDolbyVisionProfile: 8,
-                compatibilityBrand: "db1p",
-                videoRange: "PQ",
-                mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
-            )
-        default:
-            videoMode = .passthroughHEVC
-            manifestMetadata = LoopbackSessionSpec.ManifestMetadata(
-                advertisedDolbyVisionProfile: nil,
-                compatibilityBrand: nil,
-                videoRange: "PQ",
-                mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
-            )
-        }
-        return LoopbackSessionSpec(
-            sourceURL: base.sourceURL,
-            headers: base.headers,
-            sourceStartTimeSeconds: base.sourceStartTimeSeconds,
-            sourceBitrateBps: base.sourceBitrateBps,
-            videoMode: videoMode,
-            sourceVideoFrameRate: base.sourceVideoFrameRate,
-            selectedAudio: base.selectedAudio,
-            availableAudioTracks: base.availableAudioTracks,
-            manifestMetadata: manifestMetadata,
-            servingMode: base.servingMode
-        )
     }
 
     private static func subtitleTrack(

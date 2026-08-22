@@ -1,8 +1,8 @@
 import Foundation
 
-/// A track exposed by the player core. `trackId` is the per-kind id used with
-/// `setAudioTrack`/`setSubtitleTrack`; `ffIndex` is the underlying FFmpeg
-/// stream index, useful for matching against server-supplied preferred indices.
+/// An app-facing projection of an Aether media track. `trackId` is the
+/// per-kind id passed back through the Aether controller; `ffIndex` is the
+/// source stream index used to match server-supplied preferences.
 ///
 /// Fields beyond id/title/lang are optional because not every codec populates
 /// every field — e.g. PGS subtitle tracks report no `audio-channels`.

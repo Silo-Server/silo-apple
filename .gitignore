@@ -6,6 +6,18 @@ xcuserdata/
 DerivedData/
 iosApp/.deriveddata/
 
+# XcodeGen regenerates the project, but the exact Aether transitive graph is a
+# release input and must remain reviewable.
+!iosApp/Silo.xcodeproj/
+iosApp/Silo.xcodeproj/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/
+iosApp/Silo.xcodeproj/project.xcworkspace/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/
+iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
 # SwiftPM / CocoaPods
 .build/
 iosApp/.spm-packages/
@@ -59,4 +71,7 @@ Thumbs.db
 docs/*
 !docs/tvos-focus.md
 !docs/mac-builder.md
+!docs/tvos-player/
+docs/tvos-player/*
+!docs/tvos-player/aetherengine-replacement-spec.md
 !docs/release/*

@@ -89,7 +89,7 @@ final class MetricKitCaptureTests: XCTestCase {
             "binaryName": "Silo",
             "offsetIntoBinaryTextSegment": 4096,
             "subFrames": [
-              { "binaryName": "PlayerCore", "offsetIntoBinaryTextSegment": 8192 }
+              { "binaryName": "MediaModule", "offsetIntoBinaryTextSegment": 8192 }
             ]
           }
         ]
@@ -109,7 +109,7 @@ final class MetricKitCaptureTests: XCTestCase {
         "callStackRootFrames": [
           {
             "subFrames": [
-              { "offsetIntoBinaryTextSegment": 8192, "binaryName": "PlayerCore" }
+              { "offsetIntoBinaryTextSegment": 8192, "binaryName": "MediaModule" }
             ],
             "offsetIntoBinaryTextSegment": 4096,
             "binaryName": "Silo"

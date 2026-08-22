@@ -1,4 +1,5 @@
 #if os(tvOS)
+import CoreGraphics
 import SwiftUI
 
 enum TVPlayerTimeDisplayMode: Equatable {
@@ -279,6 +280,13 @@ struct TVPlayerControls: View {
                 .padding(.top, 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
+                scrubPreviewCard(image)
+                    .padding(.bottom, 214)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
             transportStack
                 .padding(.horizontal, 80)
                 .padding(.bottom, 48)
@@ -311,6 +319,26 @@ struct TVPlayerControls: View {
             )
             .frame(height: 240)
         }
+    }
+
+    private func scrubPreviewCard(_ image: CGImage) -> some View {
+        VStack(spacing: 8) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 320, height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .monospacedDigit()
+        }
+        .padding(10)
+        .siloPlayerGlass(
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous),
+            tint: Color.black.opacity(0.28)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 7)
     }
 
     /// Buffering + sleep-timer chips float in the top-right when active.

@@ -147,37 +147,34 @@ struct MobilePlayerControls: View {
 
             Spacer(minLength: 12)
 
-            if viewModel.avPlayerBackend != nil {
-                if pictureInPicture.isSupported {
-                    controlButton(
-                        systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
-                    ) {
-                        pictureInPicture.toggle()
-                    }
-                    .disabled(!pictureInPicture.isPossible)
-                    .accessibilityLabel(
-                        pictureInPicture.isActive
-                            ? "Stop Picture in Picture"
-                            : "Start Picture in Picture"
-                    )
+            if pictureInPicture.isSupported, pictureInPicture.hasSource {
+                controlButton(
+                    systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
+                ) {
+                    pictureInPicture.toggle()
                 }
+                // AVKit can report `possible == false` during the final active
+                // transition; the user must still be able to stop PiP.
+                .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
+                .accessibilityLabel(
+                    pictureInPicture.isActive
+                        ? "Stop Picture in Picture"
+                        : "Start Picture in Picture"
+                )
+            }
 
-                // Only shown where the receiver could actually fetch the
-                // media. On routes whose URL is authenticated by a request
-                // header, AirPlay video would leave the TV on a 401.
-                if viewModel.supportsExternalPlayback {
-                    AirPlayRoutePicker { isPresentingRoutes in
-                        // The route sheet is a UIKit presentation the auto-hide
-                        // timer knows nothing about; pin the controls so it can't
-                        // dismantle the picker mid-selection.
-                        if isPresentingRoutes {
-                            viewModel.pinControlsVisible()
-                        } else {
-                            viewModel.resumeAutoHide()
-                        }
+            if viewModel.supportsExternalPlayback {
+                AirPlayRoutePicker { isPresentingRoutes in
+                    // The route sheet is a UIKit presentation the auto-hide
+                    // timer knows nothing about; pin the controls so it can't
+                    // dismantle the picker mid-selection.
+                    if isPresentingRoutes {
+                        viewModel.pinControlsVisible()
+                    } else {
+                        viewModel.resumeAutoHide()
                     }
-                    .frame(width: 44, height: 44)
                 }
+                .frame(width: 44, height: 44)
             }
         }
     }
@@ -369,8 +366,8 @@ struct MobilePlayerControls: View {
                     .fill(Color.white.opacity(0.2))
                     .frame(height: barHeight)
 
-                // Buffered range (AVPlayer routes only; CoreMedia reports 0
-                // so the layer simply never draws).
+                // Buffered range from Aether telemetry. Routes that cannot
+                // report a comparable value leave the layer empty.
                 if let buffered = bufferedFraction, buffered > progress {
                     Capsule()
                         .fill(Color.white.opacity(0.22))
@@ -417,10 +414,14 @@ struct MobilePlayerControls: View {
             )
             .overlay(alignment: .topLeading) {
                 if viewModel.isScrubbing {
+                    let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
                     scrubPreviewBubble
                         .position(
-                            x: min(max(width * progress, 80), max(width - 80, 80)),
-                            y: -36
+                            x: min(
+                                max(width * progress, previewInset),
+                                max(width - previewInset, previewInset)
+                            ),
+                            y: viewModel.scrubPreviewImage == nil ? -36 : -92
                         )
                         .transition(.opacity)
                         .allowsHitTesting(false)
@@ -454,7 +455,14 @@ struct MobilePlayerControls: View {
     /// scrubbing. Presentation-only: reads the same `scrubPreviewTime` the
     /// seek machinery already maintains.
     private var scrubPreviewBubble: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 6) {
+            if let image = viewModel.scrubPreviewImage {
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 176, height: 99)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
             Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
                 .font(.system(size: 19, weight: .bold))
                 .foregroundStyle(.white)
@@ -466,8 +474,7 @@ struct MobilePlayerControls: View {
                     .lineLimit(1)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(7)
         .siloGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .fixedSize()
     }

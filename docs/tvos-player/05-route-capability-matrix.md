@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Historical pre-AetherEngine archive.** This document describes the removed custom-player architecture or its pre-migration validation model. It is retained for history only and must not be used as current implementation guidance. See the [AetherEngine-only replacement specification](aetherengine-replacement-spec.md).
+
 # Apple Route Capability Matrix
 
 Snapshot date: 2026-07-24 (SiloPlayer AirPlay hardware validation;

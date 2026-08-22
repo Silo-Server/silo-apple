@@ -745,8 +745,8 @@ private struct StatsPane: View {
         if !viewModel.playbackStats.networkRows.isEmpty {
             ids.append(PlaybackStatsPanel.networkSectionID)
         }
-        if !viewModel.playbackStats.deviceRows.isEmpty {
-            ids.append(PlaybackStatsPanel.deviceSectionID)
+        if !viewModel.playbackStats.engineRows.isEmpty {
+            ids.append(PlaybackStatsPanel.engineSectionID)
         }
         ids.append(Self.bottomAnchor)
         return ids

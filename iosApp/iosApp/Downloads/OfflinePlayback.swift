@@ -35,12 +35,10 @@ struct OfflinePreparedPlayback {
 }
 
 /// Synthesizes the same `PreparedPlayback` the online path produces, but
-/// from a stored offline manifest + local media file, so the player loads
-/// with no server session. Routing is left to the standard planner — the
-/// synthesized version carries the manifest's real track metadata so a
-/// `file://` source can reach the loopback route, not just `PlayerCore` —
-/// and the manifest drives chapters, intro/credits markers, and subtitles
-/// unchanged.
+/// from a stored offline manifest + local media file, so AetherEngine loads
+/// with no server session. Aether probes the delivered file itself; the
+/// manifest remains authoritative for catalog metadata, chapters,
+/// intro/credits markers, track preferences, and downloaded subtitles.
 enum OfflinePlaybackBuilder {
     /// Near-end resume points restart from zero, mirroring the session
     /// bridge's suppression window so offline resume feels identical to
@@ -68,21 +66,11 @@ enum OfflinePlaybackBuilder {
             throw OfflinePlaybackError.mediaFileMissing
         }
 
-        // The manifest describes the catalog's file, never its video streams,
-        // so Dolby Vision and colour signalling have to come off the download
-        // itself. Off the MainActor: this opens the file and runs a header
-        // scan. Failures come back empty and simply leave the version without
-        // video tracks, which is where offline was before probing.
-        let videoTracks = await Task.detached(priority: .userInitiated) {
-            LocalMediaProbe.videoTracks(at: mediaURL)
-        }.value
-
         let leafId = record.leafMediaItemId
         let prepared = makePreparedPlayback(
             leafContentId: leafId,
             manifest: manifest,
             mediaURL: mediaURL,
-            videoTracks: videoTracks,
             subtitleURLs: localSubtitleUrls(record: record, manifest: manifest, manager: manager),
             resumePosition: resolvedResumePosition(
                 startFromBeginning: startFromBeginning,
@@ -125,8 +113,7 @@ enum OfflinePlaybackBuilder {
                 label: nil,
                 // Manifest subtitles are always sidecar files
                 // (`external:{i}` / `downloaded:{id}`), never embedded, so
-                // they must survive the player's embedded-track dedup on
-                // AVPlayer routes.
+                // they must survive Aether's embedded-track inventory merge.
                 source: "external",
                 forced: subtitle.forced,
                 url: fileURL.absoluteString
@@ -157,14 +144,12 @@ enum OfflinePlaybackBuilder {
     }
 
     /// Map the manifest's audio tracks into the catalog `AudioTrack` shape the
-    /// route planner, loopback session spec, and detail views all read.
+    /// player and detail views read.
     ///
     /// `index` is deliberately dropped rather than forwarded. `AudioTrack.index`
-    /// means the ffmpeg stream index — it becomes `PlayerTrack.ffIndex`, which
-    /// selects the stream to mux — while the manifest's `index` is only the
-    /// ordinal within this list. On a typical file the ordinal names the video
-    /// stream, and the audio the muxer is waiting for gets discarded. Nil sends
-    /// selection down the ordinal path, which is what the manifest describes.
+    /// means the source stream index, while the manifest's `index` is only the
+    /// ordinal within this list. Aether's probe maps that ordinal to the real
+    /// source stream identifier immediately before the offline load.
     ///
     /// `embeddedTitle` stays nil because the server already collapsed the
     /// cleaned and embedded titles into one field; echoing the same string back
@@ -190,9 +175,8 @@ enum OfflinePlaybackBuilder {
     }
 
     /// Overall bitrate in kbps, matching the probed value the server puts on an
-    /// online `FileVersion`. Without it the loopback advertises a placeholder
-    /// `BANDWIDTH` in its master playlist and logs `source_bitrate_unknown`,
-    /// so offline sessions ramp differently from the same file streamed.
+    /// online `FileVersion` and keeping offline metadata consistent with the
+    /// same file streamed.
     ///
     /// The manifest carries no probed bitrate, so derive the real average from
     /// the delivered file. `targetBitrateKbps` is only a transcode target and
@@ -212,14 +196,10 @@ enum OfflinePlaybackBuilder {
         return Int(kbps)
     }
 
-    /// `videoTracks` comes from `LocalMediaProbe` reading the delivered file.
-    /// Defaulted so tests and any caller with no file to probe still get the
-    /// manifest-only version.
     static func makePreparedPlayback(
         leafContentId: String,
         manifest: OfflineManifest,
         mediaURL: URL,
-        videoTracks: [VideoTrack] = [],
         subtitleURLs: [SubtitleUrl],
         resumePosition: Double?
     ) -> PreparedPlayback {
@@ -234,7 +214,9 @@ enum OfflinePlaybackBuilder {
             fileSize: manifest.fileSize,
             duration: manifest.durationSeconds,
             bitrate: averageBitrateKbps(from: manifest),
-            videoTracks: videoTracks.isEmpty ? nil : videoTracks,
+            // AetherEngine probes the actual downloaded file. The manifest
+            // intentionally does not pretend to describe delivered streams.
+            videoTracks: nil,
             audioTracks: audioTracks(from: manifest),
             subtitleTracks: nil,
             chapters: manifest.chapters,

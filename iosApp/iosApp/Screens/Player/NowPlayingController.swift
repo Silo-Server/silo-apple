@@ -5,18 +5,14 @@ import OSLog
 import UIKit
 #endif
 
-/// Bridges the active player core into `MPNowPlayingInfoCenter` + the shared
-/// `MPRemoteCommandCenter` so lock-screen and Control Center media controls
-/// drive playback. Apple TV 4K picks this up for the top-shelf Siri shortcut
-/// (Play / Pause) and the phone gets the same dictionary on the lock screen.
+/// Bridges a SiloControl remote-media session into `MPNowPlayingInfoCenter` +
+/// the shared `MPRemoteCommandCenter`. Library video and audiobook playback
+/// use their Aether-scoped coordinators instead.
 ///
-/// Decoupled from any specific player type: the owner supplies command
-/// handlers as closures via `attach(handlers:)`. This lets the controller
-/// drive either `PlayerCore` (FFmpeg+VT pipeline) or `AVPlayerBackend` (DV
-/// Profile 5 HLS route) transparently.
+/// The owner supplies command handlers as closures via `attach(handlers:)`.
 ///
-/// Single ownership: one instance per `PlayerViewModel`. The VM owns the
-/// lifecycle (init in `loadAndPlay`, tear down in `cleanup`).
+/// Single ownership: the SiloControl client owns one instance and attaches it
+/// only for the lifetime of a remote-media session.
 final class NowPlayingController {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
@@ -77,9 +73,8 @@ final class NowPlayingController {
 
     // MARK: - Lifecycle
 
-    /// Attach command handlers. Idempotent — safe to call more than once to
-    /// replace handlers when the VM swaps backends (e.g. PlayerCore →
-    /// AVPlayer-backed route).
+    /// Attach command handlers. Idempotent and safe to call more than once
+    /// when the remote-control session changes.
     func attach(handlers: Handlers) {
         self.handlers = handlers
         if !isActive {

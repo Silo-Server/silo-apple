@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Historical pre-AetherEngine archive.** These records describe the removed custom-player architecture and are retained for history only. They must not be used as current validation evidence. See the [AetherEngine-only replacement specification](../aetherengine-replacement-spec.md).
+
 # Apple Player Validation Records
 
 Store route validation records here when a result can become a product-facing
