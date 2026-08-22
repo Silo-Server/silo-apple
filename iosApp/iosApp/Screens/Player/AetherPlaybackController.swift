@@ -57,6 +57,12 @@ final class AetherPlaybackController {
     }
 
     let engine: AetherEngine
+    /// Registers this engine with the process-wide audio-session ownership
+    /// registry for its lifetime. Silo runs two `AetherEngine`s (audiobooks and
+    /// video); without this claim the audio controller would read itself as the
+    /// sole live engine and deactivate the shared `AVAudioSession` on its own
+    /// teardown, cutting video playback off mid-stream.
+    private let aetherSessionClaim = AetherAudioSessionOwnership.Claim()
     var onEvent: ((ScopedEvent) -> Void)?
     var onControllerEvent: ((ControllerEvent) -> Void)?
     /// iOS 26's Automatic Subtitles turn captions on with no read API behind

@@ -38,6 +38,16 @@ final class PictureInPictureCoordinator {
     var isEngaged: Bool { isActive || isTransitioning }
     var isSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
 
+    /// Why a Picture in Picture start did not happen, for a host that wants to
+    /// tell the user instead of leaving a tapped button looking inert.
+    enum StartFailure {
+        /// AVKit rejected the start outright.
+        case failed(Error)
+        /// The source is not ready for a start yet (`isPictureInPicturePossible`
+        /// is still false).
+        case notReady
+    }
+
     private enum SourceKind {
         case native
         case software
@@ -61,6 +71,13 @@ final class PictureInPictureCoordinator {
     @ObservationIgnored private var delegateProxy: DelegateProxy?
     @ObservationIgnored private var subscriptions: Set<AnyCancellable> = []
     @ObservationIgnored private var onEngagementEnded: (() -> Void)?
+    /// Asked to put the full-screen player back on screen when AVKit's restore
+    /// control is used. Answering `false` means no surface can come back, which
+    /// must end the engagement rather than leave playback running headless.
+    @ObservationIgnored private var onRestoreUserInterface: ((@escaping (Bool) -> Void) -> Void)?
+    /// Surfaces a start that never happened. AVKit reports both cases only to
+    /// the delegate, so without this the user sees a button that does nothing.
+    @ObservationIgnored private var onStartFailure: ((StartFailure) -> Void)?
     @ObservationIgnored private var isRestoringUserInterface = false
     /// A source disappeared while PiP was engaged. Re-read Aether when PiP stops.
     @ObservationIgnored private var pendingRebind = false
@@ -74,25 +91,42 @@ final class PictureInPictureCoordinator {
     func bind(
         engine: AetherEngine,
         owner: AnyObject,
-        onEngagementEnded: (() -> Void)? = nil
+        onEngagementEnded: (() -> Void)? = nil,
+        onRestoreUserInterface: ((@escaping (Bool) -> Void) -> Void)? = nil,
+        onStartFailure: ((StartFailure) -> Void)? = nil
     ) {
         if self.engine === engine, lifecycleOwner === owner {
             if let onEngagementEnded {
                 self.onEngagementEnded = onEngagementEnded
+            }
+            if let onRestoreUserInterface {
+                self.onRestoreUserInterface = onRestoreUserInterface
+            }
+            if let onStartFailure {
+                self.onStartFailure = onStartFailure
             }
             adoptCurrentEngineSource()
             refreshExternalPlaybackState()
             return
         }
 
-        let retainedEngagementHandler = lifecycleOwner === owner
+        let isSameOwner = lifecycleOwner === owner
+        let retainedEngagementHandler = isSameOwner
             ? (onEngagementEnded ?? self.onEngagementEnded)
             : onEngagementEnded
+        let retainedRestoreHandler = isSameOwner
+            ? (onRestoreUserInterface ?? self.onRestoreUserInterface)
+            : onRestoreUserInterface
+        let retainedStartFailureHandler = isSameOwner
+            ? (onStartFailure ?? self.onStartFailure)
+            : onStartFailure
         tearDownBoundSession()
 
         self.engine = engine
         lifecycleOwner = owner
         self.onEngagementEnded = retainedEngagementHandler
+        self.onRestoreUserInterface = retainedRestoreHandler
+        self.onStartFailure = retainedStartFailureHandler
 
         engine.$currentAVPlayer
             .sink { [weak self, weak engine] player in
@@ -197,6 +231,7 @@ final class PictureInPictureCoordinator {
         } else {
             guard controller.isPictureInPicturePossible else {
                 Self.logger.info("PiP start ignored; not possible yet")
+                onStartFailure?(.notReady)
                 return
             }
             controller.startPictureInPicture()
@@ -417,6 +452,8 @@ final class PictureInPictureCoordinator {
         lifecycleOwner = nil
         engagedOwner = nil
         onEngagementEnded = nil
+        onRestoreUserInterface = nil
+        onStartFailure = nil
     }
 
     // MARK: - External playback + subtitle ownership
@@ -469,8 +506,31 @@ final class PictureInPictureCoordinator {
         }
     }
 
-    fileprivate func handleRestoreRequested() {
-        isRestoringUserInterface = true
+    /// AVKit is stopping PiP because the user asked for the full-screen player
+    /// back. `completion(true)` must mean the player really is on screen again:
+    /// `handleDidStop` reads the outcome to decide whether the engagement — and
+    /// with it the deferred `cleanup()` — has to end.
+    fileprivate func handleRestoreRequested(completion: @escaping (Bool) -> Void) {
+        isRestoringUserInterface = false
+        guard let onRestoreUserInterface else {
+            // Nobody owns the player presentation. Answering `true` here is what
+            // left playback running with no UI and no session teardown.
+            Self.logger.error("PiP restore requested with no presentation owner")
+            completion(false)
+            return
+        }
+        var hasAnswered = false
+        onRestoreUserInterface { [weak self] didRestore in
+            // AVKit's handler must run exactly once.
+            guard !hasAnswered else { return }
+            hasAnswered = true
+            if didRestore {
+                self?.isRestoringUserInterface = true
+            } else {
+                Self.logger.error("PiP restore could not re-present the player")
+            }
+            completion(didRestore)
+        }
     }
 
     fileprivate func handleDidStop() {
@@ -478,16 +538,22 @@ final class PictureInPictureCoordinator {
         isTransitioning = false
         isActive = false
         syncNativeSubtitleRendering()
-        let wasRestoring = isRestoringUserInterface
+        // True only when the app layer confirmed the full-screen player is back
+        // on screen. A close-button stop, a failed restore, and a rebind stop
+        // all land here as false, and each one has to end the engagement so the
+        // deferred `cleanup()` runs.
+        let didRestoreUserInterface = isRestoringUserInterface
         isRestoringUserInterface = false
-        Self.logger.info("PiP stopped restoring=\(wasRestoring ? 1 : 0, privacy: .public)")
+        Self.logger.info(
+            "PiP stopped restored=\(didRestoreUserInterface ? 1 : 0, privacy: .public)"
+        )
 
         if pendingRebind {
             pendingRebind = false
             shouldStopForSourceChange = false
             adoptCurrentEngineSource()
         }
-        if !wasRestoring {
+        if !didRestoreUserInterface {
             onEngagementEnded?()
         }
         engagedOwner = nil
@@ -501,6 +567,7 @@ final class PictureInPictureCoordinator {
         Self.logger.error(
             "PiP failed to start: \(MediaLogRedactor.sanitize(error), privacy: .public)"
         )
+        onStartFailure?(.failed(error))
         if pendingRebind {
             pendingRebind = false
             shouldStopForSourceChange = false
@@ -570,8 +637,13 @@ final class PictureInPictureCoordinator {
             restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler:
                 @escaping (Bool) -> Void
         ) {
-            MainActor.assumeIsolated { coordinator?.handleRestoreRequested() }
-            completionHandler(true)
+            MainActor.assumeIsolated {
+                guard let coordinator else {
+                    completionHandler(false)
+                    return
+                }
+                coordinator.handleRestoreRequested(completion: completionHandler)
+            }
         }
 
         func pictureInPictureController(
