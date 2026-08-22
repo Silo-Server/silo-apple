@@ -646,6 +646,12 @@ Aether-facing adapter and real-media acceptance tests.
   symbol, framework, and string scans found no legacy player engine, source
   proxy, loopback host, direct Libav consumer, or engine-name capability token
   in an installable target.
+- A disposable local-package candidate then compiled all three Silo targets
+  against the exact upstream-ready hardened Aether head `0765ce08`. iOS, tvOS,
+  and macOS builds succeeded; each product again contained exactly the expected
+  nine Aether media frameworks and no legacy-engine symbols. This proves the
+  unpublished patchset integrates cleanly, but does not replace the required
+  remotely resolvable production pin.
 - Shared development is ready and advertises
   `header_authenticated_media_v1`. Its central integrated executor is the only
   enabled stream node. The deploy target also attempted to recreate four
