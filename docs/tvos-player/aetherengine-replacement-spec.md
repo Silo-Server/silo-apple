@@ -401,6 +401,10 @@ server fallback.
   a safe unknown bucket because minor releases may add kinds.
 - Never classify localized error messages.
 - Mirror `EngineLog` only through Silo's redaction and bounded capture path.
+- Upstream Aether's unified-log output is treated as device-local support
+  data and is never harvested into a Silo diagnostics bundle. On iOS and tvOS,
+  its optional host callback is mirrored only into Silo's consent-gated,
+  Debug Logging ring after media URL, filename, path, and credential redaction.
 - Project semantic metrics rather than fabricating removed PlayerCore/loopback
   counters.
 - Audit Aether's clear temporary fMP4 cache, data protection, stale-directory
@@ -412,10 +416,10 @@ server fallback.
   ready Aether hardening commits `ac84b2e6` and `0765ce08`, based on current
   upstream `main`, redact URLs, standard and custom credential headers, paths,
   and secrets at the logging boundary and remove source filenames from known
-  call sites. The
-  Apple dependency cannot move to that commit until it is available from an
-  accessible remote; no privacy-approved candidate may use the unpatched
-  upstream revision.
+  call sites. That remains a desirable upstream defense-in-depth change, but
+  is not a Silo distribution blocker under the accepted device-local log
+  boundary: Silo never collects the unified log and masks the separate host
+  callback before it enters an uploadable diagnostics artifact.
 
 ## Scrub previews
 
@@ -574,9 +578,9 @@ Aether-facing adapter and real-media acceptance tests.
   on that `main`. A second self-review fix covers custom credential-bearing
   header names such as `X-Profile-Token` without swallowing later telemetry;
   seven focused redaction tests and the complete current suite pass, including
-  1,955 Swift Testing tests in 282 suites with zero failures. The released
-  6.34.0 pin therefore remains a privacy blocker, not the intended final
-  candidate pin.
+  1,955 Swift Testing tests in 282 suites with zero failures. Silo may retain
+  the released 6.34.0 pin; publishing this patch is optional upstream
+  hardening rather than a prerequisite for Aether-only candidates.
 - The final self-review added a two-phase V3 execution commit, commit-scoped
   first-frame/progress telemetry, strict V3 subtitle transport resolution, and
   a literal no-direct-`AVPlayer` source policy. A Fable adversarial review then
@@ -666,8 +670,14 @@ Aether-facing adapter and real-media acceptance tests.
   simulator builds.
 - The live Aether run also reproduced upstream 6.34.0's public source-URL log.
   The two-commit upstream-ready redaction patch removes that disclosure and
-  custom credential-header leakage, and remains mandatory for a privacy-
-  approved candidate once it can be pinned from an accessible remote.
+  custom credential-header leakage. Silo's diagnostics bridge separately
+  proves uploaded Aether lines are redacted; the raw upstream line remains only
+  in Apple unified logging under the accepted device-local support boundary.
+- A follow-up CLIProxy Fable review found no blocking consent, handler-lifecycle,
+  or upload-boundary defect. Its media-filename, spaced-path, underscore-header,
+  bounded-input, stale-comment, and handler-composition findings were verified
+  and repaired. The final focused diagnostics run passes 23 tests, and iOS,
+  tvOS, and macOS builds pass against unmodified upstream Aether 6.34.0.
 
 ## Objective purity checks
 

@@ -17,6 +17,11 @@ struct SiloApp: App {
         PosterImageCache.install()
 
         #if os(iOS) || os(tvOS)
+        // Aether's optional host stream enters Silo diagnostics only through a
+        // media-specific redactor and the existing consent/debug-logging gate.
+        // General Apple unified logs are never collected into a Silo report.
+        AetherDiagnosticsBridge.install()
+
         // Opens the launch phase timeline. This runs before any consent
         // context exists, so the line lands in `EarlyBootBuffer` and only
         // reaches disk if this launch's first consent establish permits it —
