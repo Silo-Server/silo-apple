@@ -2,6 +2,12 @@ import AetherEngine
 import Foundation
 
 /// Immutable inputs for one Aether load generation.
+///
+/// The initialisers are main-actor isolated because they sample the display
+/// before building `LoadOptions`: Aether runs the display-criteria handshake
+/// synchronously inside `load`, so `panelIsInHDRMode` and `matchContentEnabled`
+/// have to be true of the panel at spec-construction time. Passing an explicit
+/// `panelIsInHDRMode` overrides that measurement; `nil` means measure now.
 struct AetherLoadSpec {
     enum ValidationError: Error, Equatable {
         case invalidStreamURL(String)
@@ -23,6 +29,7 @@ struct AetherLoadSpec {
     /// the controller translates those back to Silo's stable sidecar ids.
     let externalSubtitleAppTrackIDs: [Int64]
 
+    @MainActor
     init(
         offlineURL: URL,
         startPosition: Double,
@@ -31,7 +38,8 @@ struct AetherLoadSpec {
         sidecars: [SubtitleUrl] = [],
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
-        forwardBufferSegments: Int? = nil
+        forwardBufferSegments: Int? = nil,
+        panelIsInHDRMode: Bool? = nil
     ) throws {
         guard offlineURL.isFileURL else {
             throw ValidationError.invalidStreamURL(offlineURL.absoluteString)
@@ -60,6 +68,7 @@ struct AetherLoadSpec {
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.index)
         }
         options = LoadOptions(
+            panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioOnly: audioOnly,
             preserveASSMarkup: false,
             prepareNativeSubtitles: true,
@@ -73,6 +82,7 @@ struct AetherLoadSpec {
         )
     }
 
+    @MainActor
     init(
         directURL: URL,
         headers: [String: String],
@@ -81,7 +91,8 @@ struct AetherLoadSpec {
         sidecars: [SubtitleUrl] = [],
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
-        forwardBufferSegments: Int? = nil
+        forwardBufferSegments: Int? = nil,
+        panelIsInHDRMode: Bool? = nil
     ) throws {
         guard ["http", "https", "file"].contains(directURL.scheme?.lowercased() ?? "") else {
             throw ValidationError.invalidStreamURL(directURL.absoluteString)
@@ -117,6 +128,7 @@ struct AetherLoadSpec {
         }
         options = LoadOptions(
             httpHeaders: headers,
+            panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioOnly: audioOnly,
             preserveASSMarkup: false,
             prepareNativeSubtitles: true,
@@ -130,6 +142,7 @@ struct AetherLoadSpec {
         )
     }
 
+    @MainActor
     init(
         validating plan: PlaybackV3Plan,
         sessionID: String,
@@ -139,7 +152,8 @@ struct AetherLoadSpec {
         resolveURL: ((String) -> URL?)? = nil,
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
-        forwardBufferSegments: Int? = nil
+        forwardBufferSegments: Int? = nil,
+        panelIsInHDRMode: Bool? = nil
     ) throws {
         guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
             throw ValidationError.unsupportedDelivery(plan.delivery)
@@ -230,6 +244,7 @@ struct AetherLoadSpec {
         options = LoadOptions(
             httpHeaders: effectiveHeaders,
             matchContentEnabled: matchContentEnabled,
+            panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioOnly: plan.effectiveRecipe.videoCodec == nil,
             nativeRemoteHLS: isServerHLS,
             preserveASSMarkup: false,
