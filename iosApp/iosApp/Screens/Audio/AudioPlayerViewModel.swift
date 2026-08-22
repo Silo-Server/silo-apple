@@ -1,5 +1,4 @@
 import AetherEngine
-import AVFoundation
 import Foundation
 import OSLog
 
@@ -100,7 +99,9 @@ final class AudioPlayerViewModel {
         isLoading = true
         error = nil
         do {
-            try configureAudioSession()
+            // No AVAudioSession setup here: AetherEngine declares the category
+            // (.playback/.moviePlayback, multichannel, off-main) at init and activates it
+            // on its audio paths. See the AetherEngine README, "Who owns the audio session".
             if context != nil {
                 await closePlayback()
             }
@@ -756,13 +757,5 @@ final class AudioPlayerViewModel {
     private func clampGlobal(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(0, value), max(0, duration))
-    }
-
-    private func configureAudioSession() throws {
-        #if os(iOS) || os(tvOS)
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .spokenAudio)
-        try session.setActive(true)
-        #endif
     }
 }

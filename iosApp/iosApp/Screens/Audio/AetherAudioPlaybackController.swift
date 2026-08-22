@@ -25,6 +25,9 @@ final class AetherAudioPlaybackController {
     }
 
     private let engine: AetherEngine
+    /// Registers this engine process-wide for the lifetime of the controller so a
+    /// teardown can tell whether it is safe to release the shared audio session.
+    private let sessionClaim = AetherAudioSessionOwnership.Claim()
     private var subscriptions: Set<AnyCancellable> = []
     private(set) var playbackRate: Float = 1.0
     private var generation: UInt64 = 0
@@ -44,7 +47,8 @@ final class AetherAudioPlaybackController {
         } catch {
             fatalError("AetherEngine audio initialization failed: \(error)")
         }
-        engine.deactivatesAudioSessionOnStop = true
+        // `deactivatesAudioSessionOnStop` stays at the engine default (false) here and is
+        // decided per teardown in `stop()`; see the note there.
 
         engine.clock.$currentTime
             .sink { [weak self] time in
@@ -131,6 +135,12 @@ final class AetherAudioPlaybackController {
     func stop() {
         generation &+= 1
         activeLoadEpoch = nil
+        // AVAudioSession is process-global and Silo runs a second AetherEngine for video.
+        // Only let this teardown release the session when no other engine is alive,
+        // otherwise a stopped audiobook would cut the session out from under playing
+        // video. Decided per stop because the video engine comes and goes with the
+        // player screen.
+        engine.deactivatesAudioSessionOnStop = AetherAudioSessionOwnership.isSoleLiveEngine
         engine.stop(finalTeardown: true)
     }
 
