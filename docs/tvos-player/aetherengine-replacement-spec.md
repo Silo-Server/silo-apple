@@ -511,9 +511,14 @@ Aether-facing adapter and real-media acceptance tests.
   same request without a bearer returned `401`, and the exact route/header pair
   loaded through `AetherPlaybackController` on an iOS simulator. Aether opened
   the H.264/AAC source, reached ready/presenting, and advanced its media clock.
-- Aether's local logging-hardening commit has passed its full upstream suite
-  (1,954 tests, zero failures) but is not remotely resolvable yet. The released
-  6.34.0 pin remains a privacy blocker, not the intended final candidate pin.
+- Aether's local logging-hardening commit has passed the 6.34.0 upstream suite
+  (1,954 tests, zero failures) but is not remotely resolvable yet. Public
+  release 6.34.1 and upstream `main` at
+  `6e096e4d3856eb81dbb3e63a53458c20a76535e0` retain the same unredacted logger.
+  The patch cherry-picks cleanly onto that `main`, where the complete current
+  suite passes 1,955 tests in 282 suites with zero failures. The released
+  6.34.0 pin therefore remains a privacy blocker, not the intended final
+  candidate pin.
 - The final self-review added a two-phase V3 execution commit, commit-scoped
   first-frame/progress telemetry, strict V3 subtitle transport resolution, and
   a literal no-direct-`AVPlayer` source policy. A Fable adversarial review then
