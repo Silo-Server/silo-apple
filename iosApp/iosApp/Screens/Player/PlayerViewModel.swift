@@ -1333,6 +1333,7 @@ class PlayerViewModel {
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             let priorActivePlaybackSessionId = self.activePlaybackSessionId
+            let priorAetherLoadEpoch = self.activeAetherLoadEpoch
             let priorWatchDetail = self.currentWatchDetail
             let priorSelectedVersion = self.currentSelectedVersion
             let priorPreparedProtocolV3 = self.activePreparedProtocolV3
@@ -1464,6 +1465,14 @@ class PlayerViewModel {
                 }
                 await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
             } catch is CancellationError {
+                // Same rule as the fresh-load arm: an abandoned replan load
+                // must not leave the engine reading a retired session. Only
+                // once `loadAether` moved the epoch does the engine hold the
+                // candidate source; before that the prior source still plays.
+                if currentStreamLoadGeneration == self.streamLoadGeneration,
+                   self.activeAetherLoadEpoch != priorAetherLoadEpoch {
+                    _ = self.disposeAetherPlayback()
+                }
                 if let uncommittedPrepared {
                     await self.sessionBridge.rollbackPendingProtocolV3Transition(uncommittedPrepared)
                 }
@@ -3089,6 +3098,15 @@ class PlayerViewModel {
                     await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
                 }
             } catch is CancellationError {
+                // Tear the abandoned Aether load down before retiring its
+                // session. Without this the engine keeps reading the stream
+                // URL after the DELETE and spends minutes in 404 backoff.
+                // Skip when a newer load already took the controller: its
+                // own `beginLoad` replaced this source.
+                if currentFreshLoadGeneration == self.freshLoadGeneration,
+                   currentStreamLoadGeneration == self.streamLoadGeneration {
+                    _ = self.disposeAetherPlayback()
+                }
                 if let uncommittedPrepared {
                     await self.sessionBridge.rollbackPendingProtocolV3Transition(uncommittedPrepared)
                 }
