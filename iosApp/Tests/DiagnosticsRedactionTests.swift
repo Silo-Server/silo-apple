@@ -102,6 +102,41 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(line.contains("device=tvos"))
     }
 
+    // Hashing the host left the rest of the URL verbatim, so a stream request
+    // shipped the item id and the title's filename into every captured line.
+    func testURLPathMediaNameAndItemIdentifierAreRedacted() throws {
+        let line = try rendered(
+            "stream open https://media.example.com/Videos/9f83ba21c0de44aa77b1c0de44aa77b1/Movie.Name.2019.mkv?k=1"
+        )
+        XCTAssertFalse(line.contains("media.example.com"))
+        XCTAssertFalse(line.contains("Movie.Name.2019"))
+        XCTAssertFalse(line.contains(".mkv"))
+        XCTAssertFalse(line.contains("9f83ba21c0de44aa77b1c0de44aa77b1"))
+        // The endpoint shape survives so the line still says what was called.
+        XCTAssertTrue(line.contains("/Videos/"))
+        XCTAssertTrue(line.contains("[redacted_media_name]"))
+        XCTAssertTrue(line.contains("[redacted_id]"))
+    }
+
+    func testURLPathAPIVocabularyIsNotMistakenForAnIdentifier() throws {
+        let line = try rendered("HTTP 200 GET https://media.example.com/api/v1/settings/card_overlays")
+        XCTAssertTrue(line.contains("/api/v1/settings/card_overlays"))
+    }
+
+    // Every DiagTrace, breadcrumb, and early-boot line goes through this layer,
+    // which had no filesystem-path or media-filename rule of its own.
+    func testFilesystemPathsAndBareMediaNamesAreRedacted() throws {
+        let path = try rendered("download finished /Users/person/Movies/Show Name S01E01.mkv ok")
+        XCTAssertFalse(path.contains("person"))
+        XCTAssertFalse(path.contains("Show Name"))
+        XCTAssertTrue(path.contains("ok"))
+
+        let bare = try rendered("sidecar attached Movie Title (2024).en.srt count=2")
+        XCTAssertFalse(bare.contains("Movie Title"))
+        XCTAssertFalse(bare.contains("2024"))
+        XCTAssertTrue(bare.contains("count=2"))
+    }
+
     func testCamelCaseTokenKeyValuesAreRedacted() throws {
         let line = try rendered("refresh accessToken=aaa.bbb.ccc refreshToken: ddd-eee-fff done")
         XCTAssertFalse(line.contains("aaa.bbb.ccc"))
