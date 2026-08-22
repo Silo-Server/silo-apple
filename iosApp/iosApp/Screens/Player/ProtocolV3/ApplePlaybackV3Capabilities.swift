@@ -45,13 +45,17 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.deviceQuirksFeature,
         PlaybackProtocolV3.seekReanchorFeature,
         PlaybackProtocolV3.directStreamResumeFeature,
-        PlaybackProtocolV3.headerAuthenticatedMediaFeature
+        PlaybackProtocolV3.headerAuthenticatedMediaFeature,
+        PlaybackProtocolV3.softwareVideoDecodeFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
-    /// retain enough plan identity to request seek re-anchors in place.
+    /// retain enough plan identity to request seek re-anchors in place. Their
+    /// capability snapshot is audio-only, so it must not opt into the
+    /// software-video planner contract either.
     static let audiobookFeatures = features.filter {
         $0 != PlaybackProtocolV3.seekReanchorFeature
+            && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
     }
 
     /// The audiobook surface is migrated separately but uses the same Aether
@@ -67,7 +71,10 @@ enum ApplePlaybackV3Capabilities {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
         let output = outputSnapshot(hdrAvailability: hdrAvailability)
         let videoDecode = videoDecodeAttestation()
-        let videoCodecs = videoDecode.map(\.codec)
+        var seenVideoCodecs = Set<String>()
+        let videoCodecs = videoDecode.map(\.codec).filter {
+            seenVideoCodecs.insert($0).inserted
+        }
         let hardwareVideoCodecs = videoDecode.filter(\.hardware).map(\.codec)
 
         // Aether owns demux/decode on original HTTP. The narrower packaged
@@ -79,8 +86,9 @@ enum ApplePlaybackV3Capabilities {
         let capabilities = PlaybackV3CodecCapabilities(
             // VideoToolbox attests that a codec family is hardware-decodable;
             // it cannot enumerate the profiles and levels a decoder accepts.
-            // The server skips profile/level matching at this tier and still
-            // applies every bound we do supply.
+            // The server skips those fields only for hardware entries at this
+            // tier and still applies every bound we do supply. Software
+            // entries carry profiles the server enforces.
             videoEvidence: PlaybackProtocolV3.Evidence.platformAttested,
             // These are the exact codecs accepted by the pinned Aether build,
             // not codecs attested by an Apple audio-decoder probe.
@@ -144,7 +152,7 @@ enum ApplePlaybackV3Capabilities {
                 supportedOnDevice: true,
                 failureReason: nil,
                 containers: ["mp4", "mov", "m4v"],
-                videoCodecs: AppleDecodeCapabilities.videoCodecs,
+                videoCodecs: AppleDecodeCapabilities.packagedVideoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3", "alac", "mp3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -162,7 +170,7 @@ enum ApplePlaybackV3Capabilities {
                 containers: ["hls", "mpegts", "fmp4", "mp4"],
                 // The remote-HLS bypass is intentionally narrower than the
                 // original-source Aether route.
-                videoCodecs: AppleDecodeCapabilities.videoCodecs,
+                videoCodecs: AppleDecodeCapabilities.packagedVideoCodecs,
                 audioDecodeCodecs: ["aac", "ac3", "eac3"],
                 audioPassthroughCodecs: [],
                 maxChannels: 8,
@@ -291,18 +299,19 @@ enum ApplePlaybackV3Capabilities {
         )
     }
 
-    /// What VideoToolbox will actually say about this device's decoders.
+    /// The hardware attestations VideoToolbox supplies, followed by the
+    /// narrower software envelopes proven with Aether fixtures.
     ///
-    /// Profiles and levels stay empty because there is no API that enumerates
-    /// them — under `platform_attested` the server skips both rather than
-    /// treating the gap as a refusal, so fabricating plausible tuples would add
-    /// risk and buy nothing. Every other bound here is a real platform fact.
-    private static func videoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
+    /// Hardware profiles and levels stay empty because VideoToolbox cannot
+    /// enumerate them; under `platform_attested` the server skips both only
+    /// for `hardware: true` entries. Software entries carry and enforce the
+    /// exact exercised profiles plus fixture-bounded performance ceilings.
+    static func videoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
         let codecTypes: [(String, CMVideoCodecType)] = [
             ("h264", kCMVideoCodecType_H264),
             ("hevc", kCMVideoCodecType_HEVC)
         ]
-        let capabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
+        let hardwareCapabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
             guard hardwareDecodeSupported(codecType) else {
                 return nil
             }
@@ -325,7 +334,35 @@ enum ApplePlaybackV3Capabilities {
                 hardware: true
             )
         }
-        return capabilities
+        let softwareCapabilities: [(
+            codec: String, decoder: String, profiles: [String], bitDepths: [Int],
+            maxWidth: Int, maxHeight: Int, maxFrameRate: Double, maxBitrateKbps: Int
+        )] = [
+            // H.264 remains a duplicate on purpose: the hardware entry covers
+            // ordinary 8-bit streams, while this entry is the exercised High
+            // 10 software route. MPEG-2 carries the interlaced proof.
+            ("h264", "libavcodec", ["high 10"], [10], 1_920, 1_080, 30, 10_000),
+            ("av1", "dav1d", ["main"], [10], 1_920, 1_080, 30, 3_000),
+            ("vp9", "libavcodec", ["profile 0"], [8], 1_920, 1_080, 30, 3_000),
+            // The exercised NTSC fixture's server probe reports 30.303 fps,
+            // so its rounded source-rate ceiling must be 31 rather than 30.
+            ("mpeg2video", "libavcodec", ["main"], [8], 720, 480, 31, 7_000),
+            ("vc1", "libavcodec", ["advanced"], [8], 1_920, 1_080, 30, 32_000),
+        ]
+        return hardwareCapabilities + softwareCapabilities.map { capability in
+            PlaybackV3VideoDecodeCapability(
+                codec: capability.codec,
+                decoderName: capability.decoder,
+                profiles: capability.profiles,
+                levels: [],
+                bitDepths: capability.bitDepths,
+                maxWidth: capability.maxWidth,
+                maxHeight: capability.maxHeight,
+                maxFrameRate: capability.maxFrameRate,
+                maxBitrateKbps: capability.maxBitrateKbps,
+                hardware: false
+            )
+        }
     }
 
     /// Whether the platform routes this codec to an accelerated decoder.

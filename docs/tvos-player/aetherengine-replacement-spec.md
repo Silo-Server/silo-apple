@@ -1,6 +1,6 @@
 # AetherEngine-Only Playback Replacement
 
-Status: Aether-only source migration, coordinated transport contract, Apple builds, shared-dev direct-play proof, self-review, and Fable review complete; Opus rerun, hardware breadth, and release gates pending
+Status: Aether-only source migration, coordinated transport/software-decode contracts, Apple builds, shared-dev and isolated-fixture direct-play proof, and final Fable review complete; Opus rerun, hardware breadth, and release gates pending
 Date: 2026-08-22
 Silo Apple baseline: `4910372c2ccb34d0f6bbde9419b6806e3971ff3f`
 AetherEngine pin: `6.34.0` / `0ae80496ab6f3fda135f43ef195ff10961c0e625`
@@ -251,13 +251,27 @@ Rules:
 - the server does not branch on the AetherEngine package name;
 - `header_authenticated_media_v1` describes a transport security property,
   not an Aether implementation, and is required by this Apple snapshot;
+- `software_video_decode_v1` is an engine-neutral, explicit opt-in that lets a
+  strict evidence-tier client qualify bounded `hardware: false`
+  `video_decode` entries. Without it, exact/platform-attested planning retains
+  its historical hardware-only behavior;
+- Apple advertises software decode only for original-file delivery. Packaged
+  progressive/HLS delivery stays on the conservative VideoToolbox codec list;
+  the audio-only audiobook request does not advertise the video feature;
+- download creation sends the same detailed decoder entries and feature opt-in
+  rather than flattening the 1080p software limit into the device-wide 2160p
+  ceiling. This preserves hardware 4K originals while forcing out-of-bounds
+  software sources through the compatibility-artifact policy. Its legacy flat
+  list stays hardware-only, so older servers that ignore the additive fields
+  also fail safely;
 - old client Dolby Vision transformations are dropped until their exact
   Aether outcome and display-dependent claims are re-derived and proven;
 - `authHeaderRefresh` is `false` in the first Aether snapshot. Protocol V3
   defines it as refreshing credentials without restarting playback; a fresh
   Aether load does not satisfy that contract.
 
-The migration did justify one coordinated server change: signed media URLs can
+The migration justified coordinated server changes only where direct evidence
+showed an engine-neutral contract gap. First, signed media URLs can
 put reusable credentials in Aether and AVFoundation logs, caches, diagnostics,
 and receiver-facing state outside Silo's redaction boundary. The generic
 header-authenticated media feature above removes URL credentials without
@@ -265,8 +279,25 @@ teaching the server an engine name. It is implemented in an isolated server
 worktree as commit `07383f7d` against baseline `91c3d7bd`; old clients retain
 their current wire contract. That exact change is deployed on shared
 development and has been validated through the exact Apple build's Aether
-boundary. Broader delivery, renewal, and hardware validation is still required
-before release.
+boundary.
+
+Second, the pinned Aether stack successfully software-decoded five otherwise
+transcode-only opaque fixtures, but Protocol V3 intentionally ignored
+`hardware: false` entries. The server now accepts those entries only with
+`software_video_decode_v1` and enforces their codec, exercised profile,
+bit-depth, frame size, frame-rate, and bitrate bounds. The first claims are
+deliberately fixture-bounded: 1080p30 at rounded 10/3/3/32 Mbps ceilings for
+H.264/AV1/VP9/VC-1, and 720x480 at a rounded 31 fps and 7 Mbps for MPEG-2
+(the nominally NTSC fixture's server probe reports 30.303 fps). The Apple snapshot advertises exercised H.264
+High 10, AV1 Main 10, VP9 Profile 0, interlaced MPEG-2 Main, and VC-1 Advanced
+software routes, while
+keeping H.264/HEVC VideoToolbox entries separate. Legacy clients and clients
+without the feature retain the prior planner behavior. Broader delivery,
+renewal, and physical-hardware validation is still required before release.
+The initial AV1 and H.264 software entries intentionally claim only their
+exercised 10-bit profiles; unproved 8-bit AV1 and non-VideoToolbox H.264
+variants continue through server adaptation rather than being inferred from
+codec-family support.
 
 ## Tracks and subtitles
 
@@ -512,6 +543,28 @@ Aether-facing adapter and real-media acceptance tests.
   same request without a bearer returned `401`, and the exact route/header pair
   loaded through `AetherPlaybackController` on an iOS simulator. Aether opened
   the H.264/AAC source, reached ready/presenting, and advanced its media clock.
+- An isolated distributed dev-builder sandbox exercised the complete server
+  route matrix: original HTTP returned authenticated ranges, progressive remux
+  returned MP4 bytes, remux HLS returned a manifest and fMP4 segment, and
+  transcode HLS returned a manifest and media segment through the proxy and
+  transcode nodes. After playback disconnected, the sessions disappeared,
+  active jobs returned to zero, and transcode artifacts were pruned to zero.
+- Five opaque release fixtures then proved Aether's bounded software path on
+  the iOS simulator: H.264 High 10, AV1 Main 10, VP9, interlaced MPEG-2, and
+  VC-1 all loaded through `AetherPlaybackController` and advanced its playback
+  clock. The rebuilt isolated server advertised `software_video_decode_v1`;
+  real V3 start requests using the exact software entries selected
+  `playable` / `original_http` for all five. Focused server tests separately
+  prove that an identical software entry is rejected without the feature and
+  rejected when its declared bounds or supplied software profile are exceeded.
+  The live planner likewise rejected mismatched High-10 and VP9 profile strings
+  before selecting original delivery when the exact exercised profiles were
+  supplied.
+- Self-review caught a separate persistent-download overclaim: a flat codec
+  list plus the device-wide 2160p limit could have admitted a 4K software
+  original. Download capabilities now carry the same normalized, size-bounded
+  detailed evidence. Resolver and handler tests cover opt-in, omission,
+  out-of-bounds sources, incomplete probe facts, and invalid negative bounds.
 - Aether's local logging-hardening commit has passed the 6.34.0 upstream suite
   (1,954 tests, zero failures) but is not remotely resolvable yet. Public
   release 6.34.1 and upstream `main` at
@@ -538,6 +591,15 @@ Aether-facing adapter and real-media acceptance tests.
   first-frame, timeline, realtime, offline, and subtitle-header boundaries it
   traced. The requested Opus run failed before returning a usable verdict and
   must be rerun rather than represented as completed.
+- A final Fable follow-up through the isolated CLIProxy instance reviewed the
+  frozen software-decode delta and rated it mergeable with high confidence. It
+  verified that platform-attested software profiles are enforced, the 10-bit-
+  only scope and per-codec performance ceilings match the spec, and all five
+  planner routes plus packaged-codec exclusion are pinned. Its remaining low-
+  severity observations were resolved by tightening the snapshot comment,
+  using the exact shipped ceilings and case-varied profiles in server planner
+  tests, asserting all five software bit depths, and naming the packaged-route
+  test for the Apple contract it actually proves.
 
 ### Validation record (2026-08-22)
 
@@ -550,6 +612,29 @@ Aether-facing adapter and real-media acceptance tests.
   broader post-review iOS run passes 958 tests with that same live test skipped
   when the unrelated `UICustomizationPreferencesTests` suite is explicitly
   excluded. Post-review tvOS and macOS builds also succeed.
+- The post-capability focused iOS run passes 48 tests with zero failures and
+  one intentionally opt-in live test skipped. When supplied the isolated live
+  envelope, that boundary test executes all five authenticated software-codec
+  streams through the same Aether controller contract.
+- After profile- and download-bound tightening, 39 focused capability/V3 tests
+  pass with zero failures. A clean, signed iOS simulator run passes 961 tests
+  with one opt-in live test skipped and zero failures when the same unrelated
+  `UICustomizationPreferencesTests` suite is excluded. Running that broad lane
+  unsigned makes 11 keychain-backed identity assertions fail; the identical
+  79 affected tests pass in the signed lane, so those are signing-environment
+  failures rather than playback regressions.
+- After tightening the software performance claims to the exercised fixtures,
+  the final Aether-boundary/capability/V3 run passes 51 tests with one expected
+  opt-in live-fixture skip and zero failures. The isolated planner selected
+  `playable` / `original_http` and returned authenticated `206` ranges for all
+  five final entries. MPEG-2 first failed closed at a 30 fps claim because the
+  server probe reports 30.303 fps; the documented 31 fps ceiling is the
+  smallest rounded bound that admits that exact fixture, and its focused
+  11-test capability rerun passes.
+- Current focused server playback, contract, handler, and download suites pass.
+  Every server package except `internal/jellycompat` passes as a full set; that
+  unchanged package has two reproducible macOS process-identity lock failures
+  when run alone and is outside this change.
 - iOS, tvOS simulator, and macOS arm64 builds succeed. The signed iOS app
   installs and launches on the iOS 27 simulator.
 - Built iOS, tvOS, and macOS apps contain only Aether's expected nine FFmpeg

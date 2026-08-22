@@ -1,11 +1,8 @@
 import XCTest
 @testable import Silo
 
-/// The client reports decode capability to the server through three doors —
-/// the V3 capability snapshot, the playback bootstrap, and download creation.
-/// They have to describe the same client. ALAC was once present in one list
-/// and absent from the other two, which the server could only read as "this
-/// device cannot play ALAC", silently, on two of the three paths.
+/// Playback and downloads must describe the same stack while retaining the
+/// evidence each wire contract can safely understand.
 final class AppleDecodeCapabilitiesTests: XCTestCase {
 
     // MARK: - The surfaces agree
@@ -21,8 +18,70 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         let caps = DownloadCaps.current()
         XCTAssertEqual(caps.codecsAudio, AppleDecodeCapabilities.audioCodecs)
         XCTAssertEqual(caps.containers, AppleDecodeCapabilities.containers)
-        XCTAssertEqual(caps.codecsVideo, AppleDecodeCapabilities.videoCodecs)
-        XCTAssertEqual(caps.maxResolution, AppleDecodeCapabilities.maxResolution)
+        XCTAssertEqual(caps.codecsVideo, AppleDecodeCapabilities.hardwareVideoCodecs)
+        XCTAssertEqual(caps.maxResolution, "1080p")
+        XCTAssertEqual(caps.videoEvidence, PlaybackProtocolV3.Evidence.platformAttested)
+        XCTAssertEqual(
+            caps.videoDecode,
+            ApplePlaybackV3Capabilities.snapshot().capabilities.videoDecode
+        )
+        XCTAssertEqual(caps.clientFeatures, [PlaybackProtocolV3.softwareVideoDecodeFeature])
+        XCTAssertTrue(
+            Set(AppleDecodeCapabilities.softwareVideoCodecs).isDisjoint(
+                with: Set(caps.codecsVideo)
+            )
+        )
+    }
+
+    func testDownloadSoftwareClaimsRetainTheirOwnBounds() {
+        let software = Dictionary(
+            uniqueKeysWithValues: DownloadCaps.current().videoDecode
+                .filter { !$0.hardware }
+                .map { ($0.codec, [$0.maxWidth, $0.maxHeight, Int($0.maxFrameRate), $0.maxBitrateKbps]) }
+        )
+        XCTAssertEqual(software["h264"], [1_920, 1_080, 30, 10_000])
+        XCTAssertEqual(software["av1"], [1_920, 1_080, 30, 3_000])
+        XCTAssertEqual(software["vp9"], [1_920, 1_080, 30, 3_000])
+        XCTAssertEqual(software["mpeg2video"], [720, 480, 31, 7_000])
+        XCTAssertEqual(software["vc1"], [1_920, 1_080, 30, 32_000])
+    }
+
+    func testSoftwareClaimsStayWithinTheExercisedProfilesAndBitDepths() {
+        let software = Dictionary(
+            uniqueKeysWithValues: DownloadCaps.current().videoDecode
+                .filter { !$0.hardware }
+                .map { ($0.codec, ($0.profiles, $0.bitDepths)) }
+        )
+        XCTAssertEqual(software["h264"]?.0, ["high 10"])
+        XCTAssertEqual(software["h264"]?.1, [10])
+        XCTAssertEqual(software["av1"]?.0, ["main"])
+        XCTAssertEqual(software["av1"]?.1, [10])
+        XCTAssertEqual(software["vp9"]?.0, ["profile 0"])
+        XCTAssertEqual(software["vp9"]?.1, [8])
+        XCTAssertEqual(software["mpeg2video"]?.0, ["main"])
+        XCTAssertEqual(software["mpeg2video"]?.1, [8])
+        XCTAssertEqual(software["vc1"]?.0, ["advanced"])
+        XCTAssertEqual(software["vc1"]?.1, [8])
+    }
+
+    func testDownloadSoftwareEvidenceUsesTheServerWireKeys() throws {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(DownloadCaps.current()))
+                as? [String: Any]
+        )
+        XCTAssertEqual(
+            object["client_features"] as? [String],
+            [PlaybackProtocolV3.softwareVideoDecodeFeature]
+        )
+        XCTAssertEqual(
+            object["video_evidence"] as? String,
+            PlaybackProtocolV3.Evidence.platformAttested
+        )
+        XCTAssertNotNil(object["video_decode"] as? [[String: Any]])
+        XCTAssertNil(object["clientFeatures"])
+        XCTAssertNil(object["videoDecode"])
     }
 
     func testEveryAudioSurfaceCarriesTheSameCodecs() {
@@ -74,11 +133,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
 
     func testDecodeEntriesNameTheDecoderTheyActuallyUse() {
         for entry in ApplePlaybackV3Capabilities.snapshot().capabilities.videoDecode {
-            XCTAssertEqual(
-                entry.decoderName == "VideoToolbox",
-                entry.hardware,
-                "\(entry.codec) names a decoder its hardware flag contradicts"
-            )
+            XCTAssertEqual(entry.hardware ? "VideoToolbox" : (entry.codec == "av1" ? "dav1d" : "libavcodec"), entry.decoderName)
         }
     }
 
@@ -86,7 +141,10 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
 
     func testSimulatorClaimStaysConservative() throws {
         try XCTSkipUnless(AppleDecodeCapabilities.isSimulator)
-        XCTAssertEqual(AppleDecodeCapabilities.videoCodecs, ["h264"])
+        XCTAssertEqual(
+            AppleDecodeCapabilities.videoCodecs,
+            ["h264", "av1", "vp9", "mpeg2video", "vc1"]
+        )
         XCTAssertEqual(AppleDecodeCapabilities.maxResolution, "1080p")
         XCTAssertFalse(DownloadCaps.current().hdr)
         XCTAssertEqual(DownloadCaps.current().audioPassthroughCodecs, [])

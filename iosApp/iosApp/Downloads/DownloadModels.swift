@@ -197,17 +197,20 @@ struct CreateDownloadRequest: Encodable, Sendable {
 /// Device decode capability used to decide whether `original` can be served
 /// directly or should fall back to a compatibility artifact.
 struct DownloadCaps: Encodable, Sendable {
+    let clientFeatures: [String]
+    let videoEvidence: String
     let codecsVideo: [String]
     let codecsAudio: [String]
     let audioPassthroughCodecs: [String]?
     let containers: [String]
     let maxResolution: String?
     let hdr: Bool
+    let videoDecode: [PlaybackV3VideoDecodeCapability]
 
-    /// Decode caps for the current Apple platform, from the same
-    /// `AppleDecodeCapabilities` lists the playback bootstrap and the V3
-    /// capability snapshot report — a download that plays online has to plan
-    /// the same way offline.
+    /// Decode caps for the current Apple platform. The legacy flat video list
+    /// contains hardware codecs only, so a server that ignores the additive
+    /// detailed fields fails safely. New servers use `videoDecode` plus the
+    /// feature opt-in to qualify bounded Aether software originals.
     ///
     /// Downloads are persistent artifacts, so HDR here is the device's
     /// maximum decode capability rather than the active display route:
@@ -217,12 +220,18 @@ struct DownloadCaps: Encodable, Sendable {
     static func current() -> DownloadCaps {
         let isSimulator = AppleDecodeCapabilities.isSimulator
         return DownloadCaps(
-            codecsVideo: AppleDecodeCapabilities.videoCodecs,
+            clientFeatures: [PlaybackProtocolV3.softwareVideoDecodeFeature],
+            videoEvidence: PlaybackProtocolV3.Evidence.platformAttested,
+            codecsVideo: AppleDecodeCapabilities.hardwareVideoCodecs,
             codecsAudio: AppleDecodeCapabilities.audioCodecs,
             audioPassthroughCodecs: isSimulator ? [] : ["ac3", "eac3"],
             containers: AppleDecodeCapabilities.containers,
-            maxResolution: AppleDecodeCapabilities.maxResolution,
-            hdr: !isSimulator
+            // Old servers understand only this coarse field. Keep it at the
+            // software ceiling; a new server uses the detailed hardware entry
+            // to preserve safe 4K originals on physical devices.
+            maxResolution: "1080p",
+            hdr: !isSimulator,
+            videoDecode: ApplePlaybackV3Capabilities.videoDecodeAttestation()
         )
     }
 }

@@ -16,6 +16,10 @@ enum PlaybackProtocolV3 {
     /// its current Authorization header to the source and every derived media
     /// or subtitle request.
     static let headerAuthenticatedMediaFeature = "header_authenticated_media_v1"
+    /// The server may validate bounded `hardware: false` decode entries for
+    /// original delivery. Older servers ignore the opt-in and keep their
+    /// hardware-only strict-tier behavior.
+    static let softwareVideoDecodeFeature = "software_video_decode_v1"
     static let planSourceDurationFeature = "plan_source_duration_v1"
 
     /// Delivery classes are the unit a client negotiates in
@@ -88,7 +92,7 @@ struct PlaybackV3AudioPassthrough: Codable, Equatable {
     let entries: [PlaybackV3AudioPassthroughEntry]
 }
 
-struct PlaybackV3VideoDecodeCapability: Codable, Equatable {
+struct PlaybackV3VideoDecodeCapability: Codable, Equatable, Sendable {
     let codec: String
     let decoderName: String?
     let profiles: [String]
@@ -102,10 +106,11 @@ struct PlaybackV3VideoDecodeCapability: Codable, Equatable {
 }
 
 struct PlaybackV3CodecCapabilities: Codable, Equatable {
-    /// How this client knows what it can decode. Apple attests through
-    /// VideoToolbox rather than enumerating a decoder registry, so it claims
-    /// `platform_attested`: codec, bit depth and dimension bounds are real,
-    /// profile/level are not enumerable and the server skips matching them.
+    /// How this client knows what it can decode. Apple's platform-backed
+    /// Aether stack claims `platform_attested`: codec, bit depth and dimension
+    /// bounds are exercised facts, while profile/level are not enumerable and
+    /// the server skips matching them. Software entries participate only with
+    /// the explicit software-video feature token.
     let videoEvidence: String
     let audioEvidence: String
     let codecsVideo: [String]

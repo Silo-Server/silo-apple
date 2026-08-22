@@ -6,8 +6,13 @@ import XCTest
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
     private struct LiveStreamFixture: Decodable {
+        let label: String?
         let url: URL
         let headers: [String: String]
+    }
+
+    private struct LiveStreamFixtureEnvelope: Decodable {
+        let streams: [LiveStreamFixture]
     }
 
     func testHeaderAuthenticatedStreamResolutionStaysOnAPIMediaOrigin() throws {
@@ -403,18 +408,31 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
 
         let fixtureURL = URL(fileURLWithPath: fixturePath)
-        let fixture = try JSONDecoder().decode(
-            LiveStreamFixture.self,
-            from: Data(contentsOf: fixtureURL)
-        )
+        let data = try Data(contentsOf: fixtureURL)
+        let decoder = JSONDecoder()
+        let fixtures: [LiveStreamFixture]
+        if let envelope = try? decoder.decode(LiveStreamFixtureEnvelope.self, from: data) {
+            fixtures = envelope.streams
+        } else {
+            fixtures = [try decoder.decode(LiveStreamFixture.self, from: data)]
+        }
+        XCTAssertFalse(fixtures.isEmpty, "Live fixture envelope must contain at least one stream")
+
+        for fixture in fixtures {
+            try await assertLiveFixtureLoadsAndAdvances(fixture)
+        }
+    }
+
+    private func assertLiveFixtureLoadsAndAdvances(_ fixture: LiveStreamFixture) async throws {
+        let label = fixture.label ?? "live stream"
         guard let scheme = fixture.url.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
               fixture.url.host != nil else {
-            return XCTFail("Live fixture URL must be an absolute HTTP(S) URL")
+            return XCTFail("\(label): URL must be an absolute HTTP(S) URL")
         }
         XCTAssertNotNil(
             fixture.headers.first { $0.key.caseInsensitiveCompare("Authorization") == .orderedSame },
-            "Live fixture must exercise Aether's authenticated HTTP transport"
+            "\(label): fixture must exercise Aether's authenticated HTTP transport"
         )
 
         let controller = try AetherPlaybackController()
@@ -440,7 +458,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertGreaterThan(
             controller.engine.clock.currentTime,
             0.25,
-            "Aether loaded the authenticated source but its playback clock never advanced"
+            "\(label): Aether loaded the authenticated source but its playback clock never advanced"
         )
     }
 }

@@ -517,13 +517,22 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             snapshot.capabilities.audioEvidence,
             PlaybackProtocolV3.Evidence.declared
         )
-        XCTAssertEqual(snapshot.capabilities.codecsVideo, ["h264"])
+        XCTAssertEqual(snapshot.capabilities.codecsVideo, ["h264", "av1", "vp9", "mpeg2video", "vc1"])
         XCTAssertEqual(snapshot.capabilities.codecsVideoHardware, ["h264"])
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.softwareVideoDecodeFeature
+            )
+        )
+        XCTAssertEqual(
+            Set(snapshot.capabilities.videoDecode.filter { !$0.hardware }.map(\.codec)),
+            Set(["h264", "av1", "vp9", "mpeg2video", "vc1"])
+        )
         XCTAssertEqual(snapshot.capabilities.videoDecode.first?.profiles, [])
         XCTAssertEqual(snapshot.capabilities.videoDecode.first?.levels, [])
         XCTAssertEqual(
             snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.progressive]?.videoCodecs,
-            AppleDecodeCapabilities.videoCodecs
+            AppleDecodeCapabilities.packagedVideoCodecs
         )
         XCTAssertNil(snapshot.capabilities.audioPassthrough)
         XCTAssertNil(snapshot.context.output.audioPassthrough)
@@ -560,8 +569,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             PlaybackProtocolV3.DeliveryClass.hls
         ] {
             let delivery = try XCTUnwrap(snapshot.context.deliveries[deliveryClass])
-            XCTAssertEqual(delivery.videoCodecs, AppleDecodeCapabilities.videoCodecs)
-            XCTAssertEqual(delivery.videoCodecs, AppleDecodeCapabilities.videoCodecs)
+            XCTAssertEqual(delivery.videoCodecs, AppleDecodeCapabilities.packagedVideoCodecs)
         }
     }
 
@@ -833,6 +841,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
+            )
+        )
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(
+                PlaybackProtocolV3.softwareVideoDecodeFeature
             )
         )
     }

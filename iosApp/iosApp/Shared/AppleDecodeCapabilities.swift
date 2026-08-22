@@ -2,20 +2,15 @@ import Foundation
 
 /// What this Apple client can actually decode, stated once.
 ///
-/// Three surfaces report decode capability to the server, and the server
-/// plans deliveries against all of them: the V3 capability snapshot
-/// (`ApplePlaybackV3Capabilities`), the playback bootstrap
-/// (`PlaybackSessionBridge.makeClientCaps`), and download creation
-/// (`DownloadCaps.current`). When their lists drift apart the same title is
-/// planned differently depending on which door it came through, and nothing
-/// fails loudly — ALAC sat in one list and not the other two until a review
-/// caught it. So the vocabulary lives here.
+/// Playback and download surfaces report the same underlying stack using
+/// different wire shapes: V3 can describe every detailed decoder, while the
+/// legacy portion of download creation must remain hardware-only so an older
+/// server that ignores additive decoder evidence fails safely. The codec and
+/// container vocabulary still lives here so spelling cannot drift silently.
 ///
-/// What legitimately differs between the surfaces is *policy*, and that stays
-/// at the call site where its reason can be written down: whether this route
-/// claims HDR, and which codecs the
-/// current output can take untouched. Only the underlying "the stack can open
-/// this" lists are shared.
+/// What differs between surfaces is policy and evidence shape, kept at the
+/// call site where its safety reason can be stated. Only the underlying "the
+/// stack can open this" vocabulary is shared.
 enum AppleDecodeCapabilities {
     #if targetEnvironment(simulator)
     static let isSimulator = true
@@ -23,14 +18,21 @@ enum AppleDecodeCapabilities {
     static let isSimulator = false
     #endif
 
-    /// Video codecs the client conservatively attests. The
-    /// simulator has no video decoder beyond H.264, so it claims nothing
-    /// else — a claim it cannot honor just moves the failure from the
-    /// server's planner to a black screen here.
-    static let videoCodecs: [String] = isSimulator ? ["h264"] : ["h264", "hevc"]
+    /// Video codecs the pinned media stack has exercised end to end. H.264
+    /// includes the software High-10 path; MPEG-2 includes the interlaced path.
+    /// The remaining non-Apple codecs are bounded software claims in the V3
+    /// snapshot rather than pretending VideoToolbox supplied them.
+    static let softwareVideoCodecs = ["av1", "vp9", "mpeg2video", "vc1"]
+    static let videoCodecs: [String] = (isSimulator ? ["h264"] : ["h264", "hevc"])
+        + softwareVideoCodecs
 
     /// The subset of `videoCodecs` VideoToolbox decodes in hardware.
     static let hardwareVideoCodecs: [String] = isSimulator ? ["h264"] : ["h264", "hevc"]
+
+    /// Server-packaged progressive/HLS routes remain on their native codec
+    /// vocabulary. The software claims above describe Aether's original-file
+    /// path and must not silently broaden a receiver/native-HLS contract.
+    static let packagedVideoCodecs = hardwareVideoCodecs
 
     /// Audio codecs the client decodes. The simulator keeps the conservative
     /// subset it was aligned to alongside its H.264-only video claim, rather
