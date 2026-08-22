@@ -11,6 +11,10 @@ enum PlaybackProtocolV3 {
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"
+    /// The `output_change` intent replan exists. Per §6 an intent operation
+    /// keeps the previous route eligible; `failure_recovery` would instead
+    /// exclude the current plan key and force a route the device never rejected.
+    static let outputChangeFeature = "output_change_v1"
     static let directStreamResumeFeature = "direct_stream_resume_v1"
     /// API-local media URLs carry no signed credential. The client attaches
     /// its current Authorization header to the source and every derived media
@@ -55,7 +59,7 @@ enum PlaybackProtocolV3 {
     }
 
     /// Why the client is asking for a new plan. `failureRecovery` is the
-    /// server's default when the field is absent; the two intent operations
+    /// server's default when the field is absent; the three intent operations
     /// carry no `failure`.
     enum ReplanOperation {
         static let failureRecovery = "failure_recovery"
@@ -63,6 +67,11 @@ enum PlaybackProtocolV3 {
         static let seekFailureRecovery = "seek_failure_recovery"
         static let trackChange = "track_change"
         static let qualityChange = "quality_change"
+        /// The active display/output capabilities changed. Nothing failed, so
+        /// §6 keeps the previous route eligible: neither attempted-key history
+        /// nor the failed-plan exclusion applies. The server rejects this
+        /// operation outright if it carries a `failure`.
+        static let outputChange = "output_change"
     }
 }
 

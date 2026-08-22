@@ -97,19 +97,27 @@ enum ApplePlaybackV3PlanAdapter {
         if let artifact = plan.subtitle.artifact,
            let selectedIndex = plan.selectedTracks.subtitle?.index,
            !subtitleUrls.contains(where: { $0.index == selectedIndex }) {
-            let selected = plan.selectedTracks.subtitle?.index.flatMap {
-                subtitleTrack(atServerCombinedIndex: $0, in: selectedVersion)
-            }
+            // §8: the inventory is authoritative. Describe the track from its
+            // own entry when the server published one — a `burn_in_only` entry
+            // has no URL but still carries the correct identity. Only fall back
+            // to the counted catalog lookup when the inventory names no entry
+            // for this ordinal at all.
+            let published = plan.subtitle.inventory.first { $0.combinedIndex == selectedIndex }
+            let selected = published == nil
+                ? subtitleTrack(atServerCombinedIndex: selectedIndex, in: selectedVersion)
+                : nil
             subtitleUrls.append(SubtitleUrl(
                 index: selectedIndex,
-                language: selected?.language,
+                language: published?.language ?? selected?.language,
                 codec: artifact.format,
-                label: selected?.title,
-                source: selected.map { $0.external == true ? "external" : "embedded" } ?? "protocol_v3",
-                forced: selected?.forced,
-                default: selected?.isDefault,
-                hearingImpaired: selected?.hearingImpaired,
-                fontBundleUrl: nil,
+                label: published?.label ?? selected?.title,
+                source: published?.source
+                    ?? selected.map { $0.external == true ? "external" : "embedded" }
+                    ?? "protocol_v3",
+                forced: published?.forced ?? selected?.forced,
+                default: published?.default ?? selected?.isDefault,
+                hearingImpaired: published?.hearingImpaired ?? selected?.hearingImpaired,
+                fontBundleUrl: published?.fontBundleUrl,
                 url: artifact.url
             ))
         }
@@ -149,36 +157,83 @@ enum ApplePlaybackV3PlanAdapter {
     /// embedded picker carries FFmpeg stream indices instead, and watch detail
     /// lists embedded tracks before external tracks, so the wire identity must
     /// be translated rather than copied.
+    ///
+    /// This overload derives the embedded base by counting the catalog's
+    /// external tracks, which §8 forbids: the combined space also contains a
+    /// downloaded range the catalog never exposes, and a `burn_in_only` track
+    /// still occupies its ordinal. It is correct only *before* any plan exists
+    /// — the initial start, where there is no inventory to consult yet. Use the
+    /// `inventory:` overload everywhere a plan is in hand.
     static func serverCombinedSubtitleIndex(
         ffmpegStreamIndex: Int,
         in version: FileVersion
     ) -> Int? {
-        guard ffmpegStreamIndex >= 0 else { return nil }
-        let tracks = version.subtitleTracks ?? []
-        let externalCount = tracks.filter { $0.external == true }.count
-        let embedded = tracks.filter { $0.external != true }
-        guard let embeddedOrdinal = embedded.firstIndex(where: {
-            $0.index == ffmpegStreamIndex
-        }) else {
+        guard let embeddedOrdinal = embeddedSubtitleOrdinal(
+            ffmpegStreamIndex: ffmpegStreamIndex,
+            in: version
+        ) else {
             return nil
         }
+        let externalCount = (version.subtitleTracks ?? []).filter { $0.external == true }.count
         return externalCount + embeddedOrdinal
+    }
+
+    /// Resolves an embedded FFmpeg stream index against the server's published
+    /// combined ordinals instead of deriving one.
+    ///
+    /// The inventory's `embedded` entries are in container stream order, which
+    /// is the same order the catalog lists them in, so the *n*-th embedded
+    /// catalog track is the *n*-th embedded inventory entry — and that entry
+    /// carries the authoritative `combined_index`. An empty inventory means no
+    /// plan has published one yet, so the counted derivation stands in.
+    static func serverCombinedSubtitleIndex(
+        ffmpegStreamIndex: Int,
+        in version: FileVersion,
+        inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int? {
+        guard !inventory.isEmpty else {
+            return serverCombinedSubtitleIndex(ffmpegStreamIndex: ffmpegStreamIndex, in: version)
+        }
+        guard let embeddedOrdinal = embeddedSubtitleOrdinal(
+            ffmpegStreamIndex: ffmpegStreamIndex,
+            in: version
+        ) else {
+            return nil
+        }
+        let embeddedInventory = inventory.filter { $0.source == "embedded" }
+        guard embeddedInventory.indices.contains(embeddedOrdinal) else { return nil }
+        return embeddedInventory[embeddedOrdinal].combinedIndex
     }
 
     static func serverCombinedSubtitleIndex(
         for playerTrack: PlayerTrack,
         in version: FileVersion
     ) -> Int? {
+        serverCombinedSubtitleIndex(for: playerTrack, in: version, inventory: [])
+    }
+
+    static func serverCombinedSubtitleIndex(
+        for playerTrack: PlayerTrack,
+        in version: FileVersion,
+        inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int? {
         if playerTrack.isExternal {
+            // A sidecar player track is minted from a published `SubtitleUrl`,
+            // whose `index` *is* the server's combined ordinal — so this is an
+            // echo, not a derivation, and must not be re-mapped through the
+            // inventory's positions.
             return playerTrack.srcId.flatMap { $0 >= 0 ? $0 : nil }
         }
         guard let ffmpegStreamIndex = playerTrack.ffIndex else { return nil }
         return serverCombinedSubtitleIndex(
             ffmpegStreamIndex: ffmpegStreamIndex,
-            in: version
+            in: version,
+            inventory: inventory
         )
     }
 
+    /// Inverse of `serverCombinedSubtitleIndex`. Same caveat: the counted base
+    /// is only sound before a plan publishes an inventory.
     static func ffmpegSubtitleStreamIndex(
         serverCombinedIndex: Int,
         in version: FileVersion
@@ -190,6 +245,38 @@ enum ApplePlaybackV3PlanAdapter {
         let embeddedOrdinal = serverCombinedIndex - externalCount
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }
         return embedded[embeddedOrdinal].index
+    }
+
+    static func ffmpegSubtitleStreamIndex(
+        serverCombinedIndex: Int,
+        in version: FileVersion,
+        inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int? {
+        guard !inventory.isEmpty else {
+            return ffmpegSubtitleStreamIndex(serverCombinedIndex: serverCombinedIndex, in: version)
+        }
+        let embeddedInventory = inventory.filter { $0.source == "embedded" }
+        guard let embeddedOrdinal = embeddedInventory.firstIndex(where: {
+            $0.combinedIndex == serverCombinedIndex
+        }) else {
+            // Not an embedded track: external and downloaded ordinals have no
+            // FFmpeg stream to select.
+            return nil
+        }
+        let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
+        guard embedded.indices.contains(embeddedOrdinal) else { return nil }
+        return embedded[embeddedOrdinal].index
+    }
+
+    /// Position of an FFmpeg stream index among the version's embedded subtitle
+    /// tracks, in container stream order.
+    private static func embeddedSubtitleOrdinal(
+        ffmpegStreamIndex: Int,
+        in version: FileVersion
+    ) -> Int? {
+        guard ffmpegStreamIndex >= 0 else { return nil }
+        let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
+        return embedded.firstIndex { $0.index == ffmpegStreamIndex }
     }
 
     private static func subtitleTrack(

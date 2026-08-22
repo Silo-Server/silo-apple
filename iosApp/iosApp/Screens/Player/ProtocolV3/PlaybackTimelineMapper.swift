@@ -108,8 +108,26 @@ struct PlaybackTimelineMapper: Equatable, Sendable {
         return playerPosition(forSourceTime: artifactSeconds + timingOriginSeconds)
     }
 
+    /// The earliest source position this transport can express.
+    ///
+    /// Player time is `source - timelineOffsetSeconds`, so a target below the
+    /// offset has no non-negative player coordinate at all. It is a property of
+    /// the loaded transport, not of the advertised seek window, which is why the
+    /// check below does not depend on one being published.
+    var earliestLocalSourceSeconds: Double { timelineOffsetSeconds }
+
     func seekDisposition(forSourceTime requestedSeconds: Double) -> SeekDisposition {
         let sourceSeconds = requestedSeconds.isFinite ? max(0, requestedSeconds) : sourceStartSeconds
+        // A re-anchored transport (`timeline_offset_seconds > 0`) frequently
+        // arrives with no seek window, and the old window-only test then let a
+        // backward seek before the offset fall through to `playerPosition`,
+        // which clamps at zero. That silently played the transport's origin
+        // instead of the requested moment. Only the server can produce a
+        // transport that contains it, so ask for a plan regardless of whether a
+        // window was published or `can_seek_anywhere` was set.
+        if sourceSeconds < earliestLocalSourceSeconds {
+            return .replan(sourceSeconds: sourceSeconds)
+        }
         guard canSeekAnywhere else { return .replan(sourceSeconds: sourceSeconds) }
         if let start = seekWindowStartSeconds, sourceSeconds < start {
             return .replan(sourceSeconds: sourceSeconds)

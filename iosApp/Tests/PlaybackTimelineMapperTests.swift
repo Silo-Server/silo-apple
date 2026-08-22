@@ -32,6 +32,32 @@ final class PlaybackTimelineMapperTests: XCTestCase {
         XCTAssertEqual(mapper.seekDisposition(forSourceTime: 1200), .replan(sourceSeconds: 1200))
     }
 
+    func testBackwardSeekBeforeTimelineOffsetReplansWithoutASeekWindow() throws {
+        // A re-anchored transport that advertises no seek window still cannot
+        // express any source position below its offset: player zero *is* the
+        // offset. Clamping there would play the wrong moment silently.
+        let mapper = try PlaybackTimelineMapper(validating: timeline(
+            sourceStart: 1200,
+            streamOrigin: 1000,
+            playerStart: 200,
+            offset: 1000,
+            canSeekAnywhere: true,
+            seekRestoration: "source_position"
+        ))
+
+        XCTAssertEqual(mapper.earliestLocalSourceSeconds, 1000)
+        XCTAssertEqual(mapper.seekDisposition(forSourceTime: 60), .replan(sourceSeconds: 60))
+        XCTAssertEqual(mapper.seekDisposition(forSourceTime: 0), .replan(sourceSeconds: 0))
+        XCTAssertEqual(
+            mapper.seekDisposition(forSourceTime: 1000),
+            .local(playerSeconds: 0)
+        )
+        XCTAssertEqual(
+            mapper.seekDisposition(forSourceTime: 1300),
+            .local(playerSeconds: 300)
+        )
+    }
+
     func testArtifactTimingOriginMapsOntoActivePlayerAxis() throws {
         let mapper = try PlaybackTimelineMapper(validating: timeline(
             sourceStart: 42,

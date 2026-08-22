@@ -22,7 +22,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         )
         XCTAssertEqual(matrix.schemaVersion, 1)
         XCTAssertEqual(matrix.plannerScenarios.count, 17)
-        XCTAssertEqual(matrix.replanScenarios.count, 9)
+        XCTAssertEqual(matrix.replanScenarios.count, 10)
         XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
         let categories = Set(
@@ -41,6 +41,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 "available_qualities",
                 "track_change_replan",
                 "quality_change_replan",
+                "output_change_replan",
                 "idempotent_replan",
                 "concurrent_replan",
                 "mid_seek_replan",
@@ -116,7 +117,28 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
 
         XCTAssertTrue(
             matrix.replanScenarios.allSatisfy { $0.request.failure == nil },
-            "track, quality, and seek-reanchor intent vectors must omit failure"
+            "track, quality, output and seek-reanchor intent vectors must omit failure"
+        )
+
+        // An output-route change is an intent replan, not a failure recovery:
+        // the golden vector names the operation the client must send and omits
+        // the failure block the server would reject.
+        let outputChange = try replanScenario(named: "output_change", in: matrix)
+        XCTAssertEqual(
+            outputChange.request.operation,
+            PlaybackProtocolV3.ReplanOperation.outputChange
+        )
+        XCTAssertNil(outputChange.request.failure)
+        XCTAssertEqual(outputChange.expected.preserveUnmodifiedTracks, true)
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "output_route_changed",
+                serverFeatures: [
+                    PlaybackProtocolV3.planFeature,
+                    PlaybackProtocolV3.outputChangeFeature
+                ]
+            ),
+            outputChange.request.operation
         )
 
         let recovery = try protocolScenario(named: "failure_recovery_preserves_intent", in: matrix)
@@ -171,6 +193,13 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         in matrix: PlaybackV3ConformanceMatrix
     ) throws -> PlaybackV3ConformancePlannerScenario {
         try XCTUnwrap(matrix.plannerScenarios.first { $0.name == name })
+    }
+
+    private func replanScenario(
+        named name: String,
+        in matrix: PlaybackV3ConformanceMatrix
+    ) throws -> PlaybackV3ConformanceReplanScenario {
+        try XCTUnwrap(matrix.replanScenarios.first { $0.name == name })
     }
 
     private func protocolScenario(
