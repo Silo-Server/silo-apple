@@ -1,6 +1,11 @@
-Source: silo-server docs/design/schemas/playback-v3/v3/fixtures/valid and internal/playback/testdata/protocol_v3
-Server ref: codex/playback-v3-neutral-server
-Server commit: ce2f3e6df084f52c62595db8e3011f55c3a925ef
-Vendored: 2026-08-10
+Source: silo-server internal/playback/testdata/protocol_v3
+Server ref: codex/aether-tokenless-playback-v3
+Server commit: d76226449a0aa0667ef916b8238d6afe6a7d082f
+Vendored: 2026-08-22
+
+All nine files come from internal/playback/testdata/protocol_v3. Six of them are
+also published byte-identically under docs/design/schemas/playback-v3/v3/fixtures/valid;
+attempt_keys.json, conformance_matrix.json and subtitle_inventory.json exist only
+under testdata, so the testdata directory is the single copy source.
 
 Refresh these files from the exact server commit above, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.

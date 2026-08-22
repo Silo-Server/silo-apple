@@ -44,6 +44,7 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.routeDiagnosticsFeature,
         PlaybackProtocolV3.deviceQuirksFeature,
         PlaybackProtocolV3.seekReanchorFeature,
+        PlaybackProtocolV3.outputChangeFeature,
         PlaybackProtocolV3.directStreamResumeFeature,
         PlaybackProtocolV3.headerAuthenticatedMediaFeature,
         PlaybackProtocolV3.softwareVideoDecodeFeature

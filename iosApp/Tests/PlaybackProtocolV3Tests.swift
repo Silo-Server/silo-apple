@@ -2,6 +2,13 @@ import Foundation
 import XCTest
 @testable import Silo
 
+/// Minimal cross-task observation point for the cancellation-shield tests.
+actor PlaybackTestActorBox<Value: Sendable> {
+    private(set) var value: Value?
+
+    func set(_ newValue: Value) { value = newValue }
+}
+
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
     func testServerGoldenDecisionDecodesAndPublishesCompleteSubtitleInventory() throws {
@@ -189,6 +196,194 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(object["operation"] as? String, "quality_change")
         XCTAssertNil(object["failure"])
         XCTAssertEqual(object["attempted_plan_keys"] as? [String], [])
+    }
+
+    func testOutputRouteChangeUsesTheIntentOperationWhenTheServerOffersIt() throws {
+        let advertised = [
+            PlaybackProtocolV3.planFeature,
+            PlaybackProtocolV3.outputChangeFeature
+        ]
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "output_route_changed",
+                serverFeatures: advertised
+            ),
+            PlaybackProtocolV3.ReplanOperation.outputChange,
+            "an output-route change is an intent replan, so the previous route stays eligible"
+        )
+        // "Clients must keep the active route when this feature is absent": a
+        // server without `output_change_v1` rejects the operation outright, so
+        // the historical failure-recovery spelling remains the only option.
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "output_route_changed",
+                serverFeatures: [PlaybackProtocolV3.planFeature]
+            ),
+            PlaybackProtocolV3.ReplanOperation.failureRecovery
+        )
+        // The feature must never redirect an unrelated classification.
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "decoder_failed",
+                serverFeatures: advertised
+            ),
+            PlaybackProtocolV3.ReplanOperation.failureRecovery
+        )
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.outputChangeFeature
+            ),
+            "the client must advertise the operation it intends to send"
+        )
+        // The server rejects an `output_change` that carries a failure block.
+        XCTAssertNil(
+            PlaybackSessionBridge.replanFailure(
+                operation: PlaybackProtocolV3.ReplanOperation.outputChange,
+                classification: "output_route_changed",
+                message: "route changed"
+            )
+        )
+        let request = makeReplanRequest(
+            planAttemptKey: "v3:output",
+            operation: PlaybackProtocolV3.ReplanOperation.outputChange,
+            failure: nil
+        )
+        let object = try encodedObject(request)
+        XCTAssertEqual(object["operation"] as? String, "output_change")
+        XCTAssertNil(object["failure"])
+    }
+
+    func testSubtitleOrdinalsComeFromTheInventoryWheneverOneExists() {
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: 2, codec: "ass", external: false, path: nil),
+                makeSubtitle(index: 5, codec: "pgs", external: false, path: nil),
+                makeSubtitle(index: nil, codec: "srt", external: true, path: "movie.en.srt")
+            ]
+        )
+        // The catalog knows one external sidecar; the server also carries two
+        // downloaded subtitles it never exposes, so the real embedded base is 3,
+        // not the 1 that counting the catalog produces.
+        let inventory = [
+            makeInventoryItem(combinedIndex: 0, source: "external"),
+            makeInventoryItem(combinedIndex: 1, source: "downloaded"),
+            makeInventoryItem(combinedIndex: 2, source: "downloaded"),
+            makeInventoryItem(combinedIndex: 3, source: "embedded"),
+            makeInventoryItem(combinedIndex: 4, source: "embedded", delivery: "burn_in_only")
+        ]
+
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                ffmpegStreamIndex: 2,
+                in: version,
+                inventory: inventory
+            ),
+            3
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                ffmpegStreamIndex: 5,
+                in: version,
+                inventory: inventory
+            ),
+            4,
+            "a burn-in-only track keeps its ordinal and must stay addressable"
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+                serverCombinedIndex: 4,
+                in: version,
+                inventory: inventory
+            ),
+            5
+        )
+        XCTAssertNil(
+            ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+                serverCombinedIndex: 1,
+                in: version,
+                inventory: inventory
+            ),
+            "a downloaded ordinal has no embedded FFmpeg stream index"
+        )
+        // A sidecar player track already echoes the server's combined ordinal,
+        // so it is passed through rather than re-mapped.
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                for: makePlayerSubtitle(
+                    trackId: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2),
+                    isExternal: true,
+                    ffIndex: nil,
+                    srcId: 2
+                ),
+                in: version,
+                inventory: inventory
+            ),
+            2
+        )
+        // Before any plan exists there is no inventory, and the counted
+        // derivation is the only identity available for the start request.
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                ffmpegStreamIndex: 2,
+                in: version,
+                inventory: []
+            ),
+            1
+        )
+    }
+
+    func testCancelledStartReclaimsTheSessionItStillAllocated() async {
+        let reclaimed = PlaybackTestActorBox<String>()
+        let requestStarted = XCTestExpectation(description: "shielded request started")
+
+        let caller = Task<String, Error> {
+            try await PlaybackCancellationShield.run {
+                requestStarted.fulfill()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                // The POST landed despite the caller's cancellation.
+                return "session-allocated"
+            } reclaim: { allocated in
+                await reclaimed.set(allocated)
+            }
+        }
+
+        await fulfillment(of: [requestStarted], timeout: 5)
+        caller.cancel()
+
+        do {
+            _ = try await caller.value
+            XCTFail("a cancelled caller must not receive the shielded outcome")
+        } catch {
+            XCTAssertTrue(
+                error is CancellationError,
+                "the caller must give up promptly so its start timeout still fires"
+            )
+        }
+
+        // The shielded request keeps running and retires what it allocated.
+        var observed: String?
+        for _ in 0..<100 where observed == nil {
+            observed = await reclaimed.value
+            if observed == nil { try? await Task.sleep(nanoseconds: 20_000_000) }
+        }
+        XCTAssertEqual(observed, "session-allocated")
+    }
+
+    func testUncancelledStartDeliversToTheCallerAndNeverReclaims() async throws {
+        let reclaimed = PlaybackTestActorBox<String>()
+        let value = try await PlaybackCancellationShield.run {
+            "session-allocated"
+        } reclaim: { allocated in
+            await reclaimed.set(allocated)
+        }
+
+        XCTAssertEqual(value, "session-allocated")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let observed = await reclaimed.value
+        XCTAssertNil(observed, "a delivered outcome has exactly one owner")
     }
 
     func testOutputRouteReplanRequiresChangedOutputContextIdentity() {
@@ -1265,6 +1460,27 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             isDefault: isDefault,
             external: external,
             externalPath: path
+        )
+    }
+
+    private func makeInventoryItem(
+        combinedIndex: Int,
+        source: String,
+        delivery: String = "sidecar"
+    ) -> PlaybackV3SubtitleInventoryItem {
+        PlaybackV3SubtitleInventoryItem(
+            trackId: "file:42:subtitle:\(combinedIndex)",
+            combinedIndex: combinedIndex,
+            source: source,
+            codec: "srt",
+            language: "en",
+            label: "English",
+            forced: false,
+            default: false,
+            hearingImpaired: false,
+            delivery: delivery,
+            url: delivery == "sidecar" ? "/stream/subtitles/\(combinedIndex)" : nil,
+            fontBundleUrl: nil
         )
     }
 
