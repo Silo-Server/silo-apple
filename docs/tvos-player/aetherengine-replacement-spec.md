@@ -408,10 +408,11 @@ server fallback.
 - No media URL credentials, headers, subtitle contents, or filenames enter
   uploaded diagnostics without the existing privacy policy's transformation.
 - Silo sanitizes all projected media failures before public OSLog output.
-  AetherEngine 6.34.0 itself still logs request URLs publicly, so the local
-  Aether hardening commit `9d3f291ca7461ae11d4d2f763f9fb36b7a43ea84`
-  redacts URLs, credentials, paths, and secrets at its logging boundary and
-  removes source filenames from known call sites. The
+  AetherEngine 6.34.0 itself still logs request URLs publicly. The upstream-
+  ready Aether hardening commits `ac84b2e6` and `0765ce08`, based on current
+  upstream `main`, redact URLs, standard and custom credential headers, paths,
+  and secrets at the logging boundary and remove source filenames from known
+  call sites. The
   Apple dependency cannot move to that commit until it is available from an
   accessible remote; no privacy-approved candidate may use the unpatched
   upstream revision.
@@ -565,12 +566,15 @@ Aether-facing adapter and real-media acceptance tests.
   original. Download capabilities now carry the same normalized, size-bounded
   detailed evidence. Resolver and handler tests cover opt-in, omission,
   out-of-bounds sources, incomplete probe facts, and invalid negative bounds.
-- Aether's local logging-hardening commit has passed the 6.34.0 upstream suite
-  (1,954 tests, zero failures) but is not remotely resolvable yet. Public
+- Aether's original local logging-hardening commit passed the 6.34.0 upstream
+  suite (1,954 tests, zero failures) but is not remotely resolvable yet. Public
   release 6.34.1 and upstream `main` at
   `6e096e4d3856eb81dbb3e63a53458c20a76535e0` retain the same unredacted logger.
-  The patch cherry-picks cleanly onto that `main`, where the complete current
-  suite passes 1,955 tests in 282 suites with zero failures. The released
+  The publish-ready `codex/redact-media-logs-upstream` branch is based directly
+  on that `main`. A second self-review fix covers custom credential-bearing
+  header names such as `X-Profile-Token` without swallowing later telemetry;
+  seven focused redaction tests and the complete current suite pass, including
+  1,955 Swift Testing tests in 282 suites with zero failures. The released
   6.34.0 pin therefore remains a privacy blocker, not the intended final
   candidate pin.
 - The final self-review added a two-phase V3 execution commit, commit-scoped
@@ -655,8 +659,9 @@ Aether-facing adapter and real-media acceptance tests.
   not yet available. This is an outstanding validation lane, not evidence from
   simulator builds.
 - The live Aether run also reproduced upstream 6.34.0's public source-URL log.
-  The local redaction commit removes that disclosure and remains mandatory for
-  a privacy-approved candidate once it can be pinned from an accessible remote.
+  The two-commit upstream-ready redaction patch removes that disclosure and
+  custom credential-header leakage, and remains mandatory for a privacy-
+  approved candidate once it can be pinned from an accessible remote.
 
 ## Objective purity checks
 
