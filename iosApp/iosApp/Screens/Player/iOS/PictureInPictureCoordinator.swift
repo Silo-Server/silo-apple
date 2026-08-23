@@ -224,6 +224,34 @@ final class PictureInPictureCoordinator {
         tearDownBoundSession(continuingOwner: nil)
     }
 
+    /// End whatever session is bound, regardless of which owner holds it,
+    /// because the app crossed an identity boundary — sign-out, server or
+    /// profile switch, or a cleared session.
+    ///
+    /// Ordinary teardown is owner-keyed and driven by the player's
+    /// disappearance, which deliberately defers `cleanup()` while PiP is
+    /// engaged. An identity change tears the authenticated view hierarchy down
+    /// on that same deferred path, so without this the previous identity's
+    /// engine, server playback session, and PiP window all survive into the
+    /// next one. `tearDownBoundSession` runs the engaged owner's deferred
+    /// cleanup synchronously, which is what stops the engine and closes the
+    /// session.
+    func endSessionForIdentityChange() {
+        guard lifecycleOwner != nil || engagedOwner != nil else { return }
+        Self.logger.info("Ending the PiP session for an identity boundary")
+        tearDownBoundSession(continuingOwner: nil)
+    }
+
+    /// Entry point for the shared auth paths, which are not statically
+    /// isolated to the main actor. The hop is safe in either order relative to
+    /// the player's own disappearance: whichever runs second finds the
+    /// engagement already ended.
+    nonisolated static func endEngagedSessionForIdentityChange() {
+        Task { @MainActor in
+            shared.endSessionForIdentityChange()
+        }
+    }
+
     func ownsEngagedSession(_ owner: AnyObject) -> Bool {
         lifecycleOwner === owner && isEngaged
     }

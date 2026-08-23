@@ -77,6 +77,14 @@ class AppRouter {
             pendingAuthStateReason = nil
             guard oldValue != authState else { return }
             recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
+            // Leaving the authenticated state is an identity boundary: a video
+            // still playing in PiP belongs to the old identity and must not
+            // survive into the next one, so its engagement (engine + server
+            // session) is ended here rather than waiting on a view callback
+            // that treats engaged PiP as a presentation handoff.
+            if authState != .authenticated {
+                PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
+            }
         }
     }
 

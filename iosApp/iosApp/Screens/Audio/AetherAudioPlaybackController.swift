@@ -24,10 +24,15 @@ final class AetherAudioPlaybackController {
         let event: Event
     }
 
-    private let engine: AetherEngine
-    /// Registers this engine process-wide for the lifetime of the controller so a
+    /// Built on the first real playback start, not at controller init: the store
+    /// that owns this controller is created eagerly at app launch, and
+    /// `AetherEngine()` can throw. Constructing it lazily keeps an engine
+    /// initialization failure inside a playback attempt, where it surfaces as a
+    /// player error, instead of taking down the app before login.
+    private var engine: AetherEngine?
+    /// Registers this engine process-wide for as long as it is alive so a
     /// teardown can tell whether it is safe to release the shared audio session.
-    private let sessionClaim = AetherAudioSessionOwnership.Claim()
+    private var sessionClaim: AetherAudioSessionOwnership.Claim?
     private var subscriptions: Set<AnyCancellable> = []
     private(set) var playbackRate: Float = 1.0
     private var generation: UInt64 = 0
@@ -37,16 +42,20 @@ final class AetherAudioPlaybackController {
 
     #if os(iOS) || os(tvOS)
     var audioNowPlayingSession: MPNowPlayingSession? {
-        engine.audioNowPlayingSession
+        engine?.audioNowPlayingSession
     }
     #endif
 
-    init() {
-        do {
-            engine = try AetherEngine()
-        } catch {
-            fatalError("AetherEngine audio initialization failed: \(error)")
-        }
+    /// Returns the engine, building and wiring it on first use. Throws whatever
+    /// `AetherEngine.init` throws so the caller can report it as a playback failure.
+    private func requireEngine() throws -> AetherEngine {
+        if let engine { return engine }
+        let engine = try AetherEngine()
+        self.engine = engine
+        // Engine-probed claim: while this audiobook engine is idle the video
+        // teardown may release the shared audio session; a probe-less Claim()
+        // would read as permanently active and block that release forever.
+        sessionClaim = AetherAudioSessionOwnership.Claim(engine: engine)
         // `deactivatesAudioSessionOnStop` stays at the engine default (false) here and is
         // decided per teardown in `stop()`; see the note there.
 
@@ -75,6 +84,7 @@ final class AetherAudioPlaybackController {
                 self?.publish(.failure(failure))
             }
             .store(in: &subscriptions)
+        return engine
     }
 
     @discardableResult
@@ -92,6 +102,13 @@ final class AetherAudioPlaybackController {
         startSeconds: Double
     ) async throws {
         guard epoch == activeLoadEpoch else { throw CancellationError() }
+        let engine: AetherEngine
+        do {
+            engine = try requireEngine()
+        } catch {
+            if epoch == activeLoadEpoch { activeLoadEpoch = nil }
+            throw error
+        }
         do {
             try await engine.load(
                 url: url,
@@ -111,12 +128,15 @@ final class AetherAudioPlaybackController {
     }
 
     func play() {
+        // No engine means nothing has been loaded yet, so there is nothing to
+        // resume; the engine is built by `finishLoad`.
+        guard let engine else { return }
         engine.play()
         engine.setRate(playbackRate)
     }
 
     func pause() {
-        engine.pause()
+        engine?.pause()
     }
 
     func setRate(_ rate: Double, shouldResume: Bool) {
@@ -127,7 +147,7 @@ final class AetherAudioPlaybackController {
     }
 
     func seek(to seconds: Double, epoch: LoadEpoch) async throws {
-        guard epoch == activeLoadEpoch else { throw CancellationError() }
+        guard epoch == activeLoadEpoch, let engine else { throw CancellationError() }
         await engine.seek(to: max(0, seconds))
         guard epoch == activeLoadEpoch else { throw CancellationError() }
     }
@@ -135,6 +155,7 @@ final class AetherAudioPlaybackController {
     func stop() {
         generation &+= 1
         activeLoadEpoch = nil
+        guard let engine else { return }
         // AVAudioSession is process-global and Silo runs a second AetherEngine for video.
         // Only let this teardown release the session when no other engine is alive,
         // otherwise a stopped audiobook would cut the session out from under playing

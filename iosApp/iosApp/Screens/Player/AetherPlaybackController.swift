@@ -61,8 +61,10 @@ final class AetherPlaybackController {
     /// registry for its lifetime. Silo runs two `AetherEngine`s (audiobooks and
     /// video); without this claim the audio controller would read itself as the
     /// sole live engine and deactivate the shared `AVAudioSession` on its own
-    /// teardown, cutting video playback off mid-stream.
-    private let aetherSessionClaim = AetherAudioSessionOwnership.Claim()
+    /// teardown, cutting video playback off mid-stream. The claim also carries
+    /// this engine's live activity, so the audiobook side can tell a video
+    /// engine that exists from one that is actually holding audio.
+    private let aetherSessionClaim: AetherAudioSessionOwnership.Claim
     var onEvent: ((ScopedEvent) -> Void)?
     var onControllerEvent: ((ControllerEvent) -> Void)?
     /// iOS 26's Automatic Subtitles turn captions on with no read API behind
@@ -103,6 +105,7 @@ final class AetherPlaybackController {
 
     init() throws {
         engine = try AetherEngine()
+        aetherSessionClaim = AetherAudioSessionOwnership.Claim(engine: engine)
         #if os(iOS) || os(tvOS)
         engine.ownsVideoNowPlayingSession = true
         #endif
@@ -363,6 +366,17 @@ final class AetherPlaybackController {
         appSubtitleIDByAetherID = [:]
         didPublishFirstFrame = false
         didPublishEnd = false
+        // Leaving video is the app's last use of the shared `AVAudioSession` unless an
+        // audiobook is live. Aether never releases the session unless the host opts in
+        // per teardown (#215, README "Who owns the audio session"), and a session left
+        // active keeps whatever Silo interrupted — another app's music, a podcast —
+        // paused or ducked for the rest of the process's life. Opting in here releases
+        // it with `.notifyOthersOnDeactivation` so that audio resumes, and also closes
+        // the E-AC-3/Atmos passthrough render ring the flag exists for. Gated on no
+        // *other* Aether engine actually holding audio, not on engine existence: the
+        // audiobook engine can outlive its playback.
+        engine.deactivatesAudioSessionOnStop = AetherAudioSessionOwnership
+            .canReleaseSharedSession(excluding: aetherSessionClaim)
         engine.stop(finalTeardown: true)
         refreshExternalPlaybackState()
         publishSystemMediaChanged()
@@ -607,5 +621,29 @@ final class AetherPlaybackController {
         #else
         false
         #endif
+    }
+}
+
+extension AetherAudioSessionOwnership.Claim {
+    /// A claim that reports its engine's live audio activity.
+    ///
+    /// Lives here rather than in `AetherAudioSessionOwnership.swift` because that
+    /// file is shared into extension targets (Top Shelf) that compile against but
+    /// do not link AetherEngine; naming the engine type there breaks their link.
+    ///
+    /// `.idle` is pre-load or torn down and `.ended` reached end-of-media; every
+    /// other state has a live session behind it, including `.paused` — a paused
+    /// audiobook still owns its route and must not have the session pulled from
+    /// under it. The engine is held weakly: a deallocated engine holds nothing.
+    convenience init(engine: AetherEngine) {
+        self.init(isHoldingAudio: { [weak engine] in
+            guard let engine else { return false }
+            switch engine.state {
+            case .idle, .ended:
+                return false
+            default:
+                return true
+            }
+        })
     }
 }

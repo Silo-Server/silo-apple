@@ -358,6 +358,14 @@ final class TVControlReceiver {
                 return
             }
             handleControl(command)
+        case .unsupportedControl(let name):
+            // An older v2 controller sent a command this build retired (e.g.
+            // `set_hdr_enabled`). Drop it silently rather than replying with
+            // `.error`: the phone renders an error frame as a user-visible
+            // banner and abandons a silent auto-resume, so a stale button on
+            // an old remote would look like a broken connection. Ignoring it
+            // matches what the user sees anyway — nothing happens.
+            Self.logger.info("control: ignoring unsupported command \(name, privacy: .public)")
         case .ping:
             activeSession?.enqueue(.pong)
         case .pong:

@@ -580,7 +580,7 @@ final class SiloControlClient {
             session?.enqueue(.pong)
         case .pong:
             missedHeartbeats = 0
-        case .launch, .control, .handoffOffer:
+        case .launch, .control, .unsupportedControl, .handoffOffer:
             break
         }
     }

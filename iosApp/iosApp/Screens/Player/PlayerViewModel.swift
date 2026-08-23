@@ -178,6 +178,25 @@ struct PlayerBackendCapabilities: Equatable {
     }
 }
 
+/// Video playback teardown at an app identity boundary — sign-out, server or
+/// profile switch, or a cleared session.
+///
+/// Those transitions replace the authenticated view hierarchy, which removes
+/// the player cover. That path deliberately defers the player's `cleanup()`
+/// while Picture in Picture is engaged, so nothing else ends an engaged video
+/// session: the previous identity's engine, its open server playback session,
+/// and a live PiP window would otherwise all survive into the next identity.
+///
+/// Callable from the shared auth paths on every platform; a no-op where video
+/// Picture in Picture is not hosted.
+enum PlayerIdentityBoundary {
+    static func endEngagedVideoPictureInPicture() {
+        #if os(iOS)
+        PictureInPictureCoordinator.endEngagedSessionForIdentityChange()
+        #endif
+    }
+}
+
 @MainActor
 @Observable
 class PlayerViewModel {
@@ -464,6 +483,15 @@ class PlayerViewModel {
     private(set) var isExternalPlaybackActive = false
     #if os(iOS)
     private var isPlayerPresentationVisible = false
+    /// AVKit's restore completion handler, held while the re-presented cover
+    /// is still on its way to `PlayerView.onAppear`. See
+    /// `restorePictureInPictureUserInterface`.
+    private var pendingRestoreCompletion: ((Bool) -> Void)?
+    private var pendingRestoreTimeoutTask: Task<Void, Never>?
+    /// How long the re-presented cover gets to actually mount before the
+    /// restore is treated as failed. Generous next to a SwiftUI presentation,
+    /// short next to a session that would otherwise play on forever.
+    private static let pictureInPictureRestoreTimeoutNanoseconds: UInt64 = 3_000_000_000
     #endif
     /// True after the active backend reports natural EOF. Used to keep the
     /// UI in a terminal paused state without letting tail-drain callbacks
@@ -3839,6 +3867,10 @@ class PlayerViewModel {
     #if os(iOS)
     func playerPresentationDidAppear() {
         isPlayerPresentationVisible = true
+        // Only reached once SwiftUI really mounted the cover — for a restore,
+        // via `PlayerPresentationRestoration.consumeAdoption`. That is the
+        // first moment AVKit's restore can honestly be reported successful.
+        resolvePendingPictureInPictureRestore(true)
     }
 
     /// SwiftUI can remove the full-screen player while AVKit is moving the
@@ -3855,6 +3887,14 @@ class PlayerViewModel {
 
     func pictureInPictureEngagementDidEnd() {
         guard !isPlayerPresentationVisible else { return }
+        // A restore still in flight owns the outcome: AVKit can report the
+        // stop before the re-presented cover mounts, and cleaning up here
+        // would tear down the very session the user asked to come back to.
+        // The restore timeout is the backstop if the cover never arrives.
+        guard pendingRestoreCompletion == nil else {
+            Self.logger.info("Deferring player cleanup while a PiP restore is still pending")
+            return
+        }
         cleanup()
     }
 
@@ -3883,7 +3923,40 @@ class PlayerViewModel {
             return
         }
         Self.logger.info("PiP restore re-presenting the full-screen player")
-        completion(true)
+        // Asking the router to re-present is not the same as the cover being
+        // on screen: another full-screen cover can keep SwiftUI from mounting
+        // this one. Reporting success there leaves AVKit's window gone,
+        // `handleDidStop` suppressed because the restore "worked", and a
+        // headless playing session parked on `pendingAdoption` forever. Hold
+        // AVKit's handler until `playerPresentationDidAppear` confirms the
+        // adoption, or until the timeout ends the session.
+        resolvePendingPictureInPictureRestore(false)
+        pendingRestoreCompletion = completion
+        pendingRestoreTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.pictureInPictureRestoreTimeoutNanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.abandonPictureInPictureRestore()
+        }
+    }
+
+    /// Answer AVKit's held restore handler at most once and stop the timeout.
+    private func resolvePendingPictureInPictureRestore(_ didRestore: Bool) {
+        pendingRestoreTimeoutTask?.cancel()
+        pendingRestoreTimeoutTask = nil
+        guard let completion = pendingRestoreCompletion else { return }
+        pendingRestoreCompletion = nil
+        completion(didRestore)
+    }
+
+    /// The re-presented cover never mounted. AVKit has taken the PiP window
+    /// down regardless, so the session ends here — final progress and the
+    /// server session stop — rather than playing on with no surface.
+    private func abandonPictureInPictureRestore() {
+        guard pendingRestoreCompletion != nil else { return }
+        Self.logger.error("PiP restore never mounted the player; ending the session")
+        PlayerPresentationRestoration.discardAdoption(for: self)
+        resolvePendingPictureInPictureRestore(false)
+        cleanup()
     }
 
     /// A Picture in Picture start that never happened is invisible to the user —
@@ -5260,6 +5333,9 @@ class PlayerViewModel {
         Self.logger.info("PlayerViewModel.cleanup()")
         isDisposed = true
         #if os(iOS)
+        // A restore waiting on a cover that will now never mount has to be
+        // answered, or AVKit is left holding a handler for a dead session.
+        resolvePendingPictureInPictureRestore(false)
         // The PiP coordinator is a singleton and its controller strongly
         // retains the AVPlayerLayer, the AVPlayer, and everything hanging off
         // it. SwiftUI's `dismantleUIView` normally releases it, but ordering

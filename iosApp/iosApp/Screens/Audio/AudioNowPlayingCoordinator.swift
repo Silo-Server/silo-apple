@@ -45,8 +45,7 @@ final class AudioNowPlayingCoordinator {
     /// duration and playhead across file boundaries.
     func attach(session: MPNowPlayingSession?, handlers: Handlers) {
         self.handlers = handlers
-        unregisterRemoteCommands()
-        clearPublishedInfo()
+        unbindCurrentCenters()
         self.session = session
 
         if let session {
@@ -55,8 +54,7 @@ final class AudioNowPlayingCoordinator {
             infoCenter = session.nowPlayingInfoCenter
             session.becomeActiveIfPossible(completion: { _ in })
         } else {
-            commandCenter = MPRemoteCommandCenter.shared()
-            infoCenter = MPNowPlayingInfoCenter.default()
+            bindSharedCenters()
         }
 
         registerRemoteCommands()
@@ -67,10 +65,8 @@ final class AudioNowPlayingCoordinator {
     /// fallback used when an Aether software-audio route has no session.
     func attach(handlers: Handlers) {
         self.handlers = handlers
-        unregisterRemoteCommands()
-        clearPublishedInfo()
-        commandCenter = MPRemoteCommandCenter.shared()
-        infoCenter = MPNowPlayingInfoCenter.default()
+        unbindCurrentCenters()
+        bindSharedCenters()
         registerRemoteCommands()
         publishNowPlayingInfo()
     }
@@ -78,10 +74,7 @@ final class AudioNowPlayingCoordinator {
 
     func detach() {
         handlers = nil
-        unregisterRemoteCommands()
-        clearPublishedInfo()
-        commandCenter = nil
-        infoCenter = nil
+        unbindCurrentCenters()
         #if os(iOS) || os(tvOS)
         session = nil
         #endif
@@ -237,7 +230,37 @@ final class AudioNowPlayingCoordinator {
         infoCenter.nowPlayingInfo = nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
     }
 
-    private func clearPublishedInfo() {
-        infoCenter?.nowPlayingInfo = nil
+    /// Binds the process-wide centers and registers this coordinator as a
+    /// claimant so another coordinator's teardown cannot silently strip them.
+    private func bindSharedCenters() {
+        commandCenter = MPRemoteCommandCenter.shared()
+        infoCenter = MPNowPlayingInfoCenter.default()
+        SharedNowPlayingArbiter.shared.claim(self) { [weak self] in
+            self?.restoreSharedBinding()
+        }
+    }
+
+    /// Re-registers targets and republishes metadata after another claimant
+    /// released the shared centers. No-op unless still bound to them.
+    private func restoreSharedBinding() {
+        guard commandCenter === MPRemoteCommandCenter.shared() else { return }
+        unregisterRemoteCommands()
+        registerRemoteCommands()
+        publishNowPlayingInfo()
+    }
+
+    /// Drops the current binding. Clearing published metadata is process-wide
+    /// when bound to the shared centers, so it may only happen once the last
+    /// claimant leaves; otherwise the surviving claimant is restored instead.
+    private func unbindCurrentCenters() {
+        unregisterRemoteCommands()
+        let mayClearPublishedInfo = commandCenter === MPRemoteCommandCenter.shared()
+            ? SharedNowPlayingArbiter.shared.release(self)
+            : true
+        if mayClearPublishedInfo {
+            infoCenter?.nowPlayingInfo = nil
+        }
+        commandCenter = nil
+        infoCenter = nil
     }
 }

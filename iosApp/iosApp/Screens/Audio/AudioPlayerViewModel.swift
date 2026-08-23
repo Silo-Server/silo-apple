@@ -372,15 +372,25 @@ final class AudioPlayerViewModel {
                     started.session,
                     reason: "candidate audio load did not become active"
                 )
+                // `AetherEngine.load` replaces the prior media before it probes
+                // the candidate, so once `beginLoad()` has run the old engine
+                // epoch can no longer resume and its session must be retired.
+                // Before that point the prior Aether load is untouched: if a
+                // newer seek superseded this one it is still playing against
+                // `priorSession`, so leave that session alive and let the newer
+                // load own it. Only when this load is still the current one —
+                // and therefore tears the player down below — does the prior
+                // session have to be released here.
+                let candidateReplacedEngineMedia = candidateEngineEpoch != nil
+                let failureTearsDownPlayer = generation == loadGeneration
                 if let priorSession,
-                   priorSession.sessionId != started.session.sessionId {
-                    // `AetherEngine.load` replaces the prior media before it
-                    // probes the candidate, so a thrown open cannot resume the
-                    // old engine epoch. Retire its server allocation only now,
-                    // after the candidate has actually failed.
+                   priorSession.sessionId != started.session.sessionId,
+                   candidateReplacedEngineMedia || failureTearsDownPlayer {
                     await stopPlaybackSession(
                         priorSession,
-                        reason: "audio successor load failed after replacing prior media"
+                        reason: candidateReplacedEngineMedia
+                            ? "audio successor load failed after replacing prior media"
+                            : "audio successor load failed before touching prior media"
                     )
                 }
                 resetEngineAfterLoadFailure(ifCurrent: generation)

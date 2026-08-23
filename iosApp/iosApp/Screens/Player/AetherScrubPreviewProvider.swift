@@ -94,7 +94,16 @@ final class AetherScrubPreviewProvider {
     /// moment. Only a server replan can produce a transport containing them,
     /// and server-backed preview fetching is out of scope here.
     func request(atSourceTime sourceTime: Double) {
-        guard sourceTime.isFinite, sourceTime >= 0, let spec = activeSpec else {
+        guard sourceTime.isFinite, sourceTime >= 0 else {
+            // An invalid target still supersedes whatever was decoding: fence
+            // the in-flight result and clear the published preview, or a stale
+            // frame can land after this newer request.
+            requestGeneration &+= 1
+            pendingRequest = nil
+            onPreview?(nil)
+            return
+        }
+        guard let spec = activeSpec else {
             return
         }
 
