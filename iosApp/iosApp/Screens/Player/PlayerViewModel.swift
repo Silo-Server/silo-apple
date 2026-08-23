@@ -5516,7 +5516,6 @@ class PlayerViewModel {
             additionalHeaders: additionalHeaders,
             accessToken: token,
             requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
-            allowsAuthorizedMediaOrigins: allowsAuthorizedMediaOrigins,
             // The caller knows the attempt's session, so a proxy URL naming a
             // different one is rejected rather than trusted.
             authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins

@@ -131,7 +131,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 additionalHeaders: [:],
                 accessToken: "current-token",
                 requiresHeaderAuthenticatedMedia: true,
-                allowsAuthorizedMediaOrigins: true,
                 authorizedMediaOriginSessionId: "session-1"
             ), "unexpectedly rejected \(raw)")
             XCTAssertEqual(request.url.absoluteString, "https://dev.example.test/api/v1" + raw)
@@ -154,7 +153,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 additionalHeaders: ["X-Transport": "preserved"],
                 accessToken: "current-token",
                 requiresHeaderAuthenticatedMedia: true,
-                allowsAuthorizedMediaOrigins: true,
                 authorizedMediaOriginSessionId: "session-1"
             ), "unexpectedly rejected \(raw)")
             // Used exactly as handed: no `/api/v1` prefix, no rewriting.
@@ -232,7 +230,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 additionalHeaders: [:],
                 accessToken: "private-token",
                 requiresHeaderAuthenticatedMedia: true,
-                allowsAuthorizedMediaOrigins: true,
                 authorizedMediaOriginSessionId: "session-1"
             ), "unexpectedly accepted \(raw)")
         }
@@ -246,21 +243,20 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             additionalHeaders: [:],
             accessToken: "current-token",
             requiresHeaderAuthenticatedMedia: true,
-            allowsAuthorizedMediaOrigins: true,
             authorizedMediaOriginSessionId: "session-1"
         ))
+    }
 
-        // A caller that cannot name the session still gets the route family
-        // and query contract enforced.
-        let unpinned = try XCTUnwrap(StreamRequest.resolve(
-            rawURL: foreign,
+    func testAuthorizedOriginsRejectEmptySessionId() {
+        let raw = "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8"
+        XCTAssertNil(StreamRequest.resolve(
+            rawURL: raw,
             serverURL: "https://dev.example.test",
             additionalHeaders: [:],
             accessToken: "current-token",
             requiresHeaderAuthenticatedMedia: true,
-            allowsAuthorizedMediaOrigins: true
-        ))
-        XCTAssertEqual(unpinned.url.absoluteString, foreign)
+            authorizedMediaOriginSessionId: ""
+        ), "empty session id must not enable absolute proxy URLs")
     }
 
     func testAuthorizedOriginsDoNotRelaxTheRelativeMediaContract() {
@@ -278,7 +274,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
                 additionalHeaders: [:],
                 accessToken: "private-token",
                 requiresHeaderAuthenticatedMedia: true,
-                allowsAuthorizedMediaOrigins: true,
                 authorizedMediaOriginSessionId: "session-1"
             ), "unexpectedly accepted \(raw)")
         }

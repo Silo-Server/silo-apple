@@ -15,17 +15,20 @@ struct StreamRequest {
     /// `authorized_media_origins_v1` is the one negotiated exception: an
     /// attempt that opted in may receive absolute media URLs on a
     /// server-designated proxy origin. Only the `/stream/v3/{session}` family
-    /// is accepted there, only `seek` may qualify it, and the caller passes the
-    /// attempt's session id so a plan cannot point the bearer at some other
-    /// session's grant. Everything else — including every relative URL and
-    /// every non-negotiated attempt — keeps the API-origin rule byte-for-byte.
+    /// is accepted there, only `seek` may qualify it. `authorizedMediaOriginSessionId`
+    /// carries both the opt-in and the pin: a non-nil, non-empty value means the
+    /// attempt negotiated `authorized_media_origins_v1` and absolute proxy URLs
+    /// are allowed, pinned to exactly this session — a plan cannot point the
+    /// bearer at some other session's grant. Nil (or empty) means origins are
+    /// not allowed at all, identical to behavior before the feature existed.
+    /// Everything else — including every relative URL and every non-negotiated
+    /// attempt — keeps the API-origin rule byte-for-byte.
     static func resolve(
         rawURL: String,
         serverURL: String,
         additionalHeaders: [String: String],
         accessToken: String?,
         requiresHeaderAuthenticatedMedia: Bool,
-        allowsAuthorizedMediaOrigins: Bool = false,
         authorizedMediaOriginSessionId: String? = nil
     ) -> StreamRequest? {
         let raw = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -56,11 +59,12 @@ struct StreamRequest {
         // check below. Its own validation is stricter in exchange.
         var isAuthorizedMediaOrigin = false
         if requiresHeaderAuthenticatedMedia,
-           allowsAuthorizedMediaOrigins,
+           let sid = authorizedMediaOriginSessionId,
+           !sid.isEmpty,
            raw.hasPrefix("http://") || raw.hasPrefix("https://") {
             guard let proxyURL = Self.authorizedMediaOriginURL(
                 raw,
-                sessionId: authorizedMediaOriginSessionId
+                sessionId: sid
             ) else {
                 return nil
             }
@@ -115,7 +119,7 @@ struct StreamRequest {
     /// being a credential-free `http(s)` origin — the path, query and session
     /// identity carry the whole contract, and the bearer only ever travels to a
     /// URL the current plan named for the current session.
-    private static func authorizedMediaOriginURL(_ raw: String, sessionId: String?) -> URL? {
+    private static func authorizedMediaOriginURL(_ raw: String, sessionId: String) -> URL? {
         guard let components = URLComponents(string: raw),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
@@ -138,7 +142,7 @@ struct StreamRequest {
     /// `/stream/v3/{session}`, `/stream/v3/{session}/master.m3u8` and
     /// `/stream/v3/{session}/segment/{name}` — nothing else, and never a
     /// session other than the attempt's own.
-    static func isAllowedAuthorizedMediaOriginPath(_ path: String, sessionId: String?) -> Bool {
+    static func isAllowedAuthorizedMediaOriginPath(_ path: String, sessionId: String) -> Bool {
         let lowered = path.lowercased()
         guard !lowered.contains("%2f"),
               !lowered.contains("%5c"),
@@ -152,7 +156,7 @@ struct StreamRequest {
             return false
         }
         guard decoded[1] == "stream", decoded[2] == "v3" else { return false }
-        if let sessionId, decoded[3] != sessionId { return false }
+        guard decoded[3] == sessionId else { return false }
         switch segments.count {
         case 4:
             return true
