@@ -60,6 +60,17 @@ enum ApplePlaybackV3Capabilities {
             && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
     }
 
+    /// `authorized_media_origins_v1` is negotiated per attempt rather than
+    /// declared once, so it is never part of the static list above: the video
+    /// path adds it only when the server advertises it, and both the audiobook
+    /// surface and every capability report stay opted out. Audio validates
+    /// media URLs as API-relative only, and adding the token there would let a
+    /// plan hand it an absolute URL its resolver must reject anyway.
+    static func startFeatures(authorizedMediaOrigins: Bool) -> [String] {
+        guard authorizedMediaOrigins else { return features }
+        return features + [PlaybackProtocolV3.authorizedMediaOriginsFeature]
+    }
+
     /// The audiobook surface is migrated separately but uses the same Aether
     /// execution contract. Keep its first-build claim deliberately narrow.
     private static let audiobookAudioCodecs = [

@@ -114,6 +114,176 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    // MARK: - authorized_media_origins_v1
+
+    private static let proxyOrigin = "https://proxy.example.test:8443"
+
+    func testAuthorizedOriginsStillAcceptRelativeAPIMediaURLs() throws {
+        for raw in [
+            "/stream/v3/session-1",
+            "/stream/v3/session-1/master.m3u8?seek=12",
+            "/playback/transcode/session-1/master.m3u8",
+            "/stream/session-1/subtitles/2.vtt?file_id=631745",
+        ] {
+            let request = try XCTUnwrap(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "current-token",
+                requiresHeaderAuthenticatedMedia: true,
+                allowsAuthorizedMediaOrigins: true,
+                authorizedMediaOriginSessionId: "session-1"
+            ), "unexpectedly rejected \(raw)")
+            XCTAssertEqual(request.url.absoluteString, "https://dev.example.test/api/v1" + raw)
+            XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
+        }
+    }
+
+    func testAuthorizedOriginsAcceptProxyMediaFamilyVerbatim() throws {
+        for raw in [
+            "\(Self.proxyOrigin)/stream/v3/session-1",
+            "\(Self.proxyOrigin)/stream/v3/session-1?seek=12.5",
+            "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8",
+            "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8?seek=0",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment/seg-00042.m4s",
+            "http://proxy.example.test:8080/stream/v3/session-1",
+        ] {
+            let request = try XCTUnwrap(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: ["X-Transport": "preserved"],
+                accessToken: "current-token",
+                requiresHeaderAuthenticatedMedia: true,
+                allowsAuthorizedMediaOrigins: true,
+                authorizedMediaOriginSessionId: "session-1"
+            ), "unexpectedly rejected \(raw)")
+            // Used exactly as handed: no `/api/v1` prefix, no rewriting.
+            XCTAssertEqual(request.url.absoluteString, raw)
+            XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
+            XCTAssertEqual(request.headers["X-Transport"], "preserved")
+            XCTAssertEqual(request.serverUrl, "https://dev.example.test")
+        }
+    }
+
+    func testProxyMediaURLsAreRejectedWithoutNegotiatedOrigins() {
+        for raw in [
+            "\(Self.proxyOrigin)/stream/v3/session-1",
+            "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment/seg-1.m4s",
+        ] {
+            XCTAssertNil(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "private-token",
+                requiresHeaderAuthenticatedMedia: true
+            ), "unexpectedly accepted \(raw) without negotiated origins")
+
+            XCTAssertNil(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "private-token",
+                requiresHeaderAuthenticatedMedia: false
+            ), "unexpectedly accepted \(raw) in legacy mode")
+        }
+    }
+
+    func testAuthorizedOriginsRejectEverythingOutsideTheProxyMediaFamily() {
+        for raw in [
+            // Wrong route family, or the API family spelled absolutely.
+            "\(Self.proxyOrigin)/stream/session-1",
+            "\(Self.proxyOrigin)/api/v1/stream/v3/session-1",
+            "\(Self.proxyOrigin)/playback/transcode/session-1/master.m3u8",
+            "\(Self.proxyOrigin)/stream/v3",
+            "\(Self.proxyOrigin)/stream/v3/",
+            "\(Self.proxyOrigin)/stream/v3/session-1/",
+            "\(Self.proxyOrigin)/stream/v3/session-1/index.m3u8",
+            "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8/extra",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment/seg-1/extra",
+            "\(Self.proxyOrigin)/stream/v3/session-1/subtitles/0.vtt",
+            // Traversal and encoded separators.
+            "\(Self.proxyOrigin)/stream/v3/session-1/../../admin/settings",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment/%2e%2e",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment/a%2fb",
+            "\(Self.proxyOrigin)/stream/v3/session-1/segment/a%5cb",
+            // Credentials, fragments, foreign schemes, scheme-relative.
+            "https://user:pass@proxy.example.test/stream/v3/session-1",
+            "\(Self.proxyOrigin)/stream/v3/session-1#token=legacy-secret",
+            "ftp://proxy.example.test/stream/v3/session-1",
+            "//proxy.example.test/stream/v3/session-1",
+            // Query allowlist: `seek` only, and subtitle identifiers never
+            // travel on an absolute URL.
+            "\(Self.proxyOrigin)/stream/v3/session-1?st=legacy-secret",
+            "\(Self.proxyOrigin)/stream/v3/session-1?token=legacy-secret",
+            "\(Self.proxyOrigin)/stream/v3/session-1?access_token=legacy-secret",
+            "\(Self.proxyOrigin)/stream/v3/session-1?file_id=631745",
+            "\(Self.proxyOrigin)/stream/v3/session-1?downloaded_subtitle_id=8",
+            "\(Self.proxyOrigin)/stream/v3/session-1?seek=12&token=legacy-secret",
+            "\(Self.proxyOrigin)/stream/v3/session-1?seek=12&seek=13",
+            "\(Self.proxyOrigin)/stream/v3/session-1?seek=not-a-number",
+            "\(Self.proxyOrigin)/stream/v3/session-1?seek=-1",
+            "\(Self.proxyOrigin)/stream/v3/session-1?seek",
+        ] {
+            XCTAssertNil(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "private-token",
+                requiresHeaderAuthenticatedMedia: true,
+                allowsAuthorizedMediaOrigins: true,
+                authorizedMediaOriginSessionId: "session-1"
+            ), "unexpectedly accepted \(raw)")
+        }
+    }
+
+    func testAuthorizedOriginsRejectAnotherSessionsGrant() throws {
+        let foreign = "\(Self.proxyOrigin)/stream/v3/session-2/master.m3u8"
+        XCTAssertNil(StreamRequest.resolve(
+            rawURL: foreign,
+            serverURL: "https://dev.example.test",
+            additionalHeaders: [:],
+            accessToken: "current-token",
+            requiresHeaderAuthenticatedMedia: true,
+            allowsAuthorizedMediaOrigins: true,
+            authorizedMediaOriginSessionId: "session-1"
+        ))
+
+        // A caller that cannot name the session still gets the route family
+        // and query contract enforced.
+        let unpinned = try XCTUnwrap(StreamRequest.resolve(
+            rawURL: foreign,
+            serverURL: "https://dev.example.test",
+            additionalHeaders: [:],
+            accessToken: "current-token",
+            requiresHeaderAuthenticatedMedia: true,
+            allowsAuthorizedMediaOrigins: true
+        ))
+        XCTAssertEqual(unpinned.url.absoluteString, foreign)
+    }
+
+    func testAuthorizedOriginsDoNotRelaxTheRelativeMediaContract() {
+        for raw in [
+            "/admin/settings",
+            "/api/v1/stream/v3/session-1",
+            "/stream/../admin/settings",
+            "/stream/v3/session-1?st=legacy-secret",
+            "/stream/v3/session-1#token=legacy-secret",
+            "file:///private/movie.mkv",
+        ] {
+            XCTAssertNil(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "private-token",
+                requiresHeaderAuthenticatedMedia: true,
+                allowsAuthorizedMediaOrigins: true,
+                authorizedMediaOriginSessionId: "session-1"
+            ), "unexpectedly accepted \(raw)")
+        }
+    }
+
     func testLegacyResolutionStillNeverForwardsBearerAcrossOrigins() {
         XCTAssertNil(StreamRequest.resolve(
             rawURL: "https://cdn.example.test/movie.mkv",
@@ -265,6 +435,64 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
 
         XCTAssertEqual(spec.options.httpHeaders, currentHeaders)
         XCTAssertEqual(spec.options.externalSubtitles.first?.httpHeaders, currentHeaders)
+    }
+
+    func testV3SubtitleSidecarKeepsBearerWhenMediaIsOnAProxyOrigin() throws {
+        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
+            named: "decision_response",
+            bundleClass: Self.self
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
+        )
+        var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        var selectedTracks = try XCTUnwrap(planObject["selected_tracks"] as? [String: Any])
+        selectedTracks["subtitle"] = ["id": "file:42:subtitle:0", "index": 0]
+        planObject["selected_tracks"] = selectedTracks
+        var subtitle = try XCTUnwrap(planObject["subtitle"] as? [String: Any])
+        subtitle["mode"] = "render"
+        subtitle["track_id"] = "file:42:subtitle:0"
+        subtitle["artifact"] = [
+            "url": "/stream/session/subtitles/0.vtt",
+            "mime_type": "text/vtt",
+            "format": "vtt",
+            "timing_origin_seconds": 0,
+        ]
+        planObject["subtitle"] = subtitle
+        object["playback_plan"] = planObject
+
+        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3DecisionResponse.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+            return XCTFail("Expected a playable subtitle fixture")
+        }
+        let currentHeaders = ["Authorization": "Bearer current-token"]
+        let proxySource = try XCTUnwrap(
+            URL(string: "\(Self.proxyOrigin)/stream/v3/\(sessionID)")
+        )
+        let spec = try AetherLoadSpec(
+            validating: plan,
+            sessionID: sessionID,
+            matchContentEnabled: true,
+            sourceURLOverride: proxySource,
+            requestHeaders: currentHeaders,
+            resolveURL: {
+                StreamRequest.resolve(
+                    rawURL: $0,
+                    serverURL: "https://dev.example.test",
+                    additionalHeaders: [:],
+                    accessToken: nil,
+                    requiresHeaderAuthenticatedMedia: true
+                )?.url
+            },
+            apiOriginURL: URL(string: "https://dev.example.test")
+        )
+
+        let sidecar = try XCTUnwrap(spec.options.externalSubtitles.first)
+        XCTAssertEqual(sidecar.url.host, "dev.example.test")
+        XCTAssertEqual(sidecar.httpHeaders, currentHeaders)
     }
 
     func testV3SubtitleArtifactRejectsOffOriginAndNonMediaURLs() throws {

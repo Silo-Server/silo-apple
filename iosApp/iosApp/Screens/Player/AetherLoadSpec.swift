@@ -192,6 +192,7 @@ struct AetherLoadSpec {
         sourceURLOverride: URL? = nil,
         requestHeaders: [String: String]? = nil,
         resolveURL: ((String) -> URL?)? = nil,
+        apiOriginURL: URL? = nil,
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
@@ -264,10 +265,15 @@ struct AetherLoadSpec {
                 isForced: inventoryItem?.forced ?? false,
                 isHearingImpaired: inventoryItem?.hearingImpaired ?? false,
                 isDefault: inventoryItem?.default ?? false,
+                // Subtitle artifacts are always API-origin routes, including
+                // when `authorized_media_origins_v1` puts the media itself on a
+                // proxy. Trusting the API origin alongside the source is what
+                // keeps the bearer attached to the sidecar in that case; the
+                // artifact URL itself is still plan-validated as API-relative.
                 httpHeaders: Self.subtitleRequestHeaders(
                     effectiveHeaders,
                     resourceURL: artifactURL,
-                    trustedOriginURLs: [sourceURL]
+                    trustedOriginURLs: [sourceURL, apiOriginURL].compactMap { $0 }
                 ),
                 formatHint: artifact.format
             ))

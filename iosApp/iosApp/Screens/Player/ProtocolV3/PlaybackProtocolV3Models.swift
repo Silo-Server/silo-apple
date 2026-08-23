@@ -21,6 +21,12 @@ enum PlaybackProtocolV3 {
     /// its current Authorization header to the source and every derived media
     /// or subtitle request.
     static let headerAuthenticatedMediaFeature = "header_authenticated_media_v1"
+    /// Opt-in, only meaningful alongside `header_authenticated_media_v1`: the
+    /// plan may hand back absolute, still credential-free media URLs on a
+    /// server-designated proxy origin, and the client attaches the same bearer
+    /// there that it sends the API. Unlike header auth this is optional — a
+    /// server that does not advertise it simply keeps every byte API-local.
+    static let authorizedMediaOriginsFeature = "authorized_media_origins_v1"
     /// The server may validate bounded `hardware: false` decode entries for
     /// original delivery. Older servers ignore the opt-in and keep their
     /// hardware-only strict-tier behavior.

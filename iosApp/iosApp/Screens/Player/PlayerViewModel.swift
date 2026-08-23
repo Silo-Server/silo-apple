@@ -1486,7 +1486,9 @@ class PlayerViewModel {
                     additionalHeaders: prepared.protocolV3?.plan.stream.headers ?? [:],
                     requiresHeaderAuthenticatedMedia: prepared.protocolV3?.serverFeatures.contains(
                         PlaybackProtocolV3.headerAuthenticatedMediaFeature
-                    ) == true
+                    ) == true,
+                    allowsAuthorizedMediaOrigins:
+                        prepared.protocolV3?.negotiatedAuthorizedMediaOrigins == true
                 ) else {
                     throw AetherLoadSpec.ValidationError.invalidStreamURL(prepared.session.streamUrl)
                 }
@@ -2138,6 +2140,9 @@ class PlayerViewModel {
                 matchContentEnabled: settings.hdrEnabled && AetherDisplayContext.matchContentEnabled,
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
+                // Subtitle artifacts, inventory sidecars and font bundles stay
+                // relative API-origin routes even when the media itself moved
+                // to a proxy, so this resolver never accepts absolute URLs.
                 resolveURL: { raw in
                     StreamRequest.resolve(
                         rawURL: raw,
@@ -2147,6 +2152,7 @@ class PlayerViewModel {
                         requiresHeaderAuthenticatedMedia: true
                     )?.url
                 },
+                apiOriginURL: URL(string: streamRequest.serverUrl),
                 preferredAudioLanguages: preferredAudio,
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
@@ -3215,7 +3221,9 @@ class PlayerViewModel {
                     additionalHeaders: prepared.protocolV3?.plan.stream.headers ?? [:],
                     requiresHeaderAuthenticatedMedia: prepared.protocolV3?.serverFeatures.contains(
                         PlaybackProtocolV3.headerAuthenticatedMediaFeature
-                    ) == true
+                    ) == true,
+                    allowsAuthorizedMediaOrigins:
+                        prepared.protocolV3?.negotiatedAuthorizedMediaOrigins == true
                 ) else {
                     throw AetherLoadSpec.ValidationError.invalidStreamURL(session.streamUrl)
                 }
@@ -5497,7 +5505,8 @@ class PlayerViewModel {
     private func makeStreamRequest(
         session: PlaybackSessionResponse,
         additionalHeaders: [String: String] = [:],
-        requiresHeaderAuthenticatedMedia: Bool = false
+        requiresHeaderAuthenticatedMedia: Bool = false,
+        allowsAuthorizedMediaOrigins: Bool = false
     ) async -> StreamRequest? {
         let serverUrl = await ContinuumAPI.shared.currentServerUrl()
         let token = await ContinuumAPI.shared.currentAccessToken()
@@ -5506,7 +5515,13 @@ class PlayerViewModel {
             serverURL: serverUrl,
             additionalHeaders: additionalHeaders,
             accessToken: token,
-            requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia
+            requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
+            allowsAuthorizedMediaOrigins: allowsAuthorizedMediaOrigins,
+            // The caller knows the attempt's session, so a proxy URL naming a
+            // different one is rejected rather than trusted.
+            authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins
+                ? session.sessionId
+                : nil
         )
     }
 

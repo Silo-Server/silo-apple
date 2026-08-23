@@ -58,6 +58,33 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
+    func testAuthorizedMediaOriginsIsNegotiatedPerAttemptAndNeverByAudio() {
+        // Not a static claim: the capability report and the audiobook surface
+        // must never carry it, and the video start request only adds it when
+        // the server advertised it.
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.features
+                .contains(PlaybackProtocolV3.authorizedMediaOriginsFeature)
+        )
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures
+                .contains(PlaybackProtocolV3.authorizedMediaOriginsFeature)
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: false),
+            ApplePlaybackV3Capabilities.features
+        )
+
+        let negotiated = ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: true)
+        XCTAssertTrue(negotiated.contains(PlaybackProtocolV3.authorizedMediaOriginsFeature))
+        // Meaningful only alongside header-authenticated media.
+        XCTAssertTrue(negotiated.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature))
+        XCTAssertEqual(
+            negotiated.filter { $0 != PlaybackProtocolV3.authorizedMediaOriginsFeature },
+            ApplePlaybackV3Capabilities.features
+        )
+    }
+
     func testRecoveredServerRequestAndCapabilityFixturesDecode() throws {
         let capability = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3CapabilityResponse.self,

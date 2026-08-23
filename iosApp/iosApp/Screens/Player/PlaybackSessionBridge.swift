@@ -182,26 +182,45 @@ enum PlaybackDeliveryStrategy {
 actor PlaybackV3CapabilityGate {
     static let shared = PlaybackV3CapabilityGate()
 
-    private var availabilityByServerId: [String: Bool] = [:]
-    private var probeByServerId: [String: Task<Bool, Error>] = [:]
+    /// What the active server advertises, as far as this client's contract
+    /// cares. `authorizedMediaOrigins` is optional and only informs which
+    /// feature tokens a start request may negotiate.
+    struct NeutralProtocolV3Capability: Equatable {
+        let supported: Bool
+        let authorizedMediaOrigins: Bool
 
-    func requireNeutralProtocolV3() async throws {
+        static let unsupported = NeutralProtocolV3Capability(
+            supported: false,
+            authorizedMediaOrigins: false
+        )
+    }
+
+    private var availabilityByServerId: [String: NeutralProtocolV3Capability] = [:]
+    private var probeByServerId: [String: Task<NeutralProtocolV3Capability, Error>] = [:]
+
+    @discardableResult
+    func requireNeutralProtocolV3() async throws -> NeutralProtocolV3Capability {
         let serverId = await TokenStore.shared.getActiveServerId()
-        let available: Bool
+        let available: NeutralProtocolV3Capability
         if let cached = availabilityByServerId[serverId] {
             available = cached
         } else {
-            let probe: Task<Bool, Error>
+            let probe: Task<NeutralProtocolV3Capability, Error>
             if let pending = probeByServerId[serverId] {
                 probe = pending
             } else {
                 probe = Task {
                     do {
                         let capability = try await ContinuumAPI.shared.playbackV3Capability()
-                        return PlaybackSessionBridge.supportsNeutralProtocolV3(capability)
+                        return NeutralProtocolV3Capability(
+                            supported: PlaybackSessionBridge.supportsNeutralProtocolV3(capability),
+                            authorizedMediaOrigins: capability.features.contains(
+                                PlaybackProtocolV3.authorizedMediaOriginsFeature
+                            )
+                        )
                     } catch {
                         if PlaybackSessionBridge.isMissingProtocolV3Capability(error) {
-                            return false
+                            return .unsupported
                         }
                         throw error
                     }
@@ -215,8 +234,8 @@ actor PlaybackV3CapabilityGate {
                 // server upgrade or proxy repair has not reached this client
                 // yet, so allow the next Play attempt to probe again instead
                 // of requiring an app relaunch.
-                if available {
-                    availabilityByServerId[serverId] = true
+                if available.supported {
+                    availabilityByServerId[serverId] = available
                 }
                 probeByServerId[serverId] = nil
             } catch {
@@ -225,13 +244,14 @@ actor PlaybackV3CapabilityGate {
             }
         }
 
-        guard available else {
+        guard available.supported else {
             throw PlaybackV3TerminalFailure(
                 reason: "server_upgrade_required",
                 message: "Your Silo server hasn't been updated to support the latest version of this app. Please update your server, or downgrade the TestFlight app version until the server has been updated.",
                 retryable: false
             )
         }
+        return available
     }
 }
 
@@ -371,6 +391,10 @@ actor PlaybackSessionBridge {
         var bandwidthCapKbps: Int?
         var snapshot: ApplePlaybackV3CapabilitySnapshot
         var serverFeatures: [String]
+        /// Attempt-sticky: the server silently restores the negotiated origin
+        /// state on a replan, so every replan repeats what the start request
+        /// negotiated. Changing it means a new attempt, not a replan.
+        let negotiatedAuthorizedMediaOrigins: Bool
         var plan: PlaybackV3Plan
     }
 
@@ -392,6 +416,7 @@ actor PlaybackSessionBridge {
         let bandwidthCapKbps: Int?
         let snapshot: ApplePlaybackV3CapabilitySnapshot
         let serverFeatures: [String]
+        let negotiatedAuthorizedMediaOrigins: Bool
         let plan: PlaybackV3Plan
         let sessionId: String
         let selectedVersion: FileVersion
@@ -928,14 +953,19 @@ actor PlaybackSessionBridge {
         audioTrackIndex: Int?,
         subtitleCombinedIndex: Int?
     ) async throws -> StagedProtocolV3Start {
-        try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
+        let capability = try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
+        // Optional opt-in: on a server that never advertises it the token is
+        // simply absent and the attempt stays entirely on the API origin.
+        let requestsAuthorizedMediaOrigins = capability.authorizedMediaOrigins
 
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
         let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
         let request = PlaybackV3StartRequest(
             protocolVersion: PlaybackProtocolV3.version,
-            clientFeatures: ApplePlaybackV3Capabilities.features,
+            clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
+                authorizedMediaOrigins: requestsAuthorizedMediaOrigins
+            ),
             fileId: selectedVersion.fileId,
             profileId: profileId,
             playbackAttemptId: playbackAttemptId,
@@ -1056,6 +1086,13 @@ actor PlaybackSessionBridge {
                 bandwidthCapKbps: bandwidthCapKbps,
                 snapshot: snapshot,
                 serverFeatures: response.serverFeatures,
+                // Negotiated only when we asked and the server both advertises
+                // and honours it; otherwise the plan's media URLs must stay
+                // API-relative and are validated as such.
+                negotiatedAuthorizedMediaOrigins: requestsAuthorizedMediaOrigins
+                    && response.serverFeatures.contains(
+                        PlaybackProtocolV3.authorizedMediaOriginsFeature
+                    ),
                 plan: plan,
                 sessionId: resolvedSessionId,
                 selectedVersion: effectiveVersion,
@@ -1085,6 +1122,7 @@ actor PlaybackSessionBridge {
             bandwidthCapKbps: staged.bandwidthCapKbps,
             snapshot: staged.snapshot,
             serverFeatures: staged.serverFeatures,
+            negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
             plan: staged.plan
         )
         protocolV3FirstFramePlanIds.removeAll()
@@ -1095,6 +1133,7 @@ actor PlaybackSessionBridge {
             planAttemptKey: planAttemptKey,
             outputContextId: staged.snapshot.outputContextId,
             serverFeatures: staged.serverFeatures,
+            negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
             plan: staged.plan
         )
         logger.info(
@@ -1372,7 +1411,11 @@ actor PlaybackSessionBridge {
 
         let request = PlaybackV3ReplanRequest(
             protocolVersion: PlaybackProtocolV3.version,
-            clientFeatures: ApplePlaybackV3Capabilities.features,
+            // Sticky: a replan may neither add nor drop the negotiated origin
+            // token, so it repeats the attempt's captured state verbatim.
+            clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
+                authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins
+            ),
             operation: operation,
             playbackAttemptId: active.playbackAttemptId,
             replanRequestId: "apple-replan:\(UUID().uuidString.lowercased())",
@@ -1574,6 +1617,7 @@ actor PlaybackSessionBridge {
                 planAttemptKey: active.planAttemptKey,
                 outputContextId: active.snapshot.outputContextId,
                 serverFeatures: active.serverFeatures,
+                negotiatedAuthorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins,
                 plan: nextPlan
             )
             return PreparedPlayback(

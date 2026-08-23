@@ -6,6 +6,10 @@ struct PreparedPlaybackV3: Equatable {
     let planAttemptKey: String
     let outputContextId: String?
     let serverFeatures: [String]
+    /// Whether this attempt negotiated `authorized_media_origins_v1`. Only an
+    /// attempt that did may resolve absolute proxy-origin media URLs; the flag
+    /// is fixed for the attempt and repeated unchanged across replans.
+    var negotiatedAuthorizedMediaOrigins: Bool = false
     let plan: PlaybackV3Plan
 }
 
