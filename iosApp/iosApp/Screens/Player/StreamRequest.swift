@@ -58,13 +58,16 @@ struct StreamRequest {
         // the API server, so it is the only value that may skip the same-origin
         // check below. Its own validation is stricter in exchange.
         var isAuthorizedMediaOrigin = false
+        let trimmedSessionId = authorizedMediaOriginSessionId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if requiresHeaderAuthenticatedMedia,
-           let sid = authorizedMediaOriginSessionId,
+           let sid = trimmedSessionId,
            !sid.isEmpty,
            raw.hasPrefix("http://") || raw.hasPrefix("https://") {
             guard let proxyURL = Self.authorizedMediaOriginURL(
                 raw,
-                sessionId: sid
+                sessionId: sid,
+                serverScheme: baseURL.scheme?.lowercased() ?? ""
             ) else {
                 return nil
             }
@@ -119,10 +122,20 @@ struct StreamRequest {
     /// being a credential-free `http(s)` origin — the path, query and session
     /// identity carry the whole contract, and the bearer only ever travels to a
     /// URL the current plan named for the current session.
-    private static func authorizedMediaOriginURL(_ raw: String, sessionId: String) -> URL? {
+    ///
+    /// Scheme policy: `https` is always accepted. `http` is accepted only when
+    /// the API server itself is `http` — a self-hosted http deployment already
+    /// sends the bearer to the http API origin, so an http proxy adds no new
+    /// exposure, but an https deployment must never be downgraded to a
+    /// cleartext proxy origin.
+    private static func authorizedMediaOriginURL(
+        _ raw: String,
+        sessionId: String,
+        serverScheme: String
+    ) -> URL? {
         guard let components = URLComponents(string: raw),
               let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
+              scheme == "https" || (scheme == "http" && serverScheme == "http"),
               let host = components.host,
               !host.isEmpty,
               components.user == nil,

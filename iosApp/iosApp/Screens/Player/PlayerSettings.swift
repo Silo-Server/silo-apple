@@ -835,6 +835,13 @@ final class PlayerSettings {
     @MainActor
     func resetAllDeviceSettings() async {
         let resetScopeID = Self.currentScopeIdentifier
+        // The device-local preferences have no canonical row to delete, so the
+        // DELETE loop below cannot reach them and the refresh that follows
+        // re-adopts whatever this device still has cached. Restore them here
+        // instead — before the first suspension, so each `didSet` writes its
+        // default into the partition this reset was started in rather than
+        // whichever profile is active by the time the network settles.
+        resetDeviceLocalPreferences()
         // Reset is an explicit instruction to discard the pre-contract local
         // values. Retire migration before the follow-up refresh or that refresh
         // can snapshot and import the values whose canonical rows were just
@@ -857,6 +864,21 @@ final class PlayerSettings {
                 applyCachedSettingsForCurrentScope()
             }
         }
+    }
+
+    /// Restore the preferences this device owns outright to their defaults.
+    ///
+    /// These are the ones deliberately kept off the contract — lossless
+    /// multichannel audio, background playback, the buffer-ahead window and the
+    /// two deinterlacing choices. "Reset Playback Overrides" is a promise about
+    /// the whole screen, not only the rows that happen to sync, so they are
+    /// restored to the same values a fresh install would show.
+    private func resetDeviceLocalPreferences() {
+        losslessAudioEnabled = true
+        backgroundPlaybackEnabled = true
+        bufferAhead = .automatic
+        deinterlaceMode = .automatic
+        deinterlaceFieldRate = .fullMotion
     }
 
     /// Send everything queued and wait for it.

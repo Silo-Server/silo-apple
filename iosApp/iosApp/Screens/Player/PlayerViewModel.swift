@@ -209,6 +209,13 @@ class PlayerViewModel {
     private var pendingProtocolV3FirstFrameEpoch: AetherPlaybackController.LoadEpoch?
     @ObservationIgnored
     private var pendingProtocolV3SeekReanchorPosition: Double?
+    /// The load epoch whose startup milestone (`handleFileLoaded`) has already
+    /// run. Video loads reach that milestone on Aether's first frame; audio-only
+    /// loads have no picture and reach it when the audio route starts playing.
+    /// Both funnel through one epoch-scoped latch so a load can never take the
+    /// milestone twice.
+    @ObservationIgnored
+    private var startedAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     /// A user track change that arrived while a replan was already in flight.
     /// Re-issued when the in-flight replan settles so the local selection the
     /// UI already shows is actually applied by the server. Position is
@@ -1020,6 +1027,15 @@ class PlayerViewModel {
             case .playing:
                 isPlaying = true
                 pushNowPlayingSnapshot()
+                // An audio-only load has no picture, so Aether's audio route
+                // never latches `hasFirstFrameReadyForDisplay` and the
+                // `.firstFrame` milestone below never arrives. The audio route
+                // reaching playback is the equivalent milestone; without it
+                // these loads would never start progress reporting and would
+                // lose their server session mid-listen.
+                if isAudioOnlyAetherLoad {
+                    handleAetherStartupMilestone(epoch: scopedEvent.epoch)
+                }
             case .paused:
                 isPlaying = false
                 pushNowPlayingSnapshot()
@@ -1082,14 +1098,7 @@ class PlayerViewModel {
             isBuffering = buffering
             refreshPlaybackStats(force: true)
         case .firstFrame:
-            handleFileLoaded()
-            if activePreparedProtocolV3 != nil {
-                pendingProtocolV3FirstFrameEpoch = scopedEvent.epoch
-                completeProtocolV3FirstFrameIfCommitted(scopedEvent.epoch)
-            } else {
-                startProgressReporting()
-            }
-            refreshPlaybackStats(force: true)
+            handleAetherStartupMilestone(epoch: scopedEvent.epoch)
         case .inventoryChanged:
             adoptAetherInventory()
             refreshPlaybackStats(force: true)
@@ -1240,6 +1249,32 @@ class PlayerViewModel {
         handlePlaybackError(failure.message, failure: failure)
     }
 
+    /// Whether the active load asked Aether for its audio-only route, which
+    /// publishes no video-display signal at all.
+    private var isAudioOnlyAetherLoad: Bool {
+        aetherPlaybackController.activeSpec?.options.audioOnly == true
+    }
+
+    /// The single place a load's startup milestone is taken.
+    ///
+    /// Latched per epoch, because the milestone has two sources that must
+    /// never both count: Aether's first frame for anything with a picture, and
+    /// the audio route starting for an audio-only load. Everything a started
+    /// load owes the server — progress reporting, keepalives, the Playback V3
+    /// first-frame report — hangs off this one call.
+    private func handleAetherStartupMilestone(epoch: AetherPlaybackController.LoadEpoch) {
+        guard startedAetherLoadEpoch != epoch else { return }
+        startedAetherLoadEpoch = epoch
+        handleFileLoaded()
+        if activePreparedProtocolV3 != nil {
+            pendingProtocolV3FirstFrameEpoch = epoch
+            completeProtocolV3FirstFrameIfCommitted(epoch)
+        } else {
+            startProgressReporting()
+        }
+        refreshPlaybackStats(force: true)
+    }
+
     private func handleFileLoaded() {
         hasReachedEndOfFile = false
         error = nil
@@ -1324,12 +1359,57 @@ class PlayerViewModel {
         )
     }
 
+    /// The track a queued change is actually asking for. `.subtitle(nil)` is
+    /// "turn subtitles off", which is why this is an enum and not two optional
+    /// ids.
+    private enum QueuedProtocolV3TrackTarget {
+        case audio(Int64)
+        case subtitle(Int64?)
+    }
+
     /// A track change deferred until the in-flight replan settles. Position
     /// is deliberately absent: it is re-read when the queue drains, because
     /// playback keeps moving while the earlier replan completes.
+    ///
+    /// The target, unlike the position, is *not* re-read. The in-flight replan
+    /// publishes its own plan's inventory on the way through, and
+    /// `adoptAetherInventory` republishes `selectedAudioId`/`selectedSubtitleId`
+    /// from the engine as it does — so by drain time the optimistic selection
+    /// the user's tap wrote has been overwritten by the interim plan's. A
+    /// deferred replan that re-read the selection would therefore ask the
+    /// server for the track the user was already on and silently drop the tap.
     private struct QueuedProtocolV3TrackChange {
         let classification: String
         let message: String
+        let target: QueuedProtocolV3TrackTarget?
+    }
+
+    /// Re-publishes a queued track pick just before the deferred replan reads
+    /// the selection back, undoing any interim `adoptAetherInventory`.
+    ///
+    /// A target that no longer exists in the current inventory is dropped
+    /// rather than forced: the interim plan may not carry that track at all,
+    /// and a selection pointing at nothing resolves to no index, which is a
+    /// worse answer than the one the engine is actually rendering.
+    private func restoreQueuedProtocolV3TrackSelection(
+        _ target: QueuedProtocolV3TrackTarget
+    ) {
+        switch target {
+        case .audio(let trackId):
+            guard selectedAudioId != trackId,
+                  audioTracks.contains(where: { $0.trackId == trackId }) else { return }
+            pendingAudioFfIndex = nil
+            selectedAudioId = trackId
+            reapplySystemSubtitlePolicy()
+        case .subtitle(let trackId):
+            guard selectedSubtitleId != trackId else { return }
+            if let trackId {
+                guard subtitleTracks.contains(where: { $0.trackId == trackId }) else { return }
+            }
+            pendingSubtitleFfIndex = nil
+            hasExplicitSubtitleChoice = true
+            selectedSubtitleId = trackId
+        }
     }
 
     @discardableResult
@@ -1341,6 +1421,7 @@ class PlayerViewModel {
         qualityPreference: String? = nil,
         completesQualitySwitch: Bool = false,
         requeueWhenBusy: Bool = false,
+        trackTarget: QueuedProtocolV3TrackTarget? = nil,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) -> Bool {
         if protocolV3ReplanTask != nil {
@@ -1358,7 +1439,8 @@ class PlayerViewModel {
                 // settles, at whatever position playback has reached by then.
                 pendingProtocolV3TrackChange = QueuedProtocolV3TrackChange(
                     classification: classification,
-                    message: message
+                    message: message,
+                    target: trackTarget
                 )
                 return true
             }
@@ -1368,6 +1450,14 @@ class PlayerViewModel {
         guard let watchDetail = currentWatchDetail else {
             if completesQualitySwitch { isQualitySwitching = false }
             return false
+        }
+        // This replan is about to read the current selection back. On the
+        // deferred path that selection may have been republished from the
+        // interim plan's inventory while the user's pick waited, so reassert
+        // the pick first. On the direct path the pick is already published and
+        // this is a no-op.
+        if let trackTarget {
+            restoreQueuedProtocolV3TrackSelection(trackTarget)
         }
         let selectedSubtitleSnapshot = selectedSubtitleId
         progressTask?.cancel()
@@ -1418,7 +1508,8 @@ class PlayerViewModel {
                             position: self.currentTime,
                             classification: queuedTrackChange.classification,
                             message: queuedTrackChange.message,
-                            requeueWhenBusy: true
+                            requeueWhenBusy: true,
+                            trackTarget: queuedTrackChange.target
                         )
                     }
                 } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
@@ -4296,7 +4387,8 @@ class PlayerViewModel {
                 position: currentTime,
                 classification: "audio_track_changed",
                 message: "User selected audio track \(track.title ?? String(track.trackId)).",
-                requeueWhenBusy: true
+                requeueWhenBusy: true,
+                trackTarget: .audio(track.trackId)
             ) else {
                 selectedAudioId = priorAudioId
                 pendingAudioFfIndex = priorPendingAudioFfIndex
@@ -4352,7 +4444,8 @@ class PlayerViewModel {
                 position: currentTime,
                 classification: "subtitle_track_changed",
                 message: "User selected subtitle track \(track.title ?? String(track.trackId)).",
-                requeueWhenBusy: true
+                requeueWhenBusy: true,
+                trackTarget: .subtitle(track.trackId)
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
@@ -4404,7 +4497,8 @@ class PlayerViewModel {
                 position: currentTime,
                 classification: "subtitle_track_changed",
                 message: "User disabled subtitles.",
-                requeueWhenBusy: true
+                requeueWhenBusy: true,
+                trackTarget: .subtitle(nil)
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex

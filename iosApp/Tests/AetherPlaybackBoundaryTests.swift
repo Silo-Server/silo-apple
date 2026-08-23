@@ -145,7 +145,6 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8",
             "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8?seek=0",
             "\(Self.proxyOrigin)/stream/v3/session-1/segment/seg-00042.m4s",
-            "http://proxy.example.test:8080/stream/v3/session-1",
         ] {
             let request = try XCTUnwrap(StreamRequest.resolve(
                 rawURL: raw,
@@ -161,6 +160,33 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             XCTAssertEqual(request.headers["X-Transport"], "preserved")
             XCTAssertEqual(request.serverUrl, "https://dev.example.test")
         }
+    }
+
+    func testAuthorizedOriginsAcceptHTTPProxyWhenServerIsHTTP() throws {
+        let raw = "http://proxy.example.test:8080/stream/v3/session-1"
+        let request = try XCTUnwrap(StreamRequest.resolve(
+            rawURL: raw,
+            serverURL: "http://dev.example.test",
+            additionalHeaders: ["X-Transport": "preserved"],
+            accessToken: "current-token",
+            requiresHeaderAuthenticatedMedia: true,
+            authorizedMediaOriginSessionId: "session-1"
+        ), "unexpectedly rejected \(raw) with an http server")
+        XCTAssertEqual(request.url.absoluteString, raw)
+        XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
+        XCTAssertEqual(request.headers["X-Transport"], "preserved")
+    }
+
+    func testAuthorizedOriginsRejectHTTPProxyWhenServerIsHTTPS() {
+        let raw = "http://proxy.example.test:8080/stream/v3/session-1"
+        XCTAssertNil(StreamRequest.resolve(
+            rawURL: raw,
+            serverURL: "https://dev.example.test",
+            additionalHeaders: [:],
+            accessToken: "current-token",
+            requiresHeaderAuthenticatedMedia: true,
+            authorizedMediaOriginSessionId: "session-1"
+        ), "an https deployment must never downgrade the bearer to an http proxy origin")
     }
 
     func testProxyMediaURLsAreRejectedWithoutNegotiatedOrigins() {
@@ -257,6 +283,18 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             requiresHeaderAuthenticatedMedia: true,
             authorizedMediaOriginSessionId: ""
         ), "empty session id must not enable absolute proxy URLs")
+    }
+
+    func testAuthorizedOriginsRejectWhitespaceOnlySessionId() {
+        let raw = "\(Self.proxyOrigin)/stream/v3/session-1/master.m3u8"
+        XCTAssertNil(StreamRequest.resolve(
+            rawURL: raw,
+            serverURL: "https://dev.example.test",
+            additionalHeaders: [:],
+            accessToken: "current-token",
+            requiresHeaderAuthenticatedMedia: true,
+            authorizedMediaOriginSessionId: " "
+        ), "whitespace-only session id must not enable absolute proxy URLs")
     }
 
     func testAuthorizedOriginsDoNotRelaxTheRelativeMediaContract() {

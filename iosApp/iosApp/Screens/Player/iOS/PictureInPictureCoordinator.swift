@@ -120,7 +120,11 @@ final class PictureInPictureCoordinator {
         let retainedStartFailureHandler = isSameOwner
             ? (onStartFailure ?? self.onStartFailure)
             : onStartFailure
-        tearDownBoundSession()
+        // The outgoing session keeps its engagement only when the same owner is
+        // rebinding a replacement engine; a genuinely new owner has to have its
+        // deferred cleanup run here, because the delegate that would have run it
+        // is detached below.
+        tearDownBoundSession(continuingOwner: owner)
 
         self.engine = engine
         lifecycleOwner = owner
@@ -217,7 +221,7 @@ final class PictureInPictureCoordinator {
             Self.logger.info("Skipping PiP teardown; another session owns the coordinator")
             return
         }
-        tearDownBoundSession()
+        tearDownBoundSession(continuingOwner: nil)
     }
 
     func ownsEngagedSession(_ owner: AnyObject) -> Bool {
@@ -433,7 +437,20 @@ final class PictureInPictureCoordinator {
         isRestoringUserInterface = false
     }
 
-    private func tearDownBoundSession() {
+    /// Release the bound graph.
+    ///
+    /// `releaseController(stopIfActive:)` detaches the AVKit delegate in the same
+    /// turn it asks for a stop, so `handleDidStop` can never arrive for a
+    /// controller torn down here. When PiP was engaged, that callback was the
+    /// only thing that would have ended the engagement, and the engaged owner has
+    /// already deferred its own `cleanup()` — final progress and the server
+    /// session stop — waiting for exactly that. So run the engagement-ended work
+    /// synchronously instead of dropping it on the floor.
+    ///
+    /// `continuingOwner` is the owner about to take the coordinator over. It only
+    /// matters when the same owner rebinds a replacement engine: that session is
+    /// not ending, so its cleanup must not run.
+    private func tearDownBoundSession(continuingOwner: AnyObject?) {
         engine?.pictureInPictureActive = false
         engine?.setNativeSubtitleRendering(false)
         subscriptions.removeAll()
@@ -450,10 +467,25 @@ final class PictureInPictureCoordinator {
         shouldStopForSourceChange = false
         engine = nil
         lifecycleOwner = nil
+
+        // Hand the engagement off before the references go, and keep the owner
+        // alive across its own cleanup — `engagedOwner` is the only strong
+        // reference holding it up.
+        let isEndingEngagement = engagedOwner != nil && engagedOwner !== continuingOwner
+        let endedOwner = engagedOwner
+        let endedEngagementHandler = isEndingEngagement ? onEngagementEnded : nil
+        // Cleared first so a late `handleDidStop`, or the owner-keyed
+        // `endSession` that its `cleanup()` calls back into, both find nothing
+        // left to end and cannot run this a second time.
         engagedOwner = nil
         onEngagementEnded = nil
         onRestoreUserInterface = nil
         onStartFailure = nil
+
+        if let endedEngagementHandler {
+            Self.logger.info("PiP torn down while engaged; running the outgoing session's cleanup")
+            withExtendedLifetime(endedOwner) { endedEngagementHandler() }
+        }
     }
 
     // MARK: - External playback + subtitle ownership
@@ -553,10 +585,13 @@ final class PictureInPictureCoordinator {
             shouldStopForSourceChange = false
             adoptCurrentEngineSource()
         }
-        if !didRestoreUserInterface {
-            onEngagementEnded?()
-        }
+        // Released before the callback so the owner-keyed `endSession` that its
+        // `cleanup()` may call back into cannot end the same engagement twice.
+        let endedOwner = engagedOwner
         engagedOwner = nil
+        if !didRestoreUserInterface {
+            withExtendedLifetime(endedOwner) { onEngagementEnded?() }
+        }
     }
 
     fileprivate func handleFailedToStart(_ error: Error) {
@@ -573,8 +608,9 @@ final class PictureInPictureCoordinator {
             shouldStopForSourceChange = false
             adoptCurrentEngineSource()
         }
-        onEngagementEnded?()
+        let endedOwner = engagedOwner
         engagedOwner = nil
+        withExtendedLifetime(endedOwner) { onEngagementEnded?() }
     }
 
     fileprivate func softwareSetPlaying(_ playing: Bool) {

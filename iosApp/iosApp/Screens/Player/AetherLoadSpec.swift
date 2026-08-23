@@ -336,11 +336,14 @@ struct AetherLoadSpec {
         guard !resourceURL.isFileURL else {
             return [:]
         }
+        // Origin equality has to normalize the implicit ports, or
+        // `https://host/media` and `https://host:443/subtitles` read as
+        // different origins and the bearer is stripped from a sidecar that is
+        // genuinely same-origin (Aether then gets a 401). `StreamRequest`
+        // already owns that comparison for the media URL itself; sharing it
+        // keeps the two boundaries from drifting apart.
         let isTrustedOrigin = trustedOriginURLs.contains { trustedURL in
-            !trustedURL.isFileURL
-                && resourceURL.scheme?.lowercased() == trustedURL.scheme?.lowercased()
-                && resourceURL.host?.lowercased() == trustedURL.host?.lowercased()
-                && resourceURL.port == trustedURL.port
+            !trustedURL.isFileURL && StreamRequest.hasSameOrigin(resourceURL, trustedURL)
         }
         return isTrustedOrigin ? headers : [:]
     }

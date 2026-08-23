@@ -295,6 +295,12 @@ final class TVSettingsViewModel {
         skipCredits = PlayerSettings.shared.autoSkipCredits
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
+        // The device-local rows are restored by the same reset, so the screen
+        // has to re-adopt them too or it keeps showing the old choice.
+        losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
+        bufferAhead = PlayerSettings.shared.bufferAhead
+        deinterlaceMode = PlayerSettings.shared.deinterlaceMode
+        deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     }
