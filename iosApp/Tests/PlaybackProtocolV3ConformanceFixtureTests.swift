@@ -21,7 +21,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
             bundleClass: Self.self
         )
         XCTAssertEqual(matrix.schemaVersion, 1)
-        XCTAssertEqual(matrix.plannerScenarios.count, 17)
+        XCTAssertEqual(matrix.plannerScenarios.count, 18)
         XCTAssertEqual(matrix.replanScenarios.count, 10)
         XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
@@ -73,6 +73,20 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(hdr10.source.dynamicRange, "hdr10")
         XCTAssertEqual(hdr10.expected.delivery, "original_http")
         XCTAssertEqual(hdr10.expected.claims?.video.hdr10, true)
+
+        let clientManaged = try plannerScenario(named: "client_managed_hdr_selected_audio", in: matrix)
+        XCTAssertEqual(clientManaged.source.dynamicRange, "hdr10")
+        XCTAssertEqual(clientManaged.request.audioTrackIndex, 1)
+        XCTAssertEqual(
+            Set(clientManaged.request.clientPlaybackContext.deliveries["original_http"]?.validatedClaims ?? []),
+            Set([
+                PlaybackProtocolV3.clientManagedDynamicRangeClaim,
+                PlaybackProtocolV3.clientSelectedAudioTrackClaim
+            ])
+        )
+        XCTAssertEqual(clientManaged.expected.delivery, "original_http")
+        XCTAssertEqual(clientManaged.expected.decisionReason, "client_managed_dynamic_range")
+        XCTAssertEqual(clientManaged.expected.selectedTracks?.audio?.index, 1)
 
         let dolbyVision = try plannerScenario(named: "dolby_vision_8_exact_direct", in: matrix)
         XCTAssertEqual(dolbyVision.source.dolbyVisionProfile, 8)
@@ -237,6 +251,7 @@ private struct PlaybackV3ConformanceStartRequest: Decodable {
     let qualityPreference: String
     let progressPersistence: String?
     let startPosition: Double?
+    let audioTrackIndex: Int?
     let subtitleTrackId: String?
     let subtitleTrackIndex: Int?
     let clientCapabilities: PlaybackV3ConformanceCapabilities
@@ -265,6 +280,7 @@ private struct PlaybackV3ConformanceDevice: Decodable {
 private struct PlaybackV3ConformanceDelivery: Decodable {
     let enabled: Bool
     let supportedOnDevice: Bool
+    let validatedClaims: [String]?
     let transformations: [PlaybackV3Transformation]?
 }
 

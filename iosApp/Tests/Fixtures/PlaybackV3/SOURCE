@@ -1,7 +1,7 @@
 Source: silo-server internal/playback/testdata/protocol_v3
-Server ref: codex/aether-tokenless-playback-v3
-Server commit: d76226449a0aa0667ef916b8238d6afe6a7d082f
-Vendored: 2026-08-22
+Server ref: codex/aether-managed-original
+Server commit: ccdf703c1adb84146eb6b09657eb36a73144600a
+Vendored: 2026-08-23
 
 All nine files come from internal/playback/testdata/protocol_v3. Six of them are
 also published byte-identically under docs/design/schemas/playback-v3/v3/fixtures/valid;
