@@ -1110,7 +1110,14 @@ class PlayerViewModel {
         case .failure(let failure):
             handleAetherFailure(failure)
         case .transportRestoreFailed(let message):
-            finalizeTerminalPlaybackError(message)
+            // The engine tore its media session down in the background and the
+            // rebuild for this Play failed. That is a source failure like any
+            // other post-load one — the committed plan may simply have expired
+            // while suspended — so it goes through the same recovery boundary
+            // (replan / stale-session renewal) instead of straight to the
+            // terminal wall. `handlePlaybackError` still finalizes the cases
+            // that genuinely have nowhere left to go.
+            handlePlaybackError(message)
         }
     }
 
@@ -1362,9 +1369,44 @@ class PlayerViewModel {
     /// The track a queued change is actually asking for. `.subtitle(nil)` is
     /// "turn subtitles off", which is why this is an enum and not two optional
     /// ids.
+    ///
+    /// Each case carries both the Aether `trackId` the user tapped and the
+    /// server-side identity the deferred replan will actually be resolved from
+    /// — the audio selection ordinal (`srcId ?? ffIndex`) and the subtitle
+    /// combined index. The interim replan can repackage streams, so an Aether
+    /// id recorded before it can vanish or land on a different stream by drain
+    /// time; the server identity is what `resolvedAudioTrackIndexForResume` /
+    /// `resolvedProtocolV3SubtitleIndexForResume` send, and it survives that.
     private enum QueuedProtocolV3TrackTarget {
-        case audio(Int64)
-        case subtitle(Int64?)
+        case audio(trackId: Int64, selectionIndex: Int?)
+        case subtitle(trackId: Int64?, combinedIndex: Int?)
+    }
+
+    /// Server-side ordinal a queued audio pick must resolve back to.
+    private func queuedTrackTarget(forAudio track: PlayerTrack) -> QueuedProtocolV3TrackTarget {
+        .audio(trackId: track.trackId, selectionIndex: audioSelectionIndex(for: track))
+    }
+
+    /// Server-side combined subtitle index a queued subtitle pick must resolve
+    /// back to. Nil for live AI tracks and anything the current plan cannot
+    /// place, which simply leaves the id as the only matcher.
+    private func queuedTrackTarget(
+        forSubtitle track: PlayerTrack
+    ) -> QueuedProtocolV3TrackTarget {
+        .subtitle(
+            trackId: track.trackId,
+            combinedIndex: serverCombinedSubtitleIndex(for: track)
+        )
+    }
+
+    private func serverCombinedSubtitleIndex(for track: PlayerTrack) -> Int? {
+        guard !SubtitleTrackIdSpace.isAILive(track.trackId),
+              let version = currentSelectedVersion else { return nil }
+        return ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+            for: track,
+            in: version,
+            inventory: activePreparedProtocolV3?.plan.subtitle.inventory ?? []
+        )
     }
 
     /// A track change deferred until the in-flight replan settles. Position
@@ -1387,28 +1429,44 @@ class PlayerViewModel {
     /// Re-publishes a queued track pick just before the deferred replan reads
     /// the selection back, undoing any interim `adoptAetherInventory`.
     ///
-    /// A target that no longer exists in the current inventory is dropped
-    /// rather than forced: the interim plan may not carry that track at all,
-    /// and a selection pointing at nothing resolves to no index, which is a
-    /// worse answer than the one the engine is actually rendering.
+    /// The recorded Aether id is tried first; if the interim plan repackaged
+    /// the streams and that id is gone, the pick is re-found by the server
+    /// identity captured at queue time — the same ordinal the replan would
+    /// have sent — so a renumbered stream still restores the user's tap.
+    ///
+    /// A target that resolves to neither is dropped rather than forced: the
+    /// interim plan may not carry that track at all, and a selection pointing
+    /// at nothing resolves to no index, which is a worse answer than the one
+    /// the engine is actually rendering.
     private func restoreQueuedProtocolV3TrackSelection(
         _ target: QueuedProtocolV3TrackTarget
     ) {
         switch target {
-        case .audio(let trackId):
-            guard selectedAudioId != trackId,
-                  audioTracks.contains(where: { $0.trackId == trackId }) else { return }
+        case .audio(let trackId, let selectionIndex):
+            let resolved = audioTracks.first { $0.trackId == trackId }
+                ?? selectionIndex.flatMap { wanted in
+                    audioTracks.first { audioSelectionIndex(for: $0) == wanted }
+                }
+            guard let resolved, selectedAudioId != resolved.trackId else { return }
             pendingAudioFfIndex = nil
-            selectedAudioId = trackId
+            selectedAudioId = resolved.trackId
             reapplySystemSubtitlePolicy()
-        case .subtitle(let trackId):
-            guard selectedSubtitleId != trackId else { return }
-            if let trackId {
-                guard subtitleTracks.contains(where: { $0.trackId == trackId }) else { return }
+        case .subtitle(let trackId, let combinedIndex):
+            guard let trackId else {
+                guard selectedSubtitleId != nil else { return }
+                pendingSubtitleFfIndex = nil
+                hasExplicitSubtitleChoice = true
+                selectedSubtitleId = nil
+                return
             }
+            let resolved = subtitleTracks.first { $0.trackId == trackId }
+                ?? combinedIndex.flatMap { wanted in
+                    subtitleTracks.first { serverCombinedSubtitleIndex(for: $0) == wanted }
+                }
+            guard let resolved, selectedSubtitleId != resolved.trackId else { return }
             pendingSubtitleFfIndex = nil
             hasExplicitSubtitleChoice = true
-            selectedSubtitleId = trackId
+            selectedSubtitleId = resolved.trackId
         }
     }
 
@@ -4388,7 +4446,7 @@ class PlayerViewModel {
                 classification: "audio_track_changed",
                 message: "User selected audio track \(track.title ?? String(track.trackId)).",
                 requeueWhenBusy: true,
-                trackTarget: .audio(track.trackId)
+                trackTarget: queuedTrackTarget(forAudio: track)
             ) else {
                 selectedAudioId = priorAudioId
                 pendingAudioFfIndex = priorPendingAudioFfIndex
@@ -4445,7 +4503,7 @@ class PlayerViewModel {
                 classification: "subtitle_track_changed",
                 message: "User selected subtitle track \(track.title ?? String(track.trackId)).",
                 requeueWhenBusy: true,
-                trackTarget: .subtitle(track.trackId)
+                trackTarget: queuedTrackTarget(forSubtitle: track)
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
@@ -4498,7 +4556,7 @@ class PlayerViewModel {
                 classification: "subtitle_track_changed",
                 message: "User disabled subtitles.",
                 requeueWhenBusy: true,
-                trackTarget: .subtitle(nil)
+                trackTarget: .subtitle(trackId: nil, combinedIndex: nil)
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
@@ -5891,15 +5949,57 @@ class PlayerViewModel {
         switch slot {
         case .primary:
             livePrimarySubtitleCues.append(cue)
-            if livePrimarySubtitleCues.count > 512 {
-                livePrimarySubtitleCues.removeFirst(livePrimarySubtitleCues.count - 512)
-            }
+            livePrimarySubtitleCues = Self.evictingLiveSubtitleCues(
+                livePrimarySubtitleCues,
+                position: currentTime
+            )
         case .secondary:
             liveSecondarySubtitleCues.append(cue)
-            if liveSecondarySubtitleCues.count > 512 {
-                liveSecondarySubtitleCues.removeFirst(liveSecondarySubtitleCues.count - 512)
-            }
+            liveSecondarySubtitleCues = Self.evictingLiveSubtitleCues(
+                liveSecondarySubtitleCues,
+                position: currentTime
+            )
         }
+    }
+
+    /// Bound on retained live AI cues. A fast translator can outrun the
+    /// playhead by a wide margin, so the buffer still needs a hard cap.
+    static let liveSubtitleCueLimit = 512
+
+    /// Trims a live cue buffer back to `limit` without dropping anything the
+    /// playhead has not reached yet.
+    ///
+    /// A plain oldest-first trim is wrong here: cues arrive as fast as the
+    /// translator emits them, not in playback lockstep, so a big batch can
+    /// push the count over the cap while every cue in the buffer is still
+    /// ahead of the playhead — and the ones evicted first would be exactly the
+    /// ones about to render. Already-passed cues (earliest end first) go
+    /// first; only if evicting all of them still leaves the buffer over the
+    /// cap do the furthest-future cues go, so the cues nearest the playhead
+    /// are always the last to be dropped.
+    static func evictingLiveSubtitleCues(
+        _ cues: [LiveSubtitleCue],
+        position: Double,
+        limit: Int = PlayerViewModel.liveSubtitleCueLimit
+    ) -> [LiveSubtitleCue] {
+        guard cues.count > limit else { return cues }
+        var overflow = cues.count - limit
+        var evicted = Set(
+            cues.indices
+                .filter { cues[$0].endTime < position }
+                .sorted { cues[$0].endMs < cues[$1].endMs }
+                .prefix(overflow)
+        )
+        overflow -= evicted.count
+        if overflow > 0 {
+            evicted.formUnion(
+                cues.indices
+                    .filter { !evicted.contains($0) }
+                    .sorted { cues[$0].startMs > cues[$1].startMs }
+                    .prefix(overflow)
+            )
+        }
+        return cues.indices.filter { !evicted.contains($0) }.map { cues[$0] }
     }
 
     func closeLiveSubtitleTrack(slot: SubtitleSlot = .primary) {

@@ -24,7 +24,7 @@ final class AetherScrubPreviewProvider {
 
     private struct PendingRequest {
         let sourceTime: Double
-        let spec: AetherLoadSpec
+        let playerTime: Double
         let extractor: FrameExtractor?
         let sessionGeneration: UInt64
         let requestGeneration: UInt64
@@ -85,6 +85,14 @@ final class AetherScrubPreviewProvider {
     /// single pending slot, and prompt extractor shutdown bound work during a
     /// fast drag. Both session and request generations fence late cache/decode
     /// results before publication.
+    ///
+    /// Targets the loaded transport cannot express — chiefly a backward scrub
+    /// before a re-anchored HLS plan's `timeline_offset_seconds` — are dropped
+    /// with a neutral (nil) publication. Converting them through
+    /// `playerPosition(forSourceTime:)` clamps to player time 0, which would
+    /// present the transport's first frame as if it were the requested source
+    /// moment. Only a server replan can produce a transport containing them,
+    /// and server-backed preview fetching is out of scope here.
     func request(atSourceTime sourceTime: Double) {
         guard sourceTime.isFinite, sourceTime >= 0, let spec = activeSpec else {
             return
@@ -92,9 +100,15 @@ final class AetherScrubPreviewProvider {
 
         requestGeneration &+= 1
         onPreview?(nil)
+        guard case let .local(playerTime) = spec.timeline.seekDisposition(
+            forSourceTime: sourceTime
+        ) else {
+            pendingRequest = nil
+            return
+        }
         pendingRequest = PendingRequest(
             sourceTime: sourceTime,
-            spec: spec,
+            playerTime: playerTime,
             extractor: extractor,
             sessionGeneration: sessionGeneration,
             requestGeneration: requestGeneration
@@ -145,9 +159,7 @@ final class AetherScrubPreviewProvider {
             pendingRequest = nil
             guard sessionGeneration == request.sessionGeneration else { continue }
 
-            let playerTime = request.spec.timeline.playerPosition(
-                forSourceTime: request.sourceTime
-            )
+            let playerTime = request.playerTime
             let image: CGImage?
             if engine.supportsCacheBackedStills {
                 // A nil is expected when the requested native segment is not
