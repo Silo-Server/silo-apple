@@ -96,6 +96,7 @@ targets:
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
       configs:
         Debug:
           APS_ENVIRONMENT: development
@@ -148,6 +149,7 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: appletvos
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
     dependencies:
       - package: AetherEngine
         product: AetherEngine
@@ -193,6 +195,7 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SDKROOT: macosx
         SUPPORTED_PLATFORMS: "macosx"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
     dependencies:
       - package: AetherEngine
         product: AetherEngine
