@@ -1,7 +1,7 @@
 # AetherEngine-Only Playback Replacement
 
-Status: Aether-only source migration, coordinated transport/software-decode contracts, Apple builds, shared-dev and isolated-fixture direct-play proof, and final Fable review complete; Opus rerun, hardware breadth, and release gates pending
-Date: 2026-08-22
+Status: Aether-only source migration and Apple TV 4K engine-declared streaming capabilities implemented; physical hardware breadth and release gates pending
+Date: 2026-08-23
 Silo Apple baseline: `4910372c2ccb34d0f6bbde9419b6806e3971ff3f`
 AetherEngine pin: `6.34.0` / `0ae80496ab6f3fda135f43ef195ff10961c0e625`
 
@@ -47,8 +47,9 @@ explicitly.
   `IOReader` to conceal a missing Aether API.
 - Reimplementing Aether's codec routing, recovery, demux, decode, remux,
   buffering, cache, local HLS, or AVPlayer/sample-buffer hosting.
-- Expanding Apple capabilities merely because upstream documentation lists a
-  format. Capability growth requires Silo fixture and device proof.
+- Recreating Aether's per-stream routing decision in the app. The online
+  manifest must match the exact pinned engine/build, while the engine probes
+  the actual source and device at load time.
 
 ## Ownership boundary
 
@@ -69,8 +70,8 @@ Silo controls, settings, queue, progress, realtime, downloads
 ### Silo owns
 
 - Playback V3 start, replan, renewal, stop, progress, and attempt identity.
-- User quality intent, server-delivery policy, and conservative capability
-  advertisement.
+- User quality intent, server-delivery/output policy, and Protocol V3
+  capability assembly.
 - Resume, Next Up, intro/credits, markers, queueing, and exactly-once end work.
 - Realtime commands and SiloControl behavior.
 - Download lifecycle, persistent storage, and offline item metadata.
@@ -235,10 +236,25 @@ snapshots:
 
 The audiobook snapshot is included in this cleanup.
 
-The first Aether-only build deliberately underclaims. It starts with the
-smallest delivery/codec/subtitle set needed by the controlled fixtures and
-shared-development validation. Later Aether-only builds add claims one proven
-slice at a time.
+The first Aether-only build deliberately underclaimed with handwritten,
+fixture-bounded decoder envelopes. That was safe for migration but could make
+the server reject a source before Aether's runtime probe saw it. The current
+Apple TV policy separates an engine/build declaration from device/output and
+persistent-artifact constraints:
+
+- a physical Apple TV 4K sends `video_evidence: declared`, the flat decoder and
+  demuxer manifest of pinned AetherEngine 6.34.0 plus FFmpegBuild 2.4.3, and no
+  per-profile/bit-depth/performance `video_decode[]` envelope;
+- Aether probes the actual source and exact device during `load`, selects its
+  native or software path, and a typed load failure enters Silo's bounded V3
+  replan path;
+- Apple TV HD stays on the bounded `platform_attested` policy because it has
+  materially less software-decode headroom and Aether does not yet emit a
+  typed decoder-underperforming signal;
+- simulators, iOS, and macOS also retain `platform_attested` until their rollout
+  policy is changed explicitly;
+- downloads retain the bounded attestation because an offline artifact cannot
+  ask the server for a different plan.
 
 Rules:
 
@@ -254,21 +270,39 @@ Rules:
 - `software_video_decode_v1` is an engine-neutral, explicit opt-in that lets a
   strict evidence-tier client qualify bounded `hardware: false`
   `video_decode` entries. Without it, exact/platform-attested planning retains
-  its historical hardware-only behavior;
-- Apple advertises software decode only for original-file delivery. Packaged
-  progressive/HLS delivery stays on the conservative VideoToolbox codec list;
-  the audio-only audiobook request does not advertise the video feature;
-- download creation sends the same detailed decoder entries and feature opt-in
-  rather than flattening the 1080p software limit into the device-wide 2160p
-  ceiling. This preserves hardware 4K originals while forcing out-of-bounds
-  software sources through the compatibility-artifact policy. Its legacy flat
-  list stays hardware-only, so older servers that ignore the additive fields
-  also fail safely;
-- old client Dolby Vision transformations are dropped until their exact
-  Aether outcome and display-dependent claims are re-derived and proven;
+  its historical hardware-only behavior. It remains relevant to downloads and
+  conservative streaming surfaces; `declared` Apple TV 4K planning uses the
+  flat engine list by definition;
+- only `original_http` receives the broad Aether manifest and its
+  `client_managed_dynamic_range_v1` validated claim. That claim lets the
+  server deliver an HDR/Dolby Vision source even when the current output does
+  not advertise the source range, because Aether owns the post-delivery
+  display handshake and local presentation. Packaged progressive/HLS delivery
+  stays on the VideoToolbox-backed codec list and remains gated by the live
+  output snapshot;
+- download creation sends detailed decoder entries and the feature opt-in
+  rather than inheriting the online declaration. Its legacy flat list stays
+  hardware-only, so older servers that ignore additive fields fail safely;
+- Dolby Vision client transformations remain scoped to `original_http` and to
+  the same live display/output evidence used by the server. They are preferred
+  when the server can describe an exact Profile 7 outcome; the managed-range
+  claim is the engine-owned fallback and does not invent a selectable recipe;
 - `authHeaderRefresh` is `false` in the first Aether snapshot. Protocol V3
   defines it as refreshing credentials without restarting playback; a fresh
-  Aether load does not satisfy that contract.
+  Aether load does not satisfy that contract;
+- codec, audio, container, hardware-probe, device-generation, and bounded
+  fallback logic live in `AppleDecodeCapabilities`; diagnostics, downloads,
+  and V3 shape adapters consume that owner instead of maintaining independent
+  lists.
+
+The claim changes admission, not ownership. Protocol V3 still supplies the
+authenticated original URL, freezes attempt identity, records the output
+snapshot, and excludes a failed plan key on replan. Aether probes the received
+file and may demux, locally repackage, bridge audio, switch the panel, or map
+the source onto SDR without a server-selected transformation. If that load
+returns a typed failure, the server tries a different version or delivery; an
+exhausted HDR route remains terminal until a real server tone-map recipe is
+installed.
 
 The migration justified coordinated server changes only where direct evidence
 showed an engine-neutral contract gap. First, signed media URLs can
@@ -282,22 +316,16 @@ development and has been validated through the exact Apple build's Aether
 boundary.
 
 Second, the pinned Aether stack successfully software-decoded five otherwise
-transcode-only opaque fixtures, but Protocol V3 intentionally ignored
-`hardware: false` entries. The server now accepts those entries only with
-`software_video_decode_v1` and enforces their codec, exercised profile,
-bit-depth, frame size, frame-rate, and bitrate bounds. The first claims are
-deliberately fixture-bounded: 1080p30 at rounded 10/3/3/32 Mbps ceilings for
-H.264/AV1/VP9/VC-1, and 720x480 at a rounded 31 fps and 7 Mbps for MPEG-2
-(the nominally NTSC fixture's server probe reports 30.303 fps). The Apple snapshot advertises exercised H.264
-High 10, AV1 Main 10, VP9 Profile 0, interlaced MPEG-2 Main, and VC-1 Advanced
-software routes, while
-keeping H.264/HEVC VideoToolbox entries separate. Legacy clients and clients
-without the feature retain the prior planner behavior. Broader delivery,
-renewal, and physical-hardware validation is still required before release.
-The initial AV1 and H.264 software entries intentionally claim only their
-exercised 10-bit profiles; unproved 8-bit AV1 and non-VideoToolbox H.264
-variants continue through server adaptation rather than being inferred from
-codec-family support.
+transcode-only opaque fixtures, which established the strict fallback and
+download envelopes. The server accepts those `hardware: false` entries only
+with `software_video_decode_v1` and enforces their profile, bit depth, frame
+size, frame rate, and bitrate bounds. Those bounds remain deliberately narrow:
+1080p30 at rounded 10/3/3/32 Mbps ceilings for H.264/AV1/VP9/VC-1, and 720x480
+at 31 fps and 7 Mbps for MPEG-2. They no longer constrain online Apple TV 4K
+`original_http`; there, the pinned engine manifest gets the source to Aether's
+own probe. Broader physical-hardware validation is still required before
+release, especially for sustained software decode where a load can succeed
+but fail to maintain real-time playback.
 
 ## Tracks and subtitles
 

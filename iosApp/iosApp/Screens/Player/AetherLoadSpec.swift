@@ -1,6 +1,33 @@
 import AetherEngine
 import Foundation
 
+/// Resolves the language hint Aether uses for its initial audio pick.
+///
+/// A Protocol V3 plan's selected audio ordinal is authoritative. Feeding the
+/// user's broader profile preference to Aether in that case can start a
+/// different track, publish first frame, and then force a full pipeline reload
+/// when the exact ordinal is applied after inventory arrives. Prefer the
+/// selected track's language for the first open; the existing post-probe
+/// ordinal reconciliation remains the exact fallback for unlabeled or
+/// same-language tracks.
+enum AetherInitialAudioPreference {
+    static func languages(
+        selectedOrdinal: Int?,
+        tracks: [AudioTrack],
+        fallbackLanguage: String
+    ) -> [String] {
+        if let selectedOrdinal {
+            guard tracks.indices.contains(selectedOrdinal) else { return [] }
+            let selectedLanguage = tracks[selectedOrdinal].language?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return selectedLanguage.isEmpty ? [] : [selectedLanguage]
+        }
+
+        let fallback = fallbackLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? [] : [fallback]
+    }
+}
+
 /// Immutable inputs for one Aether load generation.
 ///
 /// The initialisers are main-actor isolated because they sample the display
@@ -222,10 +249,11 @@ struct AetherLoadSpec {
         let effectiveHeaders = requestHeaders ?? plan.stream.headers
 
         // Protocol V3's selected audio index is an ordinal in the server's
-        // audio-track list, not an FFmpeg AVStream index. Original HTTP is
-        // offered only for the container default; remux/transcode outputs are
-        // already packaged with the selected track. Let Aether choose the
-        // default/output stream rather than passing a different index space.
+        // audio-track list, not an FFmpeg AVStream index. Keep it out of
+        // LoadOptions: after Aether publishes its probed inventory,
+        // PlayerViewModel maps that ordinal to Aether's stream id and applies
+        // the plan-authoritative selection. This lets original HTTP remain a
+        // byte-for-byte source while still honoring a non-default track.
         if let selectedIndex = plan.selectedTracks.audio?.index {
             guard selectedIndex >= 0 else {
                 throw ValidationError.invalidAudioTrackIndex(selectedIndex)

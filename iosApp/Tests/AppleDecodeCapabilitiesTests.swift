@@ -1,17 +1,17 @@
 import XCTest
 @testable import Silo
 
-/// Playback and downloads must describe the same stack while retaining the
-/// evidence each wire contract can safely understand.
+/// Online playback may trust Aether's load-time probe; downloads must retain
+/// enough bounded evidence to be safe without a server replan.
 final class AppleDecodeCapabilitiesTests: XCTestCase {
 
     // MARK: - The surfaces agree
 
     func testV3SnapshotReportsTheSharedVocabulary() {
         let capabilities = ApplePlaybackV3Capabilities.snapshot().capabilities
-        XCTAssertEqual(capabilities.codecsAudio, AppleDecodeCapabilities.audioCodecs)
-        XCTAssertEqual(capabilities.containers, AppleDecodeCapabilities.containers)
-        XCTAssertEqual(capabilities.codecsVideo, AppleDecodeCapabilities.videoCodecs)
+        XCTAssertEqual(capabilities.codecsAudio, AppleDecodeCapabilities.streamingAudioCodecs)
+        XCTAssertEqual(capabilities.containers, AppleDecodeCapabilities.streamingContainers)
+        XCTAssertEqual(capabilities.codecsVideo, AppleDecodeCapabilities.streamingVideoCodecs)
     }
 
     func testDownloadCapsReportTheSharedVocabulary() {
@@ -23,7 +23,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertEqual(caps.videoEvidence, PlaybackProtocolV3.Evidence.platformAttested)
         XCTAssertEqual(
             caps.videoDecode,
-            ApplePlaybackV3Capabilities.snapshot().capabilities.videoDecode
+            AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
         )
         XCTAssertEqual(caps.clientFeatures, [PlaybackProtocolV3.softwareVideoDecodeFeature])
         XCTAssertTrue(
@@ -84,9 +84,10 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertNil(object["videoDecode"])
     }
 
-    func testEveryAudioSurfaceCarriesTheSameCodecs() {
-        // The concrete regression: one list gaining a codec the others miss.
-        let v3 = Set(ApplePlaybackV3Capabilities.snapshot().capabilities.codecsAudio)
+    func testConservativeStreamingAndDownloadsShareAudioCodecs() {
+        let v3 = Set(ApplePlaybackV3Capabilities.snapshot(
+            videoCapabilityMode: .platformAttested
+        ).capabilities.codecsAudio)
         let downloads = Set(DownloadCaps.current().codecsAudio)
         XCTAssertEqual(v3, downloads)
         XCTAssertEqual(v3, Set(AppleDecodeCapabilities.audioCodecs))
@@ -98,12 +99,191 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertTrue(expected.isSubset(of: Set(AppleDecodeCapabilities.containers)))
 
         let originalHTTP = try XCTUnwrap(
-            ApplePlaybackV3Capabilities.snapshot().context.deliveries[
+            ApplePlaybackV3Capabilities.snapshot(
+                videoCapabilityMode: .platformAttested
+            ).context.deliveries[
                 PlaybackProtocolV3.DeliveryClass.originalHTTP
             ]
         )
         XCTAssertTrue(expected.isSubset(of: Set(originalHTTP.containers)))
         XCTAssertFalse(originalHTTP.containers.contains("ogg"))
+    }
+
+    func testAppleTV4KUsesTheAetherBuildDeclaration() throws {
+        let snapshot = ApplePlaybackV3Capabilities.snapshot(
+            videoCapabilityMode: .aetherDeclared
+        )
+        XCTAssertEqual(snapshot.capabilities.videoEvidence, PlaybackProtocolV3.Evidence.declared)
+        XCTAssertEqual(snapshot.capabilities.videoDecode, [])
+        XCTAssertEqual(
+            snapshot.capabilities.codecsVideoHardware,
+            AppleDecodeCapabilities.hardwareVideoCodecs
+        )
+        XCTAssertEqual(
+            snapshot.capabilities.codecsVideo,
+            AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs
+        )
+        XCTAssertEqual(
+            snapshot.capabilities.codecsAudio,
+            AppleDecodeCapabilities.aetherOriginalHTTPAudioCodecs
+        )
+        XCTAssertEqual(
+            snapshot.capabilities.containers,
+            AppleDecodeCapabilities.aetherOriginalHTTPContainers
+        )
+        XCTAssertEqual(snapshot.capabilities.maxResolution, "2160p")
+
+        let originalHTTP = try XCTUnwrap(
+            snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP]
+        )
+        XCTAssertEqual(
+            originalHTTP.videoCodecs,
+            AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs
+        )
+        XCTAssertEqual(
+            originalHTTP.audioDecodeCodecs,
+            AppleDecodeCapabilities.aetherOriginalHTTPAudioCodecs
+        )
+        XCTAssertEqual(
+            originalHTTP.containers,
+            AppleDecodeCapabilities.aetherOriginalHTTPContainers
+        )
+        XCTAssertTrue(
+            originalHTTP.validatedClaims.contains(
+                PlaybackProtocolV3.clientManagedDynamicRangeClaim
+            ),
+            "The Aether original-file executor must declare that display adaptation happens after delivery."
+        )
+        XCTAssertTrue(
+            originalHTTP.validatedClaims.contains(
+                PlaybackProtocolV3.clientSelectedAudioTrackClaim
+            ),
+            "The Aether original-file executor maps the plan's selected audio ordinal after probing."
+        )
+
+        let progressive = try XCTUnwrap(
+            snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.progressive]
+        )
+        XCTAssertEqual(progressive.videoCodecs, AppleDecodeCapabilities.packagedVideoCodecs)
+        XCTAssertEqual(progressive.containers, ["mp4", "mov", "m4v"])
+        XCTAssertEqual(progressive.audioDecodeCodecs, ["aac", "ac3", "eac3", "alac", "mp3"])
+
+        let hls = try XCTUnwrap(
+            snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.hls]
+        )
+        XCTAssertEqual(hls.videoCodecs, AppleDecodeCapabilities.packagedVideoCodecs)
+        XCTAssertEqual(hls.containers, ["hls", "mpegts", "fmp4", "mp4"])
+        XCTAssertEqual(hls.audioDecodeCodecs, ["aac", "ac3", "eac3"])
+    }
+
+    func testConservativeAndAudioOnlySnapshotsDoNotClaimClientManagedDynamicRange() throws {
+        let conservativeOriginal = try XCTUnwrap(
+            ApplePlaybackV3Capabilities.snapshot(
+                videoCapabilityMode: .platformAttested
+            ).context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP]
+        )
+        XCTAssertFalse(
+            conservativeOriginal.validatedClaims.contains(
+                PlaybackProtocolV3.clientManagedDynamicRangeClaim
+            )
+        )
+        XCTAssertFalse(
+            conservativeOriginal.validatedClaims.contains(
+                PlaybackProtocolV3.clientSelectedAudioTrackClaim
+            )
+        )
+
+        let audiobookOriginal = try XCTUnwrap(
+            ApplePlaybackV3Capabilities.audiobookSnapshot(
+                videoCapabilityMode: .aetherDeclared
+            ).context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP]
+        )
+        XCTAssertFalse(
+            audiobookOriginal.validatedClaims.contains(
+                PlaybackProtocolV3.clientManagedDynamicRangeClaim
+            )
+        )
+        XCTAssertFalse(
+            audiobookOriginal.validatedClaims.contains(
+                PlaybackProtocolV3.clientSelectedAudioTrackClaim
+            )
+        )
+    }
+
+    func testAetherDeclarationKeepsV3WireShapeWithoutDetailedPredictions() throws {
+        let capabilities = ApplePlaybackV3Capabilities.snapshot(
+            videoCapabilityMode: .aetherDeclared
+        ).capabilities
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(capabilities))
+                as? [String: Any]
+        )
+
+        XCTAssertEqual(
+            object["video_evidence"] as? String,
+            PlaybackProtocolV3.Evidence.declared
+        )
+        XCTAssertEqual((object["video_decode"] as? [[String: Any]])?.count, 0)
+        XCTAssertEqual(
+            object["codecs_video"] as? [String],
+            AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs
+        )
+        XCTAssertNil(object["videoEvidence"])
+        XCTAssertNil(object["videoDecode"])
+    }
+
+    func testEngineDeclarationCoversPinnedAetherFFmpegManifest() {
+        let video = Set(AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs)
+        let audio = Set(AppleDecodeCapabilities.aetherOriginalHTTPAudioCodecs)
+        let containers = Set(AppleDecodeCapabilities.aetherOriginalHTTPContainers)
+
+        XCTAssertEqual(video, Set([
+            "h264", "hevc", "av1", "vp9", "vp8", "mpeg4", "mpeg2video", "vc1",
+            "qtrle", "msmpeg4v1", "msmpeg4v2", "msmpeg4v3", "wmv1", "wmv2", "wmv3",
+        ]))
+        XCTAssertEqual(audio, Set([
+            "aac", "ac3", "eac3", "mp3", "mp2", "flac", "opus", "vorbis", "alac",
+            "truehd", "mlp", "dts", "dca", "dts-hd", "dtshd", "pcm", "pcm_s16le",
+            "pcm_s24le", "pcm_f32le",
+        ]))
+        XCTAssertEqual(containers, Set([
+            "mp4", "m4v", "mov", "mkv", "matroska", "avi", "mpegts", "ts", "m2ts",
+            "mts", "3gp", "3g2", "vob", "ogg", "webm", "flv", "mp3", "aac", "m4a",
+            "m4b", "flac", "alac", "wav", "opus",
+        ]))
+        XCTAssertFalse(containers.contains("asf"))
+    }
+
+    func testPersistentDownloadsDoNotInheritOptimisticEngineClaims() {
+        let caps = DownloadCaps.current()
+        XCTAssertFalse(caps.codecsVideo.contains("qtrle"))
+        XCTAssertFalse(caps.codecsAudio.contains("mlp"))
+        XCTAssertFalse(caps.containers.contains("flv"))
+        XCTAssertFalse(caps.videoDecode.isEmpty)
+    }
+
+    func testStreamingPolicyTrustsAppleTV4KButNotAppleTVHDOrSimulators() {
+        func mode(
+            _ isTVOS: Bool,
+            _ isSimulator: Bool,
+            _ machineIdentifier: String
+        ) -> AppleDecodeCapabilities.StreamingVideoCapabilityMode {
+            AppleDecodeCapabilities.streamingVideoCapabilityModeForDevice(
+                isTVOS: isTVOS,
+                isSimulator: isSimulator,
+                machineIdentifier: machineIdentifier
+            )
+        }
+        XCTAssertEqual(mode(true, false, "AppleTV5,3"), .platformAttested)
+        XCTAssertEqual(mode(true, false, "AppleTV6,2"), .aetherDeclared)
+        XCTAssertEqual(mode(true, false, "AppleTV11,1"), .aetherDeclared)
+        XCTAssertEqual(mode(true, false, "AppleTV14,1"), .aetherDeclared)
+        XCTAssertEqual(mode(true, false, "AppleTV99,1"), .aetherDeclared)
+        XCTAssertEqual(mode(true, true, "arm64"), .platformAttested)
+        XCTAssertEqual(mode(false, false, "iPhone19,1"), .platformAttested)
+        XCTAssertEqual(mode(true, false, "unknown"), .platformAttested)
     }
 
     // MARK: - The vocabulary itself
@@ -127,12 +307,13 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
     }
 
     func testHardwareCodecsAreASubsetOfClaimedCodecs() {
-        let claimed = Set(AppleDecodeCapabilities.videoCodecs)
-        XCTAssertTrue(Set(AppleDecodeCapabilities.hardwareVideoCodecs).isSubset(of: claimed))
+        let hardware = Set(AppleDecodeCapabilities.hardwareVideoCodecs)
+        XCTAssertTrue(hardware.isSubset(of: Set(AppleDecodeCapabilities.attestedVideoCodecs)))
+        XCTAssertTrue(hardware.isSubset(of: Set(AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs)))
     }
 
     func testDecodeEntriesNameTheDecoderTheyActuallyUse() {
-        for entry in ApplePlaybackV3Capabilities.snapshot().capabilities.videoDecode {
+        for entry in AppleDecodeCapabilities.videoDecodeAttestation() {
             XCTAssertEqual(entry.hardware ? "VideoToolbox" : (entry.codec == "av1" ? "dav1d" : "libavcodec"), entry.decoderName)
         }
     }
@@ -142,7 +323,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
     func testSimulatorClaimStaysConservative() throws {
         try XCTSkipUnless(AppleDecodeCapabilities.isSimulator)
         XCTAssertEqual(
-            AppleDecodeCapabilities.videoCodecs,
+            AppleDecodeCapabilities.streamingVideoCodecs,
             ["h264", "av1", "vp9", "mpeg2video", "vc1"]
         )
         XCTAssertEqual(AppleDecodeCapabilities.maxResolution, "1080p")

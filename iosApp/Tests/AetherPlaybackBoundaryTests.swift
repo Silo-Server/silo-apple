@@ -15,6 +15,79 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         let streams: [LiveStreamFixture]
     }
 
+    func testExplicitV3AudioSelectionOverridesProfileLanguageForInitialLoad() {
+        let languages = AetherInitialAudioPreference.languages(
+            selectedOrdinal: 0,
+            tracks: [
+                makeAudioTrack(language: "pt", isDefault: true),
+                makeAudioTrack(language: "en", isDefault: false),
+            ],
+            fallbackLanguage: "en"
+        )
+
+        XCTAssertEqual(languages, ["pt"])
+    }
+
+    func testUnlabeledExplicitAudioSelectionDoesNotFallBackToProfileLanguage() {
+        let languages = AetherInitialAudioPreference.languages(
+            selectedOrdinal: 0,
+            tracks: [makeAudioTrack(language: nil, isDefault: false)],
+            fallbackLanguage: "en"
+        )
+
+        XCTAssertEqual(languages, [])
+    }
+
+    func testUnavailableExplicitAudioInventoryDoesNotResurrectProfileLanguage() {
+        for tracks in [
+            [AudioTrack](),
+            [makeAudioTrack(language: "pt", isDefault: true)],
+        ] {
+            let languages = AetherInitialAudioPreference.languages(
+                selectedOrdinal: 1,
+                tracks: tracks,
+                fallbackLanguage: "en"
+            )
+
+            XCTAssertEqual(languages, [])
+        }
+    }
+
+    func testWhitespaceOnlyExplicitAudioLanguageDoesNotBecomeAnAetherHint() {
+        let languages = AetherInitialAudioPreference.languages(
+            selectedOrdinal: 0,
+            tracks: [makeAudioTrack(language: "  ", isDefault: false)],
+            fallbackLanguage: "en"
+        )
+
+        XCTAssertEqual(languages, [])
+    }
+
+    func testProfileAudioLanguageRemainsFallbackWithoutExplicitSelection() {
+        let languages = AetherInitialAudioPreference.languages(
+            selectedOrdinal: nil,
+            tracks: [makeAudioTrack(language: "pt", isDefault: true)],
+            fallbackLanguage: " en "
+        )
+
+        XCTAssertEqual(languages, ["en"])
+    }
+
+    private func makeAudioTrack(language: String?, isDefault: Bool) -> AudioTrack {
+        AudioTrack(
+            index: nil,
+            codec: "eac3",
+            channels: 6,
+            channelLayout: "5.1(side)",
+            bitrate: 640,
+            sampleRate: 48_000,
+            language: language,
+            title: nil,
+            embeddedTitle: nil,
+            isDefault: isDefault
+        )
+    }
+
     func testHeaderAuthenticatedStreamResolutionStaysOnAPIMediaOrigin() throws {
         let request = try XCTUnwrap(StreamRequest.resolve(
             rawURL: "/playback/transcode/session-1/master.m3u8?seek=12",

@@ -1,8 +1,6 @@
 import AVFoundation
-import CoreMedia
 import CryptoKit
 import Foundation
-import VideoToolbox
 
 struct ApplePlaybackV3CapabilitySnapshot: Equatable {
     let capabilities: PlaybackV3CodecCapabilities
@@ -109,29 +107,33 @@ enum ApplePlaybackV3Capabilities {
         )
     ]
 
-    static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
+    static func snapshot(
+        videoCapabilityMode requestedMode: AppleDecodeCapabilities.StreamingVideoCapabilityMode? = nil
+    ) -> ApplePlaybackV3CapabilitySnapshot {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
         let output = outputSnapshot(hdrAvailability: hdrAvailability)
-        let videoDecode = videoDecodeAttestation()
-        var seenVideoCodecs = Set<String>()
-        let videoCodecs = videoDecode.map(\.codec).filter {
-            seenVideoCodecs.insert($0).inserted
-        }
-        let hardwareVideoCodecs = videoDecode.filter(\.hardware).map(\.codec)
+        let videoCapabilityMode = requestedMode ?? AppleDecodeCapabilities.streamingVideoCapabilityMode
+        let usesAetherDeclaration = videoCapabilityMode == .aetherDeclared
+        let videoDecode = usesAetherDeclaration
+            ? []
+            : AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
+        let videoCodecs = AppleDecodeCapabilities.streamingVideoCodecs(for: videoCapabilityMode)
+        let hardwareVideoCodecs = AppleDecodeCapabilities.hardwareVideoCodecs
 
-        // Aether owns demux/decode on original HTTP. The narrower packaged
-        // delivery lists below describe the formats the server may emit.
-        let audioCodecs = AppleDecodeCapabilities.audioCodecs
-        let containers = AppleDecodeCapabilities.containers
+        // Aether owns demux/decode on original HTTP. On Apple TV 4K this is a
+        // build declaration, not a prediction about the exact source: Aether's
+        // load-time probe chooses native or software decode and a typed load
+        // failure enters the existing bounded V3 replan path. The narrower
+        // packaged delivery lists below still describe what the server may
+        // emit directly to the native receiver path.
+        let audioCodecs = AppleDecodeCapabilities.streamingAudioCodecs(for: videoCapabilityMode)
+        let containers = AppleDecodeCapabilities.streamingContainers(for: videoCapabilityMode)
         let hdr = output.hdrDetails.map { $0.hdr10 || $0.hlg || !$0.dolbyVisionProfiles.isEmpty } ?? false
 
         let capabilities = PlaybackV3CodecCapabilities(
-            // VideoToolbox attests that a codec family is hardware-decodable;
-            // it cannot enumerate the profiles and levels a decoder accepts.
-            // The server skips those fields only for hardware entries at this
-            // tier and still applies every bound we do supply. Software
-            // entries carry profiles the server enforces.
-            videoEvidence: PlaybackProtocolV3.Evidence.platformAttested,
+            videoEvidence: usesAetherDeclaration
+                ? PlaybackProtocolV3.Evidence.declared
+                : PlaybackProtocolV3.Evidence.platformAttested,
             // These are the exact codecs accepted by the pinned Aether build,
             // not codecs attested by an Apple audio-decoder probe.
             audioEvidence: PlaybackProtocolV3.Evidence.declared,
@@ -139,7 +141,7 @@ enum ApplePlaybackV3Capabilities {
             codecsVideoHardware: hardwareVideoCodecs,
             codecsAudio: audioCodecs,
             containers: containers,
-            maxResolution: AppleDecodeCapabilities.maxResolutionToken,
+            maxResolution: AppleDecodeCapabilities.streamingMaxResolutionToken(for: videoCapabilityMode),
             hdr: hdr,
             hdrDetails: output.hdrDetails,
             // No passthrough entries: Apple routes audio through the system
@@ -174,6 +176,14 @@ enum ApplePlaybackV3Capabilities {
             sidecarBitmap: false,
             fontAttachments: false
         )
+        let originalHTTPClaims = commonClaims
+            + ["client_subtitle_overlay"]
+            + (usesAetherDeclaration
+                ? [
+                    PlaybackProtocolV3.clientManagedDynamicRangeClaim,
+                    PlaybackProtocolV3.clientSelectedAudioTrackClaim,
+                ]
+                : [])
         let packagedSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: true,
             sidecarText: true,
@@ -196,7 +206,7 @@ enum ApplePlaybackV3Capabilities {
                 subtitles: aetherSubtitles,
                 features: [],
                 authHeaderRefresh: false,
-                validatedClaims: commonClaims + ["client_subtitle_overlay"],
+                validatedClaims: originalHTTPClaims,
                 transformations: clientTransformations
             ),
             PlaybackProtocolV3.DeliveryClass.progressive: PlaybackV3DeliveryCapability(
@@ -254,8 +264,10 @@ enum ApplePlaybackV3Capabilities {
 
     /// Capability evidence for Aether's audio-only execution mode. Keep every
     /// advertised delivery executable without relying on a video surface.
-    static func audiobookSnapshot() -> ApplePlaybackV3CapabilitySnapshot {
-        let base = snapshot()
+    static func audiobookSnapshot(
+        videoCapabilityMode requestedMode: AppleDecodeCapabilities.StreamingVideoCapabilityMode? = nil
+    ) -> ApplePlaybackV3CapabilitySnapshot {
+        let base = snapshot(videoCapabilityMode: requestedMode)
         let noSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: false,
             sidecarText: false,
@@ -349,94 +361,6 @@ enum ApplePlaybackV3Capabilities {
             context: context,
             hdrAvailability: base.hdrAvailability
         )
-    }
-
-    /// The hardware attestations VideoToolbox supplies, followed by the
-    /// narrower software envelopes proven with Aether fixtures.
-    ///
-    /// Hardware profiles and levels stay empty because VideoToolbox cannot
-    /// enumerate them; under `platform_attested` the server skips both only
-    /// for `hardware: true` entries. Software entries carry and enforce the
-    /// exact exercised profiles plus fixture-bounded performance ceilings.
-    static func videoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
-        let codecTypes: [(String, CMVideoCodecType)] = [
-            ("h264", kCMVideoCodecType_H264),
-            ("hevc", kCMVideoCodecType_HEVC)
-        ]
-        let hardwareCapabilities: [PlaybackV3VideoDecodeCapability] = codecTypes.compactMap { codec, codecType in
-            guard hardwareDecodeSupported(codecType) else {
-                return nil
-            }
-            return PlaybackV3VideoDecodeCapability(
-                codec: codec,
-                decoderName: "VideoToolbox",
-                profiles: [],
-                levels: [],
-                // Apple hardware decodes HEVC Main and Main10; H.264 High 10
-                // has no hardware path on any supported device.
-                bitDepths: codec == "hevc" ? [8, 10] : [8],
-                maxWidth: maxDecodeHeight >= 2_160 ? 3_840 : 1_920,
-                maxHeight: maxDecodeHeight,
-                // Every device that reaches the minimum OS decodes 4K60. Higher
-                // frame rates are only guaranteed below 4K, and the contract has
-                // no way to express a rate that depends on resolution, so the
-                // lower of the two is the bound we can stand behind.
-                maxFrameRate: 60,
-                maxBitrateKbps: maxDecodeHeight >= 2_160 ? 120_000 : 25_000,
-                hardware: true
-            )
-        }
-        let softwareCapabilities: [(
-            codec: String, decoder: String, profiles: [String], bitDepths: [Int],
-            maxWidth: Int, maxHeight: Int, maxFrameRate: Double, maxBitrateKbps: Int
-        )] = [
-            // H.264 remains a duplicate on purpose: the hardware entry covers
-            // ordinary 8-bit streams, while this entry is the exercised High
-            // 10 software route. MPEG-2 carries the interlaced proof.
-            ("h264", "libavcodec", ["high 10"], [10], 1_920, 1_080, 30, 10_000),
-            ("av1", "dav1d", ["main"], [10], 1_920, 1_080, 30, 3_000),
-            ("vp9", "libavcodec", ["profile 0"], [8], 1_920, 1_080, 30, 3_000),
-            // The exercised NTSC fixture's server probe reports 30.303 fps,
-            // so its rounded source-rate ceiling must be 31 rather than 30.
-            ("mpeg2video", "libavcodec", ["main"], [8], 720, 480, 31, 7_000),
-            ("vc1", "libavcodec", ["advanced"], [8], 1_920, 1_080, 30, 32_000),
-        ]
-        return hardwareCapabilities + softwareCapabilities.map { capability in
-            PlaybackV3VideoDecodeCapability(
-                codec: capability.codec,
-                decoderName: capability.decoder,
-                profiles: capability.profiles,
-                levels: [],
-                bitDepths: capability.bitDepths,
-                maxWidth: capability.maxWidth,
-                maxHeight: capability.maxHeight,
-                maxFrameRate: capability.maxFrameRate,
-                maxBitrateKbps: capability.maxBitrateKbps,
-                hardware: false
-            )
-        }
-    }
-
-    /// Whether the platform routes this codec to an accelerated decoder.
-    private static func hardwareDecodeSupported(_ codecType: CMVideoCodecType) -> Bool {
-        #if targetEnvironment(simulator)
-        // The simulator services VideoToolbox through the host Mac, so
-        // `VTIsHardwareDecodeSupported` answers for the host GPU rather than
-        // for any device we could ship to. H.264 is accelerated on every host
-        // that can run the simulator; nothing else is worth attesting.
-        return codecType == kCMVideoCodecType_H264
-        #else
-        return VTIsHardwareDecodeSupported(codecType)
-        #endif
-    }
-
-    /// The tallest frame this build's decoders are guaranteed to accept.
-    private static var maxDecodeHeight: Int {
-        #if targetEnvironment(simulator)
-        1_080
-        #else
-        2_160
-        #endif
     }
 
     private static func outputSnapshot(
@@ -550,13 +474,7 @@ enum ApplePlaybackV3Capabilities {
     }
 
     private static var deviceContext: PlaybackV3DeviceContext {
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let mirror = Mirror(reflecting: systemInfo.machine)
-        let machine = mirror.children.reduce(into: "") { result, element in
-            guard let value = element.value as? Int8, value != 0 else { return }
-            result.append(Character(UnicodeScalar(UInt8(value))))
-        }
+        let machine = AppleDecodeCapabilities.machineIdentifier
         let version = ProcessInfo.processInfo.operatingSystemVersion
         var details = ["os_name": platformName]
         if !machine.isEmpty {

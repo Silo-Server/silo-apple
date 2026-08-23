@@ -1203,10 +1203,21 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     }
 
     func testAudiobookSnapshotOnlyAdvertisesAudioOnlyAetherRoutes() throws {
-        let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
+        let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot(
+            videoCapabilityMode: .aetherDeclared
+        )
+        XCTAssertEqual(snapshot.capabilities.videoEvidence, PlaybackProtocolV3.Evidence.declared)
         XCTAssertEqual(snapshot.capabilities.codecsVideo, [])
         XCTAssertEqual(snapshot.capabilities.codecsVideoHardware, [])
         XCTAssertEqual(snapshot.capabilities.videoDecode, [])
+        XCTAssertEqual(
+            snapshot.capabilities.codecsAudio,
+            ["aac", "ac3", "eac3", "alac", "mp3", "flac", "pcm", "pcm_s16le", "pcm_s24le"]
+        )
+        XCTAssertEqual(
+            snapshot.capabilities.containers,
+            ["mp4", "mp3", "m4a", "m4b", "aac", "flac", "wav"]
+        )
         XCTAssertFalse(snapshot.capabilities.codecsAudio.contains("dts"))
         XCTAssertFalse(snapshot.capabilities.codecsAudio.contains("truehd"))
         XCTAssertFalse(snapshot.capabilities.codecsAudio.contains("vorbis"))

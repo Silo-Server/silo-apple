@@ -35,11 +35,16 @@ enum DiagnosticsCapabilityProbe {
     }
 
     static func snapshot(
-        displayCapabilities: ApplePlaybackDisplayCapabilities = .probe()
+        displayCapabilities: ApplePlaybackDisplayCapabilities = .probe(),
+        videoCapabilityMode requestedMode: AppleDecodeCapabilities.StreamingVideoCapabilityMode? = nil
     ) -> Snapshot {
-        Snapshot(
+        let videoCapabilityMode = requestedMode ?? AppleDecodeCapabilities.streamingVideoCapabilityMode
+        return Snapshot(
             display: displaySnapshot(displayCapabilities),
-            videoCodecs: videoCodecSnapshot(displayCapabilities),
+            videoCodecs: videoCodecSnapshot(
+                displayCapabilities,
+                videoCapabilityMode: videoCapabilityMode
+            ),
             network: .object(["transport": .string("not_collected")])
         )
     }
@@ -94,25 +99,43 @@ enum DiagnosticsCapabilityProbe {
         ])
     }
 
-    private static func videoCodecSnapshot(_ capabilities: ApplePlaybackDisplayCapabilities) -> DiagnosticsJSONValue {
+    private static func videoCodecSnapshot(
+        _ capabilities: ApplePlaybackDisplayCapabilities,
+        videoCapabilityMode: AppleDecodeCapabilities.StreamingVideoCapabilityMode
+    ) -> DiagnosticsJSONValue {
         // Which codecs is the shared client answer; the rest of each entry is
-        // this probe's own (display-derived resolution, HDR from the panel).
-        let codecs = AppleDecodeCapabilities.videoCodecs.map(diagnosticsMIME(for:))
-        #if targetEnvironment(simulator)
-        let maxResolution = "1080p"
-        let hdr = false
-        #else
-        let maxResolution = capabilities.maxResolution?.rawValue ?? "unknown"
-        let hdr = capabilities.supportsHDR10 || capabilities.supportsHLG || capabilities.supportsDolbyVision
-        #endif
+        // this probe's own. Declared evidence intentionally carries no
+        // per-codec performance or HDR prediction: the display section still
+        // records panel facts, while Aether probes the exact source at load.
+        let codecs = AppleDecodeCapabilities.streamingVideoCodecs(
+            for: videoCapabilityMode
+        ).map(diagnosticsMIME(for:))
+        let maxResolution: DiagnosticsJSONValue
+        let hdr: DiagnosticsJSONValue
+        if videoCapabilityMode == .aetherDeclared {
+            maxResolution = .string("not_collected")
+            hdr = .string("not_collected")
+        } else {
+            #if targetEnvironment(simulator)
+            maxResolution = .string("1080p")
+            hdr = .bool(false)
+            #else
+            maxResolution = .string(capabilities.maxResolution?.rawValue ?? "unknown")
+            hdr = .bool(
+                capabilities.supportsHDR10
+                    || capabilities.supportsHLG
+                    || capabilities.supportsDolbyVision
+            )
+            #endif
+        }
 
         return .array(codecs.map { codec in
             .object([
                 "mime": .string(codec),
                 "hw": .string("unknown"),
                 "profiles": .string("not_collected"),
-                "max": .string(maxResolution),
-                "hdr": .bool(hdr),
+                "max": maxResolution,
+                "hdr": hdr,
             ])
         })
     }

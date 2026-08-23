@@ -32,6 +32,14 @@ enum PlaybackProtocolV3 {
     /// hardware-only strict-tier behavior.
     static let softwareVideoDecodeFeature = "software_video_decode_v1"
     static let planSourceDurationFeature = "plan_source_duration_v1"
+    /// Scoped to `original_http`: the Aether executor accepts the declared
+    /// source dynamic range and resolves HDR/Dolby Vision presentation against
+    /// the live output after delivery. It is not a promise that packaged
+    /// server streams can present the same range natively.
+    static let clientManagedDynamicRangeClaim = "client_managed_dynamic_range_v1"
+    /// Scoped to `original_http`: after probing the complete source, Aether
+    /// maps the plan's selected audio ordinal to its concrete stream id.
+    static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
 
     /// Delivery classes are the unit a client negotiates in
     /// `client_playback_context.deliveries`. They are deliberately coarser than
@@ -121,12 +129,33 @@ struct PlaybackV3VideoDecodeCapability: Codable, Equatable, Sendable {
     let hardware: Bool
 }
 
+extension AppleDecodeCapabilities {
+    /// The neutral decoder facts above adapted once into the Protocol V3 wire
+    /// model. Keeping this adapter beside the model lets shared capability code
+    /// compile in extensions that do not carry the playback protocol.
+    static func playbackV3VideoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
+        videoDecodeAttestation().map { capability in
+            PlaybackV3VideoDecodeCapability(
+                codec: capability.codec,
+                decoderName: capability.decoderName,
+                profiles: capability.profiles,
+                levels: capability.levels,
+                bitDepths: capability.bitDepths,
+                maxWidth: capability.maxWidth,
+                maxHeight: capability.maxHeight,
+                maxFrameRate: capability.maxFrameRate,
+                maxBitrateKbps: capability.maxBitrateKbps,
+                hardware: capability.hardware
+            )
+        }
+    }
+}
+
 struct PlaybackV3CodecCapabilities: Codable, Equatable {
-    /// How this client knows what it can decode. Apple's platform-backed
-    /// Aether stack claims `platform_attested`: codec, bit depth and dimension
-    /// bounds are exercised facts, while profile/level are not enumerable and
-    /// the server skips matching them. Software entries participate only with
-    /// the explicit software-video feature token.
+    /// How this client knows what it can decode. Online Apple TV 4K playback
+    /// uses `declared` for the pinned Aether/FFmpeg manifest and lets Aether
+    /// probe the exact stream at load time. Persistent downloads and the
+    /// conservative Apple surfaces retain bounded `platform_attested` entries.
     let videoEvidence: String
     let audioEvidence: String
     let codecsVideo: [String]

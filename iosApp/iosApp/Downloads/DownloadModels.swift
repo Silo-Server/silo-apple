@@ -231,7 +231,7 @@ struct DownloadCaps: Encodable, Sendable {
             // to preserve safe 4K originals on physical devices.
             maxResolution: "1080p",
             hdr: !isSimulator,
-            videoDecode: ApplePlaybackV3Capabilities.videoDecodeAttestation()
+            videoDecode: AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
         )
     }
 }

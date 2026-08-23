@@ -2293,7 +2293,11 @@ class PlayerViewModel {
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
-        let preferredAudio = settings.audioLanguage.isEmpty ? [] : [settings.audioLanguage]
+        let preferredAudio = AetherInitialAudioPreference.languages(
+            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
+            tracks: prepared.selectedVersion.audioTracks ?? [],
+            fallbackLanguage: settings.audioLanguage
+        )
         // The explicit Buffer Ahead choice wins; `automatic` has no count of
         // its own and keeps the historical mapping from the synced Seek Cache
         // toggle, so a device that never touches this picker behaves exactly as

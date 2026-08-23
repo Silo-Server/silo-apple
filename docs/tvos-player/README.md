@@ -1,7 +1,10 @@
 # Apple Library Playback Documentation
 
-Current architecture as of 2026-08-22: Silo's library-media implementation is
-being replaced by one AetherEngine route across iOS, tvOS, and macOS. The
+Current architecture as of 2026-08-23: Silo's library-media implementation is
+one AetherEngine route across iOS, tvOS, and macOS. Apple TV 4K online playback
+declares the pinned engine/build manifest and lets Aether probe each source;
+offline downloads and conservative Apple surfaces retain bounded decoder
+attestation. The
 canonical product, ownership, deletion, capability, privacy, legal, and
 validation contract is the
 [AetherEngine-only replacement specification](aetherengine-replacement-spec.md).
