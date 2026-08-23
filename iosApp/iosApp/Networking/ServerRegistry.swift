@@ -476,6 +476,13 @@ final class ServerRegistry {
             // a destination server that has no providers configured.
             Task { await SubtitleProvidersStore.shared.refresh() }
         }
+        // Identity (URL, tokens, profile) is committed before this runs.
+        // Downloads are scoped per server/profile and must reload here —
+        // ContentView's authenticated-state task does not re-fire when
+        // authState stays `.authenticated` across a server switch.
+        #if !os(tvOS)
+        await DownloadManager.shared.onScopeChanged()
+        #endif
     }
 
     /// Sign out from `serverId` without removing the entry. Clears tokens
