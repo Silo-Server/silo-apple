@@ -24,10 +24,40 @@ struct AetherLoadSpec {
     let timeline: PlaybackTimelineMapper
     let options: LoadOptions
     let audioSourceStreamIndex: Int32?
-    /// App-facing ids for `options.externalSubtitles`, in registration order.
-    /// Aether assigns its own ids starting at `externalSubtitleTrackIDBase`;
-    /// the controller translates those back to Silo's stable sidecar ids.
-    let externalSubtitleAppTrackIDs: [Int64]
+    /// App-facing ids for `options.externalSubtitles`, positionally parallel to
+    /// that array — element `i` is the Silo id of `options.externalSubtitles[i]`,
+    /// and `nil` means "this declared track has no stable Silo id".
+    ///
+    /// Aether assigns its own ids sequentially from `externalSubtitleTrackIDBase`
+    /// in declaration order, so the controller can only translate an alias by
+    /// position. That makes the parallel-arrays invariant load-bearing: an entry
+    /// here that Aether was never asked to register binds a Silo id to the Aether
+    /// id of some *other* sidecar (the first one registered later), which is how
+    /// picking "English" ends up rendering the first sidecar in the plan. Both
+    /// arrays are therefore built at a single append site.
+    let externalSubtitleAppTrackIDs: [Int64?]
+
+    /// The bridge this app assumes for codecs Aether cannot stream-copy, when
+    /// a caller does not name one.
+    ///
+    /// Deliberately not Aether's own `.surroundCompat` default: the engine this
+    /// player replaced always bridged TrueHD and DTS-HD MA losslessly, so
+    /// inheriting the lossy default would quietly downgrade shipped behavior —
+    /// which is exactly what happened before this parameter existed. The user
+    /// setting overrides it; see `PlayerSettings.losslessAudioEnabled`.
+    static let defaultAudioBridgeMode: AudioBridgeMode = .lossless
+
+    /// The deinterlacer used when a caller does not name one.
+    ///
+    /// Aether's own default, unlike ``defaultAudioBridgeMode``: the hardware
+    /// graph with its software fallback is what every load has always got, so
+    /// restating it here changes nothing until the user picks otherwise. See
+    /// `PlayerSettings.deinterlaceMode`.
+    static let defaultDeinterlaceMode: DeinterlaceMode = .auto
+
+    /// The hardware deinterlacer's cadence when a caller does not name one.
+    /// Also Aether's own default; see `PlayerSettings.deinterlaceFieldRate`.
+    static let defaultDeinterlaceFieldRate: DeinterlaceFieldRate = .field
 
     @MainActor
     init(
@@ -39,6 +69,9 @@ struct AetherLoadSpec {
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
+        audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
+        deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
+        deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard offlineURL.isFileURL else {
@@ -64,11 +97,12 @@ struct AetherLoadSpec {
         sourceURL = offlineURL
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         self.audioSourceStreamIndex = audioSourceStreamIndex
-        externalSubtitleAppTrackIDs = sidecars.map {
-            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.index)
+        externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
         options = LoadOptions(
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
+            audioBridgeMode: audioBridgeMode,
             audioOnly: audioOnly,
             preserveASSMarkup: false,
             prepareNativeSubtitles: true,
@@ -78,7 +112,9 @@ struct AetherLoadSpec {
             preferredSubtitleLanguages: preferredSubtitleLanguages,
             externalSubtitles: externalSubtitles,
             forwardBufferSegments: forwardBufferSegments,
-            autoplay: false
+            autoplay: false,
+            deinterlaceMode: deinterlaceMode,
+            deinterlaceFieldRate: deinterlaceFieldRate
         )
     }
 
@@ -92,6 +128,9 @@ struct AetherLoadSpec {
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
+        audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
+        deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
+        deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard ["http", "https", "file"].contains(directURL.scheme?.lowercased() ?? "") else {
@@ -123,12 +162,13 @@ struct AetherLoadSpec {
         sourceURL = directURL
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         audioSourceStreamIndex = nil
-        externalSubtitleAppTrackIDs = sidecars.map {
-            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.index)
+        externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
         options = LoadOptions(
             httpHeaders: headers,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
+            audioBridgeMode: audioBridgeMode,
             audioOnly: audioOnly,
             preserveASSMarkup: false,
             prepareNativeSubtitles: true,
@@ -138,7 +178,9 @@ struct AetherLoadSpec {
             preferredSubtitleLanguages: preferredSubtitleLanguages,
             externalSubtitles: externalSubtitles,
             forwardBufferSegments: forwardBufferSegments,
-            autoplay: false
+            autoplay: false,
+            deinterlaceMode: deinterlaceMode,
+            deinterlaceFieldRate: deinterlaceFieldRate
         )
     }
 
@@ -153,6 +195,9 @@ struct AetherLoadSpec {
         preferredAudioLanguages: [String] = [],
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
+        audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
+        deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
+        deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
@@ -186,7 +231,11 @@ struct AetherLoadSpec {
             }
         }
 
+        // Declared tracks and their Silo aliases are appended together so the
+        // two arrays cannot drift: an alias without a declared track shifts
+        // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
+        var externalSubtitleAppTrackIDs: [Int64?] = []
         if let artifact = plan.subtitle.artifact,
            ["render", "convert"].contains(plan.subtitle.mode) {
             guard abs(artifact.timingOriginSeconds - plan.timeline.timelineOffsetSeconds) < 0.001 else {
@@ -222,6 +271,12 @@ struct AetherLoadSpec {
                 ),
                 formatHint: artifact.format
             ))
+            // A declared artifact the inventory does not name has no stable
+            // Silo id; leaving the slot empty keeps the arrays parallel and
+            // lets the controller fall back to Aether's own id for it.
+            externalSubtitleAppTrackIDs.append(inventoryItem.map { item in
+                SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
+            })
         }
 
         self.planID = plan.planId
@@ -230,13 +285,7 @@ struct AetherLoadSpec {
         self.sourceURL = sourceURL
         self.timeline = timeline
         self.audioSourceStreamIndex = nil
-        externalSubtitleAppTrackIDs = plan.subtitle.artifact.flatMap { _ in
-            plan.subtitle.inventory.first(where: { item in
-                item.trackId == plan.subtitle.trackId
-            })
-        }.map {
-            [SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.combinedIndex)]
-        } ?? []
+        self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
@@ -245,6 +294,7 @@ struct AetherLoadSpec {
             httpHeaders: effectiveHeaders,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
+            audioBridgeMode: audioBridgeMode,
             audioOnly: plan.effectiveRecipe.videoCodec == nil,
             nativeRemoteHLS: isServerHLS,
             preserveASSMarkup: false,
@@ -255,7 +305,9 @@ struct AetherLoadSpec {
             preferredSubtitleLanguages: preferredSubtitleLanguages,
             externalSubtitles: externalSubtitles,
             forwardBufferSegments: forwardBufferSegments,
-            autoplay: false
+            autoplay: false,
+            deinterlaceMode: deinterlaceMode,
+            deinterlaceFieldRate: deinterlaceFieldRate
         )
     }
 

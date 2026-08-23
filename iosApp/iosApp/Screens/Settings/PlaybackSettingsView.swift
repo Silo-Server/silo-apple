@@ -88,18 +88,6 @@ struct PlaybackSettingsView: View {
             .foregroundStyle(Color.continuumOnSurface)
             .tint(.continuumAccent)
 
-            if viewModel.dolbyVisionEnabled {
-                Toggle("Profile 7 HDR10 Fallback", isOn: Binding(
-                    get: { viewModel.preferProfile7HDR10Fallback },
-                    set: { enabled in
-                        viewModel.preferProfile7HDR10Fallback = enabled
-                        Task { await viewModel.setPreferProfile7HDR10Fallback(enabled) }
-                    }
-                ))
-                .foregroundStyle(Color.continuumOnSurface)
-                .tint(.continuumAccent)
-            }
-
             Toggle("Seek Cache", isOn: Binding(
                 get: { viewModel.seekCacheEnabled },
                 set: { enabled in
@@ -109,6 +97,85 @@ struct PlaybackSettingsView: View {
             ))
             .foregroundStyle(Color.continuumOnSurface)
             .tint(.continuumAccent)
+
+            Picker("Buffer Ahead", selection: Binding(
+                get: { viewModel.bufferAhead },
+                set: { newValue in
+                    viewModel.bufferAhead = newValue
+                    Task { await viewModel.setBufferAhead(newValue) }
+                }
+            )) {
+                ForEach(BufferAheadMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .foregroundStyle(Color.continuumOnSurface)
+            #if os(macOS)
+            .pickerStyle(.menu)
+            #else
+            .pickerStyle(.navigationLink)
+            #endif
+
+            Toggle("Lossless Multichannel Audio", isOn: Binding(
+                get: { viewModel.losslessAudioEnabled },
+                set: { enabled in
+                    viewModel.losslessAudioEnabled = enabled
+                    Task { await viewModel.setLosslessAudioEnabled(enabled) }
+                }
+            ))
+            .foregroundStyle(Color.continuumOnSurface)
+            .tint(.continuumAccent)
+
+            Picker("Deinterlacing", selection: Binding(
+                get: { viewModel.deinterlaceMode },
+                set: { newValue in
+                    viewModel.deinterlaceMode = newValue
+                    Task { await viewModel.setDeinterlaceMode(newValue) }
+                }
+            )) {
+                ForEach(DeinterlacePreference.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .foregroundStyle(Color.continuumOnSurface)
+            #if os(macOS)
+            .pickerStyle(.menu)
+            #else
+            .pickerStyle(.navigationLink)
+            #endif
+
+            Picker("Deinterlacing Field Rate", selection: Binding(
+                get: { viewModel.deinterlaceFieldRate },
+                set: { newValue in
+                    viewModel.deinterlaceFieldRate = newValue
+                    Task { await viewModel.setDeinterlaceFieldRate(newValue) }
+                }
+            )) {
+                ForEach(DeinterlaceFieldRatePreference.allCases, id: \.self) { rate in
+                    Text(rate.label).tag(rate)
+                }
+            }
+            .foregroundStyle(Color.continuumOnSurface)
+            #if os(macOS)
+            .pickerStyle(.menu)
+            #else
+            .pickerStyle(.navigationLink)
+            #endif
+
+            // iOS only: the engine's background policy is driven by the app
+            // lifecycle notifications, which macOS does not post — a toggle
+            // there would control nothing.
+            #if os(iOS)
+            Toggle("Background Playback", isOn: Binding(
+                get: { viewModel.backgroundPlaybackEnabled },
+                set: { enabled in
+                    viewModel.backgroundPlaybackEnabled = enabled
+                    Task { await viewModel.setBackgroundPlaybackEnabled(enabled) }
+                }
+            ))
+            .foregroundStyle(Color.continuumOnSurface)
+            .tint(.continuumAccent)
+            #endif
         } header: {
             Text("Streaming")
                 .foregroundStyle(Color.continuumSecondaryText)
@@ -127,10 +194,13 @@ struct PlaybackSettingsView: View {
             text = "\(preset.description) "
         }
         text += "Turn off Dolby Vision to play Dolby Vision titles as HDR10 instead. Profile 5 titles have no HDR10-compatible layer and always play in Dolby Vision."
-        if viewModel.dolbyVisionEnabled {
-            text += " The fallback plays Dolby Vision Profile 7 as HDR10 on this device."
-        }
         text += " Seek Cache keeps recently streamed video in temporary storage during playback so skipping forward and back is instant; it is cleared when playback ends."
+        text += " Buffer Ahead controls how much video is downloaded ahead of the playhead; longer windows ride out network dropouts, and Unlimited buffers as much as fits in temporary storage, which is cleared when playback ends."
+        text += " Lossless Multichannel Audio delivers TrueHD and DTS-HD audio as lossless multichannel PCM, and needs a receiver or soundbar that accepts multichannel PCM over eARC. If surround plays as stereo, turn it off to use a surround-compatible Dolby Digital Plus bridge instead."
+        text += " Deinterlacing applies to interlaced sources such as DVDs and broadcast recordings; Automatic uses this device's hardware deinterlacer and falls back to software, while Software always deinterlaces on the CPU. Field Rate applies to the hardware deinterlacer only: Full Motion doubles the frame rate (50/60 fps), and Film keeps one frame per field pair."
+        #if os(iOS)
+        text += " Background Playback continues audio when the app moves to the background, including Picture in Picture; turning it off stops playback when you leave the app. Audiobooks always keep playing in the background."
+        #endif
         return text
     }
 

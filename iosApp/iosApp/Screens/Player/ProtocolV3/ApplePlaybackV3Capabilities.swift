@@ -41,6 +41,7 @@ enum ApplePlaybackV3Capabilities {
     /// Advertising it would be a claim we cannot back.
     static let features = [
         PlaybackProtocolV3.planFeature,
+        PlaybackProtocolV3.clientTransformFeature,
         PlaybackProtocolV3.routeDiagnosticsFeature,
         PlaybackProtocolV3.deviceQuirksFeature,
         PlaybackProtocolV3.seekReanchorFeature,
@@ -67,6 +68,35 @@ enum ApplePlaybackV3Capabilities {
     ]
     private static let audiobookOriginalContainers = ["mp4"] + AppleDecodeCapabilities.audioContainers
     private static let commonClaims = ["authenticated_stream_headers"]
+
+    /// The Dolby Vision Profile 7 recipes Aether executes on a real device.
+    /// Advertised on the `original_http` delivery only — the packaged
+    /// deliveries are server-produced and carry no client recipe. These entries
+    /// are only valid alongside `client_video_transformations_v1` in
+    /// `features`; the server rejects the whole request if a `client` executor
+    /// entry appears without that flag.
+    static let deviceClientTransformations = [
+        PlaybackV3Transformation(
+            name: "client_dv7_to_dv81",
+            executor: "client",
+            recipeVersion: "1",
+            validatedClaims: [
+                "profile7_rpu_converted_to_profile81",
+                "hdr10_base_layer_preserved",
+                "enhancement_layer_discarded"
+            ]
+        ),
+        PlaybackV3Transformation(
+            name: "client_dv7_to_hdr10",
+            executor: "client",
+            recipeVersion: "1",
+            validatedClaims: [
+                "dolby_vision_metadata_removed",
+                "hdr10_base_layer_preserved",
+                "enhancement_layer_discarded"
+            ]
+        )
+    ]
 
     static func snapshot() -> ApplePlaybackV3CapabilitySnapshot {
         let hdrAvailability = ApplePlaybackHDRAvailability.probe()
@@ -108,10 +138,20 @@ enum ApplePlaybackV3Capabilities {
             videoDecode: videoDecode
         )
 
-        // First Aether-only candidates advertise no client-side recipe. Add a
-        // transformation only after the exact Aether pin and real hardware
-        // fixtures prove that executor end to end.
-        let clientTransformations: [PlaybackV3Transformation] = []
+        // The `client` executor for these two recipes is Aether's internal
+        // route policy, not app code: it converts a Profile 7 RPU to Profile
+        // 8.1 when the live panel accepts Dolby Vision, and strips the Dolby
+        // Vision metadata down to the HDR10 base layer otherwise. Declaring
+        // them is what lets the server keep a DV7 source on `original_http`
+        // instead of remuxing it. The server gates `client_dv7_to_dv81` on the
+        // profiles in our `dolbyVisionProfiles` and `client_dv7_to_hdr10` on
+        // `hdr_details.hdr10`, both of which come from the same display
+        // snapshot, so no extra panel condition belongs here.
+        //
+        // The simulator has no real display or hardware HEVC decoder, so it
+        // must not claim either recipe.
+        let clientTransformations: [PlaybackV3Transformation] =
+            AppleDecodeCapabilities.isSimulator ? [] : deviceClientTransformations
 
         let aetherSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: true,

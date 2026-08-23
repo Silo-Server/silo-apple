@@ -76,7 +76,6 @@ final class TrackSelectionPersistenceTests: XCTestCase {
             title: "Commentary",
             lang: "en",
             codec: "ac3",
-            layout: "stereo",
             channels: 2
         )
 
@@ -180,7 +179,6 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         title: String?,
         lang: String?,
         codec: String?,
-        layout: String? = nil,
         channels: Int? = nil,
         isForced: Bool = false,
         ffIndex: Int? = nil
@@ -191,13 +189,11 @@ final class TrackSelectionPersistenceTests: XCTestCase {
             title: title,
             lang: lang,
             codec: codec,
-            audioChannelsLayout: layout,
             audioChannelCount: channels,
             bitrate: nil,
             isDefault: false,
             isForced: isForced,
             isHearingImpaired: false,
-            isVisualImpaired: false,
             isExternal: false,
             isSelected: false,
             ffIndex: ffIndex,

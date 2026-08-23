@@ -159,8 +159,6 @@ struct PlayerBackendCapabilities: Equatable {
     let supportsSecondarySubtitles: Bool
     let supportsChapters: Bool
     let supportsVideoGravity: Bool
-    let supportsHDRToggle: Bool
-    let supportsAudioDelay: Bool
     let supportsSubtitleDelay: Bool
     let supportsSubtitleStyling: Bool
 
@@ -174,8 +172,6 @@ struct PlayerBackendCapabilities: Equatable {
             supportsSecondarySubtitles: hasTextSubtitleTrack,
             supportsChapters: true,
             supportsVideoGravity: true,
-            supportsHDRToggle: false,
-            supportsAudioDelay: false,
             supportsSubtitleDelay: subtitleOverlayControls,
             supportsSubtitleStyling: subtitleOverlayControls
         )
@@ -194,6 +190,19 @@ class PlayerViewModel {
     fileprivate var aetherPlaybackController: AetherPlaybackController!
     @ObservationIgnored
     private var activeAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
+    /// The epoch whose `finishLoad` has returned, i.e. whose engine startup ran
+    /// to completion and whose decode route is therefore settled.
+    ///
+    /// Aether publishes its track inventory during startup (`streamsProbed`),
+    /// several steps before it dispatches the source onto a backend. Applying a
+    /// deferred track pick at that point makes the engine rebuild its pipeline
+    /// against a route it has not chosen yet — on a software-decode source
+    /// (VC-1, AV1) the rebuild lands on the native path, which rejects the
+    /// codec, kills the in-flight load and leaves the app on a spinner. Nothing
+    /// that drives the engine off a *pending* selection may run before this is
+    /// set for the current epoch.
+    @ObservationIgnored
+    private var establishedAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     @ObservationIgnored
     private var committedProtocolV3LoadEpoch: AetherPlaybackController.LoadEpoch?
     @ObservationIgnored
@@ -219,6 +228,7 @@ class PlayerViewModel {
     private func disposeAetherPlayback() -> Task<Void, Never>? {
         let previewShutdown = scrubPreviewProvider.endSession()
         activeAetherLoadEpoch = nil
+        establishedAetherLoadEpoch = nil
         committedProtocolV3LoadEpoch = nil
         pendingProtocolV3FirstFrameEpoch = nil
         pendingProtocolV3SeekReanchorPosition = nil
@@ -573,6 +583,12 @@ class PlayerViewModel {
     /// failure twice — once through `handleAetherFailure` and again through
     /// the load's own catch.
     private var freshLoadOwnsFailureHandling = false
+    /// The most recent `audioTrackSwitchFailed` Aether published while a load
+    /// owned failure handling. The engine kills the in-flight load as part of
+    /// the same rebuild, so the load's own catch sees only a cancellation and
+    /// would otherwise have no idea why it was abandoned.
+    @ObservationIgnored
+    private var lastAetherAudioTrackSwitchFailure: PlaybackErrorInfo?
     private var protocolV3ReplanTask: Task<Void, Never>?
     private var nextUpLookupTask: Task<Void, Never>?
     private var nextUpOnDeckTask: Task<Void, Never>?
@@ -1141,6 +1157,36 @@ class PlayerViewModel {
 
     @MainActor
     private func handleAetherFailure(_ failure: PlaybackErrorInfo) {
+        if failure.kind == .audioTrackSwitchFailed {
+            // The engine tore its pipeline down for the switch and the rebuild
+            // failed, so there is nothing left playing whatever the phase. It
+            // also restored `activeAudioTrackIndex`, so republish the engine's
+            // truth before any recovery re-reads the selection.
+            lastAetherAudioTrackSwitchFailure = failure
+            selectedAudioId = aetherPlaybackController.engine.activeAudioTrackIndex
+                .map(Int64.init)
+            isBuffering = false
+            bufferingProgress = nil
+            isQualitySwitching = false
+            if freshLoadOwnsFailureHandling || !isAetherLoadEstablished {
+                // The load this switch killed is unwinding right now;
+                // `resolveAbandonedAetherLoad` turns its cancellation into this
+                // failure so exactly one handler recovers it.
+                return
+            }
+            // Mid-playback, after the load was established: the switch was an
+            // explicit pick, so recover the session the same way any other
+            // post-load engine failure is recovered rather than stranding the
+            // user on a spinner.
+            showNotice(
+                title: "Couldn't change audio",
+                message: "The audio track couldn't be switched. The previous track was kept.",
+                tone: .warning,
+                duration: 5
+            )
+            handlePlaybackError(failure.message, failure: failure)
+            return
+        }
         // Aether deliberately publishes its typed failure *before* the load
         // throws, so every in-flight load would otherwise be handled twice:
         // once here and once in the load's own catch. The owning load task is
@@ -2069,7 +2115,21 @@ class PlayerViewModel {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = settings.audioLanguage.isEmpty ? [] : [settings.audioLanguage]
-        let forwardBufferSegments = settings.seekCacheEnabled ? Int.max : 4
+        // The explicit Buffer Ahead choice wins; `automatic` has no count of
+        // its own and keeps the historical mapping from the synced Seek Cache
+        // toggle, so a device that never touches this picker behaves exactly as
+        // before.
+        let forwardBufferSegments = settings.bufferAhead.forwardBufferSegments
+            ?? (settings.seekCacheEnabled ? Int.max : 4)
+        let audioBridgeMode: AudioBridgeMode = settings.losslessAudioEnabled
+            ? .lossless
+            : .surroundCompat
+        let deinterlaceMode: DeinterlaceMode = settings.deinterlaceMode == .software
+            ? .software
+            : .auto
+        let deinterlaceFieldRate: DeinterlaceFieldRate = settings.deinterlaceFieldRate == .film
+            ? .frame
+            : .field
         let spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
             spec = try AetherLoadSpec(
@@ -2089,7 +2149,10 @@ class PlayerViewModel {
                 },
                 preferredAudioLanguages: preferredAudio,
                 preferredSubtitleLanguages: preferredSubtitles,
-                forwardBufferSegments: forwardBufferSegments
+                forwardBufferSegments: forwardBufferSegments,
+                audioBridgeMode: audioBridgeMode,
+                deinterlaceMode: deinterlaceMode,
+                deinterlaceFieldRate: deinterlaceFieldRate
             )
         } else if streamRequest.url.isFileURL {
             let audioStreamIndex: Int32?
@@ -2114,7 +2177,10 @@ class PlayerViewModel {
                 sidecars: prepared.session.subtitleUrls ?? [],
                 preferredAudioLanguages: preferredAudio,
                 preferredSubtitleLanguages: preferredSubtitles,
-                forwardBufferSegments: forwardBufferSegments
+                forwardBufferSegments: forwardBufferSegments,
+                audioBridgeMode: audioBridgeMode,
+                deinterlaceMode: deinterlaceMode,
+                deinterlaceFieldRate: deinterlaceFieldRate
             )
         } else {
             spec = try AetherLoadSpec(
@@ -2125,7 +2191,10 @@ class PlayerViewModel {
                 sidecars: prepared.session.subtitleUrls ?? [],
                 preferredAudioLanguages: preferredAudio,
                 preferredSubtitleLanguages: preferredSubtitles,
-                forwardBufferSegments: forwardBufferSegments
+                forwardBufferSegments: forwardBufferSegments,
+                audioBridgeMode: audioBridgeMode,
+                deinterlaceMode: deinterlaceMode,
+                deinterlaceFieldRate: deinterlaceFieldRate
             )
         }
 
@@ -2136,17 +2205,32 @@ class PlayerViewModel {
         scrubPreviewProvider.endSession()
         let loadEpoch = aetherPlaybackController.beginLoad(spec)
         activeAetherLoadEpoch = loadEpoch
+        establishedAetherLoadEpoch = nil
+        lastAetherAudioTrackSwitchFailure = nil
         committedProtocolV3LoadEpoch = nil
         pendingProtocolV3FirstFrameEpoch = nil
         do {
             try await aetherPlaybackController.finishLoad(loadEpoch)
         } catch {
+            let resolved = resolveAbandonedAetherLoad(
+                error,
+                epoch: loadEpoch,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration
+            )
             if activeAetherLoadEpoch == loadEpoch {
                 activeAetherLoadEpoch = nil
+                establishedAetherLoadEpoch = nil
                 committedProtocolV3LoadEpoch = nil
                 pendingProtocolV3FirstFrameEpoch = nil
             }
-            throw error
+            if !(resolved is CancellationError),
+               aetherPlaybackController.activeLoadEpoch == loadEpoch {
+                // The engine, not the app, abandoned this load. Nobody else
+                // will tear the source down, and the load's own catch is about
+                // to retire its server session.
+                disposeAetherPlayback()
+            }
+            throw resolved
         }
         do {
             try requireCurrentStreamLoad(expectedStreamLoadGeneration)
@@ -2160,11 +2244,58 @@ class PlayerViewModel {
             }
             throw error
         }
+        // Startup ran to completion on this epoch, so the decode route is now
+        // settled and deferred track picks may drive the engine.
+        establishedAetherLoadEpoch = loadEpoch
         scrubPreviewProvider.activate(spec)
         adoptAetherInventory()
         reapplyAetherGain()
 
         aetherPlaybackController.play()
+    }
+
+    /// Whether the engine may be driven off a deferred (not user-initiated)
+    /// track pick for the load that is currently active.
+    private var isAetherLoadEstablished: Bool {
+        activeAetherLoadEpoch != nil && establishedAetherLoadEpoch == activeAetherLoadEpoch
+    }
+
+    /// Distinguishes "the app abandoned this load" from "the engine abandoned
+    /// it under us".
+    ///
+    /// `AetherEngine.load` unwinds as a cancellation whenever a newer engine
+    /// generation supersedes it — including when the *engine itself* started
+    /// that newer generation, as an audio-track switch's pipeline rebuild does.
+    /// Treating that as an app-side abort is what leaves the player on an
+    /// endless spinner: the load task returns silently, no plan failure is
+    /// reported and no replan runs. If nothing on the app side asked for this
+    /// load to stop, the cancellation is a failure and has to be surfaced as
+    /// one so the V3 route ladder (and its server-transcode fallback) runs.
+    private func resolveAbandonedAetherLoad(
+        _ error: Error,
+        epoch: AetherPlaybackController.LoadEpoch,
+        expectedStreamLoadGeneration: UInt64
+    ) -> Error {
+        guard error is CancellationError,
+              !Task.isCancelled,
+              !isDisposed,
+              expectedStreamLoadGeneration == streamLoadGeneration,
+              activeAetherLoadEpoch == epoch else {
+            return error
+        }
+        let failure = lastAetherAudioTrackSwitchFailure
+            ?? aetherPlaybackController.engine.errorInfo
+            ?? PlaybackErrorInfo(
+                kind: .audioTrackSwitchFailed,
+                message: "Playback could not be set up with the selected audio track."
+            )
+        Self.logger.error(
+            "Aether abandoned an in-flight load (kind=\(failure.kind.rawValue, privacy: .public)); treating as a load failure"
+        )
+        return AetherPlaybackController.LoadFailure(
+            failure: failure,
+            underlying: error
+        )
     }
 
     private func requireCurrentStreamLoad(_ expectedGeneration: UInt64) throws {
@@ -2188,13 +2319,11 @@ class PlayerViewModel {
                 title: track.name,
                 lang: track.language,
                 codec: track.codec,
-                audioChannelsLayout: nil,
                 audioChannelCount: track.channels > 0 ? track.channels : nil,
                 bitrate: track.bitrate > 0 ? track.bitrate : nil,
                 isDefault: track.isDefault,
                 isForced: track.isForced,
                 isHearingImpaired: track.isHearingImpaired,
-                isVisualImpaired: false,
                 isExternal: track.isExternal,
                 isSelected: engine.activeAudioTrackIndex == track.id,
                 ffIndex: track.id,
@@ -2209,13 +2338,11 @@ class PlayerViewModel {
                 title: track.name,
                 lang: track.language,
                 codec: track.codec,
-                audioChannelsLayout: nil,
                 audioChannelCount: nil,
                 bitrate: nil,
                 isDefault: track.isDefault,
                 isForced: track.isForced,
                 isHearingImpaired: track.isHearingImpaired,
-                isVisualImpaired: false,
                 isExternal: track.isExternal,
                 isSelected: engine.activeSubtitleTrackIndex == track.id,
                 ffIndex: track.isExternal ? nil : track.id,
@@ -2243,10 +2370,24 @@ class PlayerViewModel {
             }
         }
 
+        // Inventory arrives mid-startup, so a deferred pick applied here would
+        // reach the engine before its decode route exists. Hold it until the
+        // load is established; `loadAether` re-enters this method at that point.
+        let loadIsEstablished = isAetherLoadEstablished
+
         if let wantedIndex = pendingAudioFfIndex,
            let match = audioTracks.first(where: { audioSelectionIndex(for: $0) == wantedIndex }) {
-            pendingAudioFfIndex = nil
-            if selectedAudioId != match.trackId {
+            switch DeferredTrackSelectionGate.outcome(
+                isLoadEstablished: loadIsEstablished,
+                engineAlreadyMatches: engine.activeAudioTrackIndex.map(Int64.init) == match.trackId
+            ) {
+            case .deferUntilEstablished:
+                break
+            case .adoptWithoutEngineCall:
+                pendingAudioFfIndex = nil
+                selectedAudioId = match.trackId
+            case .applyToEngine:
+                pendingAudioFfIndex = nil
                 selectedAudioId = match.trackId
                 applyAudioTrackSelection(match.trackId, reason: "pending_audio_index")
             }
@@ -2254,14 +2395,32 @@ class PlayerViewModel {
 
         if let wantedIndex = pendingSubtitleFfIndex {
             if wantedIndex < 0 {
-                pendingSubtitleFfIndex = nil
-                if selectedSubtitleId != nil {
+                switch DeferredTrackSelectionGate.outcome(
+                    isLoadEstablished: loadIsEstablished,
+                    engineAlreadyMatches: engine.activeSubtitleTrackIndex == nil
+                ) {
+                case .deferUntilEstablished:
+                    break
+                case .adoptWithoutEngineCall:
+                    pendingSubtitleFfIndex = nil
+                    selectedSubtitleId = nil
+                case .applyToEngine:
+                    pendingSubtitleFfIndex = nil
                     selectedSubtitleId = nil
                     applySubtitleTrackSelection(nil, reason: "pending_subtitle_off")
                 }
             } else if let match = aetherSubtitleTracks.first(where: { $0.ffIndex == wantedIndex }) {
-                pendingSubtitleFfIndex = nil
-                if selectedSubtitleId != match.trackId {
+                switch DeferredTrackSelectionGate.outcome(
+                    isLoadEstablished: loadIsEstablished,
+                    engineAlreadyMatches: engine.activeSubtitleTrackIndex == wantedIndex
+                ) {
+                case .deferUntilEstablished:
+                    break
+                case .adoptWithoutEngineCall:
+                    pendingSubtitleFfIndex = nil
+                    selectedSubtitleId = match.trackId
+                case .applyToEngine:
+                    pendingSubtitleFfIndex = nil
                     selectedSubtitleId = match.trackId
                     applySubtitleTrackSelection(match.trackId, reason: "pending_subtitle_index")
                 }
@@ -2420,14 +2579,6 @@ class PlayerViewModel {
         settings.setVideoGravity(gravity)
         guard backendCapabilities.supportsVideoGravity else { return }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
-    }
-
-    func setHDREnabled(_ enabled: Bool) {
-        settings.setHDREnabled(enabled)
-    }
-
-    func setAudioSyncMilliseconds(_ milliseconds: Int) {
-        settings.setAudioSyncMs(milliseconds)
     }
 
     func setSubtitleSyncMilliseconds(_ milliseconds: Int) {
@@ -5664,13 +5815,11 @@ class PlayerViewModel {
                 title: label,
                 lang: language,
                 codec: nil,
-                audioChannelsLayout: nil,
                 audioChannelCount: nil,
                 bitrate: nil,
                 isDefault: false,
                 isForced: false,
                 isHearingImpaired: false,
-                isVisualImpaired: false,
                 isExternal: false,
                 isSelected: false,
                 ffIndex: nil,
@@ -6130,11 +6279,6 @@ extension PlayerViewModel {
                 throw SiloControlPlayerError.invalidVideoGravity
             }
             setVideoGravity(gravity)
-        case .setHDREnabled:
-            guard let enabled = command.enabled else {
-                throw SiloControlPlayerError.missingEnabledValue
-            }
-            setHDREnabled(enabled)
         case .setSubtitleSyncMs:
             guard let milliseconds = command.milliseconds else {
                 throw SiloControlPlayerError.missingMilliseconds
@@ -6195,7 +6339,6 @@ extension PlayerViewModel {
             videoGravity: settings.videoGravity.rawValue,
             hdrEnabled: settings.hdrEnabled,
             supportsVideoGravity: backendCapabilities.supportsVideoGravity,
-            supportsHDRToggle: backendCapabilities.supportsHDRToggle,
             subtitleSyncMs: settings.subtitleSyncMs,
             subtitlePosition: settings.effectiveSubtitleAppearance.position.rawValue,
             supportsSubtitleDelay: backendCapabilities.supportsSubtitleDelay,

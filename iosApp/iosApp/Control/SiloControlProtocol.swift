@@ -105,7 +105,6 @@ struct SiloControlPlaybackState: Codable, Equatable, Sendable {
     let videoGravity: String
     let hdrEnabled: Bool
     let supportsVideoGravity: Bool
-    let supportsHDRToggle: Bool
     var subtitleSyncMs: Int? = nil
     var subtitlePosition: String? = nil
     var supportsSubtitleDelay: Bool? = nil
@@ -129,7 +128,6 @@ struct SiloControlCommand: Codable, Equatable, Sendable {
         case setPlaybackSpeed = "set_playback_speed"
         case setQuality = "set_quality"
         case setVideoGravity = "set_video_gravity"
-        case setHDREnabled = "set_hdr_enabled"
         case setSubtitleSyncMs = "set_subtitle_sync_ms"
         case setSubtitlePosition = "set_subtitle_position"
         case setVolume = "set_volume"
@@ -193,10 +191,6 @@ struct SiloControlCommand: Codable, Equatable, Sendable {
 
     static func setVideoGravity(_ value: String) -> SiloControlCommand {
         SiloControlCommand(name: .setVideoGravity, value: value)
-    }
-
-    static func setHDREnabled(_ enabled: Bool) -> SiloControlCommand {
-        SiloControlCommand(name: .setHDREnabled, enabled: enabled)
     }
 
     static func setSubtitleSyncMs(_ milliseconds: Int) -> SiloControlCommand {

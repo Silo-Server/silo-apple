@@ -11,6 +11,15 @@ and signing operation runs on a remote Mac reached through the SSH alias `mac-bu
 Read this before the first build in a session. Full background, one-time setup, and the
 rationale behind each rule: `docs/mac-builder.md`.
 
+## Host routing
+
+The generic workflow below is for a Linux workstation that must build through `mac-builder`.
+When the active checkout is already on the Mac Studio and the target is the bedroom Apple TV,
+the proven topology is different: build and sign on the Studio, then use the paired Mac mini only
+for device discovery, installation, launch, and process verification. Read and follow
+[references/bedroom-tvos-deployment.md](references/bedroom-tvos-deployment.md); it overrides the
+generic sync, build-host, and device-install commands below for that case.
+
 ## Two channels, and why the difference matters
 
 1. **XcodeBuildMCP** (`mcp__xcodebuildmcp__*`) — a long-lived stdio MCP server running on the Mac
@@ -137,6 +146,14 @@ in. Once authenticated, prefer stop/launch over reinstalling when the binary has
 ### Physical device
 
 Requires real signing. Discover the device first:
+
+For the bedroom Apple TV from the Mac Studio, use the dedicated
+[bedroom tvOS deployment procedure](references/bedroom-tvos-deployment.md). Do not try to discover
+the TV directly from the Studio or rebuild on the resource-constrained mini.
+
+For runtime control of a physical Apple TV after deployment—UI hierarchy, screenshots, focus,
+remote buttons, Appium/RemoteXPC, or pyatv—use the `physical-tvos-testing` skill. Continue here for
+building, signing, installing, and device logs.
 
 ```bash
 ssh mac-builder 'xcrun devicectl list devices'

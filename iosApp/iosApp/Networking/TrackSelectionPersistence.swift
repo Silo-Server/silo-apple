@@ -81,7 +81,6 @@ enum TrackSelectionPersistence {
                 title: track.normalizedTitle,
                 embeddedTitle: track.normalizedTitle,
                 codec: track.codec,
-                layout: track.audioChannelsLayout,
                 channels: track.audioChannelCount,
                 isDefault: track.isDefault
             )

@@ -13,6 +13,7 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
     case invalidTransport(String)
     case unsupportedClientTransformation(String)
+    case invalidClientTransformation(String)
     case unsupportedRuntimeCorrection(String)
 
     var errorDescription: String? {
@@ -23,6 +24,8 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
             return "The V3 playback transport is invalid: \(value)."
         case .unsupportedClientTransformation(let value):
             return "The V3 plan requires an unsupported client transformation: \(value)."
+        case .invalidClientTransformation(let value):
+            return "The V3 client transformation cannot be executed as planned: \(value)."
         case .unsupportedRuntimeCorrection(let value):
             return "The V3 plan requires an unsupported runtime correction: \(value)."
         }
@@ -30,6 +33,12 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
 }
 
 enum ApplePlaybackV3PlanAdapter {
+    /// Recipes Aether executes internally on an `original_http` load. Selecting
+    /// one changes nothing about how the load is issued — Aether re-derives the
+    /// route from the bitstream and the live panel — so validation here only
+    /// confirms the server picked something this build can honour.
+    private static let clientTransformations = ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
+
     static func validate(_ plan: PlaybackV3Plan) throws {
         guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
             throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
@@ -53,10 +62,21 @@ enum ApplePlaybackV3PlanAdapter {
         } else {
             throw ApplePlaybackV3PlanError.invalidTransport("unsupported protocol \(plan.stream.protocol)")
         }
-        if let transformation = plan.transformations.first(where: { $0.executor == "client" }) {
-            // Aether owns its internal normalization pipeline. The app no
-            // longer exposes or executes named client recipes.
-            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(transformation.name)
+        if let unsupported = plan.transformations.first(where: {
+            $0.executor == "client" && !clientTransformations.contains($0.name)
+        }) {
+            throw ApplePlaybackV3PlanError.unsupportedClientTransformation(unsupported.name)
+        }
+        let selectedClientTransformations = plan.transformations.filter { $0.executor == "client" }
+        if selectedClientTransformations.count > 1 {
+            throw ApplePlaybackV3PlanError.invalidClientTransformation(
+                "multiple mutually exclusive client transformations"
+            )
+        }
+        if !selectedClientTransformations.isEmpty && plan.delivery != "original_http" {
+            throw ApplePlaybackV3PlanError.invalidClientTransformation(
+                "client transformations require the original_http delivery"
+            )
         }
         if let correction = plan.runtimeCorrections.first {
             // Runtime correction tokens belonged to the removed Silo

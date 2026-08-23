@@ -662,6 +662,9 @@ enum TVSettingsDetailFocus: Hashable {
     case generalCardPreset
     case generalTopMenu
     case playbackAudioLanguage
+    case playbackBufferAhead
+    case playbackDeinterlaceMode
+    case playbackDeinterlaceFieldRate
     case playbackNextUpPrompt
     case subtitleBehavior
     case subtitleUseDeviceSettings

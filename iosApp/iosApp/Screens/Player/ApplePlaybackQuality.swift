@@ -111,10 +111,6 @@ enum ApplePlaybackQuality {
         return settingsOptions.first(where: { $0.id == id })?.labelWithBitrate ?? id
     }
 
-    static func playbackOptions(for _: FileVersion?) -> [ApplePlaybackQualityOption] {
-        settingsOptions
-    }
-
     /// Build the in-player menu from the server's V3 plan. The server owns
     /// which rungs are executable for this source; showing the wider Settings
     /// catalog here would let the user request qualities the active plan never
@@ -184,7 +180,7 @@ enum ApplePlaybackQuality {
         if id == autoId {
             return delivery == .transcode ? auto : original
         }
-        return playbackOptions(for: selectedVersion).first(where: { $0.id == id })
+        return settingsOptions.first(where: { $0.id == id })
             ?? (delivery == .transcode ? auto : original)
     }
 
@@ -200,7 +196,7 @@ enum ApplePlaybackQuality {
         if id == ultraHDId {
             return ultraHDId
         }
-        if playbackOptions(for: selectedVersion).contains(where: { $0.id == id }) {
+        if settingsOptions.contains(where: { $0.id == id }) {
             return id
         }
         return autoId

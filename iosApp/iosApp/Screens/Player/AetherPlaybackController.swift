@@ -106,7 +106,20 @@ final class AetherPlaybackController {
         #if os(iOS) || os(tvOS)
         engine.ownsVideoNowPlayingSession = true
         #endif
+        applyBackgroundPlaybackPreference()
         observeEngine()
+    }
+
+    /// Adopts the device's background-playback choice onto the engine.
+    ///
+    /// The engine reads `backgroundPlaybackEnabled` when the app backgrounds,
+    /// not at load time, so re-reading it at the start of every load is what
+    /// makes a change taken in Settings apply to the next session even when
+    /// this controller outlives the edit. Audiobooks deliberately never route
+    /// through here: their engine keeps Aether's default and always plays on
+    /// in the background.
+    private func applyBackgroundPlaybackPreference() {
+        engine.backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
     }
 
     /// Establishes load identity synchronously, before `AetherEngine.load` can
@@ -118,12 +131,16 @@ final class AetherPlaybackController {
         transportRestoreTask?.cancel()
         transportRestoreTask = nil
         let epoch = LoadEpoch(rawValue: generation)
+        applyBackgroundPlaybackPreference()
         activeLoadEpoch = epoch
         hasCommittedActiveLoad = false
         activeSpec = spec
         configureExternalPlaybackPolicy()
         refreshExternalPlaybackState()
-        installDeclaredSubtitleAliases(spec.externalSubtitleAppTrackIDs)
+        installDeclaredSubtitleAliases(
+            spec.externalSubtitleAppTrackIDs,
+            declaredTrackCount: spec.options.externalSubtitles.count
+        )
         didPublishFirstFrame = false
         didPublishEnd = false
         return epoch
@@ -351,17 +368,40 @@ final class AetherPlaybackController {
         publishSystemMediaChanged()
     }
 
-    private func installDeclaredSubtitleAliases(_ appIDs: [Int64]) {
+    /// Seeds the alias map for the tracks Aether registers itself during
+    /// `load`, whose ids are only knowable by position: Aether numbers
+    /// `options.externalSubtitles` sequentially from
+    /// `externalSubtitleTrackIDBase`.
+    ///
+    /// The positional read is sound only while the alias array is parallel to
+    /// the declared array, so a mismatch installs nothing rather than a shifted
+    /// map: an alias bound to the wrong Aether id silently renders a different
+    /// language than the one the UI reports as selected, whereas an absent
+    /// alias just means the id is re-established at registration time.
+    private func installDeclaredSubtitleAliases(
+        _ appIDs: [Int64?],
+        declaredTrackCount: Int
+    ) {
         aetherSubtitleIDByAppID = [:]
         appSubtitleIDByAetherID = [:]
+        guard appIDs.count == declaredTrackCount else {
+            assertionFailure(
+                "declared subtitle aliases (\(appIDs.count)) must be parallel to "
+                    + "options.externalSubtitles (\(declaredTrackCount))"
+            )
+            return
+        }
         for (ordinal, appID) in appIDs.enumerated() {
+            guard let appID else { continue }
             let aetherID = AetherEngine.externalSubtitleTrackIDBase + ordinal
             aetherSubtitleIDByAppID[appID] = aetherID
             appSubtitleIDByAetherID[aetherID] = appID
         }
     }
 
-    private func aetherSubtitleID(forAppID id: Int64) -> Int? {
+    /// The inverse of `appSubtitleID(forAetherID:)`. Internal so the boundary
+    /// tests can assert the translation round-trips.
+    func aetherSubtitleID(forAppID id: Int64) -> Int? {
         aetherSubtitleIDByAppID[id] ?? Int(exactly: id)
     }
 

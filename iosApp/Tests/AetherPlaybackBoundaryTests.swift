@@ -65,6 +65,55 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    func testHeaderAuthenticatedStreamAcceptsSubtitleArtifactIdentifiers() throws {
+        for raw in [
+            "/stream/session-1/subtitles/2.vtt?file_id=631745",
+            "/stream/session-1/subtitles/2.vtt?file_id=631745&downloaded_subtitle_id=8",
+            "/stream/session-1/subtitles/2/fonts?file_id=631745",
+        ] {
+            let request = try XCTUnwrap(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "current-token",
+                requiresHeaderAuthenticatedMedia: true
+            ), "unexpectedly rejected \(raw)")
+            XCTAssertEqual(
+                request.url.absoluteString,
+                "https://dev.example.test/api/v1" + raw
+            )
+            XCTAssertEqual(request.headers["Authorization"], "Bearer current-token")
+        }
+    }
+
+    func testHeaderAuthenticatedStreamRejectsSubtitleIdentifiersOnMediaAndMalformedValues() {
+        for raw in [
+            // Media routes keep the seek-only rule.
+            "/stream/session-1?file_id=631745",
+            "/stream/session-1/master.m3u8?file_id=631745",
+            "/playback/transcode/session-1/master.m3u8?downloaded_subtitle_id=8",
+            // Unknown names stay rejected on the subtitle artifact family.
+            "/stream/session-1/subtitles/2.vtt?st=legacy-secret",
+            "/stream/session-1/subtitles/2.vtt?file_id=631745&token=legacy-secret",
+            // Non-negative integers only, and no duplicates.
+            "/stream/session-1/subtitles/2.vtt?file_id=-1",
+            "/stream/session-1/subtitles/2.vtt?file_id=abc",
+            "/stream/session-1/subtitles/2.vtt?file_id=1.5",
+            "/stream/session-1/subtitles/2.vtt?file_id=",
+            "/stream/session-1/subtitles/2.vtt?downloaded_subtitle_id=-8",
+            "/stream/session-1/subtitles/2.vtt?file_id=1&file_id=2",
+            "/stream/session-1/subtitles/2.vtt?file_id=1#token=legacy-secret",
+        ] {
+            XCTAssertNil(StreamRequest.resolve(
+                rawURL: raw,
+                serverURL: "https://dev.example.test",
+                additionalHeaders: [:],
+                accessToken: "private-token",
+                requiresHeaderAuthenticatedMedia: true
+            ), "unexpectedly accepted \(raw)")
+        }
+    }
+
     func testLegacyResolutionStillNeverForwardsBearerAcrossOrigins() {
         XCTAssertNil(StreamRequest.resolve(
             rawURL: "https://cdn.example.test/movie.mkv",
@@ -371,6 +420,206 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(spec.options.externalSubtitles.first?.httpHeaders, [:])
     }
 
+    /// The reproduction for the ordering mismatch: a plan whose subtitle mode
+    /// is `off` declares no external track to Aether, so it must publish no
+    /// alias either — even when a stale artifact and `track_id` survive on the
+    /// decision. An alias here would claim Aether id `base + 0`, which belongs
+    /// to whichever sidecar is registered first afterwards (Arabic), so picking
+    /// English would render Arabic.
+    func testSubtitlesOffPublishesNoDeclaredAliasDespiteStaleArtifact() throws {
+        let plan = try sidecarInventoryPlan(
+            mode: "off",
+            selectedTrackId: "file:42:subtitle:2",
+            includeArtifact: true
+        )
+        let spec = try Self.loadSpec(for: plan.plan, sessionID: plan.sessionID)
+
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        XCTAssertEqual(spec.externalSubtitleAppTrackIDs.count, spec.options.externalSubtitles.count)
+        XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
+    }
+
+    /// End-to-end translation over the reported inventory (ar, da, en, es at
+    /// combined indices 0...3, sidecars registered after the load because
+    /// playback started with subtitles off): the English app id must resolve to
+    /// the Aether id English was registered under, and every id must round-trip.
+    func testPostLoadSidecarRegistrationKeepsAppAndAetherSubtitleIDsPaired() throws {
+        let plan = try sidecarInventoryPlan(
+            mode: "off",
+            selectedTrackId: "file:42:subtitle:2",
+            includeArtifact: true
+        )
+        let spec = try Self.loadSpec(for: plan.plan, sessionID: plan.sessionID)
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        controller.beginLoad(spec)
+
+        // Registration order is the plan's inventory order, exactly as the
+        // post-load path in `PlayerViewModel.loadPendingExternalSubtitles`
+        // walks it.
+        var appTrackIDsByLanguage: [String: Int64] = [:]
+        for item in plan.plan.subtitle.inventory where item.delivery == "sidecar" {
+            let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
+            appTrackIDsByLanguage[item.language ?? ""] = appTrackID
+            controller.addExternalSubtitleTrack(
+                ExternalSubtitleTrack(
+                    url: URL(fileURLWithPath: "/tmp/movie.\(item.language ?? "und").srt"),
+                    name: item.label,
+                    language: item.language
+                ),
+                appTrackID: appTrackID
+            )
+        }
+
+        let englishAppID = try XCTUnwrap(appTrackIDsByLanguage["eng"])
+        let englishAetherID = try XCTUnwrap(
+            controller.engine.subtitleTracks.first(where: { $0.language == "eng" })?.id
+        )
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: englishAppID), englishAetherID)
+        XCTAssertEqual(controller.appSubtitleID(forAetherID: englishAetherID), englishAppID)
+        // The Arabic sidecar owns `base + 0`; nothing else may translate to it.
+        XCTAssertEqual(
+            controller.aetherSubtitleID(forAppID: try XCTUnwrap(appTrackIDsByLanguage["ara"])),
+            AetherEngine.externalSubtitleTrackIDBase
+        )
+        for (_, appTrackID) in appTrackIDsByLanguage {
+            let aetherID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: appTrackID))
+            XCTAssertEqual(controller.appSubtitleID(forAetherID: aetherID), appTrackID)
+        }
+    }
+
+    /// The same inventory on the path where the server *did* render the pick:
+    /// the declared artifact is the only external track, so exactly one alias
+    /// is published and it names the selected track — the ordinal Aether will
+    /// assign that declared track during `load`.
+    func testDeclaredArtifactPublishesExactlyOneAliasForTheSelectedTrack() throws {
+        let plan = try sidecarInventoryPlan(
+            mode: "render",
+            selectedTrackId: "file:42:subtitle:2",
+            includeArtifact: true
+        )
+        let spec = try Self.loadSpec(for: plan.plan, sessionID: plan.sessionID)
+        let englishAppID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+
+        XCTAssertEqual(spec.options.externalSubtitles.count, 1)
+        XCTAssertEqual(spec.externalSubtitleAppTrackIDs, [englishAppID])
+
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        controller.beginLoad(spec)
+        XCTAssertEqual(
+            controller.aetherSubtitleID(forAppID: englishAppID),
+            AetherEngine.externalSubtitleTrackIDBase
+        )
+        XCTAssertTrue(controller.containsSubtitle(appTrackID: englishAppID))
+        XCTAssertEqual(
+            controller.appSubtitleID(forAetherID: AetherEngine.externalSubtitleTrackIDBase),
+            englishAppID
+        )
+        // No other inventory entry may claim a declared alias.
+        for combinedIndex in [0, 1, 3] {
+            XCTAssertFalse(controller.containsSubtitle(
+                appTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)
+            ))
+        }
+    }
+
+    /// The four-sidecar inventory from the reported file: ar, da, en, es at
+    /// combined indices 0...3 plus an embedded PGS track at 4.
+    private func sidecarInventoryPlan(
+        mode: String,
+        selectedTrackId: String,
+        includeArtifact: Bool
+    ) throws -> (plan: PlaybackV3Plan, sessionID: String) {
+        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
+            named: "decision_response",
+            bundleClass: Self.self
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
+        )
+        var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        var inventory: [[String: Any]] = [
+            ("ara", "Arabic"), ("dan", "Danish"), ("eng", "English"), ("spa", "Spanish"),
+        ].enumerated().map { combinedIndex, entry in
+            [
+                "track_id": "file:42:subtitle:\(combinedIndex)",
+                "combined_index": combinedIndex,
+                "source": "external",
+                "codec": "srt",
+                "language": entry.0,
+                "label": entry.1,
+                "forced": false,
+                "default": false,
+                "hearing_impaired": false,
+                "delivery": "sidecar",
+                "url": "/stream/session/subtitles/\(combinedIndex).srt?file_id=42",
+            ]
+        }
+        inventory.append([
+            "track_id": "file:42:subtitle:4",
+            "combined_index": 4,
+            "source": "embedded",
+            "codec": "pgs",
+            "language": "jpn",
+            "label": "Japanese",
+            "forced": false,
+            "default": false,
+            "hearing_impaired": false,
+            "delivery": "burn_in_only",
+        ])
+        var subtitle: [String: Any] = [
+            "mode": mode,
+            "track_id": selectedTrackId,
+            "inventory": inventory,
+        ]
+        if includeArtifact {
+            subtitle["artifact"] = [
+                "url": "/stream/session/subtitles/2.srt?file_id=42",
+                "mime_type": "application/x-subrip",
+                "format": "srt",
+                "timing_origin_seconds": 0,
+            ]
+        }
+        planObject["subtitle"] = subtitle
+        var selectedTracks = try XCTUnwrap(planObject["selected_tracks"] as? [String: Any])
+        selectedTracks["subtitle"] = ["id": selectedTrackId, "index": 2]
+        planObject["selected_tracks"] = selectedTracks
+        object["playback_plan"] = planObject
+
+        let response = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3DecisionResponse.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+            throw XCTSkip("Expected a playable sidecar-inventory fixture")
+        }
+        return (plan, sessionID)
+    }
+
+    private static func loadSpec(
+        for plan: PlaybackV3Plan,
+        sessionID: String
+    ) throws -> AetherLoadSpec {
+        try AetherLoadSpec(
+            validating: plan,
+            sessionID: sessionID,
+            matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://dev.example.test/api/v1/stream/session"),
+            requestHeaders: ["Authorization": "Bearer current-token"],
+            resolveURL: {
+                StreamRequest.resolve(
+                    rawURL: $0,
+                    serverURL: "https://dev.example.test",
+                    additionalHeaders: [:],
+                    accessToken: nil,
+                    requiresHeaderAuthenticatedMedia: true
+                )?.url
+            },
+            panelIsInHDRMode: false
+        )
+    }
+
     func testControllerConstructsOnlyAetherEngine() throws {
         let controller = try AetherPlaybackController()
         XCTAssertEqual(controller.engine.state, .idle)
@@ -459,6 +708,53 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             controller.engine.clock.currentTime,
             0.25,
             "\(label): Aether loaded the authenticated source but its playback clock never advanced"
+        )
+    }
+
+    // MARK: - Deferred track selection
+
+    // Aether publishes its track inventory during startup, before it has
+    // dispatched the source onto a decode backend. A deferred pick applied
+    // there makes the engine rebuild its pipeline on a route it has not chosen
+    // yet, which on a software-decode source (VC-1) is rejected for the codec
+    // and takes the in-flight load down with it — the player then sits on the
+    // spinner forever. The gate is what keeps that pick held.
+
+    func testDeferredTrackSelectionIsHeldUntilTheLoadIsEstablished() {
+        XCTAssertEqual(
+            DeferredTrackSelectionGate.outcome(
+                isLoadEstablished: false,
+                engineAlreadyMatches: false
+            ),
+            .deferUntilEstablished
+        )
+        XCTAssertEqual(
+            DeferredTrackSelectionGate.outcome(
+                isLoadEstablished: false,
+                engineAlreadyMatches: true
+            ),
+            .deferUntilEstablished,
+            "an unestablished load must not consume the pending pick even when it looks satisfied"
+        )
+    }
+
+    func testEstablishedLoadSkipsTheEngineCallWhenTheTrackAlreadyMatches() {
+        XCTAssertEqual(
+            DeferredTrackSelectionGate.outcome(
+                isLoadEstablished: true,
+                engineAlreadyMatches: true
+            ),
+            .adoptWithoutEngineCall
+        )
+    }
+
+    func testEstablishedLoadDrivesTheEngineWhenTheTrackDiffers() {
+        XCTAssertEqual(
+            DeferredTrackSelectionGate.outcome(
+                isLoadEstablished: true,
+                engineAlreadyMatches: false
+            ),
+            .applyToEngine
         )
     }
 }

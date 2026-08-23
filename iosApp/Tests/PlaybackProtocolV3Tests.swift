@@ -415,6 +415,85 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
+    func testDeclaredDolbyVisionClientTransformsAreAcceptedOnOriginalHTTP() throws {
+        for name in ["client_dv7_to_dv81", "client_dv7_to_hdr10"] {
+            XCTAssertNoThrow(
+                try ApplePlaybackV3PlanAdapter.validate(
+                    makePlan(
+                        container: "mkv",
+                        videoCodec: "hevc",
+                        dynamicRange: "dolby_vision",
+                        transformations: [
+                            .init(
+                                name: name,
+                                executor: "client",
+                                recipeVersion: "1",
+                                validatedClaims: []
+                            )
+                        ]
+                    )
+                ),
+                "\(name) is declared in the capability snapshot and must stay executable"
+            )
+        }
+    }
+
+    func testCapabilitySnapshotDeclaresTheDolbyVisionClientTransforms() throws {
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.features.contains(
+                PlaybackProtocolV3.clientTransformFeature
+            ),
+            "the server rejects the whole request if a client executor entry lacks this flag"
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3Capabilities.deviceClientTransformations.map(\.name),
+            ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
+        )
+        XCTAssertEqual(
+            Set(ApplePlaybackV3Capabilities.deviceClientTransformations.map(\.executor)),
+            ["client"]
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3Capabilities.deviceClientTransformations.first?.validatedClaims,
+            [
+                "profile7_rpu_converted_to_profile81",
+                "hdr10_base_layer_preserved",
+                "enhancement_layer_discarded"
+            ]
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3Capabilities.deviceClientTransformations.last?.validatedClaims,
+            [
+                "dolby_vision_metadata_removed",
+                "hdr10_base_layer_preserved",
+                "enhancement_layer_discarded"
+            ]
+        )
+
+        // The snapshot itself is device-gated: the simulator has no real panel
+        // or hardware HEVC decoder, so it declares nothing.
+        let snapshot = ApplePlaybackV3Capabilities.snapshot()
+        let original = try XCTUnwrap(
+            snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP]
+        )
+        XCTAssertEqual(
+            original.transformations,
+            AppleDecodeCapabilities.isSimulator
+                ? []
+                : ApplePlaybackV3Capabilities.deviceClientTransformations
+        )
+        for deliveryClass in [
+            PlaybackProtocolV3.DeliveryClass.progressive,
+            PlaybackProtocolV3.DeliveryClass.hls
+        ] {
+            XCTAssertEqual(
+                snapshot.context.deliveries[deliveryClass]?.transformations,
+                [],
+                "\(deliveryClass) is server-produced and carries no client recipe"
+            )
+        }
+    }
+
     func testUnsupportedPlanRequirementsAreRejected() {
         let clientTransform = makePlan(transformations: [
             .init(
@@ -428,6 +507,57 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             XCTAssertEqual(
                 error as? ApplePlaybackV3PlanError,
                 .unsupportedClientTransformation("client_owned_recipe")
+            )
+        }
+
+        // Mutually exclusive: one plan may name at most one client recipe.
+        XCTAssertThrowsError(
+            try ApplePlaybackV3PlanAdapter.validate(
+                makePlan(transformations: [
+                    .init(
+                        name: "client_dv7_to_dv81",
+                        executor: "client",
+                        recipeVersion: "1",
+                        validatedClaims: []
+                    ),
+                    .init(
+                        name: "client_dv7_to_hdr10",
+                        executor: "client",
+                        recipeVersion: "1",
+                        validatedClaims: []
+                    )
+                ])
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ApplePlaybackV3PlanError,
+                .invalidClientTransformation("multiple mutually exclusive client transformations")
+            )
+        }
+
+        // A packaged delivery is server-produced; there is no original
+        // bitstream left for Aether to transform.
+        XCTAssertThrowsError(
+            try ApplePlaybackV3PlanAdapter.validate(
+                makePlan(
+                    delivery: "server_remux_hls",
+                    streamProtocol: "hls",
+                    transformations: [
+                        .init(
+                            name: "client_dv7_to_dv81",
+                            executor: "client",
+                            recipeVersion: "1",
+                            validatedClaims: []
+                        )
+                    ]
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ApplePlaybackV3PlanError,
+                .invalidClientTransformation(
+                    "client transformations require the original_http delivery"
+                )
             )
         }
 
@@ -1496,13 +1626,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             title: "English",
             lang: "en",
             codec: "srt",
-            audioChannelsLayout: nil,
             audioChannelCount: nil,
             bitrate: nil,
             isDefault: false,
             isForced: false,
             isHearingImpaired: false,
-            isVisualImpaired: false,
             isExternal: isExternal,
             isSelected: true,
             ffIndex: ffIndex,

@@ -131,7 +131,7 @@ private extension SiloControlPlaybackState {
             selectedAudioTrackId: nil, selectedSubtitleTrackId: nil,
             qualityOptions: [], activeQualityId: "auto", isQualitySwitching: false,
             playbackSpeed: playbackSpeed, videoGravity: "fit", hdrEnabled: false,
-            supportsVideoGravity: false, supportsHDRToggle: false,
+            supportsVideoGravity: false,
             volume: 1.0, isMuted: false, hasNextEpisode: false, nextEpisodeTitle: nil,
             error: nil)
     }

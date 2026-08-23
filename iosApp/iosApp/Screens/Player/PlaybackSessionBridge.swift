@@ -228,7 +228,7 @@ actor PlaybackV3CapabilityGate {
         guard available else {
             throw PlaybackV3TerminalFailure(
                 reason: "server_upgrade_required",
-                message: "This server does not support the playback protocol this app requires. Update the server to continue.",
+                message: "Your Silo server hasn't been updated to support the latest version of this app. Please update your server, or downgrade the TestFlight app version until the server has been updated.",
                 retryable: false
             )
         }
@@ -826,13 +826,11 @@ actor PlaybackSessionBridge {
                 title: track.title ?? track.embeddedTitle,
                 lang: track.language,
                 codec: track.codec,
-                audioChannelsLayout: nil,
                 audioChannelCount: nil,
                 bitrate: nil,
                 isDefault: track.isDefault ?? false,
                 isForced: track.forced ?? false,
                 isHearingImpaired: track.hearingImpaired ?? false,
-                isVisualImpaired: false,
                 isExternal: isExternal,
                 isSelected: false,
                 ffIndex: isExternal ? nil : track.index,

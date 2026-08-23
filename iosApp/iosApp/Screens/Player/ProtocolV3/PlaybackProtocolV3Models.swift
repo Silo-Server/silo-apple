@@ -8,6 +8,7 @@ enum PlaybackProtocolV3 {
     /// and distinct intent replan operations.
     static let neutralContractFeature = "neutral_playback_v3_contract_v1"
     static let layoutPassthroughFeature = "layout_aware_passthrough"
+    static let clientTransformFeature = "client_video_transformations_v1"
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"

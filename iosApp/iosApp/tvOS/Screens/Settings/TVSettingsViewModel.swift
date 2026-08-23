@@ -43,8 +43,16 @@ final class TVSettingsViewModel {
     var skipIntros: Bool = PlayerSettings.shared.autoSkipIntro
     var skipCredits: Bool = PlayerSettings.shared.autoSkipCredits
     var dolbyVisionEnabled: Bool = PlayerSettings.shared.dolbyVisionEnabled
-    var preferProfile7HDR10Fallback: Bool = PlayerSettings.shared.preferProfile7HDR10Fallback
     var seekCacheEnabled: Bool = PlayerSettings.shared.seekCacheEnabled
+    /// Local — it describes this Apple TV's audio sink, not the profile.
+    var losslessAudioEnabled: Bool = PlayerSettings.shared.losslessAudioEnabled
+    /// Local — it spends this Apple TV's temporary storage, not the profile's.
+    var bufferAhead: BufferAheadMode = PlayerSettings.shared.bufferAhead
+    /// Local — it describes this device's GPU, not the profile.
+    var deinterlaceMode: DeinterlacePreference = PlayerSettings.shared.deinterlaceMode
+    /// Local, for the same reason as ``deinterlaceMode``.
+    var deinterlaceFieldRate: DeinterlaceFieldRatePreference =
+        PlayerSettings.shared.deinterlaceFieldRate
 
     // Subtitle styling (local — applies to renderer overrides, not the
     // language/behavior selection that lives server-side).
@@ -162,8 +170,11 @@ final class TVSettingsViewModel {
         skipIntros = PlayerSettings.shared.autoSkipIntro
         skipCredits = PlayerSettings.shared.autoSkipCredits
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
-        preferProfile7HDR10Fallback = PlayerSettings.shared.preferProfile7HDR10Fallback
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
+        losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
+        bufferAhead = PlayerSettings.shared.bufferAhead
+        deinterlaceMode = PlayerSettings.shared.deinterlaceMode
+        deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
         subtitleSize = UserDefaults.standard.string(forKey: "subtitleSize") ?? "medium"
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
@@ -244,15 +255,33 @@ final class TVSettingsViewModel {
     }
 
     @MainActor
-    func setPreferProfile7HDR10Fallback(_ enabled: Bool) async {
-        PlayerSettings.shared.setPreferProfile7HDR10Fallback(enabled)
-        preferProfile7HDR10Fallback = PlayerSettings.shared.preferProfile7HDR10Fallback
-    }
-
-    @MainActor
     func setSeekCacheEnabled(_ enabled: Bool) async {
         PlayerSettings.shared.setSeekCacheEnabled(enabled)
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
+    }
+
+    @MainActor
+    func setLosslessAudioEnabled(_ enabled: Bool) async {
+        PlayerSettings.shared.setLosslessAudioEnabled(enabled)
+        losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
+    }
+
+    @MainActor
+    func setBufferAhead(_ mode: BufferAheadMode) async {
+        PlayerSettings.shared.setBufferAhead(mode)
+        bufferAhead = PlayerSettings.shared.bufferAhead
+    }
+
+    @MainActor
+    func setDeinterlaceMode(_ mode: DeinterlacePreference) async {
+        PlayerSettings.shared.setDeinterlaceMode(mode)
+        deinterlaceMode = PlayerSettings.shared.deinterlaceMode
+    }
+
+    @MainActor
+    func setDeinterlaceFieldRate(_ rate: DeinterlaceFieldRatePreference) async {
+        PlayerSettings.shared.setDeinterlaceFieldRate(rate)
+        deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
     }
 
     @MainActor
@@ -265,7 +294,6 @@ final class TVSettingsViewModel {
         skipIntros = PlayerSettings.shared.autoSkipIntro
         skipCredits = PlayerSettings.shared.autoSkipCredits
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
-        preferProfile7HDR10Fallback = PlayerSettings.shared.preferProfile7HDR10Fallback
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
