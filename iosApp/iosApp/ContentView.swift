@@ -66,7 +66,9 @@ struct ContentView: View {
         #endif
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,
-            isPresented: debugPlayerPresentation
+            isPresented: debugPlayerPresentation,
+            router: router,
+            overlayPrefs: overlayPrefs
         ))
         #if os(iOS) || os(tvOS)
         .modifier(DiagnosticsPromptPresentationModifier(
@@ -1420,6 +1422,8 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 private struct DebugPlayerPresentationModifier: ViewModifier {
     let contentId: String?
     @Binding var isPresented: Bool
+    let router: AppRouter
+    let overlayPrefs: OverlayPrefsStore
 
     func body(content: Content) -> some View {
         #if os(macOS)
@@ -1437,6 +1441,8 @@ private struct DebugPlayerPresentationModifier: ViewModifier {
     private var player: some View {
         if let contentId {
             PlayerView(contentId: contentId)
+                .environment(router)
+                .environmentObject(overlayPrefs)
         }
     }
 }
