@@ -130,7 +130,11 @@ Fastlane lanes are defined in `fastlane/Fastfile`. All Apple IDs, team IDs, sign
 
 ## License & Trademarks
 
-Silo Apple is licensed under `AGPL-3.0-or-later`. See [LICENSE](LICENSE).
+Silo Apple is licensed under `AGPL-3.0-or-later` with an additional
+permission under AGPL section 7 allowing distribution through the Apple App
+Store and TestFlight despite those platforms' signing, DRM, and
+redistribution terms. See [LICENSE](LICENSE) and
+[APPSTORE-EXCEPTION.md](APPSTORE-EXCEPTION.md).
 
 The **Silo name, logo, and wordmark are trademarks of Silo Media L.L.C.** and
 are **not** covered by the AGPL. You're free to fork and redistribute the code,
