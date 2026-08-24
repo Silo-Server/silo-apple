@@ -154,6 +154,11 @@ final class TVSettingsViewModel {
         activeProfile?.avatarEmoji
     }
 
+    /// Server-resolved avatar image URL, preferred over ``profileAvatar``.
+    var profileAvatarImageUrl: String? {
+        activeProfile?.avatarImageUrl
+    }
+
     // MARK: - Load / save
 
     /// Main-actor isolated: it publishes into observable state the settings

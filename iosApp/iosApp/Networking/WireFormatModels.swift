@@ -12,6 +12,13 @@ struct Profile: Codable {
     let id: String
     let name: String
     let avatar: String?
+    /// Server-resolved avatar URL (`avatar_url`). For uploads this is a
+    /// short-lived presigned object-store URL that changes on every fetch, so
+    /// it must not be persisted long-term. For presets it is a DiceBear URL or
+    /// a server-relative `/profile-avatars/{id}.svg` path.
+    let avatarUrl: String?
+    /// `avatar_source`: "upload", "preset", or "none".
+    let avatarSource: String?
     let hasPin: Bool?
     let isChild: Bool?
     let isPrimary: Bool?
@@ -40,6 +47,7 @@ struct Profile: Codable {
             id: id,
             name: name,
             avatarEmoji: avatar,
+            avatarImageUrl: avatarUrl,
             hasPin: hasPin ?? false,
             isChild: isChild ?? false,
             isPrimary: isPrimary ?? false,

@@ -112,6 +112,7 @@ private struct ProfileAvatarMenu: View {
         } label: {
             ProfileAvatarView(
                 avatar: profile?.avatarEmoji,
+                imageUrl: profile?.avatarImageUrl,
                 name: profile?.name ?? "",
                 size: 36
             )

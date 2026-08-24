@@ -96,6 +96,7 @@ struct PINEntryView: View {
         VStack(spacing: 10) {
             ProfileAvatarView(
                 avatar: profile.avatarEmoji,
+                imageUrl: profile.avatarImageUrl,
                 name: profile.name,
                 size: avatarSize
             )

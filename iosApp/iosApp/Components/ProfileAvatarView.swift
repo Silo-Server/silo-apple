@@ -5,6 +5,11 @@ struct ProfileAvatarView: View {
     private static let diceBearBaseURL = "https://api.dicebear.com/9.x"
 
     let avatar: String?
+    /// Server-resolved avatar URL (`avatar_url`). When present it wins over
+    /// the client-side resolution of ``avatar``, which cannot resolve opaque
+    /// `upload:` refs. Absolute URLs are used verbatim; a leading-slash path
+    /// is resolved against the active server.
+    var imageUrl: String? = nil
     let name: String
     var size: CGFloat
     var backgroundColor: Color = .continuumSurfaceVariant
@@ -37,6 +42,7 @@ struct ProfileAvatarView: View {
     }
 
     private var displayAvatarText: String? {
+        guard resolvedServerImageURL == nil else { return nil }
         guard let trimmedAvatar = avatar?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmedAvatar.isEmpty,
               !isImageAvatar(trimmedAvatar) else {
@@ -45,7 +51,13 @@ struct ProfileAvatarView: View {
         return trimmedAvatar
     }
 
+    private var resolvedServerImageURL: String? {
+        ProfileAvatarResolver.serverResolvedImageURL(imageUrl)
+    }
+
     private var resolvedImageURL: String? {
+        if let serverURL = resolvedServerImageURL { return serverURL }
+
         guard let trimmedAvatar = avatar?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmedAvatar.isEmpty,
               isImageAvatar(trimmedAvatar) else {

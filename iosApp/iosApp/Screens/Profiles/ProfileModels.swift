@@ -9,6 +9,12 @@ struct UserProfile: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let avatarEmoji: String?
+    /// Server-resolved avatar image URL (`avatar_url`). Absolute for uploads
+    /// (short-lived presigned object-store URL) and DiceBear presets, or a
+    /// server-relative path for locally hosted preset art. Preferred over the
+    /// client-side resolution of ``avatarEmoji`` when present; optional so
+    /// cached payloads written before this field existed still decode.
+    let avatarImageUrl: String?
     let hasPin: Bool
     let isChild: Bool
     let isPrimary: Bool
@@ -23,6 +29,7 @@ struct UserProfile: Codable, Identifiable, Hashable {
         id: String,
         name: String,
         avatarEmoji: String?,
+        avatarImageUrl: String? = nil,
         hasPin: Bool,
         isChild: Bool,
         isPrimary: Bool = false,
@@ -34,6 +41,7 @@ struct UserProfile: Codable, Identifiable, Hashable {
         self.id = id
         self.name = name
         self.avatarEmoji = avatarEmoji
+        self.avatarImageUrl = avatarImageUrl
         self.hasPin = hasPin
         self.isChild = isChild
         self.isPrimary = isPrimary

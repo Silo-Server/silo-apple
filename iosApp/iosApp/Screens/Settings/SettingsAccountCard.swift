@@ -3,6 +3,9 @@ import SwiftUI
 
 struct SettingsAccountCard: View {
     let avatar: String?
+    /// Server-resolved avatar image URL (`avatar_url`), preferred over the
+    /// raw `avatar` ref when present.
+    var avatarImageUrl: String? = nil
     let name: String
     let subtitle: String
     let isAdministrator: Bool
@@ -11,7 +14,7 @@ struct SettingsAccountCard: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 14) {
-                ProfileAvatarView(avatar: avatar, name: name, size: 54)
+                ProfileAvatarView(avatar: avatar, imageUrl: avatarImageUrl, name: name, size: 54)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Current profile")

@@ -25,6 +25,7 @@ struct IOSSettingsOverview: View {
 
                     SettingsAccountCard(
                         avatar: viewModel.activeProfile?.avatarEmoji,
+                        avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
                         name: displayName,
                         subtitle: subtitleLine,
                         isAdministrator: viewModel.userInfo?.isAdmin == true,

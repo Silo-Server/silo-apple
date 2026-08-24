@@ -237,6 +237,7 @@ struct TVSettingsView: View {
             HStack(spacing: 18) {
                 ProfileAvatarView(
                     avatar: viewModel.profileAvatar,
+                    imageUrl: viewModel.profileAvatarImageUrl,
                     name: viewModel.displayName,
                     size: 68
                 )

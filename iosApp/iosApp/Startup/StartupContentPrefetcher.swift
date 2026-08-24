@@ -729,10 +729,21 @@ enum StartupContentPrefetcher {
         var seen = Set<String>()
 
         for profile in profiles {
-            guard urls.count < maxProfileArtworkURLs,
-                  let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  ProfileAvatarResolver.isImage(avatar),
-                  let urlString = ProfileAvatarResolver.imageURL(for: avatar),
+            guard urls.count < maxProfileArtworkURLs else { continue }
+
+            // Mirror the view-side precedence: server-resolved `avatar_url`
+            // first, then the client-side resolution of the raw ref.
+            let resolved: String?
+            if let serverURL = ProfileAvatarResolver.serverResolvedImageURL(profile.avatarImageUrl) {
+                resolved = serverURL
+            } else if let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      ProfileAvatarResolver.isImage(avatar) {
+                resolved = ProfileAvatarResolver.imageURL(for: avatar)
+            } else {
+                resolved = nil
+            }
+
+            guard let urlString = resolved,
                   let url = normalizedURL(from: urlString) else {
                 continue
             }

@@ -84,6 +84,7 @@ struct SettingsView: View {
                 HStack(spacing: 14) {
                     ProfileAvatarView(
                         avatar: viewModel.activeProfile?.avatarEmoji,
+                        imageUrl: viewModel.activeProfile?.avatarImageUrl,
                         name: viewModel.activeProfile?.name
                             ?? viewModel.userInfo?.username
                             ?? "",

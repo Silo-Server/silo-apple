@@ -557,6 +557,7 @@ struct TVTopMenuBar: View {
         } label: {
             ProfileAvatarView(
                 avatar: currentProfile?.avatarEmoji,
+                imageUrl: currentProfile?.avatarImageUrl,
                 name: currentProfile?.name ?? "",
                 size: ContinuumTheme.Skyline.barIconSize,
                 backgroundColor: Color.white.opacity(0.18),
@@ -1088,6 +1089,9 @@ private enum TVProfileAction: Hashable {
 struct TVProfileDropdown: View {
     let profileName: String
     let avatar: String?
+    /// Server-resolved avatar image URL (`avatar_url`), preferred over the
+    /// raw `avatar` ref when present.
+    var avatarImageUrl: String? = nil
     /// Display name of the active server, shown under the profile name in
     /// the §5.8 mono header style.
     let serverHost: String?
@@ -1185,6 +1189,7 @@ struct TVProfileDropdown: View {
         HStack(spacing: 14) {
             ProfileAvatarView(
                 avatar: avatar,
+                imageUrl: avatarImageUrl,
                 name: profileName,
                 size: 44,
                 backgroundColor: Color.white.opacity(0.16),

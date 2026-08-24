@@ -600,6 +600,7 @@ struct TVMainTabView: View {
         TVProfileDropdown(
             profileName: currentProfile?.name ?? "Profile",
             avatar: currentProfile?.avatarEmoji,
+            avatarImageUrl: currentProfile?.avatarImageUrl,
             serverHost: ServerRegistry.shared.activeServer?.displayName,
             entersPanel: isActive && panelEntersFocus,
             focusEntryGeneration: panelFocusEntryGeneration,
