@@ -462,6 +462,7 @@ final class ServerRegistry {
         // foreground refresh observes one consistent server context.
         await MainActor.run {
             AICapabilities.shared.reset()
+            ImageSizeCapability.shared.reset()
             RequestsFeatureStore.shared.reset()
             SubtitleProvidersStore.shared.reset()
             RequestsEventBus.shared.reset()
@@ -471,6 +472,10 @@ final class ServerRegistry {
             // until the next foreground. Fire-and-forget — the probe
             // degrades to disabled on any failure.
             Task { await RequestsFeatureStore.shared.refresh() }
+            // Same shape: without a re-probe the destination server's
+            // image-size support would stay unknown, and TV requests would
+            // silently fall back to the server's default image variants.
+            Task { await ImageSizeCapability.shared.refresh() }
             // Same reason, opposite default: the reset above restored
             // "available", so this re-probe is what *dims* the search row on
             // a destination server that has no providers configured.
@@ -741,6 +746,7 @@ final class ServerRegistry {
         if removesActiveServer {
             await MainActor.run {
                 AICapabilities.shared.reset()
+                ImageSizeCapability.shared.reset()
                 RequestsFeatureStore.shared.reset()
                 SubtitleProvidersStore.shared.reset()
                 RequestsEventBus.shared.reset()
@@ -748,6 +754,7 @@ final class ServerRegistry {
                 // already be signed in, with no auth-state change to
                 // trigger the usual probe.
                 Task { await RequestsFeatureStore.shared.refresh() }
+                Task { await ImageSizeCapability.shared.refresh() }
                 Task { await SubtitleProvidersStore.shared.refresh() }
             }
         }

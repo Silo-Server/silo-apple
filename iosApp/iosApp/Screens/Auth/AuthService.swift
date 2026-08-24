@@ -208,6 +208,7 @@ final class AuthService: @unchecked Sendable {
         // so nothing blocks on this.
         Task { @MainActor in
             await AICapabilities.shared.refresh()
+            await ImageSizeCapability.shared.refresh()
             await RequestsFeatureStore.shared.refresh()
             // Unlike the two above, this one gates *enablement* of an entry
             // point that stays visible either way, and it defaults to
@@ -524,6 +525,7 @@ final class AuthService: @unchecked Sendable {
         // Server-wide AI capability + per-user ASR quota are reset on every
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
+        ImageSizeCapability.shared.reset()
         RequestsFeatureStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
@@ -692,6 +694,7 @@ final class AuthService: @unchecked Sendable {
         OverlayPrefsStore.shared.clear()
         ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()
+        ImageSizeCapability.shared.reset()
         RequestsFeatureStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()

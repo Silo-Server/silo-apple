@@ -226,6 +226,10 @@ struct ContentView: View {
                 // features stay hidden until a profile switch. Idempotent and
                 // failure-tolerant, so double-calling with `selectProfile` is safe.
                 await AICapabilities.shared.refresh()
+                // Same cold-relaunch reasoning: without this, a restored
+                // session on tvOS would request default-size images until
+                // the next profile switch.
+                await ImageSizeCapability.shared.refresh()
                 await RequestsFeatureStore.shared.refresh()
                 await SubtitleProvidersStore.shared.refresh()
                 await uiCustomization.refresh()
@@ -361,6 +365,7 @@ struct ContentView: View {
             // natural retry on foreground. `refresh()` is idempotent, so the
             // happy path costs nothing.
             Task { await AICapabilities.shared.refresh() }
+            Task { await ImageSizeCapability.shared.refresh() }
             Task { await RequestsFeatureStore.shared.refresh() }
             Task { await SubtitleProvidersStore.shared.refresh() }
             Task { await uiCustomization.refresh() }
