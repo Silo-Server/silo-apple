@@ -40,6 +40,7 @@ struct PhonePlaybackSelectorRow: View {
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
     @State private var activeSelector: PhonePlaybackSelectorKind?
 
@@ -50,14 +51,21 @@ struct PhonePlaybackSelectorRow: View {
     var body: some View {
         if currentVersion != nil, !selectorKinds.isEmpty {
             #if os(iOS)
-            selectorCard
-                .popover(
-                    item: $activeSelector,
-                    attachmentAnchor: .rect(.bounds),
-                    arrowEdge: .top
-                ) { kind in
-                    selectorPresentation(for: kind)
-                }
+            if usesPopoverLayout {
+                selectorCard
+                    .popover(
+                        item: $activeSelector,
+                        attachmentAnchor: .rect(.bounds),
+                        arrowEdge: .top
+                    ) { kind in
+                        selectorPresentation(for: kind)
+                    }
+            } else {
+                selectorCard
+                    .sheet(item: $activeSelector) { kind in
+                        selectorPresentation(for: kind)
+                    }
+            }
             #else
             selectorCard
                 .sheet(item: $activeSelector) { kind in
@@ -86,7 +94,7 @@ struct PhonePlaybackSelectorRow: View {
 
     private var usesPopoverLayout: Bool {
         #if os(iOS)
-        horizontalSizeClass == .regular
+        horizontalSizeClass == .regular && verticalSizeClass == .regular
         #else
         false
         #endif
