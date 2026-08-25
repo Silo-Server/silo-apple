@@ -139,6 +139,11 @@ struct TVTopMenuBar: View {
     @Binding var isMenuFocused: Bool
     let isFocusSuppressed: Bool
     let focusRequest: Int
+    /// Bumped when the shell has determined the bar's `@FocusState` is stale —
+    /// the engine dropped focus without the bar observing it, so no suppression
+    /// transition will clear it. Drops the bar's focus state without asking for
+    /// focus back.
+    var focusResetRequest: Int = 0
     /// Bar element to focus on the next `focusRequest` bump, overriding the
     /// default of the selected tab. The shell sets this so Menu-ing out of a
     /// panel returns focus to the *panel's* tab/avatar (§7), not whatever
@@ -247,6 +252,15 @@ struct TVTopMenuBar: View {
                 // should dwell-open normally, so drop any close-suppression.
                 dwellSuppressedElement = nil
             }
+        }
+        .onChange(of: focusResetRequest) { _, _ in
+            // Clear the re-pin flags first: the bar has no focus to defend
+            // here, and letting the nil write below take the re-pin branch
+            // would have the bar grab focus the shell is handing elsewhere.
+            refocusAfterClose = false
+            dwellSuppressedElement = nil
+            dwellTask?.cancel()
+            focusedItem = nil
         }
         .onChange(of: focusRequest) { _, _ in
             let target = focusRequestTarget.map { String(describing: $0) } ?? "nil"

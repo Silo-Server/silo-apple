@@ -468,8 +468,12 @@ struct TVSettingsView: View {
         }
     }
 
+    /// The tab request is the only action needed: TVMainTabView's
+    /// `requestedTab` handler routes `.home` through `selectRoot`, which pops
+    /// to root itself (unconditionally, including when Home is already the
+    /// selected root). Popping here too produced a second `popToRoot` and a
+    /// duplicate navigation breadcrumb for one exit.
     private func exitSettingsToHome() {
-        router.popToRoot()
         router.switchTab(to: .home)
     }
 

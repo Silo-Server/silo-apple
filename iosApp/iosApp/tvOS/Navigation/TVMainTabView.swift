@@ -94,6 +94,11 @@ struct TVMainTabView: View {
     /// this, so their pops keep the engine's restore-to-card behavior.
     @State private var barOwnsFocusOnPopToRoot = false
     @State private var topMenuFocusRequest = 0
+    /// Bumped by the focus watchdog to drop the bar's `@FocusState` when the
+    /// engine has already dropped focus without telling it. Re-suppressing is
+    /// not enough: the bar nils on the *transition* into suppression, and the
+    /// wedge is observed while suppression is already true.
+    @State private var topMenuFocusResetRequest = 0
     /// Active focus hand-down generation. Incremented whenever a root is
     /// selected so the freshly-swapped-in content imperatively claims
     /// focus, instead of relying on `prefersDefaultFocus` (which can lose
@@ -125,6 +130,7 @@ struct TVMainTabView: View {
                     isMenuFocused: $isTopMenuFocused,
                     isFocusSuppressed: isTopMenuFocusSuppressed,
                     focusRequest: topMenuFocusRequest,
+                    focusResetRequest: topMenuFocusResetRequest,
                     focusRequestTarget: panelReturnFocus,
                     openPanel: openPanel,
                     panelHasFocus: panelHasFocus,
@@ -279,6 +285,35 @@ struct TVMainTabView: View {
                 let authority = currentLibraryAuthority
                 Task { await loadLibraries(for: authority) }
             }
+        }
+        .tvFocusWatchdog(isActive: focusWatchdogIsActive, onRepair: repairLostFocus)
+    }
+
+    /// The watchdog's reading is only actionable while this shell's focus graph
+    /// is the one on screen. Covers, dialogs, and the standby overlay own (or
+    /// legitimately suspend) focus themselves, and a backgrounded scene has no
+    /// focused item by definition.
+    private var focusWatchdogIsActive: Bool {
+        scenePhase == .active
+            && router.presentedPlayer == nil
+            && !audioStore.isShowingFullPlayer
+            && !showSignOutConfirm
+            && !showServerPicker
+            && controlReceiver.standbyState == nil
+    }
+
+    /// One nudge per detected focus outage (docs/tvos-focus.md: do not fight
+    /// the engine). At root the shell owns the hand-down, so clear the bar's
+    /// stale focus state and re-arm content entry focus — the same path a tab
+    /// selection uses. On a pushed route the shell owns no focus target, so ask
+    /// the engine to re-resolve from the window instead of pinning one.
+    private func repairLostFocus() {
+        topMenuFocusResetRequest += 1
+        if router.path.isEmpty {
+            suppressTopMenuFocusForContentHandoff()
+            contentFocusRequest += 1
+        } else {
+            TVFocusSystemProbe.requestFocusUpdate()
         }
     }
 
