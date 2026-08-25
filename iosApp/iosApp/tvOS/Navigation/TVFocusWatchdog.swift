@@ -62,12 +62,14 @@ struct TVFocusWatchdogModifier: ViewModifier {
     /// Two consecutive misses (~4 s) before acting. One miss is routinely seen
     /// mid-transition, while a cover dismisses or content swaps in.
     private static let missesBeforeRepair = 2
-    private static let minimumSecondsBetweenRepairs: TimeInterval = 5
+    /// Monotonic: a wall-clock step (NTP, manual date change) must not be able
+    /// to read as "the last repair was in the future" and gate repair off.
+    private static let minimumTimeBetweenRepairs = Duration.seconds(5)
     private static let maximumRepairsPerOutage = 3
 
     @State private var consecutiveMisses = 0
     @State private var repairsThisOutage = 0
-    @State private var lastRepairAt: Date?
+    @State private var lastRepairAt: ContinuousClock.Instant?
     @State private var repairPending = false
 
     func body(content: Content) -> some View {
@@ -96,12 +98,13 @@ struct TVFocusWatchdogModifier: ViewModifier {
         consecutiveMisses += 1
         guard consecutiveMisses >= Self.missesBeforeRepair else { return }
         guard repairsThisOutage < Self.maximumRepairsPerOutage else { return }
-        if let lastRepairAt, Date().timeIntervalSince(lastRepairAt) < Self.minimumSecondsBetweenRepairs {
+        let now = ContinuousClock.now
+        if let lastRepairAt, now - lastRepairAt < Self.minimumTimeBetweenRepairs {
             return
         }
 
         repairsThisOutage += 1
-        lastRepairAt = Date()
+        lastRepairAt = now
         repairPending = true
         DiagnosticsCoordinator.recordBreadcrumb(
             level: .warning,

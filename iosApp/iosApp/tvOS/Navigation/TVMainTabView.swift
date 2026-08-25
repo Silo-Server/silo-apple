@@ -307,9 +307,13 @@ struct TVMainTabView: View {
     /// stale focus state and re-arm content entry focus — the same path a tab
     /// selection uses. On a pushed route the shell owns no focus target, so ask
     /// the engine to re-resolve from the window instead of pinning one.
+    ///
+    /// `rootContent` blocks hit testing while a panel is open, so an open panel
+    /// has to come down first or the content focus hand-down lands on nothing.
     private func repairLostFocus() {
         topMenuFocusResetRequest += 1
         if router.path.isEmpty {
+            closePanelForContentHandoff()
             suppressTopMenuFocusForContentHandoff()
             contentFocusRequest += 1
         } else {

@@ -314,6 +314,18 @@ struct TVTopMenuBar: View {
             // one main-queue turn leaves a visible frame where tvOS repairs
             // focus back to Home. A legit leave (down into the page, Menu out)
             // has neither flag, so it falls through and focus is allowed to go.
+            // A suppressed bar must never take focus back. The shell suppresses
+            // before handing focus down, and the watchdog's reset arrives while
+            // suppression is already true with a passive preview still open —
+            // exactly the `spuriousFromOpenPreview` shape — so an ungated re-pin
+            // would undo the repair and re-strand the remote. Drop the re-pin
+            // flag with it so it can't fire on a later legitimate nil write.
+            if isFocusSuppressed {
+                isMenuFocused = false
+                refocusAfterClose = false
+                dwellTask?.cancel()
+                return
+            }
             let spuriousFromOpenPreview = openPanel != nil && !panelHasFocus
             if (spuriousFromOpenPreview || refocusAfterClose), let target = lastBarFocus {
                 refocusAfterClose = false
