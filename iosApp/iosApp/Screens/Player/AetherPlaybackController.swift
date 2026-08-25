@@ -195,6 +195,21 @@ final class AetherPlaybackController {
     }
 
     func play() {
+        // `beginLoad` installs spec/epoch before `engine.load` returns, and
+        // that window looks identical to a background teardown: route `.none`,
+        // session not ready. Reloading here would start a second `engine.load`
+        // and cancel the in-flight startup — the Siri Remote Play/Pause path
+        // during the loading spinner.
+        switch AetherPlayIntent.action(
+            hasCommittedActiveLoad: hasCommittedActiveLoad,
+            sessionRequiresRestore: sessionRequiresRestore
+        ) {
+        case .ignore:
+            return
+        case .play, .restoreThenPlay:
+            break
+        }
+
         transportIntentGeneration &+= 1
         let intentGeneration = transportIntentGeneration
         transportRestoreTask?.cancel()
@@ -202,7 +217,7 @@ final class AetherPlaybackController {
             guard let self,
                   let loadEpoch = self.activeLoadEpoch,
                   self.activeSpec != nil else { return }
-            if self.sessionRequiresRestore {
+            if self.hasCommittedActiveLoad, self.sessionRequiresRestore {
                 do {
                     try await self.engine.reloadAtCurrentPosition()
                 } catch is CancellationError {
@@ -621,6 +636,34 @@ final class AetherPlaybackController {
         #else
         false
         #endif
+    }
+}
+
+/// Whether `play()` may restore a torn-down session or must wait for the
+/// in-flight load to commit.
+///
+/// Split out as a pure decision because the hazard is invisible in the happy
+/// path: `beginLoad` publishes spec/epoch before `AetherEngine.load` returns,
+/// and that window matches the background-teardown restore predicate. A Play
+/// in that window calls `reloadAtCurrentPosition()`, which is another `load`
+/// and supersedes the startup generation.
+enum AetherPlayIntent {
+    enum Action: Equatable {
+        /// No committed load yet. The in-flight `engine.load` still owns
+        /// startup and will play when it commits.
+        case ignore
+        /// Session is live; start transport.
+        case play
+        /// Committed load was torn down in the background; rebuild then play.
+        case restoreThenPlay
+    }
+
+    static func action(
+        hasCommittedActiveLoad: Bool,
+        sessionRequiresRestore: Bool
+    ) -> Action {
+        guard hasCommittedActiveLoad else { return .ignore }
+        return sessionRequiresRestore ? .restoreThenPlay : .play
     }
 }
 

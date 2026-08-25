@@ -1091,4 +1091,49 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             .applyToEngine
         )
     }
+
+    // MARK: - Play during in-flight load
+
+    // `beginLoad` installs spec/epoch before `engine.load` returns. That
+    // window looks like a background teardown (route `.none`, session not
+    // ready). Play in that window must not call `reloadAtCurrentPosition()`,
+    // which starts a second `load` and cancels startup.
+
+    func testPlayDuringUncommittedLoadDoesNotRestore() {
+        XCTAssertEqual(
+            AetherPlayIntent.action(
+                hasCommittedActiveLoad: false,
+                sessionRequiresRestore: true
+            ),
+            .ignore
+        )
+        XCTAssertEqual(
+            AetherPlayIntent.action(
+                hasCommittedActiveLoad: false,
+                sessionRequiresRestore: false
+            ),
+            .ignore,
+            "an uncommitted load must not start transport even when the route looks live"
+        )
+    }
+
+    func testPlayAfterCommitRestoresATornDownSession() {
+        XCTAssertEqual(
+            AetherPlayIntent.action(
+                hasCommittedActiveLoad: true,
+                sessionRequiresRestore: true
+            ),
+            .restoreThenPlay
+        )
+    }
+
+    func testPlayAfterCommitStartsTransportWhenTheSessionIsLive() {
+        XCTAssertEqual(
+            AetherPlayIntent.action(
+                hasCommittedActiveLoad: true,
+                sessionRequiresRestore: false
+            ),
+            .play
+        )
+    }
 }
