@@ -27,6 +27,10 @@ private final class FakePairingChannel: PairingChannel {
         sent.append(message)
     }
 
+    func queue(_ message: PairingMessage) async {
+        sent.append(message)
+    }
+
     func close() async {
         closeCount += 1
         feed.finish()
@@ -53,9 +57,11 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
     var approveError: Error?
     var startError: Error?
     var pollResponse: DeviceLoginPollResponse?
+    var pollResults: [Result<DeviceLoginPollResponse, Error>] = []
 
     private(set) var startedServers: [String] = []
     private(set) var approvedCodes: [String] = []
+    private(set) var pollCount = 0
 
     func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
         if let startError { throw startError }
@@ -75,6 +81,10 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
     }
 
     func poll(serverURL: String, deviceCode: String) async throws -> DeviceLoginPollResponse {
+        pollCount += 1
+        if !pollResults.isEmpty {
+            return try pollResults.removeFirst().get()
+        }
         if let pollResponse { return pollResponse }
         throw PairingDeviceAPI.APIError.http(500)
     }
@@ -387,6 +397,29 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         var persisted: [Persisted] = []
     }
 
+    @MainActor
+    private final class PersistGate {
+        var started = false
+        var cancelled = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func wait() async {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation {
+                    continuation = $0
+                    started = true
+                }
+            } onCancel: {
+                Task { @MainActor in self.cancelled = true }
+            }
+        }
+
+        func release() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     private func makeCoordinator(api: FakePairingAPI, recorder: PersistRecorder) -> ReceiverPairingCoordinator {
         ReceiverPairingCoordinator(api: api) { url, _, access, _ in
             recorder.persisted.append(Persisted(url: url, access: access))
@@ -444,6 +477,173 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.state, .idle)
         XCTAssertEqual(channel.lastSent, .cancel(reason: "consent_denied"))
         XCTAssertTrue(api.startedServers.isEmpty)
+    }
+
+    /// Regression: the server can restart or a reverse proxy can briefly
+    /// return an error while a valid device-login request is pending. Keep
+    /// polling the same request instead of making the whole companion setup
+    /// terminal after that single transient response.
+    func testTransientPollFailureRetriesAndEventuallySignsIn() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [
+            .failure(PairingDeviceAPI.APIError.http(502)),
+            .success(approvedPoll),
+        ]
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("signed in after retry") {
+            if case .signedIn(let count) = coordinator.state { return count == 1 }
+            return false
+        }
+
+        XCTAssertEqual(api.pollCount, 2)
+        XCTAssertEqual(recorder.persisted.map(\.access), ["ACCESS"])
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult(_, .signedIn, _) = $0 { return true }
+            return false
+        })
+
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    func testMissingPollRequestFailsWithoutRetrying() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [.failure(PairingDeviceAPI.APIError.http(404))]
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("missing request failure") {
+            if case .failed(let name) = coordinator.state { return name == "Home" }
+            return false
+        }
+
+        XCTAssertEqual(api.pollCount, 1)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    func testCancellationDuringTransientPollBackoffDoesNotPublishFailure() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResults = [.failure(PairingDeviceAPI.APIError.http(502))]
+        let recorder = PersistRecorder()
+        let coordinator = makeCoordinator(api: api, recorder: recorder)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("first transient poll failure") { api.pollCount == 1 }
+
+        channel.deliver(.cancel(reason: "test_cancel"))
+        await runTask.value
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertTrue(recorder.persisted.isEmpty)
+        XCTAssertFalse(channel.sent.contains {
+            if case .serverResult(_, .failed, _) = $0 { return true }
+            return false
+        })
+    }
+
+    /// Regression: leaving the setup screen can race the non-cancellable
+    /// persistence boundary. A committed sign-in result must reach the phone
+    /// before the TV sends its teardown cancellation.
+    func testCancellationAfterPersistenceStartsPublishesSuccessFirst() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let recorder = PersistRecorder()
+        let gate = PersistGate()
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+            await gate.wait()
+            recorder.persisted.append(Persisted(url: url, access: access))
+            return true
+        }
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("persistence started") { gate.started }
+
+        let cancelTask = Task { await coordinator.cancel() }
+        await expectEventually("attempt cancelled at persistence boundary") { gate.cancelled }
+        gate.release()
+        await cancelTask.value
+
+        let resultIndex = channel.sent.firstIndex {
+            if case .serverResult(_, .signedIn, _) = $0 { return true }
+            return false
+        }
+        let cancelIndex = channel.sent.firstIndex(of: .cancel(reason: "receiver_cancelled"))
+        XCTAssertNotNil(resultIndex)
+        XCTAssertNotNil(cancelIndex)
+        if let resultIndex, let cancelIndex {
+            XCTAssertLessThan(resultIndex, cancelIndex)
+        }
+        XCTAssertEqual(recorder.persisted.map(\.access), ["ACCESS"])
+        await runTask.value
+    }
+
+    /// A phone-side timeout at the same boundary must not return the TV to
+    /// setup after its credentials have already committed.
+    func testPeerCancellationAfterPersistenceStartsPreservesCommittedSignIn() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let recorder = PersistRecorder()
+        let gate = PersistGate()
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+            await gate.wait()
+            recorder.persisted.append(Persisted(url: url, access: access))
+            return true
+        }
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
+        await expectEventually("consent prompt") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("persistence started") { gate.started }
+
+        channel.deliver(.cancel(reason: "phone_timeout"))
+        await expectEventually("attempt cancelled at persistence boundary") { gate.cancelled }
+        gate.release()
+        await runTask.value
+
+        XCTAssertEqual(coordinator.state, .completed(serverNames: ["Home"]))
+        XCTAssertEqual(recorder.persisted.map(\.access), ["ACCESS"])
+        XCTAssertTrue(channel.sent.contains {
+            if case .serverResult(_, .signedIn, _) = $0 { return true }
+            return false
+        })
     }
 
     /// Regression: the phone's `done` after a failed-only session must not

@@ -123,6 +123,19 @@ struct ContentView: View {
             ) else { return }
             router.showProfileSelection()
         }
+        .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
+            guard previousServerID != activeServerID,
+                  router.authState == .needsServerSetup,
+                  shouldPresentProfileSelectionAfterRecovery(
+                      isLoggedIn: AuthService.shared.isLoggedIn,
+                      activeProfileID: AuthService.shared.profileId
+                  ) else { return }
+            // Companion setup adds the server and account atomically. The
+            // active-server change intentionally re-keys `authContent`, which
+            // otherwise replaces the receiver's success screen with a fresh
+            // setup view before its delayed navigation can run.
+            router.showProfileSelection()
+        }
         #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
             guard router.authState == .authenticated else { return }
