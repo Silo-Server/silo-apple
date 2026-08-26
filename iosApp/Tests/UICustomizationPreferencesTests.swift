@@ -1119,6 +1119,15 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         XCTAssertEqual(initial.last?.id, .app(.downloads))
         XCTAssertEqual(
+            initial.map(\.id),
+            [
+                .app(.home),
+                .app(.recommendations),
+                .app(.calendar),
+                .app(.downloads),
+            ]
+        )
+        XCTAssertEqual(
             appendingStableDownloadsDestination(to: initial),
             initial,
             "capability updates must not insert a duplicate or reflow the tab bar"

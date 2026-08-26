@@ -295,14 +295,14 @@ struct DownloadsView: View {
         }
         #endif
 
-        if isSelecting {
+        if manager.downloadsEnabled && isSelecting {
             ToolbarItem(placement: .navigation) {
                 Button(allSelected ? "Clear" : "Select All") { toggleSelectAll() }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("Done") { exitSelectMode() }
             }
-        } else if !listItems.isEmpty {
+        } else if manager.downloadsEnabled && !listItems.isEmpty {
             ToolbarItem(placement: .primaryAction) {
                 Button("Select") { isSelecting = true }
             }
@@ -311,7 +311,7 @@ struct DownloadsView: View {
 
     @ViewBuilder
     private var bottomBar: some View {
-        if isSelecting && !selection.isEmpty {
+        if manager.downloadsEnabled && isSelecting && !selection.isEmpty {
             Button {
                 pendingDeletion = PendingDeletion(ids: selectedDownloadIds, endsSelection: true)
             } label: {
