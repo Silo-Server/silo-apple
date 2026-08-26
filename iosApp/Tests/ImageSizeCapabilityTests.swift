@@ -174,4 +174,78 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertTrue(capability.requestQuery.isEmpty)
         XCTAssertFalse(capability.isAvailable)
     }
+
+    func testSuccessfulRefreshIsCachedForSession() async throws {
+        let response = try decodedCapability()
+        let stub = ImageSizeCapabilityFetchStub(response: response)
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true) {
+            try await stub.fetch()
+        }
+
+        await capability.refresh()
+        await capability.refresh()
+
+        let callCount = await stub.callCount
+        XCTAssertEqual(callCount, 1)
+        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+    }
+
+    func testFailedRefreshRetriesAndThenCachesSuccess() async throws {
+        let response = try decodedCapability()
+        let stub = ImageSizeCapabilityFetchStub(
+            response: response,
+            failuresBeforeSuccess: 1
+        )
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true) {
+            try await stub.fetch()
+        }
+
+        await capability.refresh()
+        XCTAssertTrue(capability.requestQuery.isEmpty)
+
+        await capability.refresh()
+        await capability.refresh()
+
+        let callCount = await stub.callCount
+        XCTAssertEqual(callCount, 2)
+        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+    }
+
+    func testResetRequiresCapabilityProbeForNewIdentity() async throws {
+        let response = try decodedCapability()
+        let stub = ImageSizeCapabilityFetchStub(response: response)
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true) {
+            try await stub.fetch()
+        }
+
+        await capability.refresh()
+        capability.reset()
+        await capability.refresh()
+
+        let callCount = await stub.callCount
+        XCTAssertEqual(callCount, 2)
+        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+    }
+}
+
+private actor ImageSizeCapabilityFetchStub {
+    private(set) var callCount = 0
+    private let response: ImageSizeCapabilityResponse
+    private let failuresBeforeSuccess: Int
+
+    init(
+        response: ImageSizeCapabilityResponse,
+        failuresBeforeSuccess: Int = 0
+    ) {
+        self.response = response
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+    }
+
+    func fetch() throws -> ImageSizeCapabilityResponse {
+        callCount += 1
+        if callCount <= failuresBeforeSuccess {
+            throw URLError(.cannotConnectToHost)
+        }
+        return response
+    }
 }

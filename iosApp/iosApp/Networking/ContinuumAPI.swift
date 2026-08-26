@@ -52,13 +52,19 @@ actor ContinuumAPI {
     /// unless) the capability probe in ``ImageSizeCapability`` lands —
     /// which makes iOS and macOS requests byte-identical to before.
     private var imageSizeQuery: [String: String] {
-        ImageSizeCapability.shared.requestQuery
+        get async {
+            // Gate only the artwork request, never launch/profile navigation.
+            // Concurrent startup prefetches join one probe, and older or
+            // unreachable servers fall back to an empty query.
+            await ImageSizeCapability.shared.refresh()
+            return ImageSizeCapability.shared.requestQuery
+        }
     }
 
     /// Merge ``imageSizeQuery`` into a caller-built query. Caller-supplied
     /// values win, so an explicit size is never overwritten.
-    private func withImageSize(_ query: [String: String]) -> [String: String] {
-        query.merging(imageSizeQuery) { caller, _ in caller }
+    private func withImageSize(_ query: [String: String]) async -> [String: String] {
+        query.merging(await imageSizeQuery) { caller, _ in caller }
     }
 
     /// `GET /api/v1/images/capability`. Throws `HTTPError.http(404, _)`
@@ -448,7 +454,7 @@ actor ContinuumAPI {
     // --- Home / sections ---
 
     func homeSections() async throws -> SectionsResponse {
-        try await http.get("/api/v1/home/sections", query: imageSizeQuery)
+        try await http.get("/api/v1/home/sections", query: await imageSizeQuery)
     }
 
     func dismissContinueWatchingItem(contentId: String, progressUpdatedAt: String) async throws {
@@ -463,7 +469,7 @@ actor ContinuumAPI {
     }
 
     func librarySections(libraryId: Int) async throws -> SectionsResponse {
-        try await http.get("/api/v1/library/\(libraryId)/sections", query: imageSizeQuery)
+        try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
     }
 
     /// Fetch the IDs of items the recommendation engine considers
@@ -524,7 +530,7 @@ actor ContinuumAPI {
     /// collection items, section paging) funnels through here, so the
     /// image-size entry only has to be merged in once.
     func catalog(query: [String: String]) async throws -> CatalogResponse {
-        try await http.get("/api/v1/catalog", query: withImageSize(query))
+        try await http.get("/api/v1/catalog", query: await withImageSize(query))
     }
 
     func historyCatalog(
@@ -544,7 +550,7 @@ actor ContinuumAPI {
     }
 
     func itemDetail(contentId: String) async throws -> ItemDetail {
-        try await http.get("/api/v1/catalog/items/\(contentId)", query: imageSizeQuery)
+        try await http.get("/api/v1/catalog/items/\(contentId)", query: await imageSizeQuery)
     }
 
     func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFilters {
@@ -556,18 +562,21 @@ actor ContinuumAPI {
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
-        try await http.get("/api/v1/catalog/series/\(seriesId)/seasons", query: imageSizeQuery)
+        try await http.get(
+            "/api/v1/catalog/series/\(seriesId)/seasons",
+            query: await imageSizeQuery
+        )
     }
 
     func episodes(seriesId: String, seasonNumber: Int) async throws -> EpisodesResponse {
         try await http.get(
             "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes",
-            query: imageSizeQuery
+            query: await imageSizeQuery
         )
     }
 
     func watchDetail(contentId: String) async throws -> WatchDetail {
-        try await http.get("/api/v1/watch/\(contentId)", query: imageSizeQuery)
+        try await http.get("/api/v1/watch/\(contentId)", query: await imageSizeQuery)
     }
 
     func person(id: Int) async throws -> Person {
@@ -764,21 +773,21 @@ actor ContinuumAPI {
     // by `catalog(query:)`.
 
     func favorites(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/favorites", query: withImageSize([
+        try await http.get("/api/v1/favorites", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
         ]))
     }
 
     func watchlist(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/watchlist", query: withImageSize([
+        try await http.get("/api/v1/watchlist", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
         ]))
     }
 
     func history(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/history", query: withImageSize([
+        try await http.get("/api/v1/history", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
         ]))

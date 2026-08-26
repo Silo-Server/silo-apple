@@ -203,9 +203,10 @@ final class AuthService: @unchecked Sendable {
             rememberSelection: rememberSelection,
             expectedAccount: expectedAccount
         )
-        // Re-probe AI capabilities for the newly-selected profile. Fire and
-        // forget — gating defaults to "unavailable" until the probes land,
-        // so nothing blocks on this.
+        // Re-probe capabilities for the newly-selected profile. Fire and
+        // forget so profile navigation is never held behind an optional
+        // feature probe. Artwork-bearing API methods await the coalesced image
+        // probe at their own request boundary before dispatching.
         Task { @MainActor in
             await AICapabilities.shared.refresh()
             await ImageSizeCapability.shared.refresh()
