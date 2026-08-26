@@ -1110,6 +1110,21 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
     }
 
+    func testDownloadsDestinationIsStableBeforeCapabilityHydration() {
+        let initial = appendingStableDownloadsDestination(to: [
+            .app(.home),
+            .app(.recommendations),
+            .app(.calendar),
+        ])
+
+        XCTAssertEqual(initial.last?.id, .app(.downloads))
+        XCTAssertEqual(
+            appendingStableDownloadsDestination(to: initial),
+            initial,
+            "capability updates must not insert a duplicate or reflow the tab bar"
+        )
+    }
+
     func testLegacyCollectionOutboxIdentityMigratesToStructuredIdentity() async throws {
         let suiteName = "ui-customization-legacy-collection-id-suite-\(UUID().uuidString)"
         let standardName = "ui-customization-legacy-collection-id-standard-\(UUID().uuidString)"

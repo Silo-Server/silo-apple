@@ -1540,6 +1540,20 @@ struct MainTabDestination: Identifiable, Equatable {
     }
 }
 
+#if !os(tvOS)
+/// Keeps Downloads in the mobile/desktop shell from the first rendered frame.
+/// Capability hydration controls the destination's content and actions, not
+/// whether the tab exists, so the tab bar never inserts an item after launch.
+func appendingStableDownloadsDestination(
+    to destinations: [MainTabDestination]
+) -> [MainTabDestination] {
+    guard !destinations.contains(where: { $0.id == .app(.downloads) }) else {
+        return destinations
+    }
+    return destinations + [.app(.downloads)]
+}
+#endif
+
 private struct MainTabSidebarDestination: Identifiable {
     let destination: MainTabDestination
     let isNestedLibrary: Bool
@@ -1884,12 +1898,11 @@ struct MainTabView: View {
         #endif
     }
 
-    /// Visible tabs, plus a Downloads tab when the server advertises the
-    /// downloads capability for this profile. Reading
-    /// `DownloadManager.shared.downloadsEnabled` here registers the tab bar
-    /// as an observer, so the tab appears as soon as capability loads.
+    /// Visible tabs always include Downloads on supported platforms. The
+    /// destination owns its empty/unavailable state, keeping the tab bar from
+    /// reflowing when capability hydration completes after first render.
     private var visibleDestinations: [MainTabDestination] {
-        var destinations = projectedMainTabDestinations(
+        let destinations = projectedMainTabDestinations(
             primaryMenu: uiCustomization.primaryMenu,
             availableLibraries: librarySnapshot.availableLibraries(
                 for: currentLibraryAuthority
@@ -1897,12 +1910,10 @@ struct MainTabView: View {
             showAudiobooks: navPrefs.showAudiobooks
         )
         #if !os(tvOS)
-        if DownloadManager.shared.downloadsEnabled,
-           !destinations.contains(where: { $0.id == .app(.downloads) }) {
-            destinations.append(.app(.downloads))
-        }
-        #endif
+        return appendingStableDownloadsDestination(to: destinations)
+        #else
         return destinations
+        #endif
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {

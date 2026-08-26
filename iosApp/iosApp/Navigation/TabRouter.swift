@@ -35,9 +35,8 @@ enum AppTab: String, CaseIterable, Identifiable {
         #if os(tvOS)
         return [.home, .libraries, .search, .recommendations, .settings, .switchProfile, .switchServer]
         #else
-        // Downloads is appended dynamically by `MainTabView` only when the
-        // server advertises the capability, so it stays hidden when the
-        // feature is off rather than showing an empty tab.
+        // MainTabView appends Downloads as a stable shell destination after
+        // projecting the customizable content destinations.
         return [.home, .libraries, .recommendations, .calendar]
         #endif
     }
