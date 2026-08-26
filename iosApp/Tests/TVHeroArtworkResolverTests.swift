@@ -18,7 +18,7 @@ final class TVHeroArtworkResolverTests: XCTestCase {
             fallback: poster,
             prefersEnrichedBackdrop: true,
             canLoadEnrichment: true,
-            enrichmentLoaded: false,
+            enrichmentState: .loading,
             enrichedBackdrop: nil
         )
 
@@ -31,7 +31,7 @@ final class TVHeroArtworkResolverTests: XCTestCase {
             fallback: poster,
             prefersEnrichedBackdrop: true,
             canLoadEnrichment: true,
-            enrichmentLoaded: true,
+            enrichmentState: .completed,
             enrichedBackdrop: detailBackdrop
         )
 
@@ -44,7 +44,7 @@ final class TVHeroArtworkResolverTests: XCTestCase {
             fallback: poster,
             prefersEnrichedBackdrop: true,
             canLoadEnrichment: true,
-            enrichmentLoaded: true,
+            enrichmentState: .completed,
             enrichedBackdrop: nil
         )
 
@@ -57,7 +57,7 @@ final class TVHeroArtworkResolverTests: XCTestCase {
             fallback: poster,
             prefersEnrichedBackdrop: false,
             canLoadEnrichment: true,
-            enrichmentLoaded: false,
+            enrichmentState: .loading,
             enrichedBackdrop: nil
         )
 
@@ -70,7 +70,20 @@ final class TVHeroArtworkResolverTests: XCTestCase {
             fallback: poster,
             prefersEnrichedBackdrop: true,
             canLoadEnrichment: false,
-            enrichmentLoaded: false,
+            enrichmentState: .notStarted,
+            enrichedBackdrop: nil
+        )
+
+        XCTAssertEqual(artwork, poster)
+    }
+
+    func testFailedDetailLookupFallsBackInsteadOfStayingBlank() {
+        let artwork = TVHeroArtworkResolver.resolve(
+            sectionBackdrop: nil,
+            fallback: poster,
+            prefersEnrichedBackdrop: true,
+            canLoadEnrichment: true,
+            enrichmentState: .failed,
             enrichedBackdrop: nil
         )
 

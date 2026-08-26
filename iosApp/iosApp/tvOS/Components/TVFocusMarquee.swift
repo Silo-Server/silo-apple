@@ -14,13 +14,24 @@ struct TVHeroArtwork: Equatable {
     }
 }
 
+enum TVHeroEnrichmentState: Equatable {
+    case notStarted
+    case loading
+    case completed
+    case failed
+
+    var permitsFallback: Bool {
+        self == .completed || self == .failed
+    }
+}
+
 enum TVHeroArtworkResolver {
     static func resolve(
         sectionBackdrop: TVHeroArtwork?,
         fallback: TVHeroArtwork?,
         prefersEnrichedBackdrop: Bool,
         canLoadEnrichment: Bool,
-        enrichmentLoaded: Bool,
+        enrichmentState: TVHeroEnrichmentState,
         enrichedBackdrop: TVHeroArtwork?
     ) -> TVHeroArtwork? {
         if !prefersEnrichedBackdrop, let sectionBackdrop {
@@ -30,7 +41,7 @@ enum TVHeroArtworkResolver {
         guard canLoadEnrichment else {
             return sectionBackdrop ?? fallback
         }
-        guard enrichmentLoaded else {
+        guard enrichmentState.permitsFallback else {
             // Do not paint the poster while detail enrichment is in flight:
             // that creates a conspicuous portrait-to-landscape flash. The
             // first image displayed should be the real backdrop.
@@ -318,7 +329,7 @@ final class TVFocusMarqueeModel {
             ),
             prefersEnrichedBackdrop: content.isEpisode || content.backdropUrl?.isEmpty != false,
             canLoadEnrichment: content.contentId != nil,
-            enrichmentLoaded: enrichment != nil,
+            enrichmentState: enrichmentState,
             enrichedBackdrop: TVHeroArtwork(
                 url: enrichment?.backdropUrl,
                 thumbhash: enrichment?.backdropThumbhash
@@ -333,6 +344,7 @@ final class TVFocusMarqueeModel {
     private var debounceTask: Task<Void, Never>?
     private var tintTask: Task<Void, Never>?
     private var enrichTask: Task<Void, Never>?
+    private var enrichmentState: TVHeroEnrichmentState = .notStarted
     private var lastSampledTintURL: String?
     /// Per-item enrichment cache so scrubbing back over a row never
     /// refetches details.
@@ -375,22 +387,34 @@ final class TVFocusMarqueeModel {
         enrichTask?.cancel()
         guard let contentId = candidate.contentId else {
             enrichment = nil
+            enrichmentState = .completed
             return
         }
         if let cached = enrichmentCache[contentId] {
             enrichment = cached
+            enrichmentState = .completed
             sampleTintIfNeeded(for: backdropURL)
             return
         }
 
         enrichment = nil
+        enrichmentState = .loading
         enrichTask = Task { [weak self] in
-            guard let detail = try? await ContinuumAPI.shared.itemDetail(contentId: contentId) else { return }
-            guard !Task.isCancelled, let self else { return }
-            let enrichment = TVMarqueeEnrichment(detail: detail)
-            self.enrichmentCache[contentId] = enrichment
-            if self.content?.contentId == contentId {
-                self.enrichment = enrichment
+            do {
+                let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                guard !Task.isCancelled, let self else { return }
+                let enrichment = TVMarqueeEnrichment(detail: detail)
+                self.enrichmentCache[contentId] = enrichment
+                if self.content?.contentId == contentId {
+                    self.enrichment = enrichment
+                    self.enrichmentState = .completed
+                    self.sampleTintIfNeeded(for: self.backdropURL)
+                }
+            } catch {
+                guard !Task.isCancelled, let self,
+                      self.content?.contentId == contentId else { return }
+                self.enrichment = nil
+                self.enrichmentState = .failed
                 self.sampleTintIfNeeded(for: self.backdropURL)
             }
         }
