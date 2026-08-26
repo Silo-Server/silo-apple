@@ -31,6 +31,7 @@ struct HomeView: View {
 
     @State private var viewModel = HomeViewModel()
     #if !os(tvOS)
+    @State private var navPreferences = AppNavPreferences.shared
     @State private var currentProfile: UserProfile?
     @State private var homeScrollOffset: CGFloat = 0
     @State private var isRefreshing = false
@@ -193,6 +194,7 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .task {
+            navPreferences.refresh()
             await viewModel.loadSections()
             await loadCurrentProfile()
         }
@@ -224,7 +226,8 @@ struct HomeView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
                     #if os(iOS)
-                    if let featured = viewModel.featuredSection {
+                    if navPreferences.showFeaturedHero,
+                       let featured = viewModel.featuredSection {
                         MobileFeaturedHero(
                             items: featured.items,
                             onPlay: playFeaturedItem,
@@ -303,7 +306,8 @@ struct HomeView: View {
 
     private var hasHomeContent: Bool {
         #if os(iOS)
-        return viewModel.featuredSection != nil || !displayedSections.isEmpty
+        return (navPreferences.showFeaturedHero && viewModel.featuredSection != nil)
+            || !displayedSections.isEmpty
         #else
         return !displayedSections.isEmpty
         #endif

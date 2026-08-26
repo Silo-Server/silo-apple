@@ -52,6 +52,33 @@ final class ClientLocalSettingsTests: XCTestCase {
         XCTAssertTrue(defaults.containsObject(forKey: key))
     }
 
+    func testShowFeaturedHeroDefaultsOnAndPersistsAtItsInjectedProfileScope() throws {
+        let suiteName = "client-local-hero-suite-\(UUID().uuidString)"
+        let standardName = "client-local-hero-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+            UserDefaults().removePersistentDomain(forName: standardName)
+        }
+        let defaults = SharedDefaults(suite: suite, standard: standard)
+        let key = "ios.home.showFeaturedHero.test-server.test-profile"
+
+        let settings = AppNavPreferences(
+            defaults: defaults,
+            featuredHeroStorageKey: { key }
+        )
+        XCTAssertTrue(settings.showFeaturedHero)
+        settings.setShowFeaturedHero(false)
+
+        let restored = AppNavPreferences(
+            defaults: defaults,
+            featuredHeroStorageKey: { key }
+        )
+        XCTAssertFalse(restored.showFeaturedHero)
+        XCTAssertTrue(defaults.containsObject(forKey: key))
+    }
+
     @MainActor
     func testMatchDeviceCaptionsOverridesServerAppearanceAndManualEditingTakesBackControl() async throws {
         let harness = try PlayerSettingsHarness()

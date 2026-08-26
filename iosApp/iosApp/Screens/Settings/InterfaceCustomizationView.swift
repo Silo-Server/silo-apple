@@ -133,12 +133,29 @@ func offsetPrimaryMenuEditorItem(
 /// outside the reorderable list, matching the cross-client contract.
 struct InterfaceCustomizationView: View {
     @State private var preferences = UICustomizationPreferences.shared
+    @State private var navPreferences = AppNavPreferences.shared
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         List {
+            #if os(iOS)
+            Section {
+                Toggle(
+                    "Show Featured Hero",
+                    isOn: Binding(
+                        get: { navPreferences.showFeaturedHero },
+                        set: { navPreferences.setShowFeaturedHero($0) }
+                    )
+                )
+            } header: {
+                Text("Home")
+            } footer: {
+                Text("When hidden, your other Home rows move up to fill the space.")
+            }
+            #endif
+
             if let message = preferences.capabilityMessage {
                 Section {
                     Label(message, systemImage: "server.rack")
@@ -307,6 +324,7 @@ struct InterfaceCustomizationView: View {
         .continuumGroupedListStyle()
         .navigationTitle("Interface")
         .task {
+            navPreferences.refresh()
             await preferences.refresh()
         }
         .task(id: currentLibraryAuthority) {
