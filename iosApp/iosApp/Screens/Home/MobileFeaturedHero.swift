@@ -15,19 +15,13 @@ struct MobileFeaturedHero: View {
     }
 
     var body: some View {
-        ZStack {
-            TabView(selection: $currentIndex) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    spotlight(item)
-                        .tag(index)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-
-            if items.count > 1 {
-                carouselControls
+        TabView(selection: $currentIndex) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                spotlight(item)
+                    .tag(index)
             }
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
         .background(Color.continuumBackground)
@@ -202,39 +196,6 @@ struct MobileFeaturedHero: View {
             .multilineTextAlignment(.center)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private var carouselControls: some View {
-        HStack {
-            carouselArrow(systemName: "chevron.left") {
-                move(by: -1)
-            }
-            Spacer()
-            carouselArrow(systemName: "chevron.right") {
-                move(by: 1)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 258)
-        .frame(maxHeight: .infinity, alignment: .bottom)
-    }
-
-    private func carouselArrow(systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
-                .background(Color.black.opacity(0.34), in: Circle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func move(by delta: Int) {
-        guard !items.isEmpty else { return }
-        withAnimation(.easeInOut(duration: 0.38)) {
-            currentIndex = (currentIndex + delta + items.count) % items.count
-        }
     }
 
     private func preferredArtworkURL(for item: SectionItem) -> String? {

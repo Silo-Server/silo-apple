@@ -35,15 +35,31 @@ class HomeViewModel {
         }
     }
 
-    /// First non-empty section selected as the server-driven phone hero.
+    /// The server's top Home row becomes the phone hero only when that exact
+    /// row is non-empty and marked featured. A featured row farther down must
+    /// never jump ahead of rows placed above it in the web admin order.
     var featuredSection: ResolvedSection? {
-        sections.first { $0.isFeatured && !$0.items.isEmpty }
+        guard let firstSection = sections.first,
+              firstSection.isFeatured,
+              !firstSection.items.isEmpty else { return nil }
+        return firstSection
     }
 
-    /// Sections for Home in server order, excluding the hero source so it is
-    /// never repeated as a normal row on iOS or tvOS.
+    /// Sections for Home in server order. iOS promotes only the top row when
+    /// it qualifies, so featured sections farther down remain ordinary rows.
+    /// tvOS suppresses every featured row because its existing hero already
+    /// owns that content.
     var regularSections: [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
+        #if os(iOS)
+        guard let heroSection = featuredSection else {
+            return sections.filter { !$0.items.isEmpty }
+        }
+        return sections.filter { !$0.items.isEmpty && $0.id != heroSection.id }
+        #elseif os(tvOS)
+        return sections.filter { !$0.isFeatured && !$0.items.isEmpty }
+        #else
+        return sections.filter { !$0.items.isEmpty }
+        #endif
     }
 
     init(

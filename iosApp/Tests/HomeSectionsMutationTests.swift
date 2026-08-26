@@ -7,6 +7,32 @@ final class HomeSectionsMutationTests: XCTestCase {
         case failed
     }
 
+    @MainActor
+    func testOnlyTopFeaturedSectionBecomesHeroAndLaterFeaturedSectionRemainsARow() throws {
+        let item = try makeItem(contentId: "item")
+        let viewModel = HomeViewModel()
+        viewModel.sections = [
+            makeSection(id: "featured-first", type: "custom", totalCount: 1, featured: true, items: [item]),
+            makeSection(id: "featured-later", type: "custom", totalCount: 1, featured: true, items: [item]),
+        ]
+
+        XCTAssertEqual(viewModel.featuredSection?.id, "featured-first")
+        XCTAssertEqual(viewModel.regularSections.map(\.id), ["featured-later"])
+    }
+
+    @MainActor
+    func testFeaturedSectionBelowTopRowDoesNotBecomeHero() throws {
+        let item = try makeItem(contentId: "item")
+        let viewModel = HomeViewModel()
+        viewModel.sections = [
+            makeSection(id: "regular", type: "recently_added", totalCount: 1, items: [item]),
+            makeSection(id: "featured-later", type: "custom", totalCount: 1, featured: true, items: [item]),
+        ]
+
+        XCTAssertNil(viewModel.featuredSection)
+        XCTAssertEqual(viewModel.regularSections.map(\.id), ["regular", "featured-later"])
+    }
+
     func testRemovesItemOnlyFromContinueWatchingSections() throws {
         let target = try makeItem(contentId: "target")
         let other = try makeItem(contentId: "other")
@@ -220,13 +246,14 @@ final class HomeSectionsMutationTests: XCTestCase {
         id: String,
         type: String,
         totalCount: Int?,
+        featured: Bool = false,
         items: [SectionItem]
     ) -> ResolvedSection {
         ResolvedSection(
             id: id,
             sectionType: type,
             title: id,
-            featured: false,
+            featured: featured,
             itemLimit: nil,
             totalCount: totalCount,
             isCustom: false,
