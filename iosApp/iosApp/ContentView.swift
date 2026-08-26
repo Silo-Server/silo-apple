@@ -887,8 +887,8 @@ struct ContentView: View {
                 requiresPIN: profile.hasPin
             )
             StartupContentPrefetcher.prefetchAuthenticatedContent()
-            await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
+            await PlayerSettings.shared.refreshFromServer()
             print("[DebugAutoLogin] signed in and selected profile")
         } catch {
             print("[DebugAutoLogin] failed: \(error)")

@@ -59,8 +59,11 @@ class ProfileSelectionViewModel {
                 requiresPIN: profile.hasPin
             )
             StartupContentPrefetcher.prefetchAuthenticatedContent()
-            await PlayerSettings.shared.refreshFromServer()
+            // Change screens before the settings request suspends. The refresh
+            // applies this profile's cached playback quality synchronously,
+            // then updates it from the server while Home is already visible.
             router.resetToHome()
+            await PlayerSettings.shared.refreshFromServer()
         } catch {
             self.error = ErrorState(error)
         }
@@ -77,8 +80,8 @@ class ProfileSelectionViewModel {
             requiresPIN: profile.hasPin
         )
         StartupContentPrefetcher.prefetchAuthenticatedContent()
-        await PlayerSettings.shared.refreshFromServer()
         router.resetToHome()
+        await PlayerSettings.shared.refreshFromServer()
     }
 
     /// The picker itself has no active profile, but the server requires the
