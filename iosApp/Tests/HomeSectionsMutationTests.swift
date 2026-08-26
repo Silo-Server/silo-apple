@@ -7,6 +7,32 @@ final class HomeSectionsMutationTests: XCTestCase {
         case failed
     }
 
+    func testFeaturedAudiobookPlayOpensDetailsInsteadOfVideoPlayer() throws {
+        let item = try makeItem(contentId: "audiobook", type: "audiobook")
+        var events: [String] = []
+
+        dispatchFeaturedHeroPlay(
+            item,
+            onVideoPlay: { events.append("play:\($0.contentId)") },
+            onInfo: { events.append("info:\($0.contentId)") }
+        )
+
+        XCTAssertEqual(events, ["info:audiobook"])
+    }
+
+    func testFeaturedMoviePlayKeepsVideoPlayerRoute() throws {
+        let item = try makeItem(contentId: "movie")
+        var events: [String] = []
+
+        dispatchFeaturedHeroPlay(
+            item,
+            onVideoPlay: { events.append("play:\($0.contentId)") },
+            onInfo: { events.append("info:\($0.contentId)") }
+        )
+
+        XCTAssertEqual(events, ["play:movie"])
+    }
+
     @MainActor
     func testOnlyTopFeaturedSectionBecomesHeroAndLaterFeaturedSectionRemainsARow() throws {
         let item = try makeItem(contentId: "item")
@@ -230,11 +256,11 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertTrue(viewModel.isShowingActionError)
     }
 
-    private func makeItem(contentId: String) throws -> SectionItem {
+    private func makeItem(contentId: String, type: String = "movie") throws -> SectionItem {
         let json = """
         {
           "contentId": "\(contentId)",
-          "type": "movie",
+          "type": "\(type)",
           "title": "Test Item",
           "progressUpdatedAt": "2026-07-10T12:00:00Z"
         }

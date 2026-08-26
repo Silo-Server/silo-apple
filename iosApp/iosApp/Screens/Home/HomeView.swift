@@ -4,6 +4,21 @@ extension Notification.Name {
     static let homeSectionsShouldRefresh = Notification.Name("homeSectionsShouldRefresh")
 }
 
+/// Keeps audiobook containers out of the video player. Home section items do
+/// not carry the part metadata used by audiobook playback, so the hero opens
+/// details and lets the existing audiobook flow resolve the correct part.
+func dispatchFeaturedHeroPlay(
+    _ item: SectionItem,
+    onVideoPlay: (SectionItem) -> Void,
+    onInfo: (SectionItem) -> Void
+) {
+    if item.isAudiobook {
+        onInfo(item)
+    } else {
+        onVideoPlay(item)
+    }
+}
+
 /// Main home screen. iOS promotes the server's featured section into a
 /// full-bleed spotlight, while tvOS keeps its existing Skyline focus marquee.
 struct HomeView: View {
@@ -351,12 +366,18 @@ struct HomeView: View {
 
     #if os(iOS)
     private func playFeaturedItem(_ item: SectionItem) {
-        router.presentPlayer(
-            contentId: item.contentId,
-            resumePosition: item.positionSeconds,
-            returnToContentId: item.contentId,
-            posterURL: item.posterUrl,
-            backdropURL: item.backdropUrl
+        dispatchFeaturedHeroPlay(
+            item,
+            onVideoPlay: { playableItem in
+                router.presentPlayer(
+                    contentId: playableItem.contentId,
+                    resumePosition: playableItem.positionSeconds,
+                    returnToContentId: playableItem.contentId,
+                    posterURL: playableItem.posterUrl,
+                    backdropURL: playableItem.backdropUrl
+                )
+            },
+            onInfo: { navigateToDetail($0.contentId) }
         )
     }
     #endif
