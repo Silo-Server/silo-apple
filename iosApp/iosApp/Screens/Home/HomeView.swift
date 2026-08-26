@@ -229,8 +229,11 @@ struct HomeView: View {
                             items: featured.items,
                             onPlay: playFeaturedItem,
                             onInfo: { navigateToDetail($0.contentId) },
-                            loadTextlessPoster: { contentID in
-                                try? await ContinuumAPI.shared.textlessPoster(contentId: contentID)
+                            loadTextlessPoster: { contentID, contentType in
+                                try? await ContinuumAPI.shared.textlessPoster(
+                                    contentId: contentID,
+                                    contentType: contentType
+                                )
                             }
                         )
                         // The card begins below the separate status/header band

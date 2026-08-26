@@ -144,10 +144,24 @@ final class ImageSizeCapability: @unchecked Sendable {
         }
     }
 
-    /// Server-advertised route template for a textless portrait poster.
-    /// A nil value means the server predates the mobile hero contract.
-    var textlessPosterEndpoint: String? {
-        capability?.textlessPoster?.endpoint
+    /// Server-advertised route template for a textless portrait poster when
+    /// the requested catalogue type is explicitly supported. A nil value means
+    /// the server predates the contract or the item should use normal artwork.
+    static func textlessPosterEndpoint(
+        capability: ImageSizeCapabilityResponse?,
+        for contentType: String
+    ) -> String? {
+        guard let textlessPoster = capability?.textlessPoster,
+              !textlessPoster.endpoint.isEmpty,
+              textlessPoster.supportedTypes.contains(where: {
+                  $0.caseInsensitiveCompare(contentType) == .orderedSame
+              })
+        else { return nil }
+        return textlessPoster.endpoint
+    }
+
+    func textlessPosterEndpoint(for contentType: String) -> String? {
+        Self.textlessPosterEndpoint(capability: capability, for: contentType)
     }
 
     /// Drop the cached probe so capabilities don't leak across accounts

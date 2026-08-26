@@ -7,7 +7,7 @@ struct MobileFeaturedHero: View {
     let items: [SectionItem]
     let onPlay: (SectionItem) -> Void
     let onInfo: (SectionItem) -> Void
-    let loadTextlessPoster: @Sendable (String) async -> String?
+    let loadTextlessPoster: @Sendable (String, String) async -> String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var currentIndex: Int?
@@ -304,11 +304,12 @@ struct MobileFeaturedHero: View {
         let indexes = items.count > 1 ? [index, (index + 1) % items.count] : [index]
 
         for candidateIndex in indexes {
-            let contentID = items[candidateIndex].contentId
+            let candidate = items[candidateIndex]
+            let contentID = candidate.contentId
             guard textlessPosterURLs[contentID] == nil,
                   !unavailableTextlessPosters.contains(contentID) else { continue }
 
-            if let url = await loadTextlessPoster(contentID) {
+            if let url = await loadTextlessPoster(contentID, candidate.type) {
                 textlessPosterURLs[contentID] = url
             } else {
                 unavailableTextlessPosters.insert(contentID)

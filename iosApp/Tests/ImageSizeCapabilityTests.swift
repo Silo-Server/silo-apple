@@ -89,6 +89,24 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertEqual(capability.widths["thumb"]?["large"], 480)
     }
 
+    func testTextlessPosterEndpointOnlySupportsAdvertisedContentTypes() throws {
+        let capability = try decodedCapability()
+        XCTAssertEqual(
+            ImageSizeCapability.textlessPosterEndpoint(capability: capability, for: "movie"),
+            "/api/v1/catalog/items/{id}/images/textless-poster"
+        )
+        XCTAssertEqual(
+            ImageSizeCapability.textlessPosterEndpoint(capability: capability, for: "SERIES"),
+            "/api/v1/catalog/items/{id}/images/textless-poster"
+        )
+        XCTAssertNil(
+            ImageSizeCapability.textlessPosterEndpoint(capability: capability, for: "episode")
+        )
+        XCTAssertNil(
+            ImageSizeCapability.textlessPosterEndpoint(capability: capability, for: "audiobook")
+        )
+    }
+
     // MARK: - Query injection
 
     func testQueryEntriesAddLargeWhenSupportedOnTV() throws {

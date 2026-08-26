@@ -77,9 +77,9 @@ actor ContinuumAPI {
     /// Best available textless portrait poster for the mobile featured card.
     /// Capability detection keeps older servers on the normal artwork fallback
     /// without generating a stream of expected 404s.
-    func textlessPoster(contentId: String) async throws -> String? {
+    func textlessPoster(contentId: String, contentType: String) async throws -> String? {
         await ImageSizeCapability.shared.refresh()
-        guard let template = ImageSizeCapability.shared.textlessPosterEndpoint else {
+        guard let template = ImageSizeCapability.shared.textlessPosterEndpoint(for: contentType) else {
             return nil
         }
 
