@@ -234,7 +234,7 @@ struct HomeView: View {
                             onPlay: playFeaturedItem,
                             onInfo: { navigateToDetail($0.contentId) },
                             loadTextlessPoster: { contentID, contentType in
-                                try? await ContinuumAPI.shared.textlessPoster(
+                                try await ContinuumAPI.shared.textlessPoster(
                                     contentId: contentID,
                                     contentType: contentType
                                 )

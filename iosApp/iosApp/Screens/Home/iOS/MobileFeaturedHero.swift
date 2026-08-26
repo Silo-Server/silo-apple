@@ -8,7 +8,7 @@ struct MobileFeaturedHero: View {
     let usesCardLayout: Bool
     let onPlay: (SectionItem) -> Void
     let onInfo: (SectionItem) -> Void
-    let loadTextlessPoster: @Sendable (String, String) async -> String?
+    let loadTextlessPoster: @Sendable (String, String) async throws -> String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var currentIndex: Int?
@@ -350,10 +350,17 @@ struct MobileFeaturedHero: View {
             guard textlessPosterURLs[contentID] == nil,
                   !unavailableTextlessPosters.contains(contentID) else { continue }
 
-            if let url = await loadTextlessPoster(contentID, candidate.type) {
-                textlessPosterURLs[contentID] = url
-            } else {
-                unavailableTextlessPosters.insert(contentID)
+            do {
+                if let url = try await loadTextlessPoster(contentID, candidate.type) {
+                    textlessPosterURLs[contentID] = url
+                } else {
+                    unavailableTextlessPosters.insert(contentID)
+                }
+            } catch {
+                if Task.isCancelled { return }
+                // A transient request failure remains retryable when the
+                // carousel next visits this item.
+                continue
             }
         }
     }

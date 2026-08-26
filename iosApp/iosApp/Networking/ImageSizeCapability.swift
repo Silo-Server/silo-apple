@@ -8,9 +8,9 @@ import Foundation
 /// fetched once per session and reset on sign-out and profile/server
 /// switch, with a generation counter so a probe still in flight across
 /// a reset discards its result instead of repopulating the next
-/// account's capabilities. A `404`/network error leaves the slot `nil`,
+/// account's capabilities. A `404`/network error is cached as unavailable,
 /// which ``isAvailable`` reads as "feature off", so older servers
-/// degrade silently.
+/// degrade silently without being probed again by every artwork request.
 ///
 /// Unlike `AICapabilities` this is **not** `@MainActor @Observable`: no
 /// view observes it, and its one consumer is the `ContinuumAPI` actor,
@@ -62,10 +62,16 @@ final class ImageSizeCapability: @unchecked Sendable {
         let task: Task<ImageSizeCapabilityResponse?, Never>
     }
 
+    private enum ProbeState {
+        case unknown
+        case available(ImageSizeCapabilityResponse)
+        case unavailable
+    }
+
     private let fetchCapability: @Sendable () async throws -> ImageSizeCapabilityResponse
     private let prefersLargeImages: Bool
     private let lock = NSLock()
-    private var storedCapability: ImageSizeCapabilityResponse?
+    private var probeState = ProbeState.unknown
     private var generation = 0
     private var nextProbeID = 0
     private var inFlightProbe: Probe?
@@ -88,9 +94,13 @@ final class ImageSizeCapability: @unchecked Sendable {
 
     // MARK: - Gating convenience
 
-    /// The decoded probe, or `nil` before it lands / after `reset()`.
+    /// The decoded probe, or `nil` before it lands, after `reset()`, or when
+    /// the latest probe established that the capability is unavailable.
     var capability: ImageSizeCapabilityResponse? {
-        lock.withLock { storedCapability }
+        lock.withLock {
+            guard case let .available(capability) = probeState else { return nil }
+            return capability
+        }
     }
 
     /// Whether this client will actually send a size on this platform.
@@ -108,17 +118,16 @@ final class ImageSizeCapability: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    /// Probe the server once per session. Failure-tolerant and
-    /// idempotent: a `404` from an older server, or any transport
-    /// error, leaves the feature off and is retried on the next
-    /// foreground refresh.
+    /// Probe the server once per session. Failure-tolerant and idempotent: a
+    /// `404` from an older server, or any transport error, leaves the feature
+    /// off until ``retryUnavailable()`` runs at the next foreground edge.
     ///
     /// All platforms probe because the same payload also advertises optional
     /// artwork roles such as textless mobile posters. Platforms that do not
     /// want a larger image size still leave ``requestQuery`` empty.
     func refresh() async {
         guard let probe = lock.withLock({ () -> Probe? in
-            if storedCapability != nil { return nil }
+            guard case .unknown = probeState else { return nil }
             if let inFlightProbe, inFlightProbe.generation == generation {
                 return inFlightProbe
             }
@@ -135,13 +144,29 @@ final class ImageSizeCapability: @unchecked Sendable {
         let probed = await probe.task.value
         lock.withLock {
             // Discard if a reset happened while the probe was in flight, or a
-            // newer probe superseded this one. A nil result remains retryable
-            // on the next foreground; successful results are cached.
+            // newer probe superseded this one. Both successful and unavailable
+            // outcomes stay cached until an explicit lifecycle retry or reset.
             guard generation == probe.generation,
                   inFlightProbe?.id == probe.id else { return }
             inFlightProbe = nil
-            storedCapability = probed
+            if let probed {
+                probeState = .available(probed)
+            } else {
+                probeState = .unavailable
+            }
         }
+    }
+
+    /// Retry a previously unavailable probe at the foreground lifecycle edge.
+    /// Ordinary artwork requests call ``refresh()`` and therefore reuse the
+    /// cached unavailable result instead of repeatedly probing older servers.
+    func retryUnavailable() async {
+        lock.withLock {
+            if case .unavailable = probeState {
+                probeState = .unknown
+            }
+        }
+        await refresh()
     }
 
     /// Server-advertised route template for a textless portrait poster when
@@ -170,7 +195,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     func reset() {
         let task = lock.withLock { () -> Task<ImageSizeCapabilityResponse?, Never>? in
             generation &+= 1
-            storedCapability = nil
+            probeState = .unknown
             let task = inFlightProbe?.task
             inFlightProbe = nil
             return task

@@ -361,11 +361,11 @@ struct ContentView: View {
             #endif
             Task { await hydrateOverlayPrefs(phase: "foreground_refresh") }
             // Same rationale as overlay hydration above: a transiently-failed
-            // capability probe (or one skipped on a cold restore) gets a
-            // natural retry on foreground. `refresh()` is idempotent, so the
-            // happy path costs nothing.
+            // capability probe (or one skipped on a cold restore) gets an
+            // explicit retry on foreground. Successful probes remain cached,
+            // so the happy path costs nothing.
             Task { await AICapabilities.shared.refresh() }
-            Task { await ImageSizeCapability.shared.refresh() }
+            Task { await ImageSizeCapability.shared.retryUnavailable() }
             Task { await RequestsFeatureStore.shared.refresh() }
             Task { await SubtitleProvidersStore.shared.refresh() }
             Task { await uiCustomization.refresh() }

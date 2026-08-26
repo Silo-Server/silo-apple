@@ -217,7 +217,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
     }
 
-    func testFailedRefreshRetriesAndThenCachesSuccess() async throws {
+    func testFailedRefreshIsCachedUntilExplicitRetry() async throws {
         let response = try decodedCapability()
         let stub = ImageSizeCapabilityFetchStub(
             response: response,
@@ -231,9 +231,13 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertTrue(capability.requestQuery.isEmpty)
 
         await capability.refresh()
+        var callCount = await stub.callCount
+        XCTAssertEqual(callCount, 1)
+
+        await capability.retryUnavailable()
         await capability.refresh()
 
-        let callCount = await stub.callCount
+        callCount = await stub.callCount
         XCTAssertEqual(callCount, 2)
         XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
     }
