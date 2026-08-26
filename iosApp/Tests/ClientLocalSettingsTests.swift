@@ -63,20 +63,27 @@ final class ClientLocalSettingsTests: XCTestCase {
         }
         let defaults = SharedDefaults(suite: suite, standard: standard)
         let key = "ios.home.showFeaturedHero.test-server.test-profile"
+        let cardsKey = "ios.home.useFeaturedHeroCards.test-server.test-profile"
 
         let settings = AppNavPreferences(
             defaults: defaults,
-            featuredHeroStorageKey: { key }
+            featuredHeroStorageKey: { key },
+            featuredHeroCardsStorageKey: { cardsKey }
         )
         XCTAssertTrue(settings.showFeaturedHero)
+        XCTAssertTrue(settings.useFeaturedHeroCards)
         settings.setShowFeaturedHero(false)
+        settings.setUseFeaturedHeroCards(false)
 
         let restored = AppNavPreferences(
             defaults: defaults,
-            featuredHeroStorageKey: { key }
+            featuredHeroStorageKey: { key },
+            featuredHeroCardsStorageKey: { cardsKey }
         )
         XCTAssertFalse(restored.showFeaturedHero)
+        XCTAssertFalse(restored.useFeaturedHeroCards)
         XCTAssertTrue(defaults.containsObject(forKey: key))
+        XCTAssertTrue(defaults.containsObject(forKey: cardsKey))
     }
 
     @MainActor

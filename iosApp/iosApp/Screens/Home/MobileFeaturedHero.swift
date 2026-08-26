@@ -5,6 +5,7 @@ import SwiftUI
 /// rendered once here and removed from the rows below.
 struct MobileFeaturedHero: View {
     let items: [SectionItem]
+    let usesCardLayout: Bool
     let onPlay: (SectionItem) -> Void
     let onInfo: (SectionItem) -> Void
     let loadTextlessPoster: @Sendable (String, String) async -> String?
@@ -56,24 +57,39 @@ struct MobileFeaturedHero: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geometry in
-                let cardWidth = min(max(geometry.size.width - 24, 280), 620)
-                let pagingInset = max((geometry.size.width - cardWidth) / 2, 0)
+                let heroWidth = usesCardLayout
+                    ? min(max(geometry.size.width - 24, 280), 620)
+                    : geometry.size.width
+                let pagingInset = usesCardLayout
+                    ? max((geometry.size.width - heroWidth) / 2, 0)
+                    : 0
 
                 ScrollView(.horizontal) {
-                    LazyHStack(spacing: 12) {
+                    LazyHStack(spacing: usesCardLayout ? 12 : 0) {
                         ForEach(renderedCards) { card in
-                            ZStack {
-                                cardGlow(for: card.item)
+                            Group {
+                                if usesCardLayout {
+                                    ZStack {
+                                        cardGlow(for: card.item)
 
-                                spotlight(card.item, cardWidth: cardWidth)
-                                    .frame(width: cardWidth, height: heroHeight)
-                                    .clipShape(cardShape)
-                                    .overlay {
-                                        cardShape.stroke(Color.white.opacity(0.09), lineWidth: 0.75)
+                                        spotlight(card.item, heroWidth: heroWidth)
+                                            .frame(width: heroWidth, height: heroHeight)
+                                            .clipShape(cardShape)
+                                            .overlay {
+                                                cardShape.stroke(
+                                                    Color.white.opacity(0.09),
+                                                    lineWidth: 0.75
+                                                )
+                                            }
                                     }
+                                    .contentShape(cardShape)
+                                } else {
+                                    spotlight(card.item, heroWidth: heroWidth)
+                                        .frame(width: heroWidth, height: heroHeight)
+                                        .contentShape(Rectangle())
+                                }
                             }
-                                .frame(width: cardWidth, height: heroHeight)
-                                .contentShape(cardShape)
+                                .frame(width: heroWidth, height: heroHeight)
                                 .onTapGesture { onInfo(card.item) }
                                 .id(card.id)
                         }
@@ -106,32 +122,38 @@ struct MobileFeaturedHero: View {
         }
         .frame(height: heroHeight + (items.count > 1 ? indicatorHeight : 0))
         .frame(maxWidth: .infinity)
-        .background(Color.continuumBackground)
         .background(alignment: .bottom) {
-            Rectangle()
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            activeGlowTint.opacity(0.52),
-                            activeGlowTint.opacity(0.18),
-                            .clear,
-                        ],
-                        center: .top,
-                        startRadius: 0,
-                        endRadius: 260
+            if usesCardLayout {
+                Rectangle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                activeGlowTint.opacity(0.52),
+                                activeGlowTint.opacity(0.18),
+                                .clear,
+                            ],
+                            center: .top,
+                            startRadius: 0,
+                            endRadius: 260
+                        )
                     )
-                )
-                .frame(height: 230)
-                .offset(y: 120)
-                .blur(radius: 26)
-                .allowsHitTesting(false)
-                .animation(.easeInOut(duration: 0.45), value: activeContentID)
+                    .frame(height: 230)
+                    .offset(y: 120)
+                    .blur(radius: 26)
+                    .allowsHitTesting(false)
+                    .animation(.easeInOut(duration: 0.45), value: activeContentID)
+            }
         }
+        .background(Color.continuumBackground)
         .task {
             seedCurrentIndex()
         }
         .task(id: currentItemID) {
             await loadTextlessArtworkAroundCurrentCard()
+        }
+        .task(id: activeArtworkURL) {
+            guard usesCardLayout else { return }
+            await loadActiveGlowTint()
         }
         .task(
             id: AutoAdvanceKey(
@@ -218,6 +240,25 @@ struct MobileFeaturedHero: View {
 
     private var activeGlowTint: Color {
         glowTints[activeContentID] ?? .clear
+    }
+
+    private var activeArtworkURL: String? {
+        guard !items.isEmpty else { return nil }
+        return preferredArtworkURL(
+            for: items[logicalIndex(forPage: currentIndex ?? lastValidIndex)]
+        )
+    }
+
+    private func loadActiveGlowTint() async {
+        guard let artwork = activeArtworkURL,
+              let url = URL(string: artwork) else { return }
+        if let cached = HeroBackdropPalette.cachedTint(for: url) {
+            glowTints[activeContentID] = cached
+        } else if let tint = await HeroBackdropPalette.tintColor(for: url) {
+            withAnimation(.easeInOut(duration: 0.35)) {
+                glowTints[activeContentID] = tint
+            }
+        }
     }
 
     @ViewBuilder
@@ -317,9 +358,9 @@ struct MobileFeaturedHero: View {
         }
     }
 
-    private func spotlight(_ item: SectionItem, cardWidth: CGFloat) -> some View {
+    private func spotlight(_ item: SectionItem, heroWidth: CGFloat) -> some View {
         ZStack(alignment: .bottom) {
-            artwork(for: item, cardWidth: cardWidth)
+            artwork(for: item, heroWidth: heroWidth)
 
             LinearGradient(
                 stops: [
@@ -341,15 +382,15 @@ struct MobileFeaturedHero: View {
     }
 
     @ViewBuilder
-    private func artwork(for item: SectionItem, cardWidth: CGFloat) -> some View {
+    private func artwork(for item: SectionItem, heroWidth: CGFloat) -> some View {
         if let url = preferredArtworkURL(for: item) {
             AsyncImageView(
                 url: url,
                 thumbhash: item.posterThumbhash ?? item.backdropThumbhash,
-                targetSize: CGSize(width: cardWidth, height: heroHeight),
+                targetSize: CGSize(width: heroWidth, height: heroHeight),
                 contentMode: .fill
             )
-            .frame(width: cardWidth, height: heroHeight)
+            .frame(width: heroWidth, height: heroHeight)
             .clipped()
             .transition(.opacity.animation(.easeInOut(duration: 0.35)))
         } else {

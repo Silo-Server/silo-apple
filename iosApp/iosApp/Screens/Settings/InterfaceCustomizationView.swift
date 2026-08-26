@@ -149,10 +149,21 @@ struct InterfaceCustomizationView: View {
                         set: { navPreferences.setShowFeaturedHero($0) }
                     )
                 )
+                Toggle(
+                    "Card Layout",
+                    isOn: Binding(
+                        get: { navPreferences.useFeaturedHeroCards },
+                        set: { navPreferences.setUseFeaturedHeroCards($0) }
+                    )
+                )
+                .disabled(!navPreferences.showFeaturedHero)
             } header: {
                 Text("Home")
             } footer: {
-                Text("When hidden, your other Home rows move up to fill the space.")
+                Text(
+                    "Turn off Card Layout for a full-width hero with no card, border, "
+                        + "or side gutter. Hiding the hero moves your other Home rows up."
+                )
             }
             #endif
 

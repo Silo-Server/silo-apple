@@ -230,6 +230,7 @@ struct HomeView: View {
                        let featured = viewModel.featuredSection {
                         MobileFeaturedHero(
                             items: featured.items,
+                            usesCardLayout: usesFeaturedHeroCardLayout,
                             onPlay: playFeaturedItem,
                             onInfo: { navigateToDetail($0.contentId) },
                             loadTextlessPoster: { contentID, contentType in
@@ -243,9 +244,11 @@ struct HomeView: View {
                         // instead of painting behind the logo and actions.
                         .padding(
                             .top,
-                            featuredHeaderRunwaySpacing(
-                                topSafeAreaInset: geometry.safeAreaInsets.top
-                            )
+                            usesFeaturedHeroCardLayout
+                                ? featuredHeaderRunwaySpacing(
+                                    topSafeAreaInset: geometry.safeAreaInsets.top
+                                )
+                                : 0
                         )
                         // Keep the timer dots clear of Continue Watching while
                         // retaining the tight, seamless transition into the
@@ -312,6 +315,12 @@ struct HomeView: View {
         return !displayedSections.isEmpty
         #endif
     }
+
+    #if os(iOS)
+    private var usesFeaturedHeroCardLayout: Bool {
+        navPreferences.useFeaturedHeroCards
+    }
+    #endif
 
     #if !os(tvOS)
     private var headerChromeOpacity: Double {
