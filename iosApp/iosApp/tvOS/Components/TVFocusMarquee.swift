@@ -1,3 +1,45 @@
+import Foundation
+
+/// Pure artwork selection for the tvOS focus hero. Kept outside the tvOS
+/// compilation guard so the iOS-hosted unit tests can exercise the transition
+/// from section data to detail enrichment.
+struct TVHeroArtwork: Equatable {
+    let url: String
+    let thumbhash: String?
+
+    init?(url: String?, thumbhash: String?) {
+        guard let url, !url.isEmpty else { return nil }
+        self.url = url
+        self.thumbhash = thumbhash
+    }
+}
+
+enum TVHeroArtworkResolver {
+    static func resolve(
+        sectionBackdrop: TVHeroArtwork?,
+        fallback: TVHeroArtwork?,
+        prefersEnrichedBackdrop: Bool,
+        canLoadEnrichment: Bool,
+        enrichmentLoaded: Bool,
+        enrichedBackdrop: TVHeroArtwork?
+    ) -> TVHeroArtwork? {
+        if !prefersEnrichedBackdrop, let sectionBackdrop {
+            return sectionBackdrop
+        }
+
+        guard canLoadEnrichment else {
+            return sectionBackdrop ?? fallback
+        }
+        guard enrichmentLoaded else {
+            // Do not paint the poster while detail enrichment is in flight:
+            // that creates a conspicuous portrait-to-landscape flash. The
+            // first image displayed should be the real backdrop.
+            return nil
+        }
+        return enrichedBackdrop ?? sectionBackdrop ?? fallback
+    }
+}
+
 #if os(tvOS)
 import SwiftUI
 import Nuke
@@ -29,8 +71,13 @@ struct TVMarqueeContent: Equatable {
     /// or `S2 E7 · episode title · 45 min · 23 min left` for episodes.
     let metaParts: [String]
     let synopsis: String?
+    /// A genuine landscape backdrop from the section payload. This must stay
+    /// separate from the poster fallback so the hero can wait for detail
+    /// enrichment without briefly painting a portrait poster first.
     let backdropUrl: String?
     let backdropThumbhash: String?
+    let fallbackArtworkUrl: String?
+    let fallbackArtworkThumbhash: String?
     /// Episodes carry only their low-res still in the section payload, so the
     /// root hero upgrades to the series backdrop from detail enrichment rather
     /// than blowing the still up full-width.
@@ -78,10 +125,10 @@ extension TVMarqueeContent {
             badges: badges,
             metaParts: meta,
             synopsis: item.overview,
-            backdropUrl: Self.nonEmpty(item.backdropUrl) ?? item.posterUrl,
-            backdropThumbhash: Self.nonEmpty(item.backdropUrl) != nil
-                ? item.backdropThumbhash
-                : item.posterThumbhash,
+            backdropUrl: Self.nonEmpty(item.backdropUrl),
+            backdropThumbhash: item.backdropThumbhash,
+            fallbackArtworkUrl: Self.nonEmpty(item.posterUrl),
+            fallbackArtworkThumbhash: item.posterThumbhash,
             isEpisode: isEpisode
         )
     }
@@ -105,8 +152,10 @@ extension TVMarqueeContent {
             badges: [],
             metaParts: meta,
             synopsis: nil,
-            backdropUrl: collection.posterUrl,
-            backdropThumbhash: collection.posterThumbhash,
+            backdropUrl: nil,
+            backdropThumbhash: nil,
+            fallbackArtworkUrl: collection.posterUrl,
+            fallbackArtworkThumbhash: collection.posterThumbhash,
             isEpisode: false
         )
     }
@@ -250,25 +299,36 @@ final class TVFocusMarqueeModel {
     /// backdrop (same palette pipeline the hero carousel used).
     private(set) var tintColor: Color = .continuumBackground
 
-    /// Backdrop art for the root hero. Episodes carry only their low-res still
-    /// in the section payload (§9); once detail enrichment lands we upgrade to
-    /// the series backdrop it provides rather than blowing the still up
-    /// full-width. Non-episodes always use their own section backdrop.
-    var backdropURL: String? {
-        if content?.isEpisode == true,
-           let enriched = enrichment?.backdropUrl, !enriched.isEmpty {
-            return enriched
-        }
-        return content?.backdropUrl
+    /// Backdrop art for the root hero. Episodes need their detail-level series
+    /// backdrop, and any item missing a section backdrop gets one chance to
+    /// obtain the real backdrop from detail. While that request is in flight
+    /// the hero stays artwork-free instead of flashing the poster. Poster/still
+    /// fallback is used only after detail confirms no backdrop exists (or for
+    /// collections, which have no detail lookup).
+    private var resolvedArtwork: TVHeroArtwork? {
+        guard let content else { return nil }
+        return TVHeroArtworkResolver.resolve(
+            sectionBackdrop: TVHeroArtwork(
+                url: content.backdropUrl,
+                thumbhash: content.backdropThumbhash
+            ),
+            fallback: TVHeroArtwork(
+                url: content.fallbackArtworkUrl,
+                thumbhash: content.fallbackArtworkThumbhash
+            ),
+            prefersEnrichedBackdrop: content.isEpisode || content.backdropUrl?.isEmpty != false,
+            canLoadEnrichment: content.contentId != nil,
+            enrichmentLoaded: enrichment != nil,
+            enrichedBackdrop: TVHeroArtwork(
+                url: enrichment?.backdropUrl,
+                thumbhash: enrichment?.backdropThumbhash
+            )
+        )
     }
 
-    var backdropThumbhash: String? {
-        if content?.isEpisode == true,
-           let enriched = enrichment?.backdropUrl, !enriched.isEmpty {
-            return enrichment?.backdropThumbhash ?? content?.backdropThumbhash
-        }
-        return content?.backdropThumbhash
-    }
+    var backdropURL: String? { resolvedArtwork?.url }
+
+    var backdropThumbhash: String? { resolvedArtwork?.thumbhash }
 
     private var debounceTask: Task<Void, Never>?
     private var tintTask: Task<Void, Never>?
@@ -303,8 +363,8 @@ final class TVFocusMarqueeModel {
 
     private func display(_ candidate: TVMarqueeContent) {
         content = candidate
-        sampleTintIfNeeded(for: candidate.backdropUrl)
         loadEnrichment(for: candidate)
+        sampleTintIfNeeded(for: backdropURL)
     }
 
     /// The §9 backfill: fields the section payload doesn't carry (air
