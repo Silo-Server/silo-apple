@@ -627,15 +627,21 @@ enum StartupContentPrefetcher {
             urls.append(url)
         }
 
-        // No client renders a featured hero anymore — featured sections show
-        // as ordinary rows. Entry lands on the first card of the first content
-        // row. Warm that row's logo + art first (so a cold start paints a
-        // finished first row), then the rest. (The first row's logo + backdrop
-        // are sized for the tvOS focus marquee; on other platforms only
-        // posters/episode stills render, so those two are speculative but
-        // harmless.)
+        // iOS promotes the featured section into the Home spotlight. Warm its
+        // first logo and backdrops before row artwork so cold entry paints the
+        // hero immediately. tvOS filters this section from its rows, but the
+        // small speculative fetch is harmless there.
         let contentSections = response.sections.filter { !$0.items.isEmpty }
-        if let firstRow = contentSections.first {
+        if let featured = contentSections.first(where: { $0.isFeatured }) {
+            append(featured.items.first?.logoUrl)
+            for item in featured.items {
+                append(item.backdropUrl ?? item.posterUrl)
+                if urls.count >= maxHomeArtworkURLs { break }
+            }
+        }
+
+        let rowSections = contentSections.filter { !$0.isFeatured }
+        if let firstRow = rowSections.first {
             append(firstRow.items.first?.logoUrl)
             for item in firstRow.items {
                 if episodeSectionTypes.contains(firstRow.sectionType) {
@@ -649,7 +655,7 @@ enum StartupContentPrefetcher {
                 if urls.count >= maxHomeArtworkURLs { break }
             }
         }
-        for section in contentSections.dropFirst() {
+        for section in rowSections.dropFirst() {
             for item in section.items {
                 if episodeSectionTypes.contains(section.sectionType) {
                     append(item.backdropUrl ?? item.posterUrl)
@@ -670,7 +676,7 @@ enum StartupContentPrefetcher {
         // fading up from the black background once sampling finishes. Other
         // platforms render no marquee, so skip the fetch + sampling there.
         #if os(tvOS)
-        if let firstBackdrop = normalizedURL(from: contentSections.first?.items.first?.backdropUrl) {
+        if let firstBackdrop = normalizedURL(from: rowSections.first?.items.first?.backdropUrl) {
             Task { _ = await HeroBackdropPalette.tintColor(for: firstBackdrop) }
         }
         #endif

@@ -35,11 +35,15 @@ class HomeViewModel {
         }
     }
 
-    /// Sections for Home in server order, filtered to non-empty rows.
-    /// `featured` sections render as ordinary rows in their server position —
-    /// Apple Home has no separate hero surface.
+    /// First non-empty section selected as the server-driven phone hero.
+    var featuredSection: ResolvedSection? {
+        sections.first { $0.isFeatured && !$0.items.isEmpty }
+    }
+
+    /// Sections for Home in server order, excluding the hero source so it is
+    /// never repeated as a normal row on iOS or tvOS.
     var regularSections: [ResolvedSection] {
-        sections.filter { !$0.items.isEmpty }
+        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
     }
 
     init(

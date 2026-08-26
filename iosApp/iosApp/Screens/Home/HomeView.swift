@@ -4,9 +4,8 @@ extension Notification.Name {
     static let homeSectionsShouldRefresh = Notification.Name("homeSectionsShouldRefresh")
 }
 
-/// Main home screen. iOS/macOS render resume-first section rows on a flat
-/// background; tvOS uses the Skyline focus marquee (§5.4) — a passive
-/// billboard previewing whichever card holds focus.
+/// Main home screen. iOS promotes the server's featured section into a
+/// full-bleed spotlight, while tvOS keeps its existing Skyline focus marquee.
 struct HomeView: View {
     var homeFocusRequest: Int = 0
     /// tvOS-only: whether the custom top menu holds focus. Deferred entry
@@ -94,7 +93,7 @@ struct HomeView: View {
                 .ignoresSafeArea()
 
             Group {
-                if !displayedSections.isEmpty {
+                if hasHomeContent {
                     scrollContent
                 } else if let error = viewModel.error {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
@@ -203,11 +202,24 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                    // No hero — reserve runway for the floating Home header so
-                    // the first row doesn't slide under the status-bar chrome.
-                    Color.clear
-                        .frame(height: topRunwaySpacing(topSafeAreaInset: geometry.safeAreaInsets.top))
-                        .id(HomeFocusTarget.topSpacer)
+                    #if os(iOS)
+                    if let featured = viewModel.featuredSection {
+                        MobileFeaturedHero(
+                            items: featured.items,
+                            onPlay: playFeaturedItem,
+                            onInfo: { navigateToDetail($0.contentId) }
+                        )
+                        // The spotlight already fades to the page background;
+                        // cancel the stack gap so the first row grows out of
+                        // that fade instead of exposing a straight seam.
+                        .padding(.bottom, -HomeFeedMetrics.sectionSpacing)
+                        .id(HomeFocusTarget.featured)
+                    } else {
+                        topRunway(topSafeAreaInset: geometry.safeAreaInsets.top)
+                    }
+                    #else
+                    topRunway(topSafeAreaInset: geometry.safeAreaInsets.top)
+                    #endif
 
                     ForEach(displayedSections) { section in
                         HomeFeedRow(
@@ -230,9 +242,16 @@ struct HomeView: View {
             homeScrollOffset = max(0, newValue)
         }
     }
+
+    private func topRunway(topSafeAreaInset: CGFloat) -> some View {
+        Color.clear
+            .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
+            .id(HomeFocusTarget.topSpacer)
+    }
     #endif
 
     private enum HomeFocusTarget: Hashable {
+        case featured
         case topSpacer
         case row(String)
     }
@@ -240,7 +259,19 @@ struct HomeView: View {
     /// Rows for the vertical list, in server Home order after filtering empty
     /// and featured sections. Recommendations stay in the For You tab.
     private var displayedSections: [ResolvedSection] {
+        #if os(macOS)
+        return viewModel.sections.filter { !$0.items.isEmpty }
+        #else
         return viewModel.regularSections
+        #endif
+    }
+
+    private var hasHomeContent: Bool {
+        #if os(iOS)
+        return viewModel.featuredSection != nil || !displayedSections.isEmpty
+        #else
+        return !displayedSections.isEmpty
+        #endif
     }
 
     #if !os(tvOS)
@@ -317,6 +348,18 @@ struct HomeView: View {
     private func navigateToDetail(_ contentId: String) {
         router.navigate(to: .itemDetail(contentId: contentId))
     }
+
+    #if os(iOS)
+    private func playFeaturedItem(_ item: SectionItem) {
+        router.presentPlayer(
+            contentId: item.contentId,
+            resumePosition: item.positionSeconds,
+            returnToContentId: item.contentId,
+            posterURL: item.posterUrl,
+            backdropURL: item.backdropUrl
+        )
+    }
+    #endif
 
     private func dismissContinueWatching(_ item: SectionItem) {
         Task {
