@@ -1,152 +1,390 @@
 #if os(iOS)
 import SwiftUI
 
-/// Server-driven Home spotlight for iPhone and iPad. The featured section is
+/// Server-driven Home cards for iPhone and iPad. The featured section is
 /// rendered once here and removed from the rows below.
 struct MobileFeaturedHero: View {
     let items: [SectionItem]
     let onPlay: (SectionItem) -> Void
     let onInfo: (SectionItem) -> Void
+    let loadTextlessPoster: @Sendable (String) async -> String?
 
-    @State private var currentIndex = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var currentIndex: Int?
+    @State private var lastValidIndex = 0
+    @State private var isPagerIdle = true
+    @State private var autoAdvanceProgress: CGFloat = 0
+    @State private var textlessPosterURLs: [String: String] = [:]
+    @State private var unavailableTextlessPosters: Set<String> = []
+    @State private var glowTints: [String: Color] = [:]
 
-    private var heroHeight: CGFloat {
-        min(max(PlatformScreen.mainBounds.height * 0.69, 610), 740)
+    private struct AutoAdvanceKey: Hashable {
+        let itemIDs: [String]
+        let currentIndex: Int?
+        let isPagerIdle: Bool
     }
 
-    var body: some View {
-        TabView(selection: $currentIndex) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                spotlight(item)
-                    .tag(index)
+    private struct RenderedCard: Identifiable {
+        let id: Int
+        let logicalIndex: Int
+        let item: SectionItem
+    }
+
+    /// Duplicate the trailing/leading cards at opposite ends so the carousel
+    /// wraps by one ordinary page instead of animating across the whole list.
+    private var renderedCards: [RenderedCard] {
+        guard items.count > 1 else {
+            return items.enumerated().map {
+                RenderedCard(id: $0.offset, logicalIndex: $0.offset, item: $0.element)
             }
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .frame(height: heroHeight)
+
+        var cards = [RenderedCard(id: 0, logicalIndex: items.count - 1, item: items[items.count - 1])]
+        cards.append(contentsOf: items.enumerated().map {
+            RenderedCard(id: $0.offset + 1, logicalIndex: $0.offset, item: $0.element)
+        })
+        cards.append(RenderedCard(id: items.count + 1, logicalIndex: 0, item: items[0]))
+        return cards
+    }
+
+    private var heroHeight: CGFloat {
+        min(max(PlatformScreen.mainBounds.height * 0.61, 500), 620)
+    }
+
+    private let indicatorHeight: CGFloat = 23
+
+    var body: some View {
+        VStack(spacing: 0) {
+            GeometryReader { geometry in
+                let cardWidth = min(max(geometry.size.width - 24, 280), 620)
+                let pagingInset = max((geometry.size.width - cardWidth) / 2, 0)
+
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 12) {
+                        ForEach(renderedCards) { card in
+                            ZStack {
+                                cardGlow(for: card.item)
+
+                                spotlight(card.item, cardWidth: cardWidth)
+                                    .frame(width: cardWidth, height: heroHeight)
+                                    .clipShape(cardShape)
+                                    .overlay {
+                                        cardShape.stroke(Color.white.opacity(0.09), lineWidth: 0.75)
+                                    }
+                            }
+                                .frame(width: cardWidth, height: heroHeight)
+                                .contentShape(cardShape)
+                                .onTapGesture { onInfo(card.item) }
+                                .id(card.id)
+                        }
+                    }
+                    .scrollTargetLayout()
+                }
+                .scrollIndicators(.hidden)
+                .scrollClipDisabled()
+                // Keep the runway outside the target layout. Padding the
+                // LazyHStack makes every programmatic target inherit one extra
+                // inset and leaves automatic advances visibly off-centre.
+                .contentMargins(.horizontal, pagingInset, for: .scrollContent)
+                .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
+                // An explicit centre anchor makes both timer advances and manual
+                // gestures settle on one complete card instead of a partial page.
+                .scrollPosition(id: $currentIndex, anchor: .center)
+                .onScrollPhaseChange { _, phase in
+                    isPagerIdle = phase == .idle
+                    if phase == .idle {
+                        normalizeSettledPage()
+                    }
+                }
+            }
+            .frame(height: heroHeight)
+
+            if items.count > 1 {
+                timedPageIndicator
+                    .frame(height: indicatorHeight)
+            }
+        }
+        .frame(height: heroHeight + (items.count > 1 ? indicatorHeight : 0))
         .frame(maxWidth: .infinity)
         .background(Color.continuumBackground)
-        .clipped()
-        .task(id: items.map(\.contentId)) {
+        .background(alignment: .bottom) {
+            Rectangle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            activeGlowTint.opacity(0.52),
+                            activeGlowTint.opacity(0.18),
+                            .clear,
+                        ],
+                        center: .top,
+                        startRadius: 0,
+                        endRadius: 260
+                    )
+                )
+                .frame(height: 230)
+                .offset(y: 120)
+                .blur(radius: 26)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.45), value: activeContentID)
+        }
+        .task {
+            seedCurrentIndex()
+        }
+        .task(id: currentItemID) {
+            await loadTextlessArtworkAroundCurrentCard()
+        }
+        .task(
+            id: AutoAdvanceKey(
+                itemIDs: items.map(\.contentId),
+                currentIndex: currentIndex,
+                isPagerIdle: isPagerIdle
+            )
+        ) {
+            var resetTransaction = Transaction()
+            resetTransaction.disablesAnimations = true
+            withTransaction(resetTransaction) {
+                autoAdvanceProgress = 0
+            }
+
             guard items.count > 1 else { return }
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: 10_000_000_000)
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeInOut(duration: 0.55)) {
-                    currentIndex = (currentIndex + 1) % items.count
-                }
+            guard isPagerIdle else { return }
+
+            await Task.yield()
+            withAnimation(reduceMotion ? nil : .linear(duration: 10)) {
+                autoAdvanceProgress = 1
+            }
+
+            do {
+                try await Task.sleep(for: .seconds(10))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, isPagerIdle else { return }
+
+            let nextIndex = min((currentIndex ?? lastValidIndex) + 1, items.count + 1)
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.55)) {
+                currentIndex = nextIndex
             }
         }
         .onChange(of: items.map(\.contentId)) { _, _ in
-            currentIndex = min(currentIndex, max(items.count - 1, 0))
+            seedCurrentIndex()
+        }
+        .onChange(of: currentIndex) { _, newIndex in
+            guard let newIndex, renderedCards.indices.contains(newIndex) else { return }
+            lastValidIndex = newIndex
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Featured")
     }
 
-    private func spotlight(_ item: SectionItem) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            artwork(for: item)
+    private var timedPageIndicator: some View {
+        let activeIndex = logicalIndex(forPage: currentIndex ?? lastValidIndex)
+        let progress = min(max(autoAdvanceProgress, 0), 1)
+
+        return HStack(spacing: 8) {
+            ForEach(items.indices, id: \.self) { index in
+                if index == activeIndex {
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.28))
+                        Capsule()
+                            .fill(Color.white.opacity(0.94))
+                            .frame(width: max(7, 32 * progress))
+                    }
+                    .frame(width: 32, height: 7)
+                    .clipped()
+                    .accessibilityLabel("Featured item \(index + 1) of \(items.count)")
+                } else {
+                    Circle()
+                        .fill(Color.white.opacity(0.38))
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .animation(nil, value: activeIndex)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+    }
+
+    private var activeContentID: String {
+        guard !items.isEmpty else { return "" }
+        return items[logicalIndex(forPage: currentIndex ?? lastValidIndex)].contentId
+    }
+
+    private var activeGlowTint: Color {
+        glowTints[activeContentID] ?? .clear
+    }
+
+    @ViewBuilder
+    private func cardGlow(for item: SectionItem) -> some View {
+        if let artwork = preferredArtworkURL(for: item),
+           let url = URL(string: artwork) {
+            ZStack {
+                cardShape
+                    .fill(Color.black.opacity(0.88))
+                    .blur(radius: 30)
+                    .scaleEffect(1.04)
+
+                cardShape
+                    .fill((glowTints[item.contentId] ?? .clear).opacity(0.56))
+                    .blur(radius: 24)
+                    .scaleEffect(1.025)
+            }
+                .allowsHitTesting(false)
+                .task(id: artwork) {
+                    if let cached = HeroBackdropPalette.cachedTint(for: url) {
+                        glowTints[item.contentId] = cached
+                    } else if let tint = await HeroBackdropPalette.tintColor(for: url) {
+                        withAnimation(.easeInOut(duration: 0.35)) {
+                            glowTints[item.contentId] = tint
+                        }
+                    }
+                }
+        }
+    }
+
+    private func seedCurrentIndex() {
+        guard !items.isEmpty else {
+            currentIndex = nil
+            lastValidIndex = 0
+            return
+        }
+        let defaultIndex = items.count > 1 ? 1 : 0
+        let candidate = currentIndex ?? defaultIndex
+        let seededIndex = renderedCards.indices.contains(candidate) ? candidate : defaultIndex
+        lastValidIndex = seededIndex
+        currentIndex = seededIndex
+    }
+
+    private func normalizeSettledPage() {
+        guard !items.isEmpty else { return }
+        var page = currentIndex ?? lastValidIndex
+        if items.count > 1 {
+            if page == 0 {
+                page = items.count
+            } else if page == items.count + 1 {
+                page = 1
+            }
+        } else {
+            page = 0
+        }
+
+        lastValidIndex = page
+        guard currentIndex != page else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            currentIndex = page
+        }
+    }
+
+    private func logicalIndex(forPage page: Int) -> Int {
+        guard items.count > 1 else { return 0 }
+        if page <= 0 { return items.count - 1 }
+        if page >= items.count + 1 { return 0 }
+        return page - 1
+    }
+
+    private var currentItemID: String? {
+        guard !items.isEmpty else { return nil }
+        return items[logicalIndex(forPage: currentIndex ?? lastValidIndex)].contentId
+    }
+
+    /// Fetch the visible card and its next neighbour. Keeping this cache local
+    /// to Home avoids refetches while the carousel loops but naturally drops it
+    /// on profile/server changes when the Home view is rebuilt.
+    private func loadTextlessArtworkAroundCurrentCard() async {
+        guard !items.isEmpty else { return }
+        let index = logicalIndex(forPage: currentIndex ?? lastValidIndex)
+        let indexes = items.count > 1 ? [index, (index + 1) % items.count] : [index]
+
+        for candidateIndex in indexes {
+            let contentID = items[candidateIndex].contentId
+            guard textlessPosterURLs[contentID] == nil,
+                  !unavailableTextlessPosters.contains(contentID) else { continue }
+
+            if let url = await loadTextlessPoster(contentID) {
+                textlessPosterURLs[contentID] = url
+            } else {
+                unavailableTextlessPosters.insert(contentID)
+            }
+        }
+    }
+
+    private func spotlight(_ item: SectionItem, cardWidth: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            artwork(for: item, cardWidth: cardWidth)
 
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.28), location: 0),
-                    .init(color: .clear, location: 0.22),
-                    .init(color: .black.opacity(0.32), location: 0.50),
-                    .init(color: Color.continuumBackground.opacity(0.86), location: 0.78),
-                    .init(color: Color.continuumBackground, location: 1),
+                    .init(color: .black.opacity(0.12), location: 0),
+                    .init(color: .clear, location: 0.30),
+                    .init(color: .black.opacity(0.18), location: 0.52),
+                    .init(color: .black.opacity(0.74), location: 0.76),
+                    .init(color: .black.opacity(0.96), location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
 
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.68), location: 0),
-                    .init(color: .black.opacity(0.20), location: 0.55),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .opacity(0.72)
-
             editorialContent(for: item)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 34)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
         }
-        .contentShape(Rectangle())
-        .onTapGesture { onInfo(item) }
+        .background(Color.continuumSurface)
     }
 
     @ViewBuilder
-    private func artwork(for item: SectionItem) -> some View {
+    private func artwork(for item: SectionItem, cardWidth: CGFloat) -> some View {
         if let url = preferredArtworkURL(for: item) {
-            ZStack(alignment: .top) {
-                // Blurred cover artwork carries color through the tall stage.
-                AsyncImageView(
-                    url: url,
-                    thumbhash: item.backdropThumbhash ?? item.posterThumbhash,
-                    targetSize: CGSize(width: PlatformScreen.mainBounds.width, height: heroHeight),
-                    contentMode: .fill
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .scaleEffect(1.08)
-                .blur(radius: 24)
-
-                // The crisp artwork occupies only the upper portion, reducing
-                // the crop on 16:9 backdrops so the subject remains visible.
-                AsyncImageView(
-                    url: url,
-                    thumbhash: item.backdropThumbhash ?? item.posterThumbhash,
-                    targetSize: CGSize(
-                        width: PlatformScreen.mainBounds.width,
-                        height: heroHeight * 0.74
-                    ),
-                    contentMode: .fill
-                )
-                .frame(maxWidth: .infinity)
-                .frame(height: heroHeight * 0.74, alignment: .top)
-                .clipped()
-            }
-            .backgroundExtensionEffect()
-            .transition(.opacity.animation(.easeInOut(duration: 0.45)))
+            AsyncImageView(
+                url: url,
+                thumbhash: item.posterThumbhash ?? item.backdropThumbhash,
+                targetSize: CGSize(width: cardWidth, height: heroHeight),
+                contentMode: .fill
+            )
+            .frame(width: cardWidth, height: heroHeight)
+            .clipped()
+            .transition(.opacity.animation(.easeInOut(duration: 0.35)))
         } else {
             Color.continuumSurface
         }
     }
 
     private func editorialContent(for item: SectionItem) -> some View {
-        VStack(alignment: .center, spacing: 13) {
+        VStack(alignment: .center, spacing: 9) {
             heroTitle(for: item)
+
+            Text(editorialQuote(for: item))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.94))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .multilineTextAlignment(.center)
 
             if !metadata(for: item).isEmpty {
                 metadataRow(for: item)
             }
 
-            if let overview = item.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !overview.isEmpty {
-                Text(overview)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.82))
-                    .lineSpacing(3)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.center)
-            }
-
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Button {
                     onPlay(item)
                 } label: {
                     Label(playLabel(for: item), systemImage: "play.fill")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.black)
-                        .padding(.horizontal, 22)
-                        .frame(height: 48)
-                        .background(.white, in: Capsule())
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 46)
+                        .background(
+                            .white,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
                 }
                 .buttonStyle(.plain)
 
@@ -154,17 +392,22 @@ struct MobileFeaturedHero: View {
                     onInfo(item)
                 } label: {
                     Label("More Info", systemImage: "info.circle")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 20)
-                        .frame(height: 48)
-                        .background(Color.white.opacity(0.14), in: Capsule())
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 46)
+                        .siloGlass(
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous),
+                            tint: Color.black.opacity(0.18),
+                            interactive: true
+                        )
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.top, 3)
+            .padding(.top, 2)
         }
-        .frame(maxWidth: 620, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     @ViewBuilder
@@ -176,12 +419,12 @@ struct MobileFeaturedHero: View {
                 contentMode: .fit,
                 placeholderStyle: .clear
             )
-            .frame(width: 270, height: 92, alignment: .center)
+            .frame(width: 220, height: 76, alignment: .center)
             .accessibilityLabel(item.title)
         } else {
             Text(item.title)
-                .font(.system(size: 44, weight: .black, design: .rounded))
-                .tracking(-1.2)
+                .font(.system(size: 36, weight: .black, design: .rounded))
+                .tracking(-1)
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .minimumScaleFactor(0.72)
@@ -191,33 +434,83 @@ struct MobileFeaturedHero: View {
 
     private func metadataRow(for item: SectionItem) -> some View {
         Text(metadata(for: item).joined(separator: "  ·  "))
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.88))
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.72))
             .multilineTextAlignment(.center)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func preferredArtworkURL(for item: SectionItem) -> String? {
-        let backdrop = item.backdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let backdrop, !backdrop.isEmpty { return backdrop }
+        if let textless = textlessPosterURLs[item.contentId], !textless.isEmpty {
+            return textless
+        }
         let poster = item.posterUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return poster?.isEmpty == false ? poster : nil
+        if let poster, !poster.isEmpty { return poster }
+        let backdrop = item.backdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return backdrop?.isEmpty == false ? backdrop : nil
+    }
+
+    private func editorialQuote(for item: SectionItem) -> String {
+        if let tagline = item.tagline?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !tagline.isEmpty,
+           let quote = shortQuote(tagline) {
+            return quote
+        }
+        if let overview = item.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !overview.isEmpty {
+            let punctuation = CharacterSet(charactersIn: ".!?")
+            if let end = overview.rangeOfCharacter(from: punctuation)?.lowerBound,
+               let quote = shortQuote(String(overview[...end])) {
+                return quote
+            }
+            if let quote = shortQuote(overview) {
+                return quote
+            }
+        }
+
+        // Some libraries do not have a provider tagline or overview. Keep the
+        // hero's editorial rhythm intact without inventing title-specific copy.
+        return "Ready when you are."
+    }
+
+    /// A hero tagline must read as a compact pull quote. Prefer a complete
+    /// clause; otherwise keep at most six whole words and never show a clipped
+    /// ellipsis in this surface.
+    private func shortQuote(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.count <= 46 { return trimmed }
+
+        if let clauseEnd = trimmed.firstIndex(where: { $0 == "," || $0 == ";" }) {
+            let clause = String(trimmed[..<clauseEnd])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let wordCount = clause.split(whereSeparator: { $0.isWhitespace }).count
+            if clause.count >= 8, clause.count <= 46, wordCount >= 3 {
+                return clause
+            }
+        }
+
+        var words: [Substring] = []
+        for word in trimmed.split(separator: " ").prefix(6) {
+            let candidate = (words + [word]).joined(separator: " ")
+            if candidate.count > 46 { break }
+            words.append(word)
+        }
+        let compact = words.joined(separator: " ")
+            .trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+        return compact.isEmpty ? nil : compact
     }
 
     private func metadata(for item: SectionItem) -> [String] {
         var result: [String] = []
-        if item.type.lowercased() == "episode" {
-            if let season = item.seasonNumber, let episode = item.episodeNumber {
-                result.append("S\(season) E\(episode)")
-            }
-        } else if let year = item.year, year > 0 {
-            result.append(String(year))
+        if let rating = item.ratingImdb ?? item.ratingTmdb, rating > 0 {
+            result.append(String(format: "★ %.1f", rating))
         }
+        result.append(contentsOf: (item.genres ?? []).filter { !$0.isEmpty }.prefix(2))
         if let runtime = item.runtime, runtime > 0 {
             result.append(formatRuntime(runtime))
         }
-        result.append(contentsOf: (item.genres ?? []).filter { !$0.isEmpty }.prefix(2))
         if let rating = item.contentRating?.trimmingCharacters(in: .whitespacesAndNewlines),
            !rating.isEmpty {
             result.append(rating.uppercased())

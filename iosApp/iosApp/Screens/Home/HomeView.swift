@@ -44,6 +44,7 @@ struct HomeView: View {
     /// so the logo + action icons sit comfortably below the Dynamic Island
     /// rather than crowding it (matching Plex's tight-but-relaxed top spacing).
     private let headerTopInset: CGFloat = 4
+    private let featuredHeaderLift: CGFloat = -19
     /// Gap between the bottom of the floating header and the first content row.
     /// A touch larger than the inter-section spacing so the header reads as a
     /// distinct band above the rows.
@@ -129,6 +130,7 @@ struct HomeView: View {
                 SidebarToggleButton()
 
                 SiloWordmarkView(width: 72)
+                    .offset(y: -2)
 
                 Spacer(minLength: 8)
 
@@ -137,7 +139,7 @@ struct HomeView: View {
                 // (matching Plex's top-right icon row).
                 HStack(spacing: ContinuumTheme.topBarIconSpacing) {
                     #if os(iOS)
-                    SiloControlModeButton(controller: siloControl) {
+                    SiloControlModeButton(controller: siloControl, usesGlassCircle: true) {
                         isShowingControlPicker = true
                     }
                     #endif
@@ -151,7 +153,8 @@ struct HomeView: View {
                             router.switchProfile()
                         },
                         onSwitchServer: { router.navigate(to: .serverList) },
-                        onSignOut: { router.signOutAndReset() }
+                        onSignOut: { router.signOutAndReset() },
+                        usesGlassCircles: true
                     )
                 }
             }
@@ -160,6 +163,9 @@ struct HomeView: View {
             .padding(.top, headerTopInset)
             #endif
             .padding(.bottom, ContinuumTheme.smallPadding)
+            #if os(iOS)
+            .offset(y: featuredHeaderLift)
+            #endif
             .background {
                 homeHeaderChrome
                     .opacity(headerChromeOpacity)
@@ -222,12 +228,23 @@ struct HomeView: View {
                         MobileFeaturedHero(
                             items: featured.items,
                             onPlay: playFeaturedItem,
-                            onInfo: { navigateToDetail($0.contentId) }
+                            onInfo: { navigateToDetail($0.contentId) },
+                            loadTextlessPoster: { contentID in
+                                try? await ContinuumAPI.shared.textlessPoster(contentId: contentID)
+                            }
                         )
-                        // The spotlight already fades to the page background;
-                        // cancel the stack gap so the first row grows out of
-                        // that fade instead of exposing a straight seam.
-                        .padding(.bottom, -HomeFeedMetrics.sectionSpacing)
+                        // The card begins below the separate status/header band
+                        // instead of painting behind the logo and actions.
+                        .padding(
+                            .top,
+                            featuredHeaderRunwaySpacing(
+                                topSafeAreaInset: geometry.safeAreaInsets.top
+                            )
+                        )
+                        // Keep the timer dots clear of Continue Watching while
+                        // retaining the tight, seamless transition into the
+                        // first row.
+                        .padding(.bottom, -(HomeFeedMetrics.sectionSpacing - 14))
                         .id(HomeFocusTarget.featured)
                     } else {
                         topRunway(topSafeAreaInset: geometry.safeAreaInsets.top)
@@ -409,5 +426,14 @@ struct HomeView: View {
         #endif
         return runway
     }
+
+    #if os(iOS)
+    private func featuredHeaderRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
+        topSafeAreaInset
+            + headerTopInset
+            + (ContinuumTheme.topBarIconHitSize * 2)
+            + 7
+    }
+    #endif
     #endif
 }

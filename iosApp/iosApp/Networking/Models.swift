@@ -171,6 +171,7 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let studios: [String]?
     let networks: [String]?
     let showStatus: String?
+    let tagline: String?
     let overview: String?
     let itemSource: String?
     let positionSeconds: Double?
@@ -207,6 +208,7 @@ struct SectionItem: Codable, Identifiable, Hashable {
         studios = try c.decodeIfPresent([String].self, forKey: .studios)
         networks = try c.decodeIfPresent([String].self, forKey: .networks)
         showStatus = try c.decodeIfPresent(String.self, forKey: .showStatus)
+        tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
         overview = try c.decodeIfPresent(String.self, forKey: .overview)
         itemSource = try c.decodeIfPresent(String.self, forKey: .itemSource)
         positionSeconds = try c.decodeIfPresent(Double.self, forKey: .positionSeconds)

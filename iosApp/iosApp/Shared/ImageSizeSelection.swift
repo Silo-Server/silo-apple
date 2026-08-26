@@ -9,6 +9,32 @@ struct ImageSizeCapabilityResponse: Codable, Equatable {
     let sizes: [String]
     let widths: [String: [String: Int]]
     let originalMaxWidthPx: Int
+    let textlessPoster: TextlessPosterCapability?
+
+    init(
+        schemaVersion: Int,
+        param: String,
+        sizes: [String],
+        widths: [String: [String: Int]],
+        originalMaxWidthPx: Int,
+        textlessPoster: TextlessPosterCapability? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.param = param
+        self.sizes = sizes
+        self.widths = widths
+        self.originalMaxWidthPx = originalMaxWidthPx
+        self.textlessPoster = textlessPoster
+    }
+}
+
+struct TextlessPosterCapability: Codable, Equatable {
+    let endpoint: String
+    let supportedTypes: [String]
+}
+
+struct TextlessPosterResponse: Codable, Equatable {
+    let posterUrl: String?
 }
 
 enum ImageSizeSelection {

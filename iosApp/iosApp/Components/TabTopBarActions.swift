@@ -16,20 +16,27 @@ struct TabTopBarActions: View {
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
+    var usesGlassCircles = false
 
     var body: some View {
         // Plain icon glyphs (no glass chip) spaced evenly, matching the
         // clean top-right cluster used by Plex. The profile avatar is the
         // only filled shape, so it reads as the account control.
         HStack(spacing: ContinuumTheme.topBarIconSpacing) {
-            TopBarIconButton(systemImage: "magnifyingglass", accessibilityLabel: "Search", action: onSearch)
+            TopBarIconButton(
+                systemImage: "magnifyingglass",
+                accessibilityLabel: "Search",
+                usesGlassCircle: usesGlassCircles,
+                action: onSearch
+            )
             ProfileAvatarMenu(
                 profile: profile,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
                 onSwitchServer: onSwitchServer,
-                onSignOut: onSignOut
+                onSignOut: onSignOut,
+                usesGlassCircle: usesGlassCircles
             )
         }
     }
@@ -41,18 +48,37 @@ struct TabTopBarActions: View {
 private struct TopBarIconButton: View {
     let systemImage: String
     let accessibilityLabel: String
+    let usesGlassCircle: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
-                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
-                .contentShape(Rectangle())
+            buttonLabel
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    @ViewBuilder
+    private var buttonLabel: some View {
+        let icon = Image(systemName: systemImage)
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundColor(.continuumOnSurface)
+            .frame(
+                width: ContinuumTheme.topBarIconHitSize,
+                height: ContinuumTheme.topBarIconHitSize
+            )
+            .contentShape(Circle())
+
+        if usesGlassCircle {
+            icon.siloGlass(
+                in: Circle(),
+                tint: Color.black.opacity(0.18),
+                interactive: true
+            )
+        } else {
+            icon
+        }
     }
 }
 
@@ -67,6 +93,7 @@ private struct ProfileAvatarMenu: View {
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
+    let usesGlassCircle: Bool
 
     /// Capability-gated: the Requests row exists only when the server has
     /// the feature enabled (older servers 404 the probe and read as off).
@@ -109,14 +136,16 @@ private struct ProfileAvatarMenu: View {
             } label: {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }
-        } label: {
-            ProfileAvatarView(
-                avatar: profile?.avatarEmoji,
-                imageUrl: profile?.avatarImageUrl,
-                name: profile?.name ?? "",
-                size: 36
-            )
-        }
+        } label: { avatarLabel }
         .menuStyle(.borderlessButton)
+    }
+
+    private var avatarLabel: some View {
+        ProfileAvatarView(
+            avatar: profile?.avatarEmoji,
+            imageUrl: profile?.avatarImageUrl,
+            name: profile?.name ?? "",
+            size: usesGlassCircle ? ContinuumTheme.topBarIconHitSize : 36
+        )
     }
 }

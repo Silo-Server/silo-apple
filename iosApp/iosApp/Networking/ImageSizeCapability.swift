@@ -113,10 +113,10 @@ final class ImageSizeCapability: @unchecked Sendable {
     /// error, leaves the feature off and is retried on the next
     /// foreground refresh.
     ///
-    /// Skipped entirely on platforms that wouldn't send the parameter,
-    /// so iOS and macOS don't pay for a request they can't use.
+    /// All platforms probe because the same payload also advertises optional
+    /// artwork roles such as textless mobile posters. Platforms that do not
+    /// want a larger image size still leave ``requestQuery`` empty.
     func refresh() async {
-        guard prefersLargeImages else { return }
         guard let probe = lock.withLock({ () -> Probe? in
             if storedCapability != nil { return nil }
             if let inFlightProbe, inFlightProbe.generation == generation {
@@ -142,6 +142,12 @@ final class ImageSizeCapability: @unchecked Sendable {
             inFlightProbe = nil
             storedCapability = probed
         }
+    }
+
+    /// Server-advertised route template for a textless portrait poster.
+    /// A nil value means the server predates the mobile hero contract.
+    var textlessPosterEndpoint: String? {
+        capability?.textlessPoster?.endpoint
     }
 
     /// Drop the cached probe so capabilities don't leak across accounts

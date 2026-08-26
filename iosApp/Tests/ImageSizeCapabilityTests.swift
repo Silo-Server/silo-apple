@@ -37,7 +37,11 @@ final class ImageSizeCapabilityTests: XCTestCase {
         "logo": {"small": 300, "medium": 500, "large": 1280},
         "backdrop": {"small": 300, "medium": 780, "large": 1920}
       },
-      "original_max_width_px": 1920
+      "original_max_width_px": 1920,
+      "textless_poster": {
+        "endpoint": "/api/v1/catalog/items/{id}/images/textless-poster",
+        "supported_types": ["movie", "series"]
+      }
     }
     """
 
@@ -59,6 +63,11 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertEqual(capability.widths["poster"]?["large"], 780)
         XCTAssertEqual(capability.widths["logo"]?["large"], 1280)
         XCTAssertEqual(capability.widths["backdrop"]?["large"], 1920)
+        XCTAssertEqual(
+            capability.textlessPoster?.endpoint,
+            "/api/v1/catalog/items/{id}/images/textless-poster"
+        )
+        XCTAssertEqual(capability.textlessPoster?.supportedTypes, ["movie", "series"])
     }
 
     /// Roles the client doesn't know about must not fail the decode —
