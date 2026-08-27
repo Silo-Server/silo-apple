@@ -76,6 +76,9 @@ struct MobilePlayerControls: View {
             if viewModel.showIntroSkip {
                 introSkipPill
             }
+            if viewModel.showCreditsSkip {
+                creditsSkipPill
+            }
             if showsStats {
                 MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
                     .transition(.opacity)
@@ -802,6 +805,31 @@ struct MobilePlayerControls: View {
             .padding(.horizontal, 24)
             // Clear the bottom stack while the controls are up; hug the
             // bottom edge when the pill is floating alone.
+            .padding(.bottom, viewModel.showControls ? 88 : 24)
+        }
+        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
+        .transition(.opacity)
+    }
+
+    private var creditsSkipPill: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    viewModel.skipCredits()
+                } label: {
+                    Label("Skip Credits", systemImage: "forward.end.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.white.opacity(0.9))
+                .accessibilityLabel("Skip Credits")
+            }
+            .padding(.horizontal, 24)
             .padding(.bottom, viewModel.showControls ? 88 : 24)
         }
         .animation(.easeOut(duration: 0.2), value: viewModel.showControls)

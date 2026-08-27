@@ -103,7 +103,8 @@ struct PlayerView: View {
                     //     the signed ladder, Tap Select = commit + exit,
                     //     Menu = cancel + exit (handled in onExitCommand).
                     //     Taps against Up/Down are ignored; holds are no-ops.
-                    if !viewModel.isLoading && (!viewModel.showIntroSkip || viewModel.isHoldSeeking) &&
+                    if !viewModel.isLoading &&
+                        (!(viewModel.showIntroSkip || viewModel.showCreditsSkip) || viewModel.isHoldSeeking) &&
                         (!viewModel.showControls || viewModel.isHoldSeeking) {
                         TVPressCaptureView(
                             onArrowTap: { direction in

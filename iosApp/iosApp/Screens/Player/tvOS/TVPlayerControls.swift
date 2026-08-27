@@ -72,6 +72,7 @@ struct TVPlayerControls: View {
     @FocusState private var focusedTransportButton: TVPlayerTransportCluster.FocusTarget?
     @FocusState private var focusedHUDTab: TVPlayerInfoHUD.Tab?
     @FocusState private var focusedIntroAction: IntroAction?
+    @FocusState private var isCreditsSkipFocused: Bool
 
     private var isHUDPresented: Bool { viewModel.isHUDPresented }
 
@@ -91,6 +92,10 @@ struct TVPlayerControls: View {
             }
             if viewModel.showIntroSkip {
                 introSkipLayer
+                    .transition(.opacity)
+            }
+            if viewModel.showCreditsSkip {
+                creditsSkipLayer
                     .transition(.opacity)
             }
             if isHUDPresented {
@@ -160,6 +165,18 @@ struct TVPlayerControls: View {
                 }
             }
         }
+        .onChange(of: viewModel.showCreditsSkip) { _, visible in
+            if visible {
+                if !isHUDPresented {
+                    isCreditsSkipFocused = true
+                }
+            } else {
+                isCreditsSkipFocused = false
+                if viewModel.showControls && !isHUDPresented {
+                    isScrubberFocused = true
+                }
+            }
+        }
         .onChange(of: viewModel.requestedTVHUDEntryPoint) { _, entryPoint in
             guard let entryPoint else { return }
             applyHUDEntryPoint(entryPoint)
@@ -210,6 +227,8 @@ struct TVPlayerControls: View {
         } else if viewModel.showControls {
             if viewModel.showIntroSkip && focusedIntroAction == nil {
                 focusedIntroAction = .skip
+            } else if viewModel.showCreditsSkip && !isCreditsSkipFocused {
+                isCreditsSkipFocused = true
             } else if focusedTransportButton == nil && !isScrubberFocused {
                 isScrubberFocused = true
             }
@@ -300,6 +319,9 @@ struct TVPlayerControls: View {
             if viewModel.showIntroSkip {
                 isScrubberFocused = false
                 focusedIntroAction = .skip
+            } else if viewModel.showCreditsSkip {
+                isScrubberFocused = false
+                isCreditsSkipFocused = true
             } else {
                 isScrubberFocused = true
             }
@@ -366,6 +388,25 @@ struct TVPlayerControls: View {
             // Group Skip + Cancel as their own focus region so the engine can
             // move between them and the transport row below by direction.
             .focusSection()
+    }
+
+    private var creditsSkipLayer: some View {
+        Button {
+            viewModel.skipCredits()
+        } label: {
+            Label("Skip Credits", systemImage: "forward.end.fill")
+                .font(.system(size: 26, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 220)
+        }
+        .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
+        .focused($isCreditsSkipFocused)
+        .accessibilityLabel("Skip Credits")
+        .padding(.horizontal, 80)
+        .padding(.bottom, viewModel.showControls && !isHUDPresented ? 156 : 96)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .focusSection()
     }
 
     private var introSkipButton: some View {
