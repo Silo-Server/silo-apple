@@ -100,6 +100,10 @@ final class AetherPlaybackController {
     private var externalPlaybackObservation: NSKeyValueObservation?
     private var observedExternalPlaybackPlayer: AVPlayer?
     private var externalPlaybackPolicyTask: Task<Void, Never>?
+    /// The outgoing native player's receiver policy while Aether replaces its
+    /// item. Clearing the active spec must not momentarily revoke an active
+    /// AirPlay route before the successor load completes its own handoff.
+    private var replacementExternalPlaybackPolicy: Bool?
     private var lastExternalPlaybackSupport = false
     private var lastExternalPlaybackActive = false
 
@@ -164,6 +168,7 @@ final class AetherPlaybackController {
             guard epoch == activeLoadEpoch else { throw CancellationError() }
             activeLoadEpoch = nil
             activeSpec = nil
+            replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
             appSubtitleIDByAetherID = [:]
             configureExternalPlaybackPolicy()
@@ -175,6 +180,7 @@ final class AetherPlaybackController {
             let typedFailure = engine.errorInfo
             activeLoadEpoch = nil
             activeSpec = nil
+            replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
             appSubtitleIDByAetherID = [:]
             configureExternalPlaybackPolicy()
@@ -189,6 +195,7 @@ final class AetherPlaybackController {
             throw CancellationError()
         }
         hasCommittedActiveLoad = true
+        replacementExternalPlaybackPolicy = nil
         configureExternalPlaybackPolicy()
         refreshExternalPlaybackState()
         publishSystemMediaChanged()
@@ -283,6 +290,19 @@ final class AetherPlaybackController {
 
     func dispose() { stop() }
 
+    /// Pauses the outgoing item while keeping Aether's native host mounted for
+    /// the replacement load. The next `engine.load` then owns the teardown and
+    /// can perform its native-to-native handoff without resetting the tvOS
+    /// display criteria, replacing the player layer, or releasing the shared
+    /// audio session in between consecutive episodes.
+    func prepareForReplacement() {
+        invalidateActiveLoad(preservingExternalPlaybackPolicy: true)
+        engine.deactivatesAudioSessionOnStop = false
+        engine.pause()
+        refreshExternalPlaybackState()
+        publishSystemMediaChanged()
+    }
+
     var isPaused: Bool { engine.state != .playing }
 
     #if os(iOS) || os(tvOS)
@@ -369,18 +389,7 @@ final class AetherPlaybackController {
     }
 
     func stop() {
-        generation &+= 1
-        transportIntentGeneration &+= 1
-        transportRestoreTask?.cancel()
-        transportRestoreTask = nil
-        activeLoadEpoch = nil
-        hasCommittedActiveLoad = false
-        activeSpec = nil
-        configureExternalPlaybackPolicy()
-        aetherSubtitleIDByAppID = [:]
-        appSubtitleIDByAetherID = [:]
-        didPublishFirstFrame = false
-        didPublishEnd = false
+        invalidateActiveLoad()
         // Leaving video is the app's last use of the shared `AVAudioSession` unless an
         // audiobook is live. Aether never releases the session unless the host opts in
         // per teardown (#215, README "Who owns the audio session"), and a session left
@@ -395,6 +404,24 @@ final class AetherPlaybackController {
         engine.stop(finalTeardown: true)
         refreshExternalPlaybackState()
         publishSystemMediaChanged()
+    }
+
+    private func invalidateActiveLoad(preservingExternalPlaybackPolicy: Bool = false) {
+        replacementExternalPlaybackPolicy = preservingExternalPlaybackPolicy
+            ? observedExternalPlaybackPlayer?.allowsExternalPlayback
+            : nil
+        generation &+= 1
+        transportIntentGeneration &+= 1
+        transportRestoreTask?.cancel()
+        transportRestoreTask = nil
+        activeLoadEpoch = nil
+        hasCommittedActiveLoad = false
+        activeSpec = nil
+        configureExternalPlaybackPolicy()
+        aetherSubtitleIDByAppID = [:]
+        appSubtitleIDByAetherID = [:]
+        didPublishFirstFrame = false
+        didPublishEnd = false
     }
 
     /// Seeds the alias map for the tracks Aether registers itself during
@@ -557,7 +584,10 @@ final class AetherPlaybackController {
     private func configureExternalPlaybackPolicy() {
         guard let player = observedExternalPlaybackPlayer,
               engine.currentAVPlayer === player else { return }
-        let allowed = externalPlaybackIsReceiverFetchable
+        let allowed = Self.externalPlaybackAllowed(
+            activePolicy: externalPlaybackIsReceiverFetchable,
+            preservedReplacementPolicy: replacementExternalPlaybackPolicy
+        )
         player.allowsExternalPlayback = allowed
         #if os(iOS)
         player.usesExternalPlaybackWhileExternalScreenIsActive = allowed
@@ -574,7 +604,10 @@ final class AetherPlaybackController {
                   let self, let player,
                   self.observedExternalPlaybackPlayer === player,
                   self.engine.currentAVPlayer === player else { return }
-            let allowed = self.externalPlaybackIsReceiverFetchable
+            let allowed = Self.externalPlaybackAllowed(
+                activePolicy: self.externalPlaybackIsReceiverFetchable,
+                preservedReplacementPolicy: self.replacementExternalPlaybackPolicy
+            )
             player.allowsExternalPlayback = allowed
             #if os(iOS)
             player.usesExternalPlaybackWhileExternalScreenIsActive = allowed
@@ -600,6 +633,13 @@ final class AetherPlaybackController {
         }
     }
 
+    nonisolated static func externalPlaybackAllowed(
+        activePolicy: Bool,
+        preservedReplacementPolicy: Bool?
+    ) -> Bool {
+        preservedReplacementPolicy ?? activePolicy
+    }
+
     private func refreshExternalPlaybackState() {
         let player = engine.currentAVPlayer
         let playerIsActive = player?.isExternalPlaybackActive == true
@@ -607,7 +647,11 @@ final class AetherPlaybackController {
             || engine.videoRoute == .remoteBypass
         let routeIsActive = playerIsActive
             || (isNativeVideoRoute && Self.isExternalOutputRoute)
-        let supported = player != nil && (externalPlaybackIsReceiverFetchable || routeIsActive)
+        let allowed = Self.externalPlaybackAllowed(
+            activePolicy: externalPlaybackIsReceiverFetchable,
+            preservedReplacementPolicy: replacementExternalPlaybackPolicy
+        )
+        let supported = player != nil && (allowed || routeIsActive)
 
         supportsExternalPlayback = supported
         isExternalPlaybackActive = routeIsActive
