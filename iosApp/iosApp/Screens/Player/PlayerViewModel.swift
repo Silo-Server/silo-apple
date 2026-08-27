@@ -4416,9 +4416,11 @@ class PlayerViewModel {
                       let version = detail.versions.first(where: { $0.fileId == fileId }) else {
                     return
                 }
+                let refreshedIntro = version.intro ?? detail.intro
+                let refreshedCredits = version.credits ?? detail.credits
                 self.applyMarkerRanges(
-                    intro: version.intro ?? detail.intro,
-                    credits: version.credits ?? detail.credits
+                    intro: self.introRange ?? refreshedIntro,
+                    credits: self.creditsRange ?? refreshedCredits
                 )
             } catch {
                 if self.activePlaybackSessionId == sessionId {
