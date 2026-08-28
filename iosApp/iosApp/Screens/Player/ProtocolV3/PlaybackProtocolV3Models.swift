@@ -63,6 +63,22 @@ enum PlaybackProtocolV3 {
         ]
     }
 
+    /// What the plan asks the client to do with the selected subtitle.
+    enum SubtitleMode {
+        static let off = "off"
+        static let render = "render"
+        /// Server-transcoded cues the client still renders itself. Only the
+        /// artifact's format differs from `render`.
+        static let convert = "convert"
+        static let burnIn = "burn_in"
+
+        /// Modes whose artifact the client mounts and renders locally. Every
+        /// gate that arms a local subtitle selection must accept all of them:
+        /// a gate that only knows `render` turns a mounted artifact into an
+        /// explicit Off while the picker still shows the row selected.
+        static let locallyRendered: Set<String> = [render, convert]
+    }
+
     /// How much the client actually knows about its own decoders. The server
     /// gates direct/copy routes on this: `exact` and `platformAttested` are
     /// matched against `video_decode` entries, `declared` only against the flat
@@ -502,6 +518,44 @@ struct PlaybackV3Plan: Codable, Equatable {
     let subtitleFidelityPolicy: String
     /// Quality rungs the server will honour for a `quality_change` replan.
     let availableQualities: [PlaybackV3AvailableQuality]
+}
+
+extension PlaybackV3Plan {
+    /// The one inventory row this plan's subtitle decision names.
+    ///
+    /// Every consumer that needs "which row is selected" resolves it here so
+    /// the picker, the load spec, the renewal intent and the session
+    /// projection cannot disagree with each other. The order matches the
+    /// shared Android resolver (`resolvedSelectedSubtitleIndex`):
+    /// `selected_tracks.subtitle.index` is authoritative, then its stable
+    /// `id`. The trailing `subtitle.track_id` match is Apple-only and last:
+    /// it is the transitional shape this client already accepted and must
+    /// keep accepting, but it never outranks the neutral identity.
+    ///
+    /// `subtitle.mode` is deliberately not consulted. A caller that must
+    /// distinguish "off" from "selected but not locally rendered" — the
+    /// picker — applies that gate itself.
+    var selectedSubtitleInventoryItem: PlaybackV3SubtitleInventoryItem? {
+        if let index = selectedTracks.subtitle?.index,
+           let byIndex = subtitle.inventory.first(where: { $0.combinedIndex == index }) {
+            return byIndex
+        }
+        if let id = selectedTracks.subtitle?.id,
+           let byIdentity = subtitle.inventory.first(where: { $0.trackId == id }) {
+            return byIdentity
+        }
+        if let trackId = subtitle.trackId {
+            return subtitle.inventory.first { $0.trackId == trackId }
+        }
+        return nil
+    }
+
+    /// The selected combined ordinal, falling back to the wire index when the
+    /// inventory names no row for it (a transitional plan can still be
+    /// executable without publishing the row).
+    var selectedSubtitleCombinedIndex: Int? {
+        selectedSubtitleInventoryItem?.combinedIndex ?? selectedTracks.subtitle?.index
+    }
 }
 
 struct PlaybackV3Terminal: Codable, Equatable {

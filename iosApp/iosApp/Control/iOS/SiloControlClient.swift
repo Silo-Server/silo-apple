@@ -48,12 +48,16 @@ private enum SiloControlHandoffError: LocalizedError {
 @Observable
 final class SiloControlClient {
     private(set) var activeTarget: SiloControlTarget?
-    private(set) var state: SiloControlPlaybackState?
+    private(set) var state: SiloControlPlaybackState? {
+        didSet { if state == nil { volumeReconciler.clear() } }
+    }
     private(set) var isConnecting = false
     var errorMessage: String?
     var isShowingRemoteControl = false
 
     let clock = RemotePlaybackClock()
+
+    private var volumeReconciler = RemoteVolumeReconciler()
 
     private let nowPlaying = NowPlayingController()
     private var nowPlayingArtworkTask: Task<Void, Never>?
@@ -115,7 +119,8 @@ final class SiloControlClient {
             errorMessage = "Choose a server before controlling a TV."
             return false
         }
-        guard target.serverId == activeServerId || (allowCrossServer && target.protocolVersion >= 2) else {
+        let targetsActiveServer = ServerRegistry.serverIdsMatch(target.serverId, activeServerId)
+        guard targetsActiveServer || (allowCrossServer && target.protocolVersion >= 2) else {
             errorMessage = "That TV is connected to a different server."
             return false
         }
@@ -170,7 +175,7 @@ final class SiloControlClient {
         }
         isConnecting = false
         let connected = self.connectionId == connectionId && self.session != nil
-        if connected, target.serverId == activeServerId {
+        if connected, targetsActiveServer {
             persistLastTarget(target)
         }
         return connected
@@ -216,7 +221,8 @@ final class SiloControlClient {
                 profileName: profileName,
                 session: session
             )
-            guard ready.serverId == activeServer.id, ready.profileId == profileId else {
+            guard ServerRegistry.serverIdsMatch(ready.serverId, activeServer.id),
+                  ready.profileId == profileId else {
                 throw SiloControlHandoffError.invalidResponse
             }
             adoptEffectiveTarget(server: activeServer)
@@ -365,8 +371,50 @@ final class SiloControlClient {
     }
 
     func playNext() { send(.playNext) }
-    func setVolume(_ v: Double) { send(.setVolume(min(max(v, 0), 1))) }
-    func setMuted(_ m: Bool) { send(.setMuted(m)) }
+
+    /// Shows the requested level immediately and holds it until the TV reports
+    /// it — see ``RemoteVolumeReconciler`` for why absolute volume commands need
+    /// that hold.
+    func setVolume(_ v: Double) {
+        let clamped = min(max(v, 0), 1)
+        volumeReconciler.requested(clamped)
+        if var s = state {
+            s.volume = clamped
+            state = s
+        }
+        send(.setVolume(clamped))
+    }
+
+    func setMuted(_ m: Bool) {
+        // A held level describes an unmuted volume; an explicit mute supersedes it.
+        volumeReconciler.clear()
+        if var s = state {
+            s.isMuted = m
+            state = s
+        }
+        send(.setMuted(m))
+    }
+
+    /// Applies one hardware-button volume step.
+    ///
+    /// Steps always start from the retained `volume`, never from the zero the UI
+    /// shows while muted: the TV keeps its level independently of mute, so
+    /// sending `0` would overwrite it and leave a later unmute silent. A step
+    /// down while muted is therefore a no-op — the TV is already silent, and the
+    /// only thing a command could do there is destroy the stored level.
+    func stepVolumeOptimistic(_ step: Int) {
+        guard let s = state, !(s.isMuted && step < 0) else { return }
+        if s.isMuted { setMuted(false) }
+        setVolume(s.volume + Double(step) / 16)
+    }
+
+    private func reconcileOptimisticVolume(
+        _ next: SiloControlPlaybackState
+    ) -> SiloControlPlaybackState {
+        var reconciled = next
+        reconciled.volume = volumeReconciler.reconcile(inbound: next.volume)
+        return reconciled
+    }
 
     func hideRemoteControl() {
         isShowingRemoteControl = false
@@ -456,7 +504,10 @@ final class SiloControlClient {
               !isReconnecting,
               autoResumeTask == nil,
               let persisted = Self.loadPersistedTarget(),
-              persisted.serverId == ServerRegistry.shared.activeServerId
+              ServerRegistry.serverIdsMatch(
+                  persisted.serverId,
+                  ServerRegistry.shared.activeServerId
+              )
         else { return }
 
         autoResumeGeneration += 1
@@ -544,7 +595,8 @@ final class SiloControlClient {
         case .handoffCancel(let cancel):
             guard cancel.requestId == pendingHandoffRequestId else { return }
             handoffCancellation = cancel
-        case .state(let state):
+        case .state(let inbound):
+            let state = reconcileOptimisticVolume(inbound)
             self.state = state
             clock.ingest(state)
             updateNowPlaying(for: state)

@@ -578,6 +578,23 @@ actor PlaybackSessionBridge {
         return true
     }
 
+    /// Returns the committed wire session only when it still belongs to the
+    /// exact plan the player is recovering. This lets the player rebuild the
+    /// same immutable plan with refreshed request headers without asking the
+    /// server to advance the route ladder.
+    func committedProtocolV3Session(
+        planId expectedPlanId: String,
+        sessionId expectedSessionId: String
+    ) -> PlaybackSessionResponse? {
+        guard pendingProtocolV3Transition == nil,
+              sessionId == expectedSessionId,
+              currentSession?.sessionId == expectedSessionId,
+              activeProtocolV3?.plan.planId == expectedPlanId else {
+            return nil
+        }
+        return currentSession
+    }
+
     /// Promotes a candidate that Aether could not open solely so the client
     /// can report that exact failed attempt and request the next server route.
     /// This is not an execution commit: it emits no success event, binds no

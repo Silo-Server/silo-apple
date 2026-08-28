@@ -460,7 +460,7 @@ class PlayerViewModel {
     var availableSecondarySubtitleTracks: [PlayerTrack] {
         guard backendCapabilities.supportsSecondarySubtitles else { return [] }
         return orderedSubtitles(subtitleTracks.filter {
-            !SubtitleCodecClassifier.isBitmap($0.codec)
+            !SubtitleCodecClassifier.isBitmap($0.codec) && canRenderAsSecondarySubtitle($0)
         })
     }
     private func orderedSubtitles(_ tracks: [PlayerTrack]) -> [PlayerTrack] {
@@ -629,6 +629,9 @@ class PlayerViewModel {
     /// would otherwise have no idea why it was abandoned.
     @ObservationIgnored
     private var lastAetherAudioTrackSwitchFailure: PlaybackErrorInfo?
+    /// Serializes every Protocol V3 source replacement, including a same-plan
+    /// reload whose only change is a refreshed bearer. Reusing this gate keeps
+    /// credential recovery from racing route replans, seeks, or track changes.
     private var protocolV3ReplanTask: Task<Void, Never>?
     private var nextUpLookupTask: Task<Void, Never>?
     private var nextUpOnDeckTask: Task<Void, Never>?
@@ -695,6 +698,15 @@ class PlayerViewModel {
     /// `pendingExternalSubtitles`, this survives the first successful
     /// registration so route recovery can re-register sidecars later.
     private var knownExternalSubtitles: [SubtitleUrl] = []
+    /// Picker rows for sidecars this session registered with Aether itself —
+    /// a finished AI translation/transcription or a downloaded subtitle.
+    ///
+    /// Under Protocol V3 the published picker is rebuilt from the plan's
+    /// inventory, and the plan that is active when a job completes predates
+    /// the new track, so without this the finished subtitle would vanish from
+    /// the menu until the next replan. Rows are unioned in, de-duped against
+    /// the plan, and dropped once the server publishes the same ordinal.
+    private var locallyRegisteredSidecarSubtitleTracks: [PlayerTrack] = []
     /// Server-supplied preferred track indices (ffmpeg stream indices). Kept
     /// until we've observed a matching track in the core's track-list and
     /// applied it, or until the user makes a manual selection.
@@ -802,10 +814,14 @@ class PlayerViewModel {
             selectedVersion: FileVersion,
             activeQualityId: String
         ) -> LoadRequest {
-            let selectedSubtitleIndex = plan.selectedTracks.subtitle?.index
-            let selectedSubtitle = selectedSubtitleIndex.flatMap { selectedIndex in
-                plan.subtitle.inventory.first(where: { $0.combinedIndex == selectedIndex })
-            }
+            // Shared resolution order; see
+            // `PlaybackV3Plan.selectedSubtitleInventoryItem`. An `off` plan
+            // selects nothing even if it still carries a stale identity.
+            let isSubtitleOff = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+            let selectedSubtitleIndex = isSubtitleOff
+                ? nil
+                : plan.selectedSubtitleCombinedIndex
+            let selectedSubtitle = isSubtitleOff ? nil : plan.selectedSubtitleInventoryItem
             let embeddedFFmpegIndex: Int? = selectedSubtitle.flatMap { item in
                 // A sidecar is the server-selected artifact even when it was
                 // extracted from an embedded stream. Arming both identities
@@ -1257,6 +1273,9 @@ class PlayerViewModel {
             // replans.
             return
         }
+        if attemptProtocolV3AuthenticationReload(after: failure) {
+            return
+        }
         let serverCanAdapt: Set<PlaybackErrorKind> = [
             .sourceRefused,
             .vodSourceFailed,
@@ -1403,6 +1422,164 @@ class PlayerViewModel {
         )
     }
 
+    /// Rebuilds the committed plan with the account bearer currently held by
+    /// `ContinuumAPI`. Protocol V3 media URLs are stable across access-token
+    /// refreshes, but Aether/AVPlayer freezes request headers at asset load.
+    /// A normal authenticated progress request first gives the shared HTTP
+    /// client a chance to refresh an expired token; the reload proceeds only
+    /// when that produced a different Authorization value.
+    @discardableResult
+    private func attemptProtocolV3AuthenticationReload(
+        after failure: PlaybackErrorInfo
+    ) -> Bool {
+        guard AetherAuthenticationRecoveryPolicy.isExpiredBearerFailure(failure),
+              protocolV3ReplanTask == nil,
+              let protocolV3 = activePreparedProtocolV3,
+              protocolV3.serverFeatures.contains(
+                  PlaybackProtocolV3.headerAuthenticatedMediaFeature
+              ),
+              let sessionId = activePlaybackSessionId,
+              let watchDetail = currentWatchDetail,
+              let selectedVersion = currentSelectedVersion,
+              let failedSpec = aetherPlaybackController.activeSpec,
+              failedSpec.planID == protocolV3.plan.planId,
+              failedSpec.sessionID == sessionId,
+              committedProtocolV3LoadEpoch != nil else {
+            return false
+        }
+
+        let planId = protocolV3.plan.planId
+        let resumePosition = currentTime.isFinite ? max(0, currentTime) : 0
+        let failedHeaders = failedSpec.options.httpHeaders
+        let fallbackClassification = failure.kind.rawValue
+        let fallbackMessage = failure.message
+
+        progressTask?.cancel()
+        progressTask = nil
+        isLoading = true
+        isBuffering = false
+        bufferingProgress = nil
+        streamLoadGeneration &+= 1
+        let recoveryGeneration = streamLoadGeneration
+
+        Self.logger.warning(
+            "Protocol V3 media credential expired; refreshing and reloading plan \(planId, privacy: .public) at source position \(resumePosition, privacy: .public)"
+        )
+
+        protocolV3ReplanTask = Task { @MainActor [weak self] in
+            guard let self, !self.isDisposed else { return }
+            var shouldFallbackToReplan = true
+            defer {
+                self.protocolV3ReplanTask = nil
+                if !self.isDisposed,
+                   recoveryGeneration == self.streamLoadGeneration {
+                    if shouldFallbackToReplan {
+                        if !self.attemptProtocolV3Replan(
+                            position: resumePosition,
+                            classification: fallbackClassification,
+                            message: fallbackMessage
+                        ) {
+                            self.finalizeTerminalPlaybackError(fallbackMessage)
+                        }
+                    } else if let queuedTrackChange = self.pendingProtocolV3TrackChange {
+                        self.pendingProtocolV3TrackChange = nil
+                        self.attemptProtocolV3Replan(
+                            position: self.currentTime,
+                            classification: queuedTrackChange.classification,
+                            message: queuedTrackChange.message,
+                            requeueWhenBusy: true,
+                            trackTarget: queuedTrackChange.target
+                        )
+                    } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
+                        self.pendingProtocolV3SeekReanchorPosition = nil
+                        self.commitSeek(to: queuedTarget, source: "queuedAuthReloadReanchor")
+                    }
+                }
+            }
+
+            do {
+                // This request uses the normal API transport, whose 401 path
+                // refreshes TokenStore before retrying. Its result is otherwise
+                // best-effort; the header comparison below is authoritative.
+                _ = await self.sessionBridge.reportProgress(
+                    position: resumePosition,
+                    isPaused: !self.aetherPlaybackController.shouldPlayWhenReady
+                )
+                try self.requireCurrentStreamLoad(recoveryGeneration)
+                guard self.activePlaybackSessionId == sessionId,
+                      self.activePreparedProtocolV3?.plan.planId == planId,
+                      let session = await self.sessionBridge.committedProtocolV3Session(
+                          planId: planId,
+                          sessionId: sessionId
+                      ) else {
+                    throw CancellationError()
+                }
+                try self.requireCurrentStreamLoad(recoveryGeneration)
+
+                let prepared = PreparedPlayback(
+                    watchDetail: watchDetail,
+                    selectedVersion: selectedVersion,
+                    session: session,
+                    activeQualityId: self.activeQualityId,
+                    protocolV3: protocolV3
+                )
+                guard let streamRequest = await self.makeStreamRequest(
+                    session: session,
+                    additionalHeaders: protocolV3.plan.stream.headers,
+                    requiresHeaderAuthenticatedMedia: true,
+                    allowsAuthorizedMediaOrigins:
+                        protocolV3.negotiatedAuthorizedMediaOrigins
+                ) else {
+                    throw AetherLoadSpec.ValidationError.invalidStreamURL(session.streamUrl)
+                }
+                try self.requireCurrentStreamLoad(recoveryGeneration)
+                guard AetherAuthenticationRecoveryPolicy.shouldReload(
+                    failedHeaders: failedHeaders,
+                    refreshedHeaders: streamRequest.headers
+                ) else {
+                    Self.logger.warning(
+                        "Protocol V3 media credential did not change; using bounded route recovery"
+                    )
+                    return
+                }
+
+                // A local in-window seek can finish while the refresh request
+                // is suspended. Sample the source-axis position again at the
+                // last synchronous point before beginLoad replaces the epoch,
+                // so credential recovery never jumps back over that seek.
+                let reloadPosition = self.currentTime.isFinite
+                    ? max(0, self.currentTime)
+                    : resumePosition
+                let shouldPlayWhenReady = self.aetherPlaybackController.shouldPlayWhenReady
+                self.resolvedServerUrl = streamRequest.serverUrl
+                try await self.loadAether(
+                    prepared: prepared,
+                    streamRequest: streamRequest,
+                    expectedStreamLoadGeneration: recoveryGeneration,
+                    resumeSourcePosition: reloadPosition,
+                    shouldPlayWhenReady: shouldPlayWhenReady
+                )
+                try self.requireCurrentStreamLoad(recoveryGeneration)
+                guard self.activePlaybackSessionId == sessionId,
+                      self.activePreparedProtocolV3?.plan.planId == planId else {
+                    throw CancellationError()
+                }
+                self.markProtocolV3AetherLoadCommitted()
+                shouldFallbackToReplan = false
+                Self.logger.info(
+                    "Protocol V3 media credential reload succeeded for plan \(planId, privacy: .public)"
+                )
+            } catch is CancellationError {
+                shouldFallbackToReplan = false
+            } catch {
+                Self.logger.error(
+                    "Protocol V3 media credential reload failed; using bounded route recovery: \(MediaLogRedactor.sanitize(error), privacy: .public)"
+                )
+            }
+        }
+        return true
+    }
+
     /// The track a queued change is actually asking for. `.subtitle(nil)` is
     /// "turn subtitles off", which is why this is an enum and not two optional
     /// ids.
@@ -1519,6 +1696,33 @@ class PlayerViewModel {
         trackTarget: QueuedProtocolV3TrackTarget? = nil,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) -> Bool {
+        // One classification of the user's target. A track change must have a
+        // stable server ordinal before it is queued or issued: falling back to
+        // the currently published engine selection would turn an unmappable tap
+        // into a successful replan for the track that was already playing.
+        //
+        // The dimension the user did not touch stays `nil` here and is read
+        // back from the player below, after any queued pick is re-published.
+        let explicitAudioTrackIndex: Int?
+        let explicitSubtitleTrackIndex: Int?
+        let targetsSubtitle: Bool
+        switch trackTarget {
+        case .audio(_, nil), .subtitle(.some, nil):
+            return false
+        case .audio(_, let selectionIndex):
+            explicitAudioTrackIndex = selectionIndex
+            explicitSubtitleTrackIndex = nil
+            targetsSubtitle = false
+        case .subtitle(let trackId, let combinedIndex):
+            explicitAudioTrackIndex = nil
+            // Nil subtitle with a nil track id is explicit Off.
+            explicitSubtitleTrackIndex = trackId == nil ? nil : combinedIndex
+            targetsSubtitle = true
+        case nil:
+            explicitAudioTrackIndex = nil
+            explicitSubtitleTrackIndex = nil
+            targetsSubtitle = false
+        }
         if protocolV3ReplanTask != nil {
             if operation == PlaybackProtocolV3.ReplanOperation.seekReanchor {
                 // Rapid windowed seeks are latest-wins. Re-issue the newest
@@ -1555,6 +1759,23 @@ class PlayerViewModel {
             restoreQueuedProtocolV3TrackSelection(trackTarget)
         }
         let selectedSubtitleSnapshot = selectedSubtitleId
+        // The user-facing selection can be republished from Aether while the
+        // async replan task is waiting to start (inventory/store discovery is
+        // still active after a replacement load). A user track change already
+        // carries the stable server identity captured at tap time; freeze the
+        // request indices here instead of re-reading mutable player state from
+        // inside the task.
+        let requestedAudioTrackIndex = explicitAudioTrackIndex
+            ?? resolvedAudioTrackIndexForResume()
+        let requestedSubtitleTrackIndex = targetsSubtitle
+            ? explicitSubtitleTrackIndex
+            : resolvedProtocolV3SubtitleIndexForResume()
+        if targetsSubtitle {
+            cmpLog(
+                "[CMP-SUB] phase=replan_request requested_index="
+                    + (requestedSubtitleTrackIndex.map(String.init) ?? "off")
+            )
+        }
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
@@ -1622,12 +1843,20 @@ class PlayerViewModel {
                     message: message,
                     operation: operation,
                     qualityPreference: qualityPreference,
-                    audioTrackIndex: self.resolvedAudioTrackIndexForResume(),
-                    subtitleTrackIndex: self.resolvedProtocolV3SubtitleIndexForResume(),
+                    audioTrackIndex: requestedAudioTrackIndex,
+                    subtitleTrackIndex: requestedSubtitleTrackIndex,
                     outputRouteSnapshot: outputRouteSnapshot
                 ) else {
                     self.finalizeTerminalPlaybackError(message)
                     return
+                }
+                if targetsSubtitle {
+                    cmpLog(
+                        "[CMP-SUB] phase=replan_response selected_index="
+                            + (prepared.protocolV3?.plan.selectedTracks.subtitle?.index.map(String.init) ?? "off")
+                            + " mode="
+                            + (prepared.protocolV3?.plan.subtitle.mode ?? "unknown")
+                    )
                 }
                 uncommittedPrepared = prepared
                 guard !Task.isCancelled,
@@ -2298,7 +2527,9 @@ class PlayerViewModel {
     private func loadAether(
         prepared: PreparedPlayback,
         streamRequest: StreamRequest,
-        expectedStreamLoadGeneration: UInt64
+        expectedStreamLoadGeneration: UInt64,
+        resumeSourcePosition: Double? = nil,
+        shouldPlayWhenReady: Bool = true
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
@@ -2378,11 +2609,11 @@ class PlayerViewModel {
                 apiOriginURL: URL(string: streamRequest.serverUrl),
                 audioSourceStreamIndex: audioSourceStreamIndex,
                 preferredAudioLanguages: preferredAudio,
-                preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                resumeSourcePosition: resumeSourcePosition
             )
         } else if streamRequest.url.isFileURL {
             let audioStreamIndex: Int32?
@@ -2433,7 +2664,10 @@ class PlayerViewModel {
         isBuffering = false
         bufferingProgress = nil
         scrubPreviewProvider.endSession()
-        let loadEpoch = aetherPlaybackController.beginLoad(spec)
+        let loadEpoch = aetherPlaybackController.beginLoad(
+            spec,
+            shouldPlayWhenReady: shouldPlayWhenReady
+        )
         activeAetherLoadEpoch = loadEpoch
         establishedAetherLoadEpoch = nil
         lastAetherAudioTrackSwitchFailure = nil
@@ -2481,7 +2715,11 @@ class PlayerViewModel {
         adoptAetherInventory()
         reapplyAetherGain()
 
-        aetherPlaybackController.play()
+        if aetherPlaybackController.shouldPlayWhenReady {
+            aetherPlaybackController.play()
+        } else {
+            aetherPlaybackController.pause()
+        }
     }
 
     /// Whether the engine may be driven off a deferred (not user-initiated)
@@ -2581,8 +2819,26 @@ class PlayerViewModel {
                     : nil
             )
         }
-        subtitleTracks = aetherSubtitleTracks + existingLiveTracks.filter { liveTrack in
-            !aetherSubtitleTracks.contains { $0.trackId == liveTrack.trackId }
+        // V3 inventory is an authoritative menu, not a preload list. Aether
+        // receives only the current plan's artifact; presenting its probed
+        // embedded tracks alongside every server sidecar would create two
+        // identities (and two selectors) for the same subtitle rows.
+        let planSubtitleTracks = activePreparedProtocolV3.map { prepared in
+            ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
+                plan: prepared.plan,
+                version: currentSelectedVersion
+            )
+        }
+        // …but a sidecar this session registered itself (a finished AI job or
+        // a downloaded subtitle) is real and selectable before any plan names
+        // it, so it is unioned in until the server publishes its ordinal.
+        let publishedSubtitleTracks = planSubtitleTracks.map { planTracks in
+            planTracks + locallyRegisteredSidecarSubtitleTracks.filter { local in
+                !planTracks.contains { $0.trackId == local.trackId }
+            }
+        } ?? aetherSubtitleTracks
+        subtitleTracks = publishedSubtitleTracks + existingLiveTracks.filter { liveTrack in
+            !publishedSubtitleTracks.contains { $0.trackId == liveTrack.trackId }
         }
         let mediaChapters = engine.mediaChapters.map { chapter in
             PlayerChapterInfo(
@@ -2594,9 +2850,22 @@ class PlayerViewModel {
         chapters = mediaChapters.isEmpty ? serverProvidedChapters : mediaChapters
 
         selectedAudioId = engine.activeAudioTrackIndex.map(Int64.init)
-        if selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) != true {
-            selectedSubtitleId = engine.activeSubtitleTrackIndex.map {
-                aetherPlaybackController.appSubtitleID(forAetherID: $0)
+        // A locally-registered sidecar is selected client-side, so the plan —
+        // which predates the track — must not republish over it. Once the
+        // server publishes that ordinal the plan is authoritative again.
+        let holdsLocalSidecarSelection = selectedSubtitleId.map { id in
+            locallyRegisteredSidecarSubtitleTracks.contains { $0.trackId == id }
+                && planSubtitleTracks?.contains { $0.trackId == id } != true
+        } ?? false
+        if selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) != true,
+           !holdsLocalSidecarSelection {
+            if activePreparedProtocolV3 != nil {
+                selectedSubtitleId = publishedSubtitleTracks
+                    .first(where: \.isSelected)?.trackId
+            } else {
+                selectedSubtitleId = engine.activeSubtitleTrackIndex.map {
+                    aetherPlaybackController.appSubtitleID(forAetherID: $0)
+                }
             }
         }
 
@@ -2640,6 +2909,14 @@ class PlayerViewModel {
                     applySubtitleTrackSelection(nil, reason: "pending_subtitle_off")
                 }
             } else if let match = aetherSubtitleTracks.first(where: { $0.ffIndex == wantedIndex }) {
+                // The engine still selects an embedded stream by its raw id,
+                // but under V3 the *published* row for that stream lives in
+                // the plan's sidecar id space. Publishing the engine id would
+                // leave the picker showing nothing selected and resolve to no
+                // combined ordinal on the next replan.
+                let publishedTrackID = publishedSubtitleTracks
+                    .first { $0.ffIndex == wantedIndex }?
+                    .trackId ?? match.trackId
                 switch DeferredTrackSelectionGate.outcome(
                     isLoadEstablished: loadIsEstablished,
                     engineAlreadyMatches: engine.activeSubtitleTrackIndex == wantedIndex
@@ -2648,16 +2925,20 @@ class PlayerViewModel {
                     break
                 case .adoptWithoutEngineCall:
                     pendingSubtitleFfIndex = nil
-                    selectedSubtitleId = match.trackId
+                    selectedSubtitleId = publishedTrackID
                 case .applyToEngine:
                     pendingSubtitleFfIndex = nil
-                    selectedSubtitleId = match.trackId
+                    selectedSubtitleId = publishedTrackID
                     applySubtitleTrackSelection(match.trackId, reason: "pending_subtitle_index")
                 }
             }
         }
 
+        // Reassert even when Aether publishes the same synthetic id: V3 changed
+        // the resource behind that reused id, and the current plan's artifact
+        // URL — not id equality — is authoritative.
         if let pendingTrackID = pendingSidecarSubtitleTrackId,
+           loadIsEstablished,
            subtitleTracks.contains(where: { $0.trackId == pendingTrackID }) {
             pendingSidecarSubtitleTrackId = nil
             selectedSubtitleId = pendingTrackID
@@ -3140,6 +3421,7 @@ class PlayerViewModel {
         bufferedAheadSeconds = 0
         playbackStats = .empty
         knownExternalSubtitles = []
+        locallyRegisteredSidecarSubtitleTracks = []
         pendingServerRenderedSubtitleTrackId = nil
         // Subtitle `-1` is the explicit "Off" sentinel; Aether inventory
         // adoption disables subtitles when it sees a negative value.
@@ -3164,16 +3446,20 @@ class PlayerViewModel {
     }
 
     private func resolvedSubtitleTrackIndexForResume() -> Int? {
-        if let selectedSubtitleId,
-           let selected = subtitleTracks.first(where: { $0.trackId == selectedSubtitleId }),
-           let ffIndex = selected.ffIndex {
-            return ffIndex
-        }
+        // The id space decides, not the row's metadata: a V3 picker row is
+        // published in the sidecar space and carries its FFmpeg index only so
+        // an embedded pick can be persisted. Restoring it as an embedded index
+        // would arm both identities for the same subtitle.
         if let selectedSubtitleId, SubtitleTrackIdSpace.isSidecar(selectedSubtitleId) {
             // Sidecars are re-applied client-side after the playback
             // session returns `subtitle_urls`; keep embedded subtitles off
             // until that explicit sidecar selection is restored.
             return -1
+        }
+        if let selectedSubtitleId,
+           let selected = subtitleTracks.first(where: { $0.trackId == selectedSubtitleId }),
+           let ffIndex = selected.ffIndex {
+            return ffIndex
         }
         if !subtitleTracks.isEmpty || lastLoadRequest?.preferredSubtitleTrackIndex == -1 {
             return -1
@@ -4634,6 +4920,15 @@ class PlayerViewModel {
         )
         if activePreparedProtocolV3 != nil,
            !SubtitleTrackIdSpace.isAILive(track.trackId) {
+            let trackTarget = queuedTrackTarget(forSubtitle: track)
+            if case .subtitle(_, let combinedIndex) = trackTarget {
+                cmpLog(
+                    "[CMP-SUB] phase=user_tap source="
+                        + (track.isExternal ? "external" : "embedded")
+                        + " combined_index="
+                        + (combinedIndex.map(String.init) ?? "unmapped")
+                )
+            }
             // The replan is what actually switches the track, so nothing is
             // persisted or recorded until one is under way.
             guard attemptProtocolV3Replan(
@@ -4641,7 +4936,7 @@ class PlayerViewModel {
                 classification: "subtitle_track_changed",
                 message: "User selected subtitle track \(track.title ?? String(track.trackId)).",
                 requeueWhenBusy: true,
-                trackTarget: queuedTrackTarget(forSubtitle: track)
+                trackTarget: trackTarget
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
@@ -4790,6 +5085,7 @@ class PlayerViewModel {
         // Secondary sub cannot equal the primary sid; guard at the UI layer
         // so the user gets an immediate no-op rather than seeing stale state.
         guard track.trackId != selectedSubtitleId else { return }
+        guard canRenderAsSecondarySubtitle(track) else { return }
         selectedSecondarySubtitleId = track.trackId
         applySecondarySubtitleTrackSelection(track.trackId)
         scheduleHideControls()
@@ -5004,9 +5300,9 @@ class PlayerViewModel {
             return nil
         }
         switch subtitleMode {
-        case "render":
+        case let mode? where PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(mode):
             return .renderLocally(snapshot)
-        case "burn_in":
+        case PlaybackProtocolV3.SubtitleMode.burnIn:
             return .serverRendered(snapshot)
         default:
             return nil
@@ -5043,7 +5339,8 @@ class PlayerViewModel {
         plan: PlaybackV3Plan,
         request: LoadRequest
     ) -> ProtocolV3PendingTrackIntent {
-        let rendersSubtitleLocally = plan.subtitle.mode == "render"
+        let rendersSubtitleLocally = PlaybackProtocolV3.SubtitleMode.locallyRendered
+            .contains(plan.subtitle.mode)
         return ProtocolV3PendingTrackIntent(
             audioIndex: request.preferredAudioTrackIndex,
             embeddedSubtitleIndex: rendersSubtitleLocally
@@ -5117,6 +5414,27 @@ class PlayerViewModel {
             ),
             appTrackID: trackId
         )
+        // The active V3 plan predates this track, so the plan-derived picker
+        // cannot name it. Keep the row session-side until a later plan's
+        // inventory publishes the same ordinal.
+        if !locallyRegisteredSidecarSubtitleTracks.contains(where: { $0.trackId == trackId }) {
+            locallyRegisteredSidecarSubtitleTracks.append(PlayerTrack(
+                trackId: trackId,
+                kind: .sub,
+                title: descriptor.label,
+                lang: descriptor.language,
+                codec: descriptor.codec,
+                audioChannelCount: nil,
+                bitrate: nil,
+                isDefault: descriptor.isDefault ?? false,
+                isForced: descriptor.forced ?? false,
+                isHearingImpaired: descriptor.isHearingImpaired ?? false,
+                isExternal: true,
+                isSelected: false,
+                ffIndex: nil,
+                srcId: descriptor.index
+            ))
+        }
         adoptAetherInventory()
     }
 
@@ -5424,6 +5742,7 @@ class PlayerViewModel {
         autoSkippedCreditsKey = nil
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
+        locallyRegisteredSidecarSubtitleTracks = []
         subtitleAI.reset()
         deferredLiveSubtitleCloseTask?.cancel()
         deferredLiveSubtitleCloseTask = nil
@@ -5852,7 +6171,66 @@ class PlayerViewModel {
         track.srcId ?? track.ffIndex
     }
 
+    /// Re-registers session-created sidecars (finished AI jobs, downloaded
+    /// subtitles) with a freshly loaded engine under V3.
+    ///
+    /// Their `knownExternalSubtitles` entries were recorded for exactly this
+    /// moment, but the V3 picker-only gate skips the generic re-registration
+    /// path, so without this a quality/route replan leaves the row selected
+    /// in the menu with no Aether resource behind it.
+    private func reregisterLocallyCreatedSidecarsWithAether() {
+        guard backendCapabilities.supportsExternalPrimarySubtitles else { return }
+        var reregistered = false
+        for local in locallyRegisteredSidecarSubtitleTracks {
+            guard !aetherPlaybackController.containsSubtitle(appTrackID: local.trackId),
+                  let known = knownExternalSubtitles.first(where: {
+                      SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.index) == local.trackId
+                  }),
+                  let url = resolveServerUrl(known.url, serverUrl: resolvedServerUrl) else {
+                continue
+            }
+            aetherPlaybackController.addExternalSubtitleTrack(
+                ExternalSubtitleTrack(
+                    url: url,
+                    name: known.label,
+                    language: known.language,
+                    isForced: known.forced ?? false,
+                    isHearingImpaired: known.hearingImpaired ?? false,
+                    isDefault: known.default ?? false,
+                    httpHeaders: aetherSubtitleRequestHeaders(for: url),
+                    formatHint: known.codec
+                ),
+                appTrackID: local.trackId
+            )
+            reregistered = true
+        }
+        guard reregistered else { return }
+        // If the local row was the active selection, the new engine load lost
+        // it; arm the existing pending path so inventory adoption reasserts
+        // the engine-side selection once the load is established. The plan
+        // cannot contest this id — it does not know the track.
+        if let selectedSubtitleId,
+           locallyRegisteredSidecarSubtitleTracks.contains(where: { $0.trackId == selectedSubtitleId }) {
+            pendingSidecarSubtitleTrackId = selectedSubtitleId
+        }
+        adoptAetherInventory()
+    }
+
     private func loadPendingExternalSubtitles() {
+        if activePreparedProtocolV3 != nil {
+            // `subtitle.inventory` feeds the V3 picker. Loading all of its URLs
+            // into Aether gives the engine an uncommitted set of alternatives
+            // and lets language/default policy override `subtitle.artifact`.
+            // The exact selected artifact was already declared in AetherLoadSpec.
+            pendingExternalSubtitles = []
+            // A sidecar this session created itself (finished AI job or
+            // downloaded subtitle) is not in the plan, so a reload rebuilds
+            // the alias table without it while the picker still shows its
+            // row; only those tracks are re-registered here.
+            reregisterLocallyCreatedSidecarsWithAether()
+            Self.logger.info("[CMP-SUB] keeping V3 subtitle inventory picker-only")
+            return
+        }
         let restoredFromKnownCache = pendingExternalSubtitles.isEmpty
         let allPending = restoredFromKnownCache
             ? knownExternalSubtitles
@@ -6065,7 +6443,74 @@ class PlayerViewModel {
             aetherPlaybackController.selectSecondarySubtitleTrack(id: nil)
             return
         }
+        registerSecondarySubtitleWithAetherIfNeeded(track)
+        // Only a track Aether actually holds can be rendered as the secondary
+        // one. Under V3 the plan mounts a single artifact, so an inventory row
+        // that could not be registered above has no engine id at all — showing
+        // it checked while nothing renders is worse than refusing the pick.
+        guard aetherPlaybackController.containsSubtitle(appTrackID: trackId)
+                || !SubtitleTrackIdSpace.isSidecar(trackId) else {
+            Self.logger.warning(
+                "[CMP-SUB] secondary subtitle \(trackId, privacy: .public) has no Aether track; clearing"
+            )
+            selectedSecondarySubtitleId = nil
+            aetherPlaybackController.selectSecondarySubtitleTrack(id: nil)
+            return
+        }
         aetherPlaybackController.selectSecondarySubtitleTrack(id: trackId)
+    }
+
+    /// Mounts a V3 inventory sidecar on demand so it can be used as the
+    /// secondary subtitle.
+    ///
+    /// The plan declares exactly one artifact, which is the primary. Every
+    /// other picker row is server metadata the engine has never seen, so a
+    /// dual-subtitle pick has to register its URL before it can be selected.
+    private func registerSecondarySubtitleWithAetherIfNeeded(_ track: PlayerTrack) {
+        guard !aetherPlaybackController.containsSubtitle(appTrackID: track.trackId),
+              let url = protocolV3InventorySidecarURL(for: track) else {
+            return
+        }
+        aetherPlaybackController.addExternalSubtitleTrack(
+            ExternalSubtitleTrack(
+                url: url,
+                name: track.title,
+                language: track.lang,
+                isForced: track.isForced,
+                isHearingImpaired: track.isHearingImpaired,
+                isDefault: track.isDefault,
+                httpHeaders: aetherSubtitleRequestHeaders(for: url),
+                formatHint: track.codec
+            ),
+            appTrackID: track.trackId
+        )
+    }
+
+    /// Resolved sidecar URL the active plan publishes for this picker row, or
+    /// nil when the row is not a downloadable sidecar (`burn_in_only` rows
+    /// carry no URL) or no V3 plan is active.
+    private func protocolV3InventorySidecarURL(for track: PlayerTrack) -> URL? {
+        guard let plan = activePreparedProtocolV3?.plan,
+              let combinedIndex = track.srcId,
+              let item = plan.subtitle.inventory.first(where: {
+                  $0.combinedIndex == combinedIndex
+              }),
+              item.delivery == "sidecar",
+              let raw = item.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return nil
+        }
+        return resolveServerUrl(raw, serverUrl: resolvedServerUrl)
+    }
+
+    /// Whether a picker row can actually be rendered as the secondary
+    /// subtitle: it is either already mounted in Aether or can be mounted from
+    /// the plan inventory on demand.
+    private func canRenderAsSecondarySubtitle(_ track: PlayerTrack) -> Bool {
+        guard activePreparedProtocolV3 != nil else { return true }
+        if SubtitleTrackIdSpace.isAILive(track.trackId) { return false }
+        return aetherPlaybackController.containsSubtitle(appTrackID: track.trackId)
+            || protocolV3InventorySidecarURL(for: track) != nil
     }
 
     // MARK: - Live AI subtitle track seam

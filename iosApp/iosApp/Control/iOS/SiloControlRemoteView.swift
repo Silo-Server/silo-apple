@@ -8,12 +8,19 @@ import SwiftUI
 struct SiloControlRemoteView: View {
     @Bindable var controller: SiloControlClient
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var artwork = SiloControlArtworkResolver()
     @State private var isShowingPicker = false
+    @State private var volumeButtons = RemoteHardwareVolumeInterceptor()
 
     var body: some View {
         NavigationStack {
             ZStack {
+                HiddenVolumeHost(interceptor: volumeButtons)
+                    .frame(width: 1, height: 1)
+                    .opacity(0.0001)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                 SiloControlArtworkBackground(urlString: artwork.backdropURL ?? artwork.posterURL)
                 content
             }
@@ -42,6 +49,17 @@ struct SiloControlRemoteView: View {
                         } label: {
                             Label("Stop Playback", systemImage: "stop.fill")
                         }
+                        if controller.state?.supportsVideoGravity == true {
+                            Menu {
+                                ForEach(VideoGravity.allCases, id: \.rawValue) { gravity in
+                                    Button { controller.send(.setVideoGravity(gravity.rawValue)) } label: {
+                                        Label(gravity.label, systemImage: controller.state?.videoGravity == gravity.rawValue ? "checkmark" : "rectangle.inset.filled")
+                                    }
+                                }
+                            } label: {
+                                Label("Aspect Ratio", systemImage: "rectangle.inset.filled")
+                            }
+                        }
                         Divider()
                         Button(role: .destructive) {
                             controller.disconnect()
@@ -61,8 +79,35 @@ struct SiloControlRemoteView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            volumeButtons.onVolumeStep = { step in
+                controller.stepVolumeOptimistic(step)
+            }
+            updateVolumeInterception()
+        }
+        .onDisappear { volumeButtons.stop() }
+        .onChange(of: scenePhase) { updateVolumeInterception() }
+        .onChange(of: hasActivePlayback) { updateVolumeInterception() }
         .task(id: controller.state?.contentId) {
             await artwork.resolve(contentId: controller.state?.contentId)
+        }
+    }
+
+    /// A connected-but-idle TV still publishes state, with no content id. It has
+    /// no player to route volume at, so commands come back `player_not_ready`;
+    /// interception there would only cost the phone its own volume buttons.
+    private var hasActivePlayback: Bool {
+        !(controller.state?.contentId ?? "").isEmpty
+    }
+
+    /// Hardware-volume interception is live only while the scene is active and
+    /// the TV is actually playing something: an inactive scene must return the
+    /// buttons to the phone, and without playback a press reaches nothing.
+    private func updateVolumeInterception() {
+        if scenePhase == .active, hasActivePlayback {
+            volumeButtons.start()
+        } else {
+            volumeButtons.stop()
         }
     }
 
@@ -166,20 +211,18 @@ private struct RemoteNowPlayingContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 8)
             artwork
-            Spacer(minLength: 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 12)
             titleBlock
             playingOnPill.padding(.top, 10)
-            scrubber.padding(.top, 22)
-            transport.padding(.top, 18)
-            volumeRow.padding(.top, 18)
-            Spacer(minLength: 16)
-            secondaryControls
+            scrubber.padding(.top, 24)
+            transport.padding(.top, 20)
+            volumeRow.padding(.top, 20)
+            secondaryControls.padding(.top, 20)
             if let error = state.error, !error.isEmpty {
                 errorBanner(error).padding(.top, 12)
             }
-            Spacer(minLength: 8)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
@@ -274,6 +317,12 @@ private struct RemoteNowPlayingContent: View {
 
     private var transport: some View {
         HStack(spacing: 28) {
+            if state.hasNextEpisode {
+                Image(systemName: "forward.end.fill")
+                    .font(.system(size: 24, weight: .regular))
+                    .hidden()
+            }
+
             Button {
                 onSeek(max(0, clock.displayTime() - 10))
             } label: {
@@ -337,21 +386,23 @@ private struct RemoteNowPlayingContent: View {
             .tint(Color.continuumOnSurface)
             .accessibilityLabel("Volume")
             .accessibilityValue("\(Int((state.isMuted ? 0 : state.volume) * 100)) percent")
+
+            Image(systemName: "speaker.wave.3.fill")
+                .font(.system(size: 18, weight: .medium))
+                .frame(width: 28)
+                .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
         }
+        .frame(maxWidth: 280)
         .foregroundStyle(Color.continuumOnSurface)
         .buttonStyle(.plain)
     }
 
     private var secondaryControls: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 8) {
-                if !state.audioTracks.isEmpty { audioMenu.frame(minWidth: 76) }
-                if hasSubtitleControls { subtitleMenu.frame(minWidth: 76) }
-                if !state.qualityOptions.isEmpty { qualityMenu.frame(minWidth: 76) }
-                speedMenu.frame(minWidth: 76)
-                if state.supportsVideoGravity { displayMenu.frame(minWidth: 76) }
-            }
-            .padding(.horizontal, 2)
+        HStack(alignment: .top, spacing: 8) {
+            if !state.qualityOptions.isEmpty { qualityMenu }
+            if !state.audioTracks.isEmpty { audioMenu }
+            if hasSubtitleControls { subtitleMenu }
+            speedMenu
         }
     }
 
@@ -462,19 +513,6 @@ private struct RemoteNowPlayingContent: View {
             }
         } label: { RemoteChipLabel(systemImage: "speedometer", caption: "Speed") }
         .accessibilityValue(speedLabel(state.playbackSpeed))
-    }
-
-    private var displayMenu: some View {
-        Menu {
-            if state.supportsVideoGravity {
-                ForEach(VideoGravity.allCases, id: \.rawValue) { gravity in
-                    Button { onCommand(.setVideoGravity(gravity.rawValue)) } label: {
-                        Label(gravity.label, systemImage: state.videoGravity == gravity.rawValue ? "checkmark" : "rectangle.inset.filled")
-                    }
-                }
-            }
-        } label: { RemoteChipLabel(systemImage: "rectangle.inset.filled", caption: "Aspect") }
-        .accessibilityValue(VideoGravity(rawValue: state.videoGravity)?.label ?? state.videoGravity)
     }
 
     private func speedLabel(_ speed: Double) -> String {

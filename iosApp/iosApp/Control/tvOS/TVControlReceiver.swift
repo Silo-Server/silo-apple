@@ -318,7 +318,10 @@ final class TVControlReceiver {
             remoteControllerName = hello.deviceName
             remoteControllerDeviceId = hello.deviceId
             remoteControllerServerId = serverId
-            if serverId == RemotePlaybackIdentityManager.shared.effectiveServerId {
+            if ServerRegistry.serverIdsMatch(
+                serverId,
+                RemotePlaybackIdentityManager.shared.effectiveServerId
+            ) {
                 isAuthorized = true
                 refreshStandbyState()
                 sendState()
@@ -472,7 +475,10 @@ final class TVControlReceiver {
     }
 
     private func handleLaunch(_ launch: SiloControlLaunchRequest) {
-        guard launch.serverId == RemotePlaybackIdentityManager.shared.effectiveServerId else {
+        guard ServerRegistry.serverIdsMatch(
+            launch.serverId,
+            RemotePlaybackIdentityManager.shared.effectiveServerId
+        ) else {
             sendError(code: "server_mismatch", message: "This Apple TV is connected to a different Silo server.")
             return
         }
@@ -600,7 +606,10 @@ final class TVControlReceiver {
 
     private func reconcileAuthorizationAfterRestore() {
         remoteLaunchReady = false
-        isAuthorized = remoteControllerServerId == RemotePlaybackIdentityManager.shared.effectiveServerId
+        isAuthorized = ServerRegistry.serverIdsMatch(
+            remoteControllerServerId,
+            RemotePlaybackIdentityManager.shared.effectiveServerId
+        )
         if isAuthorized {
             sendState()
         } else {

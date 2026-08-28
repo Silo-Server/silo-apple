@@ -122,8 +122,10 @@ struct SiloControlPlaybackState: Codable, Equatable, Sendable {
     var subtitlePosition: String? = nil
     var supportsSubtitleDelay: Bool? = nil
     var supportsSubtitlePosition: Bool? = nil
-    let volume: Double
-    let isMuted: Bool
+    // `var` so the iOS remote can apply optimistic volume/mute updates between
+    // TV state acknowledgements.
+    var volume: Double
+    var isMuted: Bool
     let hasNextEpisode: Bool
     let nextEpisodeTitle: String?
     let error: String?

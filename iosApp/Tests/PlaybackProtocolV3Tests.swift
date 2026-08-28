@@ -671,6 +671,19 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(
             ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
                 for: makePlayerSubtitle(
+                    trackId: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1),
+                    isExternal: false,
+                    ffIndex: nil,
+                    srcId: 1
+                ),
+                in: version
+            ),
+            1,
+            "a server inventory row keeps its combined ordinal even when its source is embedded"
+        )
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                for: makePlayerSubtitle(
                     trackId: 12,
                     isExternal: false,
                     ffIndex: 5,
@@ -1165,6 +1178,199 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ))
     }
 
+    /// The one resolver every V3 subtitle consumer shares. Order matches the
+    /// Android `resolvedSelectedSubtitleIndex`, with the Apple-only
+    /// `subtitle.track_id` fallback strictly last.
+    func testSelectedSubtitleInventoryItemResolutionOrder() {
+        let inventory = [
+            makeInventoryItem(combinedIndex: 0, source: "external"),
+            makeInventoryItem(combinedIndex: 1, source: "embedded"),
+            makeInventoryItem(combinedIndex: 2, source: "embedded"),
+        ]
+
+        // The ordinal wins even when the identity names another row.
+        let byIndex = makePlan(
+            selectedSubtitleIdentity: PlaybackV3TrackIdentity(
+                id: "file:42:subtitle:0",
+                index: 2
+            ),
+            subtitleMode: "render",
+            subtitleInventory: inventory
+        )
+        XCTAssertEqual(byIndex.selectedSubtitleInventoryItem?.combinedIndex, 2)
+        XCTAssertEqual(byIndex.selectedSubtitleCombinedIndex, 2)
+
+        // No ordinal: the stable server identity resolves the row.
+        let byIdentity = makePlan(
+            selectedSubtitleIdentity: PlaybackV3TrackIdentity(
+                id: "file:42:subtitle:1",
+                index: nil
+            ),
+            subtitleMode: "render",
+            subtitleInventory: inventory
+        )
+        XCTAssertEqual(byIdentity.selectedSubtitleInventoryItem?.combinedIndex, 1)
+        XCTAssertEqual(byIdentity.selectedSubtitleCombinedIndex, 1)
+
+        // Transitional plan: only the decision's own track id is available.
+        let byDecisionTrackId = makePlan(
+            decisionSubtitleTrackId: "file:42:subtitle:2",
+            subtitleMode: "render",
+            subtitleInventory: inventory
+        )
+        XCTAssertEqual(byDecisionTrackId.selectedSubtitleInventoryItem?.combinedIndex, 2)
+
+        // Nothing names a published row.
+        let unresolved = makePlan(
+            selectedSubtitleIdentity: PlaybackV3TrackIdentity(
+                id: "file:42:subtitle:9",
+                index: nil
+            ),
+            subtitleMode: "render",
+            subtitleInventory: inventory
+        )
+        XCTAssertNil(unresolved.selectedSubtitleInventoryItem)
+        XCTAssertNil(unresolved.selectedSubtitleCombinedIndex)
+    }
+
+    /// A plan that names its subtitle by identity alone still marks that row
+    /// selected — otherwise the picker reads "Off" over visible captions and
+    /// the next replan drops them for real. `off` still selects nothing.
+    func testSubtitlePickerSelectsResolvedRowWithoutASelectedOrdinal() {
+        let inventory = [
+            makeInventoryItem(combinedIndex: 0, source: "external"),
+            makeInventoryItem(combinedIndex: 1, source: "embedded"),
+        ]
+        let identity = PlaybackV3TrackIdentity(id: "file:42:subtitle:1", index: nil)
+
+        let rendered = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
+            plan: makePlan(
+                selectedSubtitleIdentity: identity,
+                subtitleMode: "render",
+                subtitleInventory: inventory
+            )
+        )
+        XCTAssertEqual(rendered.filter(\.isSelected).map(\.srcId), [1])
+
+        let off = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
+            plan: makePlan(
+                selectedSubtitleIdentity: identity,
+                subtitleMode: "off",
+                subtitleInventory: inventory
+            )
+        )
+        XCTAssertTrue(off.allSatisfy { !$0.isSelected })
+    }
+
+    /// `convert` mounts an artifact exactly like `render` does, so every gate
+    /// that arms the local selection must accept it. Treating it as "not
+    /// locally rendered" arms explicit Off over a mounted artifact.
+    func testConvertModeArmsTheLocallyMountedSubtitle() {
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: 5, codec: "ass", external: false, path: nil)
+            ]
+        )
+        let plan = makePlan(
+            selectedAudioIndex: 0,
+            selectedSubtitleIndex: 0,
+            subtitleMode: "convert",
+            subtitleInventory: [
+                makeInventoryItem(combinedIndex: 0, source: "embedded")
+            ]
+        )
+        let original = PlayerViewModel.LoadRequest(
+            contentId: "movie-1",
+            preferredFileId: 42,
+            preferredAudioTrackIndex: 0,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: true
+        )
+        let adopted = original.adoptingProtocolV3Intent(
+            plan: plan,
+            selectedVersion: version,
+            activeQualityId: "original"
+        )
+        let intent = PlayerViewModel.protocolV3PendingTrackIntent(
+            plan: plan,
+            request: adopted
+        )
+
+        XCTAssertEqual(
+            adopted.preferredSidecarSubtitleTrackId,
+            SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0)
+        )
+        XCTAssertEqual(intent.sidecarSubtitleTrackId, adopted.preferredSidecarSubtitleTrackId)
+        XCTAssertNotEqual(
+            intent.embeddedSubtitleIndex,
+            -1,
+            "a converted artifact is mounted, so the intent must not arm explicit Off"
+        )
+
+        let sidecarId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0)
+        XCTAssertEqual(
+            PlayerViewModel.protocolV3SidecarRestoreIntent(
+                snapshot: sidecarId,
+                selectedSubtitleIndex: 0,
+                subtitleMode: "convert"
+            ),
+            .renderLocally(sidecarId)
+        )
+    }
+
+    /// An embedded picker row has to carry its real FFmpeg stream index or the
+    /// persisted pick falls through to the explicit-Off sentinel.
+    func testEmbeddedPickerRowsCarryTheirFFmpegStreamIndex() {
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: nil, codec: "srt", external: true, path: "/movie.en.srt"),
+                makeSubtitle(index: 2, codec: "subrip", external: false, path: nil),
+                makeSubtitle(index: 5, codec: "pgs", external: false, path: nil),
+            ]
+        )
+        let plan = makePlan(
+            selectedSubtitleIndex: 1,
+            subtitleMode: "render",
+            subtitleInventory: [
+                makeInventoryItem(combinedIndex: 0, source: "external"),
+                makeInventoryItem(combinedIndex: 1, source: "embedded"),
+                makeInventoryItem(combinedIndex: 2, source: "embedded", delivery: "burn_in_only"),
+            ]
+        )
+
+        let tracks = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
+            plan: plan,
+            version: version
+        )
+        XCTAssertEqual(tracks.map(\.ffIndex), [nil, 2, 5])
+        XCTAssertEqual(tracks.map(\.isExternal), [true, false, false])
+        // The published id space is unchanged: rows stay sidecar-space and
+        // still resolve back to their combined ordinal.
+        XCTAssertEqual(
+            tracks.map {
+                ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                    for: $0,
+                    in: version,
+                    inventory: plan.subtitle.inventory
+                )
+            },
+            [0, 1, 2]
+        )
+
+        // Without a version there is nothing to translate against.
+        XCTAssertTrue(
+            ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan)
+                .allSatisfy { $0.ffIndex == nil }
+        )
+    }
+
     func testV3AudioIntentOverridesBackendDefaultAfterReplan() {
         let version = makeVersion(
             container: "mkv",
@@ -1496,6 +1702,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         dynamicRange: String = "sdr",
         selectedAudioIndex: Int = 0,
         selectedSubtitleIndex: Int? = nil,
+        /// Replaces the identity derived from `selectedSubtitleIndex`, so a
+        /// test can publish a stable id with no ordinal.
+        selectedSubtitleIdentity: PlaybackV3TrackIdentity? = nil,
+        /// Replaces `subtitle.track_id`, the transitional Apple-only fallback.
+        decisionSubtitleTrackId: String? = nil,
         subtitleMode: String = "off",
         subtitleInventory: [PlaybackV3SubtitleInventoryItem] = [],
         transformations: [PlaybackV3Transformation] = [],
@@ -1539,7 +1750,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                     id: "file:42:audio:\(selectedAudioIndex)",
                     index: selectedAudioIndex
                 ),
-                subtitle: selectedSubtitleIndex.map {
+                subtitle: selectedSubtitleIdentity ?? selectedSubtitleIndex.map {
                     PlaybackV3TrackIdentity(id: "file:42:subtitle:\($0)", index: $0)
                 }
             ),
@@ -1578,7 +1789,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ),
             subtitle: PlaybackV3SubtitleDecision(
                 mode: subtitleMode,
-                trackId: selectedSubtitleIndex.map { "file:42:subtitle:\($0)" },
+                trackId: decisionSubtitleTrackId
+                    ?? selectedSubtitleIndex.map { "file:42:subtitle:\($0)" },
                 artifact: nil,
                 inventory: subtitleInventory
             ),
