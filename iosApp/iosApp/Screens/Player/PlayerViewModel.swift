@@ -1909,10 +1909,12 @@ class PlayerViewModel {
                 }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                 self.resolvedServerUrl = streamRequest.serverUrl
+                let shouldPlayWhenReady = self.aetherPlaybackController.shouldPlayWhenReady
                 try await self.loadAether(
                     prepared: prepared,
                     streamRequest: streamRequest,
-                    expectedStreamLoadGeneration: currentStreamLoadGeneration
+                    expectedStreamLoadGeneration: currentStreamLoadGeneration,
+                    shouldPlayWhenReady: shouldPlayWhenReady
                 )
                 guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                     throw CancellationError()
@@ -2529,7 +2531,7 @@ class PlayerViewModel {
         streamRequest: StreamRequest,
         expectedStreamLoadGeneration: UInt64,
         resumeSourcePosition: Double? = nil,
-        shouldPlayWhenReady: Bool = true
+        shouldPlayWhenReady: Bool
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
@@ -3769,7 +3771,8 @@ class PlayerViewModel {
                 try await self.loadAether(
                     prepared: prepared,
                     streamRequest: streamRequest,
-                    expectedStreamLoadGeneration: currentStreamLoadGeneration
+                    expectedStreamLoadGeneration: currentStreamLoadGeneration,
+                    shouldPlayWhenReady: true
                 )
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
