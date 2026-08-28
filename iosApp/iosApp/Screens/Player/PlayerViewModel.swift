@@ -493,10 +493,16 @@ class PlayerViewModel {
     /// short next to a session that would otherwise play on forever.
     private static let pictureInPictureRestoreTimeoutNanoseconds: UInt64 = 3_000_000_000
     #endif
-    /// True after the active backend reports natural EOF. Used to keep the
+    /// True after the active backend reports EOF. Used to keep the
     /// UI in a terminal paused state without letting tail-drain callbacks
-    /// overwrite it or surface a false decode error.
+    /// overwrite it or surface a false decode error. Pair with
+    /// `endedPrematurely` — a connection-reset EOS still latches this so the
+    /// player stays paused, but it is not a natural finish.
     private var hasReachedEndOfFile = false
+    /// True when `handleEndOfFile` classified the EOS as a mid-file HTTP
+    /// reset rather than a natural finish. Watch-progress finalization and
+    /// Keep Watching must use the observed resume point, not duration.
+    private var endedPrematurely = false
     let settings = PlayerSettings.shared
     let sleepTimer = SleepTimer()
     private let nowPlaying = AetherVideoNowPlayingCoordinator()
@@ -1335,6 +1341,7 @@ class PlayerViewModel {
 
     private func handleFileLoaded() {
         hasReachedEndOfFile = false
+        endedPrematurely = false
         error = nil
         isLoading = false
         isPlaying = true
@@ -2445,7 +2452,18 @@ class PlayerViewModel {
         nextUpScreenVideoEnded = false
         cancelNextUpCountdown()
 
-        if shouldResumeAfterEnd,
+        if endedPrematurely {
+            // Connection-reset EOS: resume from the last real playhead, not
+            // a synthetic tail-of-file seek that would skip the unwatched
+            // remainder.
+            endedPrematurely = false
+            hasReachedEndOfFile = false
+            let target = currentTime.isFinite ? max(0, currentTime) : 0
+            let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpPrematureResume")
+            if !reloadsPlaybackPipeline {
+                aetherPlaybackController.play()
+            }
+        } else if shouldResumeAfterEnd,
            duration.isFinite,
            duration > 0,
            hasActiveAetherSession {
@@ -2453,6 +2471,7 @@ class PlayerViewModel {
             // position; resuming at exact EOF would immediately present the
             // postroll again. Replay a short tail of the current episode.
             hasReachedEndOfFile = false
+            endedPrematurely = false
             let target = max(0, duration - 10)
             let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
             if !reloadsPlaybackPipeline {
@@ -2513,6 +2532,7 @@ class PlayerViewModel {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: hasReachedEndOfFile,
+            endedPrematurely: endedPrematurely,
             currentTime: currentTime,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds
@@ -3254,7 +3274,7 @@ class PlayerViewModel {
         hideControlsTask?.cancel()
         hideControlsTask = nil
         aetherPlaybackController.pause()
-        if duration.isFinite, duration > 0 {
+        if !isPremature, duration.isFinite, duration > 0 {
             currentTime = duration
         }
         isLoading = false
@@ -3285,7 +3305,24 @@ class PlayerViewModel {
             }
         }
 
-        beginNextUpPostroll(videoEnded: true)
+        if isPremature {
+            endedPrematurely = true
+            // Pin the real resume point before the postroll. The 10s reporter
+            // is still running, but dismissing or a process kill before the
+            // next tick would otherwise keep whatever was last flushed —
+            // and must not later be replaced with duration. This callback
+            // may not be on the MainActor; hop like the offline flush below.
+            Task { @MainActor [weak self] in
+                self?.flushPlaybackProgressNow(reason: "premature_eof")
+            }
+            // Keep Watching must stay available: `videoEnded: true` hides it
+            // and would leave only Play Next / Back, both of which previously
+            // finalized the dropped episode as watched.
+            beginNextUpPostroll(videoEnded: false)
+        } else {
+            endedPrematurely = false
+            beginNextUpPostroll(videoEnded: true)
+        }
     }
 
     private func attachNowPlayingIfNeeded() {
@@ -3546,6 +3583,7 @@ class PlayerViewModel {
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
+        endedPrematurely = false
         // Retire the outgoing load's epoch *synchronously*. The actual
         // dispose happens several awaits down, and until this is nil a late
         // `.ended` or failure from the item we're replacing still matches
@@ -4536,6 +4574,7 @@ class PlayerViewModel {
             "[CMP-SEEK] commit requested source=\(source, privacy: .public) target=\(clampedTarget, privacy: .public) current=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) replan=\(requiresReplan, privacy: .public)"
         )
         hasReachedEndOfFile = false
+        endedPrematurely = false
         seekOriginTime = currentTime
         seekTargetTime = clampedTarget
         currentTime = clampedTarget
@@ -5803,6 +5842,7 @@ class PlayerViewModel {
             let endedNaturally = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
                 isNextUpPresented: showNextUpScreen,
                 hasReachedEndOfFile: hasReachedEndOfFile,
+                endedPrematurely: endedPrematurely,
                 currentTime: currentTime,
                 duration: duration,
                 promptSeconds: settings.nextUpPromptSeconds

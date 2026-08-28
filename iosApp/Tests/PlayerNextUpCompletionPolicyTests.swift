@@ -49,4 +49,44 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
             )
         )
     }
+
+    /// A mid-episode HTTP reset still reports EOF, so the player latches
+    /// `hasReachedEndOfFile` to stay paused. That latch must not finalize
+    /// the item as watched — otherwise dismissing (or the 10s progress tick)
+    /// overwrites the real resume point with duration.
+    func testPrematureEndOfFilePreservesCurrentPosition() {
+        let position = PlayerNextUpCompletionPolicy.progressPosition(
+            isNextUpPresented: true,
+            hasReachedEndOfFile: true,
+            endedPrematurely: true,
+            currentTime: 600,
+            duration: 2_700,
+            promptSeconds: 30
+        )
+
+        XCTAssertEqual(position, 600)
+        XCTAssertFalse(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: true,
+                hasReachedEndOfFile: true,
+                endedPrematurely: true,
+                currentTime: 600,
+                duration: 2_700,
+                promptSeconds: 30
+            )
+        )
+    }
+
+    func testPrematureEndDoesNotFinalizeEvenWhenDismissingThePlayer() {
+        XCTAssertFalse(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: false,
+                hasReachedEndOfFile: true,
+                endedPrematurely: true,
+                currentTime: 600,
+                duration: 2_700,
+                promptSeconds: 30
+            )
+        )
+    }
 }
