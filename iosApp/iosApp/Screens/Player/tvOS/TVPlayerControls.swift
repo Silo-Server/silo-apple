@@ -431,9 +431,9 @@ struct TVPlayerControls: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 18)
         .padding(.vertical, 11)
-        .background(
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
-                .fill(Color.black.opacity(0.46))
+        .siloPlayerGlass(
+            in: RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous),
+            tint: .black.opacity(0.36)
         )
         .overlay(
             RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)

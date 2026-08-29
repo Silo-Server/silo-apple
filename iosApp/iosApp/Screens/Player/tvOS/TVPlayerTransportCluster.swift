@@ -27,10 +27,12 @@ struct TVPlayerTransportCluster: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
-            primaryRow
-            Spacer(minLength: 24)
-            secondaryRow
+        GlassEffectContainer(spacing: 0) {
+            HStack(spacing: 14) {
+                primaryRow
+                Spacer(minLength: 24)
+                secondaryRow
+            }
         }
         .focusSection()
         .onMoveCommand { direction in
@@ -92,9 +94,9 @@ struct TVPlayerTransportCluster: View {
     }
 
     // Uniform sizes on both rows keep the buttons reading as a single
-    // transport group. Focus is signaled by filling the circle white — no
-    // scale transform so the buttons never cross the bounds of their
-    // circular hit target.
+    // transport group. Each fixed-size control owns an interactive clear
+    // glass disc; the surrounding container batches their rendering without
+    // the focus-handoff flashes caused by morphing resizable controls.
     private static let buttonSize: CGFloat = 66
     private static let primarySymbolSize: CGFloat = 30
     private static let secondarySymbolSize: CGFloat = 25
@@ -118,8 +120,10 @@ struct TVPlayerTransportCluster: View {
             .font(.system(size: symbolSize, weight: .semibold))
             .foregroundStyle(isFocused ? Color.black : Color.white)
             .frame(width: Self.buttonSize, height: Self.buttonSize)
-            .background(
-                Circle().fill(isFocused ? Color.white : Color.black.opacity(0.35))
+            .siloClearGlass(
+                in: Circle(),
+                tint: isFocused ? .white.opacity(0.82) : .black.opacity(0.28),
+                interactive: true
             )
             .overlay(
                 Circle().stroke(

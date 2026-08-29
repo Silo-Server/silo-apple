@@ -21,19 +21,12 @@ extension View {
         return self.glassEffect(glass, in: shape)
     }
 
-    /// Glass for surfaces drawn over LIVE VIDEO (player HUD, controls,
-    /// notices). Backdrop-sampling effects — glassEffect and the legacy
-    /// materials alike — make the render server re-sample and re-blur the
-    /// covered video region on every video frame, which A12-class Apple
-    /// TVs pay for as a visible spike whenever the player menu is up.
-    /// Low-power devices draw a non-sampling translucent fill instead;
-    /// everything else gets standard Silo glass.
-    @ViewBuilder
+    /// Regular Liquid Glass for bounded surfaces drawn over live video.
+    /// Player call sites keep these surfaces compact and group adjacent
+    /// controls in `GlassEffectContainer`s so the HUD retains the native
+    /// material on every supported Apple TV without sampling one giant
+    /// full-screen backdrop.
     func siloPlayerGlass(in shape: some Shape, tint: Color? = nil) -> some View {
-        if DevicePower.isLowPowerAppleTV {
-            self.background(shape.fill(Color(white: 0.10).opacity(0.88)))
-        } else {
-            self.siloGlass(in: shape, tint: tint)
-        }
+        self.siloGlass(in: shape, tint: tint)
     }
 }

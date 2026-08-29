@@ -262,8 +262,13 @@ struct TVPlayerScrubber: View {
     private func puck(barWidth: CGFloat) -> some View {
         let size = isTimelineScrubbing ? Self.activePuckSize : Self.puckSize
         return Circle()
-            .fill(Color.white)
+            .fill(Color.white.opacity(0.38))
             .frame(width: size, height: size)
+            .siloClearGlass(
+                in: Circle(),
+                tint: .white.opacity(isTimelineScrubbing ? 0.72 : 0.50),
+                interactive: true
+            )
             .overlay(
                 Circle().stroke(Color.white.opacity(isTimelineScrubbing ? 0.55 : 0), lineWidth: 8)
             )
@@ -290,7 +295,10 @@ struct TVPlayerScrubber: View {
         .foregroundStyle(.black)
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(Capsule(style: .continuous).fill(.white))
+        .siloClearGlass(
+            in: Capsule(style: .continuous),
+            tint: .white.opacity(0.68)
+        )
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: timelineAutoSeekRate)
     }

@@ -413,7 +413,7 @@ struct TVPlaybackSelectorRow: View {
 /// Uses the system glass style rather than `TVPillButtonStyle` so it matches
 /// the detail hero's action row directly above it and lets tvOS draw the
 /// focus highlight. `TVPillButtonStyle` is shared with the player HUD and
-/// must stay non-glass — see the note on it in `TVDetailActions.swift`.
+/// keeps custom sizing and focus geometry for those playback-only controls.
 private struct TVSelectorButton<MenuContent: View>: View {
     let icon: String
     let label: String

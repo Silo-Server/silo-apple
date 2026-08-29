@@ -384,11 +384,10 @@ struct SubtitleSearchMenu: View {
             }
             .padding(28)
             .frame(maxWidth: 1100, maxHeight: 720)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(Color.black.opacity(0.35))
+            .siloPlayerGlass(
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous),
+                tint: .black.opacity(0.50)
             )
-            .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)

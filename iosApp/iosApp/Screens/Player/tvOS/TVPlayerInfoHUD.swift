@@ -118,15 +118,17 @@ struct TVPlayerInfoHUD: View {
     // MARK: - Tab bar
 
     private var tabBar: some View {
-        HStack(spacing: 12) {
-            ForEach(availableTabs, id: \.self) { tab in
-                TabPill(
-                    title: tab.title,
-                    isSelected: activeTab == tab,
-                    focusedTab: $focusedTab,
-                    tab: tab,
-                    onSelect: { activeTab = tab }
-                )
+        GlassEffectContainer(spacing: 0) {
+            HStack(spacing: 12) {
+                ForEach(availableTabs, id: \.self) { tab in
+                    TabPill(
+                        title: tab.title,
+                        isSelected: activeTab == tab,
+                        focusedTab: $focusedTab,
+                        tab: tab,
+                        onSelect: { activeTab = tab }
+                    )
+                }
             }
         }
         .focusSection()
@@ -144,6 +146,39 @@ struct TVPlayerInfoHUD: View {
     // MARK: - Panel
 
     private var panel: some View {
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+
+        return ZStack(alignment: .top) {
+            // Keep the backdrop-sampling surface independent from the pane
+            // subtree. Changing tabs now replaces only ordinary content;
+            // the glass renderer retains one stable shape over the video.
+            Color.clear
+                .siloPlayerGlass(in: shape, tint: .black.opacity(0.46))
+
+            panelContent
+                .padding(.horizontal, 28)
+                .padding(.vertical, 22)
+                // Focus-driven tab selection can arrive in an animated
+                // transaction. Pane replacement itself should be immediate;
+                // only the tab pill owns a visible transition. Scope this to
+                // the tab value rather than clearing every descendant
+                // transaction — rows such as the subtitle marquee still need
+                // to run their own explicit animations.
+                .animation(nil, value: activeTab)
+        }
+        // Width sits at ~60% of a 1920pt tvOS frame. Height is fixed at the
+        // tallest pane's needs — content-hugging here would resize the panel
+        // on every tab swap, which cascades into a SwiftUI relayout pass.
+        // Top-aligned so short panes (Video with few rows) keep their column
+        // headers pinned to the top instead of floating mid-panel.
+        .frame(maxWidth: 1100, minHeight: 380, maxHeight: 380, alignment: .top)
+        .overlay(shape.stroke(Color.white.opacity(0.14), lineWidth: 1))
+        .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
+        .focusSection()
+    }
+
+    @ViewBuilder
+    private var panelContent: some View {
         Group {
             switch activeTab {
             case .info:
@@ -164,25 +199,6 @@ struct TVPlayerInfoHUD: View {
             case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss)
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 22)
-        // Width sits at ~60% of a 1920pt tvOS frame. Height is fixed at the
-        // tallest pane's needs — content-hugging here would resize the panel
-        // on every tab swap, which cascades into a SwiftUI relayout pass.
-        // Top-aligned so short panes (Video with few rows) keep their column
-        // headers pinned to the top instead of floating mid-panel.
-        .frame(maxWidth: 1100, minHeight: 380, maxHeight: 380, alignment: .top)
-        // Glass carries enough light that the panel lifts off the video
-        // without extra dark tint; the stroke + shadow still define the
-        // edge over a fully-black frame. Low-power TVs draw a flat
-        // translucent fill instead (see siloPlayerGlass).
-        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
-        .focusSection()
     }
 
     private var isReadOnlyPaneScrolled: Bool {
@@ -269,7 +285,11 @@ private struct HUDTabPillBody: View {
             .foregroundStyle(foreground)
             .padding(.horizontal, 24)
             .padding(.vertical, 10)
-            .background(Capsule(style: .continuous).fill(background))
+            .siloClearGlass(
+                in: Capsule(style: .continuous),
+                tint: glassTint,
+                interactive: true
+            )
             .overlay(Capsule(style: .continuous).stroke(strokeColor, lineWidth: 1))
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
@@ -282,10 +302,10 @@ private struct HUDTabPillBody: View {
         (isSelected || isFocused) ? .black : .white
     }
 
-    private var background: Color {
+    private var glassTint: Color {
         if isSelected { return .white }
-        if isFocused  { return .white.opacity(0.9) }
-        return .black.opacity(0.45)
+        if isFocused  { return .white.opacity(0.88) }
+        return .black.opacity(0.28)
     }
 
     private var strokeColor: Color {
@@ -426,6 +446,15 @@ private struct LabelValueRow: View {
 
 // MARK: - Row chrome
 
+/// Removes List's platform row chrome while retaining its lazy construction,
+/// native focus graph, and keep-visible scrolling behavior.
+private extension View {
+    func hudListRow() -> some View {
+        listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+            .listRowBackground(Color.clear)
+    }
+}
+
 /// Shared row chrome for every interactive HUD row: white fill when focused,
 /// optional faint wash when it represents the current selection. Owns all
 /// focus appearance via `@Environment(\.isFocused)` and suppresses the system
@@ -433,12 +462,14 @@ private struct LabelValueRow: View {
 private struct HUDRowButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 10
     var isSelected: Bool = false
+    var verticalPadding: CGFloat = 11
 
     func makeBody(configuration: Configuration) -> some View {
         HUDRowButtonBody(
             configuration: configuration,
             cornerRadius: cornerRadius,
-            isSelected: isSelected
+            isSelected: isSelected,
+            verticalPadding: verticalPadding
         )
     }
 }
@@ -447,13 +478,14 @@ private struct HUDRowButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let cornerRadius: CGFloat
     let isSelected: Bool
+    let verticalPadding: CGFloat
 
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         configuration.label
             .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.vertical, verticalPadding)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(background)
@@ -483,6 +515,7 @@ private struct HUDSettingRow: View {
     var detail: String? = nil
     var colorHex: String? = nil
     var systemImage: String? = nil
+    var verticalPadding: CGFloat = 11
     let action: () -> Void
 
     var body: some View {
@@ -496,7 +529,7 @@ private struct HUDSettingRow: View {
                 showsChevron: true
             )
         }
-        .buttonStyle(HUDRowButtonStyle())
+        .buttonStyle(HUDRowButtonStyle(verticalPadding: verticalPadding))
         .accessibilityLabel(label)
         .accessibilityValue(value)
     }
@@ -507,6 +540,7 @@ private struct HUDSettingRow: View {
 private struct HUDToggleRow: View {
     let label: String
     let isOn: Bool
+    var verticalPadding: CGFloat = 11
     let onToggle: (Bool) -> Void
 
     var body: some View {
@@ -517,7 +551,7 @@ private struct HUDToggleRow: View {
                 showsChevron: false
             )
         }
-        .buttonStyle(HUDRowButtonStyle())
+        .buttonStyle(HUDRowButtonStyle(verticalPadding: verticalPadding))
         .accessibilityLabel(label)
         .accessibilityValue(HUDPickerOptions.boolLabel(isOn))
         .accessibilityAddTraits(.isToggle)
@@ -1029,7 +1063,10 @@ private struct HUDPickerDialog: View {
         .padding(.horizontal, 34)
         .padding(.vertical, 28)
         .frame(width: 620, alignment: .topLeading)
-        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .siloPlayerGlass(
+            in: RoundedRectangle(cornerRadius: 28, style: .continuous),
+            tint: .black.opacity(0.52)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .stroke(Color.white.opacity(0.18), lineWidth: 1)
@@ -1369,7 +1406,10 @@ private struct SubtitleAppearanceDialog: View {
             .padding(.horizontal, 34)
             .padding(.vertical, 28)
             .frame(width: 720, alignment: .topLeading)
-            .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .siloPlayerGlass(
+                in: RoundedRectangle(cornerRadius: 28, style: .continuous),
+                tint: .black.opacity(0.54)
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
@@ -1476,7 +1516,11 @@ private struct HUDCircleButtonBody: View {
     var body: some View {
         configuration.label
             .frame(width: 46, height: 46)
-            .background(Circle().fill(isFocused ? Color.white : Color.white.opacity(0.14)))
+            .siloClearGlass(
+                in: Circle(),
+                tint: isFocused ? .white.opacity(0.86) : .black.opacity(0.18),
+                interactive: true
+            )
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .focusEffectDisabled()
@@ -1555,6 +1599,7 @@ private struct SubtitlesPane: View {
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
     @FocusState private var entryTrackFocused: Bool
+    @FocusState private var focusedSubtitleTrack: SubtitleTrackFocus?
 
     /// Identity for the options-column rows, used only to restore focus when
     /// a picker dialog, the appearance dialog, or the AI/search menu closes.
@@ -1563,9 +1608,15 @@ private struct SubtitlesPane: View {
         case search
         case delay
         case save
-        case size
-        case position
         case appearance
+    }
+
+    /// Primary and secondary rows can represent the same underlying track,
+    /// so the column is part of the focus identity. This state observes the
+    /// native List graph only; it never redirects D-pad movement.
+    private enum SubtitleTrackFocus: Hashable {
+        case primary(Int64)
+        case secondary(Int64)
     }
 
     private var overlayActive: Bool {
@@ -1574,9 +1625,17 @@ private struct SubtitlesPane: View {
     }
 
     var body: some View {
+        // These projections are pure display data. Snapshot each once for
+        // this render instead of filtering/sorting again when separate
+        // conditional branches inspect and iterate the same collection.
+        let primaryTracks = viewModel.orderedSubtitleTracks
+        let secondaryTracks = viewModel.availableSecondarySubtitleTracks
+
         ZStack {
             HStack(alignment: .top, spacing: 58) {
-                PaneColumn("Tracks") { trackRows }
+                PaneColumn("Tracks") {
+                    trackRows(primary: primaryTracks, secondary: secondaryTracks)
+                }
                     .frame(width: 470, alignment: .topLeading)
                     .focusSection()
                 PaneColumn("Options") { optionRows }
@@ -1680,12 +1739,6 @@ private struct SubtitlesPane: View {
         return "\(appearance.backgroundStyle.label), \(appearance.fontSize.label), \(appearance.position.label)"
     }
 
-    private func setAppearance(_ mutate: @escaping (inout SubtitleAppearance) -> Void) {
-        var next = viewModel.settings.subtitleAppearance
-        mutate(&next)
-        Task { await viewModel.setSubtitleAppearance(next) }
-    }
-
     private func presentPicker(for option: Option, _ presentation: HUDPickerPresentation) {
         pickerReturnField = option
         activePicker = presentation
@@ -1704,214 +1757,193 @@ private struct SubtitlesPane: View {
         focusedOption = .appearance
     }
 
-    private static let sizeOptions: [HUDDropdownOption] =
-        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+    private func trackRows(primary: [PlayerTrack], secondary: [PlayerTrack]) -> some View {
+        // List owns lazy row creation, focus navigation, and keep-visible
+        // scrolling. Rows remain native Buttons; no second focus model or
+        // manual directional handler is introduced.
+        List {
+            HUDTrackRow(
+                name: "Off",
+                attributes: nil,
+                isSelected: viewModel.selectedSubtitleId == nil,
+                verticalPadding: 7
+            ) {
+                viewModel.disableSubtitles()
+            }
+            .focused($entryTrackFocused)
+            .hudListRow()
 
-    private static let positionOptions: [HUDDropdownOption] =
-        SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+            ForEach(primary) { track in
+                HUDTrackRow(
+                    name: track.primaryLabel,
+                    attributes: track.attributesLabel,
+                    isSelected: viewModel.selectedSubtitleId == track.trackId,
+                    verticalPadding: 7,
+                    marqueeActive: focusedSubtitleTrack == .primary(track.trackId)
+                ) {
+                    viewModel.selectSubtitle(track)
+                }
+                .focused($focusedSubtitleTrack, equals: .primary(track.trackId))
+                .hudListRow()
+            }
 
-    @ViewBuilder
-    private var trackRows: some View {
-        ScrollView(showsIndicators: false) {
-            // Eager by design: every native Button stays in one stable focus
-            // graph, and the ScrollView performs its own keep-visible motion.
-            VStack(alignment: .leading, spacing: 2) {
+            if viewModel.supportsSecondarySubtitles,
+               viewModel.selectedSubtitleId != nil,
+               !secondary.isEmpty {
+                Text("SECONDARY")
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(1.6)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.top, 20)
+                    .padding(.bottom, 4)
+                    .padding(.leading, 14)
+                    .hudListRow()
+
                 HUDTrackRow(
                     name: "Off",
                     attributes: nil,
-                    isSelected: viewModel.selectedSubtitleId == nil
+                    isSelected: viewModel.selectedSecondarySubtitleId == nil,
+                    verticalPadding: 7
                 ) {
-                    viewModel.disableSubtitles()
+                    viewModel.disableSecondarySubtitles()
                 }
-                .focused($entryTrackFocused)
-                ForEach(viewModel.orderedSubtitleTracks) { track in
+                .hudListRow()
+
+                ForEach(secondary) { track in
                     HUDTrackRow(
                         name: track.primaryLabel,
                         attributes: track.attributesLabel,
-                        isSelected: viewModel.selectedSubtitleId == track.trackId
+                        isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
+                        isDisabled: track.trackId == viewModel.selectedSubtitleId,
+                        verticalPadding: 7,
+                        marqueeActive: focusedSubtitleTrack == .secondary(track.trackId)
                     ) {
-                        viewModel.selectSubtitle(track)
+                        viewModel.selectSecondarySubtitle(track)
                     }
-                }
-
-                if viewModel.supportsSecondarySubtitles,
-                   viewModel.selectedSubtitleId != nil,
-                   !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                    Text("SECONDARY")
-                        .font(.system(size: 14, weight: .semibold))
-                        .tracking(1.6)
-                        .foregroundStyle(.white.opacity(0.45))
-                        .padding(.top, 20)
-                        .padding(.bottom, 4)
-                        .padding(.leading, 14)
-                    HUDTrackRow(
-                        name: "Off",
-                        attributes: nil,
-                        isSelected: viewModel.selectedSecondarySubtitleId == nil
-                    ) {
-                        viewModel.disableSecondarySubtitles()
-                    }
-                    ForEach(viewModel.availableSecondarySubtitleTracks) { track in
-                        HUDTrackRow(
-                            name: track.primaryLabel,
-                            attributes: track.attributesLabel,
-                            isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
-                            isDisabled: track.trackId == viewModel.selectedSubtitleId
-                        ) {
-                            viewModel.selectSecondarySubtitle(track)
-                        }
-                    }
+                    .focused($focusedSubtitleTrack, equals: .secondary(track.trackId))
+                    .hudListRow()
                 }
             }
         }
+        .listStyle(.plain)
+        .environment(\.defaultMinListRowHeight, 0)
     }
 
     @ViewBuilder
     private var optionRows: some View {
-        // Scrollable: with every capability present (AI, Search, Delay,
-        // Save, Size, Position, Appearance) the column outgrows the fixed
-        // panel height; without a ScrollView the last row clips at the
-        // panel edge and focus can't bring it fully into view.
-        ScrollView(showsIndicators: false) {
+        // Native List keeps the last option reachable when every capability
+        // is present, while lazily creating rows outside the panel viewport.
+        // tvOS otherwise reserves its large standard List row height even
+        // after the row insets and button padding are reduced, leaving broad
+        // invisible gaps between these compact option buttons.
+        List {
             optionRowsContent
         }
+        .listStyle(.plain)
+        .environment(\.defaultMinListRowHeight, 0)
     }
 
     @ViewBuilder
     private var optionRowsContent: some View {
-        VStack(spacing: 2) {
-            if aiSubtitlesAvailable {
+        if aiSubtitlesAvailable {
+            HUDSettingRow(
+                label: "AI Subtitles…",
+                value: "",
+                systemImage: "sparkles",
+                verticalPadding: 7
+            ) {
+                showAITranslateMenu = true
+            }
+            .focused($focusedOption, equals: .translate)
+            .id(Option.translate)
+            .hudListRow()
+        }
+
+        if viewModel.subtitleSearchVisible {
+            // Two mutually-exclusive variants rather than one row with
+            // modifiers applied conditionally: a non-focusable row must not
+            // carry a `.focused(...)` binding, or the focus engine holds a
+            // binding for a target it can never reach.
+            if let reason = viewModel.subtitleSearchUnavailableReason {
                 HUDSettingRow(
-                    label: "AI Subtitles…",
+                    label: "Search Subtitles…",
                     value: "",
-                    systemImage: "sparkles"
-                ) {
-                    showAITranslateMenu = true
-                }
-                .focused($focusedOption, equals: .translate)
-                .id(Option.translate)
-            }
-            if viewModel.subtitleSearchVisible {
-                // Two mutually-exclusive variants rather than one row with
-                // modifiers applied conditionally: a non-focusable row must
-                // not carry a `.focused(...)` binding (same idiom as
-                // `TVGeneralSettingsView.presetRow`), or the focus engine
-                // holds a binding for a target it can never reach.
-                //
-                // The disabled variant also needs the explicit `.opacity`:
-                // `HUDSettingRowLabel` derives every color from
-                // `@Environment(\.isFocused)`, so `.disabled(true)` alone
-                // would render pixel-identical to an enabled unfocused row.
-                // Same treatment `HUDTrackRow` uses for its disabled rows.
-                if let reason = viewModel.subtitleSearchUnavailableReason {
-                    HUDSettingRow(
-                        label: "Search Subtitles…",
-                        value: "",
-                        detail: reason,
-                        systemImage: "magnifyingglass",
-                        action: {}
-                    )
-                    .disabled(true)
-                    .opacity(0.35)
-                    .accessibilityHint(reason)
-                    .id(Option.search)
-                } else {
-                    HUDSettingRow(
-                        label: "Search Subtitles…",
-                        value: "",
-                        systemImage: "magnifyingglass"
-                    ) {
-                        showSubtitleSearchMenu = true
-                    }
-                    .focused($focusedOption, equals: .search)
-                    .id(Option.search)
-                }
-            }
-            if viewModel.backendCapabilities.supportsSubtitleDelay {
-                HUDSettingRow(label: "Delay", value: delayText) {
-                    presentPicker(
-                        for: .delay,
-                        HUDPickerPresentation(
-                            title: "Subtitle Delay",
-                            options: HUDPickerOptions.delayOptions(
-                                from: -2_000,
-                                through: 2_000,
-                                by: 100,
-                                including: viewModel.settings.subtitleSyncMs
-                            ),
-                            selection: String(viewModel.settings.subtitleSyncMs),
-                            onSelect: { value in
-                                if let ms = Int(value) {
-                                    viewModel.setSubtitleSyncMilliseconds(ms)
-                                }
-                            }
-                        )
-                    )
-                }
-                .focused($focusedOption, equals: .delay)
-                .id(Option.delay)
-            }
-            if viewModel.backendCapabilities.supportsSubtitleStyling {
-                HUDToggleRow(
-                    label: "Save for this Apple TV",
-                    isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride
-                ) { enabled in
-                    Task {
-                        await viewModel.setSubtitleDeviceOverrideEnabled(enabled)
-                    }
-                }
-                .focused($focusedOption, equals: .save)
-                .id(Option.save)
+                    detail: reason,
+                    systemImage: "magnifyingglass",
+                    verticalPadding: 7,
+                    action: {}
+                )
+                .disabled(true)
+                .opacity(0.35)
+                .accessibilityHint(reason)
+                .id(Option.search)
+                .hudListRow()
+            } else {
                 HUDSettingRow(
-                    label: "Size",
-                    value: viewModel.settings.subtitleAppearance.fontSize.label
+                    label: "Search Subtitles…",
+                    value: "",
+                    systemImage: "magnifyingglass",
+                    verticalPadding: 7
                 ) {
-                    presentPicker(
-                        for: .size,
-                        HUDPickerPresentation(
-                            title: "Subtitle Size",
-                            options: Self.sizeOptions,
-                            selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
-                            onSelect: { value in
-                                if let size = SubtitleFontSizePreset(rawValue: value) {
-                                    setAppearance { $0.fontSize = size }
-                                }
-                            }
-                        )
-                    )
+                    showSubtitleSearchMenu = true
                 }
-                .focused($focusedOption, equals: .size)
-                .id(Option.size)
-                HUDSettingRow(
-                    label: "Position",
-                    value: viewModel.settings.subtitleAppearance.position.label
-                ) {
-                    presentPicker(
-                        for: .position,
-                        HUDPickerPresentation(
-                            title: "Subtitle Position",
-                            options: Self.positionOptions,
-                            selection: viewModel.settings.subtitleAppearance.position.rawValue,
-                            onSelect: { value in
-                                if let position = SubtitlePositionPreset(rawValue: value) {
-                                    setAppearance { $0.position = position }
-                                }
-                            }
-                        )
-                    )
-                }
-                .focused($focusedOption, equals: .position)
-                .id(Option.position)
-                HUDSettingRow(
-                    label: "Appearance",
-                    value: appearanceSummary,
-                    systemImage: "textformat"
-                ) {
-                    showAppearanceDialog = true
-                }
-                .focused($focusedOption, equals: .appearance)
-                .id(Option.appearance)
+                .focused($focusedOption, equals: .search)
+                .id(Option.search)
+                .hudListRow()
             }
+        }
+
+        if viewModel.backendCapabilities.supportsSubtitleDelay {
+            HUDSettingRow(label: "Delay", value: delayText, verticalPadding: 7) {
+                presentPicker(
+                    for: .delay,
+                    HUDPickerPresentation(
+                        title: "Subtitle Delay",
+                        options: HUDPickerOptions.delayOptions(
+                            from: -2_000,
+                            through: 2_000,
+                            by: 100,
+                            including: viewModel.settings.subtitleSyncMs
+                        ),
+                        selection: String(viewModel.settings.subtitleSyncMs),
+                        onSelect: { value in
+                            if let ms = Int(value) {
+                                viewModel.setSubtitleSyncMilliseconds(ms)
+                            }
+                        }
+                    )
+                )
+            }
+            .focused($focusedOption, equals: .delay)
+            .id(Option.delay)
+            .hudListRow()
+        }
+
+        if viewModel.backendCapabilities.supportsSubtitleStyling {
+            HUDToggleRow(
+                label: "Save for this Apple TV",
+                isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride,
+                verticalPadding: 7
+            ) { enabled in
+                Task {
+                    await viewModel.setSubtitleDeviceOverrideEnabled(enabled)
+                }
+            }
+            .focused($focusedOption, equals: .save)
+            .id(Option.save)
+            .hudListRow()
+
+            HUDSettingRow(
+                label: "Appearance",
+                value: appearanceSummary,
+                systemImage: "textformat",
+                verticalPadding: 7
+            ) {
+                showAppearanceDialog = true
+            }
+            .focused($focusedOption, equals: .appearance)
+            .id(Option.appearance)
+            .hudListRow()
         }
     }
 
@@ -2013,13 +2045,27 @@ private struct HUDTrackRow: View {
     let attributes: String?
     let isSelected: Bool
     var isDisabled: Bool = false
+    var verticalPadding: CGFloat = 11
+    /// `nil` renders a normal single-line label. Subtitle rows pass their
+    /// focus state so long names can marquee only while that row is active.
+    var marqueeActive: Bool? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HUDTrackRowLabel(name: name, attributes: attributes, isSelected: isSelected)
+            HUDTrackRowLabel(
+                name: name,
+                attributes: attributes,
+                isSelected: isSelected,
+                marqueeActive: marqueeActive
+            )
         }
-        .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
+        .buttonStyle(
+            HUDRowButtonStyle(
+                cornerRadius: 8,
+                verticalPadding: verticalPadding
+            )
+        )
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.35 : 1.0)
         .accessibilityLabel(name)
@@ -2031,16 +2077,25 @@ private struct HUDTrackRowLabel: View {
     let name: String
     let attributes: String?
     let isSelected: Bool
+    let marqueeActive: Bool?
 
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(name)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(isFocused ? .black : .white)
-                    .lineLimit(1)
+                if let marqueeActive {
+                    HUDFocusedMarqueeText(
+                        text: name,
+                        isActive: marqueeActive,
+                        foreground: isFocused ? .black : .white
+                    )
+                } else {
+                    Text(name)
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(isFocused ? .black : .white)
+                        .lineLimit(1)
+                }
                 if let attributes {
                     Text(attributes)
                         .font(.system(size: 17))
@@ -2048,13 +2103,124 @@ private struct HUDTrackRowLabel: View {
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 8)
+            // This column owns only the width left after the checkmark. Long
+            // marquee content must never contribute its natural width to the
+            // row, or the button background grows beyond the List viewport.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(isFocused ? .black : .white)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Automatically reveals an overlong subtitle name without introducing a
+/// second horizontal ScrollView (and therefore a competing tvOS focus owner).
+/// The animation starts only after focus rests on the row, pauses at each end,
+/// and is absent entirely for names that already fit.
+private struct HUDFocusedMarqueeText: View {
+    let text: String
+    let isActive: Bool
+    let foreground: Color
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var contentWidth: CGFloat = 0
+    @State private var viewportWidth: CGFloat = 0
+    @State private var cycleStartedAt: Date?
+
+    private var overflowDistance: CGFloat {
+        max(contentWidth - viewportWidth, 0)
+    }
+
+    private var cycleKey: CycleKey {
+        CycleKey(
+            isReady: marqueeReady,
+            overflowPoints: Int(overflowDistance.rounded())
+        )
+    }
+
+    private var marqueeReady: Bool {
+        isActive && overflowDistance > 0.5 && !reduceMotion
+    }
+
+    var body: some View {
+        // GeometryReader keeps the full text's natural width from widening
+        // the row while still giving the marquee a finite clipping viewport.
+        GeometryReader { _ in
+            TimelineView(
+                .animation(minimumInterval: 1.0 / 60.0, paused: !marqueeReady)
+            ) { timeline in
+                Text(text)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(foreground)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .offset(x: offset(at: timeline.date))
+                    // Position is already sampled for each display frame.
+                    // Prevent an ancestor focus animation from interpolating
+                    // between samples or reversing an old row toward zero.
+                    .transaction { transaction in
+                        transaction.animation = nil
+                        transaction.disablesAnimations = true
+                    }
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width
+                    } action: { width in
+                        contentWidth = width
+                    }
+            }
+        }
+        .frame(height: 27)
+        .clipped()
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            viewportWidth = width
+        }
+        .onAppear {
+            restartCycle()
+        }
+        .onChange(of: cycleKey) { _, _ in
+            restartCycle()
+        }
+        .onDisappear {
+            cycleStartedAt = nil
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func restartCycle() {
+        cycleStartedAt = marqueeReady ? Date() : nil
+    }
+
+    private func offset(at date: Date) -> CGFloat {
+        guard marqueeReady, let cycleStartedAt else { return 0 }
+
+        let leadingPause = 0.65
+        let trailingPause = 0.55
+        let travelDuration = max(1.2, Double(overflowDistance) / 42)
+        let cycleDuration = leadingPause + travelDuration + trailingPause
+        let elapsed = max(0, date.timeIntervalSince(cycleStartedAt))
+        let phase = elapsed.truncatingRemainder(dividingBy: cycleDuration)
+
+        if phase < leadingPause {
+            return 0
+        }
+        if phase < leadingPause + travelDuration {
+            let progress = (phase - leadingPause) / travelDuration
+            return -overflowDistance * CGFloat(progress)
+        }
+        return -overflowDistance
+    }
+
+    private struct CycleKey: Hashable {
+        let isReady: Bool
+        let overflowPoints: Int
     }
 }
 #endif

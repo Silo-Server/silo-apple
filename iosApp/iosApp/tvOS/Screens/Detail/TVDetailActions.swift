@@ -100,9 +100,9 @@ private struct TVExpandingDetailActionLabel: View {
 /// `isFocused` fill cannot reproduce. Do not add `.focusEffectDisabled()`
 /// here — that is what suppresses it.
 ///
-/// The detail hero sits over a still backdrop, not live video, so
-/// backdrop-sampling glass is safe here in a way it is not in the player
-/// (see `TVPillButtonStyle`).
+/// The detail hero uses the native system style directly. Player-only pills
+/// use `TVPillButtonStyle` instead so they can preserve their compact and
+/// full-size focus geometry while still drawing interactive clear glass.
 struct TVPrimaryPillButton: View {
     let icon: String
     let title: String
@@ -540,13 +540,10 @@ private struct TVPillButtonBody: View {
                     lineWidth: innerBorderWidth
                 )
             )
-            // Deliberately NOT glass. This style is shared with the player
-            // HUD (`PlayerView`, `TVPlayerControls`), which draws over live
-            // video — backdrop-sampling glass there is the documented
-            // frame-rate spike on A12-class Apple TVs. See `SiloGlass.swift`.
-            // The detail row's glass buttons use the system styles instead.
-            .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(background)
+            .siloClearGlass(
+                in: RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous),
+                tint: glassTint,
+                interactive: true
             )
             .overlay {
                 if isFocused {
@@ -578,12 +575,12 @@ private struct TVPillButtonBody: View {
         }
     }
 
-    private var background: Color {
+    private var glassTint: Color {
         switch kind {
         case .primary:
-            return isFocused ? .white : Color.white.opacity(0.76)
+            return isFocused ? .white.opacity(0.88) : .white.opacity(0.42)
         case .secondary:
-            return isFocused ? .white : Color.black.opacity(0.52)
+            return isFocused ? .white.opacity(0.88) : .black.opacity(0.30)
         }
     }
 
