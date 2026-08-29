@@ -3378,6 +3378,11 @@ class PlayerViewModel {
         seekOriginTime = nil
         seekTargetTime = nil
         showControls = false
+        // The HUD belongs to the outgoing item. Replans deliberately bypass
+        // this reset so the HUD survives them; a replacement load must close
+        // it, both because its content is stale and because the tvOS controls
+        // host stays mounted through `isLoading` whenever this flag is up.
+        isHUDPresented = false
         showNextUpScreen = false
         nextUpEpisode = nil
         nextUpOnDeckItems = []
@@ -6932,6 +6937,17 @@ class PlayerViewModel {
     private static let autoHideSeconds: UInt64 = 5
 
     private func scheduleHideControls() {
+        // The HUD pins its host visible (`pinControlsVisible` in `openHUD`).
+        // Actions taken from inside it — track selection, remote play/pause —
+        // funnel through here and must not re-arm the auto-hide out from
+        // under the open HUD: on tvOS the hide swaps the press-capture sink
+        // in beneath it, splitting remote presses across two owners.
+        // `closeHUD()` calls back in after clearing the flag, which restores
+        // the normal auto-hide lifecycle.
+        if isHUDPresented {
+            pinControlsVisible()
+            return
+        }
         hideControlsTask?.cancel()
         showControls = true
         hideControlsTask = Task { @MainActor [weak self] in
