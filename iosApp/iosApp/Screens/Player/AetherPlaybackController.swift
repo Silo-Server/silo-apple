@@ -604,7 +604,8 @@ final class AetherPlaybackController {
               engine.currentAVPlayer === player else { return }
         let allowed = Self.externalPlaybackAllowed(
             activePolicy: externalPlaybackIsReceiverFetchable,
-            preservedReplacementPolicy: replacementExternalPlaybackPolicy
+            preservedReplacementPolicy: replacementExternalPlaybackPolicy,
+            preservedPolicyIsReceiverSafe: preservedReplacementPolicyIsReceiverSafe
         )
         player.allowsExternalPlayback = allowed
         #if os(iOS)
@@ -624,7 +625,8 @@ final class AetherPlaybackController {
                   self.engine.currentAVPlayer === player else { return }
             let allowed = Self.externalPlaybackAllowed(
                 activePolicy: self.externalPlaybackIsReceiverFetchable,
-                preservedReplacementPolicy: self.replacementExternalPlaybackPolicy
+                preservedReplacementPolicy: self.replacementExternalPlaybackPolicy,
+                preservedPolicyIsReceiverSafe: self.preservedReplacementPolicyIsReceiverSafe
             )
             player.allowsExternalPlayback = allowed
             #if os(iOS)
@@ -651,11 +653,23 @@ final class AetherPlaybackController {
         }
     }
 
+    /// The outgoing player policy can survive only when the successor can use
+    /// that same receiver route. Header-authenticated remote HLS cannot: its
+    /// AVURLAsset headers remain on the sender. Evaluate this as soon as
+    /// `beginLoad` installs the successor spec, before Aether swaps the item on
+    /// its retained AVPlayer.
+    private var preservedReplacementPolicyIsReceiverSafe: Bool {
+        guard activeSpec?.options.nativeRemoteHLS == true else { return true }
+        return activeSpec?.options.httpHeaders.isEmpty == true
+    }
+
     nonisolated static func externalPlaybackAllowed(
         activePolicy: Bool,
-        preservedReplacementPolicy: Bool?
+        preservedReplacementPolicy: Bool?,
+        preservedPolicyIsReceiverSafe: Bool
     ) -> Bool {
-        preservedReplacementPolicy ?? activePolicy
+        guard preservedPolicyIsReceiverSafe else { return activePolicy }
+        return preservedReplacementPolicy ?? activePolicy
     }
 
     private func refreshExternalPlaybackState() {
@@ -667,7 +681,8 @@ final class AetherPlaybackController {
             || (isNativeVideoRoute && Self.isExternalOutputRoute)
         let allowed = Self.externalPlaybackAllowed(
             activePolicy: externalPlaybackIsReceiverFetchable,
-            preservedReplacementPolicy: replacementExternalPlaybackPolicy
+            preservedReplacementPolicy: replacementExternalPlaybackPolicy,
+            preservedPolicyIsReceiverSafe: preservedReplacementPolicyIsReceiverSafe
         )
         let supported = player != nil && (allowed || routeIsActive)
 

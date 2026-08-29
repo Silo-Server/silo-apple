@@ -1119,18 +1119,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(controller.activeLoadEpoch, successorEpoch)
     }
 
-    func testReplacementExternalPlaybackPolicyWinsUntilSuccessorCommits() {
+    func testReplacementExternalPlaybackPolicyOnlyWinsForReceiverSafeSuccessor() {
         XCTAssertTrue(AetherPlaybackController.externalPlaybackAllowed(
             activePolicy: false,
-            preservedReplacementPolicy: true
+            preservedReplacementPolicy: true,
+            preservedPolicyIsReceiverSafe: true
+        ))
+        XCTAssertFalse(AetherPlaybackController.externalPlaybackAllowed(
+            activePolicy: false,
+            preservedReplacementPolicy: true,
+            preservedPolicyIsReceiverSafe: false
         ))
         XCTAssertFalse(AetherPlaybackController.externalPlaybackAllowed(
             activePolicy: true,
-            preservedReplacementPolicy: false
+            preservedReplacementPolicy: false,
+            preservedPolicyIsReceiverSafe: true
         ))
         XCTAssertTrue(AetherPlaybackController.externalPlaybackAllowed(
             activePolicy: true,
-            preservedReplacementPolicy: nil
+            preservedReplacementPolicy: nil,
+            preservedPolicyIsReceiverSafe: false
         ))
     }
 
