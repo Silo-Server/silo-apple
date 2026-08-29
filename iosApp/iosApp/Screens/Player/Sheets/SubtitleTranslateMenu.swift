@@ -336,12 +336,9 @@ struct SubtitleTranslateMenu: View {
             .frame(maxWidth: 1100, maxHeight: 720)
             .background(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.black.opacity(0.35))
-                    )
+                    .fill(Color.black.opacity(0.35))
             )
+            .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.12), lineWidth: 1)

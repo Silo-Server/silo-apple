@@ -113,9 +113,9 @@ struct MacPlayerTimeline: View {
         .padding(6)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(Color.black.opacity(0.30))
+                .fill(Color.black.opacity(0.30))
         )
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
     }
 

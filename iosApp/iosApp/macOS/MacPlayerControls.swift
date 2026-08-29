@@ -118,9 +118,9 @@ struct MacPlayerControls: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(Color.black.opacity(0.42))
+                .fill(Color.black.opacity(0.42))
         )
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)

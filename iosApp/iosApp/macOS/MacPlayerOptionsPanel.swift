@@ -43,7 +43,7 @@ struct MacPlayerOptionsPanel: View {
             content
                 .frame(width: 420, height: 330)
         }
-        .background(.ultraThinMaterial)
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
