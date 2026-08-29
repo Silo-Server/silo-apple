@@ -352,6 +352,11 @@ class PlayerViewModel {
         return currentTime >= introRange.start && currentTime < introRange.end
     }
 
+    var showCreditsSkip: Bool {
+        guard let creditsRange else { return false }
+        return currentTime >= creditsRange.start && currentTime < creditsRange.end
+    }
+
     /// Signed rate of an in-flight seek session. Zero when the user isn't
     /// in seek mode. Positive = forward, negative = backward. Magnitudes
     /// are drawn from `Self.seekRates`. Entered by holding an arrow past
@@ -563,6 +568,13 @@ class PlayerViewModel {
     /// circuit breaker gives up; the separate connectivity snapshot above
     /// covers normal connecting/reconnecting gaps.
     private var realtimeUnavailableSnapshot = false
+
+    /// A marker update can finish after the playback session starts but before
+    /// the realtime websocket has connected. Reconcile once after the socket
+    /// is live so that event-delivery race cannot hide intro/credits prompts
+    /// for the current Aether load.
+    private var markerReconciledSessionId: String?
+    private var markerReconcileTask: Task<Void, Never>?
 
     /// Whether the realtime websocket can currently receive live AI-subtitle
     /// cues. The player-surface preparing/pause flow now starts immediately on
@@ -951,6 +963,9 @@ class PlayerViewModel {
                 guard let self else { return }
                 let wasConnected = self.realtimeConnectedSnapshot
                 self.realtimeConnectedSnapshot = connected
+                if connected && !wasConnected {
+                    self.reconcileMarkersAfterRealtimeConnect()
+                }
                 if !connected && wasConnected {
                     self.subtitleAI.realtimeDidBecomeUnavailable()
                 }
@@ -3403,6 +3418,9 @@ class PlayerViewModel {
         chapters = []
         introRange = nil
         creditsRange = nil
+        markerReconcileTask?.cancel()
+        markerReconcileTask = nil
+        markerReconciledSessionId = nil
         cancelPendingIntroAutoSkip()
         qualityOptions = [ApplePlaybackQuality.auto]
         activeQualityId = ApplePlaybackQuality.autoId
@@ -4368,6 +4386,14 @@ class PlayerViewModel {
         seekTo(seconds: introRange.end)
     }
 
+    func skipCredits() {
+        guard let creditsRange else { return }
+        if let key = currentCreditsSkipKey(for: creditsRange) {
+            autoSkippedCreditsKey = key
+        }
+        performCreditsSkip(to: creditsRange.end)
+    }
+
     func cancelIntroAutoSkip() {
         if let introRange,
            let key = currentIntroSkipKey(for: introRange) {
@@ -4654,6 +4680,50 @@ class PlayerViewModel {
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
+    private func reconcileMarkersAfterRealtimeConnect() {
+        guard offlinePlaybackContext == nil,
+              introRange == nil || creditsRange == nil,
+              let sessionId = activePlaybackSessionId,
+              markerReconciledSessionId != sessionId,
+              let contentId = currentWatchDetail?.contentId,
+              let fileId = currentSelectedVersion?.fileId else {
+            return
+        }
+
+        markerReconciledSessionId = sessionId
+        markerReconcileTask?.cancel()
+        markerReconcileTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.markerReconciledSessionId == sessionId {
+                    self.markerReconcileTask = nil
+                }
+            }
+            do {
+                let detail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+                guard !Task.isCancelled,
+                      self.activePlaybackSessionId == sessionId,
+                      self.currentSelectedVersion?.fileId == fileId,
+                      let version = detail.versions.first(where: { $0.fileId == fileId }) else {
+                    return
+                }
+                let refreshedIntro = version.intro ?? detail.intro
+                let refreshedCredits = version.credits ?? detail.credits
+                self.applyMarkerRanges(
+                    intro: self.introRange ?? refreshedIntro,
+                    credits: self.creditsRange ?? refreshedCredits
+                )
+            } catch {
+                if self.activePlaybackSessionId == sessionId {
+                    self.markerReconciledSessionId = nil
+                }
+                Self.logger.warning(
+                    "[CMP-MARKERS] realtime marker reconciliation failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+    }
+
     private func validTimeRange(_ range: TimeRange?) -> TimeRange? {
         guard let range,
               range.start.isFinite,
@@ -4767,6 +4837,21 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
+        performCreditsSkip(to: target)
+    }
+
+    private func performCreditsSkip(to target: Double) {
+        // Aether deliberately parks a programmatic seek at the exact duration
+        // in a paused state. TheIntroDB uses that exact bound when credits run
+        // to EOF, so complete the item through Silo's normal end/Next Up path
+        // instead of leaving a frozen final frame.
+        if duration.isFinite,
+           duration > 0,
+           target >= duration - 0.5 {
+            currentTime = duration
+            handleEndOfFile()
+            return
+        }
         seekTo(seconds: target)
     }
 
@@ -5737,6 +5822,9 @@ class PlayerViewModel {
         playbackStats = .empty
         introRange = nil
         creditsRange = nil
+        markerReconcileTask?.cancel()
+        markerReconcileTask = nil
+        markerReconciledSessionId = nil
         cancelPendingIntroAutoSkip()
         autoSkippedIntroKey = nil
         autoSkippedCreditsKey = nil
@@ -5884,6 +5972,7 @@ class PlayerViewModel {
                 NotificationCenter.default.removeObserver(foregroundExitObserverToken)
             }
             freshLoadTask?.cancel()
+            markerReconcileTask?.cancel()
             streamLoadGeneration &+= 1
             protocolV3ReplanTask?.cancel()
             seekReplanTask?.cancel()
