@@ -56,6 +56,9 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
     @State private var versionSelectorFocused = false
+    /// High-priority only for page entry; later focus reevaluations should
+    /// respect the active season or episode row.
+    @State private var prefersPageEntryPlay = true
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
@@ -65,7 +68,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 48) {
+                VStack(alignment: .leading, spacing: TVDetailLayoutMetrics.firstSectionSpacing) {
                     TVDetailHero(
                         title: detail.title,
                         seriesTitle: nil,
@@ -96,7 +99,11 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
             }
             .ignoresSafeArea()
             .focusScope(detailFocusNamespace)
-            .defaultFocus($playFocused, true, priority: .userInitiated)
+            .defaultFocus(
+                $playFocused,
+                true,
+                priority: prefersPageEntryPlay ? .userInitiated : .automatic
+            )
             .detailFocusScroll(
                 proxy: scrollProxy,
                 seasonRowFocused: seasonRowFocused,
@@ -132,7 +139,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
         }
         .onChange(of: playFocused) { _, isFocused in
             if isFocused {
-                setVersionSelectorFocused(false)
+                prefersPageEntryPlay = false
             }
         }
     }
@@ -174,7 +181,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
-            routesVersionUpToPlay: versionSelectorFocused && !playFocused,
+            routesVersionUpToPlay: versionSelectorFocused,
             moreMenu: {
                 if hasMoreMenu {
                     moreMenu

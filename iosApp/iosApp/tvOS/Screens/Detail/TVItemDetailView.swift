@@ -13,6 +13,10 @@ struct TVItemDetailView: View {
     let contentId: String
 
     @State private var viewModel: ItemDetailViewModel
+    /// The item currently painted by this route. Episode selection changes
+    /// this value without changing the navigation path, so the detail shell,
+    /// season selector, and episode rail remain mounted.
+    @State private var activeContentId: String
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
     /// the server override is cleared with a fire-and-forget DELETE, but the
     /// already-fetched detail still carries the old `effectiveSubtitle*`, so
@@ -22,6 +26,13 @@ struct TVItemDetailView: View {
     @State private var nextUpPlaybackDetail: ItemDetail?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
+    @State private var familyItemLoadTask: Task<Void, Never>?
+    @State private var familyItemPrefetchTask: Task<Void, Never>?
+    @State private var familyItemPrefetchContentId: String?
+    @State private var seasonPrefetchTask: Task<Void, Never>?
+    @State private var seasonPrefetchNumber: Int?
+    @State private var seasonSelectionTask: Task<Void, Never>?
+    @State private var skipNextActiveContentReload = false
     /// Whether the YouTube app is installed, probed once per page appearance.
     /// Remote trailer cards and the "Find Trailers" action are hidden when it
     /// isn't — tvOS has no in-app web fallback, so content that cannot open
@@ -42,6 +53,7 @@ struct TVItemDetailView: View {
         _viewModel = State(
             initialValue: ItemDetailCache.shared.viewModel(for: contentId)
         )
+        _activeContentId = State(initialValue: contentId)
     }
 
     var body: some View {
@@ -52,7 +64,9 @@ struct TVItemDetailView: View {
             if let detail = viewModel.detail {
                 content(for: detail)
             } else if let error = viewModel.error {
-                ErrorView(state: error, onRetry: { Task { await viewModel.loadDetail(contentId: contentId) } })
+                ErrorView(state: error, onRetry: {
+                    Task { await viewModel.loadDetail(contentId: activeContentId) }
+                })
             } else {
                 Color.clear
             }
@@ -61,7 +75,7 @@ struct TVItemDetailView: View {
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumNavigationBarBackgroundHidden()
         .onAppear {
-            Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
+            Self.focusLogger.debug("itemDetail.appear contentId=\(activeContentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             allowRemoteTrailers = TVTrailerLaunch.isYouTubeAppInstalled()
             seedSubtitleOverrideIfNeeded()
             // Returning from the player (or an extra) resumes a poll that
@@ -71,7 +85,17 @@ struct TVItemDetailView: View {
             viewModel.resumeTrailerFetchIfNeeded()
         }
         .onDisappear {
-            Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
+            Self.focusLogger.debug("itemDetail.disappear contentId=\(activeContentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
+            familyItemLoadTask?.cancel()
+            familyItemLoadTask = nil
+            familyItemPrefetchTask?.cancel()
+            familyItemPrefetchTask = nil
+            familyItemPrefetchContentId = nil
+            seasonPrefetchTask?.cancel()
+            seasonPrefetchTask = nil
+            seasonPrefetchNumber = nil
+            seasonSelectionTask?.cancel()
+            seasonSelectionTask = nil
             // The coordinator's poll is not owned by `.task`, so it would
             // otherwise keep running (and retaining the view model) after
             // this route pops.
@@ -96,13 +120,20 @@ struct TVItemDetailView: View {
                 TVTrailerReturnStore.shared.clear()
             }
         }
-        .task(id: contentId) {
+        .task(id: activeContentId) {
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
-            await viewModel.loadDetail(contentId: contentId)
+            if skipNextActiveContentReload {
+                skipNextActiveContentReload = false
+            } else {
+                await viewModel.loadDetail(
+                    contentId: activeContentId,
+                    includeRelatedStructure: activeContentId == contentId
+                )
+            }
             seedSubtitleOverrideIfNeeded()
         }
     }
@@ -164,7 +195,7 @@ struct TVItemDetailView: View {
             // `TVTrailerReturnStore`). tvOS cannot bring the user back from
             // YouTube; this is the fallback for when suspension doesn't
             // preserve the page either.
-            TVTrailerReturnStore.shared.saveHandoff(contentId: contentId)
+            TVTrailerReturnStore.shared.saveHandoff(contentId: activeContentId)
             TVTrailerLaunch.open(siteKey: video.siteKey) { didOpen in
                 guard !didOpen else { return }
                 TVTrailerReturnStore.shared.clear()
@@ -189,262 +220,29 @@ struct TVItemDetailView: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 }
             )
-        } else if detail.type == "season" {
-            TVSeasonDetailView(
-                detail: detail,
-                isFavorite: viewModel.isFavorite,
-                inWatchlist: viewModel.inWatchlist,
-                isWatched: viewModel.isWatched,
-                seasons: viewModel.seasons,
-                selectedSeason: viewModel.selectedSeason,
-                episodes: viewModel.episodes,
-                episodeFavoriteStates: viewModel.episodeFavoriteStates,
-                isLoadingEpisodes: viewModel.isLoadingEpisodes,
-                selectedNextUpFileId: preferredNextUpFileId,
-                selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
-                selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                nextUpPlaybackDetail: nextUpPlaybackDetail,
-                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
-                onPlayEpisode: { id, fileId, startFromBeginning in
-                    let episode = viewModel.episodes.first { $0.contentId == id }
-                    let resumePosition = startFromBeginning
-                        ? nil
-                        : playableResumePosition(
-                            position: episode?.userData?.positionSeconds,
-                            duration: episode?.userData?.durationSeconds
-                        )
-                    if let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
-                        router.navigate(
-                            to: .playerWithFile(
-                                contentId: id,
-                                fileId: fileId,
-                                audioTrackIndex: preferredNextUpAudioTrackIndex,
-                                subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
-                            )
-                        )
-                    } else {
-                        router.navigate(
-                            to: .player(
-                                contentId: id,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
-                            )
-                        )
-                    }
-                },
-                onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
-                onSetEpisodeWatched: { id, played in
-                    await viewModel.setEpisodeWatched(contentId: id, played: played)
-                },
-                onSetEpisodeFavorite: { id, isFavorite in
-                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
-                },
-                onSelectSeason: { season in
-                    guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId))
-                },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
-                onSelectNextUpAudioTrack: { index in
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    persistAudioSelection(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpAudioTrackIndex
-                    )
-                },
-                onSelectNextUpSubtitleTrack: { index in
-                    didClearNextUpSubtitleOverride = (index == nil)
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    persistSubtitleSelection(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nil
-                    )
-                },
-                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
-                onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
-                onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
-            )
-            .task(id: seasonNextUpEpisodeContentId(for: detail)) {
-                await loadSeasonNextUpPlaybackDetail(for: detail)
-            }
-        } else if detail.type == "series" {
-            TVSeriesDetailView(
-                detail: detail,
-                isFavorite: viewModel.isFavorite,
-                inWatchlist: viewModel.inWatchlist,
-                isWatched: viewModel.isWatched,
-                seasons: viewModel.seasons,
-                selectedSeason: viewModel.selectedSeason,
-                episodes: viewModel.episodes,
-                episodeFavoriteStates: viewModel.episodeFavoriteStates,
-                isLoadingEpisodes: viewModel.isLoadingEpisodes,
-                selectedNextUpFileId: preferredNextUpFileId,
-                selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
-                selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                nextUpPlaybackDetail: nextUpPlaybackDetail,
-                isLoadingNextUpPlaybackDetail: isLoadingNextUpPlaybackDetail,
-                didLoadNextUpPlaybackDetail: didLoadNextUpPlaybackDetail,
-                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
-                trailerEntries: trailerEntries(for: detail),
-                onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
-                onFindTrailers: {
-                    // Without the YouTube app the rail hides remote cards, so
-                    // new remote videos must not be reported as a find.
-                    viewModel.startTrailerFetch(
-                        remoteVideosDisplayable: allowRemoteTrailers
-                    )
-                },
-                trailerFetchStatus: viewModel.trailerFetch.statusMessage,
-                isFetchingTrailers: viewModel.trailerFetch.isFetching,
-                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
-                onSelectSeason: { season in
-                    Task { await viewModel.selectSeason(season) }
-                },
-                onPlayEpisode: { id, fileId, startFromBeginning in
-                    let resumePosition = startFromBeginning
-                        ? nil
-                        : viewModel.episodes.first(where: { $0.contentId == id })?.userData?.positionSeconds
-                    if let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
-                        router.navigate(
-                            to: .playerWithFile(
-                                contentId: id,
-                                fileId: fileId,
-                                audioTrackIndex: preferredNextUpAudioTrackIndex,
-                                subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
-                            )
-                        )
-                    } else {
-                        router.navigate(
-                            to: .player(
-                                contentId: id,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
-                            )
-                        )
-                    }
-                },
-                onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
-                onSetEpisodeWatched: { id, played in
-                    await viewModel.setEpisodeWatched(contentId: id, played: played)
-                },
-                onSetEpisodeFavorite: { id, isFavorite in
-                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
-                },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
-                onSelectNextUpAudioTrack: { index in
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    persistAudioSelection(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpAudioTrackIndex
-                    )
-                },
-                onSelectNextUpSubtitleTrack: { index in
-                    didClearNextUpSubtitleOverride = (index == nil)
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    persistSubtitleSelection(
-                        prefKey: prefKey(for: nextUpPlaybackDetail),
-                        version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nil
-                    )
-                },
-                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
-                onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
-                onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
-                    }
-                },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
-                },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
-            )
-            .task(id: seriesNextUpEpisodeContentId(for: detail)) {
-                await loadSeriesNextUpPlaybackDetail(for: detail)
-            }
         } else {
+            let usesNextUpPlayback = isSeriesContainer(detail)
             TVMovieDetailView(
                 detail: detail,
+                playbackDetail: usesNextUpPlayback ? nextUpPlaybackDetail : nil,
+                playTitleOverride: usesNextUpPlayback ? familyPlayTitle(for: detail) : nil,
+                isLoadingPlaybackDetail: usesNextUpPlayback && isLoadingNextUpPlaybackDetail,
+                didLoadPlaybackDetail: usesNextUpPlayback ? didLoadNextUpPlaybackDetail : true,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
-                selectedVersionFileId: preferredVersionFileId,
-                selectedAudioTrackIndex: preferredAudioTrackIndex,
-                selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                subtitleOverrideCleared: didClearSubtitleOverride,
+                selectedVersionFileId: usesNextUpPlayback
+                    ? preferredNextUpFileId
+                    : preferredVersionFileId,
+                selectedAudioTrackIndex: usesNextUpPlayback
+                    ? preferredNextUpAudioTrackIndex
+                    : preferredAudioTrackIndex,
+                selectedSubtitleTrackIndex: usesNextUpPlayback
+                    ? preferredNextUpSubtitleTrackIndex
+                    : preferredSubtitleTrackIndex,
+                subtitleOverrideCleared: usesNextUpPlayback
+                    ? didClearNextUpSubtitleOverride
+                    : didClearSubtitleOverride,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 seasonEpisodes: viewModel.episodes,
@@ -454,8 +252,6 @@ struct TVItemDetailView: View {
                 onSelectTrailer: playTrailer,
                 supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
                 onFindTrailers: {
-                    // Without the YouTube app the rail hides remote cards, so
-                    // new remote videos must not be reported as a find.
                     viewModel.startTrailerFetch(
                         remoteVideosDisplayable: allowRemoteTrailers
                     )
@@ -464,76 +260,22 @@ struct TVItemDetailView: View {
                 isFetchingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onPlay: { startFromBeginning in
-                    let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
-                    if let fileId = playbackFileId(for: detail) {
-                        router.navigate(
-                            to: .playerWithFile(
-                                contentId: contentId,
-                                fileId: fileId,
-                                audioTrackIndex: preferredAudioTrackIndex,
-                                subtitleTrackIndex: preferredSubtitleTrackIndex,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
-                            )
-                        )
-                    } else {
-                        router.navigate(
-                            to: .player(
-                                contentId: contentId,
-                                startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
-                            )
-                        )
-                    }
+                    playPrimaryItem(detail: detail, startFromBeginning: startFromBeginning)
                 },
                 onSelectVersion: { fileId in
-                    preferredVersionFileId = fileId
-                    preferredAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredAudioTrackIndex
-                    )
-                    preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredSubtitleTrackIndex
-                    )
+                    selectVersion(fileId, for: detail)
                 },
                 onSelectAudioTrack: { index in
-                    preferredAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: detail,
-                        versionFileId: preferredVersionFileId,
-                        candidate: index
-                    )
-                    persistAudioSelection(
-                        prefKey: prefKey(for: detail),
-                        version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
-                        requested: index,
-                        sanitized: preferredAudioTrackIndex
-                    )
+                    selectAudioTrack(index, for: detail)
                 },
                 onSelectSubtitleTrack: { index in
-                    didClearSubtitleOverride = (index == nil)
-                    viewModel.preferredSubtitleTrackWasManuallySelected = true
-                    preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: detail,
-                        versionFileId: preferredVersionFileId,
-                        candidate: index
-                    )
-                    persistSubtitleSelection(
-                        prefKey: prefKey(for: detail),
-                        version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
-                        requested: index,
-                        sanitized: preferredSubtitleTrackIndex,
-                        showForced: nil
-                    )
+                    selectSubtitleTrack(index, for: detail)
                 },
                 onSelectSeason: { season in
-                    // Swap the episode rail in place (series-page behavior)
-                    // instead of pushing the season's own detail page.
                     guard season.id != viewModel.selectedSeason?.id else { return }
-                    Task { await viewModel.selectSeason(season) }
+                    selectSeason(season)
                 },
+                onFocusedSeasonChange: prefetchSeasonEpisodes,
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
@@ -546,27 +288,16 @@ struct TVItemDetailView: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 },
                 onEpisodeTap: { id in
-                    let episode = viewModel.episodes.first { $0.contentId == id }
-                    let isCurrentEpisode = id == detail.contentId
-                    let resumePosition = playableResumePosition(
-                        position: episode?.userData?.positionSeconds,
-                        duration: episode?.userData?.durationSeconds
-                    )
-
-                    // Present independently of the navigation stack. Once
-                    // playback reports that it is actually running, the
-                    // hidden detail route is replaced with this episode so
-                    // dismissing the player returns to what was just played.
-                    router.presentPlayer(
-                        contentId: id,
-                        fileId: isCurrentEpisode ? playbackFileId(for: detail) : nil,
-                        audioTrackIndex: isCurrentEpisode ? preferredAudioTrackIndex : nil,
-                        subtitleTrackIndex: isCurrentEpisode ? preferredSubtitleTrackIndex : nil,
-                        startFromBeginning: false,
-                        resumePosition: resumePosition,
-                        returnToContentId: isCurrentEpisode ? nil : id
-                    )
+                    switchFamilyItem(to: id)
                 },
+                onFocusedEpisodeChange: prefetchFamilyItem,
+                onPlayFocusedEpisode: { id in
+                    playEpisodeFromRail(id, activeDetail: detail)
+                },
+                currentEpisodeContentId: detail.type == "episode"
+                    ? detail.contentId
+                    : familyNextUpEpisode(for: detail)?.contentId,
+                prefersCurrentEpisodeFocus: false,
                 onSetEpisodeWatched: { id, played in
                     await viewModel.setEpisodeWatched(contentId: id, played: played)
                 },
@@ -574,9 +305,331 @@ struct TVItemDetailView: View {
                     await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },
                 belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
+                    DescriptionTranslationView(
+                        viewModel: viewModel,
+                        contentId: detail.contentId
+                    )
+                    .id(detail.contentId)
                 }
+            )
+            .task(id: familyNextUpEpisode(for: detail)?.contentId) {
+                if detail.type == "season" {
+                    await loadSeasonNextUpPlaybackDetail(for: detail)
+                } else if detail.type == "series" {
+                    await loadSeriesNextUpPlaybackDetail(for: detail)
+                } else {
+                    clearNextUpPlaybackState()
+                }
+            }
+        }
+    }
+
+    private func isSeriesContainer(_ detail: ItemDetail) -> Bool {
+        detail.type == "series" || detail.type == "season"
+    }
+
+    private func familyNextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
+        if detail.type == "series" {
+            return seriesNextUpEpisode(for: detail)
+        }
+        if detail.type == "season" {
+            return seasonNextUpEpisode(for: detail)
+        }
+        return nil
+    }
+
+    private func familyPlayTitle(for detail: ItemDetail) -> String? {
+        guard let episode = familyNextUpEpisode(for: detail) else { return nil }
+        let prefix = episode.userData?.isInProgress == true ? "Resume" : "Play"
+        if detail.type == "series" {
+            return "\(prefix) S\(episode.seasonNumber) · E\(episode.episodeNumber)"
+        }
+        return "\(prefix) E\(episode.episodeNumber)"
+    }
+
+    private func clearNextUpPlaybackState() {
+        nextUpPlaybackDetail = nil
+        isLoadingNextUpPlaybackDetail = false
+        didLoadNextUpPlaybackDetail = false
+        preferredNextUpFileId = nil
+        preferredNextUpAudioTrackIndex = nil
+        preferredNextUpSubtitleTrackIndex = nil
+        didClearNextUpSubtitleOverride = false
+    }
+
+    private func prefetchSeasonEpisodes(_ season: Season?) {
+        seasonPrefetchTask?.cancel()
+        seasonPrefetchTask = nil
+        seasonPrefetchNumber = nil
+
+        guard let season,
+              season.seasonNumber != viewModel.selectedSeason?.seasonNumber
+        else { return }
+
+        let source = viewModel
+        seasonPrefetchNumber = season.seasonNumber
+        seasonPrefetchTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(140))
+            guard !Task.isCancelled, viewModel === source else { return }
+            await source.prefetchEpisodes(for: season)
+        }
+    }
+
+    private func selectSeason(_ season: Season) {
+        let source = viewModel
+        let matchingPrefetch = seasonPrefetchNumber == season.seasonNumber
+            ? seasonPrefetchTask
+            : nil
+
+        if matchingPrefetch == nil {
+            seasonPrefetchTask?.cancel()
+        }
+        seasonSelectionTask?.cancel()
+        seasonSelectionTask = Task { @MainActor in
+            if let matchingPrefetch {
+                await matchingPrefetch.value
+            }
+            guard !Task.isCancelled, viewModel === source else { return }
+            await source.selectSeason(season)
+        }
+    }
+
+    private func prefetchFamilyItem(_ destinationContentId: String?) {
+        familyItemPrefetchTask?.cancel()
+        familyItemPrefetchTask = nil
+        familyItemPrefetchContentId = nil
+
+        guard let destinationContentId,
+              destinationContentId != activeContentId
+        else { return }
+
+        let destination = ItemDetailCache.shared.viewModel(for: destinationContentId)
+        if destination.detail?.contentId == destinationContentId { return }
+
+        familyItemPrefetchContentId = destinationContentId
+        familyItemPrefetchTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(140))
+            guard !Task.isCancelled else { return }
+            await destination.loadDetail(
+                contentId: destinationContentId,
+                includeRelatedStructure: false
+            )
+        }
+    }
+
+    private func switchFamilyItem(to destinationContentId: String) {
+        guard destinationContentId != activeContentId else { return }
+
+        let source = viewModel
+        let matchingPrefetch = familyItemPrefetchContentId == destinationContentId
+            ? familyItemPrefetchTask
+            : nil
+        if matchingPrefetch == nil {
+            familyItemPrefetchTask?.cancel()
+        }
+        familyItemLoadTask?.cancel()
+        familyItemLoadTask = Task { @MainActor in
+            let destination = ItemDetailCache.shared.viewModel(for: destinationContentId)
+            if let matchingPrefetch {
+                await matchingPrefetch.value
+            }
+            if destination.detail?.contentId != destinationContentId {
+                await destination.loadDetail(
+                    contentId: destinationContentId,
+                    includeRelatedStructure: false
+                )
+            }
+            destination.adoptSeriesBrowsingContext(from: source)
+            guard !Task.isCancelled,
+                  let destinationDetail = destination.detail,
+                  destinationDetail.contentId == destinationContentId,
+                  destinationDetail.type == "series"
+                    || destinationDetail.type == "season"
+                    || destinationDetail.type == "episode",
+                  viewModel === source else { return }
+
+            TVDetailFocusDiagnostics.record(
+                "family.destinationPrepared",
+                target: "episodeCard",
+                action: "swapInPlace",
+                state: "episode=selected",
+                essential: true
+            )
+
+            skipNextActiveContentReload = true
+            viewModel = destination
+            activeContentId = destinationContentId
+        }
+    }
+
+    private func playPrimaryItem(detail: ItemDetail, startFromBeginning: Bool) {
+        if let episode = familyNextUpEpisode(for: detail) {
+            let resumePosition = startFromBeginning
+                ? nil
+                : playableResumePosition(
+                    position: episode.userData?.positionSeconds,
+                    duration: episode.userData?.durationSeconds
+                )
+            router.presentPlayer(
+                contentId: episode.contentId,
+                fileId: nextUpPlaybackFileId(resolvedFileId: preferredNextUpFileId),
+                audioTrackIndex: preferredNextUpAudioTrackIndex,
+                subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
+                startFromBeginning: startFromBeginning,
+                resumePosition: resumePosition
+            )
+            return
+        }
+
+        guard detail.type == "movie" || detail.type == "episode" else { return }
+        let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
+        let fileId = playbackFileId(for: detail)
+
+        if detail.type == "episode" {
+            router.presentPlayer(
+                contentId: detail.contentId,
+                fileId: fileId,
+                audioTrackIndex: preferredAudioTrackIndex,
+                subtitleTrackIndex: preferredSubtitleTrackIndex,
+                startFromBeginning: startFromBeginning,
+                resumePosition: resumePosition
+            )
+        } else if let fileId {
+            router.navigate(
+                to: .playerWithFile(
+                    contentId: detail.contentId,
+                    fileId: fileId,
+                    audioTrackIndex: preferredAudioTrackIndex,
+                    subtitleTrackIndex: preferredSubtitleTrackIndex,
+                    startFromBeginning: startFromBeginning,
+                    resumePosition: resumePosition
+                )
+            )
+        } else {
+            router.navigate(
+                to: .player(
+                    contentId: detail.contentId,
+                    startFromBeginning: startFromBeginning,
+                    resumePosition: resumePosition
+                )
+            )
+        }
+    }
+
+    private func playEpisodeFromRail(_ contentId: String, activeDetail: ItemDetail) {
+        let episode = viewModel.episodes.first { $0.contentId == contentId }
+        let isActiveEpisode = activeDetail.type == "episode"
+            && activeDetail.contentId == contentId
+        router.presentPlayer(
+            contentId: contentId,
+            fileId: isActiveEpisode ? playbackFileId(for: activeDetail) : nil,
+            audioTrackIndex: isActiveEpisode ? preferredAudioTrackIndex : nil,
+            subtitleTrackIndex: isActiveEpisode ? preferredSubtitleTrackIndex : nil,
+            startFromBeginning: false,
+            resumePosition: playableResumePosition(
+                position: episode?.userData?.positionSeconds,
+                duration: episode?.userData?.durationSeconds
+            )
+        )
+    }
+
+    private func selectVersion(_ fileId: Int?, for detail: ItemDetail) {
+        if isSeriesContainer(detail) {
+            preferredNextUpFileId = fileId
+            preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+                for: nextUpPlaybackDetail,
+                versionFileId: fileId,
+                candidate: preferredNextUpAudioTrackIndex
+            )
+            preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+                for: nextUpPlaybackDetail,
+                versionFileId: fileId,
+                candidate: preferredNextUpSubtitleTrackIndex
+            )
+        } else {
+            preferredVersionFileId = fileId
+            preferredAudioTrackIndex = sanitizedAudioTrackIndex(
+                for: detail,
+                versionFileId: fileId,
+                candidate: preferredAudioTrackIndex
+            )
+            preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+                for: detail,
+                versionFileId: fileId,
+                candidate: preferredSubtitleTrackIndex
+            )
+        }
+    }
+
+    private func selectAudioTrack(_ index: Int?, for detail: ItemDetail) {
+        if isSeriesContainer(detail) {
+            preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+                for: nextUpPlaybackDetail,
+                versionFileId: preferredNextUpFileId,
+                candidate: index
+            )
+            persistAudioSelection(
+                prefKey: prefKey(for: nextUpPlaybackDetail),
+                version: effectiveVersion(
+                    for: nextUpPlaybackDetail,
+                    versionFileId: preferredNextUpFileId
+                ),
+                requested: index,
+                sanitized: preferredNextUpAudioTrackIndex
+            )
+        } else {
+            preferredAudioTrackIndex = sanitizedAudioTrackIndex(
+                for: detail,
+                versionFileId: preferredVersionFileId,
+                candidate: index
+            )
+            persistAudioSelection(
+                prefKey: prefKey(for: detail),
+                version: effectiveVersion(
+                    for: detail,
+                    versionFileId: preferredVersionFileId
+                ),
+                requested: index,
+                sanitized: preferredAudioTrackIndex
+            )
+        }
+    }
+
+    private func selectSubtitleTrack(_ index: Int?, for detail: ItemDetail) {
+        if isSeriesContainer(detail) {
+            didClearNextUpSubtitleOverride = index == nil
+            preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+                for: nextUpPlaybackDetail,
+                versionFileId: preferredNextUpFileId,
+                candidate: index
+            )
+            persistSubtitleSelection(
+                prefKey: prefKey(for: nextUpPlaybackDetail),
+                version: effectiveVersion(
+                    for: nextUpPlaybackDetail,
+                    versionFileId: preferredNextUpFileId
+                ),
+                requested: index,
+                sanitized: preferredNextUpSubtitleTrackIndex,
+                showForced: nil
+            )
+        } else {
+            didClearSubtitleOverride = index == nil
+            viewModel.preferredSubtitleTrackWasManuallySelected = true
+            preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+                for: detail,
+                versionFileId: preferredVersionFileId,
+                candidate: index
+            )
+            persistSubtitleSelection(
+                prefKey: prefKey(for: detail),
+                version: effectiveVersion(
+                    for: detail,
+                    versionFileId: preferredVersionFileId
+                ),
+                requested: index,
+                sanitized: preferredSubtitleTrackIndex,
+                showForced: nil
             )
         }
     }

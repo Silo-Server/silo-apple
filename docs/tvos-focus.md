@@ -54,6 +54,14 @@ actionable item can be a real focus target.
 - Use `@FocusState`, `prefersDefaultFocus`, `defaultFocus`, or `resetFocus` to
   seed, observe, or restore focus, not to fight the engine on every move.
 - Keep the focused subtree mounted and structurally stable while moving focus.
+- Keep native focus effects structurally stable too. If temporary focus
+  eligibility is required to make one cross-row destination exclusive, latch
+  it through the focus engine's transient `source -> nil -> destination`
+  handoff. Restoring a row of Liquid Glass controls during that `nil` frame can
+  redraw every glass surface and produce a visible row-wide flash. Release the
+  latch only after the destination has landed, with implicit animations
+  disabled. Prefer a bounded `focusSection()` catchment when geometry alone
+  can express the edge; use `UIFocusGuide` when it cannot.
 - Attach `onMoveCommand` at an intentional edge only when native movement has
   no desired destination, such as Up from the first card returning to chrome.
   Do not attach broad handlers that compete with ordinary in-zone movement.

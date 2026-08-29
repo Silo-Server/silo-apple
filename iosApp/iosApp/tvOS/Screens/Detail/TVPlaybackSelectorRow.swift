@@ -47,6 +47,7 @@ struct TVPlaybackSelectorRow: View {
     @FocusState private var focusedSelector: SelectorFocus?
     @State private var defaultSelectorFocus: SelectorFocus?
     @State private var preferredSubtitleLanguage: String?
+    @State private var versionFocusReleaseTask: Task<Void, Never>?
 
     private var editions: [PlaybackEditions.Edition] { PlaybackEditions.editions(from: versions) }
 
@@ -65,8 +66,8 @@ struct TVPlaybackSelectorRow: View {
                 .focusScope(selectorFocusScope)
                 .focusSection()
                 .modifier(SelectorDefaultFocus(focus: defaultSelectorFocus, binding: $focusedSelector))
-                .onChange(of: focusedSelector) { _, newValue in
-                    onVersionFocusChanged(newValue == .version)
+                .onChange(of: focusedSelector) { oldValue, newValue in
+                    reportVersionFocusTransition(from: oldValue, to: newValue)
                     // The restore default (see `restoreFocus`) must only
                     // outlive the menu dismissal it serves. Once focus leaves
                     // the row — up to the action row, or into an opening menu
@@ -85,6 +86,8 @@ struct TVPlaybackSelectorRow: View {
                     preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
                 }
                 .onDisappear {
+                    versionFocusReleaseTask?.cancel()
+                    versionFocusReleaseTask = nil
                     onVersionFocusChanged(false)
                 }
         }
@@ -114,6 +117,29 @@ struct TVPlaybackSelectorRow: View {
         if shouldShowVersionValue { return .version }
         if shouldShowAudioValue { return .audio }
         return .subtitles
+    }
+
+    /// Keep Play as Version's exclusive Up destination through the focus
+    /// engine's transient `Version -> nil -> Play` handoff. Releasing the
+    /// other action buttons synchronously at `nil` reconstructs every native
+    /// glass surface before Play has visibly settled, which produces a
+    /// row-wide flash.
+    private func reportVersionFocusTransition(
+        from oldValue: SelectorFocus?,
+        to newValue: SelectorFocus?
+    ) {
+        versionFocusReleaseTask?.cancel()
+        versionFocusReleaseTask = nil
+
+        if newValue == .version {
+            onVersionFocusChanged(true)
+        } else if oldValue == .version {
+            versionFocusReleaseTask = Task { @MainActor in
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                onVersionFocusChanged(false)
+            }
+        }
     }
 
     private var hasAnySelector: Bool {
@@ -409,8 +435,9 @@ private struct TVSelectorButton<MenuContent: View>: View {
             }
         }
         .menuStyle(.button)
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
+        .tvDetailGlassControl(
+            shape: .roundedRectangle(radius: ContinuumTheme.smallCornerRadius)
+        )
     }
 }
 
@@ -434,8 +461,9 @@ private struct TVSelectorValue: View {
                 Text(value).font(.system(size: 22, weight: .semibold)).lineLimit(1)
             }
         }
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
+        .tvDetailGlassControl(
+            shape: .roundedRectangle(radius: ContinuumTheme.smallCornerRadius)
+        )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label), \(value)")
     }

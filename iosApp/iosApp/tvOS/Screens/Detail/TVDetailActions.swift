@@ -121,8 +121,7 @@ struct TVPrimaryPillButton: View {
         // The label grows inside one stable native control. A capsule is a
         // circle at the resting square size and naturally stretches around
         // the title, allowing the system glass to morph with the content.
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.capsule)
+        .tvDetailGlassControl(shape: .capsule)
         .accessibilityLabel(title)
         .applyOptionalFocus(focused)
     }
@@ -165,8 +164,7 @@ struct TVSecondaryPillButton: View {
         Button(action: action) {
             TVExpandingDetailActionLabel(icon: icon, title: title)
         }
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.capsule)
+        .tvDetailGlassControl(shape: .capsule)
         .accessibilityLabel(title)
     }
 }
@@ -231,8 +229,7 @@ struct TVCircleMenuButton<MenuContent: View>: View {
             TVExpandingDetailActionLabel(icon: icon, title: title)
         }
         .menuStyle(.button)
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.capsule)
+        .tvDetailGlassControl(shape: .capsule)
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -275,8 +272,7 @@ struct TVCircleActionButton: View {
         Button(action: action) {
             TVExpandingDetailActionLabel(icon: resolvedIcon, title: title)
         }
-        .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.capsule)
+        .tvDetailGlassControl(shape: .capsule)
         // No tint override: default glass in both states. The filled SF
         // Symbol variant (`heart.fill`, `bookmark.fill`,
         // `checkmark.circle.fill`) is what carries the active state, so an
@@ -321,8 +317,8 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     let playFocused: FocusState<Bool>.Binding
     let rowFocused: FocusState<Bool>.Binding
     /// While Version owns focus below this row, Play is the sole eligible Up
-    /// destination. This expresses the semantic edge in the native graph
-    /// before movement instead of correcting focus after the fact.
+    /// destination. The selector delays releasing this state until the focus
+    /// move has landed, avoiding a transient all-buttons redraw.
     let routesVersionUpToPlay: Bool
     @ViewBuilder let moreMenu: () -> MoreMenu
 
@@ -405,6 +401,25 @@ struct TVDetailActionRow<MoreMenu: View>: View {
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        .onChange(of: focusedAction) { oldAction, newAction in
+            TVDetailFocusDiagnostics.record(
+                "action.focusChanged",
+                target: actionName(newAction),
+                action: newAction == nil ? "lost" : "focused",
+                state: "from=\(actionName(oldAction)) to=\(actionName(newAction)) "
+                    + "playFocused=\(playFocused.wrappedValue)"
+            )
+        }
+        .onChange(of: playFocused.wrappedValue) { _, isFocused in
+            guard isFocused else { return }
+            TVDetailFocusDiagnostics.record(
+                "play.focusGained",
+                target: "play",
+                action: "focused",
+                state: "rowTarget=\(actionName(focusedAction))",
+                essential: true
+            )
+        }
         .onChange(of: seasonKey, initial: true) { _, seasonKey in
             guard let seasonKey else { return }
             if initialFocusSeasonKey == nil {
@@ -452,9 +467,28 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     if Task.isCancelled { return }
                 }
+                TVDetailFocusDiagnostics.record(
+                    "play.defaultReset",
+                    target: "play",
+                    action: "resetFocus",
+                    state: "attempt=\(attempt + 1) current=\(actionName(focusedNow))",
+                    essential: true
+                )
                 resetFocus(in: focusNamespace)
                 await Task.yield()
             }
+        }
+    }
+
+    private func actionName(_ action: ActionID?) -> String {
+        guard let action else { return "none" }
+        switch action {
+        case .play: return "play"
+        case .startOver: return "startOver"
+        case .favorite: return "favorite"
+        case .watchlist: return "watchlist"
+        case .watched: return "watched"
+        case .more: return "more"
         }
     }
 

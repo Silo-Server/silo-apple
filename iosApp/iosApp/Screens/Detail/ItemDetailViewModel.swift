@@ -21,9 +21,11 @@ class ItemDetailViewModel {
     var episodeSeriesPosterUrl: String?
     var episodeSeriesPosterThumbhash: String?
     /// Route-scoped pages already loaded while browsing seasons. This keeps
-    /// chip taps and iPad page swipes instant when the user comes back to a
-    /// season, while `ResponseCache` remains the longer-lived cold-start tier.
+    /// nearby chip taps and iPad page swipes instant without retaining every
+    /// episode list for shows with very large season counts.
     var episodesBySeason: [Int: [EpisodeListItem]] = [:]
+    private var episodeSeasonCacheOrder: [Int] = []
+    private let episodeSeasonCacheCapacity = 3
     var episodeFavoriteStates: [String: Bool] = [:]
     var isLoadingEpisodes = false
 
@@ -80,7 +82,11 @@ class ItemDetailViewModel {
     ///   the preferred initial season would yank the ground out from under
     ///   the user — under focus, on tvOS. Entry loads and the player-dismiss
     ///   reload leave it false: there, re-picking the season is the point.
-    func loadDetail(contentId: String, preserveSeasonSelection: Bool = false) async {
+    func loadDetail(
+        contentId: String,
+        preserveSeasonSelection: Bool = false,
+        includeRelatedStructure: Bool = true
+    ) async {
         if detail?.contentId != contentId {
             episodeSeriesPosterUrl = nil
             episodeSeriesPosterThumbhash = nil
@@ -138,6 +144,12 @@ class ItemDetailViewModel {
             guard let enriched else { return }
 
             isWatched = enriched.userData?.played ?? false
+
+            // Focus-dwell prefetches only need the leaf metadata that will
+            // paint the hero and playback controls. Re-fetching an episode's
+            // complete season list and sibling rail here would turn one
+            // focused card into work proportional to an entire large show.
+            guard includeRelatedStructure else { return }
 
             await loadRelatedStructure(
                 for: enriched,
@@ -321,7 +333,7 @@ class ItemDetailViewModel {
            ) {
             let sorted = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
             episodes = sorted
-            episodesBySeason[seasonNumber] = sorted
+            cacheEpisodes(sorted, seasonNumber: seasonNumber)
             loadedSeasonNumber = seasonNumber
         }
     }
@@ -557,8 +569,10 @@ class ItemDetailViewModel {
             // selection with stale content.
             episodeLoadGeneration += 1
             episodes = cached
+            touchEpisodeSeasonCache(season.seasonNumber)
             loadedSeasonNumber = season.seasonNumber
             isLoadingEpisodes = false
+            await refreshEpisodeFavoriteStates(for: cached)
             return
         }
 
@@ -567,6 +581,68 @@ class ItemDetailViewModel {
             seasonNumber: season.seasonNumber,
             fallbackSeasonNumber: fallbackSeasonNumber
         )
+    }
+
+    /// Warm only the episode list for the season currently under focus. The
+    /// caller debounces and cancels this work as focus moves; this method does
+    /// not mutate `selectedSeason`, the visible rail, or focus-related state.
+    func prefetchEpisodes(for season: Season) async {
+        guard let seriesId = seriesContentId else { return }
+
+        let seasonNumber = season.seasonNumber
+        if episodesBySeason[seasonNumber] != nil {
+            touchEpisodeSeasonCache(seasonNumber)
+            return
+        }
+
+        let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+        if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
+            let sorted = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            cacheEpisodes(sorted, seasonNumber: seasonNumber)
+            return
+        }
+
+        do {
+            let response = try await ContinuumAPI.shared.episodes(
+                seriesId: seriesId,
+                seasonNumber: seasonNumber
+            )
+            guard !Task.isCancelled else { return }
+            let sorted = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
+            // Keep dwell-only data in the bounded route cache. A season the
+            // viewer actually selects will still enter ResponseCache through
+            // the normal load path.
+            cacheEpisodes(sorted, seasonNumber: seasonNumber)
+        } catch {
+            // Prefetch is opportunistic. Selection retains the normal loading
+            // and error behavior if this warm-up misses or is cancelled.
+        }
+    }
+
+    /// Carry the already-visible family browser into a leaf-detail model.
+    /// Episode selection can then swap hero metadata without rebuilding or
+    /// re-fetching the season selector and episode carousel.
+    func adoptSeriesBrowsingContext(from source: ItemDetailViewModel) {
+        guard let destinationDetail = detail,
+              destinationDetail.type == "series"
+                || destinationDetail.type == "season"
+                || destinationDetail.type == "episode",
+              let destinationSeriesId = destinationDetail.type == "series"
+                ? destinationDetail.contentId
+                : destinationDetail.seriesId,
+              destinationSeriesId == source.seriesContentId
+        else { return }
+
+        seriesContentId = source.seriesContentId
+        seasons = source.seasons
+        selectedSeason = source.selectedSeason
+        episodes = source.episodes
+        episodesBySeason = source.episodesBySeason
+        episodeSeasonCacheOrder = source.episodeSeasonCacheOrder
+        episodeFavoriteStates = source.episodeFavoriteStates
+        episodeFavoriteMutationVersions = source.episodeFavoriteMutationVersions
+        loadedSeasonNumber = source.loadedSeasonNumber
+        isLoadingEpisodes = false
     }
 
     func loadEpisodes(
@@ -580,13 +656,13 @@ class ItemDetailViewModel {
         let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
 
         // Hydrate this page from either route memory or ResponseCache, then
-        // refresh silently. Never leave the previous season's rows under a
-        // newly-selected chip.
+        // refresh silently. On a true miss, the previous rail remains mounted
+        // but visibly disabled until the replacement is ready.
         var cachedEpisodes = episodesBySeason[seasonNumber]
         if cachedEpisodes == nil,
            let cached: EpisodesResponse = ResponseCache.shared.get(key) {
             let sorted = cached.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
-            episodesBySeason[seasonNumber] = sorted
+            cacheEpisodes(sorted, seasonNumber: seasonNumber)
             cachedEpisodes = sorted
         }
 
@@ -595,7 +671,9 @@ class ItemDetailViewModel {
             episodes = cachedEpisodes
             loadedSeasonNumber = seasonNumber
         } else if shouldPublish {
-            episodes = []
+            // Keep the old rail mounted while the new page loads. The view
+            // dims it and overlays progress, preserving layout and preventing
+            // the carousel from popping out and back in.
             isLoadingEpisodes = true
         }
 
@@ -606,7 +684,7 @@ class ItemDetailViewModel {
             ResponseCache.shared.set(response, for: key)
             let sorted = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
             guard generation == episodeLoadGeneration else { return }
-            episodesBySeason[seasonNumber] = sorted
+            cacheEpisodes(sorted, seasonNumber: seasonNumber)
             if selectedSeason == nil || selectedSeason?.seasonNumber == seasonNumber {
                 episodes = sorted
                 loadedSeasonNumber = seasonNumber
@@ -636,6 +714,32 @@ class ItemDetailViewModel {
         }
     }
 
+    private func cacheEpisodes(_ episodes: [EpisodeListItem], seasonNumber: Int) {
+        episodesBySeason[seasonNumber] = episodes
+        touchEpisodeSeasonCache(seasonNumber)
+
+        while episodeSeasonCacheOrder.count > episodeSeasonCacheCapacity {
+            guard let evictionIndex = episodeSeasonCacheOrder.firstIndex(where: {
+                $0 != loadedSeasonNumber && $0 != selectedSeason?.seasonNumber
+            }) else { break }
+            let evictedSeasonNumber = episodeSeasonCacheOrder.remove(at: evictionIndex)
+            episodesBySeason.removeValue(forKey: evictedSeasonNumber)
+            if let seriesContentId {
+                ResponseCache.shared.remove(
+                    CacheKey.itemEpisodes(
+                        seriesId: seriesContentId,
+                        seasonNumber: evictedSeasonNumber
+                    )
+                )
+            }
+        }
+    }
+
+    private func touchEpisodeSeasonCache(_ seasonNumber: Int) {
+        episodeSeasonCacheOrder.removeAll(where: { $0 == seasonNumber })
+        episodeSeasonCacheOrder.append(seasonNumber)
+    }
+
     private func refreshEpisodeFavoriteStates(
         for episodes: [EpisodeListItem],
         maxConcurrent: Int = 6
@@ -648,6 +752,9 @@ class ItemDetailViewModel {
         // Query in small batches so a long season cannot fan out an
         // unbounded number of requests against the server.
         for batchStart in stride(from: 0, to: episodes.count, by: maxConcurrent) {
+            guard !Task.isCancelled,
+                  generation == episodeFavoriteRefreshGeneration
+            else { return }
             let batchEnd = min(batchStart + maxConcurrent, episodes.count)
             let batch = Array(episodes[batchStart..<batchEnd])
             let batchStates = await withTaskGroup(of: (String, Bool?).self) { group in

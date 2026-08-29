@@ -69,11 +69,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// page-entry framing by scrolling the hero back to the top.
     @FocusState private var actionRowFocused: Bool
     @State private var versionSelectorFocused = false
+    /// Play is a high-priority default only until page-entry focus lands.
+    /// Keeping it user-initiated forever lets its reinsertion after an
+    /// episode reload override the season row's active focus preference.
+    @State private var prefersPageEntryPlay = true
 
     var body: some View {
         ScrollViewReader { scrollProxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 48) {
+                VStack(alignment: .leading, spacing: TVDetailLayoutMetrics.firstSectionSpacing) {
                     heroView
                         .id(heroScrollId)
 
@@ -93,7 +97,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             }
             .ignoresSafeArea()
             .focusScope(detailFocusNamespace)
-            .defaultFocus($playFocused, true, priority: .userInitiated)
+            .defaultFocus(
+                $playFocused,
+                true,
+                priority: prefersPageEntryPlay ? .userInitiated : .automatic
+            )
             .detailFocusScroll(
                 proxy: scrollProxy,
                 seasonRowFocused: seasonRowFocused,
@@ -162,8 +170,50 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
         .onChange(of: playFocused) { _, isFocused in
             if isFocused {
-                setVersionSelectorFocused(false)
+                TVDetailFocusDiagnostics.record(
+                    "series.playFocused",
+                    target: "play",
+                    action: "focused",
+                    state: detailFocusState,
+                    essential: true
+                )
+                prefersPageEntryPlay = false
             }
+        }
+        .onChange(of: seasonRowFocused) { _, isFocused in
+            TVDetailFocusDiagnostics.record(
+                "series.seasonRowFocus",
+                target: "seasonRow",
+                action: isFocused ? "focused" : "lost",
+                state: detailFocusState,
+                essential: !isFocused
+            )
+        }
+        .onChange(of: selectedSeason?.seasonNumber) { oldSeason, newSeason in
+            TVDetailFocusDiagnostics.record(
+                "series.selectedSeasonChanged",
+                target: "seasonRow",
+                action: "selectionChanged",
+                state: "from=\(oldSeason.map(String.init) ?? "none") "
+                    + "to=\(newSeason.map(String.init) ?? "none") \(detailFocusState)",
+                essential: true
+            )
+        }
+        .onChange(of: isLoadingEpisodes) { _, isLoading in
+            TVDetailFocusDiagnostics.record(
+                "series.episodeLoading",
+                target: "episodeRail",
+                action: isLoading ? "loadingStarted" : "loadingFinished",
+                state: detailFocusState
+            )
+        }
+        .onChange(of: episodes.count) { oldCount, newCount in
+            TVDetailFocusDiagnostics.record(
+                "series.episodeCountChanged",
+                target: "episodeRail",
+                action: "contentChanged",
+                state: "from=\(oldCount) to=\(newCount) \(detailFocusState)"
+            )
         }
     }
 
@@ -173,6 +223,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         withTransaction(transaction) {
             versionSelectorFocused = isFocused
         }
+    }
+
+    private var detailFocusState: String {
+        "season=\(selectedSeason.map { String($0.seasonNumber) } ?? "none") "
+            + "seasonRowFocused=\(seasonRowFocused) "
+            + "playFocused=\(playFocused) "
+            + "actionRowFocused=\(actionRowFocused) "
+            + "loading=\(isLoadingEpisodes) episodes=\(episodes.count) "
+            + "playEntryPriority=\(prefersPageEntryPlay ? "user" : "automatic")"
     }
 
     private var nextUpVersions: [FileVersion] {
@@ -204,7 +263,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
-            routesVersionUpToPlay: versionSelectorFocused && !playFocused,
+            routesVersionUpToPlay: versionSelectorFocused,
             moreMenu: {
                 if supportsTrailerFetch {
                     moreMenu

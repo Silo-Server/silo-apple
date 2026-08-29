@@ -1,10 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Season chip used on series / season / episode detail pages. Selected
-/// reads as a filled white pill; focused fades in a translucent fill;
-/// idle is outline only. The style owns its focus rendering so tvOS
-/// doesn't stack a system halo on top.
+/// Season chip used on series / season / episode detail pages. It uses the
+/// same native Liquid Glass control treatment as the hero actions and
+/// playback selectors; a white glass tint distinguishes the active season.
 struct TVSeasonChip: View {
     let season: Season
     let isSelected: Bool
@@ -12,12 +11,9 @@ struct TVSeasonChip: View {
 
     var body: some View {
         Button(action: onSelect) {
-            Text(chipLabel)
-                .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
-                .padding(.horizontal, 26)
-                .padding(.vertical, 14)
+            TVSeasonChipLabel(text: chipLabel, isSelected: isSelected)
         }
-        .buttonStyle(TVSeasonChipStyle(isSelected: isSelected))
+        .tvDetailGlassControl(shape: .capsule, isSelected: isSelected)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -28,54 +24,18 @@ struct TVSeasonChip: View {
     }
 }
 
-private struct TVSeasonChipStyle: ButtonStyle {
-    let isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        TVSeasonChipBody(configuration: configuration, isSelected: isSelected)
-    }
-}
-
-private struct TVSeasonChipBody: View {
-    let configuration: ButtonStyleConfiguration
+private struct TVSeasonChipLabel: View {
+    let text: String
     let isSelected: Bool
 
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        configuration.label
-            .foregroundColor(foregroundColor)
-            // Selected/focused fills sit in front of the glass, so the
-            // selection signal is unchanged and only the idle chrome moves
-            // from an outline to glass.
-            .background(background)
-            .siloGlass(in: RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous))
-            .scaleEffect(scale)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused ? 1.04 : 1.0
-        return configuration.isPressed ? base * 0.97 : base
-    }
-
-    @ViewBuilder
-    private var background: some View {
-        if isSelected {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white)
-        } else if isFocused {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
-        } else {
-            // Idle is the bare glass underneath; the old 1.5pt outline would
-            // double up with the edge highlight glass draws itself.
-            Color.clear
-        }
-    }
-
-    private var foregroundColor: Color {
-        if isSelected { return .black }
-        return .white
+        let usesInvertedLabel = isFocused || isSelected
+        Text(text)
+            .font(.system(size: 22, weight: usesInvertedLabel ? .semibold : .medium))
+            .foregroundStyle(usesInvertedLabel ? Color.black : Color.white)
+            .padding(.horizontal, 6)
     }
 }
 
@@ -88,34 +48,100 @@ struct TVSeasonChipRow: View {
     let seasons: [Season]
     let selectedSeasonId: String?
     let onSelect: (Season) -> Void
+    var onFocusedSeasonChange: ((Season?) -> Void)? = nil
 
     @FocusState private var focusedSeasonId: String?
+    /// Entry preference is intentionally separate from server-driven
+    /// selection updates. A direct Select press advances this preference
+    /// synchronously, before the episode rail changes beneath the row.
+    @State private var defaultFocusSeasonId: String?
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    ForEach(seasons) { season in
-                        TVSeasonChip(
-                            season: season,
-                            isSelected: selectedSeasonId == season.id,
-                            onSelect: { onSelect(season) }
-                        )
-                        .id(season.id)
-                        .focused($focusedSeasonId, equals: season.id)
+                GlassEffectContainer(spacing: 0) {
+                    HStack(spacing: 14) {
+                        ForEach(seasons) { season in
+                            TVSeasonChip(
+                                season: season,
+                                isSelected: selectedSeasonId == season.id,
+                                onSelect: {
+                                    // Establish the fallback before the
+                                    // selection mutates the surrounding page.
+                                    // If tvOS reevaluates focus while the rail
+                                    // reloads, the pill the person selected is
+                                    // already this row's preferred target.
+                                    defaultFocusSeasonId = season.id
+                                    TVDetailFocusDiagnostics.record(
+                                        "season.select",
+                                        target: "seasonPill",
+                                        action: "select",
+                                        state: focusState(
+                                            selectedId: selectedSeasonId,
+                                            focusedId: focusedSeasonId,
+                                            preferredId: season.id
+                                        ),
+                                        essential: true
+                                    )
+                                    onSelect(season)
+                                }
+                            )
+                            .id(season.id)
+                            .focused($focusedSeasonId, equals: season.id)
+                        }
                     }
                 }
                 .padding(.vertical, 12)
             }
             .scrollClipDisabled()
             .focusSection()
-            .applyChipRowDefaultFocus(selectedSeasonId, binding: $focusedSeasonId)
-            .onChange(of: selectedSeasonId) { _, newId in
+            .applyChipRowDefaultFocus(defaultFocusSeasonId, binding: $focusedSeasonId)
+            .onChange(of: selectedSeasonId) { oldId, newId in
                 guard let newId else { return }
+                TVDetailFocusDiagnostics.record(
+                    "season.selectionChanged",
+                    target: "seasonPill",
+                    action: "selectionChanged",
+                    state: "from=\(seasonNumber(for: oldId)) to=\(seasonNumber(for: newId)) "
+                        + focusState(
+                            selectedId: newId,
+                            focusedId: focusedSeasonId,
+                            preferredId: defaultFocusSeasonId
+                        ),
+                    essential: true
+                )
+                // A focused chip is already visible and is the source of this
+                // selection. Re-centering its ScrollView here can briefly
+                // invalidate that native focus while the episode rail below
+                // is also changing size, allowing the outer Play default to
+                // win. Only programmatic, off-row selections need centering.
+                guard focusedSeasonId == nil else { return }
+                defaultFocusSeasonId = newId
                 withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
                     proxy.scrollTo(newId, anchor: .center)
                 }
             }
+            .onChange(of: focusedSeasonId) { oldId, newId in
+                TVDetailFocusDiagnostics.record(
+                    "season.focusChanged",
+                    target: "seasonPill",
+                    action: newId == nil ? "lost" : "focused",
+                    state: "from=\(seasonNumber(for: oldId)) to=\(seasonNumber(for: newId)) "
+                        + focusState(
+                            selectedId: selectedSeasonId,
+                            focusedId: newId,
+                            preferredId: defaultFocusSeasonId
+                        ),
+                    essential: newId == nil
+                )
+                if newId == nil {
+                    defaultFocusSeasonId = selectedSeasonId
+                }
+                onFocusedSeasonChange?(
+                    newId.flatMap { id in seasons.first(where: { $0.id == id }) }
+                )
+            }
+            .onDisappear { onFocusedSeasonChange?(nil) }
             .onAppear {
                 // Center the selected chip on first paint too. Without this a
                 // high-numbered season (e.g. Season 8) opens with the row
@@ -123,9 +149,36 @@ struct TVSeasonChipRow: View {
                 // until the user d-pads into it. The HStack is non-lazy, so the
                 // target chip is already laid out — no dispatch hop needed.
                 guard let selectedSeasonId else { return }
+                defaultFocusSeasonId = selectedSeasonId
+                TVDetailFocusDiagnostics.record(
+                    "season.rowAppeared",
+                    target: "seasonRow",
+                    action: "appear",
+                    state: focusState(
+                        selectedId: selectedSeasonId,
+                        focusedId: focusedSeasonId,
+                        preferredId: selectedSeasonId
+                    )
+                )
                 proxy.scrollTo(selectedSeasonId, anchor: .center)
             }
         }
+    }
+
+    private func focusState(
+        selectedId: String?,
+        focusedId: String?,
+        preferredId: String?
+    ) -> String {
+        "selected=\(seasonNumber(for: selectedId)) "
+            + "focused=\(seasonNumber(for: focusedId)) "
+            + "preferred=\(seasonNumber(for: preferredId))"
+    }
+
+    private func seasonNumber(for id: String?) -> String {
+        guard let id else { return "none" }
+        return seasons.first(where: { $0.id == id })
+            .map { String($0.seasonNumber) } ?? "unknown"
     }
 }
 

@@ -1,6 +1,14 @@
 #if os(tvOS)
 import SwiftUI
 
+enum TVDetailLayoutMetrics {
+    /// Leaves a deliberate preview band for the first body section on the
+    /// 1080-point tvOS canvas, echoing Home's marquee-above-row composition.
+    static let heroHeight: CGFloat = 880
+    static let heroContentBottomInset: CGFloat = 64
+    static let firstSectionSpacing: CGFloat = 32
+}
+
 /// Full-bleed cinematic hero for the tvOS item-detail screen. Modeled
 /// after Apple TV's detail page: a nearly full-viewport backdrop layered
 /// with a tall left-column editorial stack (eyebrow pill → title →
@@ -39,7 +47,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    private let heroHeight: CGFloat = 980
+    private let heroHeight = TVDetailLayoutMetrics.heroHeight
     private let contentMaxWidth: CGFloat = 1200
 
     var body: some View {
@@ -119,10 +127,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         }
         .padding(.leading, ContinuumTheme.safePadding)
         .padding(.trailing, ContinuumTheme.safePadding)
-        // Keep this tight: the detail pages' outer VStack already adds its
-        // own spacing between the hero and the first content section, so a
-        // large inset here reads as a dead band under the selector row.
-        .padding(.bottom, 48)
+        // Raise the editorial stack and controls enough to leave the first
+        // body section visible beneath the hero on initial entry.
+        .padding(.bottom, TVDetailLayoutMetrics.heroContentBottomInset)
     }
 
     private var editorialColumn: some View {
