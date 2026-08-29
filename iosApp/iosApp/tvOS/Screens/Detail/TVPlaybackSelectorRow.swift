@@ -375,7 +375,11 @@ struct TVPlaybackSelectorRow: View {
 }
 
 /// One squared selector button: `[icon] LABEL  value  ⌄`, opening a `Menu`.
-/// Matches the secondary squared button look (translucent fill + hairline).
+///
+/// Uses the system glass style rather than `TVPillButtonStyle` so it matches
+/// the detail hero's action row directly above it and lets tvOS draw the
+/// focus highlight. `TVPillButtonStyle` is shared with the player HUD and
+/// must stay non-glass — see the note on it in `TVDetailActions.swift`.
 private struct TVSelectorButton<MenuContent: View>: View {
     let icon: String
     let label: String
@@ -397,7 +401,8 @@ private struct TVSelectorButton<MenuContent: View>: View {
             }
         }
         .menuStyle(.button)
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
     }
 }
 
@@ -421,7 +426,8 @@ private struct TVSelectorValue: View {
                 Text(value).font(.system(size: 22, weight: .semibold)).lineLimit(1)
             }
         }
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label), \(value)")
     }

@@ -16,7 +16,7 @@ struct RefreshStatusPill: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(.ultraThinMaterial, in: Capsule())
+        .siloGlass(in: Capsule())
         .overlay {
             Capsule()
                 .stroke(Color.white.opacity(0.14), lineWidth: 0.8)

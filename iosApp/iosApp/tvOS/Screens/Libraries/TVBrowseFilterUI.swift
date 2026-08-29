@@ -572,12 +572,15 @@ private struct TVBrowseControlPillBody: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 12)
             .foregroundColor(isFocused ? .continuumBackground : .continuumOnSurface)
+            // Focused and active fills sit in front of the glass; the resting
+            // state is the bare glass, so only idle chrome changes.
             .background(
                 Capsule().fill(
                     isFocused ? Color.continuumOnSurface
-                        : (active ? Color.continuumChromeSelectedFill : Color.continuumChromeRestingFill)
+                        : (active ? Color.continuumChromeSelectedFill : Color.clear)
                 )
             )
+            .siloGlass(in: Capsule())
             .overlay(
                 Capsule().strokeBorder(
                     isFocused ? Color.clear : Color.continuumChromeRestingBorder,

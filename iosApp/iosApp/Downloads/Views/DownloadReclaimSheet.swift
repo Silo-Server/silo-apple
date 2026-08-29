@@ -146,7 +146,7 @@ struct DownloadReclaimSheet: View {
             .padding(.horizontal, 16)
             .padding(.top, 10)
             .padding(.bottom, 8)
-            .background(.ultraThinMaterial)
+            .siloGlass(in: Rectangle())
         }
     }
 

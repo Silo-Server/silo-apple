@@ -772,7 +772,7 @@ struct TVSkylinePanelChrome: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return content
-            .background(shape.fill(.regularMaterial))
+            .siloGlass(in: shape)
             .background(
                 shape.fill(
                     LinearGradient(

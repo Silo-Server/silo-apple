@@ -58,19 +58,11 @@ struct PhoneSeasonChips: View {
                 .foregroundColor(isSelected ? .black : .white)
                 .padding(.horizontal, 16)
                 .frame(height: 36)
-                .background(
-                    Group {
-                        if isSelected {
-                            Capsule().fill(Color.white)
-                        } else {
-                            Capsule()
-                                .fill(Color.white.opacity(0.06))
-                                .overlay(
-                                    Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1)
-                                )
-                        }
-                    }
-                )
+                // Selected stays an opaque white capsule: against a row of
+                // glass siblings that contrast is what marks the current
+                // season, and glass-on-glass would make selection ambiguous.
+                .background(isSelected ? AnyShapeStyle(Color.white) : AnyShapeStyle(.clear), in: Capsule())
+                .siloGlass(in: Capsule())
         }
         .buttonStyle(.plain)
     }

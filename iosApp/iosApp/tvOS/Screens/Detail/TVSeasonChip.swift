@@ -45,7 +45,11 @@ private struct TVSeasonChipBody: View {
     var body: some View {
         configuration.label
             .foregroundColor(foregroundColor)
+            // Selected/focused fills sit in front of the glass, so the
+            // selection signal is unchanged and only the idle chrome moves
+            // from an outline to glass.
             .background(background)
+            .siloGlass(in: RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous))
             .scaleEffect(scale)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
@@ -63,7 +67,9 @@ private struct TVSeasonChipBody: View {
         } else if isFocused {
             RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+            // Idle is the bare glass underneath; the old 1.5pt outline would
+            // double up with the edge highlight glass draws itself.
+            Color.clear
         }
     }
 

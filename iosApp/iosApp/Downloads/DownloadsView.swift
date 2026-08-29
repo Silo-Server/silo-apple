@@ -331,7 +331,7 @@ struct DownloadsView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 6)
-            .background(.ultraThinMaterial)
+            .siloGlass(in: Rectangle())
         }
     }
 

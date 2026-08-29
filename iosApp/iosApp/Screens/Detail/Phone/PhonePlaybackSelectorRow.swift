@@ -151,14 +151,9 @@ struct PhonePlaybackSelectorRow: View {
             }
         }
         .padding(.horizontal, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.05))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-                )
-        )
+        // Glass rather than a flat white wash, matching the action row above.
+        // The hero backdrop behind this card is a still, so sampling is safe.
+        .siloGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     /// Wraps a layout's row/column in a button when that selector can
     /// actually be changed, and leaves it inert when it cannot.

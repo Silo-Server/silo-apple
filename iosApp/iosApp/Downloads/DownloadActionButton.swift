@@ -388,7 +388,7 @@ struct DownloadActionButton: View {
                 .foregroundColor(.continuumOnSurface)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
+                .siloGlass(in: Capsule())
                 .fixedSize()
                 .offset(y: -36)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))

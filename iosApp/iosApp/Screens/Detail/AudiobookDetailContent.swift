@@ -309,32 +309,29 @@ struct AudiobookDetailContent: View {
         .frame(maxWidth: 420)
     }
 
+    /// Same named glass row the movie / series / season / episode pages use,
+    /// so the audiobook page stops being the one detail screen with its own
+    /// button vocabulary.
     private var phoneSecondaryControls: some View {
-        HStack(alignment: .top, spacing: 26) {
-            phoneControl("Start Over") {
-                PhoneCircleActionButton(
-                    icon: "arrow.counterclockwise",
-                    accessibilityLabel: "Start Over"
-                ) {
-                    audioStore.play(contentId: detail.contentId, restart: true)
-                }
+        PhoneLabeledActionRow {
+            PhoneLabeledAction(
+                icon: "arrow.counterclockwise",
+                label: "Start Over"
+            ) {
+                audioStore.play(contentId: detail.contentId, restart: true)
             }
 
-            phoneControl("Speed") {
-                phoneSpeedControl
-            }
+            phoneSpeedControl
 
             if !otherNarrations.isEmpty {
-                phoneControl("Narration") {
-                    PhoneCircleMenuButton(icon: "person.wave.2", accessibilityLabel: "Narration") {
-                        ForEach(otherNarrations) { narration in
-                            Button {
-                                onNavigateToItem(narration.contentId)
-                            } label: {
-                                Text(narration.narrators.isEmpty
-                                     ? narration.title
-                                     : narration.narrators.joined(separator: ", "))
-                            }
+                PhoneLabeledMenu(icon: "person.wave.2", label: "Narration") {
+                    ForEach(otherNarrations) { narration in
+                        Button {
+                            onNavigateToItem(narration.contentId)
+                        } label: {
+                            Text(narration.narrators.isEmpty
+                                 ? narration.title
+                                 : narration.narrators.joined(separator: ", "))
                         }
                     }
                 }
@@ -356,30 +353,15 @@ struct AudiobookDetailContent: View {
                 }
             }
         } label: {
-            Text(speedLabel(audioStore.player.playbackRate))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 44, height: 44)
-                .background(
-                    Circle()
-                        .fill(Color.white.opacity(0.10))
-                        .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
-                )
+            // Text rather than a glyph, so it goes through
+            // `PhoneGlassActionLabel` directly instead of `PhoneLabeledAction`.
+            PhoneGlassActionLabel(caption: "Speed") {
+                Text(speedLabel(audioStore.player.playbackRate))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.continuumOnSurface)
+            }
         }
         .accessibilityLabel("Playback Speed")
-    }
-
-    @ViewBuilder
-    private func phoneControl<Content: View>(
-        _ caption: String,
-        @ViewBuilder _ content: () -> Content
-    ) -> some View {
-        VStack(spacing: 7) {
-            content()
-            Text(caption)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-        }
     }
 
     private var phoneChaptersSection: some View {

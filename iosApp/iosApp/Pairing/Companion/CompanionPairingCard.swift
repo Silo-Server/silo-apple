@@ -62,7 +62,7 @@ struct CompanionPairingCard: View {
                 .padding(.bottom, 22)
         }
         .frame(maxWidth: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .siloGlass(in: RoundedRectangle(cornerRadius: 30, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
