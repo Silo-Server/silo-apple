@@ -119,14 +119,14 @@ enum ApplePlaybackV3PlanAdapter {
         // plan does not lose its active subtitle if a transitional server
         // omitted that one inventory URL.
         if let artifact = plan.subtitle.artifact,
-           let selectedIndex = plan.selectedTracks.subtitle?.index,
+           let selectedIndex = plan.selectedSubtitleCombinedIndex,
            !subtitleUrls.contains(where: { $0.index == selectedIndex }) {
             // §8: the inventory is authoritative. Describe the track from its
             // own entry when the server published one — a `burn_in_only` entry
             // has no URL but still carries the correct identity. Only fall back
             // to the counted catalog lookup when the inventory names no entry
             // for this ordinal at all.
-            let published = plan.subtitle.inventory.first { $0.combinedIndex == selectedIndex }
+            let published = plan.selectedSubtitleInventoryItem
             let selected = published == nil
                 ? subtitleTrack(atServerCombinedIndex: selectedIndex, in: selectedVersion)
                 : nil
@@ -175,6 +175,56 @@ enum ApplePlaybackV3PlanAdapter {
                 audioCodec: plan.effectiveRecipe.audioCodec
             )
         )
+    }
+
+    /// Protocol V3's subtitle inventory is picker state, not a preload list.
+    /// Project every authoritative server row into the app's menu without
+    /// registering its URL with Aether. The active plan's single artifact is
+    /// mounted separately by `AetherLoadSpec`.
+    ///
+    /// `version` is only needed to give embedded rows their FFmpeg stream
+    /// index. Without it those rows persist as the explicit-Off sentinel,
+    /// because `TrackSelectionPersistence` identifies an embedded pick by that
+    /// index; the combined ordinal alone cannot stand in for it.
+    static func subtitlePickerTracks(
+        plan: PlaybackV3Plan,
+        version: FileVersion? = nil
+    ) -> [PlayerTrack] {
+        // A selected row and a rendered row are different questions: `off`
+        // means nothing is selected no matter what the plan still names.
+        let selectedIndex = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+            ? nil
+            : plan.selectedSubtitleCombinedIndex
+        return plan.subtitle.inventory.compactMap { item in
+            guard item.combinedIndex >= 0 else { return nil }
+            let ffIndex: Int? = item.source == "embedded"
+                ? version.flatMap {
+                    ffmpegSubtitleStreamIndex(
+                        serverCombinedIndex: item.combinedIndex,
+                        in: $0,
+                        inventory: plan.subtitle.inventory
+                    )
+                }
+                : nil
+            return PlayerTrack(
+                trackId: SubtitleTrackIdSpace.makeSidecarTrackId(
+                    urlIndex: item.combinedIndex
+                ),
+                kind: .sub,
+                title: item.label,
+                lang: item.language,
+                codec: item.codec,
+                audioChannelCount: nil,
+                bitrate: nil,
+                isDefault: item.default,
+                isForced: item.forced,
+                isHearingImpaired: item.hearingImpaired,
+                isExternal: item.source != "embedded",
+                isSelected: item.combinedIndex == selectedIndex,
+                ffIndex: ffIndex,
+                srcId: item.combinedIndex
+            )
+        }
     }
 
     /// V3 subtitle identities are external-first combined ordinals. Apple’s
@@ -241,7 +291,7 @@ enum ApplePlaybackV3PlanAdapter {
         in version: FileVersion,
         inventory: [PlaybackV3SubtitleInventoryItem]
     ) -> Int? {
-        if playerTrack.isExternal {
+        if SubtitleTrackIdSpace.isSidecar(playerTrack.trackId) || playerTrack.isExternal {
             // A sidecar player track is minted from a published `SubtitleUrl`,
             // whose `index` *is* the server's combined ordinal — so this is an
             // echo, not a derivation, and must not be re-mapped through the

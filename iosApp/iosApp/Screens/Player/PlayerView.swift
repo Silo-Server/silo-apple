@@ -103,7 +103,11 @@ struct PlayerView: View {
                     //     the signed ladder, Tap Select = commit + exit,
                     //     Menu = cancel + exit (handled in onExitCommand).
                     //     Taps against Up/Down are ignored; holds are no-ops.
-                    if !viewModel.isLoading &&
+                    // Never while the HUD is presented: the sink and the HUD's
+                    // focus graph would be two owners for the same presses
+                    // (docs/tvos-focus.md), and the sink's Down handler
+                    // force-switches the HUD tab underneath the user.
+                    if !viewModel.isLoading && !viewModel.isHUDPresented &&
                         (!(viewModel.showIntroSkip || viewModel.showCreditsSkip) || viewModel.isHoldSeeking) &&
                         (!viewModel.showControls || viewModel.isHoldSeeking) {
                         TVPressCaptureView(
@@ -161,7 +165,14 @@ struct PlayerView: View {
                         .ignoresSafeArea()
                     }
 
-                    if !viewModel.isLoading && !viewModel.isHoldSeeking {
+                    // `isLoading` also covers Protocol V3 replans (track or
+                    // quality changes made *from inside the HUD*). Unmounting
+                    // here for those would destroy the HUD's @State/@FocusState
+                    // mid-press and reseed focus on a reset tab, so the HUD
+                    // keeps its host mounted through a replan. A replacement
+                    // load closes the HUD in `resetPublishedLoadState`, so
+                    // cold starts and item changes still unmount as before.
+                    if (!viewModel.isLoading || viewModel.isHUDPresented) && !viewModel.isHoldSeeking {
                         TVPlayerControls(
                             viewModel: viewModel,
                             showsTimelinePreview: isTimelinePreviewVisible,
@@ -260,10 +271,15 @@ struct PlayerView: View {
                 }
             } else if viewModel.isHoldSeeking {
                 viewModel.cancelHoldSeek()
+            } else if viewModel.isHUDPresented {
+                // Before the `isLoading` escape: a replan issued from the HUD
+                // keeps the HUD mounted while `isLoading` is true, and Menu
+                // during that window must close the HUD, not exit the player.
+                // A genuinely stalled load is still escapable — the first
+                // Menu closes the HUD, the next one lands below.
+                viewModel.closeHUD()
             } else if viewModel.isLoading {
                 dismissPlayer()
-            } else if viewModel.isHUDPresented {
-                viewModel.closeHUD()
             } else if !viewModel.isPlaying {
                 // While paused, Menu exits the player instead of hiding the
                 // controls over a frozen frame.

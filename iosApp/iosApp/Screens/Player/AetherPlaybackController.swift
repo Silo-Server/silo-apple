@@ -93,6 +93,10 @@ final class AetherPlaybackController {
     private var didPublishEnd = false
     private var transportIntentGeneration: UInt64 = 0
     private var transportRestoreTask: Task<Void, Never>?
+    /// The user's latest transport intent, independent of transient engine
+    /// states such as loading, buffering, and error. A replacement load reads
+    /// this after it commits so Play/Pause commands issued while loading win.
+    private(set) var shouldPlayWhenReady = false
     private var desiredVolume: Float = 1
     private var muted = false
     private var aetherSubtitleIDByAppID: [Int64: Int] = [:]
@@ -128,11 +132,15 @@ final class AetherPlaybackController {
     /// Establishes load identity synchronously, before `AetherEngine.load` can
     /// synchronously publish any state for the replacement media.
     @discardableResult
-    func beginLoad(_ spec: AetherLoadSpec) -> LoadEpoch {
+    func beginLoad(
+        _ spec: AetherLoadSpec,
+        shouldPlayWhenReady: Bool = true
+    ) -> LoadEpoch {
         generation &+= 1
         transportIntentGeneration &+= 1
         transportRestoreTask?.cancel()
         transportRestoreTask = nil
+        self.shouldPlayWhenReady = shouldPlayWhenReady
         let epoch = LoadEpoch(rawValue: generation)
         applyBackgroundPlaybackPreference()
         activeLoadEpoch = epoch
@@ -156,7 +164,7 @@ final class AetherPlaybackController {
         do {
             try await engine.load(
                 url: spec.sourceURL,
-                startPosition: spec.timeline.aetherStartPosition,
+                startPosition: spec.aetherStartPosition,
                 options: spec.options,
                 audioSourceStreamIndex: spec.audioSourceStreamIndex
             )
@@ -195,6 +203,7 @@ final class AetherPlaybackController {
     }
 
     func play() {
+        shouldPlayWhenReady = true
         // `beginLoad` installs spec/epoch before `engine.load` returns, and
         // that window looks identical to a background teardown: route `.none`,
         // session not ready. Reloading here would start a second `engine.load`
@@ -257,6 +266,7 @@ final class AetherPlaybackController {
     }
 
     func pause() {
+        shouldPlayWhenReady = false
         transportIntentGeneration &+= 1
         transportRestoreTask?.cancel()
         transportRestoreTask = nil
@@ -373,6 +383,7 @@ final class AetherPlaybackController {
         transportIntentGeneration &+= 1
         transportRestoreTask?.cancel()
         transportRestoreTask = nil
+        shouldPlayWhenReady = false
         activeLoadEpoch = nil
         hasCommittedActiveLoad = false
         activeSpec = nil
@@ -431,7 +442,14 @@ final class AetherPlaybackController {
     /// The inverse of `appSubtitleID(forAetherID:)`. Internal so the boundary
     /// tests can assert the translation round-trips.
     func aetherSubtitleID(forAppID id: Int64) -> Int? {
-        aetherSubtitleIDByAppID[id] ?? Int(exactly: id)
+        if let translated = aetherSubtitleIDByAppID[id] {
+            return translated
+        }
+        // A Silo sidecar id is not an Aether id. Passing an unaliased value
+        // through reaches Aether as an unknown external id and is silently
+        // ignored, leaving the previously selected subtitle on screen.
+        guard !SubtitleTrackIdSpace.isSidecar(id) else { return nil }
+        return Int(exactly: id)
     }
 
     private func observeEngine() {
