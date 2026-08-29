@@ -38,23 +38,21 @@ struct SeriesDownloadMenuButton: View {
             )
     }
 
-    /// Glyph over caption, matching `PhoneLabeledAction`'s metrics.
+    /// Glass glyph over caption, drawn through the same
+    /// `PhoneGlassActionLabel` as the rest of the detail action row.
     private var labeledLabel: some View {
-        VStack(spacing: 6) {
+        PhoneGlassActionLabel(
+            caption: isMonitored ? "Monitored" : "Download",
+            captionTint: isMonitored
+                ? Color.continuumAccent
+                : PhoneDetailActionMetrics.inactiveCaptionTint,
+            glassTint: isMonitored ? Color.continuumAccent : nil
+        ) {
             Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.to.line")
-                .font(.system(size: 19, weight: .regular))
-                .foregroundColor(isMonitored ? Color.continuumAccent : Color.continuumOnSurface)
-                .frame(height: 22)
-            Text(isMonitored ? "Monitored" : "Download")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(isMonitored
-                                 ? Color.continuumAccent
-                                 : Color.continuumOnSurface.opacity(0.6))
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
+                .font(.system(size: PhoneDetailActionMetrics.glyphPointSize, weight: .regular))
+                .foregroundColor(Color.continuumOnSurface)
+                .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .contentShape(Rectangle())
     }
 
     var body: some View {

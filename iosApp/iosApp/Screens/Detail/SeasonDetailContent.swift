@@ -93,16 +93,15 @@ struct SeasonDetailContent<BelowOverview: View>: View {
 
     @ViewBuilder
     private var actionStack: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             if let nextUp = nextUpEpisode {
-                PhonePrimaryPillButton(
+                PhoneRefinedPlayButton(
                     icon: "play.fill",
                     title: playButtonLabel(for: nextUp),
-                    action: { handlePlayTap(for: nextUp) },
-                    fullWidth: true
+                    action: { handlePlayTap(for: nextUp) }
                 )
             }
-            circleRow
+            actionRow
             if nextUpEpisode != nil, let effectiveNextUpVersion {
                 PhonePlaybackSelectorRow(
                     versions: nextUpVersions,
@@ -127,29 +126,37 @@ struct SeasonDetailContent<BelowOverview: View>: View {
         }
     }
 
-    private var circleRow: some View {
-        HStack(spacing: 14) {
-            PhoneCircleActionButton(
+    /// Same named glass action row the movie, episode, and series pages use —
+    /// the season page was the last one still drawing unlabelled circles.
+    private var actionRow: some View {
+        PhoneLabeledActionRow {
+            PhoneLabeledAction(
                 icon: "heart",
                 iconActive: "heart.fill",
                 isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
+                label: "Favorite",
+                accessibilityLabelOverride: isFavorite
+                    ? "Remove from Favorites" : "Add to Favorites",
                 action: onToggleFavorite
             )
 
-            PhoneCircleActionButton(
+            PhoneLabeledAction(
                 icon: "bookmark",
                 iconActive: "bookmark.fill",
                 isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                label: "Watchlist",
+                accessibilityLabelOverride: inWatchlist
+                    ? "Remove from Watchlist" : "Add to Watchlist",
                 action: onToggleWatchlist
             )
 
-            PhoneCircleActionButton(
+            PhoneLabeledAction(
                 icon: "checkmark.circle",
                 iconActive: "checkmark.circle.fill",
                 isActive: isWatched,
-                accessibilityLabel: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                label: isWatched ? "Watched" : "Mark Seen",
+                accessibilityLabelOverride: isWatched
+                    ? "Mark Season Unwatched" : "Mark Season Watched",
                 action: onToggleWatched
             )
 
@@ -157,18 +164,27 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                 SeriesDownloadMenuButton(
                     detail: detail,
                     seasons: seasons,
-                    selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber })
+                    selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber }),
+                    style: .labeled
                 )
             }
 
-            if let seriesId = detail.seriesId {
-                PhoneCircleMenuButton(accessibilityLabel: "More options") {
-                    Button {
-                        onNavigateToItem(seriesId)
-                    } label: {
-                        Label("Go to Series", systemImage: "tv")
-                    }
+            if detail.seriesId != nil {
+                PhoneLabeledMenu(label: "More") {
+                    overflowMenuItems
                 }
+            }
+        }
+    }
+
+    /// Menu contents for the action row's named "More" entry.
+    @ViewBuilder
+    private var overflowMenuItems: some View {
+        if let seriesId = detail.seriesId {
+            Button {
+                onNavigateToItem(seriesId)
+            } label: {
+                Label("Go to Series", systemImage: "tv")
             }
         }
     }

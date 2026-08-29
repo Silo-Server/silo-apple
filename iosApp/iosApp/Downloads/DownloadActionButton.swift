@@ -22,10 +22,10 @@ struct DownloadActionButton: View {
     enum Style {
         case regular
         case compact
-        /// Bare glyph over a state-derived caption, matching the refined
-        /// detail page's named action row. Carries no circular chrome, so it
-        /// sits beside Favorite / Watchlist / Mark Seen without looking like
-        /// a different species of control.
+        /// Glass disc over a state-derived caption, drawn through the same
+        /// `PhoneGlassActionLabel` as the refined detail page's named action
+        /// row, so it sits beside Favorite / Watchlist / Mark Seen without
+        /// looking like a different species of control.
         case labeled
     }
 
@@ -396,23 +396,19 @@ struct DownloadActionButton: View {
         }
     }
 
-    /// Glyph over caption, sized to match `PhoneLabeledAction` exactly so
-    /// the two sit on one baseline in the refined action row.
+    /// Glass glyph over caption, sharing `PhoneGlassActionLabel` with
+    /// `PhoneLabeledAction` so the two sit on one baseline in the refined
+    /// action row and can't drift apart.
     private func labeledGlyph<Glyph: View>(
-        tint: Color,
-        @ViewBuilder glyph: () -> Glyph
+        glassTint: Color?,
+        @ViewBuilder glyph: @escaping () -> Glyph
     ) -> some View {
-        VStack(spacing: 6) {
-            glyph()
-                .frame(height: 22)
-            Text(captionText)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(captionTint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-        }
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .contentShape(Rectangle())
+        PhoneGlassActionLabel(
+            caption: captionText,
+            captionTint: captionTint,
+            glassTint: glassTint,
+            glyph: glyph
+        )
     }
 
     /// A static "Download" caption under a green tick would misreport the
@@ -465,12 +461,15 @@ struct DownloadActionButton: View {
         showSpinner: Bool = false
     ) -> some View {
         if style == .labeled {
-            labeledGlyph(tint: tint) {
+            // A terminal or in-flight state tints the disc as well as the
+            // glyph — that's the row's shared "this action is engaged"
+            // signal, matching an accent-tinted Favorite beside it.
+            labeledGlyph(glassTint: active ? tint : nil) {
                 if showSpinner {
                     ProgressView().controlSize(.small).tint(.white)
                 } else {
                     Image(systemName: icon)
-                        .font(.system(size: 19, weight: .regular))
+                        .font(.system(size: PhoneDetailActionMetrics.glyphPointSize, weight: .regular))
                         .foregroundColor(tint)
                         .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
                 }
@@ -509,7 +508,10 @@ struct DownloadActionButton: View {
     @ViewBuilder
     private func progressLabel(fraction: Double, paused: Bool) -> some View {
         if style == .labeled {
-            labeledGlyph(tint: .white) {
+            // The ring is already the state signal here, so the disc stays
+            // untinted — tinting it too would leave no visual difference
+            // between "downloading" and "downloaded".
+            labeledGlyph(glassTint: nil) {
                 ZStack {
                     Circle()
                         .stroke(Color.white.opacity(0.22), lineWidth: 2)
@@ -521,10 +523,10 @@ struct DownloadActionButton: View {
                         )
                         .rotationEffect(.degrees(-90))
                     Image(systemName: paused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.white)
                 }
-                .frame(width: 21, height: 21)
+                .frame(width: 24, height: 24)
             }
         } else {
             progressChrome(fraction: fraction, paused: paused)

@@ -1,42 +1,14 @@
 #if !os(tvOS)
 import SwiftUI
 
-// MARK: - Primary play
-
-/// Solid-white capsule play button. Phone-sized — comfortable 52pt
-/// touch target with the play icon and label sitting inline.
-///
-/// `fullWidth` lets the button expand to its container — used in the
-/// Apple-TV-style centered hero where Play is the dominant CTA.
-struct PhonePrimaryPillButton: View {
-    let icon: String
-    let title: String
-    let action: () -> Void
-    var fullWidth: Bool = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .bold))
-                Text(title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundColor(.black)
-            .frame(maxWidth: fullWidth ? .infinity : nil)
-            .padding(.horizontal, fullWidth ? 24 : 24)
-            .frame(height: 52)
-            .background(Capsule().fill(Color.white))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: - Circle action button
 
 /// Compact icon-only circle button (favorite, watchlist, watched). Used
 /// to the right of the play pills. 44pt circular touch target.
+///
+/// The movie / episode / series / season detail pages have moved to the
+/// named glass row in `PhoneDetailActionRow`; this vocabulary survives for
+/// the audiobook page, which has not been through that pass.
 struct PhoneCircleActionButton: View {
     let icon: String
     let iconActive: String?

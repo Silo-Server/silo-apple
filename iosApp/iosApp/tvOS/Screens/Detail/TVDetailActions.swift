@@ -1,10 +1,33 @@
 #if os(tvOS)
 import SwiftUI
 
+/// Sizing shared by the detail hero's glass action buttons.
+///
+/// The system glass styles add their own padding around the label, so these
+/// are the *label* dimensions, not the finished button. The old
+/// `TVCircleButtonStyle` drew a fixed 72pt tile with a 28pt glyph; feeding
+/// that same 72pt to a system style made the circles noticeably larger while
+/// the glyph stayed put, which read as small icons floating in oversized
+/// discs. Shrinking the frame and growing the glyph restores the ratio.
+enum TVDetailActionMetrics {
+    static let circleDiameter: CGFloat = 44
+    static let circleGlyphPointSize: CGFloat = 30
+}
+
 // MARK: - Primary pill
 
-/// VidHub-style primary play button. Solid white, large, dominant —
-/// this is the one element the eye should land on first in the hero.
+/// Primary play button for the detail hero — the one element the eye should
+/// land on first.
+///
+/// Uses the system's Liquid Glass button style, which means **tvOS owns
+/// the focus appearance**. That is the point: the platform's own focus
+/// highlight lenses and brightens the glass, which a hand-rolled
+/// `isFocused` fill cannot reproduce. Do not add `.focusEffectDisabled()`
+/// here — that is what suppresses it.
+///
+/// The detail hero sits over a still backdrop, not live video, so
+/// backdrop-sampling glass is safe here in a way it is not in the player
+/// (see `TVPillButtonStyle`).
 struct TVPrimaryPillButton: View {
     let icon: String
     let title: String
@@ -27,7 +50,14 @@ struct TVPrimaryPillButton: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
+        // Plain `.glass`, not `.glassProminent`. Prominent needs an explicit
+        // tint to stay legible — the app's global monochrome tint renders it
+        // white-on-white — and an accent-tinted slab made Play the only
+        // coloured element in the row. Clear glass keeps it the same material
+        // as the action buttons beside it; its width and label are what mark
+        // it as primary.
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
         .applyOptionalFocus(focused)
     }
 }
@@ -65,7 +95,8 @@ struct TVSecondaryPillButton: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
     }
 }
 
@@ -89,9 +120,9 @@ struct TVVersionPillPlaceholder: View {
         .frame(minWidth: 190)
         .padding(.horizontal, 40)
         .padding(.vertical, 22)
-        .background(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.black.opacity(0.42)))
+        .siloGlass(in: RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.16), lineWidth: 1.2)
+            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1.2)
         )
         .redacted(reason: .placeholder)
         .focusable(false)
@@ -124,11 +155,13 @@ struct TVCircleMenuButton<MenuContent: View>: View {
             menu()
         } label: {
             Image(systemName: icon)
-                .font(.system(size: 28, weight: .semibold))
+                .font(.system(size: TVDetailActionMetrics.circleGlyphPointSize, weight: .semibold))
+                .frame(width: TVDetailActionMetrics.circleDiameter, height: TVDetailActionMetrics.circleDiameter)
                 .contentTransition(.symbolEffect(.replace))
         }
         .menuStyle(.button)
-        .buttonStyle(TVCircleButtonStyle())
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -167,10 +200,16 @@ struct TVCircleActionButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: resolvedIcon)
-                .font(.system(size: 28, weight: .semibold))
+                .font(.system(size: TVDetailActionMetrics.circleGlyphPointSize, weight: .semibold))
+                .frame(width: TVDetailActionMetrics.circleDiameter, height: TVDetailActionMetrics.circleDiameter)
                 .contentTransition(.symbolEffect(.replace))
         }
-        .buttonStyle(TVCircleButtonStyle())
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        // No tint override: default glass in both states. The filled SF
+        // Symbol variant (`heart.fill`, `bookmark.fill`,
+        // `checkmark.circle.fill`) is what carries the active state, so an
+        // accent wash on top was redundant colour in an otherwise neutral row.
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -236,9 +275,13 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 }
 
                 if let onStartOver {
-                    TVSecondaryPillButton(
-                        icon: "backward.end.fill",
-                        title: "Start Over",
+                    // Icon-only: next to a wide Play, a second labelled pill
+                    // competed with it for the eye. The counterclockwise
+                    // arrow is the platform's restart glyph, and the action
+                    // stays named for VoiceOver.
+                    TVCircleActionButton(
+                        icon: "arrow.counterclockwise",
+                        accessibilityLabel: "Start Over",
                         action: onStartOver
                     )
                     .focused($focusedAction, equals: .startOver)
@@ -379,6 +422,11 @@ private struct TVPillButtonBody: View {
                     lineWidth: innerBorderWidth
                 )
             )
+            // Deliberately NOT glass. This style is shared with the player
+            // HUD (`PlayerView`, `TVPlayerControls`), which draws over live
+            // video — backdrop-sampling glass there is the documented
+            // frame-rate spike on A12-class Apple TVs. See `SiloGlass.swift`.
+            // The detail row's glass buttons use the system styles instead.
             .background(
                 RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(background)
             )
@@ -508,60 +556,4 @@ private struct TVPillButtonBody: View {
     }
 }
 
-// MARK: - Circle ButtonStyle
-
-struct TVCircleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TVCircleButtonBody(configuration: configuration)
-    }
-}
-
-private struct TVCircleButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .foregroundColor(isFocused ? .black : .white)
-            .frame(width: 72, height: 72)
-            .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(
-                    isFocused ? .white : Color.white.opacity(0.10)
-                )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(
-                    isFocused ? Color.black.opacity(0.12) : Color.white.opacity(0.34),
-                    lineWidth: isFocused ? 1.6 : 1.4
-                )
-            )
-            .overlay {
-                if isFocused {
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius + 2, style: .continuous)
-                        .stroke(Color.white.opacity(0.96), lineWidth: 3)
-                        .padding(-5)
-                }
-            }
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.34 : 0.0),
-                radius: isFocused ? 16 : 0,
-                y: isFocused ? 6 : 0
-            )
-            .shadow(
-                color: Color.continuumOnSurface.opacity(isFocused ? 0.15 : 0),
-                radius: isFocused ? 10 : 0,
-                y: 0
-            )
-            .focusEffectDisabled()
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused ? 1.1 : 1.0
-        return configuration.isPressed ? base * 0.95 : base
-    }
-}
 #endif
