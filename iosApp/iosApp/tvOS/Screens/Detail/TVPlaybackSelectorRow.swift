@@ -401,7 +401,7 @@ private struct TVSelectorButton<MenuContent: View>: View {
             }
         }
         .menuStyle(.button)
-        .buttonStyle(.glass)
+        .buttonStyle(.glass(.clear))
         .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
     }
 }
@@ -426,7 +426,7 @@ private struct TVSelectorValue: View {
                 Text(value).font(.system(size: 22, weight: .semibold)).lineLimit(1)
             }
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.glass(.clear))
         .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label), \(value)")

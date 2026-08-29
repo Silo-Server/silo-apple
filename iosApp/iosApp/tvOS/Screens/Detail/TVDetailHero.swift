@@ -74,9 +74,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private var leftGradient: some View {
         LinearGradient(
             stops: [
-                .init(color: Color.black.opacity(0.92), location: 0.0),
-                .init(color: Color.black.opacity(0.70), location: 0.22),
-                .init(color: Color.black.opacity(0.35), location: 0.55),
+                .init(color: Color.black.opacity(0.84), location: 0.0),
+                .init(color: Color.black.opacity(0.60), location: 0.22),
+                .init(color: Color.black.opacity(0.30), location: 0.55),
                 .init(color: .clear, location: 0.88),
             ],
             startPoint: .leading,

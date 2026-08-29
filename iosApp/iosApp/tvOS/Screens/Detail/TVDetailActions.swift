@@ -50,13 +50,10 @@ struct TVPrimaryPillButton: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
-        // Plain `.glass`, not `.glassProminent`. Prominent needs an explicit
-        // tint to stay legible — the app's global monochrome tint renders it
-        // white-on-white — and an accent-tinted slab made Play the only
-        // coloured element in the row. Clear glass keeps it the same material
-        // as the action buttons beside it; its width and label are what mark
-        // it as primary.
-        .buttonStyle(.glass)
+        // Clear glass keeps Play in the same material family as the secondary
+        // actions. Its wider label, rather than a separate tint, establishes
+        // the hierarchy. The system style owns focus and press feedback.
+        .buttonStyle(.glass(.clear))
         .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
         .applyOptionalFocus(focused)
     }
@@ -95,7 +92,7 @@ struct TVSecondaryPillButton: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.glass(.clear))
         .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
     }
 }
@@ -160,7 +157,7 @@ struct TVCircleMenuButton<MenuContent: View>: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .menuStyle(.button)
-        .buttonStyle(.glass)
+        .buttonStyle(.glass(.clear))
         .buttonBorderShape(.circle)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -204,7 +201,7 @@ struct TVCircleActionButton: View {
                 .frame(width: TVDetailActionMetrics.circleDiameter, height: TVDetailActionMetrics.circleDiameter)
                 .contentTransition(.symbolEffect(.replace))
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.glass(.clear))
         .buttonBorderShape(.circle)
         // No tint override: default glass in both states. The filled SF
         // Symbol variant (`heart.fill`, `bookmark.fill`,
