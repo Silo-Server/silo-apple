@@ -249,9 +249,10 @@ class PlayerViewModel {
     }
 
     /// Keeps the auxiliary Aether still decoder in the same lifetime as the
-    /// transport. Callers that own final teardown can await the returned task.
+    /// transport. Replacement loads preserve Aether's display/audio handoff;
+    /// callers that own final teardown can await the returned task.
     @discardableResult
-    private func disposeAetherPlayback() -> Task<Void, Never>? {
+    private func disposeAetherPlayback(forReplacement: Bool = false) -> Task<Void, Never>? {
         let previewShutdown = scrubPreviewProvider.endSession()
         activeAetherLoadEpoch = nil
         establishedAetherLoadEpoch = nil
@@ -259,7 +260,11 @@ class PlayerViewModel {
         pendingProtocolV3FirstFrameEpoch = nil
         pendingProtocolV3SeekReanchorPosition = nil
         pendingProtocolV3TrackChange = nil
-        aetherPlaybackController.dispose()
+        if forReplacement {
+            aetherPlaybackController.prepareForReplacement()
+        } else {
+            aetherPlaybackController.dispose()
+        }
         return previewShutdown
     }
 
@@ -1919,10 +1924,12 @@ class PlayerViewModel {
                 }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                 self.resolvedServerUrl = streamRequest.serverUrl
+                let shouldPlayWhenReady = self.aetherPlaybackController.shouldPlayWhenReady
                 try await self.loadAether(
                     prepared: prepared,
                     streamRequest: streamRequest,
-                    expectedStreamLoadGeneration: currentStreamLoadGeneration
+                    expectedStreamLoadGeneration: currentStreamLoadGeneration,
+                    shouldPlayWhenReady: shouldPlayWhenReady
                 )
                 guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                     throw CancellationError()
@@ -2539,7 +2546,7 @@ class PlayerViewModel {
         streamRequest: StreamRequest,
         expectedStreamLoadGeneration: UInt64,
         resumeSourcePosition: Double? = nil,
-        shouldPlayWhenReady: Bool = true
+        shouldPlayWhenReady: Bool
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
@@ -3642,7 +3649,7 @@ class PlayerViewModel {
                   currentStreamLoadGeneration == self.streamLoadGeneration else { return }
 
             do {
-                self.disposeAetherPlayback()
+                self.disposeAetherPlayback(forReplacement: true)
                 guard !Task.isCancelled, !self.isDisposed else { return }
 
                 // The init kicked off `settingsRefreshTask` to fetch the
@@ -3787,7 +3794,8 @@ class PlayerViewModel {
                 try await self.loadAether(
                     prepared: prepared,
                     streamRequest: streamRequest,
-                    expectedStreamLoadGeneration: currentStreamLoadGeneration
+                    expectedStreamLoadGeneration: currentStreamLoadGeneration,
+                    shouldPlayWhenReady: true
                 )
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {

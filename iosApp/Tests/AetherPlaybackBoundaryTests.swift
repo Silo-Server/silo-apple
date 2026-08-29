@@ -1092,6 +1092,56 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         controller.stop()
     }
 
+    func testReplacementPreparationInvalidatesOutgoingLoadAndAllowsSuccessorEpoch() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let spec = try AetherLoadSpec(
+            directURL: URL(string: "https://dev.example.test/api/v1/stream/session")!,
+            headers: [:],
+            startPosition: 0,
+            audioOnly: false
+        )
+
+        let outgoingEpoch = controller.beginLoad(spec)
+        XCTAssertEqual(controller.activeLoadEpoch, outgoingEpoch)
+        XCTAssertNotNil(controller.activeSpec)
+        XCTAssertTrue(controller.shouldPlayWhenReady)
+
+        controller.prepareForReplacement()
+
+        XCTAssertNil(controller.activeLoadEpoch)
+        XCTAssertNil(controller.activeSpec)
+        XCTAssertEqual(controller.engine.state, .idle)
+        XCTAssertTrue(controller.shouldPlayWhenReady)
+
+        let successorEpoch = controller.beginLoad(spec)
+        XCTAssertNotEqual(successorEpoch, outgoingEpoch)
+        XCTAssertEqual(controller.activeLoadEpoch, successorEpoch)
+    }
+
+    func testReplacementExternalPlaybackPolicyOnlyWinsForReceiverSafeSuccessor() {
+        XCTAssertTrue(AetherPlaybackController.externalPlaybackAllowed(
+            activePolicy: false,
+            preservedReplacementPolicy: true,
+            preservedPolicyIsReceiverSafe: true
+        ))
+        XCTAssertFalse(AetherPlaybackController.externalPlaybackAllowed(
+            activePolicy: false,
+            preservedReplacementPolicy: true,
+            preservedPolicyIsReceiverSafe: false
+        ))
+        XCTAssertFalse(AetherPlaybackController.externalPlaybackAllowed(
+            activePolicy: true,
+            preservedReplacementPolicy: false,
+            preservedPolicyIsReceiverSafe: true
+        ))
+        XCTAssertTrue(AetherPlaybackController.externalPlaybackAllowed(
+            activePolicy: true,
+            preservedReplacementPolicy: nil,
+            preservedPolicyIsReceiverSafe: false
+        ))
+    }
+
     /// Opt-in shared-dev proof for the complete server -> StreamRequest ->
     /// Aether boundary. The fixture stays outside the repository because it
     /// contains a short-lived bearer credential. Normal test runs skip this;
