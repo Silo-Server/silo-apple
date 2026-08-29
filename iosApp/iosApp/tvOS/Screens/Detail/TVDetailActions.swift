@@ -333,72 +333,74 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     @FocusState private var focusedAction: ActionID?
 
     var body: some View {
-        GlassEffectContainer(spacing: 18) {
-            HStack(spacing: 36) {
-                if let playTitle {
-                    TVPrimaryPillButton(
-                        icon: "play.fill",
-                        title: playTitle,
-                        action: onPlay,
-                        focused: playFocused
-                    )
-                    .focused($focusedAction, equals: .play)
-                    .onGeometryChange(for: Bool.self) { proxy in
-                        proxy.size.width > 0 && proxy.size.height > 0
-                    } action: { isLaidOut in
-                        guard isLaidOut else { return }
-                        resetInitialPlayFocus()
-                    }
-
-                    if let onStartOver {
-                        TVCircleActionButton(
-                            icon: "arrow.counterclockwise",
-                            title: "Start Over",
-                            accessibilityLabel: "Start Over",
-                            action: onStartOver
-                        )
-                        .detailActionFocusDisabled(routesVersionUpToPlay)
-                        .focused($focusedAction, equals: .startOver)
-                    }
+        // Each control owns an independent native glass surface. A shared
+        // GlassEffectContainer couples the interactive highlight while two
+        // adjacent buttons resize during a focus handoff, making inactive
+        // controls flash in one direction or the other.
+        HStack(spacing: 36) {
+            if let playTitle {
+                TVPrimaryPillButton(
+                    icon: "play.fill",
+                    title: playTitle,
+                    action: onPlay,
+                    focused: playFocused
+                )
+                .focused($focusedAction, equals: .play)
+                .onGeometryChange(for: Bool.self) { proxy in
+                    proxy.size.width > 0 && proxy.size.height > 0
+                } action: { isLaidOut in
+                    guard isLaidOut else { return }
+                    resetInitialPlayFocus()
                 }
 
-                TVCircleActionButton(
-                    icon: "heart",
-                    iconActive: "heart.fill",
-                    isActive: isFavorite,
-                    title: "Favorite",
-                    accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                    action: onToggleFavorite
-                )
-                .detailActionFocusDisabled(routesVersionUpToPlay)
-                .focused($focusedAction, equals: .favorite)
-
-                TVCircleActionButton(
-                    icon: "bookmark",
-                    iconActive: "bookmark.fill",
-                    isActive: inWatchlist,
-                    title: "Watchlist",
-                    accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                    action: onToggleWatchlist
-                )
-                .detailActionFocusDisabled(routesVersionUpToPlay)
-                .focused($focusedAction, equals: .watchlist)
-
-                TVCircleActionButton(
-                    icon: "checkmark.circle",
-                    iconActive: "checkmark.circle.fill",
-                    isActive: isWatched,
-                    title: "Watched",
-                    accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                    action: onToggleWatched
-                )
-                .detailActionFocusDisabled(routesVersionUpToPlay)
-                .focused($focusedAction, equals: .watched)
-
-                moreMenu()
+                if let onStartOver {
+                    TVCircleActionButton(
+                        icon: "arrow.counterclockwise",
+                        title: "Start Over",
+                        accessibilityLabel: "Start Over",
+                        action: onStartOver
+                    )
                     .detailActionFocusDisabled(routesVersionUpToPlay)
-                    .focused($focusedAction, equals: .more)
+                    .focused($focusedAction, equals: .startOver)
+                }
             }
+
+            TVCircleActionButton(
+                icon: "heart",
+                iconActive: "heart.fill",
+                isActive: isFavorite,
+                title: "Favorite",
+                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
+                action: onToggleFavorite
+            )
+            .detailActionFocusDisabled(routesVersionUpToPlay)
+            .focused($focusedAction, equals: .favorite)
+
+            TVCircleActionButton(
+                icon: "bookmark",
+                iconActive: "bookmark.fill",
+                isActive: inWatchlist,
+                title: "Watchlist",
+                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                action: onToggleWatchlist
+            )
+            .detailActionFocusDisabled(routesVersionUpToPlay)
+            .focused($focusedAction, equals: .watchlist)
+
+            TVCircleActionButton(
+                icon: "checkmark.circle",
+                iconActive: "checkmark.circle.fill",
+                isActive: isWatched,
+                title: "Watched",
+                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
+                action: onToggleWatched
+            )
+            .detailActionFocusDisabled(routesVersionUpToPlay)
+            .focused($focusedAction, equals: .watched)
+
+            moreMenu()
+                .detailActionFocusDisabled(routesVersionUpToPlay)
+                .focused($focusedAction, equals: .more)
         }
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
