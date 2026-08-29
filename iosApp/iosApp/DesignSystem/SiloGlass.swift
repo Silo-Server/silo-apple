@@ -12,6 +12,15 @@ extension View {
         return self.glassEffect(glass, in: shape)
     }
 
+    /// The clearer Liquid Glass variant used by floating controls and menus
+    /// that should preserve more of the artwork beneath them.
+    func siloClearGlass(in shape: some Shape, tint: Color? = nil, interactive: Bool = false) -> some View {
+        var glass = Glass.clear
+        if let tint { glass = glass.tint(tint) }
+        if interactive { glass = glass.interactive() }
+        return self.glassEffect(glass, in: shape)
+    }
+
     /// Glass for surfaces drawn over LIVE VIDEO (player HUD, controls,
     /// notices). Backdrop-sampling effects — glassEffect and the legacy
     /// materials alike — make the render server re-sample and re-blur the

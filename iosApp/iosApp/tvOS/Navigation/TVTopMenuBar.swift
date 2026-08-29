@@ -203,21 +203,24 @@ struct TVTopMenuBar: View {
     @State private var dwellSuppressedElement: TVTopMenuFocus?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "TVFocus"
     )
 
     var body: some View {
-        ZStack(alignment: .top) {
-            tabCluster
+        GlassEffectContainer(spacing: 0) {
+            ZStack(alignment: .top) {
+                tabCluster
 
-            HStack(spacing: 0) {
-                wordmark
+                HStack(spacing: 0) {
+                    wordmark
 
-                Spacer(minLength: ContinuumTheme.Skyline.tabSpacing)
+                    Spacer(minLength: ContinuumTheme.Skyline.tabSpacing)
 
-                trailingCluster
+                    trailingCluster
+                }
             }
         }
         .frame(height: ContinuumTheme.Skyline.barHeight)
@@ -443,7 +446,11 @@ struct TVTopMenuBar: View {
                 .frame(maxWidth: 260)
                 .padding(.horizontal, ContinuumTheme.Skyline.tabPaddingHorizontal)
                 .padding(.vertical, ContinuumTheme.Skyline.tabPaddingVertical)
-                .modifier(TVTopMenuCapsuleChrome(isSelected: isSelected, isFocused: isFocused))
+                .modifier(TVTopMenuCapsuleChrome(
+                    isSelected: isSelected,
+                    isFocused: isFocused,
+                    isMenuAnchor: openPanel == .root(root)
+                ))
         }
         .buttonStyle(.continuumFlat)
         .focused($focusedItem, equals: .root(root))
@@ -506,9 +513,9 @@ struct TVTopMenuBar: View {
     }
 
     private func tabForeground(isSelected: Bool, isFocused: Bool) -> Color {
-        if isFocused { return .continuumBackground }
+        if isFocused { return .white }
         if isSelected { return .white }
-        return .white.opacity(0.62)
+        return .white.opacity(colorSchemeContrast == .increased ? 0.92 : 0.82)
     }
 
     private func selectRootFromMenu(_ root: TVRootDestination) {
@@ -550,12 +557,20 @@ struct TVTopMenuBar: View {
         return Button(action: onSearch) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 27, weight: .semibold))
-                .foregroundStyle(isFocused ? Color.continuumBackground : .white.opacity(0.62))
+                .foregroundStyle(
+                    isFocused
+                        ? Color.white
+                        : .white.opacity(colorSchemeContrast == .increased ? 0.92 : 0.82)
+                )
                 .frame(
                     width: ContinuumTheme.Skyline.barIconSize,
                     height: ContinuumTheme.Skyline.barIconSize
                 )
-                .modifier(TVTopMenuCapsuleChrome(isSelected: false, isFocused: isFocused))
+                .modifier(TVTopMenuCapsuleChrome(
+                    isSelected: false,
+                    isFocused: isFocused,
+                    isMenuAnchor: false
+                ))
         }
         .buttonStyle(.continuumFlat)
         .focused($focusedItem, equals: .search)
@@ -591,7 +606,10 @@ struct TVTopMenuBar: View {
             )
             .overlay {
                 Circle()
-                    .strokeBorder(Color.white, lineWidth: isFocused ? 3 : 0)
+                    .strokeBorder(
+                        Color.white.opacity(isFocused ? 1.0 : 0.72),
+                        lineWidth: isFocused ? 4 : (panelOwnsFocus ? 2 : 0)
+                    )
             }
             // Reduce Motion drops the focus scale so the avatar snaps (§4.2).
             .scaleEffect(isFocused && !reduceMotion ? 1.05 : 1.0)
@@ -724,73 +742,105 @@ private enum TVTopMenuFocus: Hashable {
     }
 }
 
-/// Capsule chrome for top-bar tabs and the search button (§5.1):
-/// resting = bare label, selected = `chrome.selected` capsule, focused =
-/// inverted white capsule. Focus inversion is the platform grammar — no
-/// outline ring, no system halo.
+/// Clear Liquid Glass chrome for top-bar tabs and the search button. The bar
+/// keeps its custom focus graph, while the material supplies the floating
+/// control layer and the tint/border communicate selected and focused state.
 private struct TVTopMenuCapsuleChrome: ViewModifier {
     let isSelected: Bool
     let isFocused: Bool
+    let isMenuAnchor: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .background(Capsule().fill(fillColor))
+        if reduceTransparency {
+            decorated(
+                content.background(Capsule().fill(opaqueFillColor))
+            )
+        } else {
+            decorated(
+                content.siloClearGlass(in: Capsule(), tint: glassTint, interactive: true)
+            )
+        }
+    }
+
+    private func decorated(_ surface: some View) -> some View {
+        surface
             .overlay {
-                Capsule().strokeBorder(borderColor, lineWidth: 1)
+                Capsule().strokeBorder(borderColor, lineWidth: borderWidth)
             }
             .focusEffectDisabled()
-            // Reduce Motion snaps the tab/search capsule inversion (§4.2).
+            // Reduce Motion snaps the tab/search glass-state transition.
             .animation(reduceMotion ? nil : ContinuumTheme.springAnimation, value: isFocused)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: isSelected)
     }
 
-    private var fillColor: Color {
-        if isFocused { return .white }
-        if isSelected { return .continuumChromeSelectedFill }
-        return .clear
+    private var opaqueFillColor: Color {
+        if isFocused { return Color(hex: "#4A4C53") }
+        if isMenuAnchor { return Color(hex: "#35373D") }
+        if isSelected { return Color(hex: "#24262B") }
+        return Color(hex: "#17181C")
+    }
+
+    private var glassTint: Color? {
+        if isFocused { return .white.opacity(0.38) }
+        if isMenuAnchor { return .white.opacity(0.24) }
+        if isSelected { return .white.opacity(0.12) }
+        return nil
     }
 
     private var borderColor: Color {
-        if isFocused { return .clear }
-        if isSelected { return .continuumChromeSelectedBorder }
-        return .clear
+        if isFocused { return .white.opacity(colorSchemeContrast == .increased ? 1.0 : 0.96) }
+        if isMenuAnchor { return .white.opacity(colorSchemeContrast == .increased ? 0.92 : 0.74) }
+        if isSelected { return .white.opacity(colorSchemeContrast == .increased ? 0.68 : 0.46) }
+        return .white.opacity(colorSchemeContrast == .increased ? 0.34 : 0.16)
+    }
+
+    private var borderWidth: CGFloat {
+        if isFocused { return 2.5 }
+        if isMenuAnchor { return 2 }
+        return 1
     }
 }
 
 /// Shared surface for every Skyline anchored menu (§5.3 cascade + flyout,
-/// §5.8 profile) so they read as one family. A frosted material base under
-/// a near-opaque vertical tint — lighter at the top, as if lit from above —
-/// finished with a gradient hairline that brightens along the top lip and a
-/// two-layer shadow (a tight contact shadow under a broad ambient one) so
-/// the panel floats over the page on its own depth rather than needing a
-/// page scrim to darken everything behind it.
+/// §5.8 profile) so they read as one family. Regular glass and a strong dark
+/// tint keep menu text legible over bright artwork while retaining the native
+/// Liquid Glass depth. The two-layer shadow separates the panel without a
+/// page scrim.
 struct TVSkylinePanelChrome: ViewModifier {
     var cornerRadius: CGFloat = ContinuumTheme.Skyline.dropdownCornerRadius
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        return content
-            .siloGlass(in: shape)
-            .background(
-                shape.fill(
-                    LinearGradient(
-                        colors: [
-                            Color(hex: "#23252C").opacity(0.92),
-                            Color(hex: "#141519").opacity(0.95),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+        if reduceTransparency {
+            decorated(
+                content.background(shape.fill(Color(hex: "#141519"))),
+                shape: shape
             )
+        } else {
+            decorated(
+                content.siloGlass(in: shape, tint: .black.opacity(panelTintOpacity)),
+                shape: shape
+            )
+        }
+    }
+
+    private func decorated(_ surface: some View, shape: RoundedRectangle) -> some View {
+        surface
             .overlay {
                 shape.strokeBorder(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.22),
-                            Color.white.opacity(0.05),
+                            Color.white.opacity(colorSchemeContrast == .increased ? 0.62 : 0.38),
+                            Color.white.opacity(colorSchemeContrast == .increased ? 0.20 : 0.10),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -798,8 +848,35 @@ struct TVSkylinePanelChrome: ViewModifier {
                     lineWidth: 1
                 )
             }
-            .shadow(color: .black.opacity(0.35), radius: 8, y: 4)
-            .shadow(color: .black.opacity(0.55), radius: 40, y: 24)
+            .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
+            .shadow(color: .black.opacity(0.48), radius: 40, y: 24)
+    }
+
+    private var panelTintOpacity: Double {
+        colorSchemeContrast == .increased ? 0.78 : 0.64
+    }
+}
+
+/// Shared section title used by the library cascades and single-level menus.
+/// Keeping the typography and insets here prevents sibling dropdowns from
+/// drifting into separate visual systems while their focus models stay local.
+struct TVSkylineMenuHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.system(
+                size: ContinuumTheme.Skyline.cascadeHeaderTextSize,
+                weight: .semibold,
+                design: .monospaced
+            ))
+            .tracking(1.4)
+            .foregroundStyle(Color.white.opacity(0.60))
+            .lineLimit(1)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .accessibilityHidden(true)
     }
 }
 
@@ -986,16 +1063,14 @@ struct TVForYouDropdown: View {
     }
 
     private var panel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            panelHeader
+        VStack(alignment: .leading, spacing: 0) {
+            TVSkylineMenuHeader(title: "For You")
 
             actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
                 .modifier(TVDropdownBoundaryMoveHandler(onMoveUp: onClose, onMoveDown: nil))
             actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
             actionButton("Recommendations", systemImage: "sparkles", id: .recommendations, action: onRecommendations)
                 .modifier(TVDropdownBoundaryMoveHandler(onMoveUp: nil, onMoveDown: onExitToContent))
-
-            panelFooter
         }
         .padding(ContinuumTheme.Skyline.dropdownPadding)
         .frame(width: ContinuumTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -1003,39 +1078,6 @@ struct TVForYouDropdown: View {
         .focusSection()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("For You menu")
-    }
-
-    private var panelHeader: some View {
-        Text("FOR YOU")
-            .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-            .tracking(ContinuumTheme.Skyline.dropdownHeaderSize * 0.26)
-            .foregroundStyle(Color.white.opacity(0.38))
-            .lineLimit(1)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 2)
-            .accessibilityHidden(true)
-    }
-
-    private var panelFooter: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Rectangle()
-                .fill(Color.continuumDivider)
-                .frame(height: 1)
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-
-            Text("Press opens the section · Menu closes")
-                .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-                .tracking(1.2)
-                .foregroundStyle(Color.white.opacity(0.34))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-        }
-        .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -1047,11 +1089,11 @@ struct TVForYouDropdown: View {
     ) -> some View {
         let label = HStack(spacing: 14) {
             Image(systemName: systemImage)
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 30)
+                .font(.system(size: 22, weight: .semibold))
+                .frame(width: ContinuumTheme.Skyline.cascadeRowIconSize)
 
             Text(title)
-                .font(.system(size: ContinuumTheme.Skyline.dropdownRowTextSize, weight: .semibold))
+                .font(.system(size: ContinuumTheme.Skyline.cascadeRowTextSize, weight: .semibold))
                 .lineLimit(1)
 
             Spacer(minLength: 0)
@@ -1065,9 +1107,9 @@ struct TVForYouDropdown: View {
             .focused($focusedAction, equals: id)
         } else {
             label
-                .foregroundStyle(.white.opacity(0.86))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                .foregroundStyle(.white.opacity(0.90))
+                .padding(.horizontal, ContinuumTheme.Skyline.cascadeRowPaddingHorizontal)
+                .padding(.vertical, ContinuumTheme.Skyline.cascadeRowPaddingVertical)
         }
     }
 }
@@ -1198,7 +1240,7 @@ struct TVProfileDropdown: View {
             Text("Press Menu to close")
                 .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
                 .tracking(1.4)
-                .foregroundStyle(Color.white.opacity(0.38))
+                .foregroundStyle(Color.white.opacity(0.60))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
                 .accessibilityHidden(true)
@@ -1232,7 +1274,7 @@ struct TVProfileDropdown: View {
                     Text(serverHost.uppercased())
                         .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
                         .tracking(1.4)
-                        .foregroundStyle(Color.white.opacity(0.38))
+                        .foregroundStyle(Color.white.opacity(0.60))
                         .lineLimit(1)
                 }
             }
@@ -1304,10 +1346,13 @@ private struct TVProfileMenuButtonBody: View {
     var body: some View {
         configuration.label
             .foregroundStyle(foregroundColor)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.horizontal, ContinuumTheme.Skyline.cascadeRowPaddingHorizontal)
+            .padding(.vertical, ContinuumTheme.Skyline.cascadeRowPaddingVertical)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(
+                    cornerRadius: ContinuumTheme.Skyline.cascadeRowCornerRadius,
+                    style: .continuous
+                )
                     .fill(isFocused ? Color.white : Color.clear)
             )
             .opacity(configuration.isPressed ? 0.75 : 1.0)

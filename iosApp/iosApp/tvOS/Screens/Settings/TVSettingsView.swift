@@ -12,10 +12,11 @@ import SwiftUI
 ///
 /// Focus model: one native graph with one preferred owner. Each pane is a
 /// `.focusSection()`; vertical movement stays in-pane and Left/Right bridges
-/// panes natively. The detail pane gives its preferred row user-initiated
-/// default priority so it wins the initial cross-pane focus resolution before
-/// geometric proximity can select a lower row. The outer scope still chooses
-/// the active pane for page entry and modal restoration (see docs/tvos-focus.md).
+/// panes natively. While detail owns focus, the visible category is the rail's
+/// only eligible return target. That makes a Left move deterministic without a
+/// second programmatic focus update or visible correction. The outer scope
+/// still chooses the active pane for page entry and modal restoration (see
+/// docs/tvos-focus.md).
 struct TVSettingsView: View {
     @State private var viewModel = TVSettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
@@ -52,7 +53,6 @@ struct TVSettingsView: View {
                     confirm: router.signOutAndReset,
                     additionalDestructiveAction: router.signOutRemoveServerAndReset
                 )
-                .transition(.opacity)
                 .zIndex(1)
             }
 
@@ -70,7 +70,6 @@ struct TVSettingsView: View {
 
             if showPrivacyPolicy {
                 TVPrivacyPolicyOverlay(dismiss: dismissPrivacyPolicy)
-                    .transition(.opacity)
                     .zIndex(3)
             }
 
@@ -78,12 +77,10 @@ struct TVSettingsView: View {
                 TVOpenSourceAcknowledgementsOverlay(
                     dismiss: dismissOpenSourceAcknowledgements
                 )
-                .transition(.opacity)
                 .zIndex(4)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
         .task {
             await viewModel.load()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
@@ -103,9 +100,7 @@ struct TVSettingsView: View {
             if case .category(let category) = focus {
                 preferredDetailFocus = initialDetailFocus(for: category)
                 if category != selectedCategory {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
-                        selectedCategory = category
-                    }
+                    selectCategoryWithoutPaneAnimation(category)
                 }
             }
         }
@@ -140,52 +135,47 @@ struct TVSettingsView: View {
     }
 
     private var settingsContent: some View {
-        HStack(alignment: .top, spacing: 52) {
-            rail
-                .padding(24)
-                .background(
-                    RoundedRectangle(cornerRadius: 26)
-                        .fill(Color.continuumSurface.opacity(0.74))
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 26)
-                        .strokeBorder(Color.continuumOutline, lineWidth: 1)
-                }
-                .frame(width: 490)
-                .disabled(
-                    showSignOutConfirm
-                        || showPrivacyPolicy
-                        || showOpenSourceAcknowledgements
-                        || activePicker != nil
-                        || isRestoringDetailFocus
-                )
-                .defaultFocus(
-                    $railFocus,
-                    .category(selectedCategory),
-                    priority: preferredFocusOwner == .rail ? .userInitiated : .automatic
-                )
-                .prefersDefaultFocus(preferredFocusOwner == .rail, in: settingsFocusScope)
-                .focusSection()
-                .focusScope(railFocusScope)
-                .onExitCommand(perform: exitSettingsToHome)
+        GlassEffectContainer(spacing: 0) {
+            HStack(alignment: .top, spacing: 52) {
+                rail
+                    .padding(24)
+                    .modifier(TVSettingsPanelChrome(cornerRadius: 26))
+                    .frame(width: 490)
+                    .disabled(
+                        showSignOutConfirm
+                            || showPrivacyPolicy
+                            || showOpenSourceAcknowledgements
+                            || activePicker != nil
+                            || isRestoringDetailFocus
+                    )
+                    .defaultFocus(
+                        $railFocus,
+                        .category(selectedCategory),
+                        priority: preferredFocusOwner == .rail ? .userInitiated : .automatic
+                    )
+                    .prefersDefaultFocus(preferredFocusOwner == .rail, in: settingsFocusScope)
+                    .focusSection()
+                    .focusScope(railFocusScope)
+                    .onExitCommand(perform: exitSettingsToHome)
 
-            detailPane
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(
-                    showSignOutConfirm
-                        || showPrivacyPolicy
-                        || showOpenSourceAcknowledgements
-                        || activePicker != nil
-                )
-                .defaultFocus(
-                    $detailFocus,
-                    preferredDetailFocus,
-                    priority: .userInitiated
-                )
-                .prefersDefaultFocus(preferredFocusOwner == .detail, in: settingsFocusScope)
-                .focusSection()
-                .focusScope(detailFocusScope)
-                .onExitCommand(perform: returnFocusToRail)
+                detailPane
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .disabled(
+                        showSignOutConfirm
+                            || showPrivacyPolicy
+                            || showOpenSourceAcknowledgements
+                            || activePicker != nil
+                    )
+                    .defaultFocus(
+                        $detailFocus,
+                        preferredDetailFocus,
+                        priority: .userInitiated
+                    )
+                    .prefersDefaultFocus(preferredFocusOwner == .detail, in: settingsFocusScope)
+                    .focusSection()
+                    .focusScope(detailFocusScope)
+                    .onExitCommand(perform: returnFocusToRail)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .focusScope(settingsFocusScope)
@@ -260,6 +250,7 @@ struct TVSettingsView: View {
             }
         }
         .buttonStyle(TVSettingsRailRowStyle())
+        .focusable(canRailItemReceiveFocus(.profile))
         .focused($railFocus, equals: .profile)
     }
 
@@ -288,6 +279,7 @@ struct TVSettingsView: View {
         .buttonStyle(TVSettingsRailRowStyle(
             isSelected: category == selectedCategory && railFocus != .signOut
         ))
+        .focusable(canRailItemReceiveFocus(.category(category)))
         .focused($railFocus, equals: .category(category))
     }
 
@@ -305,6 +297,7 @@ struct TVSettingsView: View {
             }
         }
         .buttonStyle(TVSettingsRailRowStyle(isDestructive: true))
+        .focusable(canRailItemReceiveFocus(.signOut))
         .focused($railFocus, equals: .signOut)
     }
 
@@ -313,7 +306,7 @@ struct TVSettingsView: View {
     }
 
     private func enterDetailPane(for category: TVSettingsCategory) {
-        selectedCategory = category
+        selectCategoryWithoutPaneAnimation(category)
         preferredFocusOwner = .detail
         let initialFocus = initialDetailFocus(for: category)
         preferredDetailFocus = initialFocus
@@ -330,6 +323,18 @@ struct TVSettingsView: View {
         }
     }
 
+    /// Glass-backed rows cannot cross-fade as two complete ScrollViews: the
+    /// outgoing and incoming materials sample one another while they overlap,
+    /// which reads as a smear/pulse on tvOS. Replace the pane atomically while
+    /// leaving the rail's local focus animation untouched.
+    private func selectCategoryWithoutPaneAnimation(_ category: TVSettingsCategory) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedCategory = category
+        }
+    }
+
     private func initialDetailFocus(for category: TVSettingsCategory) -> TVSettingsDetailFocus {
         if category == .general {
             return .generalAppleTVUser
@@ -341,6 +346,23 @@ struct TVSettingsView: View {
         return .top
     }
 
+    /// Encodes the semantic detail-to-rail return path in the native focus
+    /// graph. When the rail owns focus, every row is eligible so vertical
+    /// navigation works normally. When detail owns focus, only the category
+    /// whose pane is visible remains eligible. A Left gesture therefore has
+    /// exactly one rail destination, regardless of which detail row is focused
+    /// or which rail row is geometrically closest.
+    ///
+    /// This eligibility gate replaces an ancestor `onMoveCommand`. SwiftUI can
+    /// satisfy Left with a native geometric move before such a handler becomes
+    /// the effective owner, so the handler could neither guarantee the target
+    /// nor prevent a visible wrong-item correction. Here the engine performs
+    /// the entire transition itself and there is no intermediate focus state.
+    private func canRailItemReceiveFocus(_ item: RailItem) -> Bool {
+        guard preferredFocusOwner == .detail else { return true }
+        return item == .category(selectedCategory)
+    }
+
     private func returnFocusToRail() {
         guard activePicker == nil,
               !showSignOutConfirm,
@@ -349,10 +371,14 @@ struct TVSettingsView: View {
               !isRestoringDetailFocus else {
             return
         }
-        preferredFocusOwner = .rail
-        detailFocus = nil
-        railFocus = .category(selectedCategory)
-        resetFocus(in: railFocusScope)
+        let target = RailItem.category(selectedCategory)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            preferredFocusOwner = .rail
+            detailFocus = nil
+            railFocus = target
+        }
     }
 
     private func dismissSignOutConfirmation() {
@@ -497,7 +523,6 @@ struct TVSettingsView: View {
         // Rebuild the scroll view per category so it opens at the top.
         // Safe: selection only changes while focus is in the rail.
         .id(selectedCategory)
-        .transition(.opacity)
     }
 
     private var paneHeader: some View {

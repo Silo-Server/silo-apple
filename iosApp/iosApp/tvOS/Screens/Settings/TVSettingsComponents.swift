@@ -131,6 +131,86 @@ enum TVSettingsOptions {
     }
 }
 
+// MARK: - Glass surfaces
+
+/// Substantial Settings surface. It deliberately matches the top-menu panel
+/// density so controls stay readable over the atmospheric page backdrop.
+struct TVSettingsPanelChrome: ViewModifier {
+    var cornerRadius: CGFloat
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            decorated(
+                content.background(shape.fill(Color(hex: "#141519"))),
+                shape: shape
+            )
+        } else {
+            decorated(
+                content.siloGlass(in: shape, tint: .black.opacity(panelTintOpacity)),
+                shape: shape
+            )
+        }
+    }
+
+    private func decorated(_ surface: some View, shape: RoundedRectangle) -> some View {
+        surface
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(colorSchemeContrast == .increased ? 0.62 : 0.38),
+                            Color.white.opacity(colorSchemeContrast == .increased ? 0.20 : 0.10),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+            }
+            .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
+            .shadow(color: .black.opacity(0.48), radius: 40, y: 24)
+    }
+
+    private var panelTintOpacity: Double {
+        colorSchemeContrast == .increased ? 0.78 : 0.64
+    }
+}
+
+/// Noninteractive glass used for read-only facts in the detail pane.
+private struct TVSettingsStaticGlassChrome: ViewModifier {
+    var cornerRadius: CGFloat = 14
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            content
+                .background(shape.fill(Color(hex: "#1B1D22")))
+                .overlay { shape.strokeBorder(borderColor, lineWidth: 1) }
+        } else {
+            content
+                .siloClearGlass(in: shape, tint: .black.opacity(restingTintOpacity))
+                .overlay { shape.strokeBorder(borderColor, lineWidth: 1) }
+        }
+    }
+
+    private var restingTintOpacity: Double {
+        colorSchemeContrast == .increased ? 0.42 : 0.26
+    }
+
+    private var borderColor: Color {
+        .white.opacity(colorSchemeContrast == .increased ? 0.34 : 0.18)
+    }
+}
+
 // MARK: - Rail row style
 
 /// Left-rail row: quiet at rest, `chrome.selected` fill when it is the
@@ -182,12 +262,10 @@ private struct TVSettingsRailRowBody: View {
                     .padding(.vertical, 12)
                     .opacity(isSelected && !isFocused ? 1 : 0)
             }
-            .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
-            .shadow(
-                color: isFocused ? Color.continuumAccent.opacity(0.14) : .clear,
-                radius: 18
-            )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .focusEffectDisabled()
+            .transaction { transaction in
+                transaction.animation = nil
+            }
     }
 
     private var foreground: Color {
@@ -227,50 +305,66 @@ private struct TVSettingsPaneRowBody: View {
     let isDestructive: Bool
     let isSelected: Bool
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
+    @ViewBuilder
     var body: some View {
-        configuration.label
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let label = configuration.label
             .padding(.horizontal, 24)
             .padding(.vertical, 17)
             .frame(maxWidth: .infinity, alignment: .leading)
             .foregroundColor(foreground)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(backgroundFill)
+
+        if reduceTransparency {
+            decorated(label.background(shape.fill(opaqueFill)), shape: shape)
+        } else {
+            decorated(
+                label.siloClearGlass(in: shape, tint: glassTint),
+                shape: shape
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(
-                        borderColor,
-                        lineWidth: 1
-                    )
-            )
-            .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
-            .shadow(
-                color: isFocused ? Color.continuumAccent.opacity(0.16) : .clear,
-                radius: 18
-            )
+        }
+    }
+
+    private func decorated(_ surface: some View, shape: RoundedRectangle) -> some View {
+        surface
+            .overlay {
+                shape.strokeBorder(borderColor, lineWidth: borderWidth)
+            }
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .transaction { transaction in
+                transaction.animation = nil
+            }
     }
 
     private var foreground: Color {
-        if isDestructive {
-            return isFocused ? Color(hex: "#D22F3F") : .continuumError
-        }
-        return isFocused ? .continuumBackground : .continuumOnSurface
+        if isDestructive && !isFocused { return .continuumError }
+        return .continuumOnSurface
     }
 
-    private var backgroundFill: Color {
-        if isFocused { return .continuumOnSurface }
-        if isSelected { return .continuumChromeSelectedFill }
-        return .continuumSurfaceElevated.opacity(0.84)
+    private var glassTint: Color {
+        if isFocused && isDestructive { return .continuumError.opacity(0.48) }
+        if isFocused { return .white.opacity(0.38) }
+        if isSelected { return .white.opacity(0.14) }
+        return .black.opacity(colorSchemeContrast == .increased ? 0.42 : 0.26)
+    }
+
+    private var opaqueFill: Color {
+        if isFocused && isDestructive { return Color(hex: "#7B202B") }
+        if isFocused { return Color(hex: "#4A4C53") }
+        if isSelected { return Color(hex: "#2D2F35") }
+        return Color(hex: "#1B1D22")
     }
 
     private var borderColor: Color {
-        if isFocused { return .clear }
-        if isSelected { return .continuumChromeSelectedBorder }
-        return .continuumChromeRestingBorder
+        if isFocused { return .white.opacity(colorSchemeContrast == .increased ? 1.0 : 0.96) }
+        if isSelected { return .white.opacity(colorSchemeContrast == .increased ? 0.68 : 0.46) }
+        return .white.opacity(colorSchemeContrast == .increased ? 0.34 : 0.18)
+    }
+
+    private var borderWidth: CGFloat {
+        isFocused ? 2.5 : 1
     }
 }
 
@@ -383,14 +477,7 @@ struct TVSettingsInfoRow: View {
         .padding(.vertical, 17)
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundColor(.continuumOnSurface)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumSurfaceElevated.opacity(0.84))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
-        )
+        .modifier(TVSettingsStaticGlassChrome())
         .accessibilityElement(children: .combine)
     }
 }
@@ -524,14 +611,7 @@ struct TVSettingsConfirmationOverlay: View {
             }
             .padding(.horizontal, 48)
             .padding(.vertical, 42)
-            .background(
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
-            )
+            .modifier(TVSettingsPanelChrome(cornerRadius: 30))
             .focusSection()
             .defaultFocus($focusedAction, .cancel, priority: .userInitiated)
             .onExitCommand(perform: cancel)
@@ -606,14 +686,7 @@ struct TVPrivacyPolicyOverlay: View {
             }
             .padding(.horizontal, 64)
             .padding(.vertical, 52)
-            .background(
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
-                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
-            }
+            .modifier(TVSettingsPanelChrome(cornerRadius: 32))
             .focusSection()
             .defaultFocus($isDoneFocused, true, priority: .userInitiated)
         }
@@ -778,17 +851,10 @@ struct TVSettingsPickerSheet: View {
         }
         .padding(30)
         .frame(width: width, height: height, alignment: .top)
-        .background(cardShape.fill(Color.continuumSurfaceElevated.opacity(0.98)))
         // Clip child layers first, then add the border and outer card shadow.
         // This preserves the floating dialog while containing scroll content.
         .clipShape(cardShape)
-        .overlay {
-            cardShape.strokeBorder(
-                Color.continuumChromeSelectedBorder.opacity(0.9),
-                lineWidth: 1
-            )
-        }
-        .shadow(color: .black.opacity(0.58), radius: 48, y: 22)
+        .modifier(TVSettingsPanelChrome(cornerRadius: 30))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title) options")
     }

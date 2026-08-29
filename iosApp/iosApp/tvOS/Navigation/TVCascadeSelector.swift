@@ -189,8 +189,6 @@ struct TVCascadeSelector: View {
             panelHeader(type.librariesHeader)
 
             libraryRows
-
-            panelFooter
         }
         .padding(ContinuumTheme.Skyline.dropdownPadding)
         .frame(width: ContinuumTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -268,8 +266,6 @@ struct TVCascadeSelector: View {
                     sectionRow(pill, in: library)
                 }
             }
-
-            panelFooter
         }
         .padding(ContinuumTheme.Skyline.dropdownPadding)
         .frame(width: ContinuumTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -343,54 +339,23 @@ struct TVCascadeSelector: View {
     // MARK: - Shared chrome
 
     private func panelHeader(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-            .tracking(ContinuumTheme.Skyline.dropdownHeaderSize * 0.26)
-            .foregroundStyle(Color.white.opacity(0.38))
-            .lineLimit(1)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-            .accessibilityHidden(true)
+        TVSkylineMenuHeader(title: text)
     }
 
     private func flyoutHeader(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.system(size: ContinuumTheme.Skyline.flyoutHeaderSize, design: .monospaced))
-            .tracking(ContinuumTheme.Skyline.flyoutHeaderSize * 0.26)
-            .foregroundStyle(Color.white.opacity(0.38))
+            .font(.system(
+                size: ContinuumTheme.Skyline.flyoutHeaderSize,
+                weight: .semibold,
+                design: .monospaced
+            ))
+            .tracking(1.2)
+            .foregroundStyle(Color.white.opacity(0.60))
             .lineLimit(1)
             .padding(.horizontal, 14)
             .padding(.top, 6)
             .padding(.bottom, 8)
             .accessibilityHidden(true)
-    }
-
-    private var panelFooter: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Rectangle()
-                .fill(Color.continuumDivider)
-                .frame(height: 1)
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-
-            Text(footerCaption)
-                .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-                .tracking(1.2)
-                .foregroundStyle(Color.white.opacity(0.34))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var footerCaption: String {
-        isSingleLibrary
-            ? "Press opens the section · Menu closes"
-            : "Press opens the library · → jumps to a section · Menu closes"
     }
 
     // MARK: - Focus plumbing

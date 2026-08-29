@@ -206,7 +206,8 @@ struct ContinuumTheme {
         static let cascadeNotchHeight: CGFloat = 10
 
         /// Level-1 library row metrics (§5.3).
-        static let cascadeRowTextSize: CGFloat = 22
+        static let cascadeHeaderTextSize: CGFloat = 18
+        static let cascadeRowTextSize: CGFloat = 26
         static let cascadeRowPaddingHorizontal: CGFloat = 18
         static let cascadeRowPaddingVertical: CGFloat = 16
         static let cascadeRowCornerRadius: CGFloat = 14
@@ -224,7 +225,7 @@ struct ContinuumTheme {
         static let flyoutRowPaddingHorizontal: CGFloat = 16
         static let flyoutRowPaddingVertical: CGFloat = 13
         static let flyoutRowCornerRadius: CGFloat = 12
-        static let flyoutHeaderSize: CGFloat = 13
+        static let flyoutHeaderSize: CGFloat = 17
         /// Open scale-up for the flyout (§4.2, 0.97 → 1.0).
         static let flyoutOpenScale: CGFloat = 0.97
         static let flyoutOpenDuration: Double = 0.16
