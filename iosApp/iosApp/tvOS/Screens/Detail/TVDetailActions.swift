@@ -12,12 +12,87 @@ import SwiftUI
 enum TVDetailActionMetrics {
     static let circleDiameter: CGFloat = 44
     static let circleGlyphPointSize: CGFloat = 30
+    static let expandedLabelSpacing: CGFloat = 14
+    static let expandedLabelPointSize: CGFloat = 26
 }
 
-// MARK: - Primary pill
+// MARK: - Expanding action label
 
-/// Primary play button for the detail hero — the one element the eye should
-/// land on first.
+/// A square icon at rest that reveals its title when its owning control is
+/// focused. The surrounding `Button`/`Menu` remains the same focus item; only
+/// the label's intrinsic content changes. Expansion and title visibility are
+/// deliberately separate phases so text never remains visible while the
+/// glass is collapsing around it.
+private struct TVExpandingDetailActionLabel: View {
+    let icon: String
+    let title: String
+    var prominent = false
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isExpanded = false
+    @State private var showsTitle = false
+
+    var body: some View {
+        HStack(spacing: isExpanded ? TVDetailActionMetrics.expandedLabelSpacing : 0) {
+            Image(systemName: icon)
+                .font(.system(
+                    size: prominent ? 32 : TVDetailActionMetrics.circleGlyphPointSize,
+                    weight: prominent ? .bold : .semibold
+                ))
+                .frame(
+                    width: TVDetailActionMetrics.circleDiameter,
+                    height: TVDetailActionMetrics.circleDiameter
+                )
+                .contentTransition(.symbolEffect(.replace))
+
+            if isExpanded {
+                Text(title)
+                    .font(.system(
+                        size: prominent ? 28 : TVDetailActionMetrics.expandedLabelPointSize,
+                        weight: .semibold
+                    ))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .opacity(showsTitle ? 1 : 0)
+            }
+        }
+        .task(id: isFocused) {
+            if reduceMotion {
+                isExpanded = isFocused
+                showsTitle = isFocused
+                return
+            }
+
+            if isFocused {
+                withAnimation(.smooth(duration: 0.26, extraBounce: 0)) {
+                    isExpanded = true
+                }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.10)) {
+                    showsTitle = true
+                }
+            } else {
+                // Clear the glyphs while the capsule is still full size.
+                // Only after that short fade does the empty glass contract.
+                withAnimation(.easeOut(duration: 0.06)) {
+                    showsTitle = false
+                }
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.smooth(duration: 0.24, extraBounce: 0)) {
+                    isExpanded = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Primary action
+
+/// Primary play button for the detail hero. It rests as a compact play circle
+/// and expands into a labelled capsule when focused.
 ///
 /// Uses the system's Liquid Glass button style, which means **tvOS owns
 /// the focus appearance**. That is the point: the platform's own focus
@@ -41,20 +116,14 @@ struct TVPrimaryPillButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 18) {
-                Image(systemName: icon)
-                    .font(.system(size: 32, weight: .bold))
-                Text(title)
-                    .font(.system(size: 30, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            TVExpandingDetailActionLabel(icon: icon, title: title, prominent: true)
         }
-        // Clear glass keeps Play in the same material family as the secondary
-        // actions. Its wider label, rather than a separate tint, establishes
-        // the hierarchy. The system style owns focus and press feedback.
+        // The label grows inside one stable native control. A capsule is a
+        // circle at the resting square size and naturally stretches around
+        // the title, allowing the system glass to morph with the content.
         .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
+        .buttonBorderShape(.capsule)
+        .accessibilityLabel(title)
         .applyOptionalFocus(focused)
     }
 }
@@ -68,14 +137,25 @@ private extension View {
             self
         }
     }
+
+    /// Native Buttons already own their focus interaction. Applying
+    /// `.focusable(true)` on top replaces that interaction and suppresses the
+    /// glass style's visible focus response, so only add a modifier in the
+    /// exceptional disabled state.
+    @ViewBuilder
+    func detailActionFocusDisabled(_ isDisabled: Bool) -> some View {
+        if isDisabled {
+            self.focusable(false)
+        } else {
+            self
+        }
+    }
 }
 
-// MARK: - Secondary pill
+// MARK: - Secondary action
 
-/// Apple-TV-style dark secondary pill. Sits next to `TVPrimaryPillButton`
-/// in the hero row. Filled dark squared tile with white icon + label — Apple
-/// uses this for "Play Free Episode" alongside a white "Subscribe"
-/// button; we use it for "Start Over" alongside a white "Resume …".
+/// Secondary detail action with the same icon-to-labelled-capsule behavior as
+/// Play, while retaining the quieter secondary typography.
 struct TVSecondaryPillButton: View {
     let icon: String
     let title: String
@@ -83,17 +163,11 @@ struct TVSecondaryPillButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 16) {
-                Image(systemName: icon)
-                    .font(.system(size: 28, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 26, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            TVExpandingDetailActionLabel(icon: icon, title: title)
         }
         .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.roundedRectangle(radius: ContinuumTheme.smallCornerRadius))
+        .buttonBorderShape(.capsule)
+        .accessibilityLabel(title)
     }
 }
 
@@ -134,15 +208,18 @@ struct TVVersionPillPlaceholder: View {
 /// one tap away without crowding the primary row.
 struct TVCircleMenuButton<MenuContent: View>: View {
     let icon: String
+    let title: String
     let accessibilityLabel: String
     @ViewBuilder let menu: () -> MenuContent
 
     init(
         icon: String = "ellipsis",
+        title: String = "More",
         accessibilityLabel: String,
         @ViewBuilder menu: @escaping () -> MenuContent
     ) {
         self.icon = icon
+        self.title = title
         self.accessibilityLabel = accessibilityLabel
         self.menu = menu
     }
@@ -151,14 +228,11 @@ struct TVCircleMenuButton<MenuContent: View>: View {
         Menu {
             menu()
         } label: {
-            Image(systemName: icon)
-                .font(.system(size: TVDetailActionMetrics.circleGlyphPointSize, weight: .semibold))
-                .frame(width: TVDetailActionMetrics.circleDiameter, height: TVDetailActionMetrics.circleDiameter)
-                .contentTransition(.symbolEffect(.replace))
+            TVExpandingDetailActionLabel(icon: icon, title: title)
         }
         .menuStyle(.button)
         .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.circle)
+        .buttonBorderShape(.capsule)
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -172,6 +246,7 @@ struct TVCircleActionButton: View {
     let icon: String
     let iconActive: String?
     let isActive: Bool
+    let title: String
     let accessibilityLabel: String
     let action: () -> Void
 
@@ -179,12 +254,14 @@ struct TVCircleActionButton: View {
         icon: String,
         iconActive: String? = nil,
         isActive: Bool = false,
+        title: String,
         accessibilityLabel: String,
         action: @escaping () -> Void
     ) {
         self.icon = icon
         self.iconActive = iconActive
         self.isActive = isActive
+        self.title = title
         self.accessibilityLabel = accessibilityLabel
         self.action = action
     }
@@ -196,13 +273,10 @@ struct TVCircleActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: resolvedIcon)
-                .font(.system(size: TVDetailActionMetrics.circleGlyphPointSize, weight: .semibold))
-                .frame(width: TVDetailActionMetrics.circleDiameter, height: TVDetailActionMetrics.circleDiameter)
-                .contentTransition(.symbolEffect(.replace))
+            TVExpandingDetailActionLabel(icon: resolvedIcon, title: title)
         }
         .buttonStyle(.glass(.clear))
-        .buttonBorderShape(.circle)
+        .buttonBorderShape(.capsule)
         // No tint override: default glass in both states. The filled SF
         // Symbol variant (`heart.fill`, `bookmark.fill`,
         // `checkmark.circle.fill`) is what carries the active state, so an
@@ -246,6 +320,10 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     let focusNamespace: Namespace.ID
     let playFocused: FocusState<Bool>.Binding
     let rowFocused: FocusState<Bool>.Binding
+    /// While Version owns focus below this row, Play is the sole eligible Up
+    /// destination. This expresses the semantic edge in the native graph
+    /// before movement instead of correcting focus after the fact.
+    let routesVersionUpToPlay: Bool
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
@@ -255,65 +333,72 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     @FocusState private var focusedAction: ActionID?
 
     var body: some View {
-        HStack(spacing: 36) {
-            if let playTitle {
-                TVPrimaryPillButton(
-                    icon: "play.fill",
-                    title: playTitle,
-                    action: onPlay,
-                    focused: playFocused
-                )
-                .focused($focusedAction, equals: .play)
-                .onGeometryChange(for: Bool.self) { proxy in
-                    proxy.size.width > 0 && proxy.size.height > 0
-                } action: { isLaidOut in
-                    guard isLaidOut else { return }
-                    resetInitialPlayFocus()
-                }
-
-                if let onStartOver {
-                    // Icon-only: next to a wide Play, a second labelled pill
-                    // competed with it for the eye. The counterclockwise
-                    // arrow is the platform's restart glyph, and the action
-                    // stays named for VoiceOver.
-                    TVCircleActionButton(
-                        icon: "arrow.counterclockwise",
-                        accessibilityLabel: "Start Over",
-                        action: onStartOver
+        GlassEffectContainer(spacing: 18) {
+            HStack(spacing: 36) {
+                if let playTitle {
+                    TVPrimaryPillButton(
+                        icon: "play.fill",
+                        title: playTitle,
+                        action: onPlay,
+                        focused: playFocused
                     )
-                    .focused($focusedAction, equals: .startOver)
+                    .focused($focusedAction, equals: .play)
+                    .onGeometryChange(for: Bool.self) { proxy in
+                        proxy.size.width > 0 && proxy.size.height > 0
+                    } action: { isLaidOut in
+                        guard isLaidOut else { return }
+                        resetInitialPlayFocus()
+                    }
+
+                    if let onStartOver {
+                        TVCircleActionButton(
+                            icon: "arrow.counterclockwise",
+                            title: "Start Over",
+                            accessibilityLabel: "Start Over",
+                            action: onStartOver
+                        )
+                        .detailActionFocusDisabled(routesVersionUpToPlay)
+                        .focused($focusedAction, equals: .startOver)
+                    }
                 }
+
+                TVCircleActionButton(
+                    icon: "heart",
+                    iconActive: "heart.fill",
+                    isActive: isFavorite,
+                    title: "Favorite",
+                    accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
+                    action: onToggleFavorite
+                )
+                .detailActionFocusDisabled(routesVersionUpToPlay)
+                .focused($focusedAction, equals: .favorite)
+
+                TVCircleActionButton(
+                    icon: "bookmark",
+                    iconActive: "bookmark.fill",
+                    isActive: inWatchlist,
+                    title: "Watchlist",
+                    accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                    action: onToggleWatchlist
+                )
+                .detailActionFocusDisabled(routesVersionUpToPlay)
+                .focused($focusedAction, equals: .watchlist)
+
+                TVCircleActionButton(
+                    icon: "checkmark.circle",
+                    iconActive: "checkmark.circle.fill",
+                    isActive: isWatched,
+                    title: "Watched",
+                    accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
+                    action: onToggleWatched
+                )
+                .detailActionFocusDisabled(routesVersionUpToPlay)
+                .focused($focusedAction, equals: .watched)
+
+                moreMenu()
+                    .detailActionFocusDisabled(routesVersionUpToPlay)
+                    .focused($focusedAction, equals: .more)
             }
-
-            TVCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-            .focused($focusedAction, equals: .favorite)
-
-            TVCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-            .focused($focusedAction, equals: .watchlist)
-
-            TVCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                action: onToggleWatched
-            )
-            .focused($focusedAction, equals: .watched)
-
-            moreMenu()
-                .focused($focusedAction, equals: .more)
         }
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)

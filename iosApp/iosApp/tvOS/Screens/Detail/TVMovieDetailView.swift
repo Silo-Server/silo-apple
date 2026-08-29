@@ -63,6 +63,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    @State private var versionSelectorFocused = false
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
@@ -138,7 +139,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false,
                 onSelectVersion: onSelectVersion,
                 onSelectAudioTrack: onSelectAudioTrack,
-                onSelectSubtitleTrack: onSelectSubtitleTrack
+                onSelectSubtitleTrack: onSelectSubtitleTrack,
+                onVersionFocusChanged: setVersionSelectorFocused
             )
             if let trailerFetchStatus {
                 // Non-focusable readout, so it adds no stop to the action
@@ -149,6 +151,19 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     onAutoDismiss: onTrailerStatusShown
                 )
             }
+        }
+        .onChange(of: playFocused) { _, isFocused in
+            if isFocused {
+                setVersionSelectorFocused(false)
+            }
+        }
+    }
+
+    private func setVersionSelectorFocused(_ isFocused: Bool) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            versionSelectorFocused = isFocused
         }
     }
 
@@ -169,6 +184,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
+            routesVersionUpToPlay: versionSelectorFocused && !playFocused,
             moreMenu: {
                 if hasMoreMenu {
                     moreMenu

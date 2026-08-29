@@ -17,15 +17,15 @@ struct EpisodeThumbCard: View {
     /// tvOS-only: parent row's focus tracking binding. See
     /// `MediaCard.focusedItemId` for the contract.
     var focusedItemId: FocusState<String?>.Binding? = nil
+    /// tvOS-only. False removes `.card`'s focused glass/parallax rendering
+    /// while retaining focus scale and shadow.
+    var usesSystemCardFocusEffect: Bool = true
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
-    #if os(tvOS)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    #endif
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. Lets the
     /// tapped thumbnail act as the `.matchedTransitionSource` for the zoom into
     /// the episode's item detail, keyed on `item.contentId`. `nil` (tvOS/macOS
@@ -329,19 +329,14 @@ struct EpisodeThumbCard: View {
         let button = Button(action: action) {
             thumbnail
         }
-        .buttonStyle(.card)
+        .modifier(EpisodeCardButtonFocusStyle(
+            usesSystemCardFocusEffect: usesSystemCardFocusEffect
+        ))
         .applyEpisodeFocus(
             focusedItemId,
             itemId: item.contentId,
             standaloneBinding: $standaloneFocused
         )
-        .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
-        .shadow(
-            color: .black.opacity(isFocused ? 0.5 : 0.2),
-            radius: isFocused ? 20 : 8,
-            y: isFocused ? 10 : 4
-        )
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
         .applyEpisodePlayPauseAction(playAction)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
@@ -396,6 +391,30 @@ struct EpisodeThumbCard: View {
 }
 
 #if os(tvOS)
+/// Matches the poster-card choice for Home's 16:9 rows. The custom path is
+/// deliberately flatter than `.card`: no glass or parallax, only a restrained
+/// focus lift and shadow.
+private struct EpisodeCardButtonFocusStyle: ViewModifier {
+    let usesSystemCardFocusEffect: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if usesSystemCardFocusEffect {
+            content.buttonStyle(.card)
+        } else {
+            content.buttonStyle(TVCardFocusButtonStyle(
+                scale: 1.025,
+                focusedShadowOpacity: 0.5,
+                focusedShadowRadius: 20,
+                focusedShadowY: 10,
+                unfocusedShadowOpacity: 0,
+                unfocusedShadowRadius: 0,
+                unfocusedShadowY: 0
+            ))
+        }
+    }
+}
+
 private extension View {
     @ViewBuilder
     func applyEpisodePlayPauseAction(_ action: (() -> Void)?) -> some View {

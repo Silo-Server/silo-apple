@@ -145,6 +145,10 @@ struct ContinuumTheme {
         static let tabLabelSize: CGFloat = 26
         static let tabPaddingHorizontal: CGFloat = 29
         static let tabPaddingVertical: CGFloat = 12
+        /// Total width shared by every root tab capsule. Keeping this fixed
+        /// prevents longer built-ins such as Calendar from reading as a
+        /// different component; long custom library labels truncate inside.
+        static let tabPillWidth: CGFloat = 184
         /// Square hit target of the search button and the profile avatar.
         static let barIconSize: CGFloat = 58
         /// Gap between the search button and the avatar.

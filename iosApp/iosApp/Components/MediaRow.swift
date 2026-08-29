@@ -27,6 +27,9 @@ struct MediaRow: View {
     var showProgress: Bool = false
     var icon: String? = nil
     var layout: MediaRowLayout = .poster
+    /// tvOS-only visual choice. The Home feed disables the system `.card`
+    /// effect while other rows retain it by default.
+    var usesSystemCardFocusEffect: Bool = true
     /// When true (and there are items), the row's first card becomes the
     /// default focus target — on initial appearance AND on user-driven
     /// d-pad entry into the row's focus section. Implemented via
@@ -264,6 +267,7 @@ struct MediaRow: View {
                             action: { onItemTap(item.contentId) },
                             playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
+                            usesSystemCardFocusEffect: usesSystemCardFocusEffect,
                             contentId: item.contentId,
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                             onSetWatched: watchedToggleAction(for: item),
@@ -278,6 +282,7 @@ struct MediaRow: View {
                             action: { onItemTap(item.contentId) },
                             playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
+                            usesSystemCardFocusEffect: usesSystemCardFocusEffect,
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                             onSetWatched: watchedToggleAction(for: item)
                         )

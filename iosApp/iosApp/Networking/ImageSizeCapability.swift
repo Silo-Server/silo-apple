@@ -26,15 +26,13 @@ final class ImageSizeCapability: @unchecked Sendable {
     static let shared = ImageSizeCapability()
 
     /// The query parameter name and size token this client asks for.
-    /// `large` is a deliberate stop short of `original`: TV posters and
-    /// stills render at w780 without paying for full-size art on every
-    /// card in a shelf.
+    /// The shared selector currently chooses the known-good medium rung;
+    /// capability negotiation still keeps older servers byte-compatible.
     static let requestedSize = ImageSizeSelection.requestedSize
 
-    /// Whether this platform wants larger images at all. tvOS renders
-    /// full-screen shelves and detail art on a 4K panel; iOS and macOS
-    /// keep the server's default sizes, so their requests are unchanged.
-    static var platformPrefersLargeImages: Bool {
+    /// Whether this platform opts into server-negotiated image sizing.
+    /// iOS and macOS keep the server default, so their requests are unchanged.
+    static var platformRequestsNegotiatedImages: Bool {
         #if os(tvOS)
         true
         #else
@@ -48,11 +46,11 @@ final class ImageSizeCapability: @unchecked Sendable {
     /// iOS-hosted test target, which cannot exercise `#if os(tvOS)`.
     static func queryEntries(
         capability: ImageSizeCapabilityResponse?,
-        platformPrefersLargeImages: Bool
+        platformRequestsNegotiatedImages: Bool
     ) -> [String: String] {
         ImageSizeSelection.queryEntries(
             capability: capability,
-            prefersLargeImages: platformPrefersLargeImages
+            requestsNegotiatedSize: platformRequestsNegotiatedImages
         )
     }
 
@@ -63,7 +61,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     }
 
     private let fetchCapability: @Sendable () async throws -> ImageSizeCapabilityResponse
-    private let prefersLargeImages: Bool
+    private let requestsNegotiatedImages: Bool
     private let lock = NSLock()
     private var storedCapability: ImageSizeCapabilityResponse?
     private var generation = 0
@@ -72,17 +70,17 @@ final class ImageSizeCapability: @unchecked Sendable {
 
     init(
         api: ContinuumAPI = .shared,
-        platformPrefersLargeImages: Bool = ImageSizeCapability.platformPrefersLargeImages
+        platformRequestsNegotiatedImages: Bool = ImageSizeCapability.platformRequestsNegotiatedImages
     ) {
-        self.prefersLargeImages = platformPrefersLargeImages
+        self.requestsNegotiatedImages = platformRequestsNegotiatedImages
         self.fetchCapability = { try await api.imageSizeCapability() }
     }
 
     init(
-        platformPrefersLargeImages: Bool,
+        platformRequestsNegotiatedImages: Bool,
         fetchCapability: @escaping @Sendable () async throws -> ImageSizeCapabilityResponse
     ) {
-        self.prefersLargeImages = platformPrefersLargeImages
+        self.requestsNegotiatedImages = platformRequestsNegotiatedImages
         self.fetchCapability = fetchCapability
     }
 
@@ -102,7 +100,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     var requestQuery: [String: String] {
         Self.queryEntries(
             capability: capability,
-            platformPrefersLargeImages: prefersLargeImages
+            platformRequestsNegotiatedImages: requestsNegotiatedImages
         )
     }
 
@@ -116,7 +114,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     /// Skipped entirely on platforms that wouldn't send the parameter,
     /// so iOS and macOS don't pay for a request they can't use.
     func refresh() async {
-        guard prefersLargeImages else { return }
+        guard requestsNegotiatedImages else { return }
         guard let probe = lock.withLock({ () -> Probe? in
             if storedCapability != nil { return nil }
             if let inFlightProbe, inFlightProbe.generation == generation {

@@ -443,7 +443,10 @@ struct TVTopMenuBar: View {
                 .foregroundStyle(tabForeground(isSelected: isSelected, isFocused: isFocused))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: 260)
+                .frame(
+                    width: ContinuumTheme.Skyline.tabPillWidth
+                        - (2 * ContinuumTheme.Skyline.tabPaddingHorizontal)
+                )
                 .padding(.horizontal, ContinuumTheme.Skyline.tabPaddingHorizontal)
                 .padding(.vertical, ContinuumTheme.Skyline.tabPaddingVertical)
                 .modifier(TVTopMenuCapsuleChrome(

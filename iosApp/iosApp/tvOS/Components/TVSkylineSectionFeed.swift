@@ -22,6 +22,10 @@ struct TVSkylineSectionFeed: View {
     /// Whether the top menu currently holds focus. A late content load must
     /// not steal focus while the user is up in the menu.
     var isTopMenuFocused: Bool = false
+    /// Home opts out of the system `.card` effect so focused artwork stays
+    /// free of its glass/parallax treatment. Library Browse keeps the native
+    /// style by using this default.
+    var usesSystemCardFocusEffect: Bool = true
     /// Up at the first page hands focus to the top bar.
     let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
@@ -167,7 +171,8 @@ struct TVSkylineSectionFeed: View {
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
                 set: { _ in }
-            )
+            ),
+            usesSystemCardFocusEffect: usesSystemCardFocusEffect
         )
     }
 

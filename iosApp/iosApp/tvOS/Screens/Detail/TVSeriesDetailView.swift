@@ -68,6 +68,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// (Play / Start Over / circle buttons). Backing up into it restores the
     /// page-entry framing by scrolling the hero back to the top.
     @FocusState private var actionRowFocused: Bool
+    @State private var versionSelectorFocused = false
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -145,7 +146,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack,
+                    onVersionFocusChanged: setVersionSelectorFocused
                 )
             }
             if let trailerFetchStatus {
@@ -157,6 +159,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     onAutoDismiss: onTrailerStatusShown
                 )
             }
+        }
+        .onChange(of: playFocused) { _, isFocused in
+            if isFocused {
+                setVersionSelectorFocused(false)
+            }
+        }
+    }
+
+    private func setVersionSelectorFocused(_ isFocused: Bool) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            versionSelectorFocused = isFocused
         }
     }
 
@@ -189,6 +204,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
+            routesVersionUpToPlay: versionSelectorFocused && !playFocused,
             moreMenu: {
                 if supportsTrailerFetch {
                     moreMenu

@@ -76,6 +76,9 @@ struct MediaCard: View {
     /// to a specific card. Pass `nil` for callers that don't need row-level
     /// focus targeting.
     var focusedItemId: FocusState<String?>.Binding? = nil
+    /// tvOS-only. False replaces the system `.card` rendering with the
+    /// house scale-and-shadow focus style, without changing focus ownership.
+    var usesSystemCardFocusEffect: Bool = true
 
     var contentId: String? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
@@ -141,6 +144,7 @@ struct MediaCard: View {
             action: action,
             playAction: playAction,
             focusedItemId: focusedItemId,
+            usesSystemCardFocusEffect: usesSystemCardFocusEffect,
             itemId: contentId,
             isWatched: isPlayed,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
@@ -510,6 +514,7 @@ private struct FocusableMediaCard<Content: View>: View {
     /// `defaultFocus(... priority: .userInitiated)` can land focus here
     /// on d-pad entry.
     let focusedItemId: FocusState<String?>.Binding?
+    let usesSystemCardFocusEffect: Bool
     let itemId: String?
     let isWatched: Bool
     let onRemoveFromContinueWatching: (() -> Void)?
@@ -562,7 +567,9 @@ private struct FocusableMediaCard<Content: View>: View {
         let button = Button(action: action) {
             content()
         }
-        .buttonStyle(.card)
+        .modifier(MediaCardButtonFocusStyle(
+            usesSystemCardFocusEffect: usesSystemCardFocusEffect
+        ))
         .applyCardFocus(
             focusedItemId,
             itemId: itemId,
@@ -624,6 +631,30 @@ private struct FocusableMediaCard<Content: View>: View {
             } label: {
                 Label("Remove from Continue Watching", systemImage: "xmark.circle")
             }
+        }
+    }
+}
+
+/// Home keeps the system focus graph but opts out of `.card`'s focused
+/// glass/parallax rendering. A modest scale and shadow preserve a clear focus
+/// cue without drawing another material over the poster artwork.
+private struct MediaCardButtonFocusStyle: ViewModifier {
+    let usesSystemCardFocusEffect: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if usesSystemCardFocusEffect {
+            content.buttonStyle(.card)
+        } else {
+            content.buttonStyle(TVCardFocusButtonStyle(
+                scale: 1.05,
+                focusedShadowOpacity: 0.45,
+                focusedShadowRadius: 18,
+                focusedShadowY: 8,
+                unfocusedShadowOpacity: 0,
+                unfocusedShadowRadius: 0,
+                unfocusedShadowY: 0
+            ))
         }
     }
 }

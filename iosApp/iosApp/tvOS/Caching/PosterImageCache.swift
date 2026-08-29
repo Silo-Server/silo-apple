@@ -35,22 +35,31 @@ enum PosterImageCache {
     }
 
     private static func makePipeline() -> ImagePipeline {
-        return ImagePipeline { config in
-            // Memory cache for decoded UIImages.
-            let memoryCache = ImageCache()
-            memoryCache.costLimit = decodedMemoryCacheBudgetBytes
-            memoryCache.countLimit = decodedImageCountLimit
-            config.imageCache = memoryCache
+        var config = ImagePipeline.Configuration()
 
-            // On-disk cache for raw image data.
-            if let dataCache = try? DataCache(name: "com.continuum.app.apple.posters") {
-                dataCache.sizeLimit = 1_024 * 1024 * 1024  // 1 GB
-                config.dataCache = dataCache
-            }
+        // Memory cache for decoded UIImages.
+        let memoryCache = ImageCache()
+        memoryCache.costLimit = decodedMemoryCacheBudgetBytes
+        memoryCache.countLimit = decodedImageCountLimit
+        config.imageCache = memoryCache
 
-            // Decode on a background queue — never block the main thread.
-            config.imageDecompressingQueue.maxConcurrentOperationCount = 2
+        // On-disk cache for raw image data.
+        if let dataCache = try? DataCache(name: "com.continuum.app.apple.posters") {
+            dataCache.sizeLimit = 1_024 * 1024 * 1024  // 1 GB
+            config.dataCache = dataCache
         }
+
+        // Decode on a background queue — never block the main thread.
+        config.imageDecompressingQueue.maxConcurrentOperationCount = 2
+
+        #if os(iOS) || os(tvOS)
+        return ImagePipeline(
+            configuration: config,
+            delegate: PosterImagePipelineDiagnostics.shared
+        )
+        #else
+        return ImagePipeline(configuration: config)
+        #endif
     }
 
     private static var decodedMemoryCacheBudgetBytes: Int {

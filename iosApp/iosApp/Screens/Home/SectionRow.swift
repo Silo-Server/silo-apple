@@ -31,6 +31,9 @@ struct SectionRow: View {
     var onMoveDown: (() -> Void)? = nil
     /// Live tvOS ownership gate for context-menu focus restoration.
     var focusRestorationOwner: Binding<Bool>? = nil
+    /// tvOS-only visual choice. False keeps the native focus graph while
+    /// replacing `.card`'s glass/parallax rendering with scale and shadow.
+    var usesSystemCardFocusEffect: Bool = true
 
     #if os(tvOS)
     @Environment(AppRouter.self) private var router
@@ -93,6 +96,7 @@ struct SectionRow: View {
             showProgress: showProgress,
             icon: isContinueWatching ? "play.circle.fill" : nil,
             layout: layout,
+            usesSystemCardFocusEffect: usesSystemCardFocusEffect,
             prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
             defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,

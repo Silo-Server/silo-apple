@@ -52,7 +52,7 @@ struct TopShelfHTTPClient {
         )
     }
 
-    /// Negotiate the same large-image contract as the main tvOS app. Older
+    /// Negotiate the same image-size contract as the main tvOS app. Older
     /// servers and transient failures return an empty query, preserving the
     /// extension's existing fallback behavior.
     func fetchImageSizeQuery() async -> [String: String] {
@@ -61,7 +61,7 @@ struct TopShelfHTTPClient {
         )
         return ImageSizeSelection.queryEntries(
             capability: capability,
-            prefersLargeImages: true
+            requestsNegotiatedSize: true
         )
     }
 

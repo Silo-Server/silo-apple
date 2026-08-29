@@ -56,6 +56,7 @@ struct HomeView: View {
                     sections: displayedSections,
                     focusRequest: homeFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
+                    usesSystemCardFocusEffect: false,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: { navigateToDetail($0) },
                     onRemoveFromContinueWatching: dismissContinueWatching,

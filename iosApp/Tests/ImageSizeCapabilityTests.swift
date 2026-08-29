@@ -8,7 +8,7 @@
 //  query entries the networking layer merges into image-bearing
 //  requests.
 //
-//  The `platformPrefersLargeImages` flag is passed explicitly rather
+//  The `platformRequestsNegotiatedImages` flag is passed explicitly rather
 //  than read from `#if os(tvOS)`: the test target is hosted by the iOS
 //  app, so the tvOS branch is otherwise unreachable from a test.
 //
@@ -82,19 +82,19 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
     // MARK: - Query injection
 
-    func testQueryEntriesAddLargeWhenSupportedOnTV() throws {
+    func testQueryEntriesAddMediumWhenSupportedOnTV() throws {
         let entries = ImageSizeCapability.queryEntries(
             capability: try decodedCapability(),
-            platformPrefersLargeImages: true
+            platformRequestsNegotiatedImages: true
         )
-        XCTAssertEqual(entries, ["image_size": "large"])
+        XCTAssertEqual(entries, ["image_size": "medium"])
     }
 
     /// iOS and macOS must keep sending byte-identical requests.
     func testQueryEntriesEmptyOffTV() throws {
         let entries = ImageSizeCapability.queryEntries(
             capability: try decodedCapability(),
-            platformPrefersLargeImages: false
+            platformRequestsNegotiatedImages: false
         )
         XCTAssertTrue(entries.isEmpty)
     }
@@ -104,7 +104,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
     func testQueryEntriesEmptyWithoutCapability() {
         let entries = ImageSizeCapability.queryEntries(
             capability: nil,
-            platformPrefersLargeImages: true
+            platformRequestsNegotiatedImages: true
         )
         XCTAssertTrue(entries.isEmpty)
     }
@@ -121,25 +121,25 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertTrue(
             ImageSizeCapability.queryEntries(
                 capability: capability,
-                platformPrefersLargeImages: true
+                platformRequestsNegotiatedImages: true
             ).isEmpty
         )
     }
 
-    /// A server that doesn't advertise `large` gets no parameter at all,
+    /// A server that doesn't advertise `medium` gets no parameter at all,
     /// because an unadvertised value is a 400.
-    func testQueryEntriesEmptyWhenLargeNotAdvertised() {
+    func testQueryEntriesEmptyWhenMediumNotAdvertised() {
         let capability = ImageSizeCapabilityResponse(
             schemaVersion: 1,
             param: "image_size",
-            sizes: ["small", "medium"],
+            sizes: ["small", "large"],
             widths: [:],
             originalMaxWidthPx: 1920
         )
         XCTAssertTrue(
             ImageSizeCapability.queryEntries(
                 capability: capability,
-                platformPrefersLargeImages: true
+                platformRequestsNegotiatedImages: true
             ).isEmpty
         )
     }
@@ -149,16 +149,16 @@ final class ImageSizeCapabilityTests: XCTestCase {
         let capability = ImageSizeCapabilityResponse(
             schemaVersion: 1,
             param: "img_size",
-            sizes: ["large"],
+            sizes: ["medium"],
             widths: [:],
             originalMaxWidthPx: 1920
         )
         XCTAssertEqual(
             ImageSizeCapability.queryEntries(
                 capability: capability,
-                platformPrefersLargeImages: true
+                platformRequestsNegotiatedImages: true
             ),
-            ["img_size": "large"]
+            ["img_size": "medium"]
         )
     }
 
@@ -178,7 +178,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
     func testSuccessfulRefreshIsCachedForSession() async throws {
         let response = try decodedCapability()
         let stub = ImageSizeCapabilityFetchStub(response: response)
-        let capability = ImageSizeCapability(platformPrefersLargeImages: true) {
+        let capability = ImageSizeCapability(platformRequestsNegotiatedImages: true) {
             try await stub.fetch()
         }
 
@@ -187,7 +187,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 1)
-        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+        XCTAssertEqual(capability.requestQuery, ["image_size": "medium"])
     }
 
     func testFailedRefreshRetriesAndThenCachesSuccess() async throws {
@@ -196,7 +196,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
             response: response,
             failuresBeforeSuccess: 1
         )
-        let capability = ImageSizeCapability(platformPrefersLargeImages: true) {
+        let capability = ImageSizeCapability(platformRequestsNegotiatedImages: true) {
             try await stub.fetch()
         }
 
@@ -208,13 +208,13 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 2)
-        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+        XCTAssertEqual(capability.requestQuery, ["image_size": "medium"])
     }
 
     func testResetRequiresCapabilityProbeForNewIdentity() async throws {
         let response = try decodedCapability()
         let stub = ImageSizeCapabilityFetchStub(response: response)
-        let capability = ImageSizeCapability(platformPrefersLargeImages: true) {
+        let capability = ImageSizeCapability(platformRequestsNegotiatedImages: true) {
             try await stub.fetch()
         }
 
@@ -224,7 +224,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 2)
-        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+        XCTAssertEqual(capability.requestQuery, ["image_size": "medium"])
     }
 }
 

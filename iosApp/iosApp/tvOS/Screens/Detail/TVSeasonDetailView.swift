@@ -55,6 +55,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    @State private var versionSelectorFocused = false
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
@@ -124,9 +125,23 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack,
+                    onVersionFocusChanged: setVersionSelectorFocused
                 )
             }
+        }
+        .onChange(of: playFocused) { _, isFocused in
+            if isFocused {
+                setVersionSelectorFocused(false)
+            }
+        }
+    }
+
+    private func setVersionSelectorFocused(_ isFocused: Bool) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            versionSelectorFocused = isFocused
         }
     }
 
@@ -159,6 +174,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
+            routesVersionUpToPlay: versionSelectorFocused && !playFocused,
             moreMenu: {
                 if hasMoreMenu {
                     moreMenu

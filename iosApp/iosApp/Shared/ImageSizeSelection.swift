@@ -12,13 +12,17 @@ struct ImageSizeCapabilityResponse: Codable, Equatable {
 }
 
 enum ImageSizeSelection {
-    static let requestedSize = "large"
+    /// Production's public artwork delivery currently returns 404 for a
+    /// subset of the advertised large poster/still objects, while the same
+    /// items' medium objects are healthy. Keep tvOS on the server-negotiated
+    /// w500 tier until capability can express per-rung readiness.
+    static let requestedSize = "medium"
 
     static func queryEntries(
         capability: ImageSizeCapabilityResponse?,
-        prefersLargeImages: Bool
+        requestsNegotiatedSize: Bool
     ) -> [String: String] {
-        guard prefersLargeImages,
+        guard requestsNegotiatedSize,
               let capability,
               capability.schemaVersion == 1,
               !capability.param.isEmpty,

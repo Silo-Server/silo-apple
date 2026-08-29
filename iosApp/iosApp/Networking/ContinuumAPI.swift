@@ -44,7 +44,7 @@ actor ContinuumAPI {
 
     // MARK: - Image size selection
 
-    /// Extra query entries asking the server to bake a larger image
+    /// Extra query entries asking the server to bake the negotiated image
     /// variant into every image URL in the response.
     ///
     /// One place decides this for every image-bearing endpoint, so call

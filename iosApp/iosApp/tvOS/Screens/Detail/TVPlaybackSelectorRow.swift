@@ -38,6 +38,9 @@ struct TVPlaybackSelectorRow: View {
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
+    /// Reports whether Version currently owns focus. The parent uses this to
+    /// shape the action row's native focus eligibility before an Up move.
+    let onVersionFocusChanged: (Bool) -> Void
 
     @Environment(\.resetFocus) private var resetFocus
     @Namespace private var selectorFocusScope
@@ -63,6 +66,7 @@ struct TVPlaybackSelectorRow: View {
                 .focusSection()
                 .modifier(SelectorDefaultFocus(focus: defaultSelectorFocus, binding: $focusedSelector))
                 .onChange(of: focusedSelector) { _, newValue in
+                    onVersionFocusChanged(newValue == .version)
                     // The restore default (see `restoreFocus`) must only
                     // outlive the menu dismissal it serves. Once focus leaves
                     // the row — up to the action row, or into an opening menu
@@ -79,6 +83,9 @@ struct TVPlaybackSelectorRow: View {
                 .task {
                     await ProfilePrefsStore.shared.hydrateIfNeeded()
                     preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
+                }
+                .onDisappear {
+                    onVersionFocusChanged(false)
                 }
         }
     }
@@ -213,6 +220,7 @@ struct TVPlaybackSelectorRow: View {
             .focused($focusedSelector, equals: .version)
         } else {
             TVSelectorValue(icon: "tv", label: "Version", value: value)
+                .focused($focusedSelector, equals: .version)
         }
     }
 
