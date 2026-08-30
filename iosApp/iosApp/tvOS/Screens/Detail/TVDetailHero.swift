@@ -319,17 +319,36 @@ private struct TVDetailHeroReveal: ViewModifier {
     let scrollVisualState: TVDetailScrollVisualState?
     let preservesFocusEligibility: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
-        content.opacity(
-            preservesFocusEligibility ? max(opacity, 0.001) : opacity
-        )
+        content
+            // The hero is a fixed overlay, so returning from the browser does
+            // not move it with the scroll view. A small scroll-synchronous
+            // lift gives that return visible continuity without changing the
+            // layout or focus geometry.
+            .offset(y: reduceMotion ? 0 : verticalOffset)
+            .opacity(
+                preservesFocusEligibility ? max(opacity, 0.001) : opacity
+            )
     }
 
     private var opacity: Double {
         let rawProgress = scrollVisualState?.progress ?? fallbackProgress
-        let progress = min(max((rawProgress - 0.04) / 0.28, 0), 1)
-        let eased = progress * progress * (3 - (2 * progress))
-        return Double(1 - eased)
+        return Double(1 - easedRevealProgress(for: rawProgress))
+    }
+
+    private var verticalOffset: CGFloat {
+        let rawProgress = scrollVisualState?.progress ?? fallbackProgress
+        return 24 * easedRevealProgress(for: rawProgress)
+    }
+
+    /// Use most of the canvas return rather than the final few frames. The
+    /// compact header is already fading out across this range, producing a
+    /// restrained crossfade instead of an abrupt hero appearance at rest.
+    private func easedRevealProgress(for rawProgress: CGFloat) -> CGFloat {
+        let progress = min(max((rawProgress - 0.08) / 0.50, 0), 1)
+        return progress * progress * (3 - (2 * progress))
     }
 }
 

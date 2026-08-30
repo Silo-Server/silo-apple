@@ -286,7 +286,13 @@ detail view invalidates the complete focus graph and every Liquid Glass control
 on every animation frame, which can hitch on physical Apple TV even when the
 simulator looks smooth. Likewise, do not animate the radius of a full-screen
 backdrop blur. Crossfade a fixed pre-blurred layer so scrolling changes only
-cheap compositing properties.
+cheap compositing properties. The fixed hero returns with a scroll-synchronous
+opacity and small vertical lift across most of the browser -> hero journey.
+Keep that reveal derived from the same progress value rather than starting a
+second timed animation when selector focus arrives; focus can move before the
+scroll finishes, and an independent animation makes the controls pop or drift
+out of phase with the canvas. Reduce Motion removes the lift while retaining
+the lightweight crossfade.
 
 The focus engine can report a transient `item -> nil -> item` while moving
 horizontally inside a row. `TVDetailFocusScroll` keeps its last settled canvas
