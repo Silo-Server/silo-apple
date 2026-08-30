@@ -297,7 +297,6 @@ struct TVItemDetailView: View {
                 currentEpisodeContentId: detail.type == "episode"
                     ? detail.contentId
                     : familyNextUpEpisode(for: detail)?.contentId,
-                prefersCurrentEpisodeFocus: false,
                 onSetEpisodeWatched: { id, played in
                     await viewModel.setEpisodeWatched(contentId: id, played: played)
                 },

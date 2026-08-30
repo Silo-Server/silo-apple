@@ -57,58 +57,62 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
     @Namespace private var detailFocusNamespace
-    @FocusState private var playFocused: Bool
+    @FocusState private var actionFocus: TVDetailActionFocus?
     /// True while focus sits anywhere inside the season chip row. Used to
     /// scroll the episode section to the same centered framing the focus
     /// engine produces when the (taller) episode rail itself is focused —
     /// otherwise landing on the short chip row only reveals the chips and
     /// leaves the episodes below the fold.
     @FocusState private var seasonRowFocused: Bool
-    /// True while focus sits anywhere in the hero's primary action row
-    /// (Play / Start Over / circle buttons). Backing up into it restores the
-    /// page-entry framing by scrolling the hero back to the top.
-    @FocusState private var actionRowFocused: Bool
-    @State private var versionSelectorFocused = false
+    /// One page-owned focus value for Version / Audio / Subtitles.
+    @FocusState private var playbackSelectorFocus: TVPlaybackSelectorFocus?
     /// Play is a high-priority default only until page-entry focus lands.
     /// Keeping it user-initiated forever lets its reinsertion after an
     /// episode reload override the season row's active focus preference.
     @State private var prefersPageEntryPlay = true
 
     var body: some View {
-        ScrollViewReader { scrollProxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: TVDetailLayoutMetrics.firstSectionSpacing) {
-                    heroView
-                        .id(heroScrollId)
+        ZStack {
+            TVDetailPageBackdrop(
+                artworkURL: detail.backdropUrl,
+                artworkThumbhash: detail.backdropThumbhash
+            )
 
-                    VStack(alignment: .leading, spacing: 72) {
-                        episodeSection
-                            .id(episodeSectionScrollId)
-                        if let cast = detail.cast, !cast.isEmpty {
-                            castSection(cast: cast)
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: TVDetailLayoutMetrics.firstSectionSpacing) {
+                        heroView
+                            .id(heroScrollId)
+
+                        VStack(alignment: .leading, spacing: 72) {
+                            episodeSection
+                                .id(episodeSectionScrollId)
+                            if let cast = detail.cast, !cast.isEmpty {
+                                castSection(cast: cast)
+                            }
+                            trailersSection
+                            detailsSection
+                            similarSection
                         }
-                        trailersSection
-                        detailsSection
-                        similarSection
+                        .padding(.horizontal, ContinuumTheme.safePadding)
+                        .padding(.bottom, 160)
                     }
-                    .padding(.horizontal, ContinuumTheme.safePadding)
-                    .padding(.bottom, 160)
                 }
+                .ignoresSafeArea()
+                .focusScope(detailFocusNamespace)
+                .defaultFocus(
+                    $actionFocus,
+                    .play,
+                    priority: prefersPageEntryPlay ? .userInitiated : .automatic
+                )
+                .detailFocusScroll(
+                    proxy: scrollProxy,
+                    episodeBrowserFocused: seasonRowFocused,
+                    heroControlsFocused: actionRowFocused,
+                    episodeSectionId: episodeSectionScrollId,
+                    heroId: heroScrollId
+                )
             }
-            .ignoresSafeArea()
-            .focusScope(detailFocusNamespace)
-            .defaultFocus(
-                $playFocused,
-                true,
-                priority: prefersPageEntryPlay ? .userInitiated : .automatic
-            )
-            .detailFocusScroll(
-                proxy: scrollProxy,
-                seasonRowFocused: seasonRowFocused,
-                actionRowFocused: actionRowFocused,
-                episodeSectionId: episodeSectionScrollId,
-                heroId: heroScrollId
-            )
         }
     }
 
@@ -122,13 +126,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             title: detail.title,
             seriesTitle: nil,
             logoUrl: detail.logoUrl,
-            backdropUrl: detail.backdropUrl,
             eyebrow: TVHeroMetadata.eyebrow(from: detail),
             sourceTokens: TVHeroMetadata.seriesSourceTokens(from: detail),
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
             starringText: TVHeroMetadata.starringText(from: detail),
+            heroHeight: TVDetailLayoutMetrics.heroHeight,
+            heroCanvasHeight: TVDetailLayoutMetrics.heroHeight,
+            scrollRevealProgress: 0,
+            suppressesEditorialFocus: false,
             actions: { actionColumn },
             belowSynopsis: belowSynopsis
         )
@@ -155,7 +162,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack,
-                    onVersionFocusChanged: setVersionSelectorFocused
+                    focusedSelector: $playbackSelectorFocus,
+                    onSelectorRowFocusChanged: { _ in }
                 )
             }
             if let trailerFetchStatus {
@@ -168,8 +176,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 )
             }
         }
-        .onChange(of: playFocused) { _, isFocused in
-            if isFocused {
+        .onChange(of: actionFocus) { _, action in
+            if action == .play {
                 TVDetailFocusDiagnostics.record(
                     "series.playFocused",
                     target: "play",
@@ -217,18 +225,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
     }
 
-    private func setVersionSelectorFocused(_ isFocused: Bool) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            versionSelectorFocused = isFocused
-        }
-    }
-
     private var detailFocusState: String {
         "season=\(selectedSeason.map { String($0.seasonNumber) } ?? "none") "
             + "seasonRowFocused=\(seasonRowFocused) "
-            + "playFocused=\(playFocused) "
+            + "playFocused=\(actionFocus == .play) "
             + "actionRowFocused=\(actionRowFocused) "
             + "loading=\(isLoadingEpisodes) episodes=\(episodes.count) "
             + "playEntryPriority=\(prefersPageEntryPlay ? "user" : "automatic")"
@@ -261,15 +261,18 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             onToggleWatched: onToggleWatched,
             initialFocusScope: .season(key: selectedSeason?.contentId),
             focusNamespace: detailFocusNamespace,
-            playFocused: $playFocused,
-            rowFocused: $actionRowFocused,
-            routesVersionUpToPlay: versionSelectorFocused,
+            focusedAction: $actionFocus,
+            routesSelectorUpToPlay: playbackSelectorFocus != nil,
             moreMenu: {
                 if supportsTrailerFetch {
                     moreMenu
                 }
             }
         )
+    }
+
+    private var actionRowFocused: Bool {
+        actionFocus != nil
     }
 
     // MARK: - More menu

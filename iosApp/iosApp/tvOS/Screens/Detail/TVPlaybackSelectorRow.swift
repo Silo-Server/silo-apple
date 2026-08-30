@@ -1,6 +1,13 @@
 #if os(tvOS)
 import SwiftUI
 
+enum TVPlaybackSelectorFocus: Hashable {
+    case edition
+    case version
+    case audio
+    case subtitles
+}
+
 /// Pre-Play playback metadata row shown under the hero actions. Version ·
 /// Audio · Subtitles stay visible as squared value boxes; boxes become menus
 /// only when there are multiple real choices. Edition is included only when
@@ -13,13 +20,6 @@ import SwiftUI
 struct TVPlaybackSelectorRow: View {
     private enum Layout {
         static let selectorSpacing: CGFloat = 28
-    }
-
-    private enum SelectorFocus: Hashable {
-        case edition
-        case version
-        case audio
-        case subtitles
     }
 
     let versions: [FileVersion]
@@ -38,16 +38,12 @@ struct TVPlaybackSelectorRow: View {
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
-    /// Reports whether Version currently owns focus. The parent uses this to
-    /// shape the action row's native focus eligibility before an Up move.
-    let onVersionFocusChanged: (Bool) -> Void
+    let focusedSelector: FocusState<TVPlaybackSelectorFocus?>.Binding
+    /// Reports focus anywhere in this row. The detail canvas uses it to
+    /// restore the hero framing when focus returns from the episode browser.
+    let onSelectorRowFocusChanged: (Bool) -> Void
 
-    @Environment(\.resetFocus) private var resetFocus
-    @Namespace private var selectorFocusScope
-    @FocusState private var focusedSelector: SelectorFocus?
-    @State private var defaultSelectorFocus: SelectorFocus?
     @State private var preferredSubtitleLanguage: String?
-    @State private var versionFocusReleaseTask: Task<Void, Never>?
 
     private var editions: [PlaybackEditions.Edition] { PlaybackEditions.editions(from: versions) }
 
@@ -63,22 +59,17 @@ struct TVPlaybackSelectorRow: View {
                 // the nearest selector instead of skipping the row. Buttons
                 // stay left-aligned.
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .focusScope(selectorFocusScope)
                 .focusSection()
-                .modifier(SelectorDefaultFocus(focus: defaultSelectorFocus, binding: $focusedSelector))
-                .onChange(of: focusedSelector) { oldValue, newValue in
-                    reportVersionFocusTransition(from: oldValue, to: newValue)
-                    // The restore default (see `restoreFocus`) must only
-                    // outlive the menu dismissal it serves. Once focus leaves
-                    // the row — up to the action row, or into an opening menu
-                    // — repoint it at the leading pill so re-entering the row
-                    // lands like untouched geometry instead of jumping back
-                    // to the last-modified selector. Swap the value rather
-                    // than clearing it: `SelectorDefaultFocus` branches on
-                    // nil, and re-identifying the row subtree would tear down
-                    // an open Menu.
-                    if newValue == nil, defaultSelectorFocus != nil {
-                        defaultSelectorFocus = firstSelector
+                .onChange(of: focusedSelector.wrappedValue) { oldValue, newValue in
+                    TVDetailFocusDiagnostics.record(
+                        "selector.focusChanged",
+                        target: selectorName(newValue),
+                        action: newValue == nil ? "lost" : "focused",
+                        state: "from=\(selectorName(oldValue)) to=\(selectorName(newValue))",
+                        essential: oldValue == nil || newValue == nil
+                    )
+                    if (oldValue == nil) != (newValue == nil) {
+                        onSelectorRowFocusChanged(newValue != nil)
                     }
                 }
                 .task {
@@ -86,9 +77,7 @@ struct TVPlaybackSelectorRow: View {
                     preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
                 }
                 .onDisappear {
-                    versionFocusReleaseTask?.cancel()
-                    versionFocusReleaseTask = nil
-                    onVersionFocusChanged(false)
+                    onSelectorRowFocusChanged(false)
                 }
         }
     }
@@ -106,38 +95,6 @@ struct TVPlaybackSelectorRow: View {
             }
             if shouldShowSubtitleValue {
                 subtitleSelector
-            }
-        }
-    }
-
-    /// Leading visible pill — where entry into the row should land once the
-    /// post-menu restore default has served its purpose.
-    private var firstSelector: SelectorFocus {
-        if shouldShowEditionSelector { return .edition }
-        if shouldShowVersionValue { return .version }
-        if shouldShowAudioValue { return .audio }
-        return .subtitles
-    }
-
-    /// Keep Play as Version's exclusive Up destination through the focus
-    /// engine's transient `Version -> nil -> Play` handoff. Releasing the
-    /// other action buttons synchronously at `nil` reconstructs every native
-    /// glass surface before Play has visibly settled, which produces a
-    /// row-wide flash.
-    private func reportVersionFocusTransition(
-        from oldValue: SelectorFocus?,
-        to newValue: SelectorFocus?
-    ) {
-        versionFocusReleaseTask?.cancel()
-        versionFocusReleaseTask = nil
-
-        if newValue == .version {
-            onVersionFocusChanged(true)
-        } else if oldValue == .version {
-            versionFocusReleaseTask = Task { @MainActor in
-                await Task.yield()
-                guard !Task.isCancelled else { return }
-                onVersionFocusChanged(false)
             }
         }
     }
@@ -202,7 +159,7 @@ struct TVPlaybackSelectorRow: View {
                             lastFileId: nil,
                             preferredQualityId: PlayerSettings.shared.preferredQuality
                         )
-                        selectVersion(best?.fileId, returningFocusTo: .edition)
+                        selectVersion(best?.fileId)
                     } label: {
                         selectorMenuItem(
                             title: edition.label,
@@ -213,7 +170,7 @@ struct TVPlaybackSelectorRow: View {
                 }
             }
         }
-        .focused($focusedSelector, equals: .edition)
+            .focused(focusedSelector, equals: .edition)
     }
 
     // MARK: - Version
@@ -228,12 +185,12 @@ struct TVPlaybackSelectorRow: View {
                 label: "Version",
                 value: value
             ) {
-                Button { selectVersion(nil, returningFocusTo: .version) } label: {
+                Button { selectVersion(nil) } label: {
                     selectorMenuItem(title: "Auto", detail: "Best match for this device", isSelected: selectedVersionFileId == nil)
                 }
                 ForEach(scopedVersions) { version in
                     Button {
-                        selectVersion(version.fileId, returningFocusTo: .version)
+                        selectVersion(version.fileId)
                     } label: {
                         selectorMenuItem(
                             title: DetailPlaybackFormatting.versionShortLabel(version),
@@ -243,10 +200,10 @@ struct TVPlaybackSelectorRow: View {
                     }
                 }
             }
-            .focused($focusedSelector, equals: .version)
+            .focused(focusedSelector, equals: .version)
         } else {
             TVSelectorValue(icon: "tv", label: "Version", value: value)
-                .focused($focusedSelector, equals: .version)
+                .focused(focusedSelector, equals: .version)
         }
     }
 
@@ -293,9 +250,10 @@ struct TVPlaybackSelectorRow: View {
                     }
                 }
             }
-            .focused($focusedSelector, equals: .audio)
+            .focused(focusedSelector, equals: .audio)
         } else {
             TVSelectorValue(icon: "speaker.wave.2", label: "Audio", value: value)
+                .focused(focusedSelector, equals: .audio)
         }
     }
 
@@ -351,48 +309,32 @@ struct TVPlaybackSelectorRow: View {
                     }
                 }
             }
-            .focused($focusedSelector, equals: .subtitles)
+            .focused(focusedSelector, equals: .subtitles)
         } else {
             TVSelectorValue(icon: "captions.bubble", label: "Subtitles", value: value)
+                .focused(focusedSelector, equals: .subtitles)
         }
     }
 
-    private func selectVersion(_ fileId: Int?, returningFocusTo focus: SelectorFocus) {
+    private func selectVersion(_ fileId: Int?) {
         onSelectVersion(fileId)
-        restoreFocus(to: focus)
     }
 
     private func selectAudioTrack(_ index: Int?) {
         onSelectAudioTrack(index)
-        restoreFocus(to: .audio)
     }
 
     private func selectSubtitleTrack(_ index: Int?) {
         onSelectSubtitleTrack(index)
-        restoreFocus(to: .subtitles)
     }
 
-    private func restoreFocus(to focus: SelectorFocus) {
-        defaultSelectorFocus = focus
-        focusedSelector = focus
-        Task { @MainActor in
-            await Task.yield()
-            resetFocus(in: selectorFocusScope)
-            focusedSelector = focus
-        }
-    }
-
-    private struct SelectorDefaultFocus: ViewModifier {
-        let focus: SelectorFocus?
-        let binding: FocusState<SelectorFocus?>.Binding
-
-        @ViewBuilder
-        func body(content: Content) -> some View {
-            if let focus {
-                content.defaultFocus(binding, focus, priority: .userInitiated)
-            } else {
-                content
-            }
+    private func selectorName(_ focus: TVPlaybackSelectorFocus?) -> String {
+        guard let focus else { return "none" }
+        switch focus {
+        case .edition: return "edition"
+        case .version: return "version"
+        case .audio: return "audio"
+        case .subtitles: return "subtitles"
         }
     }
 
@@ -438,6 +380,7 @@ private struct TVSelectorButton<MenuContent: View>: View {
         .tvDetailGlassControl(
             shape: .roundedRectangle(radius: ContinuumTheme.smallCornerRadius)
         )
+        .accessibilityIdentifier("detail.selector.\(label.lowercased())")
     }
 }
 
@@ -464,6 +407,7 @@ private struct TVSelectorValue: View {
         .tvDetailGlassControl(
             shape: .roundedRectangle(radius: ContinuumTheme.smallCornerRadius)
         )
+        .accessibilityIdentifier("detail.selector.\(label.lowercased())")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label), \(value)")
     }

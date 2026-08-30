@@ -56,7 +56,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     var onFocusedEpisodeChange: ((String?) -> Void)? = nil
     var onPlayFocusedEpisode: ((String) -> Void)? = nil
     var currentEpisodeContentId: String? = nil
-    var prefersCurrentEpisodeFocus = false
     let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
     let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
     /// On-view description-translation affordance, built at the detail call
@@ -65,14 +64,28 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
 
     @Namespace private var detailFocusNamespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @FocusState private var playFocused: Bool
-    /// True while focus sits anywhere inside the season chip row — drives the
-    /// episode-section re-center in `detailFocusScroll`.
-    @FocusState private var seasonRowFocused: Bool
-    /// True while focus sits anywhere in the hero's primary action row —
-    /// drives the scroll back to the page-entry (hero at top) framing.
-    @FocusState private var actionRowFocused: Bool
-    @State private var versionSelectorFocused = false
+    @FocusState private var actionFocus: TVDetailActionFocus?
+    /// One focus owner for the season pills and episode cards. The whole
+    /// browser settles into its expanded framing once focus enters either
+    /// row, avoiding a second scroll when focus moves from pills to cards.
+    @FocusState private var episodeBrowserFocused: Bool
+    /// One page-owned focus value for Version / Audio / Subtitles. Keeping it
+    /// outside the child row preserves the native horizontal focus context.
+    @FocusState private var playbackSelectorFocus: TVPlaybackSelectorFocus?
+    @State private var selectorRowFocused = false
+    /// Keeps the lower browser out of the action row's Down search until the
+    /// visible playback selector has actually accepted focus. This survives
+    /// the focus engine's transient source -> nil -> destination frame.
+    @State private var episodeBrowserSuppressedForSelectorEntry = false
+    @State private var selectorEntryReleaseTask: Task<Void, Never>?
+    /// Symmetric latch for Version -> Season. While the selector row owns
+    /// focus, large episode cards are excluded until a Season pill lands.
+    @State private var episodeRailSuppressedForSeasonEntry = false
+    @State private var seasonEntryReleaseTask: Task<Void, Never>?
+    /// Keeps the hidden hero editorial controls out of the focus graph while
+    /// a lower rail is active. Without this, Up from Cast & Crew can first
+    /// land on an invisible synopsis control before a second Up reaches Play.
+    @State private var castRailFocused = false
     /// High-priority only for page entry; later focus reevaluations should
     /// respect the active season or episode row.
     @State private var prefersPageEntryPlay = true
@@ -80,67 +93,153 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "detail-episode-section"
     private let heroScrollId = "detail-hero"
+    private let selectorEntryReleaseDelayNanoseconds: UInt64 = 2_000_000_000
     @State private var focusedEpisodeContentId: String?
     @State private var heroRevealOpacity = 1.0
     @State private var episodeRailRevealOpacity = 1.0
+    /// Single source of truth for the backdrop parallax and compact-header
+    /// reveal. Keeping this in a fine-grained Observation object prevents
+    /// every scroll frame from invalidating this complete focus-owning view.
+    @State private var scrollVisualState = TVDetailScrollVisualState()
 
     var body: some View {
-        ScrollViewReader { scrollProxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: TVDetailLayoutMetrics.firstSectionSpacing) {
-                    TVDetailHero(
-                        title: detail.title,
-                        seriesTitle: heroSeriesTitle,
-                        logoUrl: detail.logoUrl,
-                        backdropUrl: detail.backdropUrl,
-                        eyebrow: heroEyebrow,
-                        sourceTokens: heroSourceTokens,
-                        ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
-                        overview: detail.overview,
-                        factsLine: heroFactsLine,
-                        starringText: TVHeroMetadata.starringText(from: detail),
-                        actions: { actionColumn },
-                        belowSynopsis: belowSynopsis
-                    )
-                    .id(heroScrollId)
-                    .opacity(heroRevealOpacity)
-                    .onChange(of: detail.contentId) { _, _ in
-                        revealHeroMetadata()
-                    }
+        GeometryReader { geometry in
+            let episodeSectionOffset = max(
+                680,
+                geometry.size.height - TVDetailLayoutMetrics.episodePreviewDepth
+            )
+            let heroCanvasHeight = max(
+                episodeSectionOffset,
+                geometry.size.height - TVDetailLayoutMetrics.heroCanvasBottomMargin
+            )
 
-                    VStack(alignment: .leading, spacing: 72) {
-                        if showsEpisodeRail {
-                            episodesSection
-                                .id(episodeSectionScrollId)
-                        }
-                        if let cast = detail.cast, !cast.isEmpty {
-                            castSection(cast: cast)
-                        }
-                        trailersSection
-                        detailsSection
-                        if showsSimilarRail {
-                            similarSection
+            ZStack {
+                TVDetailPageBackdrop(
+                    artworkURL: detail.backdropUrl,
+                    artworkThumbhash: detail.backdropThumbhash,
+                    scrollVisualState: scrollVisualState
+                )
+
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        // The hero owns its complete visual/focus frame. A
+                        // negative *layout* spacing brings the episode browser
+                        // back to the same preview position without drawing
+                        // hero controls outside their reported geometry.
+                        VStack(
+                            alignment: .leading,
+                            spacing: episodeSectionOffset - heroCanvasHeight
+                        ) {
+                            TVDetailHero(
+                                title: detail.title,
+                                seriesTitle: heroSeriesTitle,
+                                logoUrl: detail.logoUrl,
+                                eyebrow: heroEyebrow,
+                                sourceTokens: heroSourceTokens,
+                                ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+                                overview: detail.overview,
+                                factsLine: heroFactsLine,
+                                starringText: TVHeroMetadata.starringText(from: detail),
+                                heroHeight: heroCanvasHeight,
+                                heroCanvasHeight: heroCanvasHeight,
+                                scrollRevealProgress: 0,
+                                scrollVisualState: scrollVisualState,
+                                suppressesEditorialFocus: episodeBrowserFocused
+                                    || castRailFocused
+                                    || selectorRowFocused,
+                                actions: { actionColumn },
+                                belowSynopsis: belowSynopsis
+                            )
+                            .id(heroScrollId)
+                            .opacity(heroRevealOpacity)
+                            .onChange(of: detail.contentId) { _, _ in
+                                releaseEpisodeBrowserSuppression()
+                                releaseEpisodeRailSuppression()
+                                if actionRowFocused {
+                                    armEpisodeBrowserSuppression()
+                                } else if selectorRowFocused {
+                                    armEpisodeRailSuppression()
+                                }
+                                revealHeroMetadata()
+                            }
+
+                            VStack(alignment: .leading, spacing: 72) {
+                                if showsEpisodeRail {
+                                    episodesSection
+                                        .id(episodeSectionScrollId)
+                                        .focused($episodeBrowserFocused)
+                                        .disabled(
+                                            episodeBrowserSuppressedForSelectorEntry
+                                        )
+                                } else {
+                                    compactScrolledHeader
+                                        .frame(
+                                            height: TVDetailLayoutMetrics.compactHeaderHeight,
+                                            alignment: .topLeading
+                                        )
+                                }
+                                if let cast = detail.cast, !cast.isEmpty {
+                                    castSection(cast: cast)
+                                        .disabled(episodeRailSuppressedForSeasonEntry)
+                                }
+                                trailersSection
+                                    .disabled(episodeRailSuppressedForSeasonEntry)
+                                detailsSection
+                                    .disabled(episodeRailSuppressedForSeasonEntry)
+                                if showsSimilarRail {
+                                    similarSection
+                                        .disabled(episodeRailSuppressedForSeasonEntry)
+                                }
+                            }
+                            .padding(.horizontal, ContinuumTheme.safePadding)
+                            .padding(.bottom, 160)
                         }
                     }
-                    .padding(.horizontal, ContinuumTheme.safePadding)
-                    .padding(.bottom, 160)
+                    .ignoresSafeArea()
+                    .focusScope(detailFocusNamespace)
+                    .defaultFocus(
+                        $actionFocus,
+                        .play,
+                        priority: prefersPageEntryPlay ? .userInitiated : .automatic
+                    )
+                    .detailFocusScroll(
+                        proxy: scrollProxy,
+                        episodeBrowserFocused: episodeBrowserFocused,
+                        heroControlsFocused: actionRowFocused || selectorRowFocused,
+                        episodeSectionId: episodeSectionScrollId,
+                        heroId: heroScrollId
+                    )
+                    .onScrollGeometryChange(for: CGFloat.self) { scrollGeometry in
+                        let offset = scrollGeometry.contentOffset.y
+                            + scrollGeometry.contentInsets.top
+                        return min(max(offset / max(episodeSectionOffset, 1), 0), 1)
+                    } action: { _, progress in
+                        scrollVisualState.progress = progress
+                    }
+                    .onPlayPauseCommand(perform: playFocusedEpisodeOrCurrent)
                 }
             }
-            .ignoresSafeArea()
-            .focusScope(detailFocusNamespace)
-            .defaultFocus(
-                $playFocused,
-                true,
-                priority: prefersPageEntryPlay ? .userInitiated : .automatic
-            )
-            .detailFocusScroll(
-                proxy: scrollProxy,
-                seasonRowFocused: seasonRowFocused,
-                actionRowFocused: actionRowFocused,
-                episodeSectionId: episodeSectionScrollId,
-                heroId: heroScrollId
-            )
-            .onPlayPauseCommand(perform: playFocusedEpisodeOrCurrent)
+        }
+        .ignoresSafeArea()
+        .onChange(of: actionFocus, initial: true) { _, action in
+            if action != nil {
+                armEpisodeBrowserSuppression()
+            } else {
+                scheduleEpisodeBrowserSuppressionRelease()
+            }
+        }
+        .onDisappear {
+            selectorEntryReleaseTask?.cancel()
+            selectorEntryReleaseTask = nil
+            seasonEntryReleaseTask?.cancel()
+            seasonEntryReleaseTask = nil
+        }
+        .onChange(of: seasons.count) { _, count in
+            if count <= 1 {
+                releaseEpisodeRailSuppression()
+            } else if selectorRowFocused {
+                armEpisodeRailSuppression()
+            }
         }
     }
 
@@ -169,7 +268,8 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     onSelectVersion: onSelectVersion,
                     onSelectAudioTrack: onSelectAudioTrack,
                     onSelectSubtitleTrack: onSelectSubtitleTrack,
-                    onVersionFocusChanged: setVersionSelectorFocused
+                    focusedSelector: $playbackSelectorFocus,
+                    onSelectorRowFocusChanged: setSelectorRowFocused
                 )
             }
             if let trailerFetchStatus {
@@ -182,18 +282,35 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 )
             }
         }
-        .onChange(of: playFocused) { _, isFocused in
-            if isFocused {
+        .onChange(of: actionFocus) { _, action in
+            if action == .play {
                 prefersPageEntryPlay = false
+            }
+        }
+        .onChange(of: hasPlaybackSelector) { _, hasTarget in
+            if hasTarget, actionRowFocused {
+                armEpisodeBrowserSuppression()
+            } else if !hasTarget {
+                releaseEpisodeBrowserSuppression()
             }
         }
     }
 
-    private func setVersionSelectorFocused(_ isFocused: Bool) {
+    private func setSelectorRowFocused(_ isFocused: Bool) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            versionSelectorFocused = isFocused
+            selectorRowFocused = isFocused
+            if isFocused {
+                selectorEntryReleaseTask?.cancel()
+                selectorEntryReleaseTask = nil
+                episodeBrowserSuppressedForSelectorEntry = false
+            }
+        }
+        if isFocused {
+            armEpisodeRailSuppression()
+        } else {
+            scheduleEpisodeRailSuppressionRelease()
         }
     }
 
@@ -214,15 +331,18 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 ? .season(key: selectedSeason?.contentId)
                 : .page,
             focusNamespace: detailFocusNamespace,
-            playFocused: $playFocused,
-            rowFocused: $actionRowFocused,
-            routesVersionUpToPlay: versionSelectorFocused,
+            focusedAction: $actionFocus,
+            routesSelectorUpToPlay: playbackSelectorFocus != nil,
             moreMenu: {
                 if hasMoreMenu {
                     moreMenu
                 }
             }
         )
+    }
+
+    private var actionRowFocused: Bool {
+        actionFocus != nil
     }
 
     // MARK: - More menu
@@ -316,19 +436,13 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var episodesSection: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            TVSectionHeader(label: episodeRailEyebrow, title: "Episodes")
-            if seasons.count > 1 {
-                TVSeasonChipRow(
-                    seasons: seasons,
-                    selectedSeasonId: selectedSeason?.id,
-                    onSelect: onSelectSeason,
-                    onFocusedSeasonChange: onFocusedSeasonChange
+        VStack(alignment: .leading, spacing: 0) {
+            compactScrolledHeader
+                .frame(
+                    height: TVDetailLayoutMetrics.compactHeaderHeight,
+                    alignment: .topLeading
                 )
-                // Container binding — true while any chip has focus, driving
-                // the episode-section re-center in `detailFocusScroll`.
-                .focused($seasonRowFocused)
-            }
+
             if seasonEpisodes.isEmpty, isLoadingEpisodes {
                 HStack {
                     Spacer()
@@ -354,10 +468,9 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         currentContentId: currentEpisodeContentId
                             ?? (detail.type == "episode" ? detail.contentId : nil),
                         currentContentIsFavorite: detail.type == "episode" ? isFavorite : false,
-                        favoriteStates: episodeFavoriteStates,
-                        prefersCurrentContentFocus: prefersCurrentEpisodeFocus
+                        favoriteStates: episodeFavoriteStates
                     )
-                    .disabled(isLoadingEpisodes)
+                    .disabled(isLoadingEpisodes || episodeRailSuppressedForSeasonEntry)
                     .opacity(isLoadingEpisodes ? 0.55 : episodeRailRevealOpacity)
                     .onChange(of: episodeRailIdentity) { _, _ in
                         revealEpisodeRail()
@@ -378,6 +491,142 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 }
                 .padding(.horizontal, -ContinuumTheme.safePadding)
             }
+        }
+    }
+
+    /// Apple TV-style compact identity block revealed by the same progress
+    /// that moves the canvas. It is always present in layout and focus, so a
+    /// Down move can target the Season row before the scroll reveals it.
+    private var compactScrolledHeader: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            compactTitle
+
+            if showsEpisodeRail, seasons.count > 1 {
+                TVSeasonChipRow(
+                    seasons: seasons,
+                    selectedSeasonId: selectedSeason?.id,
+                    onSelect: onSelectSeason,
+                    onFocusedSeasonChange: { season in
+                        if season != nil || seasons.count <= 1 {
+                            releaseEpisodeRailSuppression()
+                        }
+                        onFocusedSeasonChange?(season)
+                    }
+                )
+                .onMoveCommand { direction in
+                    guard direction == .up else { return }
+                    playbackSelectorFocus = .version
+                }
+            }
+        }
+        .padding(.top, 34)
+        .modifier(TVDetailCompactHeaderReveal(scrollVisualState: scrollVisualState))
+    }
+
+    @ViewBuilder
+    private var compactTitle: some View {
+        if let logoURL = detail.logoUrl, !logoURL.isEmpty {
+            CachedAsyncImage(
+                url: logoURL,
+                contentMode: .fit,
+                placeholderStyle: .clear
+            )
+            .frame(width: 460, height: 82, alignment: .leading)
+            .accessibilityLabel(compactTitleText)
+        } else {
+            Text(compactTitleText)
+                .font(.system(size: 48, weight: .bold))
+                .foregroundStyle(Color.continuumOnSurface)
+                .lineLimit(1)
+        }
+    }
+
+    private var compactTitleText: String {
+        if detail.type == "episode" || detail.type == "season" {
+            return detail.seriesTitle ?? detail.title
+        }
+        return detail.title
+    }
+
+    private var hasPlaybackSelector: Bool {
+        currentVersion != nil && !shouldShowVersionPlaceholder
+    }
+
+    private func armEpisodeBrowserSuppression() {
+        guard hasPlaybackSelector else {
+            releaseEpisodeBrowserSuppression()
+            return
+        }
+        selectorEntryReleaseTask?.cancel()
+        selectorEntryReleaseTask = nil
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            episodeBrowserSuppressedForSelectorEntry = true
+        }
+    }
+
+    /// Focus may leave the action row for chrome instead of the selector. A
+    /// short fallback prevents that path from leaving Episodes unavailable;
+    /// a real selector landing cancels it synchronously.
+    private func scheduleEpisodeBrowserSuppressionRelease() {
+        guard episodeBrowserSuppressedForSelectorEntry else { return }
+        selectorEntryReleaseTask?.cancel()
+        selectorEntryReleaseTask = Task { @MainActor in
+            // Scroll-backed focus searches can outlive the old 500 ms
+            // fallback on tvOS 26.5. A real selector landing cancels this
+            // immediately, so the longer ceiling affects only aborted moves.
+            try? await Task.sleep(
+                nanoseconds: selectorEntryReleaseDelayNanoseconds
+            )
+            guard !Task.isCancelled, !selectorRowFocused else { return }
+            releaseEpisodeBrowserSuppression()
+        }
+    }
+
+    private func releaseEpisodeBrowserSuppression() {
+        selectorEntryReleaseTask?.cancel()
+        selectorEntryReleaseTask = nil
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            episodeBrowserSuppressedForSelectorEntry = false
+        }
+    }
+
+    private func armEpisodeRailSuppression() {
+        guard showsEpisodeRail,
+              seasons.count > 1,
+              !seasonEpisodes.isEmpty else {
+            releaseEpisodeRailSuppression()
+            return
+        }
+        seasonEntryReleaseTask?.cancel()
+        seasonEntryReleaseTask = nil
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            episodeRailSuppressedForSeasonEntry = true
+        }
+    }
+
+    private func scheduleEpisodeRailSuppressionRelease() {
+        guard episodeRailSuppressedForSeasonEntry else { return }
+        seasonEntryReleaseTask?.cancel()
+        seasonEntryReleaseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, !selectorRowFocused else { return }
+            releaseEpisodeRailSuppression()
+        }
+    }
+
+    private func releaseEpisodeRailSuppression() {
+        seasonEntryReleaseTask?.cancel()
+        seasonEntryReleaseTask = nil
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            episodeRailSuppressedForSeasonEntry = false
         }
     }
 
@@ -436,20 +685,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         }
     }
 
-    private var episodeRailEyebrow: String {
-        // Track the chip selection — the rail can show a different season
-        // than the episode's own once the viewer switches in place.
-        if let season = selectedSeason {
-            return season.seasonNumber > 0
-                ? "Season \(season.seasonNumber)"
-                : (season.title ?? "Specials")
-        }
-        if let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
-            return "Season \(seasonNumber)"
-        }
-        return "This Season"
-    }
-
     // MARK: - More Like This
 
     /// Hide on episode pages — viewers want the next episode, not
@@ -482,7 +717,17 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 28) {
             TVSectionHeader(title: "Cast & Crew")
-            TVDetailCastRail(cast: cast, onTap: onPersonTap)
+            TVDetailCastRail(
+                cast: cast,
+                onTap: onPersonTap,
+                onFocusChanged: { isFocused in
+                    castRailFocused = isFocused
+                    if isFocused {
+                        releaseEpisodeBrowserSuppression()
+                        releaseEpisodeRailSuppression()
+                    }
+                }
+            )
         }
     }
 
@@ -557,6 +802,24 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             return []
         }
         return TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion)
+    }
+}
+
+/// Keeps the compact title and Season pills mounted in the native focus graph
+/// while limiting per-frame invalidation to this render-only wrapper. A tiny
+/// opacity floor is visually transparent but avoids the focus removal caused
+/// by a literal zero without requiring an offscreen mask every frame.
+private struct TVDetailCompactHeaderReveal: ViewModifier {
+    let scrollVisualState: TVDetailScrollVisualState
+
+    func body(content: Content) -> some View {
+        content.opacity(max(opacity, 0.001))
+    }
+
+    private var opacity: Double {
+        let progress = min(max((scrollVisualState.progress - 0.24) / 0.36, 0), 1)
+        let eased = progress * progress * (3 - (2 * progress))
+        return Double(eased)
     }
 }
 #endif

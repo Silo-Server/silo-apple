@@ -190,6 +190,107 @@ the semantic target. A later programmatic assignment either did not win or
 produced the distracting wrong-item flash. Restricting eligibility expresses
 the destination before movement begins and avoids corrective focus mutation.
 
+## Detail Hero and Episode-Browser Handoff
+
+The Apple-TV-style detail page is one vertical canvas with two visual regions:
+the hero controls and the episode browser. `TVDetailFocusScroll` is the only
+`ScrollViewProxy` writer. Focus state chooses its scroll intent; individual
+buttons and rows must not also issue vertical `scrollTo` calls.
+
+The directional contract is:
+
+1. The detail page owns one `TVDetailActionFocus` value for Play and its sibling
+   actions, plus one `TVPlaybackSelectorFocus` value for Version, Audio, and
+   Subtitles. Child rows receive those bindings; they must not attach a second
+   local `FocusState` to the same native control. Two focus bindings can produce
+   a split state where a button looks focused but its row still reports `nil`.
+2. Play -> Down enters the playback selector. While an action owns focus, the
+   episode browser is temporarily ineligible. Keep that latch through the
+   transient `source -> nil -> destination` frame and release it immediately
+   when the selector row reports focus. The fallback is two seconds because a
+   scroll-backed search on tvOS 26.5 can exceed 500 ms; it exists only to unlock
+   an aborted move and is cancelled on a successful landing.
+3. Version <-> Audio <-> Subtitles is ordinary native horizontal movement.
+   Never rewrite selector focus for those presses. Keeping their shared focus
+   binding at page scope also makes a Season-row return land on a healthy native
+   item instead of a child-scope item with no horizontal candidates.
+4. Playback selector -> Down uses native geometry. Episode cards and later
+   rails are temporarily ineligible, but the Season row remains eligible. The
+   selected pill is the row's only eligible entry target until the row owns
+   focus; all pills then become eligible for ordinary Left and Right movement.
+   Latch that ownership across the focus engine's transient
+   `pill -> nil -> pill` frame. Only restore selected-only eligibility when nil
+   persists as a genuine row exit, and suppress implicit animation for that
+   eligibility update. Likewise, do not report transient nil to parent
+   prefetch state: rebuilding the parent and every glass pill mid-handoff
+   produces a row-wide flash.
+   Render each season pill as an independent native glass surface. Do not wrap
+   this row in a shared `GlassEffectContainer`: its combined render group
+   couples every pill when the focused pill changes tint and scale, producing
+   the same inactive-control flash avoided by `TVDetailActionRow`.
+   Each pill is one custom composite: the completed glass surface receives the
+   `.focusable(eligible)` gate, the row's `.focused(...)` binding, the Select
+   gesture, and the default accessibility action. Render its Liquid Glass with
+   the shared detail-surface recipe instead of nesting a native `Button`.
+   Applying `.focusable` around an already focusable `Button` creates two
+   activation owners: Select can stop at the outer interaction, visually
+   highlight the pill, and never run the Button action. Repeated presses then
+   appear to select every season while the episode carousel never changes.
+   Removing only the eligibility wrapper makes activation work but loses the
+   selected-season entry guarantee because tvOS does not reevaluate scoped
+   default focus for every directional move.
+   Render the bright white glass, lift, and inverted label from the same
+   `focusedSeasonId` telemetry. Selection is a separate, quieter clear-glass
+   tint with a white label. Do not add a dynamic backing or overlay around the
+   pill: it can leave stale highlights behind and obscure which state owns the
+   visual. This rendering must never mutate focus.
+   A scoped `defaultFocus` remains a fallback, not the guarantee: tvOS does not
+   reevaluate it for every directional entry. The latch is released when a
+   Season pill owns focus. Do not add a second Version -> Season request/cancel
+   state machine.
+5. Season -> Up is the one intentional dead-edge command. The Season row asks
+   the page-owned selector focus binding for Version. Selector telemetry then
+   drives the existing `TVDetailFocusScroll` hero intent; individual controls
+   still do not issue their own `scrollTo` calls.
+6. Season -> Down enters the episode carousel on the episode represented by
+   the detail page (or the series/season's next-up episode). `TVEpisodeRail`
+   gives that card a user-initiated `defaultFocus` preference inside a nested
+   carousel `focusScope`. The nested scope is essential: it makes the current
+   episode win when focus enters the rail without letting the rail's preference
+   compete with Play during page entry. Left and Right within the carousel
+   remain ordinary native movement. Up from an episode re-enters the Season
+   scope on its selected pill.
+7. Selector -> Up returns to Play. Because a wide Version pill is geometrically
+   centred under the secondary actions, keep those sibling actions ineligible
+   while *any* selector owns focus. Use one continuously mounted `.disabled`
+   value rather than conditionally adding/removing focus modifiers. The Boolean
+   stays true across Version -> Audio -> Subtitles, so horizontal movement does
+   not reconstruct the Liquid Glass action row.
+
+Keep visually fading focus owners mounted with a render-only opacity floor. A
+literal `.opacity(0)` removes descendants from the focus graph; `0.001` is
+visually transparent while preserving stable eligibility and avoids the
+offscreen render pass of a full-subtree mask.
+
+Scroll progress is high-frequency render state, not page-navigation state.
+Keep it in `TVDetailScrollVisualState` and pass the reference without reading
+`progress` in `TVMovieDetailView.body`. Only the backdrop, hero reveal wrappers,
+and compact-header reveal observe it. Storing progress directly on the root
+detail view invalidates the complete focus graph and every Liquid Glass control
+on every animation frame, which can hitch on physical Apple TV even when the
+simulator looks smooth. Likewise, do not animate the radius of a full-screen
+backdrop blur. Crossfade a fixed pre-blurred layer so scrolling changes only
+cheap compositing properties.
+
+The simulator regression test for this contract is
+`TVDetailFocusHandoffUITests.testSeasonUpReturnsToPlaybackSelector`. It follows
+Play -> Version -> Audio -> Version -> selected Season -> adjacent Season ->
+current episode -> selected Season -> Version -> Audio -> Subtitles -> Version
+-> Play -> Start Over -> Play and verifies the actual focused accessibility
+element after every move. Keep it attached to a multi-season series fixture so
+it exercises both focus zones and the canvas transition. Do not add sleeps to
+make this route pass.
+
 ## Debugging Checklist
 
 When focus feels random, capture the active ownership boundary first:

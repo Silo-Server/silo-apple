@@ -17,6 +17,7 @@ struct ContentView: View {
     #endif
     @State private var debugPlayContentId: String?
     @State private var didAttemptDebugAutoPlay = false
+    @State private var didAttemptDebugItemNavigation = false
     @State private var didAttemptDebugDiagnostics = false
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
@@ -73,7 +74,7 @@ struct ContentView: View {
         #if os(iOS) || os(tvOS)
         .modifier(DiagnosticsPromptPresentationModifier(
             model: diagnosticsModel,
-            isEnabled: router.authState == .authenticated
+            isEnabled: shouldPresentDiagnosticsPrompt
         ))
         #endif
         .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
@@ -212,6 +213,9 @@ struct ContentView: View {
                     pendingDeepLink = nil
                     handleDeepLink(pending)
                 }
+                #if DEBUG
+                navigateToDebugItemIfRequested()
+                #endif
                 #if os(tvOS)
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
@@ -823,12 +827,39 @@ struct ContentView: View {
     }
 
     #if DEBUG
+    private var shouldPresentDiagnosticsPrompt: Bool {
+        router.authState == .authenticated
+            && !CommandLine.arguments.contains("-debugSuppressDiagnosticsPrompt")
+    }
+
     private func debugLaunchArgValue(_ name: String) -> String? {
         guard let index = CommandLine.arguments.firstIndex(of: name),
               index + 1 < CommandLine.arguments.count else {
             return nil
         }
         return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    #else
+    private var shouldPresentDiagnosticsPrompt: Bool {
+        router.authState == .authenticated
+    }
+    #endif
+
+    #if DEBUG
+    /// Debug-only simulator/device fixture for opening a detail page after
+    /// authentication resolves. Keeping this behind an explicit launch
+    /// argument makes focus regression tests deterministic without changing
+    /// production deep-link behavior.
+    private func navigateToDebugItemIfRequested() {
+        guard !didAttemptDebugItemNavigation,
+              let contentId = debugLaunchArgValue("-debugItem"),
+              !contentId.isEmpty else {
+            return
+        }
+        didAttemptDebugItemNavigation = true
+        router.popToRoot()
+        router.navigate(to: .itemDetail(contentId: contentId))
+        print("[DebugItem] opened requested detail")
     }
 
     #if os(iOS) || os(tvOS)

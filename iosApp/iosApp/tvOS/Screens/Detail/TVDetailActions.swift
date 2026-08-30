@@ -118,6 +118,7 @@ struct TVPrimaryPillButton: View {
         Button(action: action) {
             TVExpandingDetailActionLabel(icon: icon, title: title, prominent: true)
         }
+        .accessibilityIdentifier("detail.action.play")
         // The label grows inside one stable native control. A capsule is a
         // circle at the resting square size and naturally stretches around
         // the title, allowing the system glass to morph with the content.
@@ -137,18 +138,6 @@ private extension View {
         }
     }
 
-    /// Native Buttons already own their focus interaction. Applying
-    /// `.focusable(true)` on top replaces that interaction and suppresses the
-    /// glass style's visible focus response, so only add a modifier in the
-    /// exceptional disabled state.
-    @ViewBuilder
-    func detailActionFocusDisabled(_ isDisabled: Bool) -> some View {
-        if isDisabled {
-            self.focusable(false)
-        } else {
-            self
-        }
-    }
 }
 
 // MARK: - Secondary action
@@ -245,6 +234,7 @@ struct TVCircleActionButton: View {
     let isActive: Bool
     let title: String
     let accessibilityLabel: String
+    var accessibilityIdentifier: String? = nil
     let action: () -> Void
 
     init(
@@ -253,6 +243,7 @@ struct TVCircleActionButton: View {
         isActive: Bool = false,
         title: String,
         accessibilityLabel: String,
+        accessibilityIdentifier: String? = nil,
         action: @escaping () -> Void
     ) {
         self.icon = icon
@@ -260,6 +251,7 @@ struct TVCircleActionButton: View {
         self.isActive = isActive
         self.title = title
         self.accessibilityLabel = accessibilityLabel
+        self.accessibilityIdentifier = accessibilityIdentifier
         self.action = action
     }
 
@@ -278,10 +270,31 @@ struct TVCircleActionButton: View {
         // `checkmark.circle.fill`) is what carries the active state, so an
         // accent wash on top was redundant colour in an otherwise neutral row.
         .accessibilityLabel(accessibilityLabel)
+        .applyAccessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func applyAccessibilityIdentifier(_ identifier: String?) -> some View {
+        if let identifier {
+            self.accessibilityIdentifier(identifier)
+        } else {
+            self
+        }
     }
 }
 
 // MARK: - Detail action row
+
+enum TVDetailActionFocus: Hashable {
+    case play
+    case startOver
+    case favorite
+    case watchlist
+    case watched
+    case more
+}
 
 /// Shared native focus row for movie, episode, season and series detail pages.
 /// The only imperative focus work is a bounded page-entry retry for Play;
@@ -290,15 +303,6 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     enum InitialFocusScope: Equatable {
         case page
         case season(key: String?)
-    }
-
-    private enum ActionID: Hashable {
-        case play
-        case startOver
-        case favorite
-        case watchlist
-        case watched
-        case more
     }
 
     let playTitle: String?
@@ -314,19 +318,17 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     let onToggleWatched: () -> Void
     let initialFocusScope: InitialFocusScope
     let focusNamespace: Namespace.ID
-    let playFocused: FocusState<Bool>.Binding
-    let rowFocused: FocusState<Bool>.Binding
-    /// While Version owns focus below this row, Play is the sole eligible Up
-    /// destination. The selector delays releasing this state until the focus
-    /// move has landed, avoiding a transient all-buttons redraw.
-    let routesVersionUpToPlay: Bool
+    let focusedAction: FocusState<TVDetailActionFocus?>.Binding
+    /// While the playback selector zone owns focus, Play is the single
+    /// semantic destination above it. This remains true across horizontal
+    /// selector moves, so the action row's eligibility is structurally stable.
+    let routesSelectorUpToPlay: Bool
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
-    @FocusState private var focusedAction: ActionID?
 
     var body: some View {
         // Each control owns an independent native glass surface. A shared
@@ -338,10 +340,9 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 TVPrimaryPillButton(
                     icon: "play.fill",
                     title: playTitle,
-                    action: onPlay,
-                    focused: playFocused
+                    action: onPlay
                 )
-                .focused($focusedAction, equals: .play)
+                .focused(focusedAction, equals: .play)
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width > 0 && proxy.size.height > 0
                 } action: { isLaidOut in
@@ -354,10 +355,11 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                         icon: "arrow.counterclockwise",
                         title: "Start Over",
                         accessibilityLabel: "Start Over",
+                        accessibilityIdentifier: "detail.action.startOver",
                         action: onStartOver
                     )
-                    .detailActionFocusDisabled(routesVersionUpToPlay)
-                    .focused($focusedAction, equals: .startOver)
+                    .disabled(routesSelectorUpToPlay)
+                    .focused(focusedAction, equals: .startOver)
                 }
             }
 
@@ -369,8 +371,8 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
                 action: onToggleFavorite
             )
-            .detailActionFocusDisabled(routesVersionUpToPlay)
-            .focused($focusedAction, equals: .favorite)
+            .disabled(routesSelectorUpToPlay)
+            .focused(focusedAction, equals: .favorite)
 
             TVCircleActionButton(
                 icon: "bookmark",
@@ -380,8 +382,8 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
                 action: onToggleWatchlist
             )
-            .detailActionFocusDisabled(routesVersionUpToPlay)
-            .focused($focusedAction, equals: .watchlist)
+            .disabled(routesSelectorUpToPlay)
+            .focused(focusedAction, equals: .watchlist)
 
             TVCircleActionButton(
                 icon: "checkmark.circle",
@@ -391,32 +393,31 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
                 action: onToggleWatched
             )
-            .detailActionFocusDisabled(routesVersionUpToPlay)
-            .focused($focusedAction, equals: .watched)
+            .disabled(routesSelectorUpToPlay)
+            .focused(focusedAction, equals: .watched)
 
             moreMenu()
-                .detailActionFocusDisabled(routesVersionUpToPlay)
-                .focused($focusedAction, equals: .more)
+                .disabled(routesSelectorUpToPlay)
+                .focused(focusedAction, equals: .more)
         }
-        .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
-        .onChange(of: focusedAction) { oldAction, newAction in
+        .onChange(of: focusedAction.wrappedValue) { oldAction, newAction in
             TVDetailFocusDiagnostics.record(
                 "action.focusChanged",
                 target: actionName(newAction),
                 action: newAction == nil ? "lost" : "focused",
                 state: "from=\(actionName(oldAction)) to=\(actionName(newAction)) "
-                    + "playFocused=\(playFocused.wrappedValue)"
+                    + "playFocused=\(newAction == .play)"
             )
         }
-        .onChange(of: playFocused.wrappedValue) { _, isFocused in
-            guard isFocused else { return }
+        .onChange(of: focusedAction.wrappedValue) { _, action in
+            guard action == .play else { return }
             TVDetailFocusDiagnostics.record(
                 "play.focusGained",
                 target: "play",
                 action: "focused",
-                state: "rowTarget=\(actionName(focusedAction))",
+                state: "rowTarget=\(actionName(focusedAction.wrappedValue))",
                 essential: true
             )
         }
@@ -450,14 +451,14 @@ struct TVDetailActionRow<MoreMenu: View>: View {
         }
         didResetInitialPlayFocus = true
 
-        let actionFocus = $focusedAction
+        let actionBinding = focusedAction
         initialPlayFocusTask = Task { @MainActor in
-            var lastFocusedAction = actionFocus.wrappedValue
+            var lastFocusedAction = actionBinding.wrappedValue
             for attempt in 0..<3 {
                 if Task.isCancelled { return }
-                if playFocused.wrappedValue { return }
+                if focusedAction.wrappedValue == .play { return }
 
-                let focusedNow = actionFocus.wrappedValue
+                let focusedNow = actionBinding.wrappedValue
                 if lastFocusedAction != nil, focusedNow != lastFocusedAction {
                     return
                 }
@@ -480,7 +481,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
         }
     }
 
-    private func actionName(_ action: ActionID?) -> String {
+    private func actionName(_ action: TVDetailActionFocus?) -> String {
         guard let action else { return "none" }
         switch action {
         case .play: return "play"

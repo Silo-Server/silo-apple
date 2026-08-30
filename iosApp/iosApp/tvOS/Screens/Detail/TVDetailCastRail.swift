@@ -6,6 +6,7 @@ import SwiftUI
 struct TVDetailCastRail: View {
     let cast: [CastMember]
     let onTap: (String) -> Void
+    var onFocusChanged: ((Bool) -> Void)? = nil
 
     private let photoWidth: CGFloat = 200
     private let photoHeight: CGFloat = 200
@@ -30,6 +31,13 @@ struct TVDetailCastRail: View {
         .focusSection()
         .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
         .scrollClipDisabled()
+        .onChange(of: focusedCastId) { oldValue, newValue in
+            guard (oldValue == nil) != (newValue == nil) else { return }
+            onFocusChanged?(newValue != nil)
+        }
+        .onDisappear {
+            onFocusChanged?(false)
+        }
     }
 
     private var defaultFocusId: String? {

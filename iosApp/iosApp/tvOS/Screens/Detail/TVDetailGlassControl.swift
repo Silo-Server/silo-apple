@@ -7,14 +7,36 @@ import SwiftUI
 extension View {
     func tvDetailGlassControl(
         shape: ButtonBorderShape,
-        isSelected: Bool = false
+        isSelected: Bool = false,
+        isFocused: Bool = false
     ) -> some View {
-        let glass = isSelected
-            ? Glass.clear.tint(Color.white.opacity(0.76))
-            : Glass.clear
-
-        return buttonStyle(.glass(glass))
+        buttonStyle(.glass(detailGlass(isSelected: isSelected, isFocused: isFocused)))
             .buttonBorderShape(shape)
+    }
+
+    /// The same detail-control material for a single custom focus owner. Use
+    /// this when a native Button plus an eligibility wrapper would create two
+    /// competing focus/activation interactions.
+    func tvDetailGlassSurface(
+        in shape: some Shape,
+        isSelected: Bool = false,
+        isFocused: Bool = false
+    ) -> some View {
+        glassEffect(
+            detailGlass(isSelected: isSelected, isFocused: isFocused)
+                .interactive(),
+            in: shape
+        )
+    }
+}
+
+private func detailGlass(isSelected: Bool, isFocused: Bool) -> Glass {
+    if isFocused {
+        Glass.clear.tint(Color.white.opacity(0.94))
+    } else if isSelected {
+        Glass.clear.tint(Color.white.opacity(0.26))
+    } else {
+        Glass.clear
     }
 }
 #endif

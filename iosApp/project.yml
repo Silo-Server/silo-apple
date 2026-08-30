@@ -4,7 +4,7 @@ options:
   deploymentTarget:
     iOS: "26.0"
     macOS: "26.0"
-    tvOS: "26.6"
+    tvOS: "26.5"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
@@ -353,6 +353,24 @@ targets:
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
 
+  # Focus-only simulator regressions for the native tvOS focus engine. These
+  # tests launch the real app and receive credentials through the invoking
+  # process environment; no account data is stored in the project.
+  SiloTVUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources:
+      - path: TVUITests
+    dependencies:
+      - target: SiloTV
+    settings:
+      base:
+        PRODUCT_NAME: SiloTVUITests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: "appletvsimulator"
+        TEST_TARGET_NAME: SiloTV
+
 schemes:
   Silo:
     build:
@@ -390,10 +408,13 @@ schemes:
     build:
       targets:
         SiloTV: all
+        SiloTVUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - SiloTVUITests
     archive:
       config: Release
     analyze:

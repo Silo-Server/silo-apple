@@ -1,15 +1,23 @@
 #if os(tvOS)
+import Observation
 import SwiftUI
+
+/// Scroll-synchronous visual state for the detail canvas. The owning detail
+/// view deliberately passes this reference without reading `progress` in its
+/// body, so frame-by-frame scroll updates invalidate only the small visual
+/// leaves that consume it instead of rebuilding the complete focus graph.
+@Observable
+final class TVDetailScrollVisualState {
+    var progress: CGFloat = 0
+}
 
 extension View {
     /// Shared scroll choreography for the tvOS detail pages (movie/episode,
     /// series, season). Apply to the detail page's vertical ScrollView.
     ///
-    /// Only multi-season pages need help: the short season chip row
-    /// intercepts the down move, so the focus engine's minimal reveal scroll
-    /// stops with the episode rail below the fold. Single-season pages never
-    /// misframe — focus lands straight on the tall episode card and the
-    /// engine's reveal produces the deep centered framing natively.
+    /// The season pills and cards are one browser region. Entering either one
+    /// settles the section at the top, producing a single coherent hero →
+    /// episode transition even on pages without a season-pill row.
     ///
     /// Each focus transition produces at most one scroll. Repeated delayed
     /// `scrollTo` calls restart the animation while the focus engine is also
@@ -19,18 +27,19 @@ extension View {
     ///
     /// Returning up to the Play / Start Over / circle-button row restores the
     /// page-entry framing (hero pinned to the top) the same way.
+    ///
     func detailFocusScroll(
         proxy: ScrollViewProxy,
-        seasonRowFocused: Bool,
-        actionRowFocused: Bool,
+        episodeBrowserFocused: Bool,
+        heroControlsFocused: Bool,
         episodeSectionId: String,
         heroId: String
     ) -> some View {
         modifier(
             DetailFocusScrollModifier(
                 proxy: proxy,
-                seasonRowFocused: seasonRowFocused,
-                actionRowFocused: actionRowFocused,
+                episodeBrowserFocused: episodeBrowserFocused,
+                heroControlsFocused: heroControlsFocused,
                 episodeSectionId: episodeSectionId,
                 heroId: heroId
             )
@@ -40,24 +49,29 @@ extension View {
 
 private struct DetailFocusScrollModifier: ViewModifier {
     let proxy: ScrollViewProxy
-    let seasonRowFocused: Bool
-    let actionRowFocused: Bool
+    let episodeBrowserFocused: Bool
+    let heroControlsFocused: Bool
     let episodeSectionId: String
     let heroId: String
 
-    private enum Region: Equatable {
-        case seasonRow
-        case actionRow
+    private enum Destination: Equatable {
+        case episodeBrowser
+        case hero
+    }
+
+    private struct ScrollRequest: Equatable {
+        let destination: Destination
+        let generation: Int
     }
 
     /// A single non-bouncy curve follows the native reveal without continuing
     /// to move after focus has visually settled.
-    private static let scrollAnimation = Animation.smooth(duration: 0.32, extraBounce: 0)
+    private static let scrollAnimation = Animation.smooth(duration: 0.44, extraBounce: 0)
 
     func body(content: Content) -> some View {
         content
-            .task(id: currentRegion) {
-                guard let region = currentRegion else { return }
+            .task(id: currentRequest) {
+                guard let request = currentRequest else { return }
 
                 // Let SwiftUI commit the new focused geometry before asking
                 // the reader to frame it. This is one cooperative yield, not
@@ -65,20 +79,31 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 await Task.yield()
                 guard !Task.isCancelled else { return }
 
+                TVDetailFocusDiagnostics.record(
+                    "detail.scroll.request",
+                    target: request.destination == .hero ? "hero" : "episodeBrowser",
+                    action: "scrollTo",
+                    state: "generation=\(request.generation)",
+                    essential: true
+                )
                 withAnimation(Self.scrollAnimation) {
-                    switch region {
-                    case .seasonRow:
-                        proxy.scrollTo(episodeSectionId, anchor: .center)
-                    case .actionRow:
+                    switch request.destination {
+                    case .episodeBrowser:
+                        proxy.scrollTo(episodeSectionId, anchor: .top)
+                    case .hero:
                         proxy.scrollTo(heroId, anchor: .top)
                     }
                 }
             }
     }
 
-    private var currentRegion: Region? {
-        if seasonRowFocused { return .seasonRow }
-        if actionRowFocused { return .actionRow }
+    private var currentRequest: ScrollRequest? {
+        if episodeBrowserFocused {
+            return ScrollRequest(destination: .episodeBrowser, generation: 0)
+        }
+        if heroControlsFocused {
+            return ScrollRequest(destination: .hero, generation: 0)
+        }
         return nil
     }
 }

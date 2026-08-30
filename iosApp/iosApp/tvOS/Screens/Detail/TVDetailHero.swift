@@ -5,8 +5,16 @@ enum TVDetailLayoutMetrics {
     /// Leaves a deliberate preview band for the first body section on the
     /// 1080-point tvOS canvas, echoing Home's marquee-above-row composition.
     static let heroHeight: CGFloat = 880
-    static let heroContentBottomInset: CGFloat = 64
+    static let heroContentBottomInset: CGFloat = 104
     static let firstSectionSpacing: CGFloat = 32
+    /// At rest the compact header occupies most of this band invisibly, so
+    /// only the upper slice of the episode artwork peeks into the viewport.
+    static let episodePreviewDepth: CGFloat = 180
+    static let compactHeaderHeight: CGFloat = 208
+    /// The hero reports a shorter layout height so the episode rail can peek,
+    /// but its controls use almost the full viewport and stop at this safe
+    /// distance above the bottom edge.
+    static let heroCanvasBottomMargin: CGFloat = 56
 }
 
 /// Full-bleed cinematic hero for the tvOS item-detail screen. Modeled
@@ -23,7 +31,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let title: String
     let seriesTitle: String?
     let logoUrl: String?
-    let backdropUrl: String?
     /// Optional short editorial line placed in a capsule above the title
     /// (e.g. "New Episode Friday", "Continuing Series"). Hidden when nil.
     let eyebrow: String?
@@ -41,44 +48,67 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
     let starringText: String?
+    /// Height reported to the outer scroll layout. This controls where the
+    /// compact header and episode rail begin.
+    let heroHeight: CGFloat
+    /// Visual canvas used by the metadata and controls. The active detail
+    /// layout reports this complete height to the focus engine; legacy hosts
+    /// can still provide a distinct outer height while they migrate.
+    let heroCanvasHeight: CGFloat
+    /// Normalized outer-scroll progress. The hero fades away before the
+    /// compact title and season controls enter the same part of the screen.
+    let scrollRevealProgress: CGFloat
+    /// Fine-grained scroll state used by the persistent detail canvas. When
+    /// supplied, only the reveal wrappers observe progress; the complete hero
+    /// and its Liquid Glass focus controls do not rebuild every scroll frame.
+    var scrollVisualState: TVDetailScrollVisualState? = nil
+    /// Semantic focus ownership from the parent. Unlike scroll progress this
+    /// changes only when the episode browser actually owns focus, so the
+    /// editorial subtree cannot enter/leave the graph mid-animation.
+    let suppressesEditorialFocus: Bool
     @ViewBuilder let actions: () -> Actions
     /// Affordance rendered directly under the synopsis (e.g. the on-view
     /// description-translation control). Pass `{ EmptyView() }` when there's
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    private let heroHeight = TVDetailLayoutMetrics.heroHeight
     private let contentMaxWidth: CGFloat = 1200
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            backdrop
             leftGradient
-            bottomFade
+                .modifier(heroRevealModifier())
             content
+                // A literal zero opacity removes descendants from tvOS focus
+                // eligibility. Fade only the rendered pixels so the mounted
+                // Version/Audio/Subtitle controls remain valid Up targets;
+                // focus then drives the existing scroll-back reveal.
+                .modifier(heroRevealModifier(preservesFocusEligibility: true))
         }
-        .overlay(alignment: .trailing) { starringOverlay }
-        .frame(height: heroHeight)
+        .overlay(alignment: .trailing) {
+            starringOverlay
+                .modifier(heroRevealModifier())
+        }
+        .frame(height: heroCanvasHeight)
         .frame(maxWidth: .infinity)
-        .clipped()
+        .frame(height: heroHeight, alignment: .top)
     }
 
-    // MARK: - Backdrop
-
-    private var backdrop: some View {
-        Group {
-            if let url = backdropUrl, !url.isEmpty {
-                CachedAsyncImage(url: url, contentMode: .fill)
-            } else {
-                Color.continuumSurface
-            }
-        }
-        .frame(height: heroHeight)
-        .frame(maxWidth: .infinity)
+    /// Smoothstep gives the hero an eased fade while still being a direct
+    /// function of scroll position. It is fully gone before the compact
+    /// season header becomes materially visible, eliminating overlap.
+    private func heroRevealModifier(
+        preservesFocusEligibility: Bool = false
+    ) -> TVDetailHeroReveal {
+        TVDetailHeroReveal(
+            fallbackProgress: scrollRevealProgress,
+            scrollVisualState: scrollVisualState,
+            preservesFocusEligibility: preservesFocusEligibility
+        )
     }
 
-    /// Heavy left-side darkening → clear on the right so the backdrop
-    /// imagery breathes while text stays legible.
+    /// Heavy left-side darkening → clear on the right so the page-level
+    /// corner artwork breathes while text stays legible.
     private var leftGradient: some View {
         LinearGradient(
             stops: [
@@ -90,21 +120,21 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             startPoint: .leading,
             endPoint: .trailing
         )
-    }
-
-    /// Soft bottom fade into the scroll body — subtle so the seam is
-    /// invisible and a hint of the next rail peeks through.
-    private var bottomFade: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0.0),
-                .init(color: .clear, location: 0.55),
-                .init(color: Color.continuumBackground.opacity(0.55), location: 0.85),
-                .init(color: Color.continuumBackground, location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        // The scrim belongs only to the metadata, but a full-height rectangle
+        // would reveal its bottom edge exactly where the first rail begins.
+        // Fade its alpha before that boundary while leaving the sampled page
+        // wash underneath untouched.
+        .mask {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.82),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 
     // MARK: - Content column
@@ -112,6 +142,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 24) {
             editorialColumn
+                // When the episode browser is settled, the synopsis and its
+                // translation/expand controls must not compete with the
+                // selector row for Up. They rejoin the graph as the hero
+                // scrolls back into view.
+                .disabled(suppressesEditorialFocus)
 
             // Give the action cluster the full hero width with leading
             // content (instead of `HStack { actions(); Spacer() }`) so the
@@ -265,6 +300,29 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .padding(.trailing, ContinuumTheme.safePadding)
                 .padding(.bottom, heroHeight * 0.45)
         }
+    }
+}
+
+/// Render-only reveal wrapper. Observation tracking stops at this leaf, so a
+/// progress update changes compositing without rebuilding the hero's action
+/// and selector controls. The focus-preserving variant never reaches a
+/// literal zero because tvOS removes fully transparent controls from focus.
+private struct TVDetailHeroReveal: ViewModifier {
+    let fallbackProgress: CGFloat
+    let scrollVisualState: TVDetailScrollVisualState?
+    let preservesFocusEligibility: Bool
+
+    func body(content: Content) -> some View {
+        content.opacity(
+            preservesFocusEligibility ? max(opacity, 0.001) : opacity
+        )
+    }
+
+    private var opacity: Double {
+        let rawProgress = scrollVisualState?.progress ?? fallbackProgress
+        let progress = min(max((rawProgress - 0.04) / 0.28, 0), 1)
+        let eased = progress * progress * (3 - (2 * progress))
+        return Double(1 - eased)
     }
 }
 
@@ -645,6 +703,159 @@ enum TVHeroMetadata {
             return "\(minutes / 60)h \(minutes % 60)m"
         }
         return "\(minutes) min"
+    }
+}
+
+/// Full-screen detail artwork backed by a sampled color wash. The artwork and
+/// wash stay mounted while the scroll view moves above them; one normalized
+/// reveal value produces the subtle upward drift and fade into the episode
+/// browser, so no independent transition can get out of sync with scrolling.
+struct TVDetailPageBackdrop: View {
+    let artworkURL: String?
+    let artworkThumbhash: String?
+    var revealProgress: CGFloat = 0
+    var scrollVisualState: TVDetailScrollVisualState? = nil
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var tintColor: Color = .continuumBackground
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.continuumBackground
+                ambientWash
+
+                if let artworkURL, !artworkURL.isEmpty {
+                    ZStack {
+                        artworkLayer(
+                            url: artworkURL,
+                            targetSize: geometry.size,
+                            layerID: "sharp"
+                        )
+                        artworkLayer(
+                            url: artworkURL,
+                            targetSize: geometry.size,
+                            layerID: "blurred"
+                        )
+                        // The radius is fixed, allowing SwiftUI to reuse the
+                        // blurred render while scroll only crossfades it.
+                        .blur(radius: 22, opaque: true)
+                        .opacity(artworkBlurBlend)
+                    }
+                    .scaleEffect(artworkScale)
+                    .offset(y: artworkOffset)
+                    .opacity(artworkOpacity)
+                    .mask { artworkFadeMask }
+                    .transition(.opacity)
+                }
+            }
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.35),
+                value: artworkURL
+            )
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .task(id: artworkURL) {
+            await updateTint()
+        }
+    }
+
+    private var progress: CGFloat {
+        min(max(scrollVisualState?.progress ?? revealProgress, 0), 1)
+    }
+
+    private func artworkLayer(
+        url: String,
+        targetSize: CGSize,
+        layerID: String
+    ) -> some View {
+        AsyncImageView(
+            url: url,
+            thumbhash: artworkThumbhash,
+            targetSize: targetSize,
+            contentMode: .fill
+        )
+        .id("\(url)-\(layerID)")
+        .frame(width: targetSize.width, height: targetSize.height)
+        .clipped()
+    }
+
+    /// The color sampled from the full-bleed image remains behind every body
+    /// section after the image itself fades, keeping the page on one visual
+    /// plane instead of transitioning to an unrelated black background.
+    private var ambientWash: some View {
+        LinearGradient(
+            stops: [
+                .init(color: tintColor.opacity(0.88), location: 0.0),
+                .init(color: tintColor.opacity(0.62), location: 0.48),
+                .init(color: tintColor.opacity(0.38), location: 1.0),
+            ],
+            startPoint: .topTrailing,
+            endPoint: .bottomLeading
+        )
+    }
+
+    /// The bottom of the full-screen image dissolves into `ambientWash`; it
+    /// never terminates at the hero or episode-section boundary.
+    private var artworkFadeMask: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0.0),
+                .init(color: .black, location: 0.62),
+                .init(color: .black.opacity(0.78), location: 0.78),
+                .init(color: .black.opacity(0.26), location: 0.93),
+                .init(color: .clear, location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var artworkScale: CGFloat {
+        guard !reduceMotion else { return 1.025 }
+        // A slight push-in gives the blur enough overscan to keep every edge
+        // painted while the canvas drifts upward.
+        return 1.025 + (0.02 * progress)
+    }
+
+    private var artworkOffset: CGFloat {
+        guard !reduceMotion else { return 0 }
+        return -90 * progress
+    }
+
+    private var artworkOpacity: Double {
+        1 - (0.46 * Double(progress))
+    }
+
+    /// Smoothstep crossfades a pre-blurred layer as the hero gives way to the
+    /// compact browser. Unlike animating the radius of a full-screen blur,
+    /// this keeps the expensive filter input stable during scrolling.
+    private var artworkBlurBlend: Double {
+        let blurProgress = min(max((progress - 0.06) / 0.66, 0), 1)
+        let eased = blurProgress * blurProgress * (3 - (2 * blurProgress))
+        return Double(eased)
+    }
+
+    @MainActor
+    private func updateTint() async {
+        guard let artworkURL,
+              !artworkURL.isEmpty,
+              let url = URL(string: artworkURL)
+        else {
+            tintColor = .continuumBackground
+            return
+        }
+
+        if let cached = HeroBackdropPalette.cachedTint(for: url) {
+            tintColor = cached
+            return
+        }
+
+        guard let sampled = await HeroBackdropPalette.tintColor(for: url),
+              !Task.isCancelled
+        else { return }
+        tintColor = sampled
     }
 }
 #endif

@@ -9,8 +9,8 @@ import SwiftUI
 ///
 /// Pass `currentContentId` to highlight the episode currently represented
 /// by the surrounding detail experience. The rail scrolls that card to the
-/// horizontal center on first appearance, while d-pad entry remains fully
-/// spatial so focus lands beneath the control the user moved down from.
+/// horizontal center on first appearance and prefers it whenever focus enters
+/// the episode carousel.
 struct TVEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
@@ -22,9 +22,9 @@ struct TVEpisodeRail: View {
     var currentContentId: String? = nil
     var currentContentIsFavorite = false
     var favoriteStates: [String: Bool] = [:]
-    var prefersCurrentContentFocus = false
 
     private let cardSpacing: CGFloat = 36
+    @Namespace private var episodeFocusScope
     @FocusState private var focusedCardId: String?
     @State private var uiCustomization = UICustomizationPreferences.shared
 
@@ -53,8 +53,12 @@ struct TVEpisodeRail: View {
                 .padding(.horizontal, ContinuumTheme.safePadding)
             }
             .focusSection()
+            // Keep this preference local to carousel entry. Without a nested
+            // scope, its user-initiated priority can compete with the page's
+            // Play default while the detail screen is first appearing.
+            .focusScope(episodeFocusScope)
             .applyCurrentEpisodeDefaultFocus(
-                prefersCurrentContentFocus ? currentContentId : nil,
+                currentContentId,
                 binding: $focusedCardId
             )
             .scrollClipDisabled()
@@ -123,6 +127,9 @@ struct TVEpisodeCard: View {
         }
         .buttonStyle(TVCardFocusButtonStyle())
         .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier(
+            isCurrent ? "detail.episode.current" : "detail.episode.\(episode.contentId)"
+        )
         .accessibilityLabel(accessibilityDescription)
 
         Group {
