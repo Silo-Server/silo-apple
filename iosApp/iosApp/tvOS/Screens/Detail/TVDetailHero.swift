@@ -5,12 +5,20 @@ enum TVDetailLayoutMetrics {
     /// Leaves a deliberate preview band for the first body section on the
     /// 1080-point tvOS canvas, echoing Home's marquee-above-row composition.
     static let heroHeight: CGFloat = 880
-    static let heroContentBottomInset: CGFloat = 104
+    /// Bottom-aligns the complete hero cluster just above the episode peek.
+    /// The hero is outside the vertical scroller, so it can stay visually low
+    /// without tvOS reframing Play and Version differently.
+    static let heroContentBottomInset: CGFloat = 92
     static let firstSectionSpacing: CGFloat = 32
-    /// At rest the compact header occupies most of this band invisibly, so
-    /// only the upper slice of the episode artwork peeks into the viewport.
-    static let episodePreviewDepth: CGFloat = 180
+    /// At hero rest the compact header occupies most of this band invisibly,
+    /// leaving roughly the upper fifth of the real episode artwork visible at
+    /// the bottom of the screen.
+    static let episodePreviewDepth: CGFloat = 292
     static let compactHeaderHeight: CGFloat = 208
+    /// Shortens the focus scroll viewport without shifting its content origin.
+    /// tvOS therefore settles the browser higher while keeping the native
+    /// reveal trajectory monotonic.
+    static let browserViewportBottomInset: CGFloat = 144
     /// The hero reports a shorter layout height so the episode rail can peek,
     /// but its controls use almost the full viewport and stop at this safe
     /// distance above the bottom edge.
@@ -140,7 +148,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     // MARK: - Content column
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 16) {
             editorialColumn
                 // When the episode browser is settled, the synopsis and its
                 // translation/expand controls must not compete with the
@@ -156,19 +164,18 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             // Still a full-width focus destination so lower rails can move
             // "up" into this cluster even from a far-right card.
             actions()
-                .padding(.top, 8)
+                .padding(.top, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
         .padding(.leading, ContinuumTheme.safePadding)
         .padding(.trailing, ContinuumTheme.safePadding)
-        // Raise the editorial stack and controls enough to leave the first
-        // body section visible beneath the hero on initial entry.
+        // Keep the complete hero cluster just above the visible episode peek.
         .padding(.bottom, TVDetailLayoutMetrics.heroContentBottomInset)
     }
 
     private var editorialColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             if let eyebrow, !eyebrow.isEmpty {
                 TVHeroEyebrow(text: eyebrow)
             }
@@ -298,7 +305,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .frame(maxWidth: 460, alignment: .trailing)
                 .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
                 .padding(.trailing, ContinuumTheme.safePadding)
-                .padding(.bottom, heroHeight * 0.45)
+                .padding(.bottom, heroHeight * 0.41)
         }
     }
 }
@@ -739,7 +746,7 @@ struct TVDetailPageBackdrop: View {
                         )
                         // The radius is fixed, allowing SwiftUI to reuse the
                         // blurred render while scroll only crossfades it.
-                        .blur(radius: 22, opaque: true)
+                        .blur(radius: 72, opaque: true)
                         .opacity(artworkBlurBlend)
                     }
                     .scaleEffect(artworkScale)
@@ -748,6 +755,11 @@ struct TVDetailPageBackdrop: View {
                     .mask { artworkFadeMask }
                     .transition(.opacity)
                 }
+
+                // Keep the stronger blur from reading as a milky overlay on
+                // bright artwork. This neutral wash sits outside the fading
+                // artwork group, so its full strength is visible at rest.
+                Color.black.opacity(scrolledArtworkDimming)
             }
             .animation(
                 reduceMotion ? nil : .easeInOut(duration: 0.35),
@@ -835,6 +847,10 @@ struct TVDetailPageBackdrop: View {
         let blurProgress = min(max((progress - 0.06) / 0.66, 0), 1)
         let eased = blurProgress * blurProgress * (3 - (2 * blurProgress))
         return Double(eased)
+    }
+
+    private var scrolledArtworkDimming: Double {
+        0.30 * artworkBlurBlend
     }
 
     @MainActor

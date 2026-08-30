@@ -16,7 +16,7 @@ extension View {
     /// series, season). Apply to the detail page's vertical ScrollView.
     ///
     /// The season pills and cards are one browser region. Entering either one
-    /// settles the section at the top, producing a single coherent hero →
+    /// uses the focus engine's native reveal, producing one coherent hero →
     /// episode transition even on pages without a season-pill row.
     ///
     /// Each focus transition produces at most one scroll. Repeated delayed
@@ -64,6 +64,11 @@ private struct DetailFocusScrollModifier: ViewModifier {
         let generation: Int
     }
 
+    /// Remembers the canvas destination across the focus engine's transient
+    /// `item -> nil -> item` handoff. Without this, horizontal movement within
+    /// a row replays the same vertical `scrollTo` and nudges the page.
+    @State private var settledDestination: Destination?
+
     /// A single non-bouncy curve follows the native reveal without continuing
     /// to move after focus has visually settled.
     private static let scrollAnimation = Animation.smooth(duration: 0.44, extraBounce: 0)
@@ -71,7 +76,16 @@ private struct DetailFocusScrollModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task(id: currentRequest) {
-                guard let request = currentRequest else { return }
+                guard let request = currentRequest else {
+                    // Focus commonly passes through nil between controls in
+                    // the same destination. Preserve the latch so Play →
+                    // Version cannot replay the hero scroll and nudge the
+                    // canvas. A real browser ↔ hero transition still changes
+                    // the destination and therefore issues the required
+                    // request without relying on a nil reset.
+                    return
+                }
+                guard request.destination != settledDestination else { return }
 
                 // Let SwiftUI commit the new focused geometry before asking
                 // the reader to frame it. This is one cooperative yield, not
@@ -82,15 +96,21 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 TVDetailFocusDiagnostics.record(
                     "detail.scroll.request",
                     target: request.destination == .hero ? "hero" : "episodeBrowser",
-                    action: "scrollTo",
+                    action: request.destination == .hero ? "scrollTo" : "nativeReveal",
                     state: "generation=\(request.generation)",
                     essential: true
                 )
-                withAnimation(Self.scrollAnimation) {
-                    switch request.destination {
-                    case .episodeBrowser:
-                        proxy.scrollTo(episodeSectionId, anchor: .top)
-                    case .hero:
+                settledDestination = request.destination
+                switch request.destination {
+                case .episodeBrowser:
+                    // The focus engine already reveals the newly focused
+                    // Season pill or episode card at its preferred safe-area
+                    // position. Forcing the section to `.top` competes with
+                    // that placement; the next horizontal move then corrects
+                    // the canvas by roughly one focus-margin.
+                    break
+                case .hero:
+                    withAnimation(Self.scrollAnimation) {
                         proxy.scrollTo(heroId, anchor: .top)
                     }
                 }

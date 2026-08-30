@@ -39,6 +39,10 @@ struct TVPlaybackSelectorRow: View {
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     let focusedSelector: FocusState<TVPlaybackSelectorFocus?>.Binding
+    /// Runs synchronously when Down is pressed from this row, before tvOS
+    /// resolves the next focus target. Detail pages use it to make the
+    /// already-mounted browser eligible for native focus entry.
+    var onPrepareBrowserEntry: () -> Void = {}
     /// Reports focus anywhere in this row. The detail canvas uses it to
     /// restore the hero framing when focus returns from the episode browser.
     let onSelectorRowFocusChanged: (Bool) -> Void
@@ -60,6 +64,10 @@ struct TVPlaybackSelectorRow: View {
                 // stay left-aligned.
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
+                .onMoveCommand { direction in
+                    guard direction == .down else { return }
+                    onPrepareBrowserEntry()
+                }
                 .onChange(of: focusedSelector.wrappedValue) { oldValue, newValue in
                     TVDetailFocusDiagnostics.record(
                         "selector.focusChanged",

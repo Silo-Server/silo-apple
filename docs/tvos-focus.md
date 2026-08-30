@@ -192,10 +192,16 @@ the destination before movement begins and avoids corrective focus mutation.
 
 ## Detail Hero and Episode-Browser Handoff
 
-The Apple-TV-style detail page is one vertical canvas with two visual regions:
-the hero controls and the episode browser. `TVDetailFocusScroll` is the only
-`ScrollViewProxy` writer. Focus state chooses its scroll intent; individual
-buttons and rows must not also issue vertical `scrollTo` calls.
+The Apple-TV-style detail page presents one continuous visual canvas with two
+regions: the hero controls and the episode browser. The hero is a fixed sibling
+overlay above the vertical `ScrollView`; a transparent spacer inside the
+scroller represents its scroll destination. This separates visual placement
+from focus-driven scroll geometry, allowing the hero cluster to sit just above
+the episode peek without Play -> Version reframing the canvas. The enclosing
+focus scope owns both siblings so directional movement still sees one coherent
+focus graph. `TVDetailFocusScroll` is the only `ScrollViewProxy` writer. Focus
+state chooses its scroll intent; individual buttons and rows must not also
+issue vertical `scrollTo` calls.
 
 The directional contract is:
 
@@ -281,6 +287,41 @@ on every animation frame, which can hitch on physical Apple TV even when the
 simulator looks smooth. Likewise, do not animate the radius of a full-screen
 backdrop blur. Crossfade a fixed pre-blurred layer so scrolling changes only
 cheap compositing properties.
+
+The focus engine can report a transient `item -> nil -> item` while moving
+horizontally inside a row. `TVDetailFocusScroll` keeps its last settled canvas
+destination through nil handoffs. Re-entering the same destination must not
+replay a vertical scroll—not even after focus spends several frames at nil—so
+Play -> Version leaves the canvas fixed. Browser entry uses the focus engine's
+native reveal position; forcing the section to `.top` competes with that
+safe-area placement, so the next Left/Right move corrects the canvas by one
+focus margin. The coordinator still restores the hero explicitly on Up because
+browser and hero are different destinations; clearing the latch at nil is not
+required to recognize that transition.
+
+Shape the native browser framing by shortening the scroll viewport, not by
+shifting its content origin. `TVDetailLayoutMetrics.browserViewportBottomInset`
+reserves stable layout space below the vertical `ScrollView`, so tvOS settles
+the compact title, Season row, Episodes, and following rails higher on screen.
+The fixed hero overlay does not participate in that viewport's native reveal,
+so its bottom inset can be tuned independently to place the title, metadata,
+Play, and selector rows immediately above the episode peek. The vertical
+`ScrollView` must keep visual clipping disabled: the shorter viewport is a
+focus-placement boundary, not a visible canvas edge, and the real episode
+artwork plus backdrop must continue painting through the reserved bottom band.
+A negative top content margin is not equivalent: it can make the focus reveal
+run past its resting position and then correct backward. The UI regression
+test samples a stable canvas anchor across Play -> Version, then samples the
+Version control during Version -> Season and rejects overshoot. An `.offset`
+is also wrong because it recreates a layout/render disagreement that makes
+directional focus correction unpredictable.
+
+The episode artwork peeking at hero rest is the real `TVEpisodeRail`, not a
+decorative duplicate. The selector row's Down command makes the already-mounted
+browser eligible immediately before native focus resolution; until then the
+browser remains disabled so its visually peeking controls cannot steal Right
+from Version/Audio/Subtitles. Because there is only one carousel, the same card
+views move into their expanded position with the vertical canvas.
 
 The simulator regression test for this contract is
 `TVDetailFocusHandoffUITests.testSeasonUpReturnsToPlaybackSelector`. It follows

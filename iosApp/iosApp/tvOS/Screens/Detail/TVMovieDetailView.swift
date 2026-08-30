@@ -122,46 +122,18 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
 
                 ScrollViewReader { scrollProxy in
                     ScrollView(.vertical, showsIndicators: false) {
-                        // The hero owns its complete visual/focus frame. A
-                        // negative *layout* spacing brings the episode browser
-                        // back to the same preview position without drawing
-                        // hero controls outside their reported geometry.
+                        // The transparent spacer gives the scroll coordinator
+                        // a stable hero destination while the visible hero is
+                        // rendered as a fixed sibling overlay. Negative layout
+                        // spacing preserves the real episode rail's preview
+                        // position without duplicating its artwork.
                         VStack(
                             alignment: .leading,
                             spacing: episodeSectionOffset - heroCanvasHeight
                         ) {
-                            TVDetailHero(
-                                title: detail.title,
-                                seriesTitle: heroSeriesTitle,
-                                logoUrl: detail.logoUrl,
-                                eyebrow: heroEyebrow,
-                                sourceTokens: heroSourceTokens,
-                                ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
-                                overview: detail.overview,
-                                factsLine: heroFactsLine,
-                                starringText: TVHeroMetadata.starringText(from: detail),
-                                heroHeight: heroCanvasHeight,
-                                heroCanvasHeight: heroCanvasHeight,
-                                scrollRevealProgress: 0,
-                                scrollVisualState: scrollVisualState,
-                                suppressesEditorialFocus: episodeBrowserFocused
-                                    || castRailFocused
-                                    || selectorRowFocused,
-                                actions: { actionColumn },
-                                belowSynopsis: belowSynopsis
-                            )
+                            Color.clear
+                                .frame(height: heroCanvasHeight)
                             .id(heroScrollId)
-                            .opacity(heroRevealOpacity)
-                            .onChange(of: detail.contentId) { _, _ in
-                                releaseEpisodeBrowserSuppression()
-                                releaseEpisodeRailSuppression()
-                                if actionRowFocused {
-                                    armEpisodeBrowserSuppression()
-                                } else if selectorRowFocused {
-                                    armEpisodeRailSuppression()
-                                }
-                                revealHeroMetadata()
-                            }
 
                             VStack(alignment: .leading, spacing: 72) {
                                 if showsEpisodeRail {
@@ -196,12 +168,15 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         }
                     }
                     .ignoresSafeArea()
-                    .focusScope(detailFocusNamespace)
-                    .defaultFocus(
-                        $actionFocus,
-                        .play,
-                        priority: prefersPageEntryPlay ? .userInitiated : .automatic
+                    .padding(
+                        .bottom,
+                        TVDetailLayoutMetrics.browserViewportBottomInset
                     )
+                    // The shorter viewport shapes native focus placement, but
+                    // its reserved bottom band is still part of the cinematic
+                    // canvas. Let the real episode artwork and hero backdrop
+                    // paint through it instead of exposing a clipped hard edge.
+                    .scrollClipDisabled()
                     .detailFocusScroll(
                         proxy: scrollProxy,
                         episodeBrowserFocused: episodeBrowserFocused,
@@ -218,7 +193,16 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     }
                     .onPlayPauseCommand(perform: playFocusedEpisodeOrCurrent)
                 }
+
+                heroCanvas(height: heroCanvasHeight)
+                    .frame(maxHeight: .infinity, alignment: .top)
             }
+            .focusScope(detailFocusNamespace)
+            .defaultFocus(
+                $actionFocus,
+                .play,
+                priority: prefersPageEntryPlay ? .userInitiated : .automatic
+            )
         }
         .ignoresSafeArea()
         .onChange(of: actionFocus, initial: true) { _, action in
@@ -243,11 +227,45 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         }
     }
 
+    private func heroCanvas(height: CGFloat) -> some View {
+        TVDetailHero(
+            title: detail.title,
+            seriesTitle: heroSeriesTitle,
+            logoUrl: detail.logoUrl,
+            eyebrow: heroEyebrow,
+            sourceTokens: heroSourceTokens,
+            ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
+            overview: detail.overview,
+            factsLine: heroFactsLine,
+            starringText: TVHeroMetadata.starringText(from: detail),
+            heroHeight: height,
+            heroCanvasHeight: height,
+            scrollRevealProgress: 0,
+            scrollVisualState: scrollVisualState,
+            suppressesEditorialFocus: episodeBrowserFocused
+                || castRailFocused
+                || selectorRowFocused,
+            actions: { actionColumn },
+            belowSynopsis: belowSynopsis
+        )
+        .opacity(heroRevealOpacity)
+        .onChange(of: detail.contentId) { _, _ in
+            releaseEpisodeBrowserSuppression()
+            releaseEpisodeRailSuppression()
+            if actionRowFocused {
+                armEpisodeBrowserSuppression()
+            } else if selectorRowFocused {
+                armEpisodeRailSuppression()
+            }
+            revealHeroMetadata()
+        }
+    }
+
     // MARK: - Hero actions
 
     @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 16) {
             actionRow
             if shouldShowVersionPlaceholder {
                 TVVersionPillPlaceholder()
@@ -269,6 +287,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     onSelectAudioTrack: onSelectAudioTrack,
                     onSelectSubtitleTrack: onSelectSubtitleTrack,
                     focusedSelector: $playbackSelectorFocus,
+                    onPrepareBrowserEntry: prepareBrowserEntry,
                     onSelectorRowFocusChanged: setSelectorRowFocused
                 )
             }
@@ -304,7 +323,10 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             if isFocused {
                 selectorEntryReleaseTask?.cancel()
                 selectorEntryReleaseTask = nil
-                episodeBrowserSuppressedForSelectorEntry = false
+                // The real episode rail is already peeking into the hero, but
+                // remains ineligible until Down explicitly prepares entry.
+                // This keeps horizontal selector moves inside their row.
+                episodeBrowserSuppressedForSelectorEntry = true
             }
         }
         if isFocused {
@@ -628,6 +650,11 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
         withTransaction(transaction) {
             episodeRailSuppressedForSeasonEntry = false
         }
+    }
+
+    private func prepareBrowserEntry() {
+        guard showsEpisodeRail, !seasonEpisodes.isEmpty else { return }
+        releaseEpisodeBrowserSuppression()
     }
 
     private var episodeRailIdentity: String {

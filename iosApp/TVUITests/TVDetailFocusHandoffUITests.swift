@@ -47,20 +47,56 @@ final class TVDetailFocusHandoffUITests: XCTestCase {
         XCTAssertTrue(play.waitForExistence(timeout: 30), "Detail Play action never appeared")
         XCTAssertTrue(waitForFocus(identifier: playID), "Play did not receive page-entry focus")
 
-        remote.press(.down)
         let versionID = "detail.selector.version"
         let version = app.descendants(matching: .any)[versionID]
         XCTAssertTrue(version.waitForExistence(timeout: 15), "Version selector never appeared")
+        let selectedSeasonAnchor = app.descendants(matching: .any)
+            .matching(
+                NSPredicate(
+                    format: "identifier BEGINSWITH %@",
+                    "detail.season.selected."
+                )
+            )
+            .firstMatch
+        XCTAssertTrue(
+            selectedSeasonAnchor.waitForExistence(timeout: 15),
+            "Selected Season anchor never appeared"
+        )
+        let canvasAnchorYBeforeSelectorEntry = waitForStableVerticalPosition(
+            of: selectedSeasonAnchor
+        )
+        XCTAssertNotNil(
+            canvasAnchorYBeforeSelectorEntry,
+            "Version selector never reached stable layout"
+        )
+        remote.press(.down)
         XCTAssertTrue(
             waitForFocus(identifier: versionID),
             "Down from Play did not focus Version; focus=\(focusedElementSummary())"
         )
+        let canvasAnchorYAfterSelectorEntry = waitForStableVerticalPosition(
+            of: selectedSeasonAnchor
+        )
+        XCTAssertNotNil(
+            canvasAnchorYAfterSelectorEntry,
+            "Version selector did not settle after receiving focus"
+        )
+        if let before = canvasAnchorYBeforeSelectorEntry,
+           let after = canvasAnchorYAfterSelectorEntry {
+            XCTAssertEqual(
+                after,
+                before,
+                accuracy: 2,
+                "Play-to-Version focus moved the detail canvas"
+            )
+        }
 
         let audioID = "detail.selector.audio"
         remote.press(.right)
         XCTAssertTrue(
             waitForFocus(identifier: audioID, timeout: 3),
-            "Right from Version did not focus Audio on initial entry"
+            "Right from Version did not focus Audio on initial entry; "
+                + "focus=\(focusedElementSummary())"
         )
         remote.press(.left)
         XCTAssertTrue(
@@ -68,7 +104,24 @@ final class TVDetailFocusHandoffUITests: XCTestCase {
             "Left from Audio did not return focus to Version on initial entry"
         )
 
+        let versionToSeasonStartY = version.frame.minY
         remote.press(.down)
+        let versionToSeasonTrajectory = verticalTrajectoryUntilStable(of: version)
+        let versionToSeasonOvershoot = verticalOvershoot(
+            startY: versionToSeasonStartY,
+            trajectory: versionToSeasonTrajectory
+        )
+        XCTAssertFalse(
+            versionToSeasonTrajectory.isEmpty,
+            "Version-to-Season canvas motion was not observable"
+        )
+        XCTAssertLessThanOrEqual(
+            versionToSeasonOvershoot,
+            4,
+            "Version-to-Season canvas overshot its resting position by "
+                + "\(versionToSeasonOvershoot) points; trajectory="
+                + "\(versionToSeasonTrajectory)"
+        )
         let selectedSeasonPrefix = "detail.season.selected."
         let enteredSeason = firstFocusedElement(
             matchingIdentifierPrefix: "detail.season."
@@ -80,6 +133,25 @@ final class TVDetailFocusHandoffUITests: XCTestCase {
         XCTAssertTrue(
             enteredSeason?.identifier.hasPrefix(selectedSeasonPrefix) ?? false,
             "Down from Version focused \(enteredSeason?.identifier ?? "nothing") instead of the selected Season pill"
+        )
+        let seasonRestingY = enteredSeason.flatMap {
+            waitForStableVerticalPosition(of: $0)
+        }
+        XCTAssertNotNil(
+            seasonRestingY,
+            "Selected Season pill did not reach stable browser framing"
+        )
+        if let seasonRestingY {
+            XCTAssertLessThanOrEqual(
+                seasonRestingY,
+                280,
+                "Selected Season settled mid-screen instead of near the top"
+            )
+        }
+        let verticalPositionBeforeSeasonMove = waitForStableVerticalPosition(of: version)
+        XCTAssertNotNil(
+            verticalPositionBeforeSeasonMove,
+            "Detail canvas did not settle after entering the Season row"
         )
 
         // Prove the entry gate does not break ordinary navigation within the
@@ -112,10 +184,24 @@ final class TVDetailFocusHandoffUITests: XCTestCase {
             adjacentSeason?.identifier.hasPrefix(selectedSeasonPrefix) ?? true,
             "Horizontal Season navigation did not leave the selected pill"
         )
+        let verticalPositionAfterSeasonMove = waitForStableVerticalPosition(of: version)
+        XCTAssertNotNil(
+            verticalPositionAfterSeasonMove,
+            "Detail canvas did not settle after horizontal Season navigation"
+        )
+        if let before = verticalPositionBeforeSeasonMove,
+           let after = verticalPositionAfterSeasonMove {
+            XCTAssertEqual(
+                after,
+                before,
+                accuracy: 2,
+                "Horizontal Season navigation moved the vertical detail canvas"
+            )
+        }
 
-        // Select must remain owned by the pill's Button. A visual layer added
-        // outside this control previously intercepted activation: every pill
-        // appeared selected while the episode carousel never changed.
+        // Select must remain owned by the pill's single composite control. A
+        // nested Button previously let the outer focus interaction intercept
+        // activation: every pill appeared selected while Episodes never changed.
         let adjacentSeasonNumber = adjacentSeason.flatMap { seasonNumber(from: $0) }
         XCTAssertNotNil(adjacentSeasonNumber, "Adjacent Season pill had no season number")
         if let adjacentSeasonNumber, let originalSeasonNumber {
@@ -251,6 +337,68 @@ final class TVDetailFocusHandoffUITests: XCTestCase {
             let identifier = element.identifier.isEmpty ? "<no-id>" : element.identifier
             return "\(element.elementType.rawValue):\(identifier):\(element.label)"
         }.joined(separator: " | ")
+    }
+
+    private func waitForStableVerticalPosition(
+        of element: XCUIElement,
+        timeout: TimeInterval = 3
+    ) -> CGFloat? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousY: CGFloat?
+        var stableSamples = 0
+
+        repeat {
+            guard element.exists else { return nil }
+            let currentY = element.frame.minY
+            guard currentY.isFinite else { return nil }
+            if let previousY, abs(currentY - previousY) <= 0.5 {
+                stableSamples += 1
+                if stableSamples >= 4 { return currentY }
+            } else {
+                stableSamples = 0
+            }
+            previousY = currentY
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+
+        return nil
+    }
+
+    private func verticalTrajectoryUntilStable(
+        of element: XCUIElement,
+        timeout: TimeInterval = 3
+    ) -> [CGFloat] {
+        let deadline = Date().addingTimeInterval(timeout)
+        var positions: [CGFloat] = []
+        var stableSamples = 0
+
+        repeat {
+            guard element.exists else { break }
+            let currentY = element.frame.minY
+            guard currentY.isFinite else { break }
+            positions.append(currentY)
+            if let previousY = positions.dropLast().last,
+               abs(currentY - previousY) <= 0.5 {
+                stableSamples += 1
+                if stableSamples >= 5 { break }
+            } else {
+                stableSamples = 0
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.04))
+        } while Date() < deadline
+
+        return positions
+    }
+
+    private func verticalOvershoot(
+        startY: CGFloat,
+        trajectory: [CGFloat]
+    ) -> CGFloat {
+        guard let finalY = trajectory.last else { return 0 }
+        if finalY < startY {
+            return max(0, finalY - (trajectory.min() ?? finalY))
+        }
+        return max(0, (trajectory.max() ?? finalY) - finalY)
     }
 
     private func seasonNumber(from element: XCUIElement) -> Int? {
