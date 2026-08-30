@@ -62,6 +62,11 @@ final class DownloadManager {
     /// held here and replayed by `releaseHeldSessionEvents()`.
     private var pendingSessionEvents: [DownloadSessionEvent] = []
     private var sessionEventsHeld = true
+    /// Finished media whose `taskIdentifier` is not in the currently loaded
+    /// registry. A profile or server switch can leave the previous scope's
+    /// background transfer running; deleting that staged file would lose a
+    /// completed download. Apply these when the owning scope is loaded again.
+    private var unmatchedFinished: [Int: URL] = [:]
     /// In-flight back-off timers keyed by record id, tracked so a foreground
     /// reconcile doesn't re-queue a record that already has a scheduled
     /// restart (double-starting the transfer) and so pause/delete can abort
@@ -365,18 +370,33 @@ final class DownloadManager {
         let serverId = ServerRegistry.shared.activeServerId ?? ""
         let profileId = await TokenStore.shared.getProfileId() ?? ""
         guard !serverId.isEmpty, !profileId.isEmpty else {
+            await persistAndFlush()
             deactivate()
             releaseHeldSessionEvents()
+            applyUnmatchedFinishedEvents()
             return false
         }
-        if serverId == scopeServerId, profileId == scopeProfileId, !file.records.isEmpty || file.capability != nil {
+        if !DownloadScopePolicy.requiresReload(
+            currentServerId: scopeServerId,
+            currentProfileId: scopeProfileId,
+            nextServerId: serverId,
+            nextProfileId: profileId
+        ), !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
+            applyUnmatchedFinishedEvents()
             return true
         }
+        // Flush the outgoing scope first so an in-app profile/server switch
+        // cannot drop in-memory progress, then load the destination. Retry
+        // timers belong to the outgoing identity and must not fire into the
+        // newly loaded registry.
+        await persistAndFlush()
+        cancelScopeWork()
         scopeServerId = serverId
         scopeProfileId = profileId
         file = await DownloadStore.shared.load(serverId: serverId, profileId: profileId)
         releaseHeldSessionEvents()
+        applyUnmatchedFinishedEvents()
         refreshStorageUsage()
         await backfillEpisodeMetadataIfNeeded()
         return true
@@ -393,29 +413,40 @@ final class DownloadManager {
         await runMonitoringAndProgressSync()
     }
 
-    /// Profile/server switched — load the new scope and refresh.
+    /// Profile/server switched — persist the outgoing scope, load the new
+    /// one, and refresh capability / sync. In-flight background transfers
+    /// for the previous identity are left running; their completions are
+    /// held until that scope is loaded again rather than treated as orphans.
     func onScopeChanged() async {
-        deactivate()
         await onAppActive()
     }
 
     /// Sign-out: stop active transfers and drop in-memory state. On-disk
     /// files are intentionally preserved (the user may sign back in).
     func clearForSignOut() {
+        persist()
         cancelActiveTasks()
+        cancelScopeWork()
         deactivate()
     }
 
     private func deactivate() {
+        cancelScopeWork()
+        scopeServerId = ""
+        scopeProfileId = ""
+        file = .empty
+    }
+
+    /// Cancel retry/poll work that is bound to the currently loaded scope.
+    /// Does not cancel `URLSession` transfers or drop unmatched finishes —
+    /// those belong to task identifiers that can outlive this in-memory blob.
+    private func cancelScopeWork() {
         pollTask?.cancel()
         pollTask = nil
         for task in retryTasks.values { task.cancel() }
         retryTasks.removeAll()
         pendingPauseIds.removeAll()
         pendingResumeIds.removeAll()
-        scopeServerId = ""
-        scopeProfileId = ""
-        file = .empty
         rateSamples.removeAll()
         transferRates.removeAll()
     }
@@ -965,8 +996,8 @@ final class DownloadManager {
     }
 
     /// Replay events held during launch, in arrival order, now that the
-    /// registry reflects the active scope (or the lack of one — orphan
-    /// cleanup is then correct rather than premature).
+    /// registry reflects the active scope. Completions that still do not
+    /// match stay in `unmatchedFinished` instead of deleting staged media.
     private func releaseHeldSessionEvents() {
         guard sessionEventsHeld else { return }
         sessionEventsHeld = false
@@ -975,12 +1006,32 @@ final class DownloadManager {
         }
     }
 
+    /// Apply any staged completions whose task now exists in the loaded
+    /// registry. Unknown tasks stay held — they belong to another scope.
+    private func applyUnmatchedFinishedEvents() {
+        guard !unmatchedFinished.isEmpty else { return }
+        let pending = unmatchedFinished
+        unmatchedFinished.removeAll()
+        for (taskId, stagedURL) in pending {
+            if recordByTask(taskId) != nil {
+                handleMediaFinished(taskId: taskId, stagedURL: stagedURL)
+            } else {
+                unmatchedFinished[taskId] = stagedURL
+            }
+        }
+    }
+
     private func handleMediaFinished(taskId: Int, stagedURL: URL) {
         intentionalCancels.remove(taskId)
         guard var record = recordByTask(taskId) else {
-            try? FileManager.default.removeItem(at: stagedURL)
+            if DownloadScopePolicy.shouldDeleteUnmatchedStagedMedia() {
+                try? FileManager.default.removeItem(at: stagedURL)
+            } else {
+                unmatchedFinished[taskId] = stagedURL
+            }
             return
         }
+        unmatchedFinished.removeValue(forKey: taskId)
         clearTransferRate(recordId: record.id)
         let ext = mediaExtension(for: record)
         let filename = "media.\(ext)"
@@ -1667,6 +1718,14 @@ final class DownloadManager {
             await previous?.value
             await DownloadStore.shared.save(snapshot, serverId: serverId, profileId: profileId)
         }
+    }
+
+    /// Flush queued store writes before replacing the in-memory blob so a
+    /// rapid profile/server switch cannot load a stale snapshot of the
+    /// outgoing scope on the way back.
+    private func persistAndFlush() async {
+        persist()
+        await saveChain?.value
     }
 
     /// Recompute scope storage usage off the MainActor and publish it.

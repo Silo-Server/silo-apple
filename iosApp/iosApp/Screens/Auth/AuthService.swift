@@ -375,6 +375,9 @@ final class AuthService: @unchecked Sendable {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
+        if committed {
+            await retargetDownloadsForIdentityChange()
+        }
         return committed
     }
 
@@ -426,6 +429,7 @@ final class AuthService: @unchecked Sendable {
                 #if os(iOS) || os(tvOS)
                 DiagnosticsCoordinator.activeProfileDidChange()
                 #endif
+                await retargetDownloadsForIdentityChange()
                 throw ProfileTransitionError.accountEpochUnavailable
             }
         }
@@ -438,6 +442,7 @@ final class AuthService: @unchecked Sendable {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
+        await retargetDownloadsForIdentityChange()
     }
 
     private func restoreRememberedProfile(
@@ -492,6 +497,9 @@ final class AuthService: @unchecked Sendable {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
+        if committed {
+            await retargetDownloadsForIdentityChange()
+        }
         guard committed else { return }
         await MainActor.run {
             NotificationCenter.default.post(
@@ -722,5 +730,14 @@ final class AuthService: @unchecked Sendable {
     @MainActor
     func clearCachesForServerChange() {
         clearAllCaches()
+    }
+
+    /// Downloads persist per `(server, profile)`. Retarget after the new
+    /// identity is committed so in-memory records, progress, and on-disk
+    /// paths cannot leak into the previous scope.
+    private func retargetDownloadsForIdentityChange() async {
+        #if !os(tvOS)
+        await DownloadManager.shared.onScopeChanged()
+        #endif
     }
 }
