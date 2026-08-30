@@ -76,9 +76,9 @@ struct TVMarqueeContent: Equatable {
     /// Optional server logo art that may replace the text title once
     /// cached — the title always renders as text first.
     let logoUrl: String?
-    /// Codec/HDR + content-rating chips (`4K · DOLBY VISION · ATMOS · TV-MA`).
+    /// Editorial badge chips, currently the uppercased content rating.
     let badges: [String]
-    /// Dot-joined meta tokens after the badges: year · genre · runtime,
+    /// Dot-joined editorial tokens before the content-rating badge: year · runtime · IMDb · genres,
     /// or `S2 E7 · episode title · 45 min · 23 min left` for episodes.
     let metaParts: [String]
     let synopsis: String?
@@ -101,10 +101,16 @@ extension TVMarqueeContent {
 
         var meta: [String] = []
         if isEpisode {
-            if let token = Self.episodeToken(season: item.seasonNumber, episode: item.episodeNumber) {
+            if let token = HeroEditorialMetadata.episodeIdentity(
+                season: item.seasonNumber,
+                episode: item.episodeNumber,
+                style: .compact
+            ) {
                 meta.append(token)
             }
-            meta.append(item.title)
+            if let title = HeroEditorialMetadata.normalizedValue(item.title) {
+                meta.append(title)
+            }
             if let length = Self.lengthText(runtimeMinutes: item.runtime, durationSeconds: item.durationSeconds) {
                 meta.append(length)
             }
@@ -112,18 +118,20 @@ extension TVMarqueeContent {
                 meta.append(timeLeft)
             }
         } else {
-            if let year = item.year, year > 0 { meta.append(String(year)) }
-            if let genre = item.genres?.first(where: { !$0.isEmpty }) { meta.append(genre) }
-            if let length = Self.lengthText(runtimeMinutes: item.runtime, durationSeconds: item.durationSeconds) {
-                meta.append(length)
-            }
-            if let rating = item.ratingImdb { meta.append(String(format: "%.1f", rating)) }
+            meta = HeroEditorialMetadata.browseMetadataParts(
+                year: item.year,
+                runtime: Self.lengthText(
+                    runtimeMinutes: item.runtime,
+                    durationSeconds: item.durationSeconds
+                ),
+                imdbRating: item.ratingImdb,
+                genres: item.genres
+            )
         }
 
-        var badges = Self.badges(from: item.overlaySummary)
-        if let contentRating = Self.nonEmpty(item.contentRating) {
-            badges.append(contentRating.uppercased())
-        }
+        let badges = HeroEditorialMetadata.normalizedValue(item.contentRating).map {
+            [$0.uppercased()]
+        } ?? []
 
         self.init(
             id: "\(rowTitle)#\(item.contentId)",
@@ -131,7 +139,9 @@ extension TVMarqueeContent {
             eyebrow: rowTitle,
             // Episodes headline with their series (`SEVERANCE`); the
             // episode itself moves to the meta line per §5.4.
-            title: isEpisode ? (item.seriesTitle ?? item.title) : item.title,
+            title: isEpisode
+                ? (HeroEditorialMetadata.normalizedValue(item.seriesTitle) ?? item.title)
+                : item.title,
             logoUrl: item.logoUrl,
             badges: badges,
             metaParts: meta,
@@ -173,44 +183,6 @@ extension TVMarqueeContent {
 
     // MARK: Formatting
 
-    /// Badge chips from the section payload's `OverlaySummary` — the
-    /// marquee shows the headline trio (resolution, dynamic range,
-    /// audio), uppercased to the §4.1 badge style.
-    private static func badges(from summary: OverlaySummary?) -> [String] {
-        guard let summary else { return [] }
-        var badges: [String] = []
-        if let resolution = prettyResolution(summary.resolution) {
-            badges.append(resolution)
-        }
-        if let hdr = nonEmpty(summary.hdr) {
-            badges.append(hdr.localizedCaseInsensitiveContains("dv") || hdr.localizedCaseInsensitiveContains("dolby")
-                ? "DOLBY VISION"
-                : hdr.uppercased())
-        }
-        if let audio = nonEmpty(summary.audio) {
-            badges.append(audio.localizedCaseInsensitiveContains("atmos") ? "ATMOS" : audio.uppercased())
-        }
-        return badges
-    }
-
-    private static func prettyResolution(_ value: String?) -> String? {
-        guard let value = nonEmpty(value) else { return nil }
-        switch value.lowercased() {
-        case "2160p", "4k", "uhd": return "4K"
-        case "4320p", "8k": return "8K"
-        default: return value.uppercased()
-        }
-    }
-
-    private static func episodeToken(season: Int?, episode: Int?) -> String? {
-        switch (season, episode) {
-        case let (season?, episode?): return "S\(season) E\(episode)"
-        case let (season?, nil): return "Season \(season)"
-        case let (nil, episode?): return "Episode \(episode)"
-        default: return nil
-        }
-    }
-
     /// `23 min left` for items with a live resume point, mirroring the
     /// progress rules MediaRow uses for its bars.
     private static func timeLeftText(position: Double?, duration: Double?) -> String? {
@@ -248,11 +220,11 @@ extension TVMarqueeContent {
 
 // MARK: - Detail enrichment
 
-/// Fields the marquee wants but section payloads don't carry yet (§9:
-/// air date, cast) — backfilled from a cached, low-priority item-detail
-/// fetch that never blocks or delays the marquee itself.
+/// Air-date and artwork fields the marquee wants but section payloads
+/// don't carry yet (§9) — backfilled from a cached, low-priority
+/// item-detail fetch that never blocks or delays the marquee itself.
 struct TVMarqueeEnrichment: Equatable {
-    /// `Aired Mar 12, 2026 · Pedro Pascal, Bella Ramsey, Anna Torv`
+    /// `Aired Mar 12, 2026`
     let detailLine: String?
     /// The detail-level backdrop. For episodes this is the series backdrop —
     /// far higher-res than the episode still the section payload carries — so
@@ -263,19 +235,7 @@ struct TVMarqueeEnrichment: Equatable {
     init(detail: ItemDetail) {
         backdropUrl = detail.backdropUrl
         backdropThumbhash = detail.backdropThumbhash
-        var parts: [String] = []
-        if let airDate = Self.airDateText(detail.airDate) {
-            parts.append("Aired \(airDate)")
-        }
-        let cast = (detail.cast ?? [])
-            .sorted { ($0.order ?? Int.max) < ($1.order ?? Int.max) }
-            .prefix(3)
-            .map(\.name)
-            .filter { !$0.isEmpty }
-        if !cast.isEmpty {
-            parts.append(cast.joined(separator: ", "))
-        }
-        detailLine = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        detailLine = Self.airDateText(detail.airDate).map { "Aired \($0)" }
     }
 
     /// Mirrors PlayerView's air-date formatting, with a date-only
@@ -303,7 +263,7 @@ final class TVFocusMarqueeModel {
     /// The rested, currently-displayed content. `nil` until the first
     /// row reports focus — the marquee region stays scrim-only (§8).
     private(set) var content: TVMarqueeContent?
-    /// Detail backfill (§9: air date, cast) for the displayed content.
+    /// Detail backfill (§9: air date and artwork) for the displayed content.
     /// Arrives after a low-priority fetch and fades in; `nil` until then.
     private(set) var enrichment: TVMarqueeEnrichment?
     /// Dominant-color wash behind the backdrop, sampled per displayed
@@ -379,8 +339,8 @@ final class TVFocusMarqueeModel {
         sampleTintIfNeeded(for: backdropURL)
     }
 
-    /// The §9 backfill: fields the section payload doesn't carry (air
-    /// date, cast) come from the item-detail endpoint after the marquee
+    /// The §9 backfill: air date and artwork fields the section payload
+    /// doesn't carry come from the item-detail endpoint after the marquee
     /// has already displayed — never blocking it, cached per item, and
     /// rate-limited by the rest debounce upstream.
     private func loadEnrichment(for candidate: TVMarqueeContent) {
@@ -558,6 +518,7 @@ struct TVFocusMarquee: View {
         guard let content else { return "" }
         let parts = [content.eyebrow, content.title]
             + content.metaParts
+            + content.badges
             + [content.synopsis ?? "", enrichment?.detailLine ?? ""]
         return parts
             .filter { !$0.isEmpty }
@@ -652,7 +613,7 @@ private struct TVMarqueeBlock: View {
         return (titleWrapsTwoLines || logoImage != nil) ? min(cap, 2) : cap
     }
 
-    /// Air date + top-billed cast (§9 backfill). For any item that can
+    /// Air date (§9 backfill). For any item that can
     /// enrich (has a contentId) an invisible one-line sizer always holds the
     /// row's height, and the real line fades into an *overlay* on top of it.
     /// Because the overlay never contributes to layout, the bottom-anchored
@@ -710,15 +671,15 @@ private struct TVMarqueeBlock: View {
     private var metaLine: some View {
         if !content.badges.isEmpty || !content.metaParts.isEmpty {
             HStack(spacing: 10) {
-                ForEach(content.badges, id: \.self) { badge in
-                    badgeChip(badge)
-                }
-
                 if !content.metaParts.isEmpty {
                     Text(content.metaParts.joined(separator: " · "))
                         .font(.system(size: scale.metaSize, weight: .medium))
                         .foregroundStyle(Color.continuumSecondaryText)
                         .lineLimit(1)
+                }
+
+                ForEach(content.badges, id: \.self) { badge in
+                    badgeChip(badge)
                 }
             }
         }

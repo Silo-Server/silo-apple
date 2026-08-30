@@ -1,13 +1,11 @@
 #if !os(tvOS)
 import Foundation
 
-/// A token in the hero's facts row. `.text` items get a middle-dot
-/// separator between them; `.rating` renders a green check + maturity
-/// label; `.chip` renders an outlined uppercase pill (4K / HDR / ATMOS / CC).
+/// A token in the hero's editorial facts row. `.text` items get a
+/// middle-dot separator; `.rating` retains the supported rating treatment.
 enum PhoneHeroFactToken: Hashable {
     case text(String)
     case rating(String)
-    case chip(String)
 }
 
 /// Builds the eyebrow / source / facts / starring strings shown by the
@@ -19,26 +17,26 @@ enum PhoneHeroMetadata {
     // MARK: - Source row
 
     static func movieSourceTokens(from detail: ItemDetail) -> [String] {
-        if detail.type == "episode" {
+        if detail.type.lowercased() == "episode" {
             var tokens: [String] = []
-            if let label = episodeNumberLabel(from: detail) { tokens.append(label) }
-            if let genres = detail.genres, !genres.isEmpty {
-                tokens.append(contentsOf: genres.prefix(1))
+            if let label = HeroEditorialMetadata.episodeIdentity(
+                season: detail.seasonNumber,
+                episode: detail.episodeNumber,
+                style: .detail
+            ) {
+                tokens.append(label)
             }
+            tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 1))
             return tokens
         }
         var tokens: [String] = [typeLabel(detail: detail)]
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 
     static func seriesSourceTokens(from detail: ItemDetail) -> [String] {
         var tokens: [String] = ["TV Show"]
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 
@@ -46,24 +44,19 @@ enum PhoneHeroMetadata {
         var tokens: [String] = []
         let count = detail.episodeCount ?? episodeCount
         if count > 0 { tokens.append("\(count) Episode\(count == 1 ? "" : "s")") }
-        if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
-        }
+        tokens.append(contentsOf: HeroEditorialMetadata.normalizedGenres(detail.genres, limit: 2))
         return tokens
     }
 
     static func contentRatingChip(from detail: ItemDetail) -> String? {
-        guard let rating = detail.contentRating?
-            .trimmingCharacters(in: .whitespaces), !rating.isEmpty
-        else { return nil }
-        return rating
+        HeroEditorialMetadata.normalizedValue(detail.contentRating)
     }
 
     // MARK: - Facts row
 
-    static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
+    static func movieFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
-        if detail.type == "episode",
+        if detail.type.lowercased() == "episode",
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
         } else if let year = detail.year, year > 0 {
@@ -72,10 +65,9 @@ enum PhoneHeroMetadata {
         if let runtime = detail.runtime, runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
+        if let imdb = HeroEditorialMetadata.imdbRatingText(detail.ratingImdb) {
+            tokens.append(.text("★ \(imdb)"))
         }
-        tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
     }
 
@@ -85,25 +77,22 @@ enum PhoneHeroMetadata {
         if let count = detail.seasonCount, count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
+        if let imdb = HeroEditorialMetadata.imdbRatingText(detail.ratingImdb) {
+            tokens.append(.text("★ \(imdb)"))
         }
-        tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens
     }
 
     // MARK: - Eyebrow
 
     static func eyebrow(from detail: ItemDetail) -> String? {
-        if detail.type == "episode" {
-            if let seriesTitle = detail.seriesTitle?
-                .trimmingCharacters(in: .whitespaces), !seriesTitle.isEmpty {
+        if detail.type.lowercased() == "episode" {
+            if let seriesTitle = HeroEditorialMetadata.normalizedValue(detail.seriesTitle) {
                 return seriesTitle
             }
         }
-        if let status = detail.status?
-            .trimmingCharacters(in: .whitespaces), !status.isEmpty,
-           detail.type == "series" {
+        if let status = HeroEditorialMetadata.normalizedValue(detail.status),
+           detail.type.lowercased() == "series" {
             switch status.lowercased() {
             case "continuing", "returning series", "returning":
                 return "Continuing Series"
@@ -138,23 +127,6 @@ enum PhoneHeroMetadata {
 
     // MARK: - Helpers
 
-    private static func episodeNumberLabel(from detail: ItemDetail) -> String? {
-        let seasonPart: String?
-        if let season = detail.seasonNumber {
-            seasonPart = season == 0 ? "Specials" : "Season \(season)"
-        } else {
-            seasonPart = nil
-        }
-        let episodePart = detail.episodeNumber.flatMap { n in n > 0 ? "Episode \(n)" : nil }
-
-        switch (seasonPart, episodePart) {
-        case let (.some(s), .some(e)): return "\(s) \u{00B7} \(e)"
-        case let (.some(s), .none):    return s
-        case let (.none, .some(e)):    return e
-        case (.none, .none):           return nil
-        }
-    }
-
     private static func typeLabel(detail: ItemDetail) -> String {
         switch detail.type.lowercased() {
         case "movie": return "Movie"
@@ -163,69 +135,6 @@ enum PhoneHeroMetadata {
         case "season": return "Season"
         default: return detail.type.capitalized
         }
-    }
-
-    private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
-        guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
-        var tokens: [PhoneHeroFactToken] = []
-        if let res = resolutionLabel(version.resolution) { tokens.append(.chip(res)) }
-        if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
-        }
-        if let audio = primaryAudioLabel(version: version) { tokens.append(.chip(audio)) }
-        if hasSubtitles(version: version) { tokens.append(.chip("CC")) }
-        return tokens
-    }
-
-    private static func preferredVersion(from detail: ItemDetail) -> FileVersion? {
-        guard let versions = detail.versions, !versions.isEmpty else { return nil }
-        if let lastId = detail.userData?.lastFileId,
-           let lastVersion = versions.first(where: { $0.fileId == lastId }) {
-            return lastVersion
-        }
-        return versions.first
-    }
-
-    private static func resolutionLabel(_ raw: String?) -> String? {
-        guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
-        return nil
-    }
-
-    private static func dolbyVisionLabel(version: FileVersion) -> String? {
-        let videoTracks = version.videoTracks ?? []
-        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
-        }
-        return nil
-    }
-
-    private static func primaryAudioLabel(version: FileVersion) -> String? {
-        let tracks = version.audioTracks ?? []
-        let defaultTrack = tracks.first(where: { $0.isDefault == true }) ?? tracks.first
-        guard let track = defaultTrack else { return nil }
-
-        if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
-            if layout.contains("7.1") { return "7.1" }
-            if layout.contains("5.1") { return "5.1" }
-            if layout.contains("stereo") || layout == "2.0" { return nil }
-        }
-        if let channels = track.channels {
-            switch channels {
-            case 8: return "7.1"
-            case 6: return "5.1"
-            default: return nil
-            }
-        }
-        return nil
-    }
-
-    private static func hasSubtitles(version: FileVersion) -> Bool {
-        !(version.subtitleTracks ?? []).isEmpty
     }
 
     static func formatRuntime(_ minutes: Int) -> String {

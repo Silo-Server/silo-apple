@@ -82,8 +82,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
                         ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
                         overview: detail.overview,
-                        factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
-                        starringText: TVHeroMetadata.starringText(from: detail),
+                        factsLine: TVHeroMetadata.movieFactsLine(from: detail),
                         actions: { actionColumn },
                         belowSynopsis: belowSynopsis
                     )
