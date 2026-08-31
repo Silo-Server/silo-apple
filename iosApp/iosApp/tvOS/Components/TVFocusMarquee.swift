@@ -974,6 +974,7 @@ struct TVFocusMarquee: View {
               ) else {
             return nil
         }
+        guard !presentation.badges.isEmpty else { return nil }
         return presentation.badges + [content.contentRatingBadge].compactMap { $0 }
     }
 

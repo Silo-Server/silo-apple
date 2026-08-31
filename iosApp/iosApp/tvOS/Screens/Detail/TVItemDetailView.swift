@@ -851,12 +851,14 @@ struct TVItemDetailView: View {
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             nextUpPlaybackDetail = enriched
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                version: effectiveVersion(for: enriched, versionFileId: nil),
-                signature: enriched.effectiveSubtitleTrackSignature,
-                mode: enriched.effectiveSubtitleMode,
-                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-            )
+            if let enriched {
+                preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                    version: effectiveVersion(for: enriched, versionFileId: nil),
+                    signature: enriched.effectiveSubtitleTrackSignature,
+                    mode: enriched.effectiveSubtitleMode,
+                    usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+                )
+            }
             didLoadNextUpPlaybackDetail = true
         } catch {
             guard !Task.isCancelled else { return }
@@ -924,14 +926,24 @@ struct TVItemDetailView: View {
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
-            ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(nextUp.contentId))
-            nextUpPlaybackDetail = enriched
-            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                version: effectiveVersion(for: enriched, versionFileId: nil),
-                signature: enriched.effectiveSubtitleTrackSignature,
-                mode: enriched.effectiveSubtitleMode,
-                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-            )
+            let resolved: ItemDetail?
+            if let enriched, enriched.versions?.isEmpty == false {
+                ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(nextUp.contentId))
+                resolved = enriched
+            } else if let usableCached {
+                resolved = usableCached
+            } else {
+                resolved = enriched
+            }
+            nextUpPlaybackDetail = resolved
+            if let resolved {
+                preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                    version: effectiveVersion(for: resolved, versionFileId: nil),
+                    signature: resolved.effectiveSubtitleTrackSignature,
+                    mode: resolved.effectiveSubtitleMode,
+                    usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+                )
+            }
             didLoadNextUpPlaybackDetail = true
         } catch {
             guard !Task.isCancelled else { return }
@@ -968,10 +980,10 @@ struct TVItemDetailView: View {
             guard let item = try? await ContinuumAPI.shared.itemDetail(
                 contentId: neighbor.contentId
             ), !Task.isCancelled else { continue }
-            let enriched = await enrichPlaybackMetadata(
+            guard let enriched = await enrichPlaybackMetadata(
                 for: item,
                 contentId: neighbor.contentId
-            )
+            ), enriched.versions?.isEmpty == false else { continue }
             guard !Task.isCancelled else { return }
             ResponseCache.shared.set(
                 enriched,
@@ -1023,7 +1035,7 @@ struct TVItemDetailView: View {
         }
     }
 
-    private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail {
+    private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail? {
         guard item.type != "series" else { return item }
 
         do {
@@ -1090,7 +1102,7 @@ struct TVItemDetailView: View {
                 extras: item.extras
             )
         } catch {
-            return item
+            return nil
         }
     }
 }

@@ -563,7 +563,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         TVSimilarRail(
             contentId: detail.contentId,
             title: "Recommended Series",
-            onSelect: onNavigateToItem
+            onSelect: onNavigateToItem,
+            focusRequest: !hasCast && trailerEntries.isEmpty
+                ? supportingRailFocusRequest
+                : 0
         )
     }
 

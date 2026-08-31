@@ -196,6 +196,16 @@ struct TVEpisodeRail: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(anchoredAccessibilityLabel)
         .accessibilityValue("Episode \(anchoredIndex + 1) of \(max(episodes.count, 1))")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                moveAnchoredSelection(by: 1)
+            case .decrement:
+                moveAnchoredSelection(by: -1)
+            @unknown default:
+                break
+            }
+        }
 
         if onPlay != nil || onSetWatched != nil || onSetFavorite != nil {
             button.contextMenu { anchoredContextActions }

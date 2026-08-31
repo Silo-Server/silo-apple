@@ -359,7 +359,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
             if let playTitle {
-                actionSlot(width: 360) {
+                actionSlot {
                     TVPrimaryPillButton(
                         icon: "play.fill",
                         title: playTitle,
@@ -378,7 +378,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 }
 
                 if let onStartOver {
-                    actionSlot(width: 235) {
+                    actionSlot {
                         TVSecondaryPillButton(
                             icon: "backward.end.fill",
                             title: "Start Over",
@@ -391,7 +391,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 }
             }
 
-            actionSlot(width: 200) {
+            actionSlot {
                 TVCircleActionButton(
                     icon: "heart",
                     iconActive: "heart.fill",
@@ -406,7 +406,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 .focused($focusedAction, equals: .favorite)
             }
 
-            actionSlot(width: 220) {
+            actionSlot {
                 TVCircleActionButton(
                     icon: "bookmark",
                     iconActive: "bookmark.fill",
@@ -422,7 +422,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
             }
 
             if showsWatchedAction {
-                actionSlot(width: 200) {
+                actionSlot {
                     TVCircleActionButton(
                         icon: "checkmark.circle",
                         iconActive: "checkmark.circle.fill",
@@ -438,7 +438,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 }
             }
 
-            actionSlot(width: 90) {
+            actionSlot {
                 moreMenu()
                     .focused($focusedAction, equals: .more)
             }
@@ -474,7 +474,6 @@ struct TVDetailActionRow<MoreMenu: View>: View {
 
     @ViewBuilder
     private func actionSlot<Content: View>(
-        width _: CGFloat,
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()

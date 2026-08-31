@@ -137,7 +137,9 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     private var actionRow: some View {
         TVDetailActionRow(
-            playTitle: nextUpEpisode == nil ? nil : "Play",
+            playTitle: nextUpEpisode.map {
+                $0.userData?.isInProgress == true ? "Resume" : "Play"
+            },
             playSubtitle: nextUpEpisode.map(playButtonSubtitle(for:)),
             onPlay: {
                 guard let nextUp = nextUpEpisode else { return }
@@ -199,7 +201,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     }
 
     private func playButtonSubtitle(for episode: EpisodeListItem) -> String {
-        "S\(episode.seasonNumber), \(String(format: "%02d", episode.episodeNumber))"
+        "S\(episode.seasonNumber):E\(episode.episodeNumber)"
     }
 
     private var effectiveNextUpVersion: FileVersion? {

@@ -1,5 +1,12 @@
 import SwiftUI
 
+extension ResolvedSection {
+    var isContinueWatchingSection: Bool {
+        let type = sectionType.lowercased()
+        return type == "continue_watching" || type == "in_progress"
+    }
+}
+
 /// A single section row on the home screen.
 /// Wraps MediaRow and handles "continue watching" progress display.
 /// Picks the thumbnail layout for episode-centric sections (Next Up,
@@ -37,7 +44,7 @@ struct SectionRow: View {
     #endif
 
     private var isContinueWatching: Bool {
-        section.sectionType == "continue_watching" || section.sectionType == "in_progress"
+        section.isContinueWatchingSection
     }
 
     private var hasEpisodeItems: Bool {

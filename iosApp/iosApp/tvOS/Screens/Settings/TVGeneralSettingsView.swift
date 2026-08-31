@@ -520,8 +520,26 @@ private struct TVHomeSectionsCustomizationSheet: View {
         let target = index + offset
         guard ids.indices.contains(target) else { return }
         ids.swapAt(index, target)
+        let retarget: FocusTarget?
+        if target == 0 {
+            retarget = .moveDown(section.id)
+        } else if target == ids.count - 1 {
+            retarget = .moveUp(section.id)
+        } else {
+            retarget = nil
+        }
         withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
             preferences.setOrder(ids)
+            if let retarget {
+                focusedControl = retarget
+            }
+        }
+        if let retarget {
+            Task { @MainActor in
+                await Task.yield()
+                guard isEditing, !isClosing else { return }
+                focusedControl = retarget
+            }
         }
     }
 

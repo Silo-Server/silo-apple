@@ -211,7 +211,7 @@ struct TVSkylineSectionFeed: View {
             TVMarqueeContent(
                 item: item,
                 rowTitle: section.title,
-                isContinueWatching: isContinueWatching(section)
+                isContinueWatching: section.isContinueWatchingSection
             )
         )
     }
@@ -230,14 +230,9 @@ struct TVSkylineSectionFeed: View {
             TVMarqueeContent(
                 item: item,
                 rowTitle: section.title,
-                isContinueWatching: isContinueWatching(section)
+                isContinueWatching: section.isContinueWatchingSection
             )
         )
-    }
-
-    private func isContinueWatching(_ section: ResolvedSection) -> Bool {
-        let type = section.sectionType.lowercased()
-        return type == "continue_watching" || type == "in_progress"
     }
 
 }

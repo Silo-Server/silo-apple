@@ -17,10 +17,12 @@ struct TVSimilarRail: View {
     let contentId: String
     let title: String
     let onSelect: (String) -> Void
+    var focusRequest = 0
 
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
+    @State private var lastAppliedFocusRequest = 0
     @FocusState private var focusedItemId: String?
 
     private let cardWidth: CGFloat = 220
@@ -39,6 +41,12 @@ struct TVSimilarRail: View {
             }
         }
         .task(id: contentId) { await load() }
+        .onChange(of: focusRequest, initial: true) { _, _ in
+            applyFocusRequestIfPossible()
+        }
+        .onChange(of: items) { _, _ in
+            applyFocusRequestIfPossible()
+        }
     }
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
@@ -94,11 +102,20 @@ struct TVSimilarRail: View {
         .allowsHitTesting(false)
     }
 
+    private func applyFocusRequestIfPossible() {
+        guard focusRequest > 0,
+              focusRequest != lastAppliedFocusRequest,
+              let firstContentId = items.first?.contentId else { return }
+        lastAppliedFocusRequest = focusRequest
+        focusedItemId = firstContentId
+    }
+
     // MARK: - Data loading
 
     private func load() async {
         guard loadedFor != contentId else { return }
         loadedFor = contentId
+        lastAppliedFocusRequest = 0
         isLoading = true
         items = []
 
