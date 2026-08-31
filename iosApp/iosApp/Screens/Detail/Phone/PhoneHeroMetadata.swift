@@ -23,23 +23,21 @@ enum PhoneHeroMetadata {
             var tokens: [String] = []
             if let label = episodeNumberLabel(from: detail) { tokens.append(label) }
             if let genres = detail.genres, !genres.isEmpty {
-                tokens.append(contentsOf: genres.prefix(1))
+                tokens.append(genres.prefix(1).joined(separator: ", "))
             }
             return tokens
         }
-        var tokens: [String] = [typeLabel(detail: detail)]
         if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
+            return [genres.prefix(2).joined(separator: ", ")]
         }
-        return tokens
+        return []
     }
 
     static func seriesSourceTokens(from detail: ItemDetail) -> [String] {
-        var tokens: [String] = ["TV Show"]
         if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
+            return [genres.prefix(2).joined(separator: ", ")]
         }
-        return tokens
+        return []
     }
 
     static func seasonSourceTokens(from detail: ItemDetail, episodeCount: Int) -> [String] {
@@ -115,6 +113,21 @@ enum PhoneHeroMetadata {
             }
         }
         return nil
+    }
+
+    // MARK: - Credits
+
+    static func creditText(from detail: ItemDetail) -> String? {
+        if detail.type == "movie" {
+            let directors = detail.crew?
+                .filter { $0.job?.caseInsensitiveCompare("Director") == .orderedSame }
+                .map(\.name) ?? []
+            guard !directors.isEmpty else { return nil }
+            return "Directed by " + directors.prefix(2).joined(separator: ", ")
+        }
+        if detail.type == "episode" { return nil }
+        guard let cast = detail.cast, !cast.isEmpty else { return nil }
+        return "Starring " + cast.prefix(3).map(\.name).joined(separator: ", ")
     }
 
     // MARK: - Title parts

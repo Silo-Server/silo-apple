@@ -8,6 +8,10 @@ import SwiftUI
 /// trailing side of a single `HStack` row.
 struct TabTopBarActions: View {
     let profile: UserProfile?
+    /// Home opts into circular native Liquid Glass so these utilities match
+    /// the close/remote detail controls. Other roots keep their established
+    /// chrome until they explicitly adopt the same treatment.
+    var usesGlass = false
     let onSearch: () -> Void
     let onOpenSettings: () -> Void
     /// Opens the media-requests hub. The menu row only renders when the
@@ -22,9 +26,15 @@ struct TabTopBarActions: View {
         // clean top-right cluster used by Plex. The profile avatar is the
         // only filled shape, so it reads as the account control.
         HStack(spacing: ContinuumTheme.topBarIconSpacing) {
-            TopBarIconButton(systemImage: "magnifyingglass", accessibilityLabel: "Search", action: onSearch)
+            TopBarIconButton(
+                systemImage: "magnifyingglass",
+                accessibilityLabel: "Search",
+                usesGlass: usesGlass,
+                action: onSearch
+            )
             ProfileAvatarMenu(
                 profile: profile,
+                usesGlass: usesGlass,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
@@ -41,6 +51,7 @@ struct TabTopBarActions: View {
 private struct TopBarIconButton: View {
     let systemImage: String
     let accessibilityLabel: String
+    let usesGlass: Bool
     let action: () -> Void
 
     var body: some View {
@@ -49,7 +60,8 @@ private struct TopBarIconButton: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.continuumOnSurface)
                 .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
-                .contentShape(Rectangle())
+                .modifier(TopBarCircularGlass(enabled: usesGlass))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
@@ -62,6 +74,7 @@ private struct TopBarIconButton: View {
 /// and manage their account without leaving the current tab.
 private struct ProfileAvatarMenu: View {
     let profile: UserProfile?
+    let usesGlass: Bool
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
@@ -114,9 +127,30 @@ private struct ProfileAvatarMenu: View {
                 avatar: profile?.avatarEmoji,
                 imageUrl: profile?.avatarImageUrl,
                 name: profile?.name ?? "",
-                size: 36
+                size: usesGlass ? 30 : 36
             )
+            .frame(
+                width: usesGlass ? ContinuumTheme.topBarIconHitSize : 36,
+                height: usesGlass ? ContinuumTheme.topBarIconHitSize : 36
+            )
+            .modifier(TopBarCircularGlass(enabled: usesGlass))
+            .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
+    }
+}
+
+/// Keeps all three Home utilities on the exact same 44pt native-glass circle.
+/// A modifier avoids duplicating branches inside Button and Menu labels.
+private struct TopBarCircularGlass: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.siloGlass(in: Circle(), interactive: true)
+        } else {
+            content
+        }
     }
 }

@@ -7,12 +7,13 @@ import SwiftUI
 /// 10-foot layout.
 struct ItemDetailView: View {
     let contentId: String
+    var onClose: (() -> Void)? = nil
 
     var body: some View {
         #if os(tvOS)
         TVItemDetailView(contentId: contentId)
         #else
-        ItemDetailPhoneContent(contentId: contentId)
+        ItemDetailPhoneContent(contentId: contentId, onClose: onClose)
         #endif
     }
 }
@@ -63,6 +64,7 @@ private struct UnreachablePlayRequest: Identifiable {
 
 private struct ItemDetailPhoneContent: View {
     let contentId: String
+    var onClose: (() -> Void)? = nil
 
     @State private var viewModel = ItemDetailViewModel()
     @State private var preferredVersionFileId: Int?
@@ -73,12 +75,22 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
     @State private var nextUpWatchDetail: WatchDetail?
+    /// Keeps the playback selector's footprint occupied while a newly focused
+    /// episode is resolving its files and tracks. The series page renders a
+    /// same-size skeleton from this state instead of collapsing the stack.
+    @State private var isLoadingNextUpWatchDetail = false
+    /// Series pages select episodes in place. Nil means the normal next-up
+    /// episode is active; tapping a card pins that episode without pushing a
+    /// second detail route.
+    @State private var selectedSeriesEpisodeId: String?
     @State private var refreshOnPlayerDismiss = false
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
+    @State private var isShowingControlPicker = false
+    @State private var isShowingRemoteControl = false
     #endif
     @Environment(AppRouter.self) private var router
 
@@ -93,6 +105,11 @@ private struct ItemDetailPhoneContent: View {
             }
         }
         .continuumBackground()
+        #if os(iOS)
+        // Detail chrome and selector checks stay monochrome over per-title
+        // artwork; the app accent blue looked unrelated to this visual system.
+        .tint(.white)
+        #endif
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumNavigationBarBackgroundHidden()
         .task(id: contentId) {
@@ -104,6 +121,8 @@ private struct ItemDetailPhoneContent: View {
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             nextUpWatchDetail = nil
+            isLoadingNextUpWatchDetail = false
+            selectedSeriesEpisodeId = nil
             refreshOnPlayerDismiss = false
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
@@ -194,28 +213,99 @@ private struct ItemDetailPhoneContent: View {
                 : "You're offline. Connect to a network to stream, or play a downloaded title.")
         }
         #if os(iOS)
-        .toolbar {
-            if let detail = viewModel.detail, isDirectlyPlayable(detail) {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        playOnTV(currentControlRequest(for: detail))
-                    } label: {
-                        Image(systemName: siloControl.hasActiveSession
-                            ? "appletvremote.gen4.fill"
-                            : "appletvremote.gen4")
-                    }
-                    .tint(.continuumOnSurface)
-                    .accessibilityLabel("Remote Control")
-                }
-            }
+        // The native navigation bar reserved a solid black strip above the
+        // artwork. The card owns its controls instead: the image now reaches
+        // the rounded top edge and both controls float directly over it.
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .top) {
+            detailTopControls
         }
         .sheet(item: $controlRequestBox) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
+        }
+        .sheet(isPresented: $isShowingControlPicker) {
+            SiloControlTargetPickerView(request: nil, controller: siloControl)
+        }
+        .sheet(isPresented: $isShowingRemoteControl) {
+            SiloControlRemoteView(controller: siloControl)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         #endif
     }
 
     #if os(iOS)
+    private var detailTopControls: some View {
+        HStack {
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(
+                            width: ContinuumTheme.topBarIconHitSize,
+                            height: ContinuumTheme.topBarIconHitSize
+                        )
+                        .siloGlass(in: Circle(), interactive: true)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close details")
+            } else if !router.itemDetailPath.isEmpty {
+                Button {
+                    router.itemDetailPath.removeLast()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(
+                            width: ContinuumTheme.topBarIconHitSize,
+                            height: ContinuumTheme.topBarIconHitSize
+                        )
+                        .siloGlass(in: Circle(), interactive: true)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
+            }
+
+            Spacer(minLength: 20)
+
+            Button(action: handleRemoteControlTap) {
+                Image(systemName: siloControl.hasActiveSession
+                    ? "appletvremote.gen4.fill"
+                    : "appletvremote.gen4")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(
+                        width: ContinuumTheme.topBarIconHitSize,
+                        height: ContinuumTheme.topBarIconHitSize
+                    )
+                    .siloGlass(in: Circle(), interactive: true)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remote Control")
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 18)
+        .zIndex(20)
+    }
+
+    /// Movies and episodes retain the existing cast-and-play behavior. Series
+    /// overview cards still show the same remote pill; there it opens the
+    /// connected remote or the TV picker because the container has no single
+    /// playable file of its own.
+    private func handleRemoteControlTap() {
+        if let detail = viewModel.detail, isDirectlyPlayable(detail) {
+            playOnTV(currentControlRequest(for: detail))
+        } else if siloControl.hasActiveSession || siloControl.isReconnecting {
+            isShowingRemoteControl = true
+        } else {
+            isShowingControlPicker = true
+        }
+    }
+
     /// True when the loaded detail routes to `MovieDetailContent` — the only
     /// branch whose primary item maps to a single playback request. Series,
     /// season, and audiobook containers have no single "this item" to cast.
@@ -396,14 +486,19 @@ private struct ItemDetailPhoneContent: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpWatchDetail: nextUpWatchDetail,
+                isLoadingSelectedEpisodePlayback: isLoadingNextUpWatchDetail,
+                selectedEpisodeContentId: playbackEpisode(for: detail)?.contentId,
                 onSelectSeason: { season in
+                    selectedSeriesEpisodeId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
+                    let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
                     let resumePosition = startFromBeginning
                         ? nil
                         : viewModel.episodes.first(where: { $0.contentId == id })?.userData?.positionSeconds
-                    if let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
+                    if usesSelectedEpisodeControls,
+                       let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
                         presentPlayerFromDetail(
                             contentId: id,
                             fileId: fileId,
@@ -415,13 +510,22 @@ private struct ItemDetailPhoneContent: View {
                     } else {
                         presentPlayerFromDetail(
                             contentId: id,
+                            fileId: usesSelectedEpisodeControls ? fileId : nil,
+                            audioTrackIndex: usesSelectedEpisodeControls
+                                ? preferredNextUpAudioTrackIndex : nil,
+                            subtitleTrackIndex: usesSelectedEpisodeControls
+                                ? preferredNextUpSubtitleTrackIndex : nil,
                             startFromBeginning: startFromBeginning,
                             resumePosition: resumePosition
                         )
                     }
                 },
                 onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    // The rail has already completed its native deceleration by
+                    // the time it reports a centered card. Publishing this
+                    // without a second animation prevents the whole vertical
+                    // detail stack from participating in the selection change.
+                    selectedSeriesEpisodeId = id
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
@@ -484,7 +588,7 @@ private struct ItemDetailPhoneContent: View {
                         .id(detail.contentId)
                 }
             )
-            .task(id: nextUpEpisodeContentId(for: detail)) {
+            .task(id: playbackEpisodeContentId(for: detail)) {
                 await loadNextUpWatchDetail(for: detail)
             }
         } else {
@@ -503,6 +607,7 @@ private struct ItemDetailPhoneContent: View {
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 episodeSeriesPosterUrl: viewModel.episodeSeriesPosterUrl,
                 episodeSeriesPosterThumbhash: viewModel.episodeSeriesPosterThumbhash,
+                episodeSeriesLogoUrl: viewModel.episodeSeriesLogoUrl,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
                     if let fileId = playbackFileId(for: detail) {
@@ -849,23 +954,55 @@ private struct ItemDetailPhoneContent: View {
         nextUpEpisode(for: detail)?.contentId
     }
 
+    /// Series detail keeps one active episode on the main page. The user's
+    /// explicit card selection wins; otherwise retain the existing in-progress
+    /// then first-unwatched next-up policy. Season detail continues to use the
+    /// unmodified next-up path.
+    private func playbackEpisode(for detail: ItemDetail) -> EpisodeListItem? {
+        if detail.type == "series",
+           let selectedSeriesEpisodeId,
+           let selected = viewModel.episodes.first(where: {
+               $0.contentId == selectedSeriesEpisodeId
+           }) {
+            return selected
+        }
+        return nextUpEpisode(for: detail)
+    }
+
+    private func playbackEpisodeContentId(for detail: ItemDetail) -> String? {
+        playbackEpisode(for: detail)?.contentId
+    }
+
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
-        guard let nextUp = nextUpEpisode(for: detail) else {
+        guard let nextUp = playbackEpisode(for: detail) else {
             nextUpWatchDetail = nil
+            isLoadingNextUpWatchDetail = false
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             return
         }
 
+        let requestedContentId = nextUp.contentId
+        isLoadingNextUpWatchDetail = true
         nextUpWatchDetail = nil
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
 
+        defer {
+            // A cancelled request may finish after the user has already
+            // centered another episode. Only the request that still owns the
+            // current selection is allowed to remove its skeleton.
+            if playbackEpisode(for: detail)?.contentId == requestedContentId {
+                isLoadingNextUpWatchDetail = false
+            }
+        }
+
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: nextUp.contentId)
-            guard !Task.isCancelled else { return }
+            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: requestedContentId)
+            guard !Task.isCancelled,
+                  playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
             nextUpWatchDetail = watchDetail
             preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: watchDetail, versionFileId: nil),
@@ -874,7 +1011,8 @@ private struct ItemDetailPhoneContent: View {
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
             nextUpWatchDetail = nil
         }
     }

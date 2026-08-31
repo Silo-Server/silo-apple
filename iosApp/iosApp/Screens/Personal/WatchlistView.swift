@@ -8,6 +8,9 @@ struct WatchlistView: View {
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
+    #if os(iOS)
+    @State private var selectedSection: IOSPersonalMediaSection = .movies
+    #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
 
@@ -54,7 +57,27 @@ struct WatchlistView: View {
         }
     }
 
+    @ViewBuilder
     private var gridContent: some View {
+        #if os(iOS)
+        ScrollView {
+            VStack(spacing: 16) {
+                IOSPersonalMediaSectionPicker(selection: $selectedSection)
+
+                if filteredIOSItems.isEmpty {
+                    iosSelectedSectionEmptyState
+                } else {
+                    IOSPersonalMediaCarouselRows(items: filteredIOSItems) { item, state in
+                        guard !state.inWatchlist else { return }
+                        withAnimation {
+                            items.removeAll { $0.contentId == item.contentId }
+                        }
+                    }
+                }
+            }
+            .padding(ContinuumTheme.padding)
+        }
+        #else
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
@@ -82,7 +105,23 @@ struct WatchlistView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+        #endif
     }
+
+    #if os(iOS)
+    private var filteredIOSItems: [BrowseItem] {
+        items.filter(selectedSection.includes)
+    }
+
+    private var iosSelectedSectionEmptyState: some View {
+        ContentUnavailableView(
+            "No Watchlist \(selectedSection.rawValue)",
+            systemImage: selectedSection == .movies ? "film" : "tv",
+            description: Text("Add titles from a detail page and they will appear here.")
+        )
+        .frame(maxWidth: .infinity, minHeight: 360)
+    }
+    #endif
 
     private func playAction(for item: BrowseItem) -> (() -> Void)? {
         #if os(tvOS)

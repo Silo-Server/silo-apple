@@ -107,6 +107,7 @@ struct MediaCard: View {
     @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
+    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     /// Stable per-placement id for the zoom source. A bare `contentId` collides
     /// when the same item is visible in two rows (e.g. Continue Watching +
     /// Recently Added), making SwiftUI pick an ambiguous source; a per-instance
@@ -188,7 +189,10 @@ struct MediaCard: View {
             if let contentId {
                 Button {
                     router.pendingZoomSourceID = zoomInstanceID.uuidString
-                    router.navigate(to: .itemDetail(contentId: contentId))
+                    router.presentItemDetail(
+                        contentId: contentId,
+                        browseSource: detailBrowseSource
+                    )
                 } label: {
                     cardContent
                         .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)

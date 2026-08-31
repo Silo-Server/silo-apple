@@ -11,6 +11,9 @@ struct CatalogGrid: View {
     let onLoadMore: () -> Void
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
+    #if !os(tvOS)
+    @State private var detailBrowseOriginID = UUID().uuidString
+    #endif
 
     #if os(tvOS)
     private var columns: [GridItem] {
@@ -58,6 +61,16 @@ struct CatalogGrid: View {
                 }
             }
         }
+        #if !os(tvOS)
+        .scrollTargetLayout()
+        .environment(
+            \.itemDetailBrowseSource,
+            ItemDetailBrowseSource(
+                originID: detailBrowseOriginID,
+                contentIDs: items.map(\.contentId)
+            )
+        )
+        #endif
 
         if isLoading {
             HStack {
