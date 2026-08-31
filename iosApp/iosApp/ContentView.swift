@@ -1967,7 +1967,7 @@ struct MainTabView: View {
                 routeContent(for: route)
             }
             #if os(iOS)
-            .tabBarMinimizeBehavior(.onScrollDown)
+            .siloTabBarMinimizeOnScroll()
             .modifier(NowPlayingShelfAttachment())
             #endif
         }

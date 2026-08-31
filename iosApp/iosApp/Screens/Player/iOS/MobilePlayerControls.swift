@@ -245,7 +245,7 @@ struct MobilePlayerControls: View {
                     .foregroundStyle(.white)
                     .frame(width: 50, height: 50)
             }
-            .buttonStyle(.glass)
+            .siloGlassButtonStyle()
             .buttonBorderShape(.circle)
             .accessibilityLabel("Skip Back 10 Seconds")
 
@@ -260,7 +260,7 @@ struct MobilePlayerControls: View {
                     .offset(x: viewModel.isPlaying ? 0 : 1.5)
                     .frame(width: 64, height: 64)
             }
-            .buttonStyle(.glassProminent)
+            .siloGlassProminentButtonStyle()
             .buttonBorderShape(.circle)
             .tint(.white.opacity(0.9))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
@@ -273,7 +273,7 @@ struct MobilePlayerControls: View {
                     .foregroundStyle(.white)
                     .frame(width: 50, height: 50)
             }
-            .buttonStyle(.glass)
+            .siloGlassButtonStyle()
             .buttonBorderShape(.circle)
             .accessibilityLabel("Skip Forward 10 Seconds")
         }
@@ -595,9 +595,9 @@ struct MobilePlayerControls: View {
         return Group {
             // The prominent style flags a non-Auto quality cap at a glance.
             if viewModel.activeQualityId == ApplePlaybackQuality.autoId {
-                menu.buttonStyle(.glass)
+                menu.siloGlassButtonStyle()
             } else {
-                menu.buttonStyle(.glassProminent)
+                menu.siloGlassProminentButtonStyle()
             }
         }
         .buttonBorderShape(.capsule)
@@ -679,7 +679,7 @@ struct MobilePlayerControls: View {
         .menuStyle(.button)
         // Keep Chapter 1 at the top, reading down.
         .menuOrder(.fixed)
-        .buttonStyle(.glass)
+        .siloGlassButtonStyle()
         .buttonBorderShape(style == .icons ? .circle : .capsule)
     }
 
@@ -746,7 +746,7 @@ struct MobilePlayerControls: View {
             .padding(.horizontal, 12)
             .frame(height: 34)
         }
-        .buttonStyle(.glass)
+        .siloGlassButtonStyle()
         .buttonBorderShape(.capsule)
     }
 
@@ -770,7 +770,7 @@ struct MobilePlayerControls: View {
                                 .foregroundStyle(.white)
                                 .frame(width: 38, height: 38)
                         }
-                        .buttonStyle(.glass)
+                        .siloGlassButtonStyle()
                         .buttonBorderShape(.circle)
                         .accessibilityLabel("Cancel Auto-Skip Intro")
                     }
@@ -795,7 +795,7 @@ struct MobilePlayerControls: View {
                     // White prominent glass with a dark glyph, matching the
                     // play/pause disc — accent-tinted prominent reads as an
                     // app-colored web button over video.
-                    .buttonStyle(.glassProminent)
+                    .siloGlassProminentButtonStyle()
                     .tint(.white.opacity(0.9))
                     .accessibilityLabel(
                         viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
@@ -825,7 +825,7 @@ struct MobilePlayerControls: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 9)
                 }
-                .buttonStyle(.glassProminent)
+                .siloGlassProminentButtonStyle()
                 .tint(.white.opacity(0.9))
                 .accessibilityLabel("Skip Credits")
             }
@@ -847,7 +847,7 @@ struct MobilePlayerControls: View {
         }
         // `.circle` keeps each glass control a compact circle instead of the
         // default wider capsule so rows of controls stay dense.
-        .buttonStyle(.glass)
+        .siloGlassButtonStyle()
         .buttonBorderShape(.circle)
     }
 

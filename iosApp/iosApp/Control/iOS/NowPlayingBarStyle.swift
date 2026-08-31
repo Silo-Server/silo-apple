@@ -10,6 +10,30 @@ enum NowPlayingBarStyle {
     case accessory
 }
 
+private struct NowPlayingAccessoryInlineKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var nowPlayingAccessoryIsInline: Bool {
+        get { self[NowPlayingAccessoryInlineKey.self] }
+        set { self[NowPlayingAccessoryInlineKey.self] = newValue }
+    }
+}
+
+#if os(iOS)
+/// Bridges the iOS 26 system accessory placement into an app-owned environment
+/// value that is safe to read on iOS 18.
+@available(iOS 26.0, *)
+struct NowPlayingAccessoryPlacementReader: ViewModifier {
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+
+    func body(content: Content) -> some View {
+        content.environment(\.nowPlayingAccessoryIsInline, placement == .inline)
+    }
+}
+#endif
+
 /// Applies (or omits) the rounded translucent card behind a now-playing bar.
 struct NowPlayingBarChrome: ViewModifier {
     let style: NowPlayingBarStyle

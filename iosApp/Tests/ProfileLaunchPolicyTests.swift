@@ -505,7 +505,8 @@ final class ProfileLaunchIdentityTests: XCTestCase {
         let store = TokenStore(
             keychain: SharedKeychain(
                 service: "ProfileLaunchIdentityTests.\(UUID().uuidString)",
-                accessGroup: "invalid.access.group"
+                accessGroup: "invalid.access.group",
+                allowsAppLocalFallback: false
             ),
             defaults: SharedDefaults(suite: suite, standard: suite)
         )
@@ -516,6 +517,90 @@ final class ProfileLaunchIdentityTests: XCTestCase {
         XCTAssertFalse(persisted)
         let profileToken = await store.getProfileToken()
         XCTAssertNil(profileToken)
+    }
+
+    func testUnavailableConfiguredAccessGroupUsesAppLocalKeychainWhenEnabled() {
+        let service = "ProfileLaunchIdentityTests.\(UUID().uuidString)"
+        let account = "profile-proof"
+        let sharedKeychain = SharedKeychain(
+            service: service,
+            accessGroup: "invalid.access.group",
+            allowsAppLocalFallback: true
+        )
+        let appLocalKeychain = SharedKeychain(
+            service: service,
+            accessGroup: nil
+        )
+        defer { appLocalKeychain.delete(account) }
+
+        XCTAssertTrue(sharedKeychain.set("proof", for: account))
+        XCTAssertEqual(appLocalKeychain.get(account), "proof")
+        XCTAssertEqual(sharedKeychain.get(account), "proof")
+        XCTAssertEqual(appLocalKeychain.get(account), "proof")
+        XCTAssertTrue(sharedKeychain.delete(account))
+        XCTAssertNil(sharedKeychain.get(account))
+        XCTAssertNil(appLocalKeychain.get(account))
+    }
+
+    func testAppLocalKeychainFallbackPolicyIsLimitedToLegacyIOSSideloads() {
+        XCTAssertTrue(
+            SideloadKeychainFallbackPolicy.isEnabled(
+                buildChannel: "sideload",
+                isPreIOS26: true
+            )
+        )
+        XCTAssertFalse(
+            SideloadKeychainFallbackPolicy.isEnabled(
+                buildChannel: "sideload",
+                isPreIOS26: false
+            )
+        )
+        XCTAssertFalse(
+            SideloadKeychainFallbackPolicy.isEnabled(
+                buildChannel: "release",
+                isPreIOS26: true
+            )
+        )
+        XCTAssertFalse(
+            SideloadKeychainFallbackPolicy.isEnabled(
+                buildChannel: "dev",
+                isPreIOS26: true
+            )
+        )
+    }
+
+    func testAppLocalKeychainFallbackPolicyRecognizesUnsignedArchiveGroup() {
+        let unprefixedGroup = "org.siloserver.silo.shared"
+
+        XCTAssertEqual(
+            SideloadKeychainFallbackPolicy.resolvedAccessGroup(
+                from: unprefixedGroup,
+                allowsUnprefixedSideloadGroup: true
+            ),
+            unprefixedGroup
+        )
+        XCTAssertNil(
+            SideloadKeychainFallbackPolicy.resolvedAccessGroup(
+                from: unprefixedGroup,
+                allowsUnprefixedSideloadGroup: false
+            )
+        )
+        XCTAssertEqual(
+            SideloadKeychainFallbackPolicy.resolvedAccessGroup(
+                from: "TEAMID.\(unprefixedGroup)",
+                allowsUnprefixedSideloadGroup: false
+            ),
+            "TEAMID.\(unprefixedGroup)"
+        )
+        XCTAssertEqual(
+            SideloadKeychainFallbackPolicy.teamPrefix(
+                from: "TEAMID.\(unprefixedGroup)"
+            ),
+            "TEAMID."
+        )
+        XCTAssertNil(
+            SideloadKeychainFallbackPolicy.teamPrefix(from: unprefixedGroup)
+        )
     }
 
     private struct TokenHarness {

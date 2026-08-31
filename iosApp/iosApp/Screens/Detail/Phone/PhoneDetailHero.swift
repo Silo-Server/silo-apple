@@ -179,7 +179,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .backgroundExtensionEffect()
+        .siloBackgroundExtensionEffect()
         .allowsHitTesting(false)
     }
 
@@ -236,9 +236,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         .frame(maxWidth: .infinity)
         // Mirror + blur the source artwork to fill behind the status bar /
         // Dynamic Island and out to the screen edges — the Apple TV / Music
-        // detail-page continuation, instead of a hard banner edge. All Apple
-        // targets are at the 26 minimum, so this is unconditional.
-        .backgroundExtensionEffect()
+        // detail-page continuation, instead of a hard banner edge. iOS 18
+        // keeps the legacy clipped artwork without system mirroring.
+        .siloBackgroundExtensionEffect()
     }
 
     /// Soft single-direction fade — only enough to let text below sit

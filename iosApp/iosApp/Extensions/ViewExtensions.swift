@@ -62,14 +62,51 @@ extension View {
     }
 
     /// Soft native scroll-edge blur at the top, where content passes under a
-    /// floating bar. iOS/macOS minimums are 26 so it's unconditional there;
-    /// no-op on tvOS (no floating bars in the 10-foot UI).
+    /// floating bar. iOS 18 keeps its legacy edge treatment; tvOS remains a
+    /// no-op because it has no floating bars in the 10-foot UI.
     @ViewBuilder
     func continuumScrollEdgeEffect() -> some View {
         #if os(tvOS)
         self
+        #elseif os(iOS)
+        if #available(iOS 26.0, *) {
+            self.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            self
+        }
         #else
         self.scrollEdgeEffectStyle(.soft, for: .top)
+        #endif
+    }
+
+    /// Extends hero artwork through surrounding chrome on Apple 26+. Earlier
+    /// iOS versions retain the legacy clipped artwork without the new system
+    /// mirroring effect.
+    @ViewBuilder
+    func siloBackgroundExtensionEffect() -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.backgroundExtensionEffect()
+        } else {
+            self.clipped()
+        }
+        #else
+        self.backgroundExtensionEffect()
+        #endif
+    }
+
+    /// Keeps the native minimizing tab bar on iOS 26 while leaving the fixed
+    /// iOS 18 tab bar unchanged.
+    @ViewBuilder
+    func siloTabBarMinimizeOnScroll() -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            self
+        }
+        #else
+        self
         #endif
     }
 
@@ -208,11 +245,9 @@ extension View {
 
 // MARK: - Continuum Button Styles
 
-// NOTE: On the migrated paths these styles now serve tvOS only — iOS/macOS
-// route to native `.glass`/`.glassProminent` via the `silo*Button()` view
-// extensions below. They stay defined because tvOS focus appearance (scale,
-// glow, focus stroke, `.focusEffectDisabled()`) depends on them. If tvOS later
-// adopts glass too, they can be retired.
+// These styles serve tvOS focus appearance and the pre-Liquid-Glass iOS 18
+// fallback. iOS/macOS 26+ continue to use native glass through the routing
+// helpers below.
 
 /// Primary action button — filled pill with dark text. At rest the pill is
 /// a dimmed white so focus can brighten it to solid white; on tvOS focus
@@ -376,31 +411,21 @@ private struct TextButtonBody: View {
 // MARK: - Silo button style routing (glass on iOS/macOS, Continuum on tvOS)
 
 extension View {
-    /// Primary action button: native Liquid Glass on iOS/macOS, focus-reactive
-    /// `ContinuumPrimaryButtonStyle` on tvOS (its scale/glow/focus stroke encodes
-    /// 10-foot focus, which glass does not provide). All Apple targets are 26+,
-    /// so `.glassProminent` is unconditional on the non-tvOS path.
+    /// Primary action button: native Liquid Glass on iOS/macOS 26+, the
+    /// established Continuum style on iOS 18, and focus-reactive Continuum
+    /// chrome on tvOS.
     @ViewBuilder
     func siloPrimaryButton(isLoading: Bool = false) -> some View {
         #if os(tvOS)
         self.buttonStyle(ContinuumPrimaryButtonStyle(isLoading: isLoading))
+        #elseif os(iOS)
+        if #available(iOS 26.0, *) {
+            modernSiloPrimaryButton(isLoading: isLoading)
+        } else {
+            self.buttonStyle(ContinuumPrimaryButtonStyle(isLoading: isLoading))
+        }
         #else
-        // `.glassProminent` can't take the in-flight state, so surface it the
-        // only way a modifier can: disable the button and overlay a spinner
-        // while loading. Without this the iOS save buttons gave no feedback
-        // during a request (regression vs ContinuumPrimaryButtonStyle).
-        self
-            .buttonStyle(.glassProminent)
-            // The global monochrome tint made prominent glass white-on-white;
-            // accent the fill so the label stays legible.
-            .tint(.continuumAccent)
-            .disabled(isLoading)
-            .overlay {
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
+        modernSiloPrimaryButton(isLoading: isLoading)
         #endif
     }
 
@@ -410,6 +435,12 @@ extension View {
     func siloSecondaryButton() -> some View {
         #if os(tvOS)
         self.buttonStyle(ContinuumSecondaryButtonStyle())
+        #elseif os(iOS)
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glass)
+        } else {
+            self.buttonStyle(ContinuumSecondaryButtonStyle())
+        }
         #else
         self.buttonStyle(.glass)
         #endif
@@ -421,9 +452,61 @@ extension View {
     func siloTextButton() -> some View {
         #if os(tvOS)
         self.buttonStyle(ContinuumTextButtonStyle())
+        #elseif os(iOS)
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glass)
+        } else {
+            self.buttonStyle(ContinuumTextButtonStyle())
+        }
         #else
         self.buttonStyle(.glass)
         #endif
+    }
+
+    /// Compact native glass button on iOS 26+, with the corresponding native
+    /// bordered control on iOS 18. `buttonBorderShape` and `tint` remain owned
+    /// by the caller so the modern modifier order is unchanged.
+    @ViewBuilder
+    func siloGlassButtonStyle() -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glass)
+        } else {
+            self.buttonStyle(.bordered)
+        }
+        #else
+        self.buttonStyle(.glass)
+        #endif
+    }
+
+    /// Prominent counterpart to `siloGlassButtonStyle()`.
+    @ViewBuilder
+    func siloGlassProminentButtonStyle() -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.buttonStyle(.glassProminent)
+        } else {
+            self.buttonStyle(.borderedProminent)
+        }
+        #else
+        self.buttonStyle(.glassProminent)
+        #endif
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
+    private func modernSiloPrimaryButton(isLoading: Bool) -> some View {
+        // `.glassProminent` can't take the in-flight state, so surface it the
+        // only way a modifier can: disable the button and overlay a spinner.
+        self
+            .buttonStyle(.glassProminent)
+            .tint(.continuumAccent)
+            .disabled(isLoading)
+            .overlay {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
     }
 }
 

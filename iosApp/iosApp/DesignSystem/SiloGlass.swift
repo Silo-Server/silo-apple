@@ -1,15 +1,26 @@
 import SwiftUI
 
 extension View {
-    /// Silo's Liquid Glass background in `shape`. All Apple targets (iOS / macOS /
-    /// tvOS) are at the 26 minimum, so this is unconditional. It's the single
-    /// place glass styling is configured — call sites never write `glassEffect`
-    /// directly so tint/shape conventions stay consistent.
+    /// Silo's Liquid Glass background in `shape` on Apple 26+, with the native
+    /// material fallback used by iOS 18. This is the single place glass styling
+    /// is configured so call sites keep the same tint and shape conventions.
+    @ViewBuilder
     func siloGlass(in shape: some Shape, tint: Color? = nil, interactive: Bool = false) -> some View {
-        var glass = Glass.regular
-        if let tint { glass = glass.tint(tint) }
-        if interactive { glass = glass.interactive() }
-        return self.glassEffect(glass, in: shape)
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(
+                siloGlassConfiguration(tint: tint, interactive: interactive),
+                in: shape
+            )
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+        }
+        #else
+        self.glassEffect(
+            siloGlassConfiguration(tint: tint, interactive: interactive),
+            in: shape
+        )
+        #endif
     }
 
     /// Glass for surfaces drawn over LIVE VIDEO (player HUD, controls,
@@ -21,10 +32,27 @@ extension View {
     /// everything else gets standard Silo glass.
     @ViewBuilder
     func siloPlayerGlass(in shape: some Shape, tint: Color? = nil) -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self.siloGlass(in: shape, tint: tint)
+        } else {
+            // Avoid per-frame backdrop sampling over video on A12-era phones.
+            self.background(shape.fill(Color(white: 0.10).opacity(0.88)))
+        }
+        #else
         if DevicePower.isLowPowerAppleTV {
             self.background(shape.fill(Color(white: 0.10).opacity(0.88)))
         } else {
             self.siloGlass(in: shape, tint: tint)
         }
+        #endif
     }
+}
+
+@available(iOS 26.0, macOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
+private func siloGlassConfiguration(tint: Color?, interactive: Bool) -> Glass {
+    var glass = Glass.regular
+    if let tint { glass = glass.tint(tint) }
+    if interactive { glass = glass.interactive() }
+    return glass
 }

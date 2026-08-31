@@ -535,7 +535,7 @@ struct PlayerView: View {
                     .foregroundStyle(.white)
                     .frame(width: 40, height: 40)
             }
-            .buttonStyle(.glass)
+            .siloGlassButtonStyle()
             .buttonBorderShape(.circle)
             .accessibilityLabel("Close Player")
 
