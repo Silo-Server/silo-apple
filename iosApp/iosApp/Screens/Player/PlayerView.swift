@@ -15,6 +15,7 @@ struct PlayerView: View {
     /// session bridge so both direct-play and transcode paths align.
     let startFromBeginning: Bool
     let resumePositionOverride: Double?
+    let prefersLastUsedVersion: Bool
     /// Set when the caller wants offline playback of a completed download.
     /// Routes the prepare through `OfflinePlaybackBuilder` (stored manifest
     /// + local media file, no server session) so playback works with no
@@ -49,6 +50,7 @@ struct PlayerView: View {
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
         resumePositionOverride: Double? = nil,
+        prefersLastUsedVersion: Bool = false,
         offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
         backdropURLHint: String? = nil,
@@ -60,6 +62,7 @@ struct PlayerView: View {
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
         self.startFromBeginning = startFromBeginning
         self.resumePositionOverride = resumePositionOverride
+        self.prefersLastUsedVersion = prefersLastUsedVersion
         self.offlineDownloadId = offlineDownloadId
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
@@ -343,6 +346,7 @@ struct PlayerView: View {
                 preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
                 resumePositionOverride: resumePositionOverride,
+                prefersLastUsedVersion: prefersLastUsedVersion,
                 offlineDownloadId: offlineDownloadId
             )
             #if os(tvOS)

@@ -119,6 +119,9 @@ class AppRouter {
         let subtitleTrackIndex: Int?
         let startFromBeginning: Bool
         let resumePosition: Double?
+        /// Continue Watching asks playback to prefer the exact last-used
+        /// source version over the profile's general automatic quality rule.
+        let prefersLastUsedVersion: Bool
         /// Optional detail destination to install behind the full-screen
         /// player once playback has actually started.
         let returnToContentId: String?
@@ -160,6 +163,7 @@ class AppRouter {
         subtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
         resumePosition: Double? = nil,
+        prefersLastUsedVersion: Bool = false,
         returnToContentId: String? = nil,
         posterURL: String? = nil,
         backdropURL: String? = nil
@@ -197,6 +201,7 @@ class AppRouter {
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
+            prefersLastUsedVersion: prefersLastUsedVersion,
             returnToContentId: returnToContentId,
             posterURL: posterURL,
             backdropURL: backdropURL
@@ -235,6 +240,7 @@ class AppRouter {
             subtitleTrackIndex: nil,
             startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
+            prefersLastUsedVersion: false,
             returnToContentId: nil,
             offlineDownloadId: downloadId,
             posterURL: nil,

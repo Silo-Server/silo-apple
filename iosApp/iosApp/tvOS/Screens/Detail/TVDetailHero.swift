@@ -85,31 +85,63 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// credits. Series overview uses this to disclose the remembered version
     /// that Play will launch without adding a second selector to the page.
     let playbackSummaryText: String?
+    /// A compact editorial header can retain the standard Movie backdrop
+    /// geometry independently of its own layout height. Nil keeps both heights
+    /// coupled, which is the default behavior for every other detail page.
+    var backdropHeight: CGFloat? = nil
+    var heroHeight: CGFloat = TVDetailLayout.heroHeight
+    var heroTopInset: CGFloat = TVDetailLayout.heroTopInset
+    /// Episode mode narrows only the editorial column. The logo keeps the
+    /// same leading/top anchor while long episode copy wraps before it reaches
+    /// the backdrop subject.
+    var editorialContentWidth: CGFloat = TVDetailLayout.heroContentWidth
+    /// Reserves a stable synopsis footprint while adjacent episodes swap in.
+    /// This keeps the selector and season tabs from moving when summaries have
+    /// different lengths.
+    var synopsisReservedHeight: CGFloat = 0
+    /// Series keeps its compact 520-point layout but lets the standard Movie
+    /// backdrop fade finish behind the season row. Movies retain the existing
+    /// clipped hero through the default.
+    var extendsBackdropFadeBelowHero = false
     @ViewBuilder let actions: () -> Actions
     /// Affordance rendered directly under the synopsis (e.g. the on-view
     /// description-translation control). Pass `{ EmptyView() }` when there's
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
+    @ViewBuilder
     var body: some View {
+        if extendsBackdropFadeBelowHero {
+            heroComposition
+        } else {
+            heroComposition.clipped()
+        }
+    }
+
+    private var heroComposition: some View {
         ZStack(alignment: .topLeading) {
             backdrop
             content
         }
-        .frame(height: TVDetailLayout.heroHeight)
+        .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
-        .clipped()
     }
 
     // MARK: - Backdrop
 
     private var backdrop: some View {
         GeometryReader { geometry in
+            let resolvedBackdropHeight = backdropHeight ?? heroHeight
             let artworkWidth = geometry.size.width * 0.64
             let artworkHeight = min(
-                TVDetailLayout.heroHeight * 0.94,
+                resolvedBackdropHeight * 0.94,
                 artworkWidth * 9 / 16
             )
+            // The standard Movie mask is shared verbatim. A compact Series
+            // header only changes whether that completed fade may draw beyond
+            // the editorial layout boundary.
+            let bottomFadeEnd: CGFloat = 1
+            let bottomFadeStart = max(0, bottomFadeEnd - 0.30)
 
             if let url = backdropUrl, !url.isEmpty {
                 CachedAsyncImage(
@@ -119,10 +151,15 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 )
                 .frame(width: artworkWidth, height: artworkHeight)
                 .clipped()
-                .mask { artworkFadeMask }
+                .mask {
+                    artworkFadeMask(
+                        bottomFadeStart: bottomFadeStart,
+                        bottomFadeEnd: bottomFadeEnd
+                    )
+                }
                 .frame(
                     width: geometry.size.width,
-                    height: TVDetailLayout.heroHeight,
+                    height: resolvedBackdropHeight,
                     alignment: .topTrailing
                 )
             }
@@ -131,7 +168,10 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 
     /// The image is crisp in the top-right and dissolves into the solid page
     /// tint on its leading and lower edges. No blur or translucent material.
-    private var artworkFadeMask: some View {
+    private func artworkFadeMask(
+        bottomFadeStart: CGFloat,
+        bottomFadeEnd: CGFloat
+    ) -> some View {
         LinearGradient(
             stops: [
                 .init(color: .black, location: 0.0),
@@ -145,8 +185,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             LinearGradient(
                 stops: [
                     .init(color: .black, location: 0.0),
-                    .init(color: .black, location: 0.70),
-                    .init(color: .clear, location: 1.0),
+                    .init(color: .black, location: bottomFadeStart),
+                    .init(color: .clear, location: max(0.72, bottomFadeEnd)),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -172,11 +212,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
-        .padding(.top, TVDetailLayout.heroTopInset)
+        .padding(.top, heroTopInset)
         .padding(.horizontal, TVDetailLayout.horizontalInset)
         .frame(
             maxWidth: .infinity,
-            maxHeight: TVDetailLayout.heroHeight,
+            maxHeight: heroHeight,
             alignment: .topLeading
         )
     }
@@ -191,6 +231,10 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             metadataBlock
             if let overview, !overview.isEmpty {
                 TVExpandableSynopsis(overview: overview)
+                    .frame(
+                        minHeight: synopsisReservedHeight,
+                        alignment: .topLeading
+                    )
             }
             belowSynopsis()
             if let starringText, !starringText.isEmpty {
@@ -209,7 +253,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                     .accessibilityLabel("Playback: \(playbackSummaryText)")
             }
         }
-        .frame(maxWidth: TVDetailLayout.heroContentWidth, alignment: .leading)
+        .frame(maxWidth: editorialContentWidth, alignment: .leading)
     }
 
     @ViewBuilder

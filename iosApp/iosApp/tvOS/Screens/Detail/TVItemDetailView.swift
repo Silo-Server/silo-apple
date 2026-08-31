@@ -20,6 +20,9 @@ struct TVItemDetailView: View {
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
+    /// Series owns one in-place episode selection. `nil` means the Show tab
+    /// and its suggested next episode are active.
+    @State private var activeSeriesEpisodeContentId: String?
     @State private var episodeSeriesDetail: ItemDetail?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
@@ -101,6 +104,7 @@ struct TVItemDetailView: View {
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
+            activeSeriesEpisodeContentId = nil
             episodeSeriesDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
@@ -318,6 +322,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                activeEpisodeContentId: activeSeriesEpisodeContentId,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 selectedNextUpFileId: preferredNextUpFileId,
@@ -341,13 +346,24 @@ struct TVItemDetailView: View {
                 isFetchingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onSelectSeason: { season in
+                    activeSeriesEpisodeContentId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
+                onActivateEpisode: { id in
+                    activeSeriesEpisodeContentId = id
+                },
                 onPlayEpisode: { id, fileId, startFromBeginning in
+                    let episode = viewModel.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
                         ? nil
-                        : viewModel.episodes.first(where: { $0.contentId == id })?.userData?.positionSeconds
-                    if let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
+                        : playableResumePosition(
+                            position: episode?.userData?.positionSeconds,
+                            duration: episode?.userData?.durationSeconds
+                        )
+                    if let fileId = nextUpPlaybackFileId(
+                        resolvedFileId: fileId,
+                        contentId: id
+                    ) {
                         router.navigate(
                             to: .playerWithFile(
                                 contentId: id,
@@ -367,9 +383,6 @@ struct TVItemDetailView: View {
                             )
                         )
                     }
-                },
-                onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
                 },
                 onSetEpisodeWatched: { id, played in
                     await viewModel.setEpisodeWatched(contentId: id, played: played)
@@ -436,6 +449,9 @@ struct TVItemDetailView: View {
             )
             .task(id: seriesNextUpEpisodeContentId(for: detail)) {
                 await loadSeriesNextUpPlaybackDetail(for: detail)
+            }
+            .task(id: viewModel.selectedSeason?.contentId) {
+                await prefetchAdjacentSeriesSeasons(for: detail)
             }
         } else {
             let supportingDetail = episodeSupportingDetail(for: detail)
@@ -626,11 +642,17 @@ struct TVItemDetailView: View {
         return nil
     }
 
-    /// Next-up analogue of `playbackFileId(for:)`. Series overview has no
-    /// selector, so always resolve its remembered/effective version when the
-    /// row has not supplied an explicit file. That keeps the passive quality
-    /// readout and the file launched by Play in lockstep.
-    private func nextUpPlaybackFileId(resolvedFileId: Int?) -> Int? {
+    /// Next-up analogue of `playbackFileId(for:)`. When Series focus changes,
+    /// reject any file choice still belonging to the previous episode so an
+    /// immediate quick Play safely falls back to server/device defaults.
+    private func nextUpPlaybackFileId(
+        resolvedFileId: Int?,
+        contentId: String? = nil
+    ) -> Int? {
+        if let contentId,
+           nextUpPlaybackDetail?.contentId != contentId {
+            return nil
+        }
         if let resolvedFileId {
             return resolvedFileId
         }
@@ -846,6 +868,12 @@ struct TVItemDetailView: View {
 
     private func seriesNextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         guard detail.type == "series" else { return nil }
+        if let activeSeriesEpisodeContentId,
+           let active = viewModel.episodes.first(where: {
+               $0.contentId == activeSeriesEpisodeContentId
+           }) {
+            return active
+        }
         if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
             return inProgress
         }
@@ -913,6 +941,86 @@ struct TVItemDetailView: View {
             didLoadNextUpPlaybackDetail = true
         }
         isLoadingNextUpPlaybackDetail = false
+        await prefetchAdjacentEpisodePlayback(around: nextUp)
+    }
+
+    /// Warm the immediate neighbors without publishing either one. Moving
+    /// laterally can then swap the selector and hero from ResponseCache while
+    /// the fresh request silently validates the data.
+    private func prefetchAdjacentEpisodePlayback(
+        around episode: EpisodeListItem
+    ) async {
+        guard let index = viewModel.episodes.firstIndex(where: {
+            $0.contentId == episode.contentId
+        }) else { return }
+
+        let neighborIndices = [index - 1, index + 1]
+            .filter { viewModel.episodes.indices.contains($0) }
+
+        for neighborIndex in neighborIndices {
+            guard !Task.isCancelled else { return }
+            let neighbor = viewModel.episodes[neighborIndex]
+            let cached: ItemDetail? = ResponseCache.shared.get(
+                CacheKey.itemDetail(neighbor.contentId)
+            )
+            if cached?.versions?.isEmpty == false { continue }
+
+            guard let item = try? await ContinuumAPI.shared.itemDetail(
+                contentId: neighbor.contentId
+            ), !Task.isCancelled else { continue }
+            let enriched = await enrichPlaybackMetadata(
+                for: item,
+                contentId: neighbor.contentId
+            )
+            guard !Task.isCancelled else { return }
+            ResponseCache.shared.set(
+                enriched,
+                for: CacheKey.itemDetail(neighbor.contentId)
+            )
+        }
+    }
+
+    /// Prefetch the episode lists and stills for the seasons beside the
+    /// selected one. `ItemDetailViewModel.selectSeason` already hydrates from
+    /// this same cache key, so first-time season changes avoid the empty/jumpy
+    /// state without duplicating ownership of the published episode array.
+    private func prefetchAdjacentSeriesSeasons(for detail: ItemDetail) async {
+        guard detail.type == "series",
+              let selectedSeason = viewModel.selectedSeason,
+              let index = viewModel.seasons.firstIndex(where: {
+                  $0.contentId == selectedSeason.contentId
+              }) else { return }
+
+        let neighborIndices = [index - 1, index + 1]
+            .filter { viewModel.seasons.indices.contains($0) }
+
+        for neighborIndex in neighborIndices {
+            guard !Task.isCancelled else { return }
+            let season = viewModel.seasons[neighborIndex]
+            let key = CacheKey.itemEpisodes(
+                seriesId: detail.contentId,
+                seasonNumber: season.seasonNumber
+            )
+
+            let response: EpisodesResponse
+            if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
+                response = cached
+            } else {
+                guard let fetched = try? await ContinuumAPI.shared.episodes(
+                    seriesId: detail.contentId,
+                    seasonNumber: season.seasonNumber
+                ), !Task.isCancelled else { continue }
+                ResponseCache.shared.set(fetched, for: key)
+                response = fetched
+            }
+
+            let stillURLs = response.episodes.compactMap { episode in
+                episode.stillUrl.flatMap(URL.init(string:))
+            }
+            if !stillURLs.isEmpty {
+                PosterImageCache.prefetcher.startPrefetching(with: stillURLs)
+            }
+        }
     }
 
     private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail {

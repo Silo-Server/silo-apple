@@ -189,6 +189,7 @@ struct TVMainTabView: View {
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
                 startFromBeginning: payload.startFromBeginning,
                 resumePositionOverride: payload.resumePosition,
+                prefersLastUsedVersion: payload.prefersLastUsedVersion,
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL,
                 onPlaybackStarted: {

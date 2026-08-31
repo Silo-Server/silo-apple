@@ -84,6 +84,7 @@ struct TVSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
+        .onAppear(perform: focusGeneralOnEntry)
         .task {
             await viewModel.load()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
@@ -136,6 +137,29 @@ struct TVSettingsView: View {
             if !isVisible, selectedCategory == .diagnostics {
                 selectedCategory = .general
             }
+        }
+    }
+
+    /// Settings always enters through General. Assign the concrete rail focus
+    /// before tvOS performs its first geometric resolution, then re-assert it
+    /// once the two focus scopes have mounted so the profile card cannot paint
+    /// a simultaneous entry highlight.
+    private func focusGeneralOnEntry() {
+        selectedCategory = .general
+        preferredFocusOwner = .rail
+        preferredDetailFocus = .generalAppleTVUser
+        detailFocus = nil
+        railFocus = .category(.general)
+
+        Task { @MainActor in
+            await Task.yield()
+            guard activePicker == nil,
+                  !showSignOutConfirm,
+                  !showPrivacyPolicy,
+                  !showOpenSourceAcknowledgements else { return }
+            resetFocus(in: settingsFocusScope)
+            resetFocus(in: railFocusScope)
+            railFocus = .category(.general)
         }
     }
 
@@ -664,6 +688,7 @@ enum TVSettingsDetailFocus: Hashable {
     case top
     case generalAppleTVUser
     case generalProfileLaunch
+    case generalHomeSections
     case generalCardPreset
     case generalTopMenu
     case playbackAudioLanguage

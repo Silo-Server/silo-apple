@@ -793,6 +793,9 @@ class PlayerViewModel {
         /// Explicit quality for this load (mid-stream quality-change replan);
         /// wins over `PlayerSettings.preferredQuality` in the bridge.
         var preferredQualityOverride: String? = nil
+        /// Continue Watching only: select the server's last-used source file
+        /// before applying the profile-wide automatic quality preference.
+        var prefersLastUsedVersion = false
 
         /// Rebuild a request for the same playback session while retaining the
         /// user's temporary quality choice. Recovery must not fall back to the
@@ -815,6 +818,7 @@ class PlayerViewModel {
                 preferredQualityOverride: preferredQualityOverride
             )
             request.preferredProtocolV3SubtitleIndex = preferredProtocolV3SubtitleIndex
+            request.prefersLastUsedVersion = prefersLastUsedVersion
             return request
         }
 
@@ -2499,7 +2503,7 @@ class PlayerViewModel {
 
     func playNextEpisodeNow() {
         guard let nextUpEpisode else { return }
-        let request = LoadRequest(
+        var request = LoadRequest(
             contentId: nextUpEpisode.contentId,
             preferredFileId: nil,
             preferredAudioTrackIndex: nil,
@@ -2507,12 +2511,29 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
+        request.preferredQualityOverride = nextEpisodeQualityOverride
         beginFreshLoad(
             request: request,
             progressPosition: completionProgressPositionForCurrentItem(),
             finalizeCurrentSession: true,
             origin: .autoplay
         )
+    }
+
+    /// File ids do not carry across episodes, but their effective quality can.
+    /// Preserve an explicit in-player rung; when playback is on Auto, carry
+    /// the source resolution Auto actually selected. The normal ranked
+    /// fallback remains in force if the next episode has no compatible match.
+    private var nextEpisodeQualityOverride: String? {
+        let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
+        if active != ApplePlaybackQuality.autoId {
+            return active
+        }
+        guard let resolution = currentSelectedVersion?.resolution,
+              !resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return ApplePlaybackQuality.protocolV3QualityId(resolution)
     }
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
@@ -3905,6 +3926,7 @@ class PlayerViewModel {
                     startFromBeginning: request.startFromBeginning,
                     resumePosition: resumePosition,
                     allowNearEndResume: allowNearEndResume,
+                    prefersLastUsedVersion: request.prefersLastUsedVersion,
                     preferredQualityOverride: request.preferredQualityOverride
                 )
             }
@@ -3933,6 +3955,7 @@ class PlayerViewModel {
                 startFromBeginning: request.startFromBeginning,
                 resumePosition: resumePosition,
                 allowNearEndResume: allowNearEndResume,
+                prefersLastUsedVersion: request.prefersLastUsedVersion,
                 preferredQualityOverride: request.preferredQualityOverride
             )
         }
@@ -4130,9 +4153,10 @@ class PlayerViewModel {
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool,
         resumePositionOverride: Double? = nil,
+        prefersLastUsedVersion: Bool = false,
         offlineDownloadId: String? = nil
     ) {
-        let request = LoadRequest(
+        var request = LoadRequest(
             contentId: contentId,
             preferredFileId: preferredFileId,
             preferredAudioTrackIndex: preferredAudioTrackIndex,
@@ -4141,6 +4165,7 @@ class PlayerViewModel {
             startFromBeginning: startFromBeginning,
             offlineDownloadId: offlineDownloadId
         )
+        request.prefersLastUsedVersion = prefersLastUsedVersion
         beginFreshLoad(
             request: request,
             progressPosition: currentTime,

@@ -46,6 +46,10 @@ struct MediaRow: View {
     /// focus engine isn't doing the moving.
     var focusRequest: Int = 0
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
+    /// Optional tvOS context-menu route used by Continue Watching. Select can
+    /// remain a direct resume action while long press still exposes the parent
+    /// Series or Movie detail page.
+    var onOpenContextDetail: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: reports which of the row's items holds card focus —
@@ -265,6 +269,8 @@ struct MediaRow: View {
                             playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
                             contentId: item.contentId,
+                            contextDetailTitle: contextDetailTitle(for: item),
+                            onOpenContextDetail: contextDetailAction(for: item),
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                             onSetWatched: watchedToggleAction(for: item),
                             aspect: layout == .square ? .square : .poster,
@@ -278,6 +284,8 @@ struct MediaRow: View {
                             action: { onItemTap(item.contentId) },
                             playAction: playAction(for: item),
                             focusedItemId: rowFocusBinding,
+                            contextDetailTitle: contextDetailTitle(for: item),
+                            onOpenContextDetail: contextDetailAction(for: item),
                             onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                             onSetWatched: watchedToggleAction(for: item)
                         )
@@ -349,6 +357,23 @@ struct MediaRow: View {
     private func continueWatchingRemovalAction(for item: SectionItem) -> (() -> Void)? {
         guard let onRemoveFromContinueWatching else { return nil }
         return { onRemoveFromContinueWatching(item) }
+    }
+
+    private func contextDetailAction(for item: SectionItem) -> (() -> Void)? {
+        guard let onOpenContextDetail else { return nil }
+        return { onOpenContextDetail(item) }
+    }
+
+    private func contextDetailTitle(for item: SectionItem) -> String? {
+        guard onOpenContextDetail != nil else { return nil }
+        let type = item.type.lowercased()
+        if SiloMediaType.isSeries(type) || type == "episode" || type == "season" {
+            return "Go to Series Page"
+        }
+        if SiloMediaType.isMovieLibrary(type) {
+            return "Go to Movie Page"
+        }
+        return "Go to Details"
     }
 
     private func watchedToggleAction(for item: SectionItem) -> ((Bool) async -> Bool)? {

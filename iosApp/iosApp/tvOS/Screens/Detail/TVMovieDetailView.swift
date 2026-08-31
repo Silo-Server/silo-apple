@@ -148,6 +148,10 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 subtitleMode: subtitleOverrideCleared ? nil : detail.effectiveSubtitleMode,
                 subtitleSignature: subtitleOverrideCleared ? nil : detail.effectiveSubtitleTrackSignature,
                 showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false,
+                expandsAsGroup: true,
+                stabilizesFocusMotion: true,
+                pinsLeadingEdgeOnExpansion: true,
+                prefersVersionFocusOnEntry: true,
                 onSelectVersion: onSelectVersion,
                 onSelectAudioTrack: onSelectAudioTrack,
                 onSelectSubtitleTrack: onSelectSubtitleTrack
@@ -184,6 +188,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
+            stabilizesFocusMotion: true,
             moreMenu: {
                 if hasMoreMenu {
                     moreMenu
@@ -206,7 +211,10 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var moreMenu: some View {
-        TVCircleMenuButton(accessibilityLabel: "More options") {
+        TVCircleMenuButton(
+            accessibilityLabel: "More options",
+            stabilizesFocusMotion: true
+        ) {
             if supportsTrailerFetch {
                 Button(action: onFindTrailers) {
                     Label("Find Trailers", systemImage: "film.stack")
@@ -361,7 +369,11 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     private var trailersSection: some View {
         // Header lives inside the rail so it disappears with the cards when
         // the item has neither remote videos nor local extras.
-        TVTrailersRail(entries: trailerEntries, onSelect: onSelectTrailer)
+        TVTrailersRail(
+            entries: trailerEntries,
+            onSelect: onSelectTrailer,
+            focusScale: 1.0
+        )
     }
 
     // MARK: - Cast

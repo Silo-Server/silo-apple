@@ -1,5 +1,147 @@
 import Foundation
 
+#if os(tvOS)
+/// Device-local, per-server/profile Home row visibility and order for Apple
+/// TV. The server remains authoritative for which rows exist and what they
+/// contain; this projection only arranges the populated rows it returns.
+/// Unknown/new server rows append in server order and remain visible until
+/// the user chooses otherwise.
+@Observable
+@MainActor
+final class HomeSectionPreferences {
+    static let shared = HomeSectionPreferences()
+
+    private(set) var orderedSectionIds: [String] = []
+    private(set) var hiddenSectionIds = Set<String>()
+    /// Changes only for explicit preference/layout transitions—not ordinary
+    /// Home data refreshes—so Home can reset its row band and marquee once.
+    private(set) var layoutRevision = 0
+
+    @ObservationIgnored private let defaults: SharedDefaults
+    @ObservationIgnored private let storageKey: @MainActor () -> String?
+    @ObservationIgnored private var loadedStorageKey: String?
+
+    private struct StoredLayout: Codable {
+        var orderedSectionIds: [String]
+        var hiddenSectionIds: Set<String>
+    }
+
+    init(
+        defaults: SharedDefaults = .shared,
+        storageKey: @escaping @MainActor () -> String? = HomeSectionPreferences.activeStorageKey
+    ) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        refresh()
+    }
+
+    func refresh() {
+        let key = storageKey()
+        guard key != loadedStorageKey else { return }
+        loadedStorageKey = key
+
+        guard let key,
+              let data = defaults.data(forKey: key),
+              let stored = try? JSONDecoder().decode(StoredLayout.self, from: data) else {
+            orderedSectionIds = []
+            hiddenSectionIds = []
+            layoutRevision &+= 1
+            return
+        }
+
+        orderedSectionIds = Self.unique(stored.orderedSectionIds)
+        hiddenSectionIds = stored.hiddenSectionIds
+        layoutRevision &+= 1
+    }
+
+    func isVisible(_ sectionId: String) -> Bool {
+        !hiddenSectionIds.contains(sectionId)
+    }
+
+    func setVisible(_ visible: Bool, sectionId: String) {
+        let wasVisible = isVisible(sectionId)
+        guard wasVisible != visible else { return }
+        if visible {
+            hiddenSectionIds.remove(sectionId)
+        } else {
+            hiddenSectionIds.insert(sectionId)
+        }
+        layoutRevision &+= 1
+        persist()
+    }
+
+    /// Replace the order of currently-known rows while retaining remembered
+    /// identities that are temporarily absent (for example an empty Continue
+    /// Watching row). If they return later, they recover their saved position.
+    func setOrder(_ sectionIds: [String]) {
+        let currentOrder = Self.unique(sectionIds)
+        let currentSet = Set(currentOrder)
+        let updatedOrder = currentOrder + orderedSectionIds.filter {
+            !currentSet.contains($0)
+        }
+        guard updatedOrder != orderedSectionIds else { return }
+        orderedSectionIds = updatedOrder
+        layoutRevision &+= 1
+        persist()
+    }
+
+    /// Hidden rows are removed before the Skyline feed receives this array.
+    /// Consequently the next visible row occupies the same fixed row slot;
+    /// no placeholder or vertical gap can enter the Home layout.
+    func arrangedSections(
+        _ sections: [ResolvedSection],
+        includingHidden: Bool = false
+    ) -> [ResolvedSection] {
+        let nonEmpty = sections.filter { !$0.items.isEmpty }
+        let rank = Dictionary(
+            uniqueKeysWithValues: orderedSectionIds.enumerated().map { ($0.element, $0.offset) }
+        )
+
+        let arranged = nonEmpty.enumerated().sorted { lhs, rhs in
+            let lhsRank = rank[lhs.element.id]
+            let rhsRank = rank[rhs.element.id]
+            switch (lhsRank, rhsRank) {
+            case let (.some(left), .some(right)):
+                return left < right
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+
+        guard !includingHidden else { return arranged }
+        return arranged.filter { !hiddenSectionIds.contains($0.id) }
+    }
+
+    private func persist() {
+        guard let key = storageKey() else { return }
+        loadedStorageKey = key
+        let stored = StoredLayout(
+            orderedSectionIds: orderedSectionIds,
+            hiddenSectionIds: hiddenSectionIds
+        )
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    private static func unique(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }
+    }
+
+    private static func activeStorageKey() -> String? {
+        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
+            return nil
+        }
+        let serverId = ServerRegistry.shared.activeServerId ?? "default"
+        return "tvos.homeSections.v1.\(serverId).\(profileId)"
+    }
+}
+#endif
+
 @Observable
 @MainActor
 class HomeViewModel {

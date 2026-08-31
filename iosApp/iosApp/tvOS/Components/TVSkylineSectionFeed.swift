@@ -207,7 +207,13 @@ struct TVSkylineSectionFeed: View {
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
-        marqueeModel.preview(TVMarqueeContent(item: item, rowTitle: section.title))
+        marqueeModel.preview(
+            TVMarqueeContent(
+                item: item,
+                rowTitle: section.title,
+                isContinueWatching: isContinueWatching(section)
+            )
+        )
     }
 
     /// Cold-entry backdrop: the marquee normally waits for the first card's
@@ -220,7 +226,18 @@ struct TVSkylineSectionFeed: View {
         guard marqueeModel.content == nil,
               let section = sections.first,
               let item = section.items.first else { return }
-        marqueeModel.seed(TVMarqueeContent(item: item, rowTitle: section.title))
+        marqueeModel.seed(
+            TVMarqueeContent(
+                item: item,
+                rowTitle: section.title,
+                isContinueWatching: isContinueWatching(section)
+            )
+        )
+    }
+
+    private func isContinueWatching(_ section: ResolvedSection) -> Bool {
+        let type = section.sectionType.lowercased()
+        return type == "continue_watching" || type == "in_progress"
     }
 
 }

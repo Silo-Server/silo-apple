@@ -25,6 +25,13 @@ import UIKit
 struct TVTrailersRail: View {
     let entries: [TrailerRailEntry]
     let onSelect: (TrailerRailEntry) -> Void
+    /// Series uses a ring-only focus treatment so lateral movement cannot
+    /// make the parent vertical viewport chase a newly scaled card. Movie
+    /// pages retain the existing 1.05 lift through this default.
+    var focusScale: CGFloat = 1.05
+    /// Non-zero changes explicitly hand focus into the first trailer when a
+    /// Series has no cast rail above it.
+    var focusRequest = 0
 
     @FocusState private var focusedEntryId: String?
 
@@ -49,7 +56,11 @@ struct TVTrailersRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: cardSpacing) {
                 ForEach(entries) { entry in
-                    TVTrailerCard(entry: entry, onSelect: { onSelect(entry) })
+                    TVTrailerCard(
+                        entry: entry,
+                        focusScale: focusScale,
+                        onSelect: { onSelect(entry) }
+                    )
                         .focused($focusedEntryId, equals: entry.id)
                 }
             }
@@ -60,6 +71,10 @@ struct TVTrailersRail: View {
         // episode rails, instead of the geometrically-nearest one.
         .applyTrailerRailDefaultFocus(entries.first?.id, binding: $focusedEntryId)
         .scrollClipDisabled()
+        .onChange(of: focusRequest) { _, request in
+            guard request > 0, let firstId = entries.first?.id else { return }
+            focusedEntryId = firstId
+        }
     }
 }
 
@@ -85,6 +100,7 @@ private extension View {
 
 private struct TVTrailerCard: View {
     let entry: TrailerRailEntry
+    let focusScale: CGFloat
     let onSelect: () -> Void
 
     private let cardWidth: CGFloat = 470
@@ -100,7 +116,7 @@ private struct TVTrailerCard: View {
                 thumbCornerRadius: thumbCornerRadius
             )
         }
-        .buttonStyle(TVCardFocusButtonStyle())
+        .buttonStyle(TVCardFocusButtonStyle(scale: focusScale))
     }
 }
 

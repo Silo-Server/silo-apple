@@ -16,6 +16,9 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    #if os(tvOS)
+    @State private var homeSectionPreferences = HomeSectionPreferences.shared
+    #endif
     #if !os(tvOS)
     @State private var currentProfile: UserProfile?
     @State private var homeScrollOffset: CGFloat = 0
@@ -62,10 +65,20 @@ struct HomeView: View {
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
+                // Preference edits replace the row band as one stable unit:
+                // the next visible row takes the vacated slot at the fixed
+                // first-row anchor, and no marquee from a hidden row lingers.
+                .id(homeSectionPreferences.layoutRevision)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
             } else if viewModel.isLoading {
                 Color.clear
+            } else if !viewModel.regularSections.isEmpty {
+                EmptyStateView(
+                    icon: "eye.slash",
+                    title: "Home sections are hidden",
+                    subtitle: "Choose which rows appear in Settings → General → Home Sections."
+                )
             } else {
                 EmptyStateView(
                     icon: "play.rectangle.on.rectangle",
@@ -76,6 +89,7 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
+            homeSectionPreferences.refresh()
             await viewModel.loadSections()
         }
         .onAppear {
@@ -241,7 +255,14 @@ struct HomeView: View {
     /// Rows for the vertical list, in server Home order after filtering empty
     /// and featured sections. Recommendations stay in the For You tab.
     private var displayedSections: [ResolvedSection] {
+        #if os(tvOS)
+        // Filter before the Skyline feed performs layout. A hidden section
+        // therefore leaves no placeholder: the next visible section inherits
+        // the same fixed row slot and vertical anchor.
+        return homeSectionPreferences.arrangedSections(viewModel.regularSections)
+        #else
         return viewModel.regularSections
+        #endif
     }
 
     #if !os(tvOS)

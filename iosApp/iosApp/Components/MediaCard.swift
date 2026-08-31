@@ -78,6 +78,8 @@ struct MediaCard: View {
     var focusedItemId: FocusState<String?>.Binding? = nil
 
     var contentId: String? = nil
+    var contextDetailTitle: String? = nil
+    var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
     var aspect: MediaCardAspect = .poster
@@ -143,6 +145,8 @@ struct MediaCard: View {
             focusedItemId: focusedItemId,
             itemId: contentId,
             isWatched: isPlayed,
+            contextDetailTitle: contextDetailTitle,
+            onOpenContextDetail: onOpenContextDetail,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onSetWatched: onSetWatched.map { handler in
                 { played in
@@ -512,6 +516,8 @@ private struct FocusableMediaCard<Content: View>: View {
     let focusedItemId: FocusState<String?>.Binding?
     let itemId: String?
     let isWatched: Bool
+    let contextDetailTitle: String?
+    let onOpenContextDetail: (() -> Void)?
     let onRemoveFromContinueWatching: (() -> Void)?
     let onSetWatched: ((Bool) async -> Bool)?
     /// Favorite / watchlist toggles, built by the owning card. `nil`
@@ -587,7 +593,10 @@ private struct FocusableMediaCard<Content: View>: View {
     }
 
     private var hasContextActions: Bool {
-        onSetWatched != nil || onRemoveFromContinueWatching != nil || personalItems != nil
+        onOpenContextDetail != nil
+            || onSetWatched != nil
+            || onRemoveFromContinueWatching != nil
+            || personalItems != nil
     }
 
     private var accessibilityDescription: String {
@@ -601,6 +610,12 @@ private struct FocusableMediaCard<Content: View>: View {
 
     @ViewBuilder
     private var contextActions: some View {
+        if let contextDetailTitle, let onOpenContextDetail {
+            Button(action: onOpenContextDetail) {
+                Label(contextDetailTitle, systemImage: "info.circle")
+            }
+        }
+
         if let onSetWatched {
             Button {
                 Task { @MainActor in

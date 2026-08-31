@@ -87,7 +87,7 @@ struct SectionRow: View {
         MediaRow(
             title: section.title,
             items: section.items,
-            onItemTap: onItemTap,
+            onItemTap: selectItem,
             onItemPlay: playItem,
             onSeeAll: onSeeAll,
             showProgress: showProgress,
@@ -97,6 +97,7 @@ struct SectionRow: View {
             defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
+            onOpenContextDetail: contextDetailAction,
             onSetWatched: { item, played in
                 await setWatched(item, played: played)
             },
@@ -114,9 +115,40 @@ struct SectionRow: View {
         router.presentPlayer(
             contentId: item.contentId,
             resumePosition: item.positionSeconds,
+            prefersLastUsedVersion: isContinueWatching,
             posterURL: item.posterUrl,
             backdropURL: item.backdropUrl
         )
+        #endif
+    }
+
+    /// Continue Watching is a resume surface on tvOS: Select and Play/Pause
+    /// both resume the leaf immediately. Every other row keeps the existing
+    /// Select → detail behavior.
+    private func selectItem(_ contentId: String) {
+        #if os(tvOS)
+        if isContinueWatching,
+           let item = section.items.first(where: { $0.contentId == contentId }),
+           SiloMediaType.isDirectlyPlayable(item.type) {
+            playItem(item)
+            return
+        }
+        #endif
+        onItemTap(contentId)
+    }
+
+    private var contextDetailAction: ((SectionItem) -> Void)? {
+        #if os(tvOS)
+        guard isContinueWatching else { return nil }
+        return { item in
+            let isSeriesItem = SiloMediaType.isSeries(item.type)
+                || item.type.lowercased() == "episode"
+                || item.type.lowercased() == "season"
+            let targetId = isSeriesItem ? (item.seriesId ?? item.contentId) : item.contentId
+            onItemTap(targetId)
+        }
+        #else
+        return nil
         #endif
     }
 

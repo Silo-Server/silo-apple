@@ -101,6 +101,21 @@ class ItemDetailViewModel {
         // view falls back to its skeleton.
         hydrateFromCache(contentId: contentId)
 
+        #if os(tvOS)
+        // Home / library focus may already have warmed this Series hierarchy.
+        // Start its silent refresh now, alongside the catalog refresh, instead
+        // of waiting for that otherwise-redundant item request to finish first.
+        // Movie detail has no related structure, so its path remains unchanged.
+        let cachedDetailForRelatedStructure = detail?.contentId == contentId
+            ? detail
+            : nil
+        async let cachedRelatedStructureLoad: Void = loadRelatedStructureFromCacheIfAvailable(
+            cachedDetailForRelatedStructure,
+            contentId: contentId,
+            preserveSeasonSelection: preserveSeasonSelection
+        )
+        #endif
+
         // Claimed before the fetch, so "newer" means "started later" — a
         // trailer-found adopt that begins while this request is in flight
         // supersedes it even though it publishes first.
@@ -142,11 +157,23 @@ class ItemDetailViewModel {
 
             isWatched = enriched.userData?.played ?? false
 
+            #if os(tvOS)
+            if cachedDetailForRelatedStructure != nil {
+                await cachedRelatedStructureLoad
+            } else {
+                await loadRelatedStructure(
+                    for: enriched,
+                    contentId: contentId,
+                    preserveSeasonSelection: preserveSeasonSelection
+                )
+            }
+            #else
             await loadRelatedStructure(
                 for: enriched,
                 contentId: contentId,
                 preserveSeasonSelection: preserveSeasonSelection
             )
+            #endif
 
             let (favorite, watchlist) = await (favoriteResult, watchlistResult)
             if let favorite, let watchlist,
@@ -283,6 +310,21 @@ class ItemDetailViewModel {
         }
     }
 
+    #if os(tvOS)
+    private func loadRelatedStructureFromCacheIfAvailable(
+        _ cachedDetail: ItemDetail?,
+        contentId: String,
+        preserveSeasonSelection: Bool
+    ) async {
+        guard let cachedDetail else { return }
+        await loadRelatedStructure(
+            for: cachedDetail,
+            contentId: contentId,
+            preserveSeasonSelection: preserveSeasonSelection
+        )
+    }
+    #endif
+
     private func loadEpisodeSeriesArtwork(seriesId: String) async {
         let seriesDetail: ItemDetail
         if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
@@ -355,9 +397,43 @@ class ItemDetailViewModel {
            seasons.isEmpty,
            let cached: SeasonsResponse = ResponseCache.shared.get(CacheKey.itemSeasons(seriesId)) {
             seasons = cached.seasons.sortedForDisplay()
-            if let detail, detail.type != "series", let seasonNumber = detail.seasonNumber {
+        }
+        if let detail, let seriesId = seriesContentId, selectedSeason == nil {
+            #if os(tvOS)
+            if detail.type == "series" {
+                // The marquee may have completed the whole Series warmup
+                // before this view model exists. Resolve the same initial
+                // season synchronously so the first body sees its chips,
+                // episodes, and Play target together.
+                selectedSeason = preferredInitialSeason(seasons: seasons)
+            } else if let seasonNumber = detail.seasonNumber {
+                selectedSeason = seasons.first(where: {
+                    $0.seasonNumber == seasonNumber
+                })
+            }
+            #else
+            if detail.type != "series", let seasonNumber = detail.seasonNumber {
                 selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
             }
+            #endif
+
+            #if os(tvOS)
+            if let seasonNumber = selectedSeason?.seasonNumber,
+               episodes.isEmpty,
+               let cached: EpisodesResponse = ResponseCache.shared.get(
+                   CacheKey.itemEpisodes(
+                       seriesId: seriesId,
+                       seasonNumber: seasonNumber
+                   )
+               ) {
+                let sorted = cached.episodes.sorted(by: {
+                    $0.episodeNumber < $1.episodeNumber
+                })
+                episodes = sorted
+                episodesBySeason[seasonNumber] = sorted
+                loadedSeasonNumber = seasonNumber
+            }
+            #endif
         }
         if let seriesId = seriesContentId,
            let detail,

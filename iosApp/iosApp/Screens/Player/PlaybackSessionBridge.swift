@@ -682,6 +682,7 @@ actor PlaybackSessionBridge {
         startFromBeginning: Bool,
         resumePosition: Double? = nil,
         allowNearEndResume: Bool = false,
+        prefersLastUsedVersion: Bool = false,
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
@@ -697,9 +698,13 @@ actor PlaybackSessionBridge {
         // A mid-stream quality-change replan passes an explicit override
         // (e.g. back to Auto) that must win over the persisted setting.
         let playerSettings = PlayerSettings.shared
+        let lastUsedQuality = prefersLastUsedVersion
+            ? normalizedQualityPreference(watchDetail.userData?.lastResolution)
+            : nil
         let preferredQuality = preferredQualityOverride.map {
             ApplePlaybackQuality.protocolV3QualityId($0)
-        } ?? normalizedQualityPreference(playerSettings.preferredQuality)
+        } ?? lastUsedQuality
+            ?? normalizedQualityPreference(playerSettings.preferredQuality)
         let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
             qualityOverride: preferredQualityOverride,
             fallbackBitrateKbps: playerSettings.maxBitrateKbps
@@ -725,6 +730,15 @@ actor PlaybackSessionBridge {
             initiallySelectedVersion = requestedVersion
             logger.info(
                 "Using manually selected version fileId=\(requestedVersion.fileId, privacy: .public)"
+            )
+        } else if prefersLastUsedVersion,
+                  let lastFileId = watchDetail.userData?.lastFileId,
+                  let lastUsedVersion = watchDetail.versions.first(where: {
+                      $0.fileId == lastFileId
+                  }) {
+            initiallySelectedVersion = lastUsedVersion
+            logger.info(
+                "Resuming last-used version fileId=\(lastUsedVersion.fileId, privacy: .public)"
             )
         } else {
             if let preferredFileId {
@@ -787,6 +801,8 @@ actor PlaybackSessionBridge {
                 preferredQuality: preferredQuality,
                 selectedVersion: selectedVersion,
                 hasManualSelection: preferredFileId != nil
+                    || (prefersLastUsedVersion
+                        && selectedVersion.fileId == watchDetail.userData?.lastFileId)
             )
         let profileId = await TokenStore.shared.getProfileId()
         guard let profileId,
