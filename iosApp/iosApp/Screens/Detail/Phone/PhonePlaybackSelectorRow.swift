@@ -32,7 +32,7 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
 /// It deliberately mirrors `PhonePlaybackSelectorRow`'s three 44pt rows so an
 /// episode change never removes or inserts vertical space while networking.
 struct PhonePlaybackSelectorSkeleton: View {
-    static let standardHeight: CGFloat = 132
+    static let standardHeight: CGFloat = 133
 
     private let kinds: [PhonePlaybackSelectorKind] = [.version, .audio, .subtitles]
 

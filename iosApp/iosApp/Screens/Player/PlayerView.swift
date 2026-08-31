@@ -926,6 +926,7 @@ private struct PlayerNextUpScreen<MiniPlayer: View>: View {
             showProgress: true,
             icon: "play.circle.fill",
             layout: .thumbnail,
+            usesProvidedThumbnailTapAction: true,
             focusRequest: onDeckFocusRequest,
             onMoveUp: focusAboveOnDeck
         )

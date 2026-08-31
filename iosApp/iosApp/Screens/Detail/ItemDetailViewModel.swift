@@ -556,6 +556,13 @@ class ItemDetailViewModel {
     }
 
     #if !os(tvOS)
+    /// Stop background season warming when its detail page leaves the screen.
+    /// Unlike SwiftUI `.task`, this task has an explicit view-model lifetime.
+    func stopEpisodePagePrefetch() {
+        seasonEpisodePrefetchTask?.cancel()
+        seasonEpisodePrefetchTask = nil
+    }
+
     /// Warm cached pages synchronously and missing pages two at a time. The
     /// chosen season continues through `loadEpisodes` normally; everything
     /// else lands only in route memory + ResponseCache and never mutates the

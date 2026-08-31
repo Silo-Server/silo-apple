@@ -366,7 +366,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     private var episodeRailEyebrow: String {
-        if let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
+        if let seasonNumber = selectedSeason?.seasonNumber ?? detail.seasonNumber,
+           seasonNumber > 0 {
             return "Season \(seasonNumber)"
         }
         return "This Season"

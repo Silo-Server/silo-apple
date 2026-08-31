@@ -54,10 +54,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var pendingResumeEpisode: EpisodeListItem?
+    private struct PendingEpisodePlayRequest: Equatable {
+        let seasonNumber: Int?
+    }
     /// A tap can arrive before the first episode page finishes hydrating.
     /// Keep the primary control interactive from frame one and fulfill that
     /// intent as soon as the target episode is known.
-    @State private var playWhenEpisodeIsReady = false
+    @State private var pendingEpisodePlayRequest: PendingEpisodePlayRequest?
 
     var body: some View {
         PhoneDetailPageSurface(backdropURL: detail.backdropUrl) {
@@ -84,10 +87,19 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             onPlayEpisode(episode.contentId, playbackFileId(for: episode), true)
         }
         .onChange(of: nextUpEpisode?.contentId) { _, contentID in
-            guard playWhenEpisodeIsReady, contentID != nil,
+            guard let request = pendingEpisodePlayRequest, contentID != nil,
                   let episode = nextUpEpisode else { return }
-            playWhenEpisodeIsReady = false
+            if let requestedSeason = request.seasonNumber,
+               episode.seasonNumber != requestedSeason {
+                pendingEpisodePlayRequest = nil
+                return
+            }
+            pendingEpisodePlayRequest = nil
             handlePlayTap(for: episode)
+        }
+        .onChange(of: isLoadingEpisodes) { _, isLoading in
+            guard !isLoading, nextUpEpisode == nil else { return }
+            pendingEpisodePlayRequest = nil
         }
     }
 
@@ -246,10 +258,23 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private func handlePrimaryPlayTap() {
         guard let nextUpEpisode else {
-            playWhenEpisodeIsReady = true
+            pendingEpisodePlayRequest = PendingEpisodePlayRequest(
+                seasonNumber: selectedSeason?.seasonNumber
+            )
             return
         }
+        pendingEpisodePlayRequest = nil
         handlePlayTap(for: nextUpEpisode)
+    }
+
+    private func handleSeasonSelection(_ season: Season) {
+        pendingEpisodePlayRequest = nil
+        onSelectSeason(season)
+    }
+
+    private func handleEpisodeSelection(_ contentId: String) {
+        pendingEpisodePlayRequest = nil
+        onEpisodeTap(contentId)
     }
 
     /// Next-up episode for the series Play button: prefer one in
@@ -378,7 +403,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 PhoneSeasonChips(
                     seasons: seasons,
                     selected: selectedSeason,
-                    onSelect: onSelectSeason
+                    onSelect: handleSeasonSelection
                 )
             }
 
@@ -394,8 +419,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 episodes: episodes,
                 episodesBySeason: episodesBySeason,
                 isLoadingEpisodes: isLoadingEpisodes,
-                onSelectSeason: onSelectSeason,
-                onSelectEpisode: onEpisodeTap,
+                onSelectSeason: handleSeasonSelection,
+                onSelectEpisode: handleEpisodeSelection,
                 onPlayEpisode: { contentId in
                     guard let episode = episodes.first(where: {
                         $0.contentId == contentId

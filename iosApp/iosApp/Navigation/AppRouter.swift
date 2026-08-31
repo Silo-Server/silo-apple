@@ -299,14 +299,16 @@ class AppRouter {
 
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {
-        recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
-
         #if os(iOS)
         if case .itemDetail(let contentId) = route {
             presentItemDetail(contentId: contentId)
             return
         }
+        #endif
 
+        recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
+
+        #if os(iOS)
         // Person pages reached from Cast & Crew belong to the detail card's
         // navigation stack. Keeping them inside the sheet means Back returns to
         // the title the user opened instead of revealing an unrelated route that
@@ -330,6 +332,7 @@ class AppRouter {
         browseSource: ItemDetailBrowseSource? = nil
     ) {
         #if os(iOS)
+        recordScreenBreadcrumb(target: "itemDetail", action: "present")
         if presentedItemDetail == nil {
             let source = browseSource.flatMap { source in
                 source.contentIDs.contains(contentId) ? source : nil
