@@ -20,8 +20,8 @@ struct TVItemDetailView: View {
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
-    /// Series owns one in-place episode selection. `nil` means the Show tab
-    /// and its suggested next episode are active.
+    /// Series owns one in-place episode selection. `nil` means its suggested
+    /// current episode is active.
     @State private var activeSeriesEpisodeContentId: String?
     @State private var episodeSeriesDetail: ItemDetail?
     @State private var isLoadingNextUpPlaybackDetail = false
@@ -441,10 +441,6 @@ struct TVItemDetailView: View {
                 },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
-                },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
                 }
             )
             .task(id: seriesNextUpEpisodeContentId(for: detail)) {

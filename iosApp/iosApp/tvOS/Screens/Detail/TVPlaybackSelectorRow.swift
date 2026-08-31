@@ -51,16 +51,9 @@ struct TVPlaybackSelectorRow: View {
     /// Makes Version the entry target for the Series selector focus scope.
     /// Lateral movement inside the row remains native.
     var prefersVersionFocusOnEntry: Bool = false
-    /// Non-zero changes explicitly hand focus from the composite Series
-    /// episode carousel into the leading selector segment.
-    var focusRequest = 0
     /// Series observes row-level focus so its vertical scroll choreography can
     /// use the same stable viewport as seasons and episodes.
     var onFocusChange: ((Bool) -> Void)? = nil
-    /// Series owns its vertical focus chain explicitly so tvOS cannot process
-    /// the same gesture again and bounce through an intermediate destination.
-    var onMoveUp: (() -> Void)? = nil
-    var onMoveDown: (() -> Void)? = nil
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -76,7 +69,7 @@ struct TVPlaybackSelectorRow: View {
 
     var body: some View {
         if hasAnySelector {
-            managedSelectorRow
+            selectorRow
                 // Stretch the focus section to the full action-area width even
                 // though the buttons sit on the left. Entering a focus section
                 // is resolved by the section's *bounds* overlapping the move
@@ -104,17 +97,6 @@ struct TVPlaybackSelectorRow: View {
                         defaultSelectorFocus = entrySelector
                     }
                 }
-                .onChange(of: focusRequest) { _, request in
-                    guard request > 0 else { return }
-                    let target = entrySelector
-                    // Let the episode composite finish handling the remote
-                    // command before transferring focus. This avoids rebuilding
-                    // the selector's default-focus subtree mid-gesture.
-                    Task { @MainActor in
-                        await Task.yield()
-                        focusedSelector = target
-                    }
-                }
                 .task {
                     await ProfilePrefsStore.shared.hydrateIfNeeded()
                     preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
@@ -123,39 +105,6 @@ struct TVPlaybackSelectorRow: View {
                     onFocusChange?(false)
                 }
         }
-    }
-
-    @ViewBuilder
-    private var managedSelectorRow: some View {
-        if onMoveUp != nil || onMoveDown != nil {
-            selectorRow.onMoveCommand(perform: handleMoveCommand)
-        } else {
-            selectorRow
-        }
-    }
-
-    private func handleMoveCommand(_ direction: MoveCommandDirection) {
-        switch direction {
-        case .left:
-            moveSelectorFocus(by: -1)
-        case .right:
-            moveSelectorFocus(by: 1)
-        case .up:
-            onMoveUp?()
-        case .down:
-            onMoveDown?()
-        default:
-            break
-        }
-    }
-
-    private func moveSelectorFocus(by delta: Int) {
-        let selectors = visibleSelectors
-        guard let focusedSelector,
-              let index = selectors.firstIndex(of: focusedSelector) else { return }
-        let nextIndex = index + delta
-        guard selectors.indices.contains(nextIndex) else { return }
-        self.focusedSelector = selectors[nextIndex]
     }
 
     @ViewBuilder
@@ -229,15 +178,6 @@ struct TVPlaybackSelectorRow: View {
         if shouldShowVersionValue { return .version }
         if shouldShowAudioValue { return .audio }
         return .subtitles
-    }
-
-    private var visibleSelectors: [SelectorFocus] {
-        var selectors: [SelectorFocus] = []
-        if shouldShowEditionSelector { selectors.append(.edition) }
-        if shouldShowVersionValue { selectors.append(.version) }
-        if shouldShowAudioValue { selectors.append(.audio) }
-        if shouldShowSubtitleValue { selectors.append(.subtitles) }
-        return selectors
     }
 
     private var entrySelector: SelectorFocus {

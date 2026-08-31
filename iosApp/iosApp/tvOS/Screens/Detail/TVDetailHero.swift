@@ -9,6 +9,12 @@ enum TVDetailLayout {
     static let heroHeight: CGFloat = 690
     static let heroTopInset: CGFloat = 88
     static let heroContentWidth: CGFloat = 1_080
+    /// Episode pages keep the series wordmark in the standard hero position,
+    /// then use a compact editorial handoff into the episode title.
+    static let episodeHeroHeight: CGFloat = 760
+    static let episodeTitleSpacing: CGFloat = 42
+    /// Season tabs read as the next focus group without touching the cards.
+    static let episodeBrowseSpacing: CGFloat = 24
     static let bodySectionSpacing: CGFloat = 64
     static let sectionHeaderSpacing: CGFloat = 14
     static let pageBottomPadding: CGFloat = 140
@@ -85,37 +91,27 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// credits. Series overview uses this to disclose the remembered version
     /// that Play will launch without adding a second selector to the page.
     let playbackSummaryText: String?
-    /// A compact editorial header can retain the standard Movie backdrop
-    /// geometry independently of its own layout height. Nil keeps both heights
-    /// coupled, which is the default behavior for every other detail page.
-    var backdropHeight: CGFloat? = nil
     var heroHeight: CGFloat = TVDetailLayout.heroHeight
     var heroTopInset: CGFloat = TVDetailLayout.heroTopInset
     /// Episode mode narrows only the editorial column. The logo keeps the
     /// same leading/top anchor while long episode copy wraps before it reaches
     /// the backdrop subject.
     var editorialContentWidth: CGFloat = TVDetailLayout.heroContentWidth
+    /// Vertical separation between a series wordmark and its episode title.
+    /// Callers can open up episode-mode hierarchy without moving the wordmark.
+    var episodeTitleSpacing: CGFloat = 22
     /// Reserves a stable synopsis footprint while adjacent episodes swap in.
     /// This keeps the selector and season tabs from moving when summaries have
     /// different lengths.
     var synopsisReservedHeight: CGFloat = 0
-    /// Series keeps its compact 520-point layout but lets the standard Movie
-    /// backdrop fade finish behind the season row. Movies retain the existing
-    /// clipped hero through the default.
-    var extendsBackdropFadeBelowHero = false
     @ViewBuilder let actions: () -> Actions
     /// Affordance rendered directly under the synopsis (e.g. the on-view
     /// description-translation control). Pass `{ EmptyView() }` when there's
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    @ViewBuilder
     var body: some View {
-        if extendsBackdropFadeBelowHero {
-            heroComposition
-        } else {
-            heroComposition.clipped()
-        }
+        heroComposition.clipped()
     }
 
     private var heroComposition: some View {
@@ -131,10 +127,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 
     private var backdrop: some View {
         GeometryReader { geometry in
-            let resolvedBackdropHeight = backdropHeight ?? heroHeight
             let artworkWidth = geometry.size.width * 0.64
             let artworkHeight = min(
-                resolvedBackdropHeight * 0.94,
+                heroHeight * 0.94,
                 artworkWidth * 9 / 16
             )
             // The standard Movie mask is shared verbatim. A compact Series
@@ -159,7 +154,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 }
                 .frame(
                     width: geometry.size.width,
-                    height: resolvedBackdropHeight,
+                    height: heroHeight,
                     alignment: .topTrailing
                 )
             }
@@ -199,6 +194,14 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
             editorialColumn
+
+            // Episode playback facts belong with the playback controls, not
+            // the title identity. Keeping them immediately above Actions
+            // makes the hierarchy read synopsis → facts → VAS → Play.
+            if episodeSeriesTitle != nil {
+                factsRow(includeSourceTokens: false)
+                    .frame(maxWidth: editorialContentWidth, alignment: .leading)
+            }
 
             // Give the action cluster the full hero width with leading
             // content (instead of `HStack { actions(); Spacer() }`) so the
@@ -262,7 +265,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             TVEpisodeHierarchyTitle(
                 seriesTitle: episodeSeriesTitle,
                 episodeTitle: title,
-                logoUrl: logoUrl
+                logoUrl: logoUrl,
+                titleSpacing: episodeTitleSpacing
             )
         } else if let logoUrl, !logoUrl.isEmpty {
             CachedAsyncImage(
@@ -291,7 +295,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private var metadataBlock: some View {
         if episodeSeriesTitle != nil {
             sourceRow
-            factsRow(includeSourceTokens: false)
         } else {
             factsRow(includeSourceTokens: true)
         }
@@ -465,9 +468,10 @@ private struct TVEpisodeHierarchyTitle: View {
     let seriesTitle: String
     let episodeTitle: String
     let logoUrl: String?
+    let titleSpacing: CGFloat
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: resolvedTitleSpacing) {
             if let logoUrl, !logoUrl.isEmpty {
                 CachedAsyncImage(
                     url: logoUrl,
@@ -493,6 +497,11 @@ private struct TVEpisodeHierarchyTitle: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var resolvedTitleSpacing: CGFloat {
+        guard let logoUrl, !logoUrl.isEmpty else { return 8 }
+        return titleSpacing
     }
 
     private var seriesFont: Font {
@@ -533,6 +542,61 @@ private struct TVHeroEyebrow: View {
     }
 }
 
+// MARK: - Shared episode composition
+
+/// The canonical episode hero used by both direct episode routes and the
+/// combined Series page. Keeping the episode-only metrics here prevents the
+/// two entry points from drifting as the detail hierarchy evolves.
+struct TVEpisodeDetailHero<Actions: View, BelowSynopsis: View>: View {
+    let title: String
+    let seriesTitle: String?
+    let logoUrl: String?
+    let backdropUrl: String?
+    let sourceTokens: [String]
+    let ratingChip: String?
+    let overview: String?
+    let factsLine: [TVHeroFactToken]
+    @ViewBuilder let actions: () -> Actions
+    @ViewBuilder let belowSynopsis: () -> BelowSynopsis
+
+    var body: some View {
+        TVDetailHero(
+            title: title,
+            seriesTitle: seriesTitle,
+            logoUrl: logoUrl,
+            backdropUrl: backdropUrl,
+            eyebrow: nil,
+            sourceTokens: sourceTokens,
+            ratingChip: ratingChip,
+            overview: overview,
+            factsLine: factsLine,
+            starringText: nil,
+            playbackSummaryText: nil,
+            heroHeight: TVDetailLayout.episodeHeroHeight,
+            heroTopInset: TVDetailLayout.heroTopInset,
+            editorialContentWidth: 900,
+            episodeTitleSpacing: TVDetailLayout.episodeTitleSpacing,
+            synopsisReservedHeight: 96,
+            actions: actions,
+            belowSynopsis: belowSynopsis
+        )
+    }
+}
+
+/// Shared episode action hierarchy. Selectors are visually above Play while
+/// each caller retains ownership of the selector and action behavior.
+struct TVEpisodeHeroActions<Selectors: View, PrimaryActions: View>: View {
+    @ViewBuilder let selectors: () -> Selectors
+    @ViewBuilder let primaryActions: () -> PrimaryActions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            selectors()
+            primaryActions()
+        }
+    }
+}
+
 // MARK: - Tokens
 
 /// A token in the combined facts row. `.text` items get pipe separators
@@ -551,10 +615,10 @@ enum TVHeroMetadata {
 
     static func movieSourceTokens(from detail: ItemDetail) -> [String] {
         if detail.type == "episode" {
-            if let label = episodeNumberLabel(from: detail) {
-                return [label]
-            }
-            return []
+            return episodeSourceTokens(
+                seasonNumber: detail.seasonNumber,
+                episodeNumber: detail.episodeNumber
+            )
         }
         if let genres = detail.genres, !genres.isEmpty {
             return [genres.prefix(2).joined(separator: ", ")]
@@ -562,23 +626,18 @@ enum TVHeroMetadata {
         return []
     }
 
-    /// "Season 3 · Episode 8" (or "Specials · Episode 5" / "Episode 5")
-    /// for an episode `ItemDetail`.
-    private static func episodeNumberLabel(from detail: ItemDetail) -> String? {
-        let seasonPart: String?
-        if let season = detail.seasonNumber {
-            seasonPart = season == 0 ? "Specials" : "Season \(season)"
-        } else {
-            seasonPart = nil
+    static func episodeSourceTokens(
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ) -> [String] {
+        var tokens: [String] = []
+        if let seasonNumber {
+            tokens.append(seasonNumber == 0 ? "Specials" : "Season \(seasonNumber)")
         }
-        let episodePart = detail.episodeNumber.flatMap { n in n > 0 ? "Episode \(n)" : nil }
-
-        switch (seasonPart, episodePart) {
-        case let (.some(s), .some(e)): return "\(s) \u{00B7} \(e)"
-        case let (.some(s), .none):    return s
-        case let (.none, .some(e)):    return e
-        case (.none, .none):           return nil
+        if let episodeNumber, episodeNumber > 0 {
+            tokens.append("Episode \(episodeNumber)")
         }
+        return tokens
     }
 
     static func seriesSourceTokens(from detail: ItemDetail) -> [String] {
@@ -598,15 +657,32 @@ enum TVHeroMetadata {
     // Facts line (year · runtime · maturity · quality chips)
 
     static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [TVHeroFactToken] {
+        if detail.type == "episode" {
+            return episodeFactsLine(airDate: detail.airDate, runtime: detail.runtime)
+        }
+
         var tokens: [TVHeroFactToken] = []
-        if detail.type == "episode",
-           let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
-            tokens.append(.text(airDate))
-        } else if let year = detail.year, year > 0 {
+        if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
         if let runtime = detail.runtime, runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
+        }
+        return tokens
+    }
+
+    static func episodeFactsLine(
+        airDate: String?,
+        runtime: Int?
+    ) -> [TVHeroFactToken] {
+        var tokens: [TVHeroFactToken] = []
+        if let airDate = DetailDateFormatting.abbreviatedDate(airDate) {
+            tokens.append(.text(airDate))
+        }
+        if let runtime, runtime > 0 {
+            tokens.append(.text(runtime >= 60
+                ? "\(runtime / 60)h \(runtime % 60)m"
+                : "\(runtime)m"))
         }
         return tokens
     }

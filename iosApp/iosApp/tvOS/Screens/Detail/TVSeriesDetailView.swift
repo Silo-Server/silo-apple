@@ -1,18 +1,12 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Single-page Series experience for tvOS. `Show` and every season are
-/// in-place modes: the series backdrop never changes, episode focus updates
-/// the editorial details and selectors, and selecting an episode quick-plays
-/// it without pushing a second detail page.
-struct TVSeriesDetailView<BelowSynopsis: View>: View {
-    private enum PrimaryFocusRegion {
-        case outside
-        case mode
-        case episodes
-        case selector
-    }
-
+/// Single-page Series experience for tvOS. The series backdrop never changes,
+/// episode focus updates the editorial details and selectors, and selecting an
+/// episode hands focus to the matching Play control without leaving the page.
+/// Playback remains attached to the explicit Play controls and the carousel's
+/// context action.
+struct TVSeriesDetailView: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
@@ -38,7 +32,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let isFetchingTrailers: Bool
     let onTrailerStatusShown: () -> Void
     let onSelectSeason: (Season) -> Void
-    /// `nil` restores the show overview and its suggested next episode.
+    /// `nil` restores the suggested current episode.
     let onActivateEpisode: (_ contentId: String?) -> Void
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
@@ -51,26 +45,18 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
-    @ViewBuilder let belowSynopsis: () -> BelowSynopsis
-
     @Namespace private var detailFocusNamespace
-    @Namespace private var modeFocusNamespace
     @FocusState private var playFocused: Bool
-    @FocusState private var showActionRowFocused: Bool
+    @FocusState private var actionRowFocused: Bool
     @FocusState private var similarRailFocused: Bool
-    @FocusState private var focusedModeId: String?
-    @State private var isShowingSeriesOverview = true
     @State private var focusedEpisodeContentId: String?
     @State private var playbackSelectorFocused = false
-    @State private var primaryViewportActive = false
-    @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
-    @State private var browseHoldRequest = 0
-    @State private var browseRestoreRequest = 0
+    @State private var seasonSelectorFocused = false
+    @State private var seasonSelectorFocusRequest = 0
     @State private var episodeRailFocusRequest = 0
-    @State private var playbackSelectorFocusRequest = 0
+    @State private var primaryViewportActive = false
     @State private var supportingRailFocusRequest = 0
 
-    private let showModeId = "series-show-overview"
     private let episodeSectionScrollId = "series-episode-section"
     private let heroScrollId = "series-hero"
     private let similarSectionScrollId = "series-similar-section"
@@ -104,13 +90,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 .defaultFocus($playFocused, true, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
-                    seasonRowFocused: false,
-                    actionRowFocused: showActionRowFocused,
+                    seasonRowFocused: seasonSelectorFocused,
+                    actionRowFocused: actionRowFocused || playbackSelectorFocused,
+                    episodeRailFocused: focusedEpisodeContentId != nil,
                     episodeSectionId: episodeSectionScrollId,
                     heroId: heroScrollId,
                     browseFocusKey: browseFocusKey,
-                    browseHoldRequest: browseHoldRequest,
-                    browseRestoreRequest: browseRestoreRequest,
+                    usesSinglePrimaryMovement: true,
                     similarRailFocused: similarRailFocused,
                     similarSectionId: similarSectionScrollId
                 )
@@ -125,7 +111,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         try? await Task.sleep(for: .milliseconds(180))
                         guard !Task.isCancelled else { return }
                         primaryViewportActive = false
-                        primaryFocusRegion = .outside
                     }
                 }
             }
@@ -135,45 +120,23 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - Fixed series hero
 
     private var heroView: some View {
-        TVDetailHero(
+        TVEpisodeDetailHero(
             title: heroTitle,
-            seriesTitle: isShowingSeriesOverview ? nil : detail.title,
+            seriesTitle: detail.title,
             logoUrl: detail.logoUrl,
             // Deliberately never switch to episode artwork. The series image
             // remains a stable visual anchor while episode details change.
             backdropUrl: detail.backdropUrl,
-            eyebrow: nil,
             sourceTokens: heroSourceTokens,
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overview: heroOverview,
             factsLine: heroFactsLine,
-            starringText: isShowingSeriesOverview
-                ? TVHeroMetadata.starringText(from: detail)
-                : nil,
-            playbackSummaryText: nil,
-            backdropHeight: TVDetailLayout.heroHeight,
-            heroHeight: 520,
-            heroTopInset: 46,
-            editorialContentWidth: isShowingSeriesOverview
-                ? TVDetailLayout.heroContentWidth
-                : 900,
-            synopsisReservedHeight: isShowingSeriesOverview ? 0 : 96,
-            extendsBackdropFadeBelowHero: true,
-            actions: {
-                if isShowingSeriesOverview {
-                    showActionRow
-                }
-            },
-            belowSynopsis: {
-                if isShowingSeriesOverview {
-                    belowSynopsis()
-                }
-            }
+            actions: { actionColumn },
+            belowSynopsis: { EmptyView() }
         )
     }
 
     private var heroTitle: String {
-        guard !isShowingSeriesOverview else { return detail.title }
         return matchingPlaybackDetail?.title
             ?? displayedEpisode?.title
             ?? displayedEpisode.map { "Episode \($0.episodeNumber)" }
@@ -181,45 +144,45 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private var heroOverview: String? {
-        guard !isShowingSeriesOverview else { return detail.overview }
-        return matchingPlaybackDetail?.overview ?? displayedEpisode?.overview
+        matchingPlaybackDetail?.overview ?? displayedEpisode?.overview ?? detail.overview
     }
 
     private var heroSourceTokens: [String] {
-        guard !isShowingSeriesOverview, let episode = displayedEpisode else {
-            return TVHeroMetadata.seriesSourceTokens(from: detail)
-        }
-        let season = episode.seasonNumber == 0 ? "Specials" : "Season \(episode.seasonNumber)"
-        return [season, "Episode \(episode.episodeNumber)"]
+        guard let episode = displayedEpisode else { return [] }
+        return TVHeroMetadata.episodeSourceTokens(
+            seasonNumber: episode.seasonNumber,
+            episodeNumber: episode.episodeNumber
+        )
     }
 
     private var heroFactsLine: [TVHeroFactToken] {
-        guard !isShowingSeriesOverview, let episode = displayedEpisode else {
-            return TVHeroMetadata.seriesFactsLine(from: detail)
-        }
-        var facts: [TVHeroFactToken] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            facts.append(.text(airDate))
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            facts.append(.text(runtimeLabel(runtime)))
-        }
-        return facts
+        guard let episode = displayedEpisode else { return [] }
+        return TVHeroMetadata.episodeFactsLine(
+            airDate: episode.airDate,
+            runtime: episode.runtime
+        )
     }
 
-    // MARK: - Show mode actions
+    // MARK: - Contextual episode actions
 
-    private var showActionRow: some View {
+    private var actionColumn: some View {
+        TVEpisodeHeroActions(
+            selectors: { playbackSelector },
+            primaryActions: { contextualActionRow }
+        )
+    }
+
+    private var contextualActionRow: some View {
         TVDetailActionRow(
-            playTitle: suggestedEpisode.map(showPlayTitle(for:)),
+            playTitle: playbackEpisode.map(playTitle(for:)),
             playSubtitle: nil,
             onPlay: {
-                guard let episode = suggestedEpisode else { return }
+                guard let episode = playbackEpisode else { return }
                 onPlayEpisode(episode.contentId, selectedFileId(for: episode), false)
             },
-            onStartOver: suggestedEpisode?.userData?.isInProgress == true
+            onStartOver: playbackEpisode?.userData?.isInProgress == true
                 ? {
-                    guard let episode = suggestedEpisode else { return }
+                    guard let episode = playbackEpisode else { return }
                     onPlayEpisode(episode.contentId, selectedFileId(for: episode), true)
                 }
                 : nil,
@@ -236,24 +199,30 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
-            rowFocused: $showActionRowFocused,
+            rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             moreMenu: { moreMenu }
         )
     }
 
-    private func showPlayTitle(for episode: EpisodeListItem) -> String {
+    private func playTitle(for episode: EpisodeListItem) -> String {
         let verb = episode.userData?.isInProgress == true ? "Resume" : "Play"
         return "\(verb) S\(episode.seasonNumber):E\(episode.episodeNumber)"
     }
 
-    // MARK: - Show / Season modes and episode carousel
+    // MARK: - Season modes and episode carousel
 
     private var episodeExperience: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            modeRow
+        VStack(alignment: .leading, spacing: TVDetailLayout.episodeBrowseSpacing) {
+            TVSeasonSelectorRow(
+                seasons: seasons,
+                selectedSeason: selectedSeason,
+                focusRequest: seasonSelectorFocusRequest,
+                onSelect: selectSeason,
+                onFocusChange: { seasonSelectorFocused = $0 },
+                onMoveDown: focusEpisodeRail
+            )
             episodeBody
-            playbackSelector
             if let trailerFetchStatus {
                 TVTrailerStatusPill(
                     message: trailerFetchStatus,
@@ -264,63 +233,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
     }
 
-    private var modeRow: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    TVSeriesModeTab(
-                        title: "Show",
-                        isSelected: isShowingSeriesOverview,
-                        action: showSeriesOverview
-                    )
-                    .id(showModeId)
-                    .focused($focusedModeId, equals: showModeId)
-
-                    ForEach(seasons) { season in
-                        TVSeriesModeTab(
-                            title: seasonLabel(season),
-                            isSelected: !isShowingSeriesOverview && selectedSeason?.id == season.id,
-                            action: {
-                                isShowingSeriesOverview = false
-                                if selectedSeason?.id != season.id {
-                                    onActivateEpisode(nil)
-                                    onSelectSeason(season)
-                                }
-                            }
-                        )
-                        .id(season.id)
-                        .focused($focusedModeId, equals: season.id)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .scrollClipDisabled()
-            .focusScope(modeFocusNamespace)
-            .focusSection()
-            .defaultFocus(
-                $focusedModeId,
-                selectedModeId,
-                priority: .userInitiated
-            )
-            .onChange(of: selectedModeId) { _, newId in
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-                    proxy.scrollTo(newId, anchor: .center)
-                }
-            }
-            .onChange(of: focusedModeId) { _, focusedId in
-                guard focusedId != nil else { return }
-                primaryFocusRegion = .mode
-            }
-        }
-    }
-
-    private var selectedModeId: String {
-        isShowingSeriesOverview ? showModeId : (selectedSeason?.id ?? showModeId)
-    }
-
-    private func showSeriesOverview() {
-        isShowingSeriesOverview = true
+    private func selectSeason(_ season: Season) {
         onActivateEpisode(nil)
+        onSelectSeason(season)
     }
 
     @ViewBuilder
@@ -341,7 +256,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         } else {
             TVEpisodeRail(
                 episodes: episodes,
-                onSelect: quickPlayEpisode,
+                onSelect: selectEpisode,
                 onPlay: quickPlayEpisode,
                 onFocusedEpisodeChange: focusEpisode,
                 onSetWatched: onSetEpisodeWatched,
@@ -355,7 +270,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 cardSpacing: 32,
                 anchorsFocusedCard: true,
                 onMoveUp: focusSelectedMode,
-                onMoveDown: focusPlaybackSelector,
+                onMoveDown: focusSupportingRail,
                 focusRequest: episodeRailFocusRequest
             )
             // The body already owns a 100-point page inset. Let only this
@@ -366,15 +281,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func focusSelectedMode() {
-        focusedModeId = selectedModeId
-    }
-
-    private func focusPlaybackSelector() {
-        if effectiveNextUpVersion != nil {
-            playbackSelectorFocusRequest &+= 1
-        } else {
-            supportingRailFocusRequest &+= 1
-        }
+        seasonSelectorFocusRequest &+= 1
     }
 
     private func focusEpisodeRail() {
@@ -389,24 +296,24 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         focusedEpisodeContentId = contentId
         guard let contentId else { return }
 
-        let previousRegion = primaryFocusRegion
-        primaryFocusRegion = .episodes
-        switch previousRegion {
-        case .mode:
-            browseHoldRequest &+= 1
-        case .selector:
-            browseRestoreRequest &+= 1
-        case .outside, .episodes:
-            break
-        }
-
-        isShowingSeriesOverview = false
         guard activeEpisodeContentId != contentId else { return }
         onActivateEpisode(contentId)
     }
 
+    private func selectEpisode(_ contentId: String) {
+        if activeEpisodeContentId != contentId {
+            onActivateEpisode(contentId)
+        }
+
+        // Let the carousel finish handling Select before transferring its
+        // single composite focus owner to the hero's native Play button.
+        Task { @MainActor in
+            await Task.yield()
+            playFocused = true
+        }
+    }
+
     private func quickPlayEpisode(_ contentId: String) {
-        isShowingSeriesOverview = false
         onActivateEpisode(contentId)
         let episode = episodes.first(where: { $0.contentId == contentId })
         onPlayEpisode(
@@ -423,7 +330,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     private var hasPrimaryFocus: Bool {
         playbackSelectorFocused
             || focusedEpisodeContentId != nil
-            || focusedModeId != nil
+            || seasonSelectorFocused
     }
 
     // MARK: - Episode playback selectors and contextual actions
@@ -449,10 +356,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     stabilizesFocusMotion: true,
                     pinsLeadingEdgeOnExpansion: true,
                     prefersVersionFocusOnEntry: true,
-                    focusRequest: playbackSelectorFocusRequest,
                     onFocusChange: notePlaybackSelectorFocus,
-                    onMoveUp: focusEpisodeRail,
-                    onMoveDown: focusSupportingRail,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
@@ -472,9 +376,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private func notePlaybackSelectorFocus(_ isFocused: Bool) {
         playbackSelectorFocused = isFocused
-        if isFocused {
-            primaryFocusRegion = .selector
-        }
     }
 
     private var moreMenu: some View {
@@ -513,7 +414,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private var playbackEpisode: EpisodeListItem? {
-        isShowingSeriesOverview ? suggestedEpisode : displayedEpisode
+        displayedEpisode
     }
 
     private var matchingPlaybackDetail: ItemDetail? {
@@ -545,16 +446,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         return nextUpVersions.contains(where: { $0.fileId == selectedNextUpFileId })
             ? selectedNextUpFileId
             : nil
-    }
-
-    private func seasonLabel(_ season: Season) -> String {
-        if let title = season.title, !title.isEmpty { return title }
-        if season.seasonNumber == 0 { return "Specials" }
-        return "Season \(season.seasonNumber)"
-    }
-
-    private func runtimeLabel(_ minutes: Int) -> String {
-        minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
     }
 
     // MARK: - Supporting rails
@@ -602,94 +493,4 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 }
 
-/// Stable Show/Season tab used only by the combined Series page. It changes
-/// fill and outline on focus without scaling, so neighboring tabs never move.
-private struct TVSeriesModeTab: View {
-    let title: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
-                .padding(.horizontal, 24)
-                .frame(height: 52)
-        }
-        .buttonStyle(TVSeriesModeTabStyle(isSelected: isSelected))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-}
-
-private struct TVSeriesModeTabStyle: ButtonStyle {
-    let isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        TVSeriesModeTabBody(
-            configuration: configuration,
-            isSelected: isSelected
-        )
-    }
-}
-
-private struct TVSeriesModeTabBody: View {
-    let configuration: ButtonStyleConfiguration
-    let isSelected: Bool
-    @Environment(\.isFocused) private var isFocused
-    @State private var rendersFocusedAppearance = false
-
-    var body: some View {
-        configuration.label
-            .foregroundColor(rendersFocusedAppearance ? .black : .white)
-            .background(
-                Capsule().fill(
-                    rendersFocusedAppearance
-                        ? Color.white
-                        : (isSelected ? Color.white.opacity(0.20) : Color.white.opacity(0.05))
-                )
-            )
-            .overlay(
-                Capsule().stroke(
-                    Color.white.opacity(
-                        rendersFocusedAppearance ? 1 : (isSelected ? 0.70 : 0.30)
-                    ),
-                    lineWidth: rendersFocusedAppearance ? 3 : (isSelected ? 2 : 1.5)
-                )
-                .padding(rendersFocusedAppearance ? -4 : 0)
-            )
-            .shadow(
-                color: Color.white.opacity(rendersFocusedAppearance ? 0.34 : 0),
-                radius: rendersFocusedAppearance ? 12 : 0
-            )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .focusEffectDisabled()
-            .animation(
-                .easeOut(duration: ContinuumTheme.fastDuration),
-                value: rendersFocusedAppearance
-            )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
-            .task(id: isFocused) {
-                guard isFocused else {
-                    rendersFocusedAppearance = false
-                    return
-                }
-                if isSelected {
-                    rendersFocusedAppearance = true
-                    return
-                }
-                // A downward Siri Remote gesture can briefly offer focus to a
-                // neighboring pill before entering the episode composite.
-                // Ignore that sub-frame transient without delaying the current
-                // selected season or changing normal lateral navigation.
-                try? await Task.sleep(for: .milliseconds(150))
-                guard !Task.isCancelled, isFocused else { return }
-                rendersFocusedAppearance = true
-            }
-            .onChange(of: isSelected) { _, selected in
-                if selected && isFocused {
-                    rendersFocusedAppearance = true
-                }
-            }
-    }
-}
 #endif

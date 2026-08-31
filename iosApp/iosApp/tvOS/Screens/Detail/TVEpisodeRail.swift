@@ -1,10 +1,174 @@
 #if os(tvOS)
 import SwiftUI
 
+/// Shared season picker for every tvOS episode-browsing surface. The row orders
+/// Specials before numbered seasons and owns its native focus restoration so
+/// callers do not duplicate it.
+struct TVSeasonSelectorRow: View {
+    let seasons: [Season]
+    let selectedSeason: Season?
+    var focusRequest = 0
+    let onSelect: (Season) -> Void
+    var onFocusChange: ((Bool) -> Void)?
+    var onMoveDown: (() -> Void)?
+
+    @Namespace private var focusNamespace
+    @FocusState private var focusedSeasonId: String?
+
+    var body: some View {
+        selector
+        .frame(height: 60, alignment: .leading)
+        .onChange(of: focusRequest) { _, _ in
+            focusedSeasonId = selectedSeasonId
+        }
+        .onChange(of: focusedSeasonId) { _, focusedId in
+            onFocusChange?(focusedId != nil)
+        }
+    }
+
+    private var selector: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(orderedSeasons) { season in
+                        TVSeasonSelectorTab(
+                            title: seasonLabel(season),
+                            isSelected: selectedSeason?.id == season.id,
+                            action: {
+                                guard selectedSeason?.id != season.id else { return }
+                                onSelect(season)
+                            }
+                        )
+                        .id(season.id)
+                        .focused($focusedSeasonId, equals: season.id)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .scrollClipDisabled()
+            .focusScope(focusNamespace)
+            .focusSection()
+            .defaultFocus(
+                $focusedSeasonId,
+                selectedSeasonId,
+                priority: .userInitiated
+            )
+            .onMoveCommand { direction in
+                guard direction == .down else { return }
+                onMoveDown?()
+            }
+            .onChange(of: selectedSeasonId) { _, newId in
+                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                    proxy.scrollTo(newId, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private var orderedSeasons: [Season] {
+        seasons.filter { $0.seasonNumber == 0 }
+            + seasons.filter { $0.seasonNumber != 0 }
+    }
+
+    private var selectedSeasonId: String {
+        selectedSeason?.id ?? orderedSeasons.first?.id ?? ""
+    }
+
+    private func seasonLabel(_ season: Season) -> String {
+        if let title = season.title, !title.isEmpty { return title }
+        if season.seasonNumber == 0 { return "Specials" }
+        return "Season \(season.seasonNumber)"
+    }
+}
+
+private struct TVSeasonSelectorTab: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
+                .padding(.horizontal, 24)
+                .frame(height: 52)
+        }
+        .buttonStyle(TVSeasonSelectorTabStyle(isSelected: isSelected))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct TVSeasonSelectorTabStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        TVSeasonSelectorTabBody(configuration: configuration, isSelected: isSelected)
+    }
+}
+
+private struct TVSeasonSelectorTabBody: View {
+    let configuration: ButtonStyleConfiguration
+    let isSelected: Bool
+    @Environment(\.isFocused) private var isFocused
+    @State private var rendersFocusedAppearance = false
+
+    var body: some View {
+        configuration.label
+            .foregroundColor(rendersFocusedAppearance ? .black : .white)
+            .background(
+                Capsule().fill(
+                    rendersFocusedAppearance
+                        ? Color.white
+                        : (isSelected ? Color.white.opacity(0.20) : Color.white.opacity(0.05))
+                )
+            )
+            .overlay(
+                Capsule().stroke(
+                    Color.white.opacity(
+                        rendersFocusedAppearance ? 1 : (isSelected ? 0.70 : 0.30)
+                    ),
+                    lineWidth: rendersFocusedAppearance ? 3 : (isSelected ? 2 : 1.5)
+                )
+                .padding(rendersFocusedAppearance ? -4 : 0)
+            )
+            .shadow(
+                color: Color.white.opacity(rendersFocusedAppearance ? 0.34 : 0),
+                radius: rendersFocusedAppearance ? 12 : 0
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .focusEffectDisabled()
+            .animation(
+                .easeOut(duration: ContinuumTheme.fastDuration),
+                value: rendersFocusedAppearance
+            )
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+            .task(id: isFocused) {
+                guard isFocused else {
+                    rendersFocusedAppearance = false
+                    return
+                }
+                if isSelected {
+                    rendersFocusedAppearance = true
+                    return
+                }
+                // A downward Siri Remote gesture can briefly offer focus to a
+                // neighboring pill before entering the episode composite.
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, isFocused else { return }
+                rendersFocusedAppearance = true
+            }
+            .onChange(of: isSelected) { _, selected in
+                if selected && isFocused {
+                    rendersFocusedAppearance = true
+                }
+            }
+    }
+}
+
 /// Horizontal rail of episode cards for the tvOS series/season/episode
 /// detail screens. The caller owns Select semantics: legacy season/episode
-/// pages can still navigate, while the Series overview launches playback
-/// directly and uses focus changes to update its in-place episode state.
+/// pages and the Series overview navigate to episode detail, while focus
+/// changes can still update the surrounding in-place episode state.
 ///
 /// Pass `currentContentId` to highlight the episode currently represented
 /// by the surrounding detail experience. Legacy rails center that card on
@@ -35,7 +199,7 @@ struct TVEpisodeRail: View {
     /// destinations are handed back to the parent explicitly.
     var onMoveUp: (() -> Void)? = nil
     var onMoveDown: (() -> Void)? = nil
-    /// Non-zero changes hand focus back to the composite Series episode rail.
+    /// Non-zero changes hand focus to the composite episode rail.
     var focusRequest = 0
 
     @FocusState private var focusedCardId: String?
@@ -150,7 +314,8 @@ struct TVEpisodeRail: View {
         } label: {
             ZStack(alignment: .topLeading) {
                 HStack(alignment: .top, spacing: cardSpacing) {
-                    ForEach(Array(episodes.enumerated()), id: \.element.contentId) { _, episode in
+                    ForEach(Array(episodes.enumerated()), id: \.element.contentId) { index, episode in
+                        let isActive = anchoredRailFocused && anchoredIndex == index
                         EpisodeCardLabel(
                             episode: episode,
                             isPlayed: anchoredIsPlayed(episode),
@@ -162,6 +327,20 @@ struct TVEpisodeRail: View {
                             focusOverride: false,
                             hidesEpisodeTitle: true,
                             showsCurrentOutline: false
+                        )
+                        .scaleEffect(
+                            isActive && !reduceMotion ? 1.035 : 1,
+                            anchor: .bottomLeading
+                        )
+                        .shadow(
+                            color: .black.opacity(isActive ? 0.45 : 0),
+                            radius: isActive ? 18 : 0,
+                            y: isActive ? 8 : 0
+                        )
+                        .zIndex(isActive ? 1 : 0)
+                        .animation(
+                            .easeOut(duration: ContinuumTheme.fastDuration),
+                            value: anchoredRailFocused
                         )
                     }
                 }
@@ -177,9 +356,17 @@ struct TVEpisodeRail: View {
                         lineWidth: anchoredRailFocused ? 3 : 2
                     )
                     .frame(width: anchoredCardWidth, height: anchoredStillHeight)
+                    .scaleEffect(
+                        anchoredRailFocused && !reduceMotion ? 1.035 : 1,
+                        anchor: .bottomLeading
+                    )
                     .offset(
                         x: anchoredHighlightOffset(viewportWidth: viewportWidth),
                         y: 12
+                    )
+                    .animation(
+                        .easeOut(duration: ContinuumTheme.fastDuration),
+                        value: anchoredRailFocused
                     )
             }
             .frame(
