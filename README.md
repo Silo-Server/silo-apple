@@ -39,7 +39,7 @@ Try the latest beta builds of the iOS and tvOS apps:
 
 ## Prerequisites
 
-- Xcode 16+
+- Xcode 26+
 - `xcodegen`
 - Ruby 3.2 with Bundler for release automation
 - A running Silo server for local auth, browsing, and playback validation
@@ -127,6 +127,12 @@ Personal Apple Developer teams cannot join the production App Group, so Top Shel
 ## Release Flow
 
 Fastlane lanes are defined in `fastlane/Fastfile`. All Apple IDs, team IDs, signing repo URLs, and App Store Connect credentials must come from CI environment variables.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Features,
+navigation or behavior changes, large refactors, and shared contract changes
+should start as an issue.
 
 ## License & Trademarks
 
