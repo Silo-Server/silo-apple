@@ -178,6 +178,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             watchedLabelMark: watchedLabelMark,
             watchedLabelUnmark: watchedLabelUnmark,
             onToggleWatched: onToggleWatched,
+            showsWatchedAction: true,
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,

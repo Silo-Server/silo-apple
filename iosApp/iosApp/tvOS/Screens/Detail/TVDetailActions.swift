@@ -289,6 +289,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     let watchedLabelMark: String
     let watchedLabelUnmark: String
     let onToggleWatched: () -> Void
+    let showsWatchedAction: Bool
     /// Stable identity for the detail page. A newly opened content page gets
     /// one bounded Play-focus claim; changing seasons within that page does
     /// not steal focus back from the season row.
@@ -354,15 +355,17 @@ struct TVDetailActionRow<MoreMenu: View>: View {
             )
             .focused($focusedAction, equals: .watchlist)
 
-            TVCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                title: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                action: onToggleWatched
-            )
-            .focused($focusedAction, equals: .watched)
+            if showsWatchedAction {
+                TVCircleActionButton(
+                    icon: "checkmark.circle",
+                    iconActive: "checkmark.circle.fill",
+                    isActive: isWatched,
+                    title: isWatched ? watchedLabelUnmark : watchedLabelMark,
+                    accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
+                    action: onToggleWatched
+                )
+                .focused($focusedAction, equals: .watched)
+            }
 
             moreMenu()
                 .focused($focusedAction, equals: .more)
@@ -414,23 +417,30 @@ struct TVDetailActionRow<MoreMenu: View>: View {
 
         let actionFocus = $focusedAction
         initialPlayFocusTask = Task { @MainActor in
-            var lastFocusedAction = actionFocus.wrappedValue
             for attempt in 0..<3 {
                 if Task.isCancelled { return }
                 if playFocused.wrappedValue { return }
 
-                let focusedNow = actionFocus.wrappedValue
-                if lastFocusedAction != nil, focusedNow != lastFocusedAction {
-                    return
-                }
-                lastFocusedAction = focusedNow
-
                 if attempt > 0 {
+                    if let focusedNow = actionFocus.wrappedValue,
+                       focusedNow != .play {
+                        return
+                    }
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     if Task.isCancelled { return }
+                    if playFocused.wrappedValue { return }
+                    if let focusedNow = actionFocus.wrappedValue,
+                       focusedNow != .play {
+                        return
+                    }
                 }
                 resetFocus(in: focusNamespace)
                 await Task.yield()
+                if attempt > 0,
+                   let focusedNow = actionFocus.wrappedValue,
+                   focusedNow != .play {
+                    return
+                }
                 actionFocus.wrappedValue = .play
                 playFocused.wrappedValue = true
             }

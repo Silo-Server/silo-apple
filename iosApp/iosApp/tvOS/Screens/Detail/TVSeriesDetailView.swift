@@ -181,6 +181,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             watchedLabelMark: "Mark Season Watched",
             watchedLabelUnmark: "Mark Season Unwatched",
             onToggleWatched: onToggleWatched,
+            showsWatchedAction: selectedSeason != nil,
             focusResetKey: detail.contentId,
             initialFocusScope: .season(key: selectedSeason?.contentId),
             focusNamespace: detailFocusNamespace,

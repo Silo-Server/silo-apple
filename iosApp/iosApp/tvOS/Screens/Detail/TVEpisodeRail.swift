@@ -36,6 +36,7 @@ struct TVEpisodeRail: View {
                         TVEpisodeCard(
                             episode: episode,
                             isCurrent: currentContentId == episode.contentId,
+                            posterSize: uiCustomization.cardPresentation.posterSize,
                             captionStyle: uiCustomization.cardPresentation.caption,
                             onSelect: { onSelect(episode.contentId) },
                             onSetWatched: onSetWatched,
@@ -93,6 +94,7 @@ private extension View {
 struct TVEpisodeCard: View {
     let episode: EpisodeListItem
     var isCurrent: Bool = false
+    var posterSize: CardPosterSize = .standard
     var captionStyle: CardCaptionStyle = .titleMetadata
     let onSelect: () -> Void
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
@@ -102,7 +104,7 @@ struct TVEpisodeCard: View {
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
 
-    private let cardWidth: CGFloat = 480
+    private var cardWidth: CGFloat { 480 * posterSize.scale }
     private var stillHeight: CGFloat { cardWidth * 9 / 16 }
     private let stillCornerRadius: CGFloat = 18
 

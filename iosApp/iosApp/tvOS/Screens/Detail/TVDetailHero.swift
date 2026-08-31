@@ -41,7 +41,8 @@ struct TVDetailPageSurface<Content: View>: View {
             if let cached = HeroBackdropPalette.cachedTint(for: url) {
                 sampledTint = cached
             }
-            if let tint = await HeroBackdropPalette.tintColor(for: url) {
+            if let tint = await HeroBackdropPalette.tintColor(for: url),
+               !Task.isCancelled {
                 sampledTint = tint
             }
         }

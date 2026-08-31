@@ -60,6 +60,10 @@ class ItemDetailViewModel {
     var isFavorite = false
     var inWatchlist = false
     var isWatched = false
+    /// Invalidates favorite/watchlist lookups that began before a local
+    /// mutation. Without this, a slow entry load can overwrite an optimistic
+    /// button tap and put the stale pair back into `ResponseCache`.
+    private var userStateMutationGeneration = 0
 
     // tvOS pre-play selector state. ItemDetailCache retains this view model
     // while the user enters playback or navigates to another item, so manual
@@ -123,6 +127,7 @@ class ItemDetailViewModel {
             async let watchlistResult: Bool? = try? await ContinuumAPI.shared.isInWatchlist(
                 contentId: contentId
             )
+            let userStateGeneration = userStateMutationGeneration
 
             let item: ItemDetail = try await ContinuumAPI.shared.get(
                 "/api/v1/catalog/items/\(contentId)"
@@ -144,7 +149,9 @@ class ItemDetailViewModel {
             )
 
             let (favorite, watchlist) = await (favoriteResult, watchlistResult)
-            if let favorite, let watchlist {
+            if let favorite, let watchlist,
+               detail?.contentId == contentId,
+               userStateMutationGeneration == userStateGeneration {
                 isFavorite = favorite
                 inWatchlist = watchlist
                 ResponseCache.shared.set(
@@ -738,6 +745,7 @@ class ItemDetailViewModel {
 
     func toggleFavorite() async {
         guard let contentId = detail?.contentId else { return }
+        userStateMutationGeneration += 1
         isFavorite.toggle()
         writeBackUserState(contentId: contentId)
         do {
@@ -755,6 +763,7 @@ class ItemDetailViewModel {
 
     func toggleWatchlist() async {
         guard let contentId = detail?.contentId else { return }
+        userStateMutationGeneration += 1
         inWatchlist.toggle()
         writeBackUserState(contentId: contentId)
         do {
@@ -848,6 +857,7 @@ class ItemDetailViewModel {
         do {
             try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             if contentId == detail?.contentId {
+                userStateMutationGeneration += 1
                 self.isFavorite = isFavorite
                 writeBackUserState(contentId: contentId)
             } else {
