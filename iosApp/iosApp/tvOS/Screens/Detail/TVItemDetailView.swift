@@ -20,6 +20,7 @@ struct TVItemDetailView: View {
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
     @State private var nextUpPlaybackDetail: ItemDetail?
+    @State private var episodeSeriesDetail: ItemDetail?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     /// Whether the YouTube app is installed, probed once per page appearance.
@@ -100,6 +101,7 @@ struct TVItemDetailView: View {
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
+            episodeSeriesDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
             await viewModel.loadDetail(contentId: contentId)
@@ -312,7 +314,7 @@ struct TVItemDetailView: View {
                 detail: detail,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
-                isWatched: viewModel.isWatched,
+                isWatched: viewModel.selectedSeason?.userData?.played ?? false,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
@@ -418,7 +420,7 @@ struct TVItemDetailView: View {
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
-                onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                onToggleWatched: { Task { await viewModel.toggleSelectedSeasonWatched() } },
                 onPersonTap: { personId in
                     if let pid = Int(personId) {
                         router.navigate(to: .personDetail(personId: pid))
@@ -436,8 +438,10 @@ struct TVItemDetailView: View {
                 await loadSeriesNextUpPlaybackDetail(for: detail)
             }
         } else {
+            let supportingDetail = episodeSupportingDetail(for: detail)
             TVMovieDetailView(
                 detail: detail,
+                supportingDetail: supportingDetail,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -450,7 +454,7 @@ struct TVItemDetailView: View {
                 seasonEpisodes: viewModel.episodes,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
-                trailerEntries: trailerEntries(for: detail),
+                trailerEntries: trailerEntries(for: supportingDetail ?? detail),
                 onSelectTrailer: playTrailer,
                 supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
                 onFindTrailers: {
@@ -546,25 +550,26 @@ struct TVItemDetailView: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 },
                 onEpisodeTap: { id in
+                    guard id != detail.contentId else { return }
+                    // Switch only the active episode detail. Replacing the
+                    // current route keeps Back returning to the series page
+                    // and avoids stacking one route per episode browse.
+                    router.replaceCurrent(with: .itemDetail(contentId: id))
+                },
+                onPlayEpisodeShortcut: { id in
                     let episode = viewModel.episodes.first { $0.contentId == id }
-                    let isCurrentEpisode = id == detail.contentId
                     let resumePosition = playableResumePosition(
                         position: episode?.userData?.positionSeconds,
                         duration: episode?.userData?.durationSeconds
                     )
-
-                    // Present independently of the navigation stack. Once
-                    // playback reports that it is actually running, the
-                    // hidden detail route is replaced with this episode so
-                    // dismissing the player returns to what was just played.
                     router.presentPlayer(
                         contentId: id,
-                        fileId: isCurrentEpisode ? playbackFileId(for: detail) : nil,
-                        audioTrackIndex: isCurrentEpisode ? preferredAudioTrackIndex : nil,
-                        subtitleTrackIndex: isCurrentEpisode ? preferredSubtitleTrackIndex : nil,
+                        fileId: nil,
+                        audioTrackIndex: nil,
+                        subtitleTrackIndex: nil,
                         startFromBeginning: false,
                         resumePosition: resumePosition,
-                        returnToContentId: isCurrentEpisode ? nil : id
+                        returnToContentId: id
                     )
                 },
                 onSetEpisodeWatched: { id, played in
@@ -578,7 +583,37 @@ struct TVItemDetailView: View {
                         .id(detail.contentId)
                 }
             )
+            .task(id: detail.type == "episode" ? detail.seriesId : nil) {
+                await loadEpisodeSeriesDetail(for: detail)
+            }
         }
+    }
+
+    private func loadEpisodeSeriesDetail(for detail: ItemDetail) async {
+        guard detail.type == "episode",
+              let seriesId = detail.seriesId,
+              !seriesId.isEmpty else {
+            episodeSeriesDetail = nil
+            return
+        }
+        if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
+            episodeSeriesDetail = cached
+        }
+        guard let fresh = try? await ContinuumAPI.shared.itemDetail(contentId: seriesId),
+              !Task.isCancelled else { return }
+        ResponseCache.shared.set(fresh, for: CacheKey.itemDetail(seriesId))
+        episodeSeriesDetail = fresh
+    }
+
+    /// The series page that launched an episode is already in the process-wide
+    /// cache. Read it during the episode's very first body evaluation so its
+    /// logo never waits for the supporting-detail task to make another trip.
+    private func episodeSupportingDetail(for detail: ItemDetail) -> ItemDetail? {
+        guard detail.type == "episode",
+              let seriesId = detail.seriesId,
+              !seriesId.isEmpty else { return episodeSeriesDetail }
+        return episodeSeriesDetail
+            ?? ResponseCache.shared.get(CacheKey.itemDetail(seriesId))
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
@@ -591,23 +626,18 @@ struct TVItemDetailView: View {
         return nil
     }
 
-    /// Next-up analogue of `playbackFileId(for:)`. `resolvedFileId` is the
-    /// fileId the season/series view already computed from the selected
-    /// version (non-nil only when the user changed Version). When that is
-    /// nil but an audio/subtitle override is set, resolve the next-up
-    /// effective version's fileId so the chosen tracks can still be carried
-    /// through `.playerWithFile(...)` instead of being dropped by `.player`.
+    /// Next-up analogue of `playbackFileId(for:)`. Series overview has no
+    /// selector, so always resolve its remembered/effective version when the
+    /// row has not supplied an explicit file. That keeps the passive quality
+    /// readout and the file launched by Play in lockstep.
     private func nextUpPlaybackFileId(resolvedFileId: Int?) -> Int? {
         if let resolvedFileId {
             return resolvedFileId
         }
-        if preferredNextUpAudioTrackIndex != nil || preferredNextUpSubtitleTrackIndex != nil {
-            return effectiveVersion(
-                for: nextUpPlaybackDetail,
-                versionFileId: preferredNextUpFileId
-            )?.fileId
-        }
-        return nil
+        return effectiveVersion(
+            for: nextUpPlaybackDetail,
+            versionFileId: preferredNextUpFileId
+        )?.fileId
     }
 
     private func playableResumePosition(for detail: ItemDetail) -> Double? {
@@ -841,19 +871,32 @@ struct TVItemDetailView: View {
             return
         }
 
-        nextUpPlaybackDetail = nil
+        let cached: ItemDetail? = ResponseCache.shared.get(
+            CacheKey.itemDetail(nextUp.contentId)
+        )
+        let usableCached = cached?.versions?.isEmpty == false ? cached : nil
+        nextUpPlaybackDetail = usableCached
         isLoadingNextUpPlaybackDetail = true
-        didLoadNextUpPlaybackDetail = false
+        didLoadNextUpPlaybackDetail = usableCached != nil
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
         didClearNextUpSubtitleOverride = false
+        if let usableCached {
+            preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: effectiveVersion(for: usableCached, versionFileId: nil),
+                signature: usableCached.effectiveSubtitleTrackSignature,
+                mode: usableCached.effectiveSubtitleMode,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
+        }
 
         do {
             let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
+            ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(nextUp.contentId))
             nextUpPlaybackDetail = enriched
             preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: enriched, versionFileId: nil),
@@ -864,7 +907,9 @@ struct TVItemDetailView: View {
             didLoadNextUpPlaybackDetail = true
         } catch {
             guard !Task.isCancelled else { return }
-            nextUpPlaybackDetail = nil
+            if usableCached == nil {
+                nextUpPlaybackDetail = nil
+            }
             didLoadNextUpPlaybackDetail = true
         }
         isLoadingNextUpPlaybackDetail = false
@@ -875,6 +920,7 @@ struct TVItemDetailView: View {
 
         do {
             let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+            ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId))
             return ItemDetail(
                 contentId: item.contentId,
                 type: item.type,

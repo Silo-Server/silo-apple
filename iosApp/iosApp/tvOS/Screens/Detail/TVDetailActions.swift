@@ -8,6 +8,7 @@ import SwiftUI
 struct TVPrimaryPillButton: View {
     let icon: String
     let title: String
+    var subtitle: String? = nil
     let action: () -> Void
     /// Optional focus binding so the owning detail view can both observe and
     /// claim this button's focus. Combined with `.defaultFocus(…priority:
@@ -18,17 +19,42 @@ struct TVPrimaryPillButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 18) {
-                Image(systemName: icon)
-                    .font(.system(size: 32, weight: .bold))
-                Text(title)
-                    .font(.system(size: 30, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            TVPrimaryPillLabel(icon: icon, title: title, subtitle: subtitle)
         }
         .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
         .applyOptionalFocus(focused)
+    }
+}
+
+private struct TVPrimaryPillLabel: View {
+    let icon: String
+    let title: String
+    let subtitle: String?
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 31, weight: .bold))
+                .frame(width: 36, height: 36)
+            if isFocused {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(.system(size: 29, weight: .semibold))
+                        .lineLimit(1)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: isFocused)
     }
 }
 
@@ -52,20 +78,46 @@ private extension View {
 struct TVSecondaryPillButton: View {
     let icon: String
     let title: String
+    var collapsesWhenUnfocused: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 16) {
-                Image(systemName: icon)
-                    .font(.system(size: 28, weight: .semibold))
+            TVSecondaryPillLabel(
+                icon: icon,
+                title: title,
+                collapsesWhenUnfocused: collapsesWhenUnfocused
+            )
+        }
+        .buttonStyle(TVPillButtonStyle(
+            kind: .secondary,
+            focusTreatment: .compact,
+            collapsesWhenUnfocused: collapsesWhenUnfocused
+        ))
+    }
+}
+
+private struct TVSecondaryPillLabel: View {
+    let icon: String
+    let title: String
+    let collapsesWhenUnfocused: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 28, weight: .semibold))
+                .frame(width: 36, height: 36, alignment: .center)
+            if !collapsesWhenUnfocused || isFocused {
                 Text(title)
                     .font(.system(size: 26, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .animation(.easeInOut(duration: 0.18), value: isFocused)
     }
 }
 
@@ -124,7 +176,8 @@ struct TVCircleMenuButton<MenuContent: View>: View {
             menu()
         } label: {
             Image(systemName: icon)
-                .font(.system(size: 28, weight: .semibold))
+                .font(.system(size: 31, weight: .semibold))
+                .frame(width: 38, height: 38, alignment: .center)
                 .contentTransition(.symbolEffect(.replace))
         }
         .menuStyle(.button)
@@ -142,6 +195,7 @@ struct TVCircleActionButton: View {
     let icon: String
     let iconActive: String?
     let isActive: Bool
+    let title: String
     let accessibilityLabel: String
     let action: () -> Void
 
@@ -149,12 +203,14 @@ struct TVCircleActionButton: View {
         icon: String,
         iconActive: String? = nil,
         isActive: Bool = false,
+        title: String,
         accessibilityLabel: String,
         action: @escaping () -> Void
     ) {
         self.icon = icon
         self.iconActive = iconActive
         self.isActive = isActive
+        self.title = title
         self.accessibilityLabel = accessibilityLabel
         self.action = action
     }
@@ -166,12 +222,38 @@ struct TVCircleActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: resolvedIcon)
-                .font(.system(size: 28, weight: .semibold))
-                .contentTransition(.symbolEffect(.replace))
+            TVExpandingCircleLabel(icon: resolvedIcon, title: title)
         }
-        .buttonStyle(TVCircleButtonStyle())
+        .buttonStyle(TVPillButtonStyle(
+            kind: .secondary,
+            focusTreatment: .compact,
+            collapsesWhenUnfocused: true
+        ))
         .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct TVExpandingCircleLabel: View {
+    let icon: String
+    let title: String
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 31, weight: .semibold))
+                .frame(width: 36, height: 36, alignment: .center)
+                .contentTransition(.symbolEffect(.replace))
+            if isFocused {
+                Text(title)
+                    .font(.system(size: 25, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: isFocused)
     }
 }
 
@@ -196,6 +278,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     }
 
     let playTitle: String?
+    let playSubtitle: String?
     let onPlay: () -> Void
     let onStartOver: (() -> Void)?
     let isFavorite: Bool
@@ -206,6 +289,10 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     let watchedLabelMark: String
     let watchedLabelUnmark: String
     let onToggleWatched: () -> Void
+    /// Stable identity for the detail page. A newly opened content page gets
+    /// one bounded Play-focus claim; changing seasons within that page does
+    /// not steal focus back from the season row.
+    let focusResetKey: String
     let initialFocusScope: InitialFocusScope
     let focusNamespace: Namespace.ID
     let playFocused: FocusState<Bool>.Binding
@@ -224,6 +311,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 TVPrimaryPillButton(
                     icon: "play.fill",
                     title: playTitle,
+                    subtitle: playSubtitle,
                     action: onPlay,
                     focused: playFocused
                 )
@@ -239,6 +327,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                     TVSecondaryPillButton(
                         icon: "backward.end.fill",
                         title: "Start Over",
+                        collapsesWhenUnfocused: true,
                         action: onStartOver
                     )
                     .focused($focusedAction, equals: .startOver)
@@ -249,6 +338,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 icon: "heart",
                 iconActive: "heart.fill",
                 isActive: isFavorite,
+                title: isFavorite ? "Remove Favorite" : "Favorites",
                 accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
                 action: onToggleFavorite
             )
@@ -258,6 +348,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 icon: "bookmark",
                 iconActive: "bookmark.fill",
                 isActive: inWatchlist,
+                title: inWatchlist ? "Remove from Watchlist" : "Watchlist",
                 accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
                 action: onToggleWatchlist
             )
@@ -267,6 +358,7 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 icon: "checkmark.circle",
                 iconActive: "checkmark.circle.fill",
                 isActive: isWatched,
+                title: isWatched ? watchedLabelUnmark : watchedLabelMark,
                 accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
                 action: onToggleWatched
             )
@@ -278,6 +370,18 @@ struct TVDetailActionRow<MoreMenu: View>: View {
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        .task(id: focusResetKey) {
+            cancelInitialPlayFocusRetry()
+            didResetInitialPlayFocus = false
+            initialFocusSeasonKey = seasonKey
+            await Task.yield()
+            guard playTitle != nil else { return }
+            resetInitialPlayFocus()
+        }
+        .onChange(of: playTitle, initial: true) { _, title in
+            guard title != nil else { return }
+            resetInitialPlayFocus()
+        }
         .onChange(of: seasonKey, initial: true) { _, seasonKey in
             guard let seasonKey else { return }
             if initialFocusSeasonKey == nil {
@@ -327,6 +431,8 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 }
                 resetFocus(in: focusNamespace)
                 await Task.yield()
+                actionFocus.wrappedValue = .play
+                playFocused.wrappedValue = true
             }
         }
     }
@@ -350,14 +456,25 @@ struct TVPillButtonStyle: ButtonStyle {
 
     let kind: Kind
     let focusTreatment: FocusTreatment
+    let collapsesWhenUnfocused: Bool
 
-    init(kind: Kind, focusTreatment: FocusTreatment = .hero) {
+    init(
+        kind: Kind,
+        focusTreatment: FocusTreatment = .hero,
+        collapsesWhenUnfocused: Bool = false
+    ) {
         self.kind = kind
         self.focusTreatment = focusTreatment
+        self.collapsesWhenUnfocused = collapsesWhenUnfocused
     }
 
     func makeBody(configuration: Configuration) -> some View {
-        TVPillButtonBody(configuration: configuration, kind: kind, focusTreatment: focusTreatment)
+        TVPillButtonBody(
+            configuration: configuration,
+            kind: kind,
+            focusTreatment: focusTreatment,
+            collapsesWhenUnfocused: collapsesWhenUnfocused
+        )
     }
 }
 
@@ -365,26 +482,27 @@ private struct TVPillButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let kind: TVPillButtonStyle.Kind
     let focusTreatment: TVPillButtonStyle.FocusTreatment
+    let collapsesWhenUnfocused: Bool
 
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         configuration.label
             .foregroundColor(foreground)
-            .padding(.horizontal, kind == .primary ? 54 : 40)
-            .padding(.vertical, kind == .primary ? 26 : 22)
+            .padding(.horizontal, horizontalPadding)
+            .frame(height: 76)
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(
+                Capsule().stroke(
                     innerBorderColor,
                     lineWidth: innerBorderWidth
                 )
             )
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(background)
+                Capsule().fill(background)
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius + 2, style: .continuous)
+                    Capsule()
                         .stroke(focusOutlineColor, lineWidth: focusOutlineWidth)
                         .padding(-focusOutlineInset)
                 }
@@ -401,21 +519,28 @@ private struct TVPillButtonBody: View {
                 y: 0
             )
             .focusEffectDisabled()
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(.easeInOut(duration: 0.18), value: isFocused)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var foreground: Color {
         switch kind {
-        case .primary: return .black
+        case .primary: return isFocused ? .black : .white
         case .secondary: return isFocused ? .black : .white
+        }
+    }
+
+    private var horizontalPadding: CGFloat {
+        switch kind {
+        case .primary: return isFocused ? 70 : 20
+        case .secondary: return collapsesWhenUnfocused && !isFocused ? 20 : 40
         }
     }
 
     private var background: Color {
         switch kind {
         case .primary:
-            return isFocused ? .white : Color.white.opacity(0.76)
+            return isFocused ? .white : Color.white.opacity(0.10)
         case .secondary:
             return isFocused ? .white : Color.black.opacity(0.52)
         }
@@ -524,21 +649,21 @@ private struct TVCircleButtonBody: View {
     var body: some View {
         configuration.label
             .foregroundColor(isFocused ? .black : .white)
-            .frame(width: 72, height: 72)
+            .frame(width: 76, height: 76)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(
+                Circle().fill(
                     isFocused ? .white : Color.white.opacity(0.10)
                 )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(
+                Circle().stroke(
                     isFocused ? Color.black.opacity(0.12) : Color.white.opacity(0.34),
                     lineWidth: isFocused ? 1.6 : 1.4
                 )
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius + 2, style: .continuous)
+                    Circle()
                         .stroke(Color.white.opacity(0.96), lineWidth: 3)
                         .padding(-5)
                 }
@@ -555,7 +680,7 @@ private struct TVCircleButtonBody: View {
                 y: 0
             )
             .focusEffectDisabled()
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(.easeInOut(duration: 0.18), value: isFocused)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
     }
 

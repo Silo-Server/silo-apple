@@ -16,6 +16,10 @@ struct CachedAsyncImage: View {
     var targetSize: CGSize? = nil
     var thumbhash: String? = nil
     var contentMode: ContentMode = .fill
+    /// Placement inside this view's resolved frame. Artwork keeps the
+    /// centered default; transparent logos opt into `.bottomLeading` so the
+    /// visible mark shares the metadata column's true leading edge.
+    var alignment: Alignment = .center
     var placeholderStyle: ImagePlaceholderStyle = .surface
 
     @Environment(\.displayScale) private var displayScale
@@ -28,7 +32,11 @@ struct CachedAsyncImage: View {
                     image
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .frame(
+                            width: geometry.size.width,
+                            height: geometry.size.height,
+                            alignment: alignment
+                        )
                         .clipped()
                 } else if state.error == nil, let warmed = prefetchedImage() {
                     // The startup/grid prefetchers warm the memory cache under
@@ -41,7 +49,11 @@ struct CachedAsyncImage: View {
                     Image(platformImage: warmed)
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .frame(
+                            width: geometry.size.width,
+                            height: geometry.size.height,
+                            alignment: alignment
+                        )
                         .clipped()
                 } else if state.error != nil {
                     placeholder(in: geometry.size)

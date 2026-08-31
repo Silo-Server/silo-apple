@@ -738,6 +738,38 @@ class ItemDetailViewModel {
         }
     }
 
+    /// Series overview action: mutate the season currently selected in the
+    /// pill row, not the whole series. The server already fans a season
+    /// mutation out to its episodes; refreshing the season + episode payloads
+    /// keeps every checkmark and next-up calculation consistent afterward.
+    func toggleSelectedSeasonWatched() async {
+        guard let selectedSeason,
+              let seriesId = seriesContentId else { return }
+
+        let played = !(selectedSeason.userData?.played ?? false)
+        do {
+            try await ContinuumAPI.shared.setWatched(
+                contentId: selectedSeason.contentId,
+                played: played
+            )
+            invalidateRelatedCaches(
+                contentId: selectedSeason.contentId,
+                seriesId: seriesId,
+                seasonNumber: selectedSeason.seasonNumber
+            )
+
+            await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
+            if let refreshed = seasons.first(where: {
+                $0.contentId == selectedSeason.contentId
+                    || $0.seasonNumber == selectedSeason.seasonNumber
+            }) {
+                await selectSeason(refreshed, forceRefresh: true)
+            }
+        } catch {
+            // Leave the server-provided state untouched on failure.
+        }
+    }
+
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
         do {
             try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)

@@ -13,9 +13,9 @@ struct TVSeasonChip: View {
     var body: some View {
         Button(action: onSelect) {
             Text(chipLabel)
-                .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
-                .padding(.horizontal, 26)
-                .padding(.vertical, 14)
+                .font(.system(size: 20, weight: isSelected ? .semibold : .medium))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
         }
         .buttonStyle(TVSeasonChipStyle(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -59,11 +59,15 @@ private struct TVSeasonChipBody: View {
     @ViewBuilder
     private var background: some View {
         if isSelected {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white)
+            Capsule().fill(Color.white)
         } else if isFocused {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
+            Capsule()
+                .fill(Color.white.opacity(0.18))
+                .overlay(Capsule().stroke(Color.white.opacity(0.78), lineWidth: 2))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+            Capsule()
+                .fill(Color.white.opacity(0.05))
+                .overlay(Capsule().stroke(Color.white.opacity(0.30), lineWidth: 1.5))
         }
     }
 
@@ -99,7 +103,7 @@ struct TVSeasonChipRow: View {
                         .focused($focusedSeasonId, equals: season.id)
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, 4)
             }
             .scrollClipDisabled()
             .focusSection()

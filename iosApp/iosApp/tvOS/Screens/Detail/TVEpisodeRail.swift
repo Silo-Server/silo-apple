@@ -24,7 +24,7 @@ struct TVEpisodeRail: View {
     var favoriteStates: [String: Bool] = [:]
     var prefersCurrentContentFocus = false
 
-    private let cardSpacing: CGFloat = 36
+    private let cardSpacing: CGFloat = 54
     @FocusState private var focusedCardId: String?
     @State private var uiCustomization = UICustomizationPreferences.shared
 
@@ -36,7 +36,6 @@ struct TVEpisodeRail: View {
                         TVEpisodeCard(
                             episode: episode,
                             isCurrent: currentContentId == episode.contentId,
-                            posterSize: uiCustomization.cardPresentation.posterSize,
                             captionStyle: uiCustomization.cardPresentation.caption,
                             onSelect: { onSelect(episode.contentId) },
                             onSetWatched: onSetWatched,
@@ -49,8 +48,7 @@ struct TVEpisodeRail: View {
                         .focused($focusedCardId, equals: episode.contentId)
                     }
                 }
-                .padding(.vertical, 32)
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.vertical, 12)
             }
             .focusSection()
             .applyCurrentEpisodeDefaultFocus(
@@ -95,7 +93,6 @@ private extension View {
 struct TVEpisodeCard: View {
     let episode: EpisodeListItem
     var isCurrent: Bool = false
-    var posterSize: CardPosterSize = .standard
     var captionStyle: CardCaptionStyle = .titleMetadata
     let onSelect: () -> Void
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
@@ -105,9 +102,9 @@ struct TVEpisodeCard: View {
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
 
-    private var cardWidth: CGFloat { 460 * posterSize.scale }
+    private let cardWidth: CGFloat = 480
     private var stillHeight: CGFloat { cardWidth * 9 / 16 }
-    private let stillCornerRadius: CGFloat = 10
+    private let stillCornerRadius: CGFloat = 18
 
     var body: some View {
         let button = Button(action: onSelect) {
@@ -229,41 +226,30 @@ private struct EpisodeCardLabel: View {
         VStack(alignment: .leading, spacing: 18) {
             still
             if captionStyle.showsTitle {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 10) {
-                            Text(episodeNumberLabel)
-                                .font(.system(size: 18, weight: .bold))
-                                .tracking(2.0)
-                                .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                        Text(episodeNumberLabel)
+                            .font(.system(size: 16, weight: .bold))
+                            .tracking(1.6)
+                            .foregroundStyle(Color.continuumOnSurface.opacity(0.62))
                         if isCurrent {
                             nowViewingTag
                         }
                     }
 
-                    Text(episode.title ?? "Episode \(episode.episodeNumber)")
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundStyle(titleColor)
-                        // Allow up to two lines for long titles, but don't reserve
-                        // the second line — a single-line title (the common case)
-                        // was leaving a full empty line of dead space above the
-                        // description.
-                        .lineLimit(2)
-
-                    if captionStyle.showsMetadata {
-                        if let metadataLine = episodeMetadataLine {
-                            Text(metadataLine)
-                                .font(.system(size: 20, weight: .medium))
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        Text(episode.title ?? "Episode \(episode.episodeNumber)")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(titleColor)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        if captionStyle.showsMetadata,
+                           let runtime = episode.runtime,
+                           runtime > 0 {
+                            Text(formatRuntime(runtime))
+                                .font(.system(size: 18, weight: .medium))
                                 .foregroundStyle(Color.continuumSecondaryText)
                                 .lineLimit(1)
-                        }
-
-                        if let overview = episode.overview, !overview.isEmpty {
-                            Text(overview)
-                                .font(.system(size: 20, weight: .regular))
-                                .foregroundStyle(Color.continuumSecondaryText)
-                                .lineLimit(3, reservesSpace: true)
-                                .lineSpacing(3)
-                                .padding(.top, 4)
                         }
                     }
                 }

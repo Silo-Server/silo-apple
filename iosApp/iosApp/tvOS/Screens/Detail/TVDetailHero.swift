@@ -1,6 +1,53 @@
 #if os(tvOS)
 import SwiftUI
 
+/// Shared 1920×1080 detail metrics. These are deliberately separate from the
+/// root Skyline metrics: the detail experience has its own approved rhythm,
+/// while Home and Browse keep their existing layout untouched.
+enum TVDetailLayout {
+    static let horizontalInset: CGFloat = 100
+    static let heroHeight: CGFloat = 690
+    static let heroTopInset: CGFloat = 88
+    static let heroContentWidth: CGFloat = 1_080
+    static let bodySectionSpacing: CGFloat = 64
+    static let sectionHeaderSpacing: CGFloat = 14
+    static let pageBottomPadding: CGFloat = 140
+}
+
+/// Fully opaque page surface sampled from the title artwork. The sampled tint
+/// is composited over black, so this remains a cheap, solid background rather
+/// than a live material or blur. Artwork itself lives inside the scrolling
+/// hero and therefore leaves the screen naturally as the viewer moves down.
+struct TVDetailPageSurface<Content: View>: View {
+    let backdropURL: String?
+    @ViewBuilder let content: () -> Content
+
+    @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+
+    var body: some View {
+        ZStack {
+            Color.black
+            sampledTint.opacity(0.42)
+            content()
+        }
+        .ignoresSafeArea()
+        .task(id: backdropURL) {
+            guard let rawURL = backdropURL,
+                  let url = URL(string: rawURL) else {
+                sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+                return
+            }
+
+            if let cached = HeroBackdropPalette.cachedTint(for: url) {
+                sampledTint = cached
+            }
+            if let tint = await HeroBackdropPalette.tintColor(for: url) {
+                sampledTint = tint
+            }
+        }
+    }
+}
+
 /// Full-bleed cinematic hero for the tvOS item-detail screen. Modeled
 /// after Apple TV's detail page: a nearly full-viewport backdrop layered
 /// with a tall left-column editorial stack (eyebrow pill → title →
@@ -33,24 +80,22 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
     let starringText: String?
+    /// Optional, non-interactive playback readout shown directly below the
+    /// credits. Series overview uses this to disclose the remembered version
+    /// that Play will launch without adding a second selector to the page.
+    let playbackSummaryText: String?
     @ViewBuilder let actions: () -> Actions
     /// Affordance rendered directly under the synopsis (e.g. the on-view
     /// description-translation control). Pass `{ EmptyView() }` when there's
     /// nothing to show.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    private let heroHeight: CGFloat = 980
-    private let contentMaxWidth: CGFloat = 1200
-
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack(alignment: .topLeading) {
             backdrop
-            leftGradient
-            bottomFade
             content
         }
-        .overlay(alignment: .trailing) { starringOverlay }
-        .frame(height: heroHeight)
+        .frame(height: TVDetailLayout.heroHeight)
         .frame(maxWidth: .infinity)
         .clipped()
     }
@@ -58,51 +103,60 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     // MARK: - Backdrop
 
     private var backdrop: some View {
-        Group {
+        GeometryReader { geometry in
+            let artworkWidth = geometry.size.width * 0.64
+            let artworkHeight = min(
+                TVDetailLayout.heroHeight * 0.94,
+                artworkWidth * 9 / 16
+            )
+
             if let url = backdropUrl, !url.isEmpty {
-                CachedAsyncImage(url: url, contentMode: .fill)
-            } else {
-                Color.continuumSurface
+                CachedAsyncImage(
+                    url: url,
+                    targetSize: CGSize(width: artworkWidth, height: artworkHeight),
+                    contentMode: .fill
+                )
+                .frame(width: artworkWidth, height: artworkHeight)
+                .clipped()
+                .mask { artworkFadeMask }
+                .frame(
+                    width: geometry.size.width,
+                    height: TVDetailLayout.heroHeight,
+                    alignment: .topTrailing
+                )
             }
         }
-        .frame(height: heroHeight)
-        .frame(maxWidth: .infinity)
     }
 
-    /// Heavy left-side darkening → clear on the right so the backdrop
-    /// imagery breathes while text stays legible.
-    private var leftGradient: some View {
+    /// The image is crisp in the top-right and dissolves into the solid page
+    /// tint on its leading and lower edges. No blur or translucent material.
+    private var artworkFadeMask: some View {
         LinearGradient(
             stops: [
-                .init(color: Color.black.opacity(0.92), location: 0.0),
-                .init(color: Color.black.opacity(0.70), location: 0.22),
-                .init(color: Color.black.opacity(0.35), location: 0.55),
-                .init(color: .clear, location: 0.88),
+                .init(color: .black, location: 0.0),
+                .init(color: .black, location: 0.46),
+                .init(color: .clear, location: 1.0),
             ],
-            startPoint: .leading,
-            endPoint: .trailing
+            startPoint: .trailing,
+            endPoint: .leading
         )
-    }
-
-    /// Soft bottom fade into the scroll body — subtle so the seam is
-    /// invisible and a hint of the next rail peeks through.
-    private var bottomFade: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0.0),
-                .init(color: .clear, location: 0.55),
-                .init(color: Color.continuumBackground.opacity(0.55), location: 0.85),
-                .init(color: Color.continuumBackground, location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        .mask {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.70),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 
     // MARK: - Content column
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             editorialColumn
 
             // Give the action cluster the full hero width with leading
@@ -113,42 +167,66 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             // Still a full-width focus destination so lower rails can move
             // "up" into this cluster even from a far-right card.
             actions()
-                .padding(.top, 8)
+                .padding(.top, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
-        .padding(.leading, ContinuumTheme.safePadding)
-        .padding(.trailing, ContinuumTheme.safePadding)
-        // Keep this tight: the detail pages' outer VStack already adds its
-        // own spacing between the hero and the first content section, so a
-        // large inset here reads as a dead band under the selector row.
-        .padding(.bottom, 48)
+        .padding(.top, TVDetailLayout.heroTopInset)
+        .padding(.horizontal, TVDetailLayout.horizontalInset)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: TVDetailLayout.heroHeight,
+            alignment: .topLeading
+        )
     }
 
     private var editorialColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 14) {
             if let eyebrow, !eyebrow.isEmpty {
                 TVHeroEyebrow(text: eyebrow)
             }
             titleBlock
-                .padding(.top, eyebrow == nil ? 0 : 4)
-            sourceRow
+                .padding(.top, eyebrow == nil ? 0 : 2)
+            metadataBlock
             if let overview, !overview.isEmpty {
                 TVExpandableSynopsis(overview: overview)
             }
             belowSynopsis()
-            factsRow
+            if let starringText, !starringText.isEmpty {
+                heroCredit(starringText)
+            }
+            if let playbackSummaryText, !playbackSummaryText.isEmpty {
+                Text(playbackSummaryText)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(Color.white.opacity(0.62))
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+                    .animation(
+                        .easeInOut(duration: ContinuumTheme.fastDuration),
+                        value: playbackSummaryText
+                    )
+                    .accessibilityLabel("Playback: \(playbackSummaryText)")
+            }
         }
-        .frame(maxWidth: contentMaxWidth, alignment: .leading)
+        .frame(maxWidth: TVDetailLayout.heroContentWidth, alignment: .leading)
     }
 
     @ViewBuilder
     private var titleBlock: some View {
         if let episodeSeriesTitle {
-            TVEpisodeHierarchyTitle(seriesTitle: episodeSeriesTitle, episodeTitle: title)
+            TVEpisodeHierarchyTitle(
+                seriesTitle: episodeSeriesTitle,
+                episodeTitle: title,
+                logoUrl: logoUrl
+            )
         } else if let logoUrl, !logoUrl.isEmpty {
-            CachedAsyncImage(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
-                .frame(maxWidth: 620, maxHeight: 220, alignment: .bottomLeading)
+            CachedAsyncImage(
+                url: logoUrl,
+                contentMode: .fit,
+                alignment: .bottomLeading,
+                placeholderStyle: .clear
+            )
+                .frame(maxWidth: 650, maxHeight: 160, alignment: .bottomLeading)
                 .accessibilityLabel(title)
         } else {
             TVHeroTitle(title: title)
@@ -162,11 +240,21 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         return trimmed
     }
 
-    // MARK: - Source row (type · genre · rating-chip)
+    // MARK: - Metadata
+
+    @ViewBuilder
+    private var metadataBlock: some View {
+        if episodeSeriesTitle != nil {
+            sourceRow
+            factsRow(includeSourceTokens: false)
+        } else {
+            factsRow(includeSourceTokens: true)
+        }
+    }
 
     @ViewBuilder
     private var sourceRow: some View {
-        if !sourceTokens.isEmpty || ratingChip != nil {
+        if !sourceTokens.isEmpty {
             HStack(spacing: 14) {
                 ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
                     if index > 0 {
@@ -175,21 +263,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                             .foregroundColor(Color.white.opacity(0.5))
                     }
                     Text(token)
-                        .font(.system(size: 26, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.92))
-                }
-                if let ratingChip, !ratingChip.isEmpty {
-                    Text(ratingChip)
-                        .font(.system(size: 20, weight: .heavy))
-                        .tracking(1.0)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.white.opacity(0.7), lineWidth: 1.5)
-                        )
-                        .padding(.leading, 4)
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(Color.white.opacity(0.78))
                 }
             }
         }
@@ -198,19 +273,49 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     // MARK: - Facts + quality row
 
     @ViewBuilder
-    private var factsRow: some View {
-        if !factsLine.isEmpty {
+    private func factsRow(includeSourceTokens: Bool) -> some View {
+        if !factsLine.isEmpty || (includeSourceTokens && !sourceTokens.isEmpty) || ratingChip != nil {
             HStack(spacing: 14) {
                 ForEach(Array(factsLine.enumerated()), id: \.offset) { index, token in
-                    if index > 0, case .text = token, case .text = factsLine[index - 1] {
-                        Text("·")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(Color.white.opacity(0.45))
-                    }
+                    if index > 0 { metadataDivider }
                     factsItem(token)
+                }
+
+                if includeSourceTokens {
+                    ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
+                        if !factsLine.isEmpty || index > 0 { metadataDivider }
+                        Text(token)
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundColor(Color.white.opacity(0.90))
+                    }
+                }
+
+                if let ratingChip, !ratingChip.isEmpty {
+                    if !factsLine.isEmpty || (includeSourceTokens && !sourceTokens.isEmpty) {
+                        metadataDivider
+                    }
+                    ratingBadge(ratingChip)
                 }
             }
         }
+    }
+
+    private var metadataDivider: some View {
+        Text("·")
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundColor(Color.white.opacity(0.45))
+    }
+
+    private func ratingBadge(_ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 18, weight: .bold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color.white.opacity(0.78), lineWidth: 1.5)
+            )
     }
 
     @ViewBuilder
@@ -218,7 +323,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         switch token {
         case .text(let value):
             Text(value)
-                .font(.system(size: 22, weight: .medium))
+                .font(.system(size: 24, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.88))
         case .rating(let value):
             HStack(spacing: 6) {
@@ -243,21 +348,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         }
     }
 
-    // MARK: - Starring overlay (right-aligned, vertical center)
-
-    @ViewBuilder
-    private var starringOverlay: some View {
-        if let starringText, !starringText.isEmpty {
-            Text(starringText)
-                .font(.system(size: 24, weight: .regular))
-                .foregroundColor(Color.white.opacity(0.8))
-                .multilineTextAlignment(.trailing)
-                .lineLimit(2)
-                .frame(maxWidth: 460, alignment: .trailing)
-                .shadow(color: .black.opacity(0.55), radius: 6, y: 2)
-                .padding(.trailing, ContinuumTheme.safePadding)
-                .padding(.bottom, heroHeight * 0.45)
-        }
+    private func heroCredit(_ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 23, weight: .regular))
+            .foregroundColor(Color.white.opacity(0.70))
+            .lineLimit(1)
     }
 }
 
@@ -280,7 +375,6 @@ private struct TVHeroTitle: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .shadow(color: .black.opacity(0.55), radius: 16, y: 4)
             if let subtitle = parts.subtitle {
                 Text(subtitle.uppercased())
                     .font(subtitleFont)
@@ -289,7 +383,6 @@ private struct TVHeroTitle: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .shadow(color: .black.opacity(0.5), radius: 10, y: 3)
             }
         }
     }
@@ -326,34 +419,34 @@ private struct TVHeroTitle: View {
 private struct TVEpisodeHierarchyTitle: View {
     let seriesTitle: String
     let episodeTitle: String
+    let logoUrl: String?
 
     var body: some View {
-        let parts = split(episodeTitle)
-        VStack(alignment: .leading, spacing: 10) {
-            Text(seriesTitle.uppercased())
-                .font(seriesFont)
-                .foregroundColor(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .shadow(color: .black.opacity(0.55), radius: 16, y: 4)
-            Text(parts.primary)
+        VStack(alignment: .leading, spacing: 4) {
+            if let logoUrl, !logoUrl.isEmpty {
+                CachedAsyncImage(
+                    url: logoUrl,
+                    contentMode: .fit,
+                    alignment: .bottomLeading,
+                    placeholderStyle: .clear
+                )
+                    .frame(maxWidth: 650, maxHeight: 140, alignment: .bottomLeading)
+                    .accessibilityLabel(seriesTitle)
+            } else {
+                Text(seriesTitle.uppercased())
+                    .font(seriesFont)
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(episodeTitle)
                 .font(episodeFont)
                 .foregroundColor(Color.white.opacity(0.94))
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .shadow(color: .black.opacity(0.5), radius: 10, y: 3)
-            if let subtitle = parts.subtitle {
-                Text(subtitle.uppercased())
-                    .font(subtitleFont)
-                    .foregroundColor(Color.white.opacity(0.82))
-                    .tracking(1.2)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .shadow(color: .black.opacity(0.45), radius: 8, y: 2)
-            }
         }
     }
 
@@ -366,30 +459,9 @@ private struct TVEpisodeHierarchyTitle: View {
 
     private var episodeFont: Font {
         if #available(tvOS 16.0, *) {
-            return .system(size: 50, weight: .heavy).width(.compressed)
+            return .system(size: 46, weight: .bold)
         }
-        return .system(size: 48, weight: .heavy)
-    }
-
-    private var subtitleFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 32, weight: .heavy).width(.compressed)
-        }
-        return .system(size: 30, weight: .heavy)
-    }
-
-    private func split(_ raw: String) -> (primary: String, subtitle: String?) {
-        let separators: [String] = [": ", " — ", " – ", " - "]
-        for sep in separators {
-            if let range = raw.range(of: sep) {
-                let head = String(raw[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-                let tail = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                if !head.isEmpty, !tail.isEmpty {
-                    return (head, tail)
-                }
-            }
-        }
-        return (raw, nil)
+        return .system(size: 44, weight: .bold)
     }
 }
 
@@ -434,20 +506,15 @@ enum TVHeroMetadata {
 
     static func movieSourceTokens(from detail: ItemDetail) -> [String] {
         if detail.type == "episode" {
-            var tokens: [String] = []
             if let label = episodeNumberLabel(from: detail) {
-                tokens.append(label)
+                return [label]
             }
-            if let genres = detail.genres, !genres.isEmpty {
-                tokens.append(contentsOf: genres.prefix(1))
-            }
-            return tokens
+            return []
         }
-        var tokens: [String] = [typeLabel(detail: detail)]
         if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
+            return [genres.prefix(2).joined(separator: ", ")]
         }
-        return tokens
+        return []
     }
 
     /// "Season 3 · Episode 8" (or "Specials · Episode 5" / "Episode 5")
@@ -470,11 +537,10 @@ enum TVHeroMetadata {
     }
 
     static func seriesSourceTokens(from detail: ItemDetail) -> [String] {
-        var tokens: [String] = ["TV Show"]
         if let genres = detail.genres, !genres.isEmpty {
-            tokens.append(contentsOf: genres.prefix(2))
+            return [genres.prefix(2).joined(separator: ", ")]
         }
-        return tokens
+        return []
     }
 
     static func contentRatingChip(from detail: ItemDetail) -> String? {
@@ -497,10 +563,6 @@ enum TVHeroMetadata {
         if let runtime = detail.runtime, runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
-        }
-        tokens.append(contentsOf: qualityTokens(from: detail, version: selectedVersion))
         return tokens
     }
 
@@ -512,10 +574,6 @@ enum TVHeroMetadata {
         if let count = detail.seasonCount, count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
-        if let imdb = detail.ratingImdb {
-            tokens.append(.text(String(format: "★ %.1f", imdb)))
-        }
-        tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens
     }
 
@@ -547,6 +605,14 @@ enum TVHeroMetadata {
     // Starring (first 3 cast names)
 
     static func starringText(from detail: ItemDetail) -> String? {
+        if detail.type == "movie" {
+            let directors = detail.crew?
+                .filter { $0.job?.caseInsensitiveCompare("Director") == .orderedSame }
+                .map(\.name) ?? []
+            guard !directors.isEmpty else { return nil }
+            return "Directed by " + directors.prefix(2).joined(separator: ", ")
+        }
+        if detail.type == "episode" { return nil }
         guard let cast = detail.cast, !cast.isEmpty else { return nil }
         let names = cast.prefix(3).map(\.name)
         guard !names.isEmpty else { return nil }

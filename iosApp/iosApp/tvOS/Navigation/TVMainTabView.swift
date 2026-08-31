@@ -1106,6 +1106,15 @@ struct TVMainTabView: View {
 
         withAnimation(reduceMotion ? nil : ContinuumTheme.springAnimation) {
             isTopMenuFocusSuppressed = false
+        }
+        // Let the bar's enabled state commit before asking its @FocusState to
+        // claim the selected tab. A swipe-up move can arrive in the same
+        // transaction that unsuppresses the bar; writing both together made
+        // tvOS occasionally reject the claim, forcing another swipe or Back.
+        DispatchQueue.main.async {
+            guard router.path.isEmpty,
+                  isTopMenuFocused,
+                  !isTopMenuFocusSuppressed else { return }
             topMenuFocusRequest += 1
         }
     }

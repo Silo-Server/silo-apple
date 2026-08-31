@@ -28,11 +28,11 @@ struct TVTrailersRail: View {
 
     @FocusState private var focusedEntryId: String?
 
-    private let cardSpacing: CGFloat = 36
-    private let railVerticalPadding: CGFloat = 32
+    private let cardSpacing: CGFloat = 48
+    private let railVerticalPadding: CGFloat = 12
     /// Header-to-content gap, matching the other detail sections'
     /// `VStack(spacing: 28)` so the page rhythm stays uniform.
-    private let headerSpacing: CGFloat = 28
+    private let headerSpacing: CGFloat = TVDetailLayout.sectionHeaderSpacing
 
     var body: some View {
         if !entries.isEmpty {
@@ -87,9 +87,9 @@ private struct TVTrailerCard: View {
     let entry: TrailerRailEntry
     let onSelect: () -> Void
 
-    private let cardWidth: CGFloat = 460
-    private let thumbHeight: CGFloat = 260
-    private let thumbCornerRadius: CGFloat = 10
+    private let cardWidth: CGFloat = 470
+    private let thumbHeight: CGFloat = 264
+    private let thumbCornerRadius: CGFloat = 18
 
     var body: some View {
         Button(action: onSelect) {
@@ -113,28 +113,18 @@ private struct TrailerCardLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .center, spacing: 14) {
             thumbnail
-            VStack(alignment: .leading, spacing: 6) {
-                Text(kindLabel.uppercased())
-                    .font(.system(size: 18, weight: .bold))
-                    .tracking(2.0)
-                    .foregroundColor(.continuumOnSurface.opacity(0.55))
-
-                if entry.title != kindLabel {
-                    Text(entry.title)
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundColor(titleColor)
-                        // Two lines for long provider names ("Official Trailer
-                        // — Subtitled"), but without reserving the second
-                        // line: most titles are one line and the reserved row
-                        // read as dead space in the episode rail.
-                        .lineLimit(2)
-                }
+            VStack(alignment: .center, spacing: 5) {
+                Text(entry.title)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundColor(titleColor)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.center)
 
                 if let secondaryLine {
                     Text(secondaryLine)
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.system(size: 17, weight: .medium))
                         .foregroundColor(.continuumSecondaryText)
                         .lineLimit(1)
                 }
@@ -208,9 +198,9 @@ private struct TrailerCardLabel: View {
         ZStack {
             Circle()
                 .fill(Color.black.opacity(isFocused ? 0.72 : 0.55))
-                .frame(width: 72, height: 72)
+                .frame(width: 60, height: 60)
             Image(systemName: "play.fill")
-                .font(.system(size: 28, weight: .bold))
+                .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.white)
         }
         .shadow(color: .black.opacity(0.35), radius: 8, y: 3)

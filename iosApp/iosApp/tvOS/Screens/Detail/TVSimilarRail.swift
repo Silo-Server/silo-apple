@@ -15,6 +15,7 @@ import SwiftUI
 /// title must vanish along with the cards.
 struct TVSimilarRail: View {
     let contentId: String
+    let title: String
     let onSelect: (String) -> Void
 
     @State private var items: [SimilarPosterItem] = []
@@ -22,11 +23,12 @@ struct TVSimilarRail: View {
     @State private var loadedFor: String? = nil
     @FocusState private var focusedItemId: String?
 
-    private let cardSpacing: CGFloat = 32
-    private let railVerticalPadding: CGFloat = 24
+    private let cardWidth: CGFloat = 220
+    private let cardSpacing: CGFloat = 44
+    private let railVerticalPadding: CGFloat = 12
     /// Header-to-content gap, matching the other detail sections'
     /// `VStack(spacing: 28)` so the page rhythm stays uniform.
-    private let headerSpacing: CGFloat = 28
+    private let headerSpacing: CGFloat = TVDetailLayout.sectionHeaderSpacing
 
     var body: some View {
         Group {
@@ -41,7 +43,7 @@ struct TVSimilarRail: View {
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: headerSpacing) {
-            TVSectionHeader(title: "More Like This")
+            TVSectionHeader(title: title)
             content()
         }
     }
@@ -57,6 +59,7 @@ struct TVSimilarRail: View {
                         posterUrl: item.posterUrl ?? "",
                         year: item.year,
                         action: { onSelect(item.contentId) },
+                        cardWidth: cardWidth,
                         focusTreatment: .ring,
                         focusBinding: $focusedItemId,
                         focusContentId: item.contentId
@@ -81,8 +84,8 @@ struct TVSimilarRail: View {
                     RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
                         .fill(Color.continuumSurfaceElevated)
                         .frame(
-                            width: ContinuumTheme.posterCardWidth,
-                            height: ContinuumTheme.posterCardHeight
+                            width: cardWidth,
+                            height: cardWidth * 1.5
                         )
                 }
             }

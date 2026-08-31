@@ -76,6 +76,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         overview: detail.overview,
                         factsLine: [],
                         starringText: TVHeroMetadata.starringText(from: detail),
+                        playbackSummaryText: nil,
                         actions: { actionColumn },
                         belowSynopsis: belowSynopsis
                     )
@@ -136,7 +137,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     private var actionRow: some View {
         TVDetailActionRow(
-            playTitle: nextUpEpisode.map(playButtonLabel(for:)),
+            playTitle: nextUpEpisode == nil ? nil : "Play",
+            playSubtitle: nextUpEpisode.map(playButtonSubtitle(for:)),
             onPlay: {
                 guard let nextUp = nextUpEpisode else { return }
                 onPlayEpisode(nextUp.contentId, selectedNextUpFileId, false)
@@ -155,6 +157,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
             watchedLabelMark: "Mark Season Watched",
             watchedLabelUnmark: "Mark Season Unwatched",
             onToggleWatched: onToggleWatched,
+            focusResetKey: detail.contentId,
             initialFocusScope: .season(key: selectedSeason?.contentId),
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
@@ -194,11 +197,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
         return episodes.first
     }
 
-    private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        if episode.userData?.isInProgress == true {
-            return "Resume E\(episode.episodeNumber)"
-        }
-        return "Play E\(episode.episodeNumber)"
+    private func playButtonSubtitle(for episode: EpisodeListItem) -> String {
+        "S\(episode.seasonNumber), \(String(format: "%02d", episode.episodeNumber))"
     }
 
     private var effectiveNextUpVersion: FileVersion? {

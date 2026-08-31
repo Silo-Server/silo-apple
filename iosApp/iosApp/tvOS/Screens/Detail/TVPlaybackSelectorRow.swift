@@ -12,7 +12,7 @@ import SwiftUI
 /// routes through `onSelectVersion`.
 struct TVPlaybackSelectorRow: View {
     private enum Layout {
-        static let selectorSpacing: CGFloat = 28
+        static let outerHeight: CGFloat = 50
     }
 
     private enum SelectorFocus: Hashable {
@@ -40,6 +40,7 @@ struct TVPlaybackSelectorRow: View {
     let onSelectSubtitleTrack: (Int?) -> Void
 
     @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var selectorFocusScope
     @FocusState private var focusedSelector: SelectorFocus?
     @State private var defaultSelectorFocus: SelectorFocus?
@@ -84,20 +85,43 @@ struct TVPlaybackSelectorRow: View {
     }
 
     private var selectorRow: some View {
-        HStack(spacing: Layout.selectorSpacing) {
+        HStack(spacing: 0) {
             if shouldShowEditionSelector {
                 editionSelector
+                if shouldShowVersionValue || shouldShowAudioValue || shouldShowSubtitleValue {
+                    selectorDivider
+                }
             }
             if shouldShowVersionValue {
                 versionSelector
+                if shouldShowAudioValue || shouldShowSubtitleValue {
+                    selectorDivider
+                }
             }
             if shouldShowAudioValue {
                 audioSelector
+                if shouldShowSubtitleValue {
+                    selectorDivider
+                }
             }
             if shouldShowSubtitleValue {
                 subtitleSelector
             }
         }
+        .frame(height: Layout.outerHeight)
+        .padding(2)
+        .background(Capsule().fill(Color.black.opacity(0.26)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.42), lineWidth: 1.5))
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.18),
+            value: focusedSelector
+        )
+    }
+
+    private var selectorDivider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.22))
+            .frame(width: 1, height: 34)
     }
 
     /// Leading visible pill — where entry into the row should land once the
@@ -157,7 +181,14 @@ struct TVPlaybackSelectorRow: View {
     }
 
     private var editionSelector: some View {
-        TVSelectorButton(icon: "rectangle.stack", label: "Edition", value: currentEdition?.label ?? currentVersion?.editionDisplayLabel ?? "Standard") {
+        let value = currentEdition?.label ?? currentVersion?.editionDisplayLabel ?? "Standard"
+        return TVSelectorButton(
+            icon: "rectangle.stack",
+            label: "Edition",
+            fullValue: value,
+            compactValue: value,
+            isExpanded: focusedSelector == .edition
+        ) {
             if editions.isEmpty {
                 Button("Standard") { }.disabled(true)
             } else {
@@ -189,11 +220,14 @@ struct TVPlaybackSelectorRow: View {
     private var versionSelector: some View {
         let summary = DetailPlaybackFormatting.versionShortLabel(currentVersion)
         let value = selectedVersionFileId == nil ? "Auto: \(summary)" : summary
+        let compactValue = DetailPlaybackFormatting.versionCompactLabel(currentVersion)
         if shouldEnableVersionSelector {
             TVSelectorButton(
-                icon: "tv",
+                icon: versionQualityIcon,
                 label: "Version",
-                value: value
+                fullValue: value,
+                compactValue: compactValue,
+                isExpanded: focusedSelector == .version
             ) {
                 Button { selectVersion(nil, returningFocusTo: .version) } label: {
                     selectorMenuItem(title: "Auto", detail: "Best match for this device", isSelected: selectedVersionFileId == nil)
@@ -212,8 +246,38 @@ struct TVPlaybackSelectorRow: View {
             }
             .focused($focusedSelector, equals: .version)
         } else {
-            TVSelectorValue(icon: "tv", label: "Version", value: value)
+            TVSelectorValue(
+                icon: versionQualityIcon,
+                label: "Version",
+                fullValue: value,
+                compactValue: compactValue,
+                isExpanded: focusedSelector == .version
+            )
+            .focused($focusedSelector, equals: .version)
         }
+    }
+
+    /// Keep the glyph honest when the chosen file changes. `4k.tv` is the
+    /// established design for UHD; Apple's HD/SD symbols cover the lower
+    /// tiers rather than leaving a misleading 4K badge beside 1080p/720p.
+    private var versionQualityIcon: String {
+        let quality = [
+            currentVersion?.resolution,
+            DetailPlaybackFormatting.versionShortLabel(currentVersion),
+        ]
+        .compactMap { $0?.lowercased() }
+        .joined(separator: " ")
+
+        if quality.contains("2160") || quality.contains("4k") || quality.contains("uhd") {
+            return "4k.tv"
+        }
+        if quality.contains("1080") || quality.contains("720") || quality.contains("hd") {
+            return "hd"
+        }
+        if quality.contains("576") || quality.contains("480") || quality.contains("sd") {
+            return "sd"
+        }
+        return "tv"
     }
 
     private var scopedVersions: [FileVersion] {
@@ -232,11 +296,18 @@ struct TVPlaybackSelectorRow: View {
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             annotateAuto: true
         )
+        let compactValue = DetailPlaybackFormatting.audioValueLabel(
+            version: currentVersion,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            annotateAuto: false
+        )
         if shouldEnableAudioSelector {
             TVSelectorButton(
                 icon: "speaker.wave.2",
                 label: "Audio",
-                value: value
+                fullValue: value,
+                compactValue: compactValue,
+                isExpanded: focusedSelector == .audio
             ) {
                 Button { selectAudioTrack(nil) } label: {
                     selectorMenuItem(title: "Auto", detail: "Use the file default track", isSelected: selectedAudioTrackIndex == nil)
@@ -261,7 +332,14 @@ struct TVPlaybackSelectorRow: View {
             }
             .focused($focusedSelector, equals: .audio)
         } else {
-            TVSelectorValue(icon: "speaker.wave.2", label: "Audio", value: value)
+            TVSelectorValue(
+                icon: "speaker.wave.2",
+                label: "Audio",
+                fullValue: value,
+                compactValue: compactValue,
+                isExpanded: focusedSelector == .audio
+            )
+            .focused($focusedSelector, equals: .audio)
         }
     }
 
@@ -287,11 +365,14 @@ struct TVPlaybackSelectorRow: View {
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
             autoContext: subtitleAutoContext
         )
+        let compactValue = compactSubtitleValue(value)
         if shouldEnableSubtitleSelector {
             TVSelectorButton(
                 icon: "captions.bubble",
                 label: "Subtitles",
-                value: value
+                fullValue: "Subtitles \(value)",
+                compactValue: compactValue,
+                isExpanded: focusedSelector == .subtitles
             ) {
                 Button { selectSubtitleTrack(nil) } label: {
                     selectorMenuItem(title: "Auto", detail: "Use your subtitle preferences", isSelected: selectedSubtitleTrackIndex == nil)
@@ -319,8 +400,26 @@ struct TVPlaybackSelectorRow: View {
             }
             .focused($focusedSelector, equals: .subtitles)
         } else {
-            TVSelectorValue(icon: "captions.bubble", label: "Subtitles", value: value)
+            TVSelectorValue(
+                icon: "captions.bubble",
+                label: "Subtitles",
+                fullValue: "Subtitles \(value)",
+                compactValue: compactValue,
+                isExpanded: focusedSelector == .subtitles
+            )
+            .focused($focusedSelector, equals: .subtitles)
         }
+    }
+
+    /// Idle subtitle segment shows only the effective state: Off, Auto, or
+    /// the selected/resolved language. The focused segment keeps the richer
+    /// existing wording and the menu remains completely unchanged.
+    private func compactSubtitleValue(_ value: String) -> String {
+        let withoutAutoPrefix = value.hasPrefix("Auto: ")
+            ? String(value.dropFirst("Auto: ".count))
+            : value
+        return withoutAutoPrefix.components(separatedBy: " · ").first
+            ?? withoutAutoPrefix
     }
 
     private func selectVersion(_ fileId: Int?, returningFocusTo focus: SelectorFocus) {
@@ -374,30 +473,33 @@ struct TVPlaybackSelectorRow: View {
     }
 }
 
-/// One squared selector button: `[icon] LABEL  value  ⌄`, opening a `Menu`.
-/// Matches the secondary squared button look (translucent fill + hairline).
+/// One segment inside the connected selector capsule. Each segment remains a
+/// real Menu so the existing version/audio/subtitle callbacks and native Siri
+/// Remote menu behavior remain unchanged.
 private struct TVSelectorButton<MenuContent: View>: View {
     let icon: String
     let label: String
-    let value: String
+    let fullValue: String
+    let compactValue: String
+    let isExpanded: Bool
     @ViewBuilder let menu: () -> MenuContent
 
     var body: some View {
         Menu {
             menu()
         } label: {
-            HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 22, weight: .semibold))
-                Text(label.uppercased())
-                    .font(.system(size: 18, weight: .bold))
-                    .tracking(1.0)
-                    .opacity(0.6)
-                Text(value).font(.system(size: 22, weight: .semibold)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 15, weight: .bold)).opacity(0.6)
-            }
+            TVSelectorSegmentLabel(
+                icon: icon,
+                fullValue: fullValue,
+                compactValue: compactValue,
+                isExpanded: isExpanded,
+                showsChevron: true
+            )
         }
         .menuStyle(.button)
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .buttonStyle(TVSelectorSegmentButtonStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label), \(fullValue)")
     }
 }
 
@@ -408,22 +510,91 @@ private struct TVSelectorButton<MenuContent: View>: View {
 private struct TVSelectorValue: View {
     let icon: String
     let label: String
-    let value: String
+    let fullValue: String
+    let compactValue: String
+    let isExpanded: Bool
 
     var body: some View {
         Button { } label: {
-            HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 22, weight: .semibold))
-                Text(label.uppercased())
-                    .font(.system(size: 18, weight: .bold))
-                    .tracking(1.0)
-                    .opacity(0.6)
-                Text(value).font(.system(size: 22, weight: .semibold)).lineLimit(1)
+            TVSelectorSegmentLabel(
+                icon: icon,
+                fullValue: fullValue,
+                compactValue: compactValue,
+                isExpanded: isExpanded,
+                showsChevron: false
+            )
+        }
+        .buttonStyle(TVSelectorSegmentButtonStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label), \(fullValue)")
+    }
+}
+
+/// Label whose intrinsic width follows focus. Keeping the icon in a fixed
+/// frame prevents the SVG from drifting while the value and chevron animate.
+private struct TVSelectorSegmentLabel: View {
+    let icon: String
+    let fullValue: String
+    let compactValue: String
+    let isExpanded: Bool
+    let showsChevron: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 23, weight: .semibold))
+                .frame(width: 30, height: 28, alignment: .center)
+            Text(isExpanded ? fullValue : compactValue)
+                .font(.system(size: 20, weight: .medium))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .contentTransition(.opacity)
+            if showsChevron && isExpanded {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 14, weight: .bold))
+                    .opacity(0.78)
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
         }
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(label), \(value)")
+        .padding(.horizontal, isExpanded ? 14 : 12)
+        .frame(height: 46)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.18),
+            value: isExpanded
+        )
+    }
+}
+
+private struct TVSelectorSegmentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        TVSelectorSegmentButtonBody(configuration: configuration)
+    }
+}
+
+private struct TVSelectorSegmentButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
+            .foregroundColor(isFocused ? .black : .white)
+            .background(
+                Capsule().fill(isFocused ? Color.white : Color.clear)
+            )
+            .overlay {
+                if isFocused {
+                    Capsule()
+                        .stroke(Color.white.opacity(0.95), lineWidth: 2.5)
+                        .padding(-3)
+                }
+            }
+            .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.02 : 1))
+            .shadow(color: .black.opacity(isFocused ? 0.24 : 0), radius: 8, y: 3)
+            .focusEffectDisabled()
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
     }
 }
 #endif

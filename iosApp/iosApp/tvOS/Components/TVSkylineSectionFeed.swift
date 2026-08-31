@@ -17,6 +17,10 @@ struct TVSkylineSectionFeed: View {
     /// Marquee scale. Both call sites pass `.home` so the pages render
     /// identically; kept as a parameter only for call-site clarity.
     var marqueeScale: TVFocusMarquee.Scale = .home
+    /// Home-only foreground drop. The ambient artwork and top navigation stay
+    /// fixed; moving the marquee and row band together preserves their rhythm
+    /// while keeping the next section header just below the viewport.
+    var contentVerticalOffset: CGFloat = 0
     /// Focus hand-down token from the shell — claims the first card on entry.
     var focusRequest: Int = 0
     /// Whether the top menu currently holds focus. A late content load must
@@ -67,6 +71,7 @@ struct TVSkylineSectionFeed: View {
             scrollingRows
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(edges: .bottom)
+                .offset(y: contentVerticalOffset)
 
             // Floats over the band above the row; never focusable or hit-testable.
             TVFocusMarquee(
@@ -74,6 +79,7 @@ struct TVSkylineSectionFeed: View {
                 enrichment: marqueeModel.enrichment,
                 scale: marqueeScale
             )
+            .offset(y: contentVerticalOffset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {

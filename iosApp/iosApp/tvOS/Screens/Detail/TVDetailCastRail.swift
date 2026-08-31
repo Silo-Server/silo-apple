@@ -9,7 +9,7 @@ struct TVDetailCastRail: View {
 
     private let photoWidth: CGFloat = 200
     private let photoHeight: CGFloat = 200
-    private let cardSpacing: CGFloat = 44
+    private let cardSpacing: CGFloat = 60
     private let maxEntries = 24
     @FocusState private var focusedCastId: String?
 
@@ -25,7 +25,7 @@ struct TVDetailCastRail: View {
                     .focused($focusedCastId, equals: member.id)
                 }
             }
-            .padding(.vertical, 24)
+            .padding(.vertical, 12)
         }
         .focusSection()
         .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
@@ -87,17 +87,17 @@ private struct CastCardLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             photo
             VStack(spacing: 4) {
                 Text(member.name)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.88))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.center)
                 if let character = member.character, !character.isEmpty {
                     Text(character)
-                        .font(.system(size: 18, weight: .regular))
+                        .font(.system(size: 17, weight: .regular))
                         .foregroundColor(.continuumSecondaryText)
                         .lineLimit(1)
                         .multilineTextAlignment(.center)

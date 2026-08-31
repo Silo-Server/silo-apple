@@ -68,38 +68,45 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// (Play / Start Over / circle buttons). Backing up into it restores the
     /// page-entry framing by scrolling the hero back to the top.
     @FocusState private var actionRowFocused: Bool
+    @FocusState private var similarRailFocused: Bool
 
     var body: some View {
-        ScrollViewReader { scrollProxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 48) {
-                    heroView
-                        .id(heroScrollId)
+        TVDetailPageSurface(backdropURL: detail.backdropUrl) {
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        heroView
+                            .id(heroScrollId)
 
-                    VStack(alignment: .leading, spacing: 72) {
-                        episodeSection
-                            .id(episodeSectionScrollId)
-                        if let cast = detail.cast, !cast.isEmpty {
-                            castSection(cast: cast)
+                        VStack(alignment: .leading, spacing: TVDetailLayout.bodySectionSpacing) {
+                            episodeSection
+                                .id(episodeSectionScrollId)
+                            if let cast = detail.cast, !cast.isEmpty {
+                                castSection(cast: cast)
+                            }
+                            trailersSection
+                            similarSection
+                                .focused($similarRailFocused)
+                                .id(similarSectionScrollId)
+                            detailsSection
                         }
-                        trailersSection
-                        detailsSection
-                        similarSection
+                        .padding(.horizontal, TVDetailLayout.horizontalInset)
+                        .padding(.bottom, TVDetailLayout.pageBottomPadding)
                     }
-                    .padding(.horizontal, ContinuumTheme.safePadding)
-                    .padding(.bottom, 160)
                 }
+                .ignoresSafeArea()
+                .focusScope(detailFocusNamespace)
+                .defaultFocus($playFocused, true, priority: .userInitiated)
+                .detailFocusScroll(
+                    proxy: scrollProxy,
+                    seasonRowFocused: false,
+                    actionRowFocused: actionRowFocused,
+                    episodeSectionId: episodeSectionScrollId,
+                    heroId: heroScrollId,
+                    similarRailFocused: similarRailFocused,
+                    similarSectionId: similarSectionScrollId
+                )
             }
-            .ignoresSafeArea()
-            .focusScope(detailFocusNamespace)
-            .defaultFocus($playFocused, true, priority: .userInitiated)
-            .detailFocusScroll(
-                proxy: scrollProxy,
-                seasonRowFocused: seasonRowFocused,
-                actionRowFocused: actionRowFocused,
-                episodeSectionId: episodeSectionScrollId,
-                heroId: heroScrollId
-            )
         }
     }
 
@@ -107,6 +114,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "series-episode-section"
     private let heroScrollId = "series-hero"
+    private let similarSectionScrollId = "series-similar-section"
 
     private var heroView: some View {
         TVDetailHero(
@@ -114,12 +122,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             seriesTitle: nil,
             logoUrl: detail.logoUrl,
             backdropUrl: detail.backdropUrl,
-            eyebrow: TVHeroMetadata.eyebrow(from: detail),
+            eyebrow: nil,
             sourceTokens: TVHeroMetadata.seriesSourceTokens(from: detail),
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: TVHeroMetadata.seriesFactsLine(from: detail),
             starringText: TVHeroMetadata.starringText(from: detail),
+            playbackSummaryText: playbackSummaryText,
             actions: { actionColumn },
             belowSynopsis: belowSynopsis
         )
@@ -129,24 +138,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 18) {
             actionRow
-            if shouldShowVersionPlaceholder {
-                TVVersionPillPlaceholder()
-            } else if nextUpEpisode != nil {
-                TVPlaybackSelectorRow(
-                    versions: nextUpVersions,
-                    currentVersion: effectiveNextUpVersion,
-                    selectedVersionFileId: selectedNextUpFileId,
-                    selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    subtitleMode: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleMode,
-                    subtitleSignature: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
-                    onSelectVersion: onSelectNextUpVersion,
-                    onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
-                )
+            if !seasons.isEmpty {
+                seasonRow
             }
             if let trailerFetchStatus {
                 // Non-focusable readout, so it adds no stop to the action
@@ -166,7 +161,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var actionRow: some View {
         TVDetailActionRow(
-            playTitle: nextUpEpisode.map(playButtonLabel(for:)),
+            playTitle: nextUpEpisode == nil ? nil : "Play",
+            playSubtitle: nextUpEpisode.map(playButtonSubtitle(for:)),
             onPlay: {
                 guard let nextUp = nextUpEpisode else { return }
                 onPlayEpisode(nextUp.contentId, selectedFileId(for: nextUp), false)
@@ -182,9 +178,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             inWatchlist: inWatchlist,
             onToggleWatchlist: onToggleWatchlist,
             isWatched: isWatched,
-            watchedLabelMark: "Mark Series Watched",
-            watchedLabelUnmark: "Mark Series Unwatched",
+            watchedLabelMark: "Mark Season Watched",
+            watchedLabelUnmark: "Mark Season Unwatched",
             onToggleWatched: onToggleWatched,
+            focusResetKey: detail.contentId,
             initialFocusScope: .season(key: selectedSeason?.contentId),
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
@@ -224,11 +221,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         return episodes.first
     }
 
-    private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        if episode.userData?.isInProgress == true {
-            return "Resume S\(episode.seasonNumber) · E\(episode.episodeNumber)"
-        }
-        return "Play S\(episode.seasonNumber) · E\(episode.episodeNumber)"
+    private func playButtonSubtitle(for episode: EpisodeListItem) -> String {
+        "S\(episode.seasonNumber), \(String(format: "%02d", episode.episodeNumber))"
     }
 
     // MARK: - Next-up version picker
@@ -258,15 +252,150 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         )
     }
 
+    /// Read-only disclosure for the main series overview. This deliberately
+    /// mirrors the exact effective version and track state handed to Play;
+    /// it is not focusable and does not replace the episode-detail selector.
+    private var playbackSummaryText: String? {
+        guard let version = effectiveNextUpVersion else {
+            return provisionalPlaybackSummaryText
+        }
+
+        let quality = playbackQualityLabel(for: version)
+        let audio = DetailPlaybackFormatting.audioTechnicalSummary(
+            version: version,
+            selectedAudioTrackIndex: selectedNextUpAudioTrackIndex
+        )
+        let subtitles = playbackSubtitleLabel(for: version)
+
+        return [quality, audio, subtitles]
+            .compactMap { value in
+                let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            .joined(separator: " · ")
+    }
+
+    /// Keeps the disclosure line present on the hero's first frame while the
+    /// richer watch metadata is warming. Episode rows already carry enough
+    /// file information for an honest resolution/channel preview; the exact
+    /// codec and subtitle policy fade in without moving the controls.
+    private var provisionalPlaybackSummaryText: String {
+        let file = provisionalNextUpFile
+        let quality = playbackQualityLabel(resolution: file?.resolution)
+            ?? preferredQualityFallbackLabel
+        let audio = playbackChannelLabel(file?.audioChannels) ?? "Audio Auto"
+        let subtitles: String
+        if selectedNextUpSubtitleTrackIndex == -1 {
+            subtitles = "Subtitles Off"
+        } else if selectedNextUpSubtitleTrackIndex != nil {
+            subtitles = "Subtitles On"
+        } else {
+            subtitles = "Subtitles Auto"
+        }
+        return [quality, audio, subtitles].joined(separator: " · ")
+    }
+
+    private var provisionalNextUpFile: EpisodeFile? {
+        guard let episode = nextUpEpisode,
+              let files = episode.files,
+              !files.isEmpty else { return nil }
+        if let selectedNextUpFileId,
+           let selected = files.first(where: { $0.fileId == selectedNextUpFileId }) {
+            return selected
+        }
+        if let lastFileId = episode.userData?.lastFileId,
+           let last = files.first(where: { $0.fileId == lastFileId }) {
+            return last
+        }
+
+        let preference = PlayerSettings.shared.preferredQualityResolution.lowercased()
+        let cap = playbackResolutionRank(preference)
+        if cap > 0,
+           let capped = files
+            .filter({ playbackResolutionRank($0.resolution) <= cap })
+            .max(by: { playbackResolutionRank($0.resolution) < playbackResolutionRank($1.resolution) }) {
+            return capped
+        }
+        return files.max {
+            playbackResolutionRank($0.resolution) < playbackResolutionRank($1.resolution)
+        }
+    }
+
+    private var preferredQualityFallbackLabel: String {
+        switch PlayerSettings.shared.preferredQualityResolution.lowercased() {
+        case "2160p", "4k", "uhd": return "4K"
+        case "1080p": return "1080p"
+        case "720p": return "720p"
+        case "576p": return "576p"
+        case "480p": return "480p"
+        case "original": return "Original"
+        default: return "Auto"
+        }
+    }
+
+    private func playbackChannelLabel(_ channels: Int?) -> String? {
+        switch channels {
+        case 1: return "Mono"
+        case 2: return "Stereo"
+        case 6: return "5.1"
+        case 8: return "7.1"
+        case let channels?: return "\(channels)ch"
+        case nil: return nil
+        }
+    }
+
+    private func playbackResolutionRank(_ resolution: String?) -> Int {
+        let value = resolution?.lowercased() ?? ""
+        if value.contains("2160") || value.contains("4k") || value.contains("uhd") { return 5 }
+        if value.contains("1080") { return 4 }
+        if value.contains("720") { return 3 }
+        if value.contains("576") { return 2 }
+        if value.contains("480") { return 1 }
+        return 0
+    }
+
+    private func playbackQualityLabel(for version: FileVersion) -> String? {
+        playbackQualityLabel(resolution: version.resolution)
+    }
+
+    private func playbackQualityLabel(resolution: String?) -> String? {
+        let raw = resolution?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalized = raw.lowercased()
+        if normalized.contains("2160") || normalized.contains("4k") || normalized.contains("uhd") {
+            return "4K"
+        }
+        if normalized.contains("1080") { return "1080p" }
+        if normalized.contains("720") { return "720p" }
+        if normalized.contains("576") { return "576p" }
+        if normalized.contains("480") { return "480p" }
+        return raw.isEmpty ? nil : raw
+    }
+
+    private func playbackSubtitleLabel(for version: FileVersion) -> String {
+        if selectedNextUpSubtitleTrackIndex == -1 {
+            return "Subtitles Off"
+        }
+        if let selectedNextUpSubtitleTrackIndex {
+            let value = DetailPlaybackFormatting.subtitleValueLabel(
+                version: version,
+                selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex
+            )
+            let conciseValue = value.components(separatedBy: " · ").first ?? value
+            return "Subtitles \(conciseValue)"
+        }
+        if !nextUpSubtitleOverrideCleared,
+           nextUpPlaybackDetail?.effectiveSubtitleMode?.lowercased() == "off" {
+            return "Subtitles Off"
+        }
+        return "Subtitles Auto"
+    }
+
     // MARK: - Episodes + season selector
 
     @ViewBuilder
     private var episodeSection: some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             episodeSectionHeader
-            if seasons.count > 1 {
-                seasonRow
-            }
             episodeBody
         }
     }
@@ -274,8 +403,12 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     private var episodeSectionHeader: some View {
         HStack(alignment: .firstTextBaseline) {
             TVSectionHeader(
-                label: selectedSeason.map { "Season \($0.seasonNumber)" } ?? "Episodes",
-                title: "Episodes"
+                title: selectedSeason.map { season in
+                    let label = season.seasonNumber > 0
+                        ? "Season \(season.seasonNumber)"
+                        : (season.title ?? "Specials")
+                    return "\(label) Episodes"
+                } ?? "Episodes"
             )
             Spacer()
             if let count = selectedSeason?.episodeCount, count > 0 {
@@ -333,6 +466,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         // recommendations are disabled or empty.
         TVSimilarRail(
             contentId: detail.contentId,
+            title: "Recommended Series",
             onSelect: onNavigateToItem
         )
     }
@@ -349,7 +483,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: "Cast & Crew")
             TVDetailCastRail(cast: cast, onTap: onPersonTap)
         }
@@ -358,7 +492,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - Details
 
     private var detailsSection: some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: "Details")
             TVDetailFactsSection(detail: detail)
         }

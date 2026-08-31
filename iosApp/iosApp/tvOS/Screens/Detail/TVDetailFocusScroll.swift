@@ -24,7 +24,9 @@ extension View {
         seasonRowFocused: Bool,
         actionRowFocused: Bool,
         episodeSectionId: String,
-        heroId: String
+        heroId: String,
+        similarRailFocused: Bool = false,
+        similarSectionId: String? = nil
     ) -> some View {
         modifier(
             DetailFocusScrollModifier(
@@ -32,7 +34,9 @@ extension View {
                 seasonRowFocused: seasonRowFocused,
                 actionRowFocused: actionRowFocused,
                 episodeSectionId: episodeSectionId,
-                heroId: heroId
+                heroId: heroId,
+                similarRailFocused: similarRailFocused,
+                similarSectionId: similarSectionId
             )
         )
     }
@@ -44,10 +48,13 @@ private struct DetailFocusScrollModifier: ViewModifier {
     let actionRowFocused: Bool
     let episodeSectionId: String
     let heroId: String
+    let similarRailFocused: Bool
+    let similarSectionId: String?
 
     private enum Region {
         case seasonRow
         case actionRow
+        case similarRail
     }
 
     /// Live mirror of the focus state plus a generation counter, shared with
@@ -83,11 +90,19 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 guard focused else { return }
                 assertScroll(to: heroId, anchor: .top, while: .actionRow)
             }
+            .onChange(of: similarRailFocused) { _, focused in
+                guard focused, let similarSectionId else { return }
+                // Native reveal occasionally pins a poster rail against the
+                // very top edge and loses its section heading. Centering the
+                // complete section keeps the heading and focus lift visible.
+                assertScroll(to: similarSectionId, anchor: .center, while: .similarRail)
+            }
     }
 
     private var currentRegion: Region? {
         if seasonRowFocused { return .seasonRow }
         if actionRowFocused { return .actionRow }
+        if similarRailFocused { return .similarRail }
         return nil
     }
 

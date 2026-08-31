@@ -77,6 +77,10 @@ final class DetailVersionSelectionTests: XCTestCase {
             "2160p · HEVC · DV · EAC3"
         )
         XCTAssertEqual(
+            DetailPlaybackFormatting.versionCompactLabel(version),
+            "2160p · DV"
+        )
+        XCTAssertEqual(
             DetailPlaybackFormatting.versionPrimaryText(version),
             "2160p · HEVC · DV · EAC3"
         )
