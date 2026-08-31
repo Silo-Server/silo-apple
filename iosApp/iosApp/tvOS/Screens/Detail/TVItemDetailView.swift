@@ -23,11 +23,11 @@ struct TVItemDetailView: View {
     @State private var episodeSeriesDetail: ItemDetail?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
-    /// Whether the YouTube app is installed, probed once per page appearance.
-    /// Remote trailer cards and the "Find Trailers" action are hidden when it
-    /// isn't — tvOS has no in-app web fallback, so content that cannot open
-    /// must not be offered. Always false on the simulator, which has no
-    /// YouTube app.
+    /// Whether remote YouTube trailers should be presented, probed once per
+    /// page appearance. Real Apple TVs require the YouTube app because tvOS
+    /// has no browser fallback. The simulator deliberately presents the
+    /// cards so the full detail layout can be developed and verified even
+    /// though it cannot install or launch the external YouTube app.
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
@@ -63,7 +63,7 @@ struct TVItemDetailView: View {
         .continuumNavigationBarBackgroundHidden()
         .onAppear {
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
-            allowRemoteTrailers = TVTrailerLaunch.isYouTubeAppInstalled()
+            allowRemoteTrailers = TVTrailerLaunch.canDisplayRemoteCards()
             seedSubtitleOverrideIfNeeded()
             // Returning from the player (or an extra) resumes a poll that
             // `onDisappear` cancelled — without re-POSTing, since the server
@@ -93,7 +93,7 @@ struct TVItemDetailView: View {
             // YouTube as well because its installation can change while Silo
             // is suspended.
             if newPhase == .active {
-                allowRemoteTrailers = TVTrailerLaunch.isYouTubeAppInstalled()
+                allowRemoteTrailers = TVTrailerLaunch.canDisplayRemoteCards()
                 TVTrailerReturnStore.shared.clear()
             }
         }

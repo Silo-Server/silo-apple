@@ -284,12 +284,23 @@ struct TVTrailerStatusPill: View {
 /// `TVFocusDebugOverlay`'s `UIApplication` accessors; every call site is a
 /// view-body / `onAppear` closure on the main thread.
 enum TVTrailerLaunch {
+    /// Keep remote trailer rails visible in the simulator so the complete
+    /// movie and series detail hierarchy can be exercised and captured.
+    /// Playback still follows the same external YouTube deep-link path and
+    /// therefore remains a real-device capability.
+    static func canDisplayRemoteCards() -> Bool {
+#if targetEnvironment(simulator)
+        true
+#else
+        isYouTubeAppInstalled()
+#endif
+    }
+
     /// Whether remote cards may be shown at all.
     ///
     /// `canOpenURL` needs `youtube` listed in the tvOS Info.plist's
     /// `LSApplicationQueriesSchemes` or it returns false regardless of what
-    /// is installed. It is also always false on the simulator, which has no
-    /// YouTube app — the rail then correctly degrades to local extras only.
+    /// is installed.
     static func isYouTubeAppInstalled() -> Bool {
         guard let probe = URL(string: "youtube://") else { return false }
         return UIApplication.shared.canOpenURL(probe)
