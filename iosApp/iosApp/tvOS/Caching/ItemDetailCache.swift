@@ -40,6 +40,11 @@ final class ItemDetailCache {
             return existing
         }
         let vm = ItemDetailViewModel()
+        // Home/library focus enrichment may already have fetched the full
+        // catalog payload before the user presses Select. Hydrate it here so
+        // TVItemDetailView's very first body evaluation can paint that cached
+        // hero instead of waiting for its `.task` to begin.
+        vm.hydrateFromCache(contentId: contentId)
         entries[contentId] = vm
         order.append(contentId)
         evictIfNeeded()

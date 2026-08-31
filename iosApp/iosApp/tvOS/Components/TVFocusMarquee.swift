@@ -403,6 +403,11 @@ final class TVFocusMarqueeModel {
             do {
                 let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
                 guard !Task.isCancelled, let self else { return }
+                // The marquee already paid for the same catalog request the
+                // detail route needs. Keep the complete payload—not only the
+                // tiny marquee projection—so pressing Select after resting on
+                // a card opens the approved detail layout immediately.
+                ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
                 let enrichment = TVMarqueeEnrichment(detail: detail)
                 self.enrichmentCache[contentId] = enrichment
                 if self.content?.contentId == contentId {

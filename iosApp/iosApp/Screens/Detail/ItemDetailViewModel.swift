@@ -50,6 +50,11 @@ class ItemDetailViewModel {
     /// cache with the trailer-less item — the run reports `.found` and no
     /// rail appears.
     private var detailGeneration = 0
+    /// Playback metadata is useful for the selectors, but it must never hold
+    /// the whole first render behind a second network round-trip. The catalog
+    /// payload paints immediately; this task upgrades it in place afterward.
+    @ObservationIgnored
+    private var playbackEnrichmentTask: Task<Void, Never>?
 
     // User actions
     var isFavorite = false
@@ -109,27 +114,20 @@ class ItemDetailViewModel {
         }
 
         do {
+            // These independent flags can load alongside the catalog detail
+            // and related season/episode structure. They are intentionally
+            // not on the critical path to the first painted hero.
+            async let favoriteResult: Bool? = try? await ContinuumAPI.shared.isFavorite(
+                contentId: contentId
+            )
+            async let watchlistResult: Bool? = try? await ContinuumAPI.shared.isInWatchlist(
+                contentId: contentId
+            )
+
             let item: ItemDetail = try await ContinuumAPI.shared.get(
                 "/api/v1/catalog/items/\(contentId)"
             )
             let enriched = await adoptDetail(item, contentId: contentId, generation: generation)
-
-            do {
-                async let favorite = ContinuumAPI.shared.isFavorite(contentId: contentId)
-                async let watchlist = ContinuumAPI.shared.isInWatchlist(contentId: contentId)
-                let fav = try await favorite
-                let wl = try await watchlist
-                isFavorite = fav
-                inWatchlist = wl
-                ResponseCache.shared.set(
-                    UserItemState(isFavorite: fav, inWatchlist: wl),
-                    for: CacheKey.itemUserState(contentId)
-                )
-            } catch {
-                // Leave whatever we hydrated from cache; per-item user
-                // state is non-fatal. Independent of the detail payload, so
-                // it still applies to a superseded load.
-            }
 
             // Superseded: a newer payload is already on screen. Deriving
             // watched state or the season/episode structure from this older
@@ -144,6 +142,20 @@ class ItemDetailViewModel {
                 contentId: contentId,
                 preserveSeasonSelection: preserveSeasonSelection
             )
+
+            let (favorite, watchlist) = await (favoriteResult, watchlistResult)
+            if let favorite, let watchlist {
+                isFavorite = favorite
+                inWatchlist = watchlist
+                ResponseCache.shared.set(
+                    UserItemState(isFavorite: favorite, inWatchlist: watchlist),
+                    for: CacheKey.itemUserState(contentId)
+                )
+            } else {
+                // Leave whatever we hydrated from cache; per-item user
+                // state is non-fatal. Independent of the detail payload, so
+                // it still applies to a superseded load.
+            }
         } catch let err {
             if detail == nil {
                 self.error = ErrorState(err)
@@ -154,6 +166,8 @@ class ItemDetailViewModel {
     /// Claim the right to publish into `detail`, invalidating any write that
     /// claimed earlier and hasn't landed yet.
     private func beginDetailWrite() -> Int {
+        playbackEnrichmentTask?.cancel()
+        playbackEnrichmentTask = nil
         detailGeneration += 1
         return detailGeneration
     }
@@ -168,23 +182,50 @@ class ItemDetailViewModel {
         ResponseCache.shared.set(item, for: CacheKey.itemDetail(contentId))
     }
 
-    /// Enrich, publish, and cache a freshly fetched detail payload. The one
-    /// place `detail` and `CacheKey.itemDetail` are written together, so any
-    /// caller that obtains an `ItemDetail` lands it identically.
+    /// Publish and cache a freshly fetched catalog payload immediately, then
+    /// enrich the playback-only fields in the background. The old path waited
+    /// for `/watch/{id}` before assigning `detail`, leaving a blank page for
+    /// two sequential requests on every cold movie/episode visit.
     ///
     /// Returns `nil` — publishing nothing — when a newer write claimed the
-    /// slot while this one was suspended in enrichment (a full `/watch`
-    /// round trip, which is where the window is widest).
+    /// slot before this catalog payload arrived.
     private func adoptDetail(
         _ item: ItemDetail,
         contentId: String,
         generation: Int
     ) async -> ItemDetail? {
-        let enriched = await enrichPlaybackMetadata(for: item, contentId: contentId)
         guard generation == detailGeneration else { return nil }
-        detail = enriched
-        ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId))
-        return enriched
+
+        let initial: ItemDetail
+        if supportsPlaybackMetadata(item),
+           let cachedWatchDetail: WatchDetail = ResponseCache.shared.get(
+               CacheKey.itemWatchDetail(contentId)
+           ) {
+            initial = applyingPlaybackMetadata(cachedWatchDetail, to: item)
+        } else {
+            initial = item
+        }
+
+        detail = initial
+        ResponseCache.shared.set(initial, for: CacheKey.itemDetail(contentId))
+
+        guard supportsPlaybackMetadata(item) else { return initial }
+
+        playbackEnrichmentTask = Task { [weak self] in
+            guard let self,
+                  let enriched = await self.enrichPlaybackMetadata(
+                      for: item,
+                      contentId: contentId
+                  ),
+                  !Task.isCancelled,
+                  generation == self.detailGeneration else { return }
+
+            self.detail = enriched
+            ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId))
+            self.playbackEnrichmentTask = nil
+        }
+
+        return initial
     }
 
     /// Load the season / episode structure a detail payload implies.
@@ -286,7 +327,7 @@ class ItemDetailViewModel {
 
     /// Paint every cached fragment the screen knows how to render so a
     /// returning visit never starts from a blank state.
-    private func hydrateFromCache(contentId: String) {
+    func hydrateFromCache(contentId: String) {
         if detail == nil,
            let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId)) {
             detail = cached
@@ -326,16 +367,28 @@ class ItemDetailViewModel {
         }
     }
 
-    private func enrichPlaybackMetadata(for item: ItemDetail, contentId: String) async -> ItemDetail {
-        // Series and season containers have no single watch target — `/watch/{id}`
-        // returns 404 "Watch target not found" for them. Only enrich playable
-        // leaf items, rather than firing a request we know will fail.
-        guard item.type != "series", item.type != "season" else { return item }
-
+    private func enrichPlaybackMetadata(
+        for item: ItemDetail,
+        contentId: String
+    ) async -> ItemDetail? {
         do {
             let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
             ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId))
-            return ItemDetail(
+            return applyingPlaybackMetadata(watchDetail, to: item)
+        } catch {
+            return nil
+        }
+    }
+
+    private func supportsPlaybackMetadata(_ item: ItemDetail) -> Bool {
+        item.type != "series" && item.type != "season"
+    }
+
+    private func applyingPlaybackMetadata(
+        _ watchDetail: WatchDetail,
+        to item: ItemDetail
+    ) -> ItemDetail {
+        ItemDetail(
                 contentId: item.contentId,
                 type: item.type,
                 status: item.status,
@@ -395,9 +448,6 @@ class ItemDetailViewModel {
                 videos: item.videos,
                 extras: item.extras
             )
-        } catch {
-            return item
-        }
     }
 
     // MARK: - Trailer fetch
