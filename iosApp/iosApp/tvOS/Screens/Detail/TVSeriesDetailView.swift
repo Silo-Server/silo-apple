@@ -192,6 +192,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             // Deliberately never switch to episode artwork. The series image
             // remains a stable visual anchor while episode details change.
             backdropUrl: detail.backdropUrl,
+            backdropThumbhash: detail.backdropThumbhash,
             eyebrow: nil,
             sourceTokens: heroSourceTokens,
             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),

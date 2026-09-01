@@ -123,6 +123,7 @@ private struct CastCardLabel: View {
                 CachedAsyncImage(
                     url: url,
                     targetSize: photoSize,
+                    thumbhash: member.photoThumbhash,
                     contentMode: .fill
                 )
             } else {

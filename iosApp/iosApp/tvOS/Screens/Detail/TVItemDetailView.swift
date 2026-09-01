@@ -11,6 +11,7 @@ import os
 /// then a scrollable body of horizontal rails below the fold.
 struct TVItemDetailView: View {
     let contentId: String
+    let seed: TVItemDetailRouteSeed?
 
     @State private var viewModel: ItemDetailViewModel
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
@@ -43,8 +44,9 @@ struct TVItemDetailView: View {
         category: "TVFocus"
     )
 
-    init(contentId: String) {
+    init(contentId: String, seed: TVItemDetailRouteSeed? = nil) {
         self.contentId = contentId
+        self.seed = seed
         // Resolve the cached view model eagerly so the first `body`
         // evaluation can render cached content without a blank frame.
         _viewModel = State(
@@ -62,7 +64,7 @@ struct TVItemDetailView: View {
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadDetail(contentId: contentId) } })
             } else {
-                Color.clear
+                TVItemDetailLoadingView(seed: seed)
             }
         }
         .continuumBackground()
@@ -80,6 +82,7 @@ struct TVItemDetailView: View {
         }
         .onDisappear {
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
+            viewModel.cancelDeferredEpisodeFavoriteStateRefresh()
             // The coordinator's poll is not owned by `.task`, so it would
             // otherwise keep running (and retaining the view model) after
             // this route pops.
@@ -488,7 +491,15 @@ struct TVItemDetailView: View {
             .task(id: seriesNextUpEpisodeContentId(for: detail)) {
                 await loadSeriesNextUpPlaybackDetail(for: detail)
             }
-            .task(id: viewModel.selectedSeason?.contentId) {
+            .task(
+                id: viewModel.selectedSeason?.contentId,
+                priority: .background
+            ) {
+                do {
+                    try await Task.sleep(for: .milliseconds(1_500))
+                } catch {
+                    return
+                }
                 await prefetchAdjacentSeriesSeasons(for: detail)
             }
         } else {
@@ -671,7 +682,7 @@ struct TVItemDetailView: View {
         }
 
         do {
-            let series = try await ContinuumAPI.shared.itemDetail(
+            let series = try await MetadataRequestPool.shared.itemDetail(
                 contentId: destination.seriesContentId
             )
             guard !Task.isCancelled,
@@ -713,7 +724,7 @@ struct TVItemDetailView: View {
         if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
             episodeSeriesDetail = cached
         }
-        guard let fresh = try? await ContinuumAPI.shared.itemDetail(contentId: seriesId),
+        guard let fresh = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId),
               !Task.isCancelled else { return }
         ResponseCache.shared.set(fresh, for: CacheKey.itemDetail(seriesId))
         episodeSeriesDetail = fresh
@@ -944,7 +955,7 @@ struct TVItemDetailView: View {
         didClearNextUpSubtitleOverride = false
 
         do {
-            let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
+            let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
@@ -1020,7 +1031,7 @@ struct TVItemDetailView: View {
         }
 
         do {
-            let item = try await ContinuumAPI.shared.itemDetail(contentId: nextUp.contentId)
+            let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
@@ -1051,6 +1062,15 @@ struct TVItemDetailView: View {
             didLoadNextUpPlaybackDetail = true
         }
         isLoadingNextUpPlaybackDetail = false
+
+        // Neighbor playback data is speculative. Keep it out of the selected
+        // episode's critical path so its detail and artwork get first use of
+        // the network and decoder queues.
+        do {
+            try await Task.sleep(for: .milliseconds(1_200))
+        } catch {
+            return
+        }
         await prefetchAdjacentEpisodePlayback(around: nextUp)
     }
 
@@ -1075,7 +1095,7 @@ struct TVItemDetailView: View {
             )
             if cached?.versions?.isEmpty == false { continue }
 
-            guard let item = try? await ContinuumAPI.shared.itemDetail(
+            guard let item = try? await MetadataRequestPool.shared.itemDetail(
                 contentId: neighbor.contentId
             ), !Task.isCancelled else { continue }
             guard let enriched = await enrichPlaybackMetadata(
@@ -1116,7 +1136,7 @@ struct TVItemDetailView: View {
             if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
                 response = cached
             } else {
-                guard let fetched = try? await ContinuumAPI.shared.episodes(
+                guard let fetched = try? await MetadataRequestPool.shared.episodes(
                     seriesId: detail.contentId,
                     seasonNumber: season.seasonNumber
                 ), !Task.isCancelled else { continue }
@@ -1137,7 +1157,7 @@ struct TVItemDetailView: View {
         guard item.type != "series" else { return item }
 
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+            let watchDetail = try await MetadataRequestPool.shared.watchDetail(contentId: contentId)
             ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId))
             return ItemDetail(
                 contentId: item.contentId,

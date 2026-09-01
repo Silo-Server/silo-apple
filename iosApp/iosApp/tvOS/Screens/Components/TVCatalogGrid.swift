@@ -18,7 +18,7 @@ struct TVCatalogGrid: View {
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
-    let onItemTap: (String) -> Void
+    let onItemTap: (BrowseItem) -> Void
     let onNearEnd: (Int) -> Void
     var columnCount: Int = 6
     /// Per-card width. Defaults to the theme poster size; shrink when a
@@ -68,10 +68,11 @@ struct TVCatalogGrid: View {
                         TVMediaCard(
                             title: item.title,
                             posterUrl: item.posterUrl ?? "",
+                            posterThumbhash: item.posterThumbhash,
                             year: item.year,
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
-                            action: { onItemTap(item.contentId) },
+                            action: { onItemTap(item) },
                             playAction: playAction(for: item),
                             cardWidth: cardWidth,
                             aspect: item.isAudiobook ? .square : .poster,

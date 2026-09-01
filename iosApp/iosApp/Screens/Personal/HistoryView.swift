@@ -49,8 +49,8 @@ struct HistoryView: View {
                     items: viewModel.items,
                     isLoading: viewModel.isLoading,
                     hasMore: viewModel.hasMore,
-                    onItemTap: { contentId in
-                        router.navigate(to: .itemDetail(contentId: contentId))
+                    onItemTap: { item in
+                        router.navigate(to: .itemDetail(browseItem: item))
                     },
                     onLoadMore: {
                         Task { await viewModel.load(reset: false) }

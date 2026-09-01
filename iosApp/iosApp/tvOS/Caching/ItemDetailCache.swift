@@ -93,7 +93,14 @@ final class ItemDetailCache {
 
     private func refresh(_ contentId: String) {
         guard let vm = entries[contentId] else { return }
-        Task { await vm.loadDetail(contentId: contentId) }
+        // This path follows a progress/watched mutation. It must not join a
+        // steady-state request that may have left the server before the write.
+        Task {
+            await vm.loadDetail(
+                contentId: contentId,
+                coalescesMetadataRequests: false
+            )
+        }
     }
 
     private func touch(_ contentId: String) {

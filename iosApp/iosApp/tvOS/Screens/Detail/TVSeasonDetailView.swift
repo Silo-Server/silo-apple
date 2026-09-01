@@ -71,6 +71,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         seriesTitle: nil,
                         logoUrl: nil,
                         backdropUrl: detail.backdropUrl,
+                        backdropThumbhash: detail.backdropThumbhash,
                         eyebrow: detail.seriesTitle,
                         sourceTokens: sourceTokens,
                         ratingChip: nil,

@@ -1272,8 +1272,8 @@ struct TVMainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId):
-            ItemDetailView(contentId: contentId)
+        case .itemDetail(let contentId, let tvSeed):
+            ItemDetailView(contentId: contentId, tvSeed: tvSeed)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
         case .player(let contentId, let startFromBeginning, let resumePosition):

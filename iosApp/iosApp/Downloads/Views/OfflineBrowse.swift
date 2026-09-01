@@ -495,9 +495,9 @@ struct OfflineDownloadDetailView: View {
 
 // MARK: - Shared hero
 
-/// A compact cinematic header for the offline browse screens. Backdrop art
-/// degrades to a gradient (artwork thumbhashes aren't decoded yet), keeping
-/// the chrome strictly monochrome.
+/// A compact cinematic header for the offline browse screens. The downloaded
+/// poster's ThumbHash keeps its artwork identity available before local poster
+/// data is ready.
 private struct OfflineBrowseHero: View {
     let title: String
     let eyebrow: String

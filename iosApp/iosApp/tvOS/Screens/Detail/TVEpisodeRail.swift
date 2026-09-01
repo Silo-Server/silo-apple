@@ -733,6 +733,7 @@ private struct EpisodeCardLabel: View {
                 CachedAsyncImage(
                     url: url,
                     targetSize: CGSize(width: cardWidth, height: stillHeight),
+                    thumbhash: episode.stillThumbhash,
                     contentMode: .fill
                 )
                 .frame(width: cardWidth, height: stillHeight)

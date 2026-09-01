@@ -10,6 +10,7 @@ import SwiftUI
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
+    var posterThumbhash: String? = nil
     var year: Int? = nil
     /// Optional second caption line rendered in place of the year (same
     /// type treatment) — e.g. "Book 3" on audiobook series rails.
@@ -166,6 +167,7 @@ struct TVMediaCard: View {
             CachedAsyncImage(
                 url: posterUrl,
                 targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
+                thumbhash: posterThumbhash,
                 contentMode: .fill
             )
             .frame(width: resolvedCardWidth, height: cardHeight)

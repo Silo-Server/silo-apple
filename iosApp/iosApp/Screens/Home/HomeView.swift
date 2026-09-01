@@ -65,7 +65,7 @@ struct HomeView: View {
                     detailReturnFocusRequest: detailReturnFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
-                    onItemTap: { navigateToDetail($0) },
+                    onItemTap: navigateToDetail,
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
@@ -340,8 +340,13 @@ struct HomeView: View {
 
     // MARK: - Navigation
 
-    private func navigateToDetail(_ contentId: String) {
-        router.navigate(to: .itemDetail(contentId: contentId))
+    private func navigateToDetail(_ destinationContentId: String, _ item: SectionItem) {
+        router.navigate(
+            to: .itemDetail(
+                destinationContentId: destinationContentId,
+                sectionItem: item
+            )
+        )
     }
 
     private func dismissContinueWatching(_ item: SectionItem) {

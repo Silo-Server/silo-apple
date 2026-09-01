@@ -85,6 +85,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             seriesTitle: episodeSeriesTitle,
                             logoUrl: heroLogoUrl,
                             backdropUrl: detail.backdropUrl,
+                            backdropThumbhash: detail.backdropThumbhash,
                             eyebrow: nil,
                             sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),

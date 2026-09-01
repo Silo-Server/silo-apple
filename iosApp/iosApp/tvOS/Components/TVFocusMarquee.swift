@@ -302,7 +302,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
 
     @ObservationIgnored private var loadedRevisionByContentId: [String: String] = [:]
     @ObservationIgnored private var detailByContentId: [String: ItemDetail] = [:]
-    @ObservationIgnored private var inFlight: [String: Task<ItemDetail?, Never>] = [:]
+    @ObservationIgnored private var requestedRevisionByContentId: [String: String] = [:]
 
     private init() {}
 
@@ -347,20 +347,15 @@ final class TVContinueWatchingPlaybackMetadataStore {
             return cached
         }
 
-        let requestKey = "\(contentId)#\(revision)"
-        let task: Task<ItemDetail?, Never>
-        if let existing = inFlight[requestKey] {
-            task = existing
-        } else {
-            task = Task {
-                try? await ContinuumAPI.shared.itemDetail(contentId: contentId)
-            }
-            inFlight[requestKey] = task
-        }
-
-        let detail = await task.value
-        inFlight.removeValue(forKey: requestKey)
-        guard let detail else { return nil }
+        requestedRevisionByContentId[contentId] = revision
+        guard let detail = try? await MetadataRequestPool.shared.itemDetail(
+            contentId: contentId,
+            // Always key the flight by progress revision. An initial request
+            // and a newer revision can otherwise overlap before either one
+            // publishes `loadedRevisionByContentId`, causing the newer caller
+            // to join the older payload and mislabel it as current.
+            freshnessDiscriminator: "continue-watching:\(revision)"
+        ), requestedRevisionByContentId[contentId] == revision else { return nil }
 
         ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
         commit(
@@ -691,7 +686,9 @@ final class TVFocusMarqueeModel {
                     baseOverlayData: candidate.baseOverlayData
                 )
             } else {
-                fetchedDetail = try? await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                fetchedDetail = try? await MetadataRequestPool.shared.itemDetail(
+                    contentId: contentId
+                )
             }
 
             if let detail = fetchedDetail {
@@ -745,7 +742,7 @@ final class TVFocusMarqueeModel {
         let cached: ItemDetail? = ResponseCache.shared.get(CacheKey.itemDetail(seriesId))
         guard itemContentId != seriesId,
               cached == nil,
-              let detail = try? await ContinuumAPI.shared.itemDetail(contentId: seriesId),
+              let detail = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId),
               !Task.isCancelled else { return }
         ResponseCache.shared.set(detail, for: CacheKey.itemDetail(seriesId))
     }
@@ -760,7 +757,7 @@ final class TVFocusMarqueeModel {
         ) {
             seasonsResponse = cached
         } else {
-            guard let fetched = try? await ContinuumAPI.shared.seasons(seriesId: seriesId),
+            guard let fetched = try? await MetadataRequestPool.shared.seasons(seriesId: seriesId),
                   !Task.isCancelled else { return }
             ResponseCache.shared.set(fetched, for: CacheKey.itemSeasons(seriesId))
             seasonsResponse = fetched
@@ -780,7 +777,7 @@ final class TVFocusMarqueeModel {
         if let cached: EpisodesResponse = ResponseCache.shared.get(episodesKey) {
             episodesResponse = cached
         } else {
-            guard let fetched = try? await ContinuumAPI.shared.episodes(
+            guard let fetched = try? await MetadataRequestPool.shared.episodes(
                 seriesId: seriesId,
                 seasonNumber: targetSeason.seasonNumber
             ), !Task.isCancelled else { return }

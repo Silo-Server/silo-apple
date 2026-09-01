@@ -2286,7 +2286,7 @@ struct MainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId):
+        case .itemDetail(let contentId, _):
             ItemDetailView(contentId: contentId)
                 // The iOS 26 poster → detail zoom transition
                 // (`.navigationTransition(.zoom(sourceID:in:))`, keyed off

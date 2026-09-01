@@ -373,8 +373,8 @@ private struct TVPersonDetailContent: View {
                             items: viewModel.items,
                             isLoading: viewModel.isLoadingItems,
                             hasMore: viewModel.hasMore,
-                            onItemTap: { contentId in
-                                router.navigate(to: .itemDetail(contentId: contentId))
+                            onItemTap: { item in
+                                router.navigate(to: .itemDetail(browseItem: item))
                             },
                             onNearEnd: { index in
                                 Task { await viewModel.loadMoreIfNeeded() }
@@ -502,8 +502,8 @@ private struct PhonePersonDetailContent: View {
                             items: viewModel.items,
                             isLoading: viewModel.isLoadingItems,
                             hasMore: viewModel.hasMore,
-                            onItemTap: { contentId in
-                                router.navigate(to: .itemDetail(contentId: contentId))
+                            onItemTap: { item in
+                                router.navigate(to: .itemDetail(browseItem: item))
                             },
                             onLoadMore: {
                                 Task { await viewModel.loadMoreIfNeeded() }

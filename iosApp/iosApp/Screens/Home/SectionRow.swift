@@ -13,7 +13,10 @@ extension ResolvedSection {
 /// and Continue Watching resume rows).
 struct SectionRow: View {
     let section: ResolvedSection
-    let onItemTap: (String) -> Void
+    /// Destination ID plus the card that initiated navigation. Continue
+    /// Watching may substitute a parent Series ID while retaining the episode
+    /// card as context for the detail route seed.
+    let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
     var onSeeAll: (() -> Void)? = nil
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
@@ -139,9 +142,12 @@ struct SectionRow: View {
     /// active, while movies retain their own detail page. Direct Resume/Play
     /// remains available from the remote Play/Pause command and long press.
     private func selectItem(_ contentId: String) {
+        guard let item = section.items.first(where: { $0.contentId == contentId }) else {
+            return
+        }
+
         #if os(tvOS)
-        if isContinueWatching,
-           let item = section.items.first(where: { $0.contentId == contentId }) {
+        if isContinueWatching {
             let isEpisode = item.type.lowercased() == "episode"
                 || item.episodeNumber != nil
             if isEpisode,
@@ -153,14 +159,14 @@ struct SectionRow: View {
                     seasonNumber: seasonNumber,
                     episodeContentId: item.contentId
                 )
-                onItemTap(seriesId)
+                onItemTap(seriesId, item)
             } else {
-                onItemTap(item.contentId)
+                onItemTap(item.contentId, item)
             }
             return
         }
         #endif
-        onItemTap(contentId)
+        onItemTap(contentId, item)
     }
 
     /// Home injects a model-owned mutation so its membership-driven rows and

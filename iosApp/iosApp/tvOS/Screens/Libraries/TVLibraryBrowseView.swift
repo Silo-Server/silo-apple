@@ -52,7 +52,14 @@ struct TVLibraryBrowseView: View {
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onMoveUp,
-                    onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) }
+                    onItemTap: { destinationContentId, item in
+                        router.navigate(
+                            to: .itemDetail(
+                                destinationContentId: destinationContentId,
+                                sectionItem: item
+                            )
+                        )
+                    }
                 )
             }
         }

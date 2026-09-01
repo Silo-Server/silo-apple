@@ -32,7 +32,7 @@ struct TVSkylineSectionFeed: View {
     /// Up at the first page hands focus to the top bar.
     let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
-    let onItemTap: (String) -> Void
+    let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
     /// Optional Home-only action. Library feeds leave this nil.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     /// Optional Home-only watched-state mutation. Library feeds leave this nil.

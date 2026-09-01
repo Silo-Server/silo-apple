@@ -31,6 +31,13 @@ class ItemDetailViewModel {
     /// finish after the user has already changed an episode's state.
     private var episodeFavoriteMutationVersions: [String: Int] = [:]
     private var episodeFavoriteRefreshGeneration = 0
+    #if os(tvOS)
+    /// Favorite lookups are below-fold decoration. Keep their bounded fanout
+    /// out of the detail screen's initial metadata wave and cancel stale work
+    /// when the user moves to another season.
+    @ObservationIgnored
+    private var episodeFavoriteRefreshTask: Task<Void, Never>?
+    #endif
     /// Cancels publication from an older season request after the user has
     /// already moved to another page.
     private var episodeLoadGeneration = 0
@@ -89,7 +96,11 @@ class ItemDetailViewModel {
     ///   the preferred initial season would yank the ground out from under
     ///   the user — under focus, on tvOS. Entry loads and the player-dismiss
     ///   reload leave it false: there, re-picking the season is the point.
-    func loadDetail(contentId: String, preserveSeasonSelection: Bool = false) async {
+    func loadDetail(
+        contentId: String,
+        preserveSeasonSelection: Bool = false,
+        coalescesMetadataRequests: Bool = true
+    ) async {
         if detail?.contentId != contentId {
             episodeSeriesPosterUrl = nil
             episodeSeriesPosterThumbhash = nil
@@ -112,7 +123,8 @@ class ItemDetailViewModel {
         async let cachedRelatedStructureLoad: Void = loadRelatedStructureFromCacheIfAvailable(
             cachedDetailForRelatedStructure,
             contentId: contentId,
-            preserveSeasonSelection: preserveSeasonSelection
+            preserveSeasonSelection: preserveSeasonSelection,
+            coalescesMetadataRequests: coalescesMetadataRequests
         )
         #endif
 
@@ -144,10 +156,18 @@ class ItemDetailViewModel {
             )
             let userStateGeneration = userStateMutationGeneration
 
-            let item: ItemDetail = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog/items/\(contentId)"
+            let item: ItemDetail
+            if coalescesMetadataRequests {
+                item = try await MetadataRequestPool.shared.itemDetail(contentId: contentId)
+            } else {
+                item = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            }
+            let enriched = await adoptDetail(
+                item,
+                contentId: contentId,
+                generation: generation,
+                coalescesMetadataRequest: coalescesMetadataRequests
             )
-            let enriched = await adoptDetail(item, contentId: contentId, generation: generation)
 
             // Superseded: a newer payload is already on screen. Deriving
             // watched state or the season/episode structure from this older
@@ -164,14 +184,16 @@ class ItemDetailViewModel {
                 await loadRelatedStructure(
                     for: enriched,
                     contentId: contentId,
-                    preserveSeasonSelection: preserveSeasonSelection
+                    preserveSeasonSelection: preserveSeasonSelection,
+                    coalescesMetadataRequests: coalescesMetadataRequests
                 )
             }
             #else
             await loadRelatedStructure(
                 for: enriched,
                 contentId: contentId,
-                preserveSeasonSelection: preserveSeasonSelection
+                preserveSeasonSelection: preserveSeasonSelection,
+                coalescesMetadataRequests: coalescesMetadataRequests
             )
             #endif
 
@@ -226,7 +248,8 @@ class ItemDetailViewModel {
     private func adoptDetail(
         _ item: ItemDetail,
         contentId: String,
-        generation: Int
+        generation: Int,
+        coalescesMetadataRequest: Bool = true
     ) async -> ItemDetail? {
         guard generation == detailGeneration else { return nil }
 
@@ -249,7 +272,8 @@ class ItemDetailViewModel {
             guard let self,
                   let enriched = await self.enrichPlaybackMetadata(
                       for: item,
-                      contentId: contentId
+                      contentId: contentId,
+                      coalescesMetadataRequest: coalescesMetadataRequest
                   ),
                   !Task.isCancelled,
                   generation == self.detailGeneration else { return }
@@ -270,12 +294,17 @@ class ItemDetailViewModel {
     private func loadRelatedStructure(
         for enriched: ItemDetail,
         contentId: String,
-        preserveSeasonSelection: Bool
+        preserveSeasonSelection: Bool,
+        coalescesMetadataRequests: Bool = true
     ) async {
         if enriched.type == "series" {
             seriesContentId = contentId
             let keepSeason = preserveSeasonSelection ? selectedSeason?.seasonNumber : nil
-            await loadSeasons(seriesId: contentId, autoSelectInitial: keepSeason == nil)
+            await loadSeasons(
+                seriesId: contentId,
+                autoSelectInitial: keepSeason == nil,
+                coalescesMetadataRequest: coalescesMetadataRequests
+            )
             if let keepSeason {
                 // Re-point at the freshly-loaded instance of the same
                 // season so its progress counters are current, without
@@ -287,8 +316,16 @@ class ItemDetailViewModel {
                   let seriesId = enriched.seriesId,
                   let seasonNumber = enriched.seasonNumber {
             seriesContentId = seriesId
-            await loadEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
-            await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
+            await loadEpisodes(
+                seriesId: seriesId,
+                seasonNumber: seasonNumber,
+                coalescesMetadataRequest: coalescesMetadataRequests
+            )
+            await loadSeasons(
+                seriesId: seriesId,
+                autoSelectInitial: false,
+                coalescesMetadataRequest: coalescesMetadataRequests
+            )
             selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
         } else if enriched.type == "episode",
                   let seriesId = enriched.seriesId,
@@ -299,13 +336,21 @@ class ItemDetailViewModel {
             seriesContentId = seriesId
             async let episodeLoad: Void = loadEpisodes(
                 seriesId: seriesId,
-                seasonNumber: seasonNumber
+                seasonNumber: seasonNumber,
+                coalescesMetadataRequest: coalescesMetadataRequests
             )
-            await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
+            await loadSeasons(
+                seriesId: seriesId,
+                autoSelectInitial: false,
+                coalescesMetadataRequest: coalescesMetadataRequests
+            )
             selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
             // Resolve the season first so its more-specific poster paints
             // immediately. The series detail is an optional fallback only.
-            await loadEpisodeSeriesArtwork(seriesId: seriesId)
+            await loadEpisodeSeriesArtwork(
+                seriesId: seriesId,
+                coalescesMetadataRequest: coalescesMetadataRequests
+            )
             await episodeLoad
         }
     }
@@ -314,24 +359,37 @@ class ItemDetailViewModel {
     private func loadRelatedStructureFromCacheIfAvailable(
         _ cachedDetail: ItemDetail?,
         contentId: String,
-        preserveSeasonSelection: Bool
+        preserveSeasonSelection: Bool,
+        coalescesMetadataRequests: Bool
     ) async {
         guard let cachedDetail else { return }
         await loadRelatedStructure(
             for: cachedDetail,
             contentId: contentId,
-            preserveSeasonSelection: preserveSeasonSelection
+            preserveSeasonSelection: preserveSeasonSelection,
+            coalescesMetadataRequests: coalescesMetadataRequests
         )
     }
     #endif
 
-    private func loadEpisodeSeriesArtwork(seriesId: String) async {
+    private func loadEpisodeSeriesArtwork(
+        seriesId: String,
+        coalescesMetadataRequest: Bool
+    ) async {
         let seriesDetail: ItemDetail
         if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
             seriesDetail = cached
         } else {
             do {
-                seriesDetail = try await ContinuumAPI.shared.itemDetail(contentId: seriesId)
+                if coalescesMetadataRequest {
+                    seriesDetail = try await MetadataRequestPool.shared.itemDetail(
+                        contentId: seriesId
+                    )
+                } else {
+                    seriesDetail = try await ContinuumAPI.shared.itemDetail(
+                        contentId: seriesId
+                    )
+                }
                 ResponseCache.shared.set(seriesDetail, for: CacheKey.itemDetail(seriesId))
             } catch {
                 return
@@ -452,10 +510,16 @@ class ItemDetailViewModel {
 
     private func enrichPlaybackMetadata(
         for item: ItemDetail,
-        contentId: String
+        contentId: String,
+        coalescesMetadataRequest: Bool
     ) async -> ItemDetail? {
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+            let watchDetail: WatchDetail
+            if coalescesMetadataRequest {
+                watchDetail = try await MetadataRequestPool.shared.watchDetail(contentId: contentId)
+            } else {
+                watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+            }
             ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId))
             return applyingPlaybackMetadata(watchDetail, to: item)
         } catch {
@@ -613,7 +677,11 @@ class ItemDetailViewModel {
             guard found.contentId == contentId else {
                 // Shouldn't happen (the run is pinned to one id), but a
                 // mismatched payload must never be written under this id.
-                await self.loadDetail(contentId: contentId, preserveSeasonSelection: true)
+                await self.loadDetail(
+                    contentId: contentId,
+                    preserveSeasonSelection: true,
+                    coalescesMetadataRequests: false
+                )
                 return
             }
             await self.apply(
@@ -642,15 +710,26 @@ class ItemDetailViewModel {
 
     // MARK: - Seasons
 
-    func loadSeasons(seriesId: String, autoSelectInitial: Bool = true) async {
+    func loadSeasons(
+        seriesId: String,
+        autoSelectInitial: Bool = true,
+        coalescesMetadataRequest: Bool = true
+    ) async {
         do {
-            let response: SeasonsResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog/series/\(seriesId)/seasons"
-            )
+            let response: SeasonsResponse
+            if coalescesMetadataRequest {
+                response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId)
+            } else {
+                response = try await ContinuumAPI.shared.seasons(seriesId: seriesId)
+            }
             ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
             seasons = response.seasons.sortedForDisplay()
             if autoSelectInitial, let target = preferredInitialSeason(seasons: seasons) {
-                await selectSeason(target, forceRefresh: true)
+                await selectSeason(
+                    target,
+                    forceRefresh: true,
+                    coalescesMetadataRequest: coalescesMetadataRequest
+                )
             }
         } catch {
             // Seasons loading failure is non-fatal — keep whatever
@@ -679,7 +758,11 @@ class ItemDetailViewModel {
         return seasons.first
     }
 
-    func selectSeason(_ season: Season, forceRefresh: Bool = false) async {
+    func selectSeason(
+        _ season: Season,
+        forceRefresh: Bool = false,
+        coalescesMetadataRequest: Bool = true
+    ) async {
         let fallbackSeasonNumber = loadedSeasonNumber ?? selectedSeason?.seasonNumber
         selectedSeason = season
         guard let seriesId = seriesContentId else { return }
@@ -689,6 +772,9 @@ class ItemDetailViewModel {
             // cached page. Otherwise it could finish later and replace this
             // selection with stale content.
             episodeLoadGeneration += 1
+            #if os(tvOS)
+            cancelDeferredEpisodeFavoriteStateRefresh()
+            #endif
             episodes = cached
             loadedSeasonNumber = season.seasonNumber
             isLoadingEpisodes = false
@@ -698,7 +784,8 @@ class ItemDetailViewModel {
         await loadEpisodes(
             seriesId: seriesId,
             seasonNumber: season.seasonNumber,
-            fallbackSeasonNumber: fallbackSeasonNumber
+            fallbackSeasonNumber: fallbackSeasonNumber,
+            coalescesMetadataRequest: coalescesMetadataRequest
         )
     }
 
@@ -706,8 +793,12 @@ class ItemDetailViewModel {
         seriesId: String,
         seasonNumber: Int,
         refreshFavoriteStates: Bool = true,
-        fallbackSeasonNumber: Int? = nil
+        fallbackSeasonNumber: Int? = nil,
+        coalescesMetadataRequest: Bool = true
     ) async {
+        #if os(tvOS)
+        cancelDeferredEpisodeFavoriteStateRefresh()
+        #endif
         episodeLoadGeneration += 1
         let generation = episodeLoadGeneration
         let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
@@ -733,9 +824,18 @@ class ItemDetailViewModel {
         }
 
         do {
-            let response: EpisodesResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes"
-            )
+            let response: EpisodesResponse
+            if coalescesMetadataRequest {
+                response = try await MetadataRequestPool.shared.episodes(
+                    seriesId: seriesId,
+                    seasonNumber: seasonNumber
+                )
+            } else {
+                response = try await ContinuumAPI.shared.episodes(
+                    seriesId: seriesId,
+                    seasonNumber: seasonNumber
+                )
+            }
             ResponseCache.shared.set(response, for: key)
             let sorted = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
             guard generation == episodeLoadGeneration else { return }
@@ -765,9 +865,44 @@ class ItemDetailViewModel {
         if refreshFavoriteStates,
            generation == episodeLoadGeneration,
            (selectedSeason?.seasonNumber == seasonNumber || selectedSeason == nil) {
-            await refreshEpisodeFavoriteStates(for: episodesBySeason[seasonNumber] ?? episodes)
+            let loadedEpisodes = episodesBySeason[seasonNumber] ?? episodes
+            #if os(tvOS)
+            scheduleEpisodeFavoriteStateRefresh(
+                for: loadedEpisodes,
+                episodeLoadGeneration: generation
+            )
+            #else
+            await refreshEpisodeFavoriteStates(for: loadedEpisodes)
+            #endif
         }
     }
+
+    #if os(tvOS)
+    private func scheduleEpisodeFavoriteStateRefresh(
+        for episodes: [EpisodeListItem],
+        episodeLoadGeneration: Int
+    ) {
+        guard !episodes.isEmpty else { return }
+
+        episodeFavoriteRefreshTask = Task(priority: .utility) { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1_100))
+            guard !Task.isCancelled,
+                  let self,
+                  self.episodeLoadGeneration == episodeLoadGeneration else { return }
+
+            await self.refreshEpisodeFavoriteStates(for: episodes)
+            guard !Task.isCancelled,
+                  self.episodeLoadGeneration == episodeLoadGeneration else { return }
+            self.episodeFavoriteRefreshTask = nil
+        }
+    }
+
+    func cancelDeferredEpisodeFavoriteStateRefresh() {
+        episodeFavoriteRefreshTask?.cancel()
+        episodeFavoriteRefreshTask = nil
+        episodeFavoriteRefreshGeneration += 1
+    }
+    #endif
 
     private func refreshEpisodeFavoriteStates(
         for episodes: [EpisodeListItem],
@@ -781,6 +916,8 @@ class ItemDetailViewModel {
         // Query in small batches so a long season cannot fan out an
         // unbounded number of requests against the server.
         for batchStart in stride(from: 0, to: episodes.count, by: maxConcurrent) {
+            guard !Task.isCancelled,
+                  generation == episodeFavoriteRefreshGeneration else { return }
             let batchEnd = min(batchStart + maxConcurrent, episodes.count)
             let batch = Array(episodes[batchStart..<batchEnd])
             let batchStates = await withTaskGroup(of: (String, Bool?).self) { group in
@@ -801,6 +938,8 @@ class ItemDetailViewModel {
                 }
                 return results
             }
+            guard !Task.isCancelled,
+                  generation == episodeFavoriteRefreshGeneration else { return }
             states.merge(batchStates) { _, refreshed in refreshed }
         }
 
@@ -893,12 +1032,20 @@ class ItemDetailViewModel {
                 seasonNumber: selectedSeason.seasonNumber
             )
 
-            await loadSeasons(seriesId: seriesId, autoSelectInitial: false)
+            await loadSeasons(
+                seriesId: seriesId,
+                autoSelectInitial: false,
+                coalescesMetadataRequest: false
+            )
             if let refreshed = seasons.first(where: {
                 $0.contentId == selectedSeason.contentId
                     || $0.seasonNumber == selectedSeason.seasonNumber
             }) {
-                await selectSeason(refreshed, forceRefresh: true)
+                await selectSeason(
+                    refreshed,
+                    forceRefresh: true,
+                    coalescesMetadataRequest: false
+                )
             }
         } catch {
             // Leave the server-provided state untouched on failure.
@@ -920,7 +1067,8 @@ class ItemDetailViewModel {
                 await loadEpisodes(
                     seriesId: seriesId,
                     seasonNumber: seasonNumber,
-                    refreshFavoriteStates: false
+                    refreshFavoriteStates: false,
+                    coalescesMetadataRequest: false
                 )
             }
             return true

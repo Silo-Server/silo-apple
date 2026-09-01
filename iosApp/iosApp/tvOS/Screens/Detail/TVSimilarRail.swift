@@ -40,7 +40,7 @@ struct TVSimilarRail: View {
                 section { rail }
             }
         }
-        .task(id: contentId) { await load() }
+        .task(id: contentId, priority: .background) { await load() }
         .onChange(of: focusRequest, initial: true) { _, _ in
             applyFocusRequestIfPossible()
         }
@@ -65,6 +65,7 @@ struct TVSimilarRail: View {
                     TVMediaCard(
                         title: item.title,
                         posterUrl: item.posterUrl ?? "",
+                        posterThumbhash: item.posterThumbhash,
                         year: item.year,
                         action: { onSelect(item.contentId) },
                         cardWidth: cardWidth,
@@ -114,39 +115,90 @@ struct TVSimilarRail: View {
 
     private func load() async {
         guard loadedFor != contentId else { return }
-        loadedFor = contentId
+        let requestedContentId = contentId
+        loadedFor = requestedContentId
+        var completed = false
+        defer {
+            if !completed, loadedFor == requestedContentId {
+                loadedFor = nil
+            }
+        }
         lastAppliedFocusRequest = 0
-        isLoading = true
-        items = []
+        let cacheKey = CacheKey.similar(contentId)
+        let cached: [SimilarPosterItem]? = ResponseCache.shared.get(cacheKey)
+        if let cached {
+            items = cached
+            isLoading = false
+        } else {
+            items = []
+            isLoading = true
+        }
+
+        // This rail sits below the primary detail content. Give the hero,
+        // selected season, and their artwork a head start before spending
+        // bandwidth on recommendations that may never enter the viewport.
+        do {
+            try await Task.sleep(for: .milliseconds(cached == nil ? 900 : 1_500))
+        } catch {
+            return
+        }
 
         do {
             let scored = try await ContinuumAPI.shared.recommendationsSimilar(
                 contentId: contentId,
                 limit: 12
             )
-            // Resolve detail pages in parallel — preserve the engine's
-            // ranking by zipping the resolved details back to their
-            // original index. Failed resolutions are dropped silently.
-            let resolved = await withTaskGroup(of: (Int, ItemDetail?).self) { group in
-                for (index, ref) in scored.enumerated() {
-                    group.addTask {
-                        let detail = try? await ContinuumAPI.shared.itemDetail(
-                            contentId: ref.mediaItemId
-                        )
-                        return (index, detail)
+            var indexedDetails: [(Int, ItemDetail)] = []
+
+            // Resolve a few cards at a time. The previous all-at-once fanout
+            // could launch twelve full item requests while the above-fold
+            // poster and episode stills were still cold.
+            for batchStart in stride(from: 0, to: scored.count, by: 3) {
+                guard !Task.isCancelled else { return }
+                let batchEnd = min(batchStart + 3, scored.count)
+                let batch = Array(scored[batchStart..<batchEnd])
+                let resolvedBatch = await withTaskGroup(
+                    of: (Int, ItemDetail?).self
+                ) { group in
+                    for (offset, ref) in batch.enumerated() {
+                        group.addTask {
+                            let detail = try? await MetadataRequestPool.shared.itemDetail(
+                                contentId: ref.mediaItemId
+                            )
+                            return (batchStart + offset, detail)
+                        }
                     }
+
+                    var pairs: [(Int, ItemDetail)] = []
+                    for await (index, detail) in group {
+                        if let detail { pairs.append((index, detail)) }
+                    }
+                    return pairs
                 }
-                var pairs: [(Int, ItemDetail)] = []
-                for await (index, detail) in group {
-                    if let detail { pairs.append((index, detail)) }
-                }
-                return pairs.sorted(by: { $0.0 < $1.0 }).map(\.1)
+                indexedDetails.append(contentsOf: resolvedBatch)
             }
-            items = resolved.map(SimilarPosterItem.init(detail:))
+
+            guard !Task.isCancelled else { return }
+            let resolved = indexedDetails
+                .sorted(by: { $0.0 < $1.0 })
+                .map(\.1)
+            for detail in resolved {
+                // Selecting a recommendation can now paint its authoritative
+                // detail payload on the destination's first body evaluation.
+                ResponseCache.shared.set(
+                    detail,
+                    for: CacheKey.itemDetail(detail.contentId)
+                )
+            }
+            let refreshed = resolved.map(SimilarPosterItem.init(detail:))
+            items = refreshed
+            ResponseCache.shared.set(refreshed, for: cacheKey)
         } catch {
-            items = []
+            guard !Task.isCancelled else { return }
+            if cached == nil { items = [] }
         }
         isLoading = false
+        completed = true
     }
 }
 

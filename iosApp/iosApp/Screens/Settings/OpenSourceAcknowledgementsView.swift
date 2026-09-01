@@ -21,6 +21,7 @@ enum OpenSourceAcknowledgements {
         Resource(title: "LibDovi packaging — MIT", name: "LibDovi-Packaging-MIT"),
         Resource(title: "libdovi — MIT", name: "libdovi-MIT"),
         Resource(title: "Nuke and NukeUI — MIT", name: "Nuke-MIT"),
+        Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
     ]
 
     static let text: String = resources.map { resource in
