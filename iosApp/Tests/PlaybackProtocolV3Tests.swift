@@ -1262,6 +1262,63 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(off.allSatisfy { !$0.isSelected })
     }
 
+    func testV3AudioPickerFallsBackToCatalogInventoryWhenAetherPublishesNone() {
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "eac3",
+            audioTracks: [
+                makeAudio(index: 2, codec: "eac3", isDefault: true),
+                makeAudio(index: 5, codec: "aac", isDefault: false),
+            ]
+        )
+
+        let tracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
+            aetherTracks: [],
+            plan: makePlan(selectedAudioIndex: 1),
+            version: version
+        )
+
+        XCTAssertEqual(tracks.map(\.trackId), [0, 1])
+        XCTAssertEqual(tracks.map(\.ffIndex), [2, 5])
+        XCTAssertEqual(tracks.map(\.srcId), [0, 1])
+        XCTAssertEqual(tracks.filter(\.isSelected).map(\.trackId), [1])
+    }
+
+    func testV3AudioPickerKeepsAetherInventoryWhenAvailable() {
+        let aetherTrack = PlayerTrack(
+            trackId: 7,
+            kind: .audio,
+            title: "Engine track",
+            lang: "en",
+            codec: "flac",
+            audioChannelCount: 2,
+            bitrate: nil,
+            isDefault: true,
+            isForced: false,
+            isHearingImpaired: false,
+            isExternal: false,
+            isSelected: true,
+            ffIndex: 7,
+            srcId: 0
+        )
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "eac3",
+            audioTracks: [makeAudio(index: 2, codec: "eac3", isDefault: true)]
+        )
+
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                aetherTracks: [aetherTrack],
+                plan: makePlan(selectedAudioIndex: 0),
+                version: version
+            ),
+            [aetherTrack]
+        )
+    }
+
     /// `convert` mounts an artifact exactly like `render` does, so every gate
     /// that arms the local selection must accept it. Treating it as "not
     /// locally rendered" arms explicit Off over a mounted artifact.

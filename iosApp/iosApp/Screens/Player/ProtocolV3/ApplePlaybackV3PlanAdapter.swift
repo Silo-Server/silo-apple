@@ -227,6 +227,42 @@ enum ApplePlaybackV3PlanAdapter {
         }
     }
 
+    /// Keeps Aether authoritative when it publishes audio tracks, but fills
+    /// the picker from the selected catalog version when a remote V3 route
+    /// exposes only its packaged rendition. Audio changes on that route are
+    /// already server-owned replans, so each fallback row carries the catalog
+    /// ordinal in `srcId` and the plan's selected ordinal drives the checkmark.
+    static func audioPickerTracks(
+        aetherTracks: [PlayerTrack],
+        plan: PlaybackV3Plan?,
+        version: FileVersion?
+    ) -> [PlayerTrack] {
+        guard aetherTracks.isEmpty,
+              let plan,
+              let version else {
+            return aetherTracks
+        }
+        let selectedOrdinal = plan.selectedTracks.audio?.index
+        return (version.audioTracks ?? []).enumerated().map { ordinal, track in
+            PlayerTrack(
+                trackId: Int64(ordinal),
+                kind: .audio,
+                title: track.title,
+                lang: track.language,
+                codec: track.codec,
+                audioChannelCount: track.channels,
+                bitrate: track.bitrate.map(Int64.init),
+                isDefault: track.isDefault ?? false,
+                isForced: false,
+                isHearingImpaired: false,
+                isExternal: false,
+                isSelected: ordinal == selectedOrdinal,
+                ffIndex: track.index,
+                srcId: ordinal
+            )
+        }
+    }
+
     /// V3 subtitle identities are external-first combined ordinals. Apple’s
     /// embedded picker carries FFmpeg stream indices instead, and watch detail
     /// lists embedded tracks before external tracks, so the wire identity must
