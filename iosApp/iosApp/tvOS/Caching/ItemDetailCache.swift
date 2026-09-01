@@ -36,6 +36,10 @@ final class ItemDetailCache {
     /// the cache deliberately doesn't kick off network work.
     func viewModel(for contentId: String) -> ItemDetailViewModel {
         if let existing = entries[contentId] {
+            // A source-card preload may have completed after this model was
+            // first created. Re-adopt the response before the destination's
+            // first body evaluation instead of returning an older empty shell.
+            existing.hydrateFromCache(contentId: contentId)
             touch(contentId)
             return existing
         }

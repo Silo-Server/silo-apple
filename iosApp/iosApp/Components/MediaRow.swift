@@ -25,6 +25,9 @@ struct MediaRow: View {
     var onItemPlay: ((SectionItem) -> Void)? = nil
     var onSeeAll: (() -> Void)? = nil
     var showProgress: Bool = false
+    /// Keeps the card as the sole focus target while showing that its detail
+    /// metadata is being prepared before navigation.
+    var loadingItemId: String? = nil
     var icon: String? = nil
     var layout: MediaRowLayout = .poster
     /// When true (and there are items), the row's first card becomes the
@@ -64,6 +67,9 @@ struct MediaRow: View {
     /// focus leaving the row (nil) is deliberately not reported so the
     /// marquee retains the last previewed item while focus is in chrome.
     var onItemFocus: ((SectionItem) -> Void)? = nil
+    /// Raw focus ownership changes for work that must stop when the source
+    /// card is abandoned. Unlike `onItemFocus`, this also reports `nil`.
+    var onFocusedItemIdChange: ((String?) -> Void)? = nil
     /// Optional width for poster/square cards — Skyline's dense landing
     /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
     var cardWidth: CGFloat? = nil
@@ -109,6 +115,7 @@ struct MediaRow: View {
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .onChange(of: focusedItemId) { _, newValue in
+            onFocusedItemIdChange?(newValue)
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
             lastFocusedItemId = newValue
@@ -323,43 +330,12 @@ struct MediaRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: cardSpacing) {
                 ForEach(items) { item in
-                    switch layout {
-                    case .poster, .square:
-                        MediaCard(
-                            title: posterTitle(for: item),
-                            posterUrl: item.posterUrl ?? "",
-                            thumbhash: item.posterThumbhash,
-                            year: item.year,
-                            progress: progressValue(for: item),
-                            userState: item.userState,
-                            overlayData: OverlayData.from(item),
-                            action: { onItemTap(item.contentId) },
-                            playAction: playAction(for: item),
-                            focusedItemId: rowFocusBinding,
-                            contentId: item.contentId,
-                            contextPlayTitle: contextPlayTitle(for: item),
-                            contextDetailTitle: contextDetailTitle(for: item),
-                            onOpenContextDetail: contextDetailAction(for: item),
-                            onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                            onSetWatched: watchedToggleAction(for: item),
-                            aspect: layout == .square ? .square : .poster,
-                            cardWidthOverride: cardWidth,
-                            episodeBadge: episodeBadge(for: item)
-                        )
-                    case .thumbnail:
-                        EpisodeThumbCard(
-                            item: item,
-                            showProgress: showProgress,
-                            action: { onItemTap(item.contentId) },
-                            playAction: playAction(for: item),
-                            focusedItemId: rowFocusBinding,
-                            contextPlayTitle: contextPlayTitle(for: item),
-                            contextDetailTitle: contextDetailTitle(for: item),
-                            onOpenContextDetail: contextDetailAction(for: item),
-                            onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                            onSetWatched: watchedToggleAction(for: item)
-                        )
-                    }
+                    mediaCard(for: item)
+                        .overlay {
+                        if loadingItemId == item.contentId {
+                            pendingNavigationIndicator
+                        }
+                        }
                 }
             }
             #if !os(tvOS)
@@ -396,6 +372,65 @@ struct MediaRow: View {
             restoreFocusAfterDetailReturn(request, proxy: rowProxy)
         }
         #endif
+    }
+
+    @ViewBuilder
+    private func mediaCard(for item: SectionItem) -> some View {
+        switch layout {
+        case .poster, .square:
+            MediaCard(
+                title: posterTitle(for: item),
+                posterUrl: item.posterUrl ?? "",
+                thumbhash: item.posterThumbhash,
+                year: item.year,
+                progress: progressValue(for: item),
+                userState: item.userState,
+                overlayData: OverlayData.from(item),
+                action: { onItemTap(item.contentId) },
+                playAction: playAction(for: item),
+                focusedItemId: rowFocusBinding,
+                contentId: item.contentId,
+                contextPlayTitle: contextPlayTitle(for: item),
+                contextDetailTitle: contextDetailTitle(for: item),
+                onOpenContextDetail: contextDetailAction(for: item),
+                onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
+                onSetWatched: watchedToggleAction(for: item),
+                aspect: layout == .square ? .square : .poster,
+                cardWidthOverride: cardWidth,
+                episodeBadge: episodeBadge(for: item)
+            )
+        case .thumbnail:
+            EpisodeThumbCard(
+                item: item,
+                showProgress: showProgress,
+                action: { onItemTap(item.contentId) },
+                playAction: playAction(for: item),
+                focusedItemId: rowFocusBinding,
+                contextPlayTitle: contextPlayTitle(for: item),
+                contextDetailTitle: contextDetailTitle(for: item),
+                onOpenContextDetail: contextDetailAction(for: item),
+                onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
+                onSetWatched: watchedToggleAction(for: item)
+            )
+        }
+    }
+
+    private var pendingNavigationIndicator: some View {
+        ZStack {
+            Circle()
+                .fill(Color.black.opacity(0.76))
+                .overlay {
+                    Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
+                }
+
+            ProgressView()
+                .controlSize(.large)
+                .tint(.white)
+        }
+        .frame(width: 76, height: 76)
+        .shadow(color: .black.opacity(0.45), radius: 14, y: 5)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     /// tvOS: bind every card to the row's @FocusState so the row can

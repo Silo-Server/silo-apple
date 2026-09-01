@@ -612,6 +612,7 @@ struct TVMainTabView: View {
             focusEntryGeneration: panelFocusEntryGeneration,
             onCommitLibrary: { commitScope(type: type, library: $0, pill: nil) },
             onCommitSection: { commitScope(type: type, library: $0, pill: $1) },
+            onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
             onClose: { closePanel() },
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onExitToContent: { exitPanelToContent() }
@@ -634,6 +635,7 @@ struct TVMainTabView: View {
                 focusEntryGeneration: panelFocusEntryGeneration,
                 onCommitLibrary: { commitShortcut(root: root, library: $0, pill: nil) },
                 onCommitSection: { commitShortcut(root: root, library: $0, pill: $1) },
+                onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
                 onClose: { closePanel() },
                 onPanelFocusChanged: { handlePanelFocusChanged($0) },
                 onExitToContent: { exitPanelToContent() }
@@ -844,6 +846,14 @@ struct TVMainTabView: View {
     private func exitPanelToContent() {
         closePanelForContentHandoff()
         contentFocusRequest += 1
+    }
+
+    private func prefetchLibrarySectionsIfNeeded(_ library: Library) {
+        let cached: SectionsResponse? = ResponseCache.shared.get(
+            CacheKey.librarySections(library.id)
+        )
+        guard cached == nil else { return }
+        StartupContentPrefetcher.prefetchLibrarySections(libraryId: library.id)
     }
 
     /// Commit a cascade selection (§5.3, §F): set + persist the tab scope,

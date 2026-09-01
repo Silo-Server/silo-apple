@@ -46,6 +46,10 @@ struct TVCascadeSelector: View {
     let onCommitLibrary: (Library) -> Void
     /// Commit a library scope + land on a specific section (pill).
     let onCommitSection: (Library, TVLibraryPill) -> Void
+    /// Warm the library landing after its row rests under focus. The host
+    /// joins this same request when the scope is committed, so a deliberate
+    /// menu selection can arrive with sections and artwork already cached.
+    var onPreviewLibrary: (Library) -> Void = { _ in }
     /// Close without changing scope (Menu/Back, or focus left the bar).
     let onClose: () -> Void
     /// Reports whether any panel row currently holds focus, so the host can
@@ -402,6 +406,7 @@ struct TVCascadeSelector: View {
         lastAppliedEntryGeneration = generation
         if isSingleLibrary, let library = libraries.first {
             // Single-level: land on the first section (§5.3).
+            onPreviewLibrary(library)
             focus = .section(library.id, pills.first ?? .recommended)
             claimPanelFocus()
         } else {
@@ -438,7 +443,6 @@ struct TVCascadeSelector: View {
     /// Move the flyout to a newly focused library row after a rest
     /// debounce (§5.3) so rolling the list never thrashes the flyout.
     private func scheduleFlyoutFollow(to id: Int) {
-        guard flyoutAnchorId != id else { return }
         flyoutFollowTask?.cancel()
         flyoutFollowTask = Task { @MainActor in
             try? await Task.sleep(
@@ -447,8 +451,13 @@ struct TVCascadeSelector: View {
             guard !Task.isCancelled else { return }
             // Only follow if focus is still on this library row.
             guard focus == .library(id) else { return }
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.Skyline.flyoutOpenDuration)) {
-                flyoutAnchorId = id
+            if let library = libraries.first(where: { $0.id == id }) {
+                onPreviewLibrary(library)
+            }
+            if flyoutAnchorId != id {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.Skyline.flyoutOpenDuration)) {
+                    flyoutAnchorId = id
+                }
             }
         }
     }
