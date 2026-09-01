@@ -884,8 +884,8 @@ private struct TVPlaybackSelectionSummaryView: View {
             )
         }
         // This matches the compact no-Restart action-row footprint. Starts stay
-        // fixed between episodes, while an unusually long value wraps inside
-        // its own slot instead of extending into the backdrop artwork.
+        // fixed between episodes, while unusually long values scale down inside
+        // their own slot instead of wrapping or extending into the artwork.
         .frame(width: 810, height: 44, alignment: .topLeading)
     }
 
@@ -908,10 +908,10 @@ private struct TVPlaybackSelectionSummaryView: View {
                     Text(value)
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(Color.white.opacity(0.82))
-                        .lineLimit(2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                         .allowsTightening(true)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Color.white.opacity(0.14))

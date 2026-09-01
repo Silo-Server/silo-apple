@@ -1,6 +1,14 @@
 #if os(tvOS)
 import SwiftUI
 
+private enum EpisodeHomeHoverMetrics {
+    static let scale: CGFloat = 1.08
+
+    static func leadingInset(for cardWidth: CGFloat) -> CGFloat {
+        cardWidth * (scale - 1) / 2 + 2
+    }
+}
+
 /// Horizontal rail of episode cards for the tvOS series/season/episode
 /// detail screens. The caller owns Select semantics: legacy season/episode
 /// pages can still navigate, while the Series overview launches playback
@@ -172,6 +180,13 @@ struct TVEpisodeRail: View {
                         .zIndex(isHovered ? 1 : 0)
                     }
                 }
+                // The active card scales around its center. Reserve exactly
+                // that new left half-width (plus the focus stroke) inside the
+                // hard rail crop so its rounded edge remains visible.
+                .padding(
+                    .leading,
+                    EpisodeHomeHoverMetrics.leadingInset(for: anchoredCardWidth)
+                )
                 .padding(.vertical, 12)
                 .offset(x: -anchoredContentOffset(viewportWidth: viewportWidth))
             }
@@ -425,16 +440,45 @@ private extension View {
     func episodeHomeHoverEffect(
         enabled: Bool,
         isFocused: Bool,
-        reduceMotion: Bool
+        reduceMotion: Bool,
+        cornerRadius: CGFloat
     ) -> some View {
         if enabled {
             self
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.10),
+                                    Color.clear,
+                                    Color.black.opacity(0.04)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .opacity(isFocused ? 1 : 0)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(isFocused ? 0.45 : 0),
+                                    Color.white.opacity(isFocused ? 0.10 : 0)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: isFocused ? 1.5 : 0
+                        )
+                }
                 .scaleEffect(
-                    isFocused && !reduceMotion ? 1.08 : 1,
-                    // Keep the pinned leading edge stable while allowing the
-                    // artwork to lift equally above and below, like Home's
-                    // native `.card` focus treatment.
-                    anchor: .leading
+                    isFocused && !reduceMotion ? EpisodeHomeHoverMetrics.scale : 1,
+                    // Grow evenly around the artwork instead of adding all of
+                    // the focused width on its trailing side.
+                    anchor: .center
                 )
                 .brightness(isFocused ? 0.035 : 0)
                 .shadow(
@@ -739,7 +783,8 @@ private struct EpisodeCardLabel: View {
         .episodeHomeHoverEffect(
             enabled: usesHomeHoverEffect,
             isFocused: isFocused,
-            reduceMotion: reduceMotion
+            reduceMotion: reduceMotion,
+            cornerRadius: stillCornerRadius
         )
     }
 

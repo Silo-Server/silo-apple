@@ -24,6 +24,10 @@ struct TVItemDetailView: View {
     /// and its suggested next episode are active.
     @State private var activeSeriesEpisodeContentId: String?
     @State private var episodeSeriesDetail: ItemDetail?
+    /// An episode normally canonicalizes to its parent Series overview. Keep
+    /// the standalone detail as a resilient fallback when that parent cannot
+    /// be loaded or the hierarchy metadata is incomplete.
+    @State private var failedSeriesRedirectEpisodeContentId: String?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
     /// Whether remote YouTube trailers should be presented, probed once per
@@ -109,6 +113,7 @@ struct TVItemDetailView: View {
             nextUpPlaybackDetail = nil
             activeSeriesEpisodeContentId = navigationContext?.episodeContentId
             episodeSeriesDetail = nil
+            failedSeriesRedirectEpisodeContentId = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
             await viewModel.loadDetail(contentId: contentId)
@@ -337,6 +342,15 @@ struct TVItemDetailView: View {
             .task(id: seasonNextUpEpisodeContentId(for: detail)) {
                 await loadSeasonNextUpPlaybackDetail(for: detail)
             }
+        } else if let destination = episodeSeriesDestination(for: detail),
+                  failedSeriesRedirectEpisodeContentId != detail.contentId {
+            // Episode pages are not a separate tvOS destination. Resolve the
+            // parent first so malformed hierarchy data can still fall back to
+            // the existing standalone episode detail instead of dead-ending.
+            Color.clear
+                .task(id: destination) {
+                    await redirectEpisodeToSeries(destination)
+                }
         } else if detail.type == "series" {
             TVSeriesDetailView(
                 detail: detail,
@@ -627,6 +641,66 @@ struct TVItemDetailView: View {
                 await loadEpisodeSeriesDetail(for: detail)
             }
         }
+    }
+
+    private func episodeSeriesDestination(
+        for detail: ItemDetail
+    ) -> TVSeriesDetailNavigationContextStore.Context? {
+        guard detail.type == "episode",
+              let rawSeriesId = detail.seriesId,
+              let seasonNumber = detail.seasonNumber else { return nil }
+
+        let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seriesId.isEmpty, seriesId != detail.contentId else { return nil }
+
+        return TVSeriesDetailNavigationContextStore.Context(
+            seriesContentId: seriesId,
+            seasonNumber: seasonNumber,
+            episodeContentId: detail.contentId
+        )
+    }
+
+    private func redirectEpisodeToSeries(
+        _ destination: TVSeriesDetailNavigationContextStore.Context
+    ) async {
+        let cacheKey = CacheKey.itemDetail(destination.seriesContentId)
+        if let cached: ItemDetail = ResponseCache.shared.get(cacheKey),
+           cached.type == "series" {
+            routeToSeries(destination)
+            return
+        }
+
+        do {
+            let series = try await ContinuumAPI.shared.itemDetail(
+                contentId: destination.seriesContentId
+            )
+            guard !Task.isCancelled,
+                  contentId == destination.episodeContentId else { return }
+            guard series.type == "series" else {
+                failedSeriesRedirectEpisodeContentId = destination.episodeContentId
+                return
+            }
+            ResponseCache.shared.set(series, for: cacheKey)
+            routeToSeries(destination)
+        } catch {
+            guard !Task.isCancelled,
+                  contentId == destination.episodeContentId else { return }
+            failedSeriesRedirectEpisodeContentId = destination.episodeContentId
+        }
+    }
+
+    private func routeToSeries(
+        _ destination: TVSeriesDetailNavigationContextStore.Context
+    ) {
+        guard contentId == destination.episodeContentId else { return }
+        TVSeriesDetailNavigationContextStore.stage(
+            seriesContentId: destination.seriesContentId,
+            seasonNumber: destination.seasonNumber,
+            episodeContentId: destination.episodeContentId
+        )
+        router.replaceCurrent(
+            with: .itemDetail(contentId: destination.seriesContentId)
+        )
     }
 
     private func loadEpisodeSeriesDetail(for detail: ItemDetail) async {
@@ -1131,9 +1205,10 @@ struct TVItemDetailView: View {
     }
 }
 
-/// One-shot route payload for Continue Watching. `Route.itemDetail` remains a
-/// shared iOS/tvOS destination; this tvOS-only store supplies the extra Series
-/// browse context without widening every platform's navigation enum.
+/// One-shot route payload for opening an episode in its parent Series overview.
+/// `Route.itemDetail` remains a shared iOS/tvOS destination; this tvOS-only
+/// store supplies the extra browse context without widening every platform's
+/// navigation enum.
 @MainActor
 enum TVSeriesDetailNavigationContextStore {
     struct Context: Equatable {
