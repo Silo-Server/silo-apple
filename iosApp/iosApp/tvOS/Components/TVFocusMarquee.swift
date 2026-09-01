@@ -990,7 +990,8 @@ struct TVFocusMarquee: View {
 // MARK: - Content block
 
 /// One marquee "frame": title (text first, cached logo art may swap
-/// in), badge + meta line, synopsis. The §5.4 eyebrow (source-row title)
+/// in), identity line, synopsis, enrichment, then technical badges. The
+/// §5.4 eyebrow (source-row title)
 /// was dropped by design revision — the row's own header already names
 /// the source, and the marquee leads with the title. Identity is keyed
 /// on the content id by the parent so a content change crossfades whole
@@ -1032,7 +1033,7 @@ private struct TVMarqueeBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             titleSlot
 
             metaLine
@@ -1047,6 +1048,8 @@ private struct TVMarqueeBlock: View {
             }
 
             detailLine
+
+            badgeLine
         }
         .frame(maxWidth: ContinuumTheme.Skyline.marqueeContentWidth, alignment: .leading)
         .onAppear { loadLogoIfCached() }
@@ -1125,19 +1128,56 @@ private struct TVMarqueeBlock: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        if !displayedBadges.isEmpty || !content.metaParts.isEmpty {
+        if !displayedMetaParts.isEmpty {
             HStack(spacing: 10) {
-                ForEach(displayedBadges, id: \.self) { badge in
-                    badgeChip(badge)
+                if let episodeRatingBadge {
+                    badgeChip(episodeRatingBadge)
                 }
 
-                if !content.metaParts.isEmpty {
-                    Text(content.metaParts.joined(separator: " · "))
-                        .font(.system(size: scale.metaSize, weight: .medium))
-                        .foregroundStyle(Color.continuumSecondaryText)
-                        .lineLimit(1)
+                Text(displayedMetaParts.joined(separator: " · "))
+                    .font(.system(size: scale.metaSize, weight: .medium))
+                    .foregroundStyle(Color.continuumSecondaryText)
+                    .lineLimit(1)
+            }
+            .frame(
+                maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth,
+                alignment: .leading
+            )
+        }
+    }
+
+    /// Continue Watching episodes lead with only their location and title.
+    /// Runtime and remaining-time data stay available to VoiceOver, but no
+    /// longer compete with the episode name in the visible identity row.
+    private var displayedMetaParts: [String] {
+        content.isEpisode ? Array(content.metaParts.prefix(2)) : content.metaParts
+    }
+
+    /// Episode ratings belong with episode identity, immediately before the
+    /// season/episode token. Movie ratings remain in the technical row.
+    private var episodeRatingBadge: String? {
+        content.isEpisode ? content.contentRatingBadge : nil
+    }
+
+    private var displayedTechnicalBadges: [String] {
+        guard let episodeRatingBadge else { return displayedBadges }
+        return displayedBadges.filter {
+            $0.localizedCaseInsensitiveCompare(episodeRatingBadge) != .orderedSame
+        }
+    }
+
+    /// Technical capabilities and rating sit below the async aired/cast line.
+    /// Every media item reserves the same slot, so saved-file enrichment can
+    /// update the labels without moving the Home marquee or its first row.
+    @ViewBuilder
+    private var badgeLine: some View {
+        if content.contentId != nil {
+            HStack(spacing: 10) {
+                ForEach(displayedTechnicalBadges, id: \.self) { badge in
+                    badgeChip(badge)
                 }
             }
+            .frame(height: 27, alignment: .leading)
         }
     }
 
