@@ -1746,6 +1746,10 @@ struct MainTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
+    /// For You is normally constructed lazily by TabView. Own its model at the
+    /// shell level so the existing startup single-flight can fill it before
+    /// the user taps the tab, making the destination paint immediately.
+    @State private var recommendationsViewModel = RecommendationsViewModel()
     #endif
     #if !os(macOS)
     @Environment(\.horizontalSizeClass) private var hSize
@@ -1760,6 +1764,23 @@ struct MainTabView: View {
             }
         }
         .tint(.continuumOnSurface)
+        #if os(iOS)
+        .overlay {
+            if router.presentedItemDetail != nil {
+                // Native sheets intentionally leave a narrow safe-area strip
+                // above their largest detent. Mask the live tab content there
+                // with dense glass so no logo, row or poster leaks around the
+                // rounded detail card while it is open.
+                Rectangle()
+                    .fill(.ultraThickMaterial)
+                    .overlay(Color.continuumGlassStrong.opacity(0.92))
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: router.presentedItemDetail != nil)
+        #endif
         .task(id: currentLibraryAuthority) {
             await loadVisibleLibraries(for: currentLibraryAuthority)
         }
@@ -1796,6 +1817,9 @@ struct MainTabView: View {
         // scenePhase onChange alone would miss it. Idempotent — the controller
         // guards against duplicate probes.
         .task { siloControl.attemptAutoResumeIfIdle() }
+        // Join the authenticated startup prefetch immediately and retain its
+        // decoded rows in the model TabView will later display.
+        .task { await recommendationsViewModel.loadRecommendations() }
         #endif
         .onChange(of: router.requestedTab) { _, tab in
             guard let tab else { return }
@@ -1861,6 +1885,12 @@ struct MainTabView: View {
             #endif
         }
         #if os(iOS)
+        .sheet(
+            item: $router.presentedItemDetail,
+            onDismiss: { router.dismissItemDetail() }
+        ) { presentation in
+            ItemDetailSheet(presentation: presentation, router: router)
+        }
         .sheet(isPresented: Binding(
             get: { siloControl.isShowingRemoteControl },
             set: { if !$0 { siloControl.hideRemoteControl() } }
@@ -2253,7 +2283,11 @@ struct MainTabView: View {
             SearchView()
 
         case .recommendations:
+            #if os(iOS)
+            RecommendationsView(viewModel: recommendationsViewModel)
+            #else
             RecommendationsView()
+            #endif
 
         case .calendar:
             CalendarView()
@@ -2433,3 +2467,148 @@ struct MainTabView: View {
         .continuumToolbarColorSchemeDark()
     }
 }
+
+#if os(iOS)
+/// Native bottom-presented catalog detail card. The sheet owns a small nested
+/// navigation stack for episode and Cast & Crew hops, while the tab/sidebar
+/// navigation underneath remains exactly where the user left it.
+private struct ItemDetailSheet: View {
+    let presentation: AppRouter.ItemDetailPresentation
+    @Bindable var router: AppRouter
+
+    var body: some View {
+        NavigationStack(path: $router.itemDetailPath) {
+            GeometryReader { geometry in
+                let pageHeight = geometry.size.height + geometry.safeAreaInsets.bottom
+
+                // A real paged scroll surface, not a release-triggered route
+                // swap. The adjacent detail page is physically beside the
+                // current one, so it follows the finger throughout a held
+                // drag and settles with native UIScrollView physics.
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 10) {
+                        ForEach(pageContentIDs, id: \.self) { contentID in
+                            ItemDetailView(
+                                contentId: contentID,
+                                onClose: router.dismissItemDetail
+                            )
+                            .frame(
+                                width: geometry.size.width,
+                                height: pageHeight
+                            )
+                            // Every neighbouring page remains its own card
+                            // throughout an interactive drag. The small glass
+                            // gutter exposes both rounded edges instead of
+                            // smearing two full-bleed colour fields together.
+                            // Only the presented top edge is rounded: rounding
+                            // the off-screen bottom exposed a grey material lip.
+                            .clipShape(
+                                UnevenRoundedRectangle(
+                                    topLeadingRadius: 28,
+                                    bottomLeadingRadius: 0,
+                                    bottomTrailingRadius: 0,
+                                    topTrailingRadius: 28,
+                                    style: .continuous
+                                )
+                            )
+                            .contentShape(
+                                UnevenRoundedRectangle(
+                                    topLeadingRadius: 28,
+                                    bottomLeadingRadius: 0,
+                                    bottomTrailingRadius: 0,
+                                    topTrailingRadius: 28,
+                                    style: .continuous
+                                )
+                            )
+                            .id(contentID)
+                        }
+                    }
+                    .scrollTargetLayout()
+                }
+                .scrollIndicators(.hidden)
+                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+                .scrollPosition(id: pagingSelection, anchor: .center)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .frame(height: pageHeight, alignment: .top)
+                .ignoresSafeArea(.container, edges: .bottom)
+                .task(id: currentContentID) {
+                    await prefetchAdjacentDetails()
+                }
+            }
+                .navigationDestination(for: Route.self) { route in
+                    destination(for: route)
+                }
+                .toolbarBackground(.hidden, for: .navigationBar)
+        }
+        // The sheet host reserves a bottom safe-area strip for the home
+        // indicator. Let the detail surface paint through that strip; the
+        // scroll content already owns its own bottom breathing room.
+        .ignoresSafeArea(.container, edges: .bottom)
+        // A page-sized sheet avoids the narrow form-card treatment on iPad,
+        // while the large detent raises the rounded card to the top safe area.
+        // Native pull-down dismissal still returns to the exact source page.
+        .presentationSizing(.page)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.hidden)
+        .presentationCornerRadius(28)
+        .presentationBackground(.ultraThickMaterial)
+        .presentationContentInteraction(.scrolls)
+    }
+
+    private var currentContentID: String {
+        router.presentedItemDetail?.contentId ?? presentation.contentId
+    }
+
+    private var browseSource: ItemDetailBrowseSource? {
+        router.presentedItemDetail?.browseSource ?? presentation.browseSource
+    }
+
+    private var pageContentIDs: [String] {
+        browseSource?.contentIDs ?? [currentContentID]
+    }
+
+    private var pagingSelection: Binding<String?> {
+        Binding(
+            get: { currentContentID },
+            set: { contentID in
+                guard let contentID, contentID != currentContentID else { return }
+                router.selectPresentedItemDetail(contentId: contentID)
+            }
+        )
+    }
+
+    /// Warm just the two neighbouring cards. This keeps the first sideways
+    /// swipe cache-fast without launching requests for an entire long library.
+    @MainActor
+    private func prefetchAdjacentDetails() async {
+        guard let source = browseSource,
+              let currentIndex = source.contentIDs.firstIndex(of: currentContentID)
+        else { return }
+
+        let neighborIDs = [currentIndex - 1, currentIndex + 1]
+            .filter(source.contentIDs.indices.contains)
+            .map { source.contentIDs[$0] }
+
+        for contentID in neighborIDs {
+            guard !Task.isCancelled else { return }
+            let key = CacheKey.itemDetail(contentID)
+            if let _: ItemDetail = ResponseCache.shared.get(key) { continue }
+            guard let detail = try? await ContinuumAPI.shared.itemDetail(contentId: contentID),
+                  !Task.isCancelled else { continue }
+            ResponseCache.shared.set(detail, for: key)
+        }
+    }
+
+    @ViewBuilder
+    private func destination(for route: Route) -> some View {
+        switch route {
+        case .itemDetail(let contentId, _):
+            ItemDetailView(contentId: contentId)
+        case .personDetail(let personId):
+            PersonDetailView(personId: personId)
+        default:
+            EmptyView()
+        }
+    }
+}
+#endif

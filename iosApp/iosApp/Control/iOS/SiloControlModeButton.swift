@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SiloControlModeButton: View {
     @Bindable var controller: SiloControlClient
+    var usesGlass = false
     let onChooseTarget: () -> Void
 
     var body: some View {
@@ -35,18 +36,35 @@ struct SiloControlModeButton: View {
     private func buttonLabel(isActive: Bool) -> some View {
         Image(systemName: "appletvremote.gen4")
             .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(isActive ? Color.continuumBackground : Color.continuumOnSurface)
+            .foregroundStyle(Color.continuumOnSurface)
             .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
-            .background {
-                // Chrome-free at rest (Plex-style); a filled disc appears only
-                // while actively controlling a TV so the state stays obvious.
+            .modifier(ControlModeGlass(enabled: usesGlass, isActive: isActive))
+            .contentShape(Circle())
+    }
+}
+
+private struct ControlModeGlass: ViewModifier {
+    let enabled: Bool
+    let isActive: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.siloGlass(
+                in: Circle(),
+                tint: isActive ? Color.white.opacity(0.18) : nil,
+                interactive: true
+            )
+        } else {
+            content.background {
                 if isActive {
                     Circle()
                         .fill(Color.continuumOnSurface)
                         .frame(width: 36, height: 36)
                 }
             }
-            .contentShape(Circle())
+            .foregroundStyle(isActive ? Color.continuumBackground : Color.continuumOnSurface)
+        }
     }
 }
 

@@ -38,22 +38,24 @@ struct SeriesDownloadMenuButton: View {
             )
     }
 
-    /// Glyph over caption, matching `PhoneLabeledAction`'s metrics.
+    /// Filled, borderless circle over a caption, matching
+    /// `PhoneLabeledAction`'s metrics.
     private var labeledLabel: some View {
         VStack(spacing: 6) {
             Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.to.line")
                 .font(.system(size: 19, weight: .regular))
-                .foregroundColor(isMonitored ? Color.continuumAccent : Color.continuumOnSurface)
-                .frame(height: 22)
+                .foregroundColor(Color.continuumOnSurface)
+                .frame(width: 42, height: 42)
+                .background(
+                    Circle().fill(Color.white.opacity(isMonitored ? 0.18 : 0.10))
+                )
             Text(isMonitored ? "Monitored" : "Download")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(isMonitored
-                                 ? Color.continuumAccent
-                                 : Color.continuumOnSurface.opacity(0.6))
+                .foregroundColor(Color.continuumOnSurface.opacity(isMonitored ? 0.92 : 0.6))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 58)
         .contentShape(Rectangle())
     }
 

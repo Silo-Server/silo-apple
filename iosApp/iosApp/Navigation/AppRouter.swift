@@ -1,6 +1,35 @@
 import OSLog
 import SwiftUI
 
+/// The ordered cards surrounding a detail presentation. iOS uses this to
+/// turn the open detail sheet into a small, source-aware deck: horizontal
+/// swipes move through the exact row/grid that launched it, while the source
+/// view can keep its own scroll position synchronized underneath the sheet.
+struct ItemDetailBrowseSource: Equatable {
+    let originID: String
+    let contentIDs: [String]
+
+    init(originID: String, contentIDs: [String]) {
+        self.originID = originID
+
+        var seen = Set<String>()
+        self.contentIDs = contentIDs.filter { contentID in
+            !contentID.isEmpty && seen.insert(contentID).inserted
+        }
+    }
+}
+
+private struct ItemDetailBrowseSourceKey: EnvironmentKey {
+    static let defaultValue: ItemDetailBrowseSource? = nil
+}
+
+extension EnvironmentValues {
+    var itemDetailBrowseSource: ItemDetailBrowseSource? {
+        get { self[ItemDetailBrowseSourceKey.self] }
+        set { self[ItemDetailBrowseSourceKey.self] = newValue }
+    }
+}
+
 extension Notification.Name {
     /// Posted by `HTTPClient` when a token refresh fails against the
     /// active server. `ContentView` observes it and drops to the login
@@ -84,6 +113,7 @@ class AppRouter {
             // that treats engaged PiP as a presentation handoff.
             if authState != .authenticated {
                 PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
+                dismissItemDetail()
             }
         }
     }
@@ -105,6 +135,28 @@ class AppRouter {
     /// item is visible in two rows; each card uses a unique per-instance id and
     /// records it here on tap. Transient hand-off, not observable UI state.
     @ObservationIgnored var pendingZoomSourceID: String?
+
+    // MARK: - Item Detail Presentation
+
+    /// iPhone and iPad present catalog details as a native bottom sheet instead
+    /// of pushing them into the tab or split-view navigation stack. A fresh UUID
+    /// makes reopening the same title after dismissal a new presentation while
+    /// keeping the content id itself available to the sheet root.
+    struct ItemDetailPresentation: Identifiable, Equatable {
+        let id = UUID()
+        var contentId: String
+        let browseSource: ItemDetailBrowseSource?
+
+        init(contentId: String, browseSource: ItemDetailBrowseSource? = nil) {
+            self.contentId = contentId
+            self.browseSource = browseSource
+        }
+    }
+
+    #if os(iOS)
+    var presentedItemDetail: ItemDetailPresentation?
+    var itemDetailPath = NavigationPath()
+    #endif
 
     // MARK: - Player Presentation
 
@@ -253,8 +305,78 @@ class AppRouter {
 
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {
+        #if os(iOS)
+        if case .itemDetail(let contentId, _) = route {
+            presentItemDetail(contentId: contentId)
+            return
+        }
+        #endif
+
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
+
+        #if os(iOS)
+        // Person pages reached from Cast & Crew belong to the detail card's
+        // navigation stack. Keeping them inside the sheet means Back returns to
+        // the title the user opened instead of revealing an unrelated route that
+        // was pushed behind the still-presented card.
+        if presentedItemDetail != nil,
+           case .personDetail = route {
+            itemDetailPath.append(route)
+            return
+        }
+        #endif
+
         path.append(route)
+    }
+
+    /// Open an item from an ordered card source. Existing callers can keep
+    /// using `navigate(to: .itemDetail(...))`; rows and grids that provide a
+    /// browse source opt into sideways paging without changing deep links or
+    /// nested recommendations reached from inside an already-open detail.
+    func presentItemDetail(
+        contentId: String,
+        browseSource: ItemDetailBrowseSource? = nil
+    ) {
+        #if os(iOS)
+        recordScreenBreadcrumb(target: "itemDetail", action: "present")
+        if presentedItemDetail == nil {
+            let source = browseSource.flatMap { source in
+                source.contentIDs.contains(contentId) ? source : nil
+            }
+            itemDetailPath = NavigationPath()
+            presentedItemDetail = ItemDetailPresentation(
+                contentId: contentId,
+                browseSource: source
+            )
+        } else {
+            itemDetailPath.append(Route.itemDetail(contentId: contentId))
+        }
+        #else
+        navigate(to: .itemDetail(contentId: contentId))
+        #endif
+    }
+
+    /// Select a sibling while the iOS detail card stays presented. Keeping the
+    /// presentation UUID stable prevents SwiftUI from dismissing/reopening the
+    /// sheet; only the card contents animate to the new title.
+    func selectPresentedItemDetail(contentId: String) {
+        #if os(iOS)
+        guard var presentation = presentedItemDetail,
+              presentation.contentId != contentId,
+              presentation.browseSource?.contentIDs.contains(contentId) == true
+        else { return }
+        presentation.contentId = contentId
+        presentedItemDetail = presentation
+        #endif
+    }
+
+    /// Close the complete bottom-presented detail flow and discard any nested
+    /// episode/person navigation so the next title always opens at its root.
+    func dismissItemDetail() {
+        #if os(iOS)
+        presentedItemDetail = nil
+        itemDetailPath = NavigationPath()
+        #endif
     }
 
     /// Swap the top route instead of pushing, so sideways hops between

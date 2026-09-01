@@ -44,6 +44,9 @@ struct SectionRow: View {
     var onMoveDown: (() -> Void)? = nil
     /// Live tvOS ownership gate for context-menu focus restoration.
     var focusRestorationOwner: Binding<Bool>? = nil
+    #if !os(tvOS)
+    @State private var detailBrowseOriginID = UUID().uuidString
+    #endif
 
     @State private var pendingDetailNavigationItemId: String?
     #if os(tvOS)
@@ -131,6 +134,15 @@ struct SectionRow: View {
             focusRestorationOwner: focusRestorationOwner
         )
         .onDisappear { cancelPendingDetailNavigation() }
+        #if !os(tvOS)
+        .environment(
+            \.itemDetailBrowseSource,
+            ItemDetailBrowseSource(
+                originID: detailBrowseOriginID,
+                contentIDs: section.items.map(\.contentId)
+            )
+        )
+        #endif
     }
 
     private func playItem(_ item: SectionItem) {

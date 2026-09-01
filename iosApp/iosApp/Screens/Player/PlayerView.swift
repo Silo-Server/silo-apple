@@ -930,9 +930,18 @@ private struct PlayerNextUpScreen<MiniPlayer: View>: View {
             showProgress: true,
             icon: "play.circle.fill",
             layout: .thumbnail,
+            usesProvidedThumbnailTapAction: onDeckUsesProvidedThumbnailTapAction,
             focusRequest: onDeckFocusRequest,
             onMoveUp: focusAboveOnDeck
         )
+    }
+
+    private var onDeckUsesProvidedThumbnailTapAction: Bool {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
     }
 
     private var statusLabel: String {

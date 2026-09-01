@@ -134,13 +134,17 @@ private struct HomeCardTap<Label: View>: View {
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     @Environment(\.zoomNamespace) private var zoomNamespace
     @State private var zoomInstanceID = UUID()
 
     var body: some View {
         Button {
             router.pendingZoomSourceID = zoomInstanceID.uuidString
-            router.navigate(to: .itemDetail(contentId: contentId))
+            router.presentItemDetail(
+                contentId: contentId,
+                browseSource: detailBrowseSource
+            )
         } label: {
             label()
                 .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)

@@ -8,27 +8,48 @@ struct PhoneEpisodeListRow: View {
     let episode: EpisodeListItem
     let isCurrent: Bool
     let onSelect: () -> Void
+    let onPlay: (() -> Void)?
 
     private let thumbnailWidth: CGFloat = 168
     private var thumbnailHeight: CGFloat { thumbnailWidth * 9 / 16 }
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 14) {
-                thumbnail
-                metadata
+        ZStack(alignment: .topLeading) {
+            Button(action: onSelect) {
+                HStack(alignment: .top, spacing: 14) {
+                    thumbnail
+                    metadata
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            PhoneEpisodeFormatting.accessibilityDescription(
-                for: episode,
-                isCurrent: isCurrent
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(
+                PhoneEpisodeFormatting.accessibilityDescription(
+                    for: episode,
+                    isCurrent: isCurrent
+                )
             )
-        )
+
+            if let onPlay {
+                Button(action: onPlay) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 38, height: 38)
+                        .background(.white.opacity(0.94), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .offset(
+                    x: (thumbnailWidth - 38) / 2,
+                    y: (thumbnailHeight - 38) / 2
+                )
+                .accessibilityLabel(
+                    "Play Season \(episode.seasonNumber), Episode \(episode.episodeNumber)"
+                )
+            }
+        }
     }
 
     private var thumbnail: some View {

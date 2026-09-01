@@ -8,9 +8,14 @@ import SwiftUI
 struct PhoneEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
+    var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
+    var selectsCenteredEpisode = false
+    var captionStyleOverride: CardCaptionStyle? = nil
 
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var visibleEpisodeId: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var cardWidth: CGFloat {
         240 * uiCustomization.cardPresentation.posterSize.scale
@@ -20,33 +25,63 @@ struct PhoneEpisodeRail: View {
     private let stillCornerRadius: CGFloat = 8
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: cardSpacing) {
-                    ForEach(episodes) { episode in
-                        PhoneEpisodeCard(
-                            episode: episode,
-                            isCurrent: currentContentId == episode.contentId,
-                            cardWidth: cardWidth,
-                            stillHeight: stillHeight,
-                            stillCornerRadius: stillCornerRadius,
-                            captionStyle: uiCustomization.cardPresentation.caption,
-                            onSelect: { onSelect(episode.contentId) }
-                        )
-                        .id(episode.contentId)
-                    }
-                }
-                .padding(.horizontal, ContinuumTheme.safePadding)
-                .padding(.vertical, 4)
-            }
-            .onAppear {
-                guard let id = currentContentId else { return }
-                DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: cardSpacing) {
+                ForEach(episodes) { episode in
+                    PhoneEpisodeCard(
+                        episode: episode,
+                        isCurrent: currentContentId == episode.contentId,
+                        cardWidth: cardWidth,
+                        stillHeight: stillHeight,
+                        stillCornerRadius: stillCornerRadius,
+                        captionStyle: captionStyleOverride ?? uiCustomization.cardPresentation.caption,
+                        onSelect: { onSelect(episode.contentId) },
+                        onPlay: onPlay.map { play in
+                            { play(episode.contentId) }
+                        }
+                    )
+                    .id(episode.contentId)
                 }
             }
+            .scrollTargetLayout()
+            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.vertical, 4)
+        }
+        .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+        .scrollPosition(id: $visibleEpisodeId, anchor: .center)
+        .onAppear {
+            visibleEpisodeId = currentContentId ?? episodes.first?.contentId
+        }
+        .onChange(of: episodes.map(\.contentId)) { _, newIds in
+            guard !newIds.isEmpty, !newIds.contains(visibleEpisodeId ?? "") else { return }
+            // A season replacement invalidates the previous rail id. Seed the
+            // new rail synchronously instead of animating a scroll from an id
+            // that no longer exists.
+            if let currentContentId, newIds.contains(currentContentId) {
+                visibleEpisodeId = currentContentId
+            } else {
+                visibleEpisodeId = newIds.first
+            }
+        }
+        .onChange(of: currentContentId) { _, newId in
+            guard let newId, visibleEpisodeId != newId else { return }
+            if reduceMotion {
+                visibleEpisodeId = newId
+            } else {
+                withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
+                    visibleEpisodeId = newId
+                }
+            }
+        }
+        .onScrollPhaseChange { _, newPhase in
+            guard selectsCenteredEpisode,
+                  newPhase == .idle,
+                  let visibleEpisodeId,
+                  visibleEpisodeId != currentContentId else { return }
+            // Native scroll settling has already animated the card into place.
+            // A second enclosing animation makes every dependent view animate
+            // its layout and is the source of the apparent vertical judder.
+            onSelect(visibleEpisodeId)
         }
     }
 }
@@ -59,61 +94,79 @@ private struct PhoneEpisodeCard: View {
     let stillCornerRadius: CGFloat
     let captionStyle: CardCaptionStyle
     let onSelect: () -> Void
+    let onPlay: (() -> Void)?
 
     var body: some View {
-        cardButton
+        ZStack(alignment: .top) {
+            Button(action: onSelect) {
+                cardContent
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription)
+
+            if let onPlay {
+                Button(action: onPlay) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 42, height: 42)
+                        .background(Circle().fill(Color.white.opacity(0.94)))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, (stillHeight - 42) / 2)
+                .accessibilityLabel(
+                    "Play Season \(episode.seasonNumber), Episode \(episode.episodeNumber)"
+                )
+            }
+        }
     }
 
-    private var cardButton: some View {
-        Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 8) {
-                still
-                if captionStyle.showsTitle {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(PhoneEpisodeFormatting.cardNumberLabel(for: episode))
-                                .font(.system(size: 10, weight: .bold))
-                                .tracking(1.0)
-                                .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
-                            if isCurrent {
-                                nowViewingTag
-                            }
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            still
+            if captionStyle.showsTitle {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(PhoneEpisodeFormatting.cardNumberLabel(for: episode))
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(1.0)
+                            .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                        if isCurrent {
+                            nowViewingTag
+                        }
+                    }
+
+                    Text(PhoneEpisodeFormatting.title(for: episode))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(titleColor)
+                        .lineLimit(1)
+                        .multilineTextAlignment(.leading)
+
+                    if captionStyle.showsMetadata {
+                        if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
+                            Text(metadataLine)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.continuumSecondaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                                .multilineTextAlignment(.leading)
                         }
 
-                        Text(PhoneEpisodeFormatting.title(for: episode))
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(titleColor)
-                            .lineLimit(1)
-                            .multilineTextAlignment(.leading)
-
-                        if captionStyle.showsMetadata {
-                            if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
-                                Text(metadataLine)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(Color.continuumSecondaryText)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.85)
-                                    .multilineTextAlignment(.leading)
-                            }
-
-                            if let overview = episode.overview, !overview.isEmpty {
-                                Text(overview)
-                                    .font(.system(size: 12, weight: .regular))
-                                    .foregroundStyle(Color.continuumSecondaryText)
-                                    .lineLimit(3, reservesSpace: true)
-                                    .lineSpacing(2)
-                                    .multilineTextAlignment(.leading)
-                            }
+                        if let overview = episode.overview, !overview.isEmpty {
+                            Text(overview)
+                                .font(.system(size: 12, weight: .regular))
+                                .foregroundStyle(Color.continuumSecondaryText)
+                                .lineLimit(3, reservesSpace: true)
+                                .lineSpacing(2)
+                                .multilineTextAlignment(.leading)
                         }
                     }
                 }
             }
-            .frame(width: cardWidth, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityDescription)
+        .frame(width: cardWidth, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private var titleColor: Color {
@@ -139,6 +192,7 @@ private struct PhoneEpisodeCard: View {
             AsyncImageView(
                 url: episode.stillUrl ?? "",
                 thumbhash: episode.stillThumbhash,
+                targetSize: CGSize(width: cardWidth, height: stillHeight),
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: stillHeight)
@@ -170,6 +224,7 @@ private struct PhoneEpisodeCard: View {
             RoundedRectangle(cornerRadius: stillCornerRadius)
                 .stroke(borderColor, lineWidth: borderWidth)
         )
+        .animation(.easeOut(duration: 0.18), value: isCurrent)
     }
 
     private var borderColor: Color {

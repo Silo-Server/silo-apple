@@ -13,7 +13,13 @@ struct HomeFeedRow: View {
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
+    /// Continue Watching reports only the card that has finished settling in
+    /// the center. Home uses it to change a fixed backdrop wash; no feed layout
+    /// state depends on this callback.
+    var onCenteredResumeItemChange: ((SectionItem?) -> Void)? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var visibleItemId: String?
+    @Environment(AppRouter.self) private var router
 
     private var isResume: Bool { HomeFeed.isResume(section) }
 
@@ -45,9 +51,53 @@ struct HomeFeedRow: View {
                 style: headerStyle
             )
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: cardSpacing) {
-                    ForEach(section.items) { item in
+            rowScroller
+        }
+    }
+
+    @ViewBuilder
+    private var rowScroller: some View {
+        cardsScroll
+            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            .scrollPosition(id: $visibleItemId, anchor: .center)
+            .environment(\.itemDetailBrowseSource, detailBrowseSource)
+            .onAppear {
+                let initialId = validSelectionId(
+                    preferred: visibleItemId ?? section.items.first?.contentId
+                )
+                visibleItemId = initialId
+                publishResumeSelection(initialId)
+            }
+            .onChange(of: section.items.map(\.contentId)) { _, newIds in
+                let preferred = newIds.contains(visibleItemId ?? "")
+                    ? visibleItemId
+                    : newIds.first
+                visibleItemId = preferred
+                publishResumeSelection(preferred)
+            }
+            .onScrollPhaseChange { _, newPhase in
+                guard newPhase == .idle else { return }
+                publishResumeSelection(visibleItemId)
+            }
+            #if os(iOS)
+            .onChange(of: router.presentedItemDetail) { _, presentation in
+                guard presentation?.browseSource?.originID == detailBrowseSource.originID,
+                      let contentID = presentation?.contentId,
+                      section.items.contains(where: { $0.contentId == contentID })
+                else { return }
+
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    visibleItemId = contentID
+                }
+            }
+            #endif
+    }
+
+    private var cardsScroll: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: cardSpacing) {
+                ForEach(section.items) { item in
+                    Group {
                         if usesStills {
                             HomeStillCard(
                                 item: item,
@@ -72,12 +122,36 @@ struct HomeFeedRow: View {
                             )
                         }
                     }
+                    .id(item.contentId)
                 }
-                .scrollTargetLayout()
             }
-            .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
-            .scrollClipDisabled()
+            .scrollTargetLayout()
         }
+        .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
+        .scrollClipDisabled()
+    }
+
+    private var detailBrowseSource: ItemDetailBrowseSource {
+        ItemDetailBrowseSource(
+            originID: "home:\(section.id)",
+            contentIDs: section.items.map(\.contentId)
+        )
+    }
+
+    private func validSelectionId(preferred: String?) -> String? {
+        guard let preferred,
+              section.items.contains(where: { $0.contentId == preferred }) else {
+            return section.items.first?.contentId
+        }
+        return preferred
+    }
+
+    private func publishResumeSelection(_ id: String?) {
+        guard isResume, let onCenteredResumeItemChange else { return }
+        let selected = id.flatMap { id in
+            section.items.first(where: { $0.contentId == id })
+        }
+        onCenteredResumeItemChange(selected)
     }
 
     /// "S2 · E10" for an episode drawn as a poster. Episode-discovery rows

@@ -44,14 +44,9 @@ fastlane/Preview.html
 fastlane/screenshots/
 fastlane/test_output/
 
-# Local tooling state
-# `.agents/skills` is a symlink to `.claude/skills` so non-Claude agents find the
-# same files; everything else under .agents/ is per-developer scratch.
-/.agents/*
-!/.agents/skills
-# Ignore everything in .claude/ except the committed, shared skills.
-/.claude/*
-!/.claude/skills/
+# Local agent/tooling state
+/.agents/
+/.claude/
 .codex/
 .cursor/
 .sweetpad/

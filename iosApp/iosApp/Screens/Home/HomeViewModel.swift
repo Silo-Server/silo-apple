@@ -1,11 +1,9 @@
 import Foundation
 
-#if os(tvOS)
-/// Device-local, per-server/profile Home row visibility and order for Apple
-/// TV. The server remains authoritative for which rows exist and what they
-/// contain; this projection only arranges the populated rows it returns.
-/// Unknown/new server rows append in server order and remain visible until
-/// the user chooses otherwise.
+/// Device-local, per-server/profile Home row visibility and order. The server
+/// remains authoritative for which rows exist and what they contain; this
+/// projection only arranges the rows it returns. Unknown/new server rows append
+/// in server order and remain visible until the user chooses otherwise.
 @Observable
 @MainActor
 final class HomeSectionPreferences {
@@ -137,10 +135,21 @@ final class HomeSectionPreferences {
             return nil
         }
         let serverId = ServerRegistry.shared.activeServerId ?? "default"
-        return "tvos.homeSections.v1.\(serverId).\(profileId)"
+        return "\(platformStoragePrefix).\(serverId).\(profileId)"
+    }
+
+    private static var platformStoragePrefix: String {
+        #if os(tvOS)
+        "tvos.homeSections.v1"
+        #elseif os(iOS)
+        "ios.homeSections.v1"
+        #elseif os(macOS)
+        "mac.homeSections.v1"
+        #else
+        "apple.homeSections.v1"
+        #endif
     }
 }
-#endif
 
 @Observable
 @MainActor

@@ -30,6 +30,9 @@ struct MediaRow: View {
     var loadingItemId: String? = nil
     var icon: String? = nil
     var layout: MediaRowLayout = .poster
+    /// Preserve a caller's immediate thumbnail action instead of presenting
+    /// item detail. Used by Player "On Deck"; normal media rows leave this off.
+    var usesProvidedThumbnailTapAction: Bool = false
     /// When true (and there are items), the row's first card becomes the
     /// default focus target — on initial appearance AND on user-driven
     /// d-pad entry into the row's focus section. Implemented via
@@ -332,9 +335,9 @@ struct MediaRow: View {
                 ForEach(items) { item in
                     mediaCard(for: item)
                         .overlay {
-                        if loadingItemId == item.contentId {
-                            pendingNavigationIndicator
-                        }
+                            if loadingItemId == item.contentId {
+                                pendingNavigationIndicator
+                            }
                         }
                 }
             }
@@ -404,6 +407,7 @@ struct MediaRow: View {
                 item: item,
                 showProgress: showProgress,
                 action: { onItemTap(item.contentId) },
+                usesProvidedTapAction: usesProvidedThumbnailTapAction,
                 playAction: playAction(for: item),
                 focusedItemId: rowFocusBinding,
                 contextPlayTitle: contextPlayTitle(for: item),

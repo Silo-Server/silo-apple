@@ -40,6 +40,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showResumeDialog = false
+    @State private var playWhenEpisodeIsReady = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -59,6 +60,12 @@ struct SeasonDetailContent<BelowOverview: View>: View {
         } onRestart: {
             guard let nextUp = nextUpEpisode else { return }
             onPlayEpisode(nextUp.contentId, selectedNextUpFileId, true)
+        }
+        .onChange(of: nextUpEpisode?.contentId) { _, contentID in
+            guard playWhenEpisodeIsReady, contentID != nil,
+                  let episode = nextUpEpisode else { return }
+            playWhenEpisodeIsReady = false
+            handlePlayTap(for: episode)
         }
     }
 
@@ -94,15 +101,13 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private var actionStack: some View {
         VStack(spacing: 12) {
-            if let nextUp = nextUpEpisode {
-                PhonePrimaryPillButton(
-                    icon: "play.fill",
-                    title: playButtonLabel(for: nextUp),
-                    action: { handlePlayTap(for: nextUp) },
-                    fullWidth: true
-                )
-            }
-            circleRow
+            PhonePrimaryPillButton(
+                icon: "play.fill",
+                title: nextUpEpisode.map(playButtonLabel) ?? "Play",
+                action: handlePrimaryPlayTap,
+                fullWidth: true
+            )
+            labeledActionRow
             if nextUpEpisode != nil, let effectiveNextUpVersion {
                 PhonePlaybackSelectorRow(
                     versions: nextUpVersions,
@@ -127,29 +132,40 @@ struct SeasonDetailContent<BelowOverview: View>: View {
         }
     }
 
-    private var circleRow: some View {
-        HStack(spacing: 14) {
-            PhoneCircleActionButton(
+    private func handlePrimaryPlayTap() {
+        guard let nextUpEpisode else {
+            playWhenEpisodeIsReady = true
+            return
+        }
+        handlePlayTap(for: nextUpEpisode)
+    }
+
+    private var labeledActionRow: some View {
+        PhoneLabeledActionRow {
+            PhoneLabeledAction(
                 icon: "heart",
                 iconActive: "heart.fill",
                 isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
+                label: "Favorite",
+                accessibilityLabelOverride: isFavorite ? "Remove from favorites" : "Add to favorites",
                 action: onToggleFavorite
             )
 
-            PhoneCircleActionButton(
+            PhoneLabeledAction(
                 icon: "bookmark",
                 iconActive: "bookmark.fill",
                 isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                label: "Watchlist",
+                accessibilityLabelOverride: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
                 action: onToggleWatchlist
             )
 
-            PhoneCircleActionButton(
+            PhoneLabeledAction(
                 icon: "checkmark.circle",
                 iconActive: "checkmark.circle.fill",
                 isActive: isWatched,
-                accessibilityLabel: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                label: "Watched",
+                accessibilityLabelOverride: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
                 action: onToggleWatched
             )
 
@@ -157,12 +173,13 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                 SeriesDownloadMenuButton(
                     detail: detail,
                     seasons: seasons,
-                    selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber })
+                    selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber }),
+                    style: .labeled
                 )
             }
 
             if let seriesId = detail.seriesId {
-                PhoneCircleMenuButton(accessibilityLabel: "More options") {
+                PhoneLabeledMenu(label: "More") {
                     Button {
                         onNavigateToItem(seriesId)
                     } label: {
@@ -230,7 +247,15 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private var episodesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(label: "This Season", title: "Episodes")
+            if !seasons.isEmpty {
+                PhoneSeasonChips(
+                    seasons: seasons,
+                    selected: selectedSeason,
+                    onSelect: onSelectSeason
+                )
+            }
+
+            PhoneSectionHeader(title: seasonEpisodeSectionTitle)
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
             PhoneSeasonEpisodeBrowser(
@@ -241,9 +266,21 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                 isLoadingEpisodes: isLoadingEpisodes,
                 onSelectSeason: onSelectSeason,
                 onSelectEpisode: onEpisodeTap,
+                showsSeasonSelector: false,
                 allowsSeasonPaging: false
             )
         }
+    }
+
+    private var seasonEpisodeSectionTitle: String {
+        let season = selectedSeason ?? seasons.first(where: {
+            $0.seasonNumber == detail.seasonNumber
+        })
+        guard let season else { return "Episodes" }
+        let label = season.seasonNumber == 0
+            ? (season.title ?? "Specials")
+            : "Season \(season.seasonNumber)"
+        return "\(label) Episodes"
     }
 
     @ViewBuilder
