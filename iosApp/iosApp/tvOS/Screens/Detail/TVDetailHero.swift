@@ -81,10 +81,10 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Optional "Starring A, B, C" line floated on the right of the hero
     /// at mid-height. Hidden when nil.
     let starringText: String?
-    /// Optional, non-interactive playback readout shown directly below the
-    /// credits. Series overview uses this to disclose the remembered version
-    /// that Play will launch without adding a second selector to the page.
-    let playbackSummaryText: String?
+    /// Non-interactive playback readout shown directly below the credits. It
+    /// reserves a stable slot while an episode's playback detail is loading,
+    /// so changing carousel focus never moves the persistent action row.
+    let playbackSummary: TVPlaybackSelectionSummary
     /// A compact editorial header can retain the standard Movie backdrop
     /// geometry independently of its own layout height. Nil keeps both heights
     /// coupled, which is the default behavior for every other detail page.
@@ -95,11 +95,25 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// same leading/top anchor while long episode copy wraps before it reaches
     /// the backdrop subject.
     var editorialContentWidth: CGFloat = TVDetailLayout.heroContentWidth
+    /// Optional fixed footprint for the complete editorial stack. Series uses
+    /// this to keep the action row on one baseline in Show and Season modes;
+    /// changing episode text may never reflow the controls below it.
+    var editorialReservedHeight: CGFloat? = nil
+    /// Fixed metadata slot used by Series because Show facts and episode facts
+    /// have different intrinsic widths and availability.
+    var metadataReservedHeight: CGFloat = 0
     /// Reserves a stable synopsis footprint while adjacent episodes swap in.
     /// This keeps the selector and season tabs from moving when summaries have
     /// different lengths.
     var synopsisReservedHeight: CGFloat = 0
-    /// Series keeps its compact 520-point layout but lets the standard Movie
+    /// Keeps the playback summary on one baseline whether the Show credit is
+    /// present or the focused episode has no credit of its own.
+    var creditReservedHeight: CGFloat = 0
+    /// Vertical distance between editorial metadata and the hero controls.
+    /// Series tightens this inside its fixed hero so Seasons gains clearance
+    /// without moving the episode carousel down.
+    var actionSpacing: CGFloat = 18
+    /// Series keeps its compact layout but lets the standard Movie
     /// backdrop fade finish behind the season row. Movies retain the existing
     /// clipped hero through the default.
     var extendsBackdropFadeBelowHero = false
@@ -197,8 +211,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     // MARK: - Content column
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            editorialColumn
+        VStack(alignment: .leading, spacing: actionSpacing) {
+            reservedEditorialColumn
 
             // Give the action cluster the full hero width with leading
             // content (instead of `HStack { actions(); Spacer() }`) so the
@@ -221,39 +235,130 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         )
     }
 
+    @ViewBuilder
+    private var reservedEditorialColumn: some View {
+        if let editorialReservedHeight {
+            ZStack(alignment: .topLeading) {
+                editorialPrimaryInformationColumn
+                    .frame(
+                        height: max(
+                            0,
+                            editorialReservedHeight
+                                - fixedDisclosureReservedHeight
+                                - fixedDisclosureSpacing
+                        ),
+                        alignment: .topLeading
+                    )
+                    .clipped()
+
+                // The episode credit and playback readout are one bottom-locked
+                // disclosure block. Different synopsis lengths can no longer
+                // move Starring, Version, Audio, Subtitles, or the action row.
+                fixedDisclosureColumn
+                    .frame(
+                        width: editorialContentWidth,
+                        height: editorialReservedHeight,
+                        alignment: .bottomLeading
+                    )
+            }
+            .frame(
+                width: editorialContentWidth,
+                height: editorialReservedHeight,
+                alignment: .topLeading
+            )
+            .clipped()
+        } else {
+            editorialColumn
+        }
+    }
+
     private var editorialColumn: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            editorialPrimaryInformationColumn
+            creditBlock
+            TVPlaybackSelectionSummaryView(summary: playbackSummary)
+        }
+        .frame(maxWidth: editorialContentWidth, alignment: .leading)
+    }
+
+    private var editorialPrimaryInformationColumn: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let eyebrow, !eyebrow.isEmpty {
                 TVHeroEyebrow(text: eyebrow)
             }
             titleBlock
                 .padding(.top, eyebrow == nil ? 0 : 2)
-            metadataBlock
-            if let overview, !overview.isEmpty {
-                TVExpandableSynopsis(overview: overview)
-                    .frame(
-                        minHeight: synopsisReservedHeight,
-                        alignment: .topLeading
-                    )
-            }
+            reservedMetadataBlock
+            synopsisBlock
             belowSynopsis()
-            if let starringText, !starringText.isEmpty {
-                heroCredit(starringText)
-            }
-            if let playbackSummaryText, !playbackSummaryText.isEmpty {
-                Text(playbackSummaryText)
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(Color.white.opacity(0.62))
-                    .lineLimit(1)
-                    .contentTransition(.opacity)
-                    .animation(
-                        .easeInOut(duration: ContinuumTheme.fastDuration),
-                        value: playbackSummaryText
-                    )
-                    .accessibilityLabel("Playback: \(playbackSummaryText)")
-            }
         }
         .frame(maxWidth: editorialContentWidth, alignment: .leading)
+    }
+
+    private var fixedDisclosureColumn: some View {
+        VStack(alignment: .leading, spacing: creditSummarySpacing) {
+            creditBlock
+            TVPlaybackSelectionSummaryView(summary: playbackSummary)
+                .frame(
+                    height: playbackSummaryReservedHeight,
+                    alignment: .topLeading
+                )
+        }
+        // Episode focus can replace all four strings in one model update. This
+        // block is intentionally static: values change in place without an
+        // inherited layout animation that makes the rows appear to bounce.
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
+    }
+
+    private var playbackSummaryReservedHeight: CGFloat { 44 }
+    private var creditSummarySpacing: CGFloat { creditReservedHeight > 0 ? 8 : 0 }
+    private var fixedDisclosureReservedHeight: CGFloat {
+        creditReservedHeight + creditSummarySpacing + playbackSummaryReservedHeight
+    }
+    private var fixedDisclosureSpacing: CGFloat { 4 }
+
+    @ViewBuilder
+    private var reservedMetadataBlock: some View {
+        if metadataReservedHeight > 0 {
+            metadataBlock
+                .frame(height: metadataReservedHeight, alignment: .leading)
+                .clipped()
+        } else {
+            metadataBlock
+        }
+    }
+
+    @ViewBuilder
+    private var synopsisBlock: some View {
+        if synopsisReservedHeight > 0 {
+            Group {
+                if let overview, !overview.isEmpty {
+                    TVExpandableSynopsis(overview: overview)
+                }
+            }
+            .frame(height: synopsisReservedHeight, alignment: .topLeading)
+            .clipped()
+        } else if let overview, !overview.isEmpty {
+            TVExpandableSynopsis(overview: overview)
+        }
+    }
+
+    @ViewBuilder
+    private var creditBlock: some View {
+        if creditReservedHeight > 0 {
+            Group {
+                if let starringText, !starringText.isEmpty {
+                    heroCredit(starringText)
+                }
+            }
+            .frame(height: creditReservedHeight, alignment: .leading)
+            .clipped()
+        } else if let starringText, !starringText.isEmpty {
+            heroCredit(starringText)
+        }
     }
 
     @ViewBuilder
@@ -657,7 +762,6 @@ enum TVHeroMetadata {
             guard !directors.isEmpty else { return nil }
             return "Directed by " + directors.prefix(2).joined(separator: ", ")
         }
-        if detail.type == "episode" { return nil }
         guard let cast = detail.cast, !cast.isEmpty else { return nil }
         let names = cast.prefix(3).map(\.name)
         guard !names.isEmpty else { return nil }
@@ -749,6 +853,76 @@ enum TVHeroMetadata {
             return "\(minutes / 60)h \(minutes % 60)m"
         }
         return "\(minutes) min"
+    }
+}
+
+/// Fixed-width readout matching the Android TV detail branch. Labels stay in
+/// place and unresolved values render quiet skeletons while the newly focused
+/// episode's playback detail arrives.
+private struct TVPlaybackSelectionSummaryView: View {
+    let summary: TVPlaybackSelectionSummary
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            summaryItem(
+                label: "VERSION",
+                value: summary.version,
+                slotWidth: 245,
+                placeholderWidth: 100
+            )
+            summaryItem(
+                label: "AUDIO",
+                value: summary.audio,
+                slotWidth: 285,
+                placeholderWidth: 130
+            )
+            summaryItem(
+                label: "SUBTITLES",
+                value: summary.subtitles,
+                slotWidth: 264,
+                placeholderWidth: 60
+            )
+        }
+        // This matches the compact no-Restart action-row footprint. Starts stay
+        // fixed between episodes, while an unusually long value wraps inside
+        // its own slot instead of extending into the backdrop artwork.
+        .frame(width: 810, height: 44, alignment: .topLeading)
+    }
+
+    private func summaryItem(
+        label: String,
+        value: String?,
+        slotWidth: CGFloat,
+        placeholderWidth: CGFloat
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label)
+                .font(.system(size: 18, weight: .bold))
+                .tracking(0.9)
+                .foregroundColor(Color.white.opacity(0.48))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Group {
+                if let value {
+                    Text(value)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(Color.white.opacity(0.82))
+                        .lineLimit(2)
+                        .allowsTightening(true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color.white.opacity(0.14))
+                        .frame(width: placeholderWidth, height: 14)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .frame(width: slotWidth, height: 44, alignment: .topLeading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label.capitalized), \(value ?? "loading")")
     }
 }
 #endif

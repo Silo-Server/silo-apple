@@ -101,14 +101,20 @@ struct TVItemDetailView: View {
             }
         }
         .task(id: contentId) {
+            let navigationContext = TVSeriesDetailNavigationContextStore.take(
+                for: contentId
+            )
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
-            activeSeriesEpisodeContentId = nil
+            activeSeriesEpisodeContentId = navigationContext?.episodeContentId
             episodeSeriesDetail = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
             await viewModel.loadDetail(contentId: contentId)
+            if let navigationContext, !Task.isCancelled {
+                await applySeriesNavigationContext(navigationContext)
+            }
             seedSubtitleOverrideIfNeeded()
         }
     }
@@ -119,6 +125,24 @@ struct TVItemDetailView: View {
     private var preferredVersionFileId: Int? {
         get { viewModel.preferredVersionFileId }
         nonmutating set { viewModel.preferredVersionFileId = newValue }
+    }
+
+    /// Continue Watching episodes open the combined Series page at their exact
+    /// season and episode. The marquee has normally warmed this hierarchy, but
+    /// this post-load resolution is authoritative when cached preference state
+    /// points at a different in-progress season.
+    private func applySeriesNavigationContext(
+        _ context: TVSeriesDetailNavigationContextStore.Context
+    ) async {
+        guard viewModel.detail?.type == "series" else { return }
+        if viewModel.selectedSeason?.seasonNumber != context.seasonNumber,
+           let season = viewModel.seasons.first(where: {
+               $0.seasonNumber == context.seasonNumber
+           }) {
+            await viewModel.selectSeason(season)
+        }
+        guard !Task.isCancelled else { return }
+        activeSeriesEpisodeContentId = context.episodeContentId
     }
 
     private var preferredAudioTrackIndex: Int? {
@@ -1104,6 +1128,38 @@ struct TVItemDetailView: View {
         } catch {
             return nil
         }
+    }
+}
+
+/// One-shot route payload for Continue Watching. `Route.itemDetail` remains a
+/// shared iOS/tvOS destination; this tvOS-only store supplies the extra Series
+/// browse context without widening every platform's navigation enum.
+@MainActor
+enum TVSeriesDetailNavigationContextStore {
+    struct Context: Equatable {
+        let seriesContentId: String
+        let seasonNumber: Int
+        let episodeContentId: String
+    }
+
+    private static var pending: Context?
+
+    static func stage(
+        seriesContentId: String,
+        seasonNumber: Int,
+        episodeContentId: String
+    ) {
+        pending = Context(
+            seriesContentId: seriesContentId,
+            seasonNumber: seasonNumber,
+            episodeContentId: episodeContentId
+        )
+    }
+
+    static func take(for contentId: String) -> Context? {
+        guard pending?.seriesContentId == contentId else { return nil }
+        defer { pending = nil }
+        return pending
     }
 }
 #endif

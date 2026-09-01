@@ -24,6 +24,9 @@ struct SectionRow: View {
     /// when an unrelated view (e.g. the tvOS top menu) hands focus down into
     /// this row rather than the user d-padding into it.
     var focusRequest: Int = 0
+    /// tvOS detail-pop token forwarded to `MediaRow`; the row's ownership gate
+    /// ensures only the launch row restores its exact previously focused card.
+    var detailReturnFocusRequest: Int = 0
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: card-focus reports forwarded from `MediaRow` so hosts
     /// can drive the Skyline focus marquee with `(item, row title)`.
@@ -103,8 +106,10 @@ struct SectionRow: View {
             prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
             defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,
+            detailReturnFocusRequest: detailReturnFocusRequest,
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
-            onOpenContextDetail: contextDetailAction,
+            onOpenContextDetail: nil,
+            showsPlayInContextMenu: isContinueWatching,
             onSetWatched: { item, played in
                 await setWatched(item, played: played)
             },
@@ -129,34 +134,33 @@ struct SectionRow: View {
         #endif
     }
 
-    /// Continue Watching is a resume surface on tvOS: Select and Play/Pause
-    /// both resume the leaf immediately. Every other row keeps the existing
-    /// Select → detail behavior.
+    /// Continue Watching Select opens context instead of immediately playing:
+    /// episodes land on their parent Series with the exact season and episode
+    /// active, while movies retain their own detail page. Direct Resume/Play
+    /// remains available from the remote Play/Pause command and long press.
     private func selectItem(_ contentId: String) {
         #if os(tvOS)
         if isContinueWatching,
-           let item = section.items.first(where: { $0.contentId == contentId }),
-           SiloMediaType.isDirectlyPlayable(item.type) {
-            playItem(item)
+           let item = section.items.first(where: { $0.contentId == contentId }) {
+            let isEpisode = item.type.lowercased() == "episode"
+                || item.episodeNumber != nil
+            if isEpisode,
+               let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !seriesId.isEmpty,
+               let seasonNumber = item.seasonNumber {
+                TVSeriesDetailNavigationContextStore.stage(
+                    seriesContentId: seriesId,
+                    seasonNumber: seasonNumber,
+                    episodeContentId: item.contentId
+                )
+                onItemTap(seriesId)
+            } else {
+                onItemTap(item.contentId)
+            }
             return
         }
         #endif
         onItemTap(contentId)
-    }
-
-    private var contextDetailAction: ((SectionItem) -> Void)? {
-        #if os(tvOS)
-        guard isContinueWatching else { return nil }
-        return { item in
-            let isSeriesItem = SiloMediaType.isSeries(item.type)
-                || item.type.lowercased() == "episode"
-                || item.type.lowercased() == "season"
-            let targetId = isSeriesItem ? (item.seriesId ?? item.contentId) : item.contentId
-            onItemTap(targetId)
-        }
-        #else
-        return nil
-        #endif
     }
 
     /// Home injects a model-owned mutation so its membership-driven rows and

@@ -76,7 +76,20 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         overview: detail.overview,
                         factsLine: [],
                         starringText: TVHeroMetadata.starringText(from: detail),
-                        playbackSummaryText: nil,
+                        playbackSummary: TVPlaybackSelectionSummary.make(
+                            currentVersion: effectiveNextUpVersion,
+                            selectedVersionFileId: selectedNextUpFileId,
+                            selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+                            selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                            subtitleMode: nextUpSubtitleOverrideCleared
+                                ? nil
+                                : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                            subtitleSignature: nextUpSubtitleOverrideCleared
+                                ? nil
+                                : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                            showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
+                                ?? false
+                        ),
                         actions: { actionColumn },
                         belowSynopsis: belowSynopsis
                     )
@@ -111,24 +124,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            actionRow
-            if nextUpEpisode != nil {
-                TVPlaybackSelectorRow(
-                    versions: nextUpVersions,
-                    currentVersion: effectiveNextUpVersion,
-                    selectedVersionFileId: selectedNextUpFileId,
-                    selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    subtitleMode: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleMode,
-                    subtitleSignature: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
-                    onSelectVersion: onSelectNextUpVersion,
-                    onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
-                )
-            }
-        }
+        actionRow
     }
 
     private var nextUpVersions: [FileVersion] {
@@ -151,35 +147,54 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     onPlayEpisode(nextUp.contentId, selectedNextUpFileId, true)
                 }
                 : nil,
-            isFavorite: isFavorite,
-            onToggleFavorite: onToggleFavorite,
             inWatchlist: inWatchlist,
             onToggleWatchlist: onToggleWatchlist,
-            isWatched: isWatched,
-            watchedLabelMark: "Mark Season Watched",
-            watchedLabelUnmark: "Mark Season Unwatched",
-            onToggleWatched: onToggleWatched,
-            showsWatchedAction: true,
             focusResetKey: detail.contentId,
             initialFocusScope: .season(key: selectedSeason?.contentId),
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
-            moreMenu: {
-                if hasMoreMenu {
-                    moreMenu
+            playbackSelectors: {
+                if nextUpEpisode != nil {
+                    TVPlaybackActionSelectors(
+                        versions: nextUpVersions,
+                        currentVersion: effectiveNextUpVersion,
+                        selectedVersionFileId: selectedNextUpFileId,
+                        selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+                        selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                        subtitleMode: nextUpSubtitleOverrideCleared
+                            ? nil
+                            : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                        subtitleSignature: nextUpSubtitleOverrideCleared
+                            ? nil
+                            : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                        showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
+                            ?? false,
+                        onSelectVersion: onSelectNextUpVersion,
+                        onSelectAudioTrack: onSelectNextUpAudioTrack,
+                        onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+                    )
                 }
-            }
+            },
+            moreMenu: { moreMenu }
         )
-    }
-
-    private var hasMoreMenu: Bool {
-        detail.seriesId != nil
     }
 
     @ViewBuilder
     private var moreMenu: some View {
         TVCircleMenuButton(accessibilityLabel: "More options") {
+            Button(action: onToggleFavorite) {
+                Label(
+                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: isFavorite ? "heart.fill" : "heart"
+                )
+            }
+            Button(action: onToggleWatched) {
+                Label(
+                    isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                    systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                )
+            }
             if let seriesId = detail.seriesId {
                 Button {
                     onNavigateToItem(seriesId)

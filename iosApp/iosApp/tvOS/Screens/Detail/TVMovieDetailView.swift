@@ -90,7 +90,19 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                             overview: detail.overview,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             starringText: TVHeroMetadata.starringText(from: detail),
-                            playbackSummaryText: nil,
+                            playbackSummary: TVPlaybackSelectionSummary.make(
+                                currentVersion: currentVersion,
+                                selectedVersionFileId: selectedVersionFileId,
+                                selectedAudioTrackIndex: selectedAudioTrackIndex,
+                                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                                subtitleMode: subtitleOverrideCleared
+                                    ? nil
+                                    : detail.effectiveSubtitleMode,
+                                subtitleSignature: subtitleOverrideCleared
+                                    ? nil
+                                    : detail.effectiveSubtitleTrackSignature,
+                                showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false
+                            ),
                             actions: { actionColumn },
                             belowSynopsis: belowSynopsis
                         )
@@ -139,23 +151,6 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     private var actionColumn: some View {
         VStack(alignment: .leading, spacing: 24) {
             actionRow
-            TVPlaybackSelectorRow(
-                versions: availableVersions,
-                currentVersion: currentVersion,
-                selectedVersionFileId: selectedVersionFileId,
-                selectedAudioTrackIndex: selectedAudioTrackIndex,
-                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-                subtitleMode: subtitleOverrideCleared ? nil : detail.effectiveSubtitleMode,
-                subtitleSignature: subtitleOverrideCleared ? nil : detail.effectiveSubtitleTrackSignature,
-                showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false,
-                expandsAsGroup: true,
-                stabilizesFocusMotion: true,
-                pinsLeadingEdgeOnExpansion: true,
-                prefersVersionFocusOnEntry: true,
-                onSelectVersion: onSelectVersion,
-                onSelectAudioTrack: onSelectAudioTrack,
-                onSelectSubtitleTrack: onSelectSubtitleTrack
-            )
             if let trailerFetchStatus {
                 // Non-focusable readout, so it adds no stop to the action
                 // column's focus traversal.
@@ -174,40 +169,39 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             playSubtitle: nil,
             onPlay: { onPlay(false) },
             onStartOver: hasResumeProgress ? { onPlay(true) } : nil,
-            isFavorite: isFavorite,
-            onToggleFavorite: onToggleFavorite,
             inWatchlist: inWatchlist,
             onToggleWatchlist: onToggleWatchlist,
-            isWatched: isWatched,
-            watchedLabelMark: watchedLabelMark,
-            watchedLabelUnmark: watchedLabelUnmark,
-            onToggleWatched: onToggleWatched,
-            showsWatchedAction: true,
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
-            moreMenu: {
-                if hasMoreMenu {
-                    moreMenu
-                }
-            }
+            primaryButtonWidth: 340,
+            playbackSelectors: {
+                TVPlaybackActionSelectors(
+                    versions: availableVersions,
+                    currentVersion: currentVersion,
+                    selectedVersionFileId: selectedVersionFileId,
+                    selectedAudioTrackIndex: selectedAudioTrackIndex,
+                    selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                    subtitleMode: subtitleOverrideCleared
+                        ? nil
+                        : detail.effectiveSubtitleMode,
+                    subtitleSignature: subtitleOverrideCleared
+                        ? nil
+                        : detail.effectiveSubtitleTrackSignature,
+                    showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false,
+                    onSelectVersion: onSelectVersion,
+                    onSelectAudioTrack: onSelectAudioTrack,
+                    onSelectSubtitleTrack: onSelectSubtitleTrack
+                )
+            },
+            moreMenu: { moreMenu }
         )
     }
 
     // MARK: - More menu
-
-    private var hasOverflowNavigation: Bool {
-        detail.type == "episode" && detail.seriesId != nil
-    }
-
-    /// The ellipsis now also appears on movie pages, which previously had
-    /// no overflow entries at all — "Find Trailers" is the first.
-    private var hasMoreMenu: Bool {
-        hasOverflowNavigation || supportsTrailerFetch
-    }
 
     @ViewBuilder
     private var moreMenu: some View {
@@ -215,6 +209,18 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
             accessibilityLabel: "More options",
             stabilizesFocusMotion: true
         ) {
+            Button(action: onToggleFavorite) {
+                Label(
+                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: isFavorite ? "heart.fill" : "heart"
+                )
+            }
+            Button(action: onToggleWatched) {
+                Label(
+                    isWatched ? watchedLabelUnmark : watchedLabelMark,
+                    systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                )
+            }
             if supportsTrailerFetch {
                 Button(action: onFindTrailers) {
                     Label("Find Trailers", systemImage: "film.stack")

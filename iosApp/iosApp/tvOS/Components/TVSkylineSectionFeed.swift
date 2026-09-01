@@ -23,6 +23,9 @@ struct TVSkylineSectionFeed: View {
     var contentVerticalOffset: CGFloat = 0
     /// Focus hand-down token from the shell — claims the first card on entry.
     var focusRequest: Int = 0
+    /// Return token from a card-pushed detail page. Every row receives it, but
+    /// only the row that owned focus before the push may reclaim its last card.
+    var detailReturnFocusRequest: Int = 0
     /// Whether the top menu currently holds focus. A late content load must
     /// not steal focus while the user is up in the menu.
     var isTopMenuFocused: Bool = false
@@ -162,6 +165,7 @@ struct TVSkylineSectionFeed: View {
             prefersDefaultFocusOnFirstItem: isFirstRow,
             defaultFocusPriority: .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
+            detailReturnFocusRequest: detailReturnFocusRequest,
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
             onItemFocus: { item in
                 focusRestorationOwnerSectionId = section.id
@@ -172,7 +176,14 @@ struct TVSkylineSectionFeed: View {
             onMoveDown: nil,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
-                set: { _ in }
+                set: { ownsRestoration in
+                    // A row may reassert ownership while its context menu is
+                    // dismissing. Ignore false writes—the next real card focus,
+                    // top-menu focus, or row change remains authoritative.
+                    if ownsRestoration {
+                        focusRestorationOwnerSectionId = section.id
+                    }
+                }
             )
         )
     }

@@ -1,6 +1,20 @@
 #if os(tvOS)
 import SwiftUI
 
+/// The root shell supplies this only for pushed tvOS detail routes. Up from
+/// the hero action row is an intentional focus boundary: it returns to the
+/// root and gives ownership to the persistent top menu.
+private struct TVDetailTopMenuReturnKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var tvDetailTopMenuReturn: (() -> Void)? {
+        get { self[TVDetailTopMenuReturnKey.self] }
+        set { self[TVDetailTopMenuReturnKey.self] = newValue }
+    }
+}
+
 // MARK: - Primary pill
 
 /// VidHub-style primary play button. Solid white, large, dominant —
@@ -10,6 +24,7 @@ struct TVPrimaryPillButton: View {
     let title: String
     var subtitle: String? = nil
     var stabilizesFocusMotion = false
+    var fixedWidth: CGFloat? = nil
     let action: () -> Void
     /// Optional focus binding so the owning detail view can both observe and
     /// claim this button's focus. Combined with `.defaultFocus(…priority:
@@ -31,7 +46,8 @@ struct TVPrimaryPillButton: View {
             TVPillButtonStyle(
                 kind: .primary,
                 focusTreatment: .compact,
-                stabilizesFocusMotion: stabilizesFocusMotion
+                stabilizesFocusMotion: stabilizesFocusMotion,
+                fixedWidth: fixedWidth
             )
         )
         .applyOptionalFocus(focused)
@@ -258,48 +274,17 @@ struct TVCircleActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            TVExpandingCircleLabel(
-                icon: resolvedIcon,
-                title: title,
+            Image(systemName: resolvedIcon)
+                .font(.system(size: 31, weight: .semibold))
+                .frame(width: 38, height: 38, alignment: .center)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(
+            TVCircleButtonStyle(
                 stabilizesFocusMotion: stabilizesFocusMotion
             )
-        }
-        .buttonStyle(TVPillButtonStyle(
-            kind: .secondary,
-            focusTreatment: .compact,
-            collapsesWhenUnfocused: true,
-            stabilizesFocusMotion: stabilizesFocusMotion
-        ))
+        )
         .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-private struct TVExpandingCircleLabel: View {
-    let icon: String
-    let title: String
-    let stabilizesFocusMotion: Bool
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.system(size: 31, weight: .semibold))
-                .frame(width: 36, height: 36, alignment: .center)
-                .contentTransition(.symbolEffect(.replace))
-            if isFocused && !stabilizesFocusMotion {
-                Text(title)
-                    .font(.system(size: 25, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .transition(
-                        stabilizesFocusMotion
-                            ? .opacity
-                            : .opacity.combined(with: .move(edge: .leading))
-                    )
-            }
-        }
-        .animation(.easeInOut(duration: 0.18), value: isFocused)
     }
 }
 
@@ -308,7 +293,7 @@ private struct TVExpandingCircleLabel: View {
 /// Shared native focus row for movie, episode, season and series detail pages.
 /// The only imperative focus work is a bounded page-entry retry for Play;
 /// directional movement remains owned by the tvOS focus engine.
-struct TVDetailActionRow<MoreMenu: View>: View {
+struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     enum InitialFocusScope: Equatable {
         case page
         case season(key: String?)
@@ -316,10 +301,9 @@ struct TVDetailActionRow<MoreMenu: View>: View {
 
     private enum ActionID: Hashable {
         case play
+        case playbackSelectors
         case startOver
-        case favorite
         case watchlist
-        case watched
         case more
     }
 
@@ -327,15 +311,8 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     let playSubtitle: String?
     let onPlay: () -> Void
     let onStartOver: (() -> Void)?
-    let isFavorite: Bool
-    let onToggleFavorite: () -> Void
     let inWatchlist: Bool
     let onToggleWatchlist: () -> Void
-    let isWatched: Bool
-    let watchedLabelMark: String
-    let watchedLabelUnmark: String
-    let onToggleWatched: () -> Void
-    let showsWatchedAction: Bool
     /// Stable identity for the detail page. A newly opened content page gets
     /// one bounded Play-focus claim; changing seasons within that page does
     /// not steal focus back from the season row.
@@ -348,26 +325,34 @@ struct TVDetailActionRow<MoreMenu: View>: View {
     /// stays a labeled pill; secondary actions retain fixed icon-only circles
     /// so focus changes never move the row or its neighboring controls.
     var stabilizesFocusMotion = false
+    /// Series reserves one compact width across Play/Resume episode labels.
+    /// Movies leave this nil so short labels use their natural pill width.
+    var primaryButtonWidth: CGFloat? = nil
+    @ViewBuilder let playbackSelectors: () -> PlaybackSelectors
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.tvDetailTopMenuReturn) private var returnToTopMenu
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
     @FocusState private var focusedAction: ActionID?
+    @FocusState private var playbackSelectorsFocused: Bool
 
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
-            if let playTitle {
+            if playTitle != nil || stabilizesFocusMotion {
                 actionSlot {
                     TVPrimaryPillButton(
                         icon: "play.fill",
-                        title: playTitle,
+                        title: playTitle ?? "Play",
                         subtitle: playSubtitle,
                         stabilizesFocusMotion: stabilizesFocusMotion,
+                        fixedWidth: primaryButtonWidth,
                         action: onPlay,
                         focused: playFocused
                     )
+                    .disabled(playTitle == nil)
                     .focused($focusedAction, equals: .play)
                     .onGeometryChange(for: Bool.self) { proxy in
                         proxy.size.width > 0 && proxy.size.height > 0
@@ -377,33 +362,23 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                     }
                 }
 
+                actionSlot {
+                    playbackSelectors()
+                        .focused($playbackSelectorsFocused)
+                }
+
                 if let onStartOver {
                     actionSlot {
-                        TVSecondaryPillButton(
+                        TVCircleActionButton(
                             icon: "backward.end.fill",
                             title: "Start Over",
-                            collapsesWhenUnfocused: true,
+                            accessibilityLabel: "Start Over",
                             stabilizesFocusMotion: stabilizesFocusMotion,
                             action: onStartOver
                         )
                         .focused($focusedAction, equals: .startOver)
                     }
                 }
-            }
-
-            actionSlot {
-                TVCircleActionButton(
-                    icon: "heart",
-                    iconActive: "heart.fill",
-                    isActive: isFavorite,
-                    title: stabilizesFocusMotion
-                        ? "Favorite"
-                        : (isFavorite ? "Remove Favorite" : "Favorites"),
-                    accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                    stabilizesFocusMotion: stabilizesFocusMotion,
-                    action: onToggleFavorite
-                )
-                .focused($focusedAction, equals: .favorite)
             }
 
             actionSlot {
@@ -421,23 +396,6 @@ struct TVDetailActionRow<MoreMenu: View>: View {
                 .focused($focusedAction, equals: .watchlist)
             }
 
-            if showsWatchedAction {
-                actionSlot {
-                    TVCircleActionButton(
-                        icon: "checkmark.circle",
-                        iconActive: "checkmark.circle.fill",
-                        isActive: isWatched,
-                        title: stabilizesFocusMotion
-                            ? "Watched"
-                            : (isWatched ? watchedLabelUnmark : watchedLabelMark),
-                        accessibilityLabel: isWatched ? watchedLabelUnmark : watchedLabelMark,
-                        stabilizesFocusMotion: stabilizesFocusMotion,
-                        action: onToggleWatched
-                    )
-                    .focused($focusedAction, equals: .watched)
-                }
-            }
-
             actionSlot {
                 moreMenu()
                     .focused($focusedAction, equals: .more)
@@ -446,6 +404,20 @@ struct TVDetailActionRow<MoreMenu: View>: View {
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        .onMoveCommand { direction in
+            // This row is the top boundary of the detail focus graph. Keep
+            // left/right native within the row; only Up changes ownership.
+            if direction == .up {
+                returnToTopMenu?()
+            }
+        }
+        .onChange(of: playbackSelectorsFocused) { _, isFocused in
+            if isFocused {
+                focusedAction = .playbackSelectors
+            } else if focusedAction == .playbackSelectors {
+                focusedAction = nil
+            }
+        }
         .task(id: focusResetKey) {
             cancelInitialPlayFocusRetry()
             didResetInitialPlayFocus = false
@@ -548,17 +520,20 @@ struct TVPillButtonStyle: ButtonStyle {
     let focusTreatment: FocusTreatment
     let collapsesWhenUnfocused: Bool
     let stabilizesFocusMotion: Bool
+    let fixedWidth: CGFloat?
 
     init(
         kind: Kind,
         focusTreatment: FocusTreatment = .hero,
         collapsesWhenUnfocused: Bool = false,
-        stabilizesFocusMotion: Bool = false
+        stabilizesFocusMotion: Bool = false,
+        fixedWidth: CGFloat? = nil
     ) {
         self.kind = kind
         self.focusTreatment = focusTreatment
         self.collapsesWhenUnfocused = collapsesWhenUnfocused
         self.stabilizesFocusMotion = stabilizesFocusMotion
+        self.fixedWidth = fixedWidth
     }
 
     func makeBody(configuration: Configuration) -> some View {
@@ -567,7 +542,8 @@ struct TVPillButtonStyle: ButtonStyle {
             kind: kind,
             focusTreatment: focusTreatment,
             collapsesWhenUnfocused: collapsesWhenUnfocused,
-            stabilizesFocusMotion: stabilizesFocusMotion
+            stabilizesFocusMotion: stabilizesFocusMotion,
+            fixedWidth: fixedWidth
         )
     }
 }
@@ -578,6 +554,7 @@ private struct TVPillButtonBody: View {
     let focusTreatment: TVPillButtonStyle.FocusTreatment
     let collapsesWhenUnfocused: Bool
     let stabilizesFocusMotion: Bool
+    let fixedWidth: CGFloat?
 
     @Environment(\.isFocused) private var isFocused
 
@@ -585,33 +562,15 @@ private struct TVPillButtonBody: View {
         configuration.label
             .foregroundColor(foreground)
             .padding(.horizontal, horizontalPadding)
-            .frame(height: 76)
-            .overlay(
-                Capsule().stroke(
-                    innerBorderColor,
-                    lineWidth: innerBorderWidth
-                )
-            )
+            .frame(width: fixedWidth, height: 76)
             .background(
                 Capsule().fill(background)
             )
-            .overlay {
-                if isFocused {
-                    Capsule()
-                        .stroke(focusOutlineColor, lineWidth: focusOutlineWidth)
-                        .padding(-focusOutlineInset)
-                }
-            }
             .scaleEffect(scale)
             .shadow(
                 color: .black.opacity(shadowOpacity),
                 radius: shadowRadius,
                 y: shadowY
-            )
-            .shadow(
-                color: Color.continuumOnSurface.opacity(focusGlowOpacity),
-                radius: focusGlowRadius,
-                y: 0
             )
             .focusEffectDisabled()
             .animation(.easeInOut(duration: 0.18), value: isFocused)
@@ -628,7 +587,7 @@ private struct TVPillButtonBody: View {
     private var horizontalPadding: CGFloat {
         switch kind {
         case .primary:
-            if stabilizesFocusMotion { return 30 }
+            if stabilizesFocusMotion { return 22 }
             return isFocused ? 70 : 20
         case .secondary:
             if stabilizesFocusMotion { return 20 }
@@ -643,39 +602,6 @@ private struct TVPillButtonBody: View {
         case .secondary:
             return isFocused ? .white : Color.black.opacity(0.52)
         }
-    }
-
-    private var innerBorderColor: Color {
-        if isFocused {
-            return Color.black.opacity(kind == .primary ? 0.18 : 0.12)
-        }
-        switch kind {
-        case .primary:
-            return Color.white.opacity(0.12)
-        case .secondary:
-            return Color.white.opacity(0.24)
-        }
-    }
-
-    private var innerBorderWidth: CGFloat {
-        if isFocused {
-            return kind == .primary ? 1.8 : 1.5
-        }
-        return kind == .primary ? 0.8 : 1.2
-    }
-
-    private var focusOutlineColor: Color {
-        kind == .primary ? Color.white.opacity(0.94) : Color.white.opacity(0.98)
-    }
-
-    private var focusOutlineWidth: CGFloat {
-        if focusTreatment == .compact { return 2.5 }
-        return kind == .primary ? 4 : 3.5
-    }
-
-    private var focusOutlineInset: CGFloat {
-        if focusTreatment == .compact { return 3 }
-        return kind == .primary ? 7 : 6
     }
 
     private var scale: CGFloat {
@@ -715,19 +641,6 @@ private struct TVPillButtonBody: View {
         return isFocused ? 10 : 2
     }
 
-    private var focusGlowOpacity: Double {
-        if focusTreatment == .compact {
-            return isFocused ? 0.08 : 0
-        }
-        return isFocused ? 0.18 : 0
-    }
-
-    private var focusGlowRadius: CGFloat {
-        if focusTreatment == .compact {
-            return isFocused ? 6 : 0
-        }
-        return isFocused ? (kind == .primary ? 14 : 12) : 0
-    }
 }
 
 // MARK: - Circle ButtonStyle
@@ -758,29 +671,11 @@ private struct TVCircleButtonBody: View {
                     isFocused ? .white : Color.white.opacity(0.10)
                 )
             )
-            .overlay(
-                Circle().stroke(
-                    isFocused ? Color.black.opacity(0.12) : Color.white.opacity(0.34),
-                    lineWidth: isFocused ? 1.6 : 1.4
-                )
-            )
-            .overlay {
-                if isFocused {
-                    Circle()
-                        .stroke(Color.white.opacity(0.96), lineWidth: 3)
-                        .padding(-5)
-                }
-            }
             .scaleEffect(scale)
             .shadow(
                 color: .black.opacity(isFocused ? 0.34 : 0.0),
                 radius: isFocused ? 16 : 0,
                 y: isFocused ? 6 : 0
-            )
-            .shadow(
-                color: Color.continuumOnSurface.opacity(isFocused ? 0.15 : 0),
-                radius: isFocused ? 10 : 0,
-                y: 0
             )
             .focusEffectDisabled()
             .animation(.easeInOut(duration: 0.18), value: isFocused)

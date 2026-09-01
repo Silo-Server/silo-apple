@@ -9,6 +9,9 @@ extension Notification.Name {
 /// billboard previewing whichever card holds focus.
 struct HomeView: View {
     var homeFocusRequest: Int = 0
+    /// tvOS-only: a pushed detail page has popped and Home should restore the
+    /// exact card/row that launched it instead of leaving the focus graph empty.
+    var detailReturnFocusRequest: Int = 0
     /// tvOS-only: whether the custom top menu holds focus. Deferred entry
     /// claims are dropped while the user is up in the menu so late data
     /// loads never yank focus.
@@ -59,6 +62,7 @@ struct HomeView: View {
                     sections: displayedSections,
                     contentVerticalOffset: 56,
                     focusRequest: homeFocusRequest,
+                    detailReturnFocusRequest: detailReturnFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: { navigateToDetail($0) },

@@ -29,6 +29,9 @@ struct TVEpisodeRail: View {
     /// Series opts into a larger carousel card. The default keeps the
     /// approved 480-point geometry on existing season/episode pages.
     var baseCardWidth: CGFloat = 480
+    /// Series can exactly reuse Home's 360×200 thumbnail aspect while legacy
+    /// episode pages retain their existing 16:9 geometry.
+    var cardHeightRatio: CGFloat = 9 / 16
     var cardSpacing: CGFloat = 54
     var anchorsFocusedCard = false
     /// Composite Series rails own horizontal movement, so their vertical exit
@@ -150,7 +153,8 @@ struct TVEpisodeRail: View {
         } label: {
             ZStack(alignment: .topLeading) {
                 HStack(alignment: .top, spacing: cardSpacing) {
-                    ForEach(Array(episodes.enumerated()), id: \.element.contentId) { _, episode in
+                    ForEach(Array(episodes.enumerated()), id: \.element.contentId) { index, episode in
+                        let isHovered = anchoredRailFocused && index == anchoredIndex
                         EpisodeCardLabel(
                             episode: episode,
                             isPlayed: anchoredIsPlayed(episode),
@@ -159,28 +163,17 @@ struct TVEpisodeRail: View {
                             stillHeight: anchoredStillHeight,
                             stillCornerRadius: 18,
                             captionStyle: uiCustomization.cardPresentation.caption,
-                            focusOverride: false,
+                            focusOverride: isHovered,
                             hidesEpisodeTitle: true,
+                            usesHomeHoverEffect: true,
+                            showsFocusOutline: false,
                             showsCurrentOutline: false
                         )
+                        .zIndex(isHovered ? 1 : 0)
                     }
                 }
                 .padding(.vertical, 12)
                 .offset(x: -anchoredContentOffset(viewportWidth: viewportWidth))
-
-                // The ring is independent of every moving card. It remains in
-                // the leading slot while content can scroll, then moves only
-                // when the rail clamps at its trailing boundary.
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(
-                        Color.white.opacity(anchoredRailFocused ? 0.9 : 0.7),
-                        lineWidth: anchoredRailFocused ? 3 : 2
-                    )
-                    .frame(width: anchoredCardWidth, height: anchoredStillHeight)
-                    .offset(
-                        x: anchoredHighlightOffset(viewportWidth: viewportWidth),
-                        y: 12
-                    )
             }
             .frame(
                 width: viewportWidth,
@@ -219,7 +212,7 @@ struct TVEpisodeRail: View {
     }
 
     private var anchoredStillHeight: CGFloat {
-        anchoredCardWidth * 9 / 16
+        anchoredCardWidth * cardHeightRatio
     }
 
     private var anchoredRailHeight: CGFloat {
@@ -251,17 +244,24 @@ struct TVEpisodeRail: View {
         return min(CGFloat(anchoredIndex) * step, maximumOffset)
     }
 
-    private func anchoredHighlightOffset(viewportWidth: CGFloat) -> CGFloat {
-        let selectedCardX = CGFloat(anchoredIndex) * (anchoredCardWidth + cardSpacing)
-        return selectedCardX - anchoredContentOffset(viewportWidth: viewportWidth)
-    }
-
     private func seedAnchoredIndex() {
+        let seededIndex: Int
         if let currentContentId,
            let index = episodes.firstIndex(where: { $0.contentId == currentContentId }) {
-            anchoredIndex = index
+            seededIndex = index
         } else {
-            anchoredIndex = min(anchoredIndex, max(episodes.count - 1, 0))
+            seededIndex = min(anchoredIndex, max(episodes.count - 1, 0))
+        }
+
+        // A newly inserted season page inherits the outer pan transaction.
+        // Seeding its internal episode offset inside that same animation made
+        // the cards briefly travel the opposite way while the page itself was
+        // moving correctly. Mount at the resolved index with no animation;
+        // user-driven episode moves retain their normal smooth transition.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            anchoredIndex = seededIndex
         }
     }
 
@@ -381,7 +381,8 @@ struct TVEpisodeRail: View {
 }
 
 /// Suppresses tvOS's native lift/scroll behavior for the composite carousel.
-/// Its active card supplies the only visible ring.
+/// Its active still supplies the Home-style hover while the rail remains the
+/// sole focus owner.
 private struct TVAnchoredEpisodeButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -411,6 +412,40 @@ private extension View {
     ) -> some View {
         if let contentId {
             defaultFocus(binding, contentId, priority: .userInitiated)
+        } else {
+            self
+        }
+    }
+
+    /// The composite Series rail cannot use a native `.card` button per cell
+    /// without reintroducing competing focus-scroll owners. Reproduce Home's
+    /// artwork-only lift on the active still while leaving legacy rails exactly
+    /// as they were.
+    @ViewBuilder
+    func episodeHomeHoverEffect(
+        enabled: Bool,
+        isFocused: Bool,
+        reduceMotion: Bool
+    ) -> some View {
+        if enabled {
+            self
+                .scaleEffect(
+                    isFocused && !reduceMotion ? 1.08 : 1,
+                    // Keep the pinned leading edge stable while allowing the
+                    // artwork to lift equally above and below, like Home's
+                    // native `.card` focus treatment.
+                    anchor: .leading
+                )
+                .brightness(isFocused ? 0.035 : 0)
+                .shadow(
+                    color: .black.opacity(isFocused ? 0.62 : 0.2),
+                    radius: isFocused ? 26 : 8,
+                    y: isFocused ? 14 : 4
+                )
+                .animation(
+                    reduceMotion ? nil : .smooth(duration: 0.30, extraBounce: 0),
+                    value: isFocused
+                )
         } else {
             self
         }
@@ -559,9 +594,12 @@ private struct EpisodeCardLabel: View {
     let captionStyle: CardCaptionStyle
     var focusOverride: Bool? = nil
     var hidesEpisodeTitle = false
+    var usesHomeHoverEffect = false
+    var showsFocusOutline = true
     var showsCurrentOutline = true
 
     @Environment(\.isFocused) private var environmentIsFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isFocused: Bool {
         focusOverride ?? environmentIsFocused
@@ -577,9 +615,19 @@ private struct EpisodeCardLabel: View {
                             .font(.system(size: 16, weight: .bold))
                             .tracking(1.6)
                             .foregroundStyle(Color.continuumOnSurface.opacity(0.62))
-                        if isCurrent {
-                            nowViewingTag
+                            .fixedSize(horizontal: true, vertical: false)
+                        if hidesEpisodeTitle, let compactEpisodeTitle {
+                            Text("·")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(Color.continuumOnSurface.opacity(0.48))
+                            Text(compactEpisodeTitle)
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(titleColor)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(1)
                         }
+                        Spacer(minLength: 8)
                     }
 
                     if !hidesEpisodeTitle {
@@ -611,18 +659,14 @@ private struct EpisodeCardLabel: View {
         return isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
     }
 
-    private var nowViewingTag: some View {
-        Text("NOW VIEWING")
-            .font(.system(size: 14, weight: .heavy))
-            .tracking(1.6)
-            .foregroundColor(.black)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(Color.white))
-    }
-
     private var episodeNumberLabel: String {
         "EPISODE \(episode.episodeNumber)"
+    }
+
+    private var compactEpisodeTitle: String? {
+        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return nil }
+        return title
     }
 
     private var episodeMetadataLine: String? {
@@ -677,13 +721,25 @@ private struct EpisodeCardLabel: View {
         }
         .frame(width: cardWidth, height: stillHeight)
         .clipShape(RoundedRectangle(cornerRadius: stillCornerRadius))
-        .tvFocusRing(isFocused: isFocused, cornerRadius: stillCornerRadius)
+        .tvFocusRing(
+            isFocused: showsFocusOutline && isFocused,
+            cornerRadius: stillCornerRadius
+        )
         .overlay(
             RoundedRectangle(cornerRadius: stillCornerRadius)
                 .stroke(
                     Color.white.opacity(showsCurrentOutline && isCurrent && !isFocused ? 0.7 : 0),
                     lineWidth: showsCurrentOutline && isCurrent && !isFocused ? 2 : 0
                 )
+        )
+        // Home lifts only the artwork button, not its caption. Doing the same
+        // here keeps caption geometry and carousel offsets perfectly stable.
+        // Match the rail's 0.30-second smooth curve so the hover transfers at
+        // exactly the same rate as the episode slide instead of snapping early.
+        .episodeHomeHoverEffect(
+            enabled: usesHomeHoverEffect,
+            isFocused: isFocused,
+            reduceMotion: reduceMotion
         )
     }
 
@@ -735,9 +791,10 @@ private struct EpisodeCardLabel: View {
 /// lower detail sections from jumping when real episodes arrive.
 struct TVEpisodeRailPlaceholder: View {
     var cardWidth: CGFloat = 480
+    var cardHeightRatio: CGFloat = 9 / 16
     var cardSpacing: CGFloat = 54
     var hidesEpisodeTitle = false
-    private var stillHeight: CGFloat { cardWidth * 9 / 16 }
+    private var stillHeight: CGFloat { cardWidth * cardHeightRatio }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {

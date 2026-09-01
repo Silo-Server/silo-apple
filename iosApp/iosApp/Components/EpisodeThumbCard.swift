@@ -17,6 +17,7 @@ struct EpisodeThumbCard: View {
     /// tvOS-only: parent row's focus tracking binding. See
     /// `MediaCard.focusedItemId` for the contract.
     var focusedItemId: FocusState<String?>.Binding? = nil
+    var contextPlayTitle: String? = nil
     var contextDetailTitle: String? = nil
     var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
@@ -383,13 +384,20 @@ struct EpisodeThumbCard: View {
     #endif
 
     private var hasContextActions: Bool {
-        onOpenContextDetail != nil
+        (contextPlayTitle != nil && playAction != nil)
+            || onOpenContextDetail != nil
             || onSetWatched != nil
             || onRemoveFromContinueWatching != nil
     }
 
     @ViewBuilder
     private var contextActions: some View {
+        if let contextPlayTitle, let playAction {
+            Button(action: playAction) {
+                Label(contextPlayTitle, systemImage: "play.fill")
+            }
+        }
+
         if let contextDetailTitle, let onOpenContextDetail {
             Button(action: onOpenContextDetail) {
                 Label(contextDetailTitle, systemImage: "info.circle")

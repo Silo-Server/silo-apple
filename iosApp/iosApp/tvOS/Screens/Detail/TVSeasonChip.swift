@@ -47,6 +47,7 @@ private struct TVSeasonChipBody: View {
             .foregroundColor(foregroundColor)
             .background(background)
             .scaleEffect(scale)
+            .focusEffectDisabled()
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
     }
@@ -58,21 +59,17 @@ private struct TVSeasonChipBody: View {
 
     @ViewBuilder
     private var background: some View {
-        if isSelected {
+        if isFocused {
             Capsule().fill(Color.white)
-        } else if isFocused {
-            Capsule()
-                .fill(Color.white.opacity(0.18))
-                .overlay(Capsule().stroke(Color.white.opacity(0.78), lineWidth: 2))
+        } else if isSelected {
+            Capsule().fill(Color.white.opacity(0.20))
         } else {
-            Capsule()
-                .fill(Color.white.opacity(0.05))
-                .overlay(Capsule().stroke(Color.white.opacity(0.30), lineWidth: 1.5))
+            Capsule().fill(Color.white.opacity(0.05))
         }
     }
 
     private var foregroundColor: Color {
-        if isSelected { return .black }
+        if isFocused { return .black }
         return .white
     }
 }
