@@ -2797,7 +2797,7 @@ class PlayerViewModel {
         let existingLiveTracks = subtitleTracks.filter {
             SubtitleTrackIdSpace.isAILive($0.trackId)
         }
-        audioTracks = engine.audioTracks.enumerated().map { ordinal, track in
+        let aetherAudioTracks = engine.audioTracks.enumerated().map { ordinal, track in
             PlayerTrack(
                 trackId: Int64(track.id),
                 kind: .audio,
@@ -2815,6 +2815,11 @@ class PlayerViewModel {
                 srcId: ordinal
             )
         }
+        audioTracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
+            aetherTracks: aetherAudioTracks,
+            plan: activePreparedProtocolV3?.plan,
+            version: currentSelectedVersion
+        )
         let aetherSubtitleTracks = engine.subtitleTracks.map { track in
             let appTrackID = aetherPlaybackController.appSubtitleID(forAetherID: track.id)
             return PlayerTrack(
@@ -2866,7 +2871,8 @@ class PlayerViewModel {
         }
         chapters = mediaChapters.isEmpty ? serverProvidedChapters : mediaChapters
 
-        selectedAudioId = engine.activeAudioTrackIndex.map(Int64.init)
+        selectedAudioId = audioTracks.first(where: \.isSelected)?.trackId
+            ?? engine.activeAudioTrackIndex.map(Int64.init)
         // A locally-registered sidecar is selected client-side, so the plan —
         // which predates the track — must not republish over it. Once the
         // server publishes that ordinal the plan is authoritative again.
@@ -2891,8 +2897,12 @@ class PlayerViewModel {
         // load is established; `loadAether` re-enters this method at that point.
         let loadIsEstablished = isAetherLoadEstablished
 
+        // Catalog fallback rows are picker state for server-owned replans; only
+        // a track Aether actually published may drive its local selection API.
         if let wantedIndex = pendingAudioFfIndex,
-           let match = audioTracks.first(where: { audioSelectionIndex(for: $0) == wantedIndex }) {
+           let match = aetherAudioTracks.first(where: {
+               audioSelectionIndex(for: $0) == wantedIndex
+           }) {
             switch DeferredTrackSelectionGate.outcome(
                 isLoadEstablished: loadIsEstablished,
                 engineAlreadyMatches: engine.activeAudioTrackIndex.map(Int64.init) == match.trackId
