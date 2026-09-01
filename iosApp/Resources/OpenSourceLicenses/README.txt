@@ -58,6 +58,13 @@ Nuke and NukeUI
   License: MIT
   Source: https://github.com/kean/Nuke/tree/83e19143355b02e9261edb2323b3e1e93287ebb9
 
+ThumbHash decoder
+  Revision: a652ce6ed691242f459f468f0a8756cda3b90a82
+  License: MIT
+  Source: https://github.com/evanw/thumbhash/tree/a652ce6ed691242f459f468f0a8756cda3b90a82
+  Silo includes an adapted copy of the reference Swift decode path with input
+  validation, cross-platform image creation, and a bounded asynchronous cache.
+
 SMBClient 0.3.1 is present in SwiftPM's resolution graph only because
 AetherEngine publishes a separate optional AetherEngineSMB product. Silo links
 the AetherEngine product, not AetherEngineSMB, so SMBClient is not included in

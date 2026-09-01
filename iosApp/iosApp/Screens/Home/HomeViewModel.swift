@@ -1,6 +1,5 @@
 import Foundation
 
-#if !os(tvOS)
 /// Device-local, per-server/profile Home row visibility and order. The server
 /// remains authoritative for which rows exist and what they contain; this
 /// projection only arranges the rows it returns. Unknown/new server rows append
@@ -12,6 +11,9 @@ final class HomeSectionPreferences {
 
     private(set) var orderedSectionIds: [String] = []
     private(set) var hiddenSectionIds = Set<String>()
+    /// Changes only for explicit preference/layout transitions—not ordinary
+    /// Home data refreshes—so Home can reset its row band and marquee once.
+    private(set) var layoutRevision = 0
 
     @ObservationIgnored private let defaults: SharedDefaults
     @ObservationIgnored private let storageKey: @MainActor () -> String?
@@ -41,11 +43,13 @@ final class HomeSectionPreferences {
               let stored = try? JSONDecoder().decode(StoredLayout.self, from: data) else {
             orderedSectionIds = []
             hiddenSectionIds = []
+            layoutRevision &+= 1
             return
         }
 
         orderedSectionIds = Self.unique(stored.orderedSectionIds)
         hiddenSectionIds = stored.hiddenSectionIds
+        layoutRevision &+= 1
     }
 
     func isVisible(_ sectionId: String) -> Bool {
@@ -53,11 +57,14 @@ final class HomeSectionPreferences {
     }
 
     func setVisible(_ visible: Bool, sectionId: String) {
+        let wasVisible = isVisible(sectionId)
+        guard wasVisible != visible else { return }
         if visible {
             hiddenSectionIds.remove(sectionId)
         } else {
             hiddenSectionIds.insert(sectionId)
         }
+        layoutRevision &+= 1
         persist()
     }
 
@@ -65,14 +72,20 @@ final class HomeSectionPreferences {
     /// identities that are temporarily absent (for example an empty Continue
     /// Watching row). If they return later, they recover their saved position.
     func setOrder(_ sectionIds: [String]) {
-        let visibleOrder = Self.unique(sectionIds)
-        let visibleSet = Set(visibleOrder)
-        orderedSectionIds = visibleOrder + orderedSectionIds.filter {
-            !visibleSet.contains($0)
+        let currentOrder = Self.unique(sectionIds)
+        let currentSet = Set(currentOrder)
+        let updatedOrder = currentOrder + orderedSectionIds.filter {
+            !currentSet.contains($0)
         }
+        guard updatedOrder != orderedSectionIds else { return }
+        orderedSectionIds = updatedOrder
+        layoutRevision &+= 1
         persist()
     }
 
+    /// Hidden rows are removed before the Skyline feed receives this array.
+    /// Consequently the next visible row occupies the same fixed row slot;
+    /// no placeholder or vertical gap can enter the Home layout.
     func arrangedSections(
         _ sections: [ResolvedSection],
         includingHidden: Bool = false
@@ -103,9 +116,7 @@ final class HomeSectionPreferences {
 
     private func persist() {
         guard let key = storageKey() else { return }
-        if loadedStorageKey != key {
-            loadedStorageKey = key
-        }
+        loadedStorageKey = key
         let stored = StoredLayout(
             orderedSectionIds: orderedSectionIds,
             hiddenSectionIds: hiddenSectionIds
@@ -128,7 +139,9 @@ final class HomeSectionPreferences {
     }
 
     private static var platformStoragePrefix: String {
-        #if os(iOS)
+        #if os(tvOS)
+        "tvos.homeSections.v1"
+        #elseif os(iOS)
         "ios.homeSections.v1"
         #elseif os(macOS)
         "mac.homeSections.v1"
@@ -137,7 +150,6 @@ final class HomeSectionPreferences {
         #endif
     }
 }
-#endif
 
 @Observable
 @MainActor

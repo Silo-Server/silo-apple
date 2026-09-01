@@ -10,15 +10,15 @@ struct TVExpandableSynopsis: View {
 
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private let maxWidth: CGFloat = 1200
+    private let maxWidth: CGFloat = TVDetailLayout.heroContentWidth
 
     var body: some View {
         Button { expanded.toggle() } label: {
             VStack(alignment: .leading, spacing: 12) {
                 Text(overview)
                     .font(.system(size: 26, weight: .regular))
-                    .foregroundColor(.white.opacity(0.82))
-                    .lineSpacing(8)
+                    .foregroundColor(.white.opacity(0.92))
+                    .lineSpacing(4)
                     .lineLimit(expanded ? nil : 3)
                     .fixedSize(horizontal: false, vertical: true)
             }

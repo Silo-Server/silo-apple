@@ -19,7 +19,10 @@ enum Route: Hashable {
     case browse(libraryId: Int?)
     case library(libraryId: Int, title: String?)
     case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?)
-    case itemDetail(contentId: String)
+    case itemDetail(
+        contentId: String,
+        tvSeed: TVItemDetailRouteSeed? = nil
+    )
     case personDetail(personId: Int)
     case player(contentId: String, startFromBeginning: Bool, resumePosition: Double?)
     case playerWithFile(
@@ -76,6 +79,126 @@ enum Route: Hashable {
         filter: TVLibraryFilterPayload,
         subtitle: String?
     )
+}
+
+/// Card metadata that lets tvOS paint a branded detail frame before the
+/// authoritative item response arrives. The seed is deliberately display-only:
+/// playback, personal state, selectors, and actions still wait for `ItemDetail`.
+struct TVItemDetailRouteSeed: Hashable {
+    let mediaType: String
+    let title: String
+    let year: Int?
+    let overview: String?
+    let runtime: Int?
+    let contentRating: String?
+    let genre: String?
+    let logoUrl: String?
+    let posterUrl: String?
+    let posterThumbhash: String?
+    let backdropUrl: String?
+    let backdropThumbhash: String?
+
+    init(_ item: SectionItem) {
+        mediaType = item.type
+        title = item.title
+        year = item.year
+        overview = item.overview
+        runtime = item.runtime
+        contentRating = item.contentRating
+        genre = item.genres?.first
+        logoUrl = item.logoUrl
+        posterUrl = item.posterUrl
+        posterThumbhash = item.posterThumbhash
+        backdropUrl = item.backdropUrl
+        backdropThumbhash = item.backdropThumbhash
+    }
+
+    init(_ item: BrowseItem) {
+        mediaType = item.type
+        title = item.title
+        year = item.year
+        overview = item.overview
+        runtime = item.runtime
+        contentRating = item.contentRating
+        genre = item.genres?.first
+        logoUrl = nil
+        posterUrl = item.posterUrl
+        posterThumbhash = item.posterThumbhash
+        backdropUrl = item.backdropUrl
+        backdropThumbhash = item.backdropThumbhash
+    }
+
+    /// Continue Watching episodes open their parent Series. Keep the immediate
+    /// title/logo, but do not promote episode metadata into the Series frame.
+    private init(parentSeriesFrom episode: SectionItem) {
+        let seriesTitle = episode.seriesTitle?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        mediaType = "series"
+        title = seriesTitle.flatMap { $0.isEmpty ? nil : $0 } ?? episode.title
+        year = nil
+        overview = nil
+        runtime = nil
+        contentRating = nil
+        genre = nil
+        logoUrl = episode.logoUrl
+        posterUrl = episode.posterUrl
+        posterThumbhash = episode.posterThumbhash
+        backdropUrl = nil
+        backdropThumbhash = nil
+    }
+
+    static func destination(
+        contentId: String,
+        from item: SectionItem
+    ) -> TVItemDetailRouteSeed {
+        let seriesId = item.seriesId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let isEpisode = item.type.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "episode" || item.episodeNumber != nil
+
+        if isEpisode,
+           seriesId?.isEmpty == false,
+           seriesId == contentId,
+           contentId != item.contentId {
+            return TVItemDetailRouteSeed(parentSeriesFrom: item)
+        }
+        return TVItemDetailRouteSeed(item)
+    }
+}
+
+extension Route {
+    /// Builds the platform-appropriate route from a section card. tvOS carries
+    /// the card's presentation seed; iOS/macOS retain their existing ID-only
+    /// route so poster zoom and detail behavior are unchanged.
+    static func itemDetail(
+        destinationContentId: String,
+        sectionItem: SectionItem
+    ) -> Route {
+        #if os(tvOS)
+        return .itemDetail(
+            contentId: destinationContentId,
+            tvSeed: TVItemDetailRouteSeed.destination(
+                contentId: destinationContentId,
+                from: sectionItem
+            )
+        )
+        #else
+        return .itemDetail(contentId: destinationContentId)
+        #endif
+    }
+
+    /// Builds the platform-appropriate route from a catalog card. The seed is
+    /// display-only and is ignored entirely on iOS/macOS.
+    static func itemDetail(browseItem: BrowseItem) -> Route {
+        #if os(tvOS)
+        return .itemDetail(
+            contentId: browseItem.contentId,
+            tvSeed: TVItemDetailRouteSeed(browseItem)
+        )
+        #else
+        return .itemDetail(contentId: browseItem.contentId)
+        #endif
+    }
 }
 
 /// Plain-data copy of `TVLibraryFilter` that can live in the shared `Route`

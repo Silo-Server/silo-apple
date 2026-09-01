@@ -180,8 +180,8 @@ struct TVLibraryGridView: View {
                         items: viewModel.items,
                         isLoading: viewModel.isLoading,
                         hasMore: viewModel.hasMore,
-                        onItemTap: { contentId in
-                            router.navigate(to: .itemDetail(contentId: contentId))
+                        onItemTap: { item in
+                            router.navigate(to: .itemDetail(browseItem: item))
                         },
                         onNearEnd: { index in
                             Task { await viewModel.loadMoreIfNeeded() }

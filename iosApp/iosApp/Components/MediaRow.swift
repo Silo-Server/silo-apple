@@ -25,6 +25,9 @@ struct MediaRow: View {
     var onItemPlay: ((SectionItem) -> Void)? = nil
     var onSeeAll: (() -> Void)? = nil
     var showProgress: Bool = false
+    /// Keeps the card as the sole focus target while showing that its detail
+    /// metadata is being prepared before navigation.
+    var loadingItemId: String? = nil
     var icon: String? = nil
     var layout: MediaRowLayout = .poster
     /// Preserve a caller's immediate thumbnail action instead of presenting
@@ -48,7 +51,18 @@ struct MediaRow: View {
     /// where `.userInitiated` defaultFocus alone doesn't fire because the
     /// focus engine isn't doing the moving.
     var focusRequest: Int = 0
+    /// Monotonic token emitted when a card-pushed detail route pops. The row
+    /// that still owns restoration reclaims its exact last-focused card.
+    var detailReturnFocusRequest: Int = 0
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
+    /// Optional tvOS context-menu route used by Continue Watching. Select can
+    /// remain a direct resume action while long press still exposes the parent
+    /// Series or Movie detail page.
+    var onOpenContextDetail: ((SectionItem) -> Void)? = nil
+    /// Continue Watching exposes Resume/Play in the long-press menu while
+    /// Select opens detail. Other rows keep Play/Pause as a remote shortcut
+    /// only, avoiding a redundant menu entry on ordinary discovery cards.
+    var showsPlayInContextMenu = false
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: reports which of the row's items holds card focus —
@@ -56,6 +70,9 @@ struct MediaRow: View {
     /// focus leaving the row (nil) is deliberately not reported so the
     /// marquee retains the last previewed item while focus is in chrome.
     var onItemFocus: ((SectionItem) -> Void)? = nil
+    /// Raw focus ownership changes for work that must stop when the source
+    /// card is abandoned. Unlike `onItemFocus`, this also reports `nil`.
+    var onFocusedItemIdChange: ((String?) -> Void)? = nil
     /// Optional width for poster/square cards — Skyline's dense landing
     /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
     var cardWidth: CGFloat? = nil
@@ -83,6 +100,7 @@ struct MediaRow: View {
     /// neighboring card instead of leaving the row without an owner.
     @State private var lastFocusedItemId: String?
     @State private var focusRestorationGeneration = 0
+    @State private var lastAppliedDetailReturnFocusRequest = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
@@ -100,6 +118,7 @@ struct MediaRow: View {
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .onChange(of: focusedItemId) { _, newValue in
+            onFocusedItemIdChange?(newValue)
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
             lastFocusedItemId = newValue
@@ -213,6 +232,66 @@ struct MediaRow: View {
             }
         }
     }
+
+    /// A NavigationStack pop can remount Home with no focus owner at all,
+    /// which also leaves Up unable to reach the top menu. The Skyline host
+    /// retains the launch row as the sole restoration owner; scroll its exact
+    /// last card into the lazy strip, then reclaim it after the pop transaction.
+    private func restoreFocusAfterDetailReturn(
+        _ request: Int,
+        proxy: ScrollViewProxy
+    ) {
+        guard request > 0,
+              request != lastAppliedDetailReturnFocusRequest,
+              focusRestorationOwner?.wrappedValue == true,
+              let targetId = lastFocusedItemId,
+              let targetItem = items.first(where: { $0.contentId == targetId }) else { return }
+
+        lastAppliedDetailReturnFocusRequest = request
+        focusRestorationGeneration += 1
+        let generation = focusRestorationGeneration
+
+        proxy.scrollTo(targetId, anchor: .center)
+        DispatchQueue.main.async {
+            claimDetailReturnFocus(
+                targetItem,
+                generation: generation
+            )
+        }
+    }
+
+    /// Reassert only while the same row and same card still own restoration.
+    /// If the user moves after focus lands, `lastFocusedItemId` changes and the
+    /// bounded retry immediately yields instead of fighting their navigation.
+    private func claimDetailReturnFocus(
+        _ targetItem: SectionItem,
+        generation: Int,
+        attempt: Int = 0
+    ) {
+        guard generation == focusRestorationGeneration,
+              focusRestorationOwner?.wrappedValue == true,
+              lastFocusedItemId == targetItem.contentId,
+              items.contains(where: { $0.contentId == targetItem.contentId }) else { return }
+
+        focusedItemId = targetItem.contentId
+        onItemFocus?(targetItem)
+
+        guard attempt < 4 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard generation == focusRestorationGeneration,
+                  focusRestorationOwner?.wrappedValue == true,
+                  lastFocusedItemId == targetItem.contentId,
+                  focusedItemId != targetItem.contentId else { return }
+            Self.focusLogger.debug(
+                "mediaRow.reclaimDetailReturnFocus attempt=\(attempt + 1, privacy: .public)"
+            )
+            claimDetailReturnFocus(
+                targetItem,
+                generation: generation,
+                attempt: attempt + 1
+            )
+        }
+    }
     #endif
 
     // MARK: - Header
@@ -254,38 +333,12 @@ struct MediaRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: cardSpacing) {
                 ForEach(items) { item in
-                    switch layout {
-                    case .poster, .square:
-                        MediaCard(
-                            title: posterTitle(for: item),
-                            posterUrl: item.posterUrl ?? "",
-                            thumbhash: item.posterThumbhash,
-                            year: item.year,
-                            progress: progressValue(for: item),
-                            userState: item.userState,
-                            overlayData: OverlayData.from(item),
-                            action: { onItemTap(item.contentId) },
-                            playAction: playAction(for: item),
-                            focusedItemId: rowFocusBinding,
-                            contentId: item.contentId,
-                            onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                            onSetWatched: watchedToggleAction(for: item),
-                            aspect: layout == .square ? .square : .poster,
-                            cardWidthOverride: cardWidth,
-                            episodeBadge: episodeBadge(for: item)
-                        )
-                    case .thumbnail:
-                        EpisodeThumbCard(
-                            item: item,
-                            showProgress: showProgress,
-                            action: { onItemTap(item.contentId) },
-                            usesProvidedTapAction: usesProvidedThumbnailTapAction,
-                            playAction: playAction(for: item),
-                            focusedItemId: rowFocusBinding,
-                            onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                            onSetWatched: watchedToggleAction(for: item)
-                        )
-                    }
+                    mediaCard(for: item)
+                        .overlay {
+                            if loadingItemId == item.contentId {
+                                pendingNavigationIndicator
+                            }
+                        }
                 }
             }
             #if !os(tvOS)
@@ -315,7 +368,73 @@ struct MediaRow: View {
         // the row's outer stack.
         .onAppear { applyFocusRequest(focusRequest, proxy: rowProxy) }
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request, proxy: rowProxy) }
+        .onAppear {
+            restoreFocusAfterDetailReturn(detailReturnFocusRequest, proxy: rowProxy)
+        }
+        .onChange(of: detailReturnFocusRequest) { _, request in
+            restoreFocusAfterDetailReturn(request, proxy: rowProxy)
+        }
         #endif
+    }
+
+    @ViewBuilder
+    private func mediaCard(for item: SectionItem) -> some View {
+        switch layout {
+        case .poster, .square:
+            MediaCard(
+                title: posterTitle(for: item),
+                posterUrl: item.posterUrl ?? "",
+                thumbhash: item.posterThumbhash,
+                year: item.year,
+                progress: progressValue(for: item),
+                userState: item.userState,
+                overlayData: OverlayData.from(item),
+                action: { onItemTap(item.contentId) },
+                playAction: playAction(for: item),
+                focusedItemId: rowFocusBinding,
+                contentId: item.contentId,
+                contextPlayTitle: contextPlayTitle(for: item),
+                contextDetailTitle: contextDetailTitle(for: item),
+                onOpenContextDetail: contextDetailAction(for: item),
+                onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
+                onSetWatched: watchedToggleAction(for: item),
+                aspect: layout == .square ? .square : .poster,
+                cardWidthOverride: cardWidth,
+                episodeBadge: episodeBadge(for: item)
+            )
+        case .thumbnail:
+            EpisodeThumbCard(
+                item: item,
+                showProgress: showProgress,
+                action: { onItemTap(item.contentId) },
+                usesProvidedTapAction: usesProvidedThumbnailTapAction,
+                playAction: playAction(for: item),
+                focusedItemId: rowFocusBinding,
+                contextPlayTitle: contextPlayTitle(for: item),
+                contextDetailTitle: contextDetailTitle(for: item),
+                onOpenContextDetail: contextDetailAction(for: item),
+                onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
+                onSetWatched: watchedToggleAction(for: item)
+            )
+        }
+    }
+
+    private var pendingNavigationIndicator: some View {
+        ZStack {
+            Circle()
+                .fill(Color.black.opacity(0.76))
+                .overlay {
+                    Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
+                }
+
+            ProgressView()
+                .controlSize(.large)
+                .tint(.white)
+        }
+        .frame(width: 76, height: 76)
+        .shadow(color: .black.opacity(0.45), radius: 14, y: 5)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     /// tvOS: bind every card to the row's @FocusState so the row can
@@ -352,13 +471,98 @@ struct MediaRow: View {
 
     private func continueWatchingRemovalAction(for item: SectionItem) -> (() -> Void)? {
         guard let onRemoveFromContinueWatching else { return nil }
-        return { onRemoveFromContinueWatching(item) }
+        return {
+            #if os(tvOS)
+            preserveFocusForContextMutation(on: item)
+            #endif
+            onRemoveFromContinueWatching(item)
+        }
+    }
+
+    private func contextPlayTitle(for item: SectionItem) -> String? {
+        guard showsPlayInContextMenu,
+              SiloMediaType.isDirectlyPlayable(item.type),
+              onItemPlay != nil else { return nil }
+        return (item.positionSeconds ?? 0) > 0 ? "Resume" : "Play"
+    }
+
+    private func contextDetailAction(for item: SectionItem) -> (() -> Void)? {
+        guard let onOpenContextDetail else { return nil }
+        return { onOpenContextDetail(item) }
+    }
+
+    private func contextDetailTitle(for item: SectionItem) -> String? {
+        guard onOpenContextDetail != nil else { return nil }
+        let type = item.type.lowercased()
+        if SiloMediaType.isSeries(type) || type == "episode" || type == "season" {
+            return "Go to Series Page"
+        }
+        if SiloMediaType.isMovieLibrary(type) {
+            return "Go to Movie Page"
+        }
+        return "Go to Details"
     }
 
     private func watchedToggleAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
         guard let onSetWatched else { return nil }
-        return { played in await onSetWatched(item, played) }
+        return { played in
+            #if os(tvOS)
+            await MainActor.run {
+                preserveFocusForContextMutation(on: item)
+            }
+            #endif
+            return await onSetWatched(item, played)
+        }
     }
+
+    #if os(tvOS)
+    /// Context-menu dismissal briefly leaves the originating button without a
+    /// focus owner even when the mutation keeps that card in the row. Reclaim
+    /// the same card through the dismissal window. If the mutation removes it,
+    /// `restoreFocusAfterItemRemoval` increments the shared generation and
+    /// takes over with the neighboring card at the same visual index.
+    private func preserveFocusForContextMutation(on item: SectionItem) {
+        guard focusRestorationOwner?.wrappedValue == true
+                || lastFocusedItemId == item.contentId else { return }
+
+        focusRestorationOwner?.wrappedValue = true
+        lastFocusedItemId = item.contentId
+        focusRestorationGeneration += 1
+        let generation = focusRestorationGeneration
+        claimContextMutationFocus(
+            item.contentId,
+            generation: generation
+        )
+    }
+
+    private func claimContextMutationFocus(
+        _ itemId: String,
+        generation: Int,
+        attempt: Int = 0
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard generation == focusRestorationGeneration,
+                  lastFocusedItemId == itemId else { return }
+
+            // The host may briefly see the top bar as focused while tvOS closes
+            // the context menu. This explicit mutation still owns restoration.
+            focusRestorationOwner?.wrappedValue = true
+            focusedItemId = itemId
+
+            guard attempt < 8 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                guard generation == focusRestorationGeneration,
+                      lastFocusedItemId == itemId,
+                      focusedItemId != itemId else { return }
+                claimContextMutationFocus(
+                    itemId,
+                    generation: generation,
+                    attempt: attempt + 1
+                )
+            }
+        }
+    }
+    #endif
 
     /// Caption for a poster card. Episodes are captioned with the series name
     /// — the bare `title` is the episode title (often "TBA" when unannounced).

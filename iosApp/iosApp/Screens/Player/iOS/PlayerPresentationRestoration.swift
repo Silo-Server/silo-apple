@@ -85,6 +85,7 @@ extension AppRouter.PlayerPresentation {
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
+            prefersLastUsedVersion: prefersLastUsedVersion,
             returnToContentId: returnToContentId,
             offlineDownloadId: offlineDownloadId,
             posterURL: posterURL,

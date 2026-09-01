@@ -57,7 +57,7 @@ struct CollectionDetailView: View {
                         userState: item.userState,
                         overlayData: OverlayData.from(item),
                         action: {
-                            router.navigate(to: .itemDetail(contentId: item.contentId))
+                            router.navigate(to: .itemDetail(browseItem: item))
                         },
                         playAction: playAction(for: item),
                         contentId: item.contentId

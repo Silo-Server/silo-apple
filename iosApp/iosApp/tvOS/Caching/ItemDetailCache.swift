@@ -36,10 +36,19 @@ final class ItemDetailCache {
     /// the cache deliberately doesn't kick off network work.
     func viewModel(for contentId: String) -> ItemDetailViewModel {
         if let existing = entries[contentId] {
+            // A source-card preload may have completed after this model was
+            // first created. Re-adopt the response before the destination's
+            // first body evaluation instead of returning an older empty shell.
+            existing.hydrateFromCache(contentId: contentId)
             touch(contentId)
             return existing
         }
         let vm = ItemDetailViewModel()
+        // Home/library focus enrichment may already have fetched the full
+        // catalog payload before the user presses Select. Hydrate it here so
+        // TVItemDetailView's very first body evaluation can paint that cached
+        // hero instead of waiting for its `.task` to begin.
+        vm.hydrateFromCache(contentId: contentId)
         entries[contentId] = vm
         order.append(contentId)
         evictIfNeeded()
@@ -88,7 +97,14 @@ final class ItemDetailCache {
 
     private func refresh(_ contentId: String) {
         guard let vm = entries[contentId] else { return }
-        Task { await vm.loadDetail(contentId: contentId) }
+        // This path follows a progress/watched mutation. It must not join a
+        // steady-state request that may have left the server before the write.
+        Task {
+            await vm.loadDetail(
+                contentId: contentId,
+                coalescesMetadataRequests: false
+            )
+        }
     }
 
     private func touch(_ contentId: String) {

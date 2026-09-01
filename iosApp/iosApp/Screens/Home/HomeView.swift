@@ -9,6 +9,9 @@ extension Notification.Name {
 /// billboard previewing whichever card holds focus.
 struct HomeView: View {
     var homeFocusRequest: Int = 0
+    /// tvOS-only: a pushed detail page has popped and Home should restore the
+    /// exact card/row that launched it instead of leaving the focus graph empty.
+    var detailReturnFocusRequest: Int = 0
     /// tvOS-only: whether the custom top menu holds focus. Deferred entry
     /// claims are dropped while the user is up in the menu so late data
     /// loads never yank focus.
@@ -16,6 +19,9 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    #if os(tvOS)
+    @State private var homeSectionPreferences = HomeSectionPreferences.shared
+    #endif
     #if !os(tvOS)
     @State private var homeSectionPreferences = HomeSectionPreferences.shared
     @State private var currentProfile: UserProfile?
@@ -59,16 +65,27 @@ struct HomeView: View {
                 TVSkylineSectionFeed(
                     sections: displayedSections,
                     focusRequest: homeFocusRequest,
+                    detailReturnFocusRequest: detailReturnFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
-                    onItemTap: { navigateToDetail($0) },
+                    onItemTap: navigateToDetail,
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
+                // Preference edits replace the row band as one stable unit:
+                // the next visible row takes the vacated slot at the fixed
+                // first-row anchor, and no marquee from a hidden row lingers.
+                .id(homeSectionPreferences.layoutRevision)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
             } else if viewModel.isLoading {
                 Color.clear
+            } else if !viewModel.regularSections.isEmpty {
+                EmptyStateView(
+                    icon: "eye.slash",
+                    title: "Home sections are hidden",
+                    subtitle: "Choose which rows appear in Settings → General → Home Sections."
+                )
             } else {
                 EmptyStateView(
                     icon: "play.rectangle.on.rectangle",
@@ -79,6 +96,7 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
+            homeSectionPreferences.refresh()
             await viewModel.loadSections()
         }
         .onAppear {
@@ -258,7 +276,10 @@ struct HomeView: View {
     /// Rows for the vertical list, in server Home order after filtering empty
     /// and featured sections. Recommendations stay in the For You tab.
     private var displayedSections: [ResolvedSection] {
-        #if os(iOS)
+        #if os(tvOS) || os(iOS)
+        // Filter before the Skyline feed performs layout. A hidden section
+        // therefore leaves no placeholder: the next visible section inherits
+        // the same fixed row slot and vertical anchor.
         return homeSectionPreferences.arrangedSections(viewModel.regularSections)
         #else
         return viewModel.regularSections
@@ -442,8 +463,13 @@ struct HomeView: View {
 
     // MARK: - Navigation
 
-    private func navigateToDetail(_ contentId: String) {
-        router.navigate(to: .itemDetail(contentId: contentId))
+    private func navigateToDetail(_ destinationContentId: String, _ item: SectionItem) {
+        router.navigate(
+            to: .itemDetail(
+                destinationContentId: destinationContentId,
+                sectionItem: item
+            )
+        )
     }
 
     private func dismissContinueWatching(_ item: SectionItem) {

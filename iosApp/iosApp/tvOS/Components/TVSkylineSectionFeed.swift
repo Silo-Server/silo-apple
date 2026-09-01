@@ -14,18 +14,21 @@ struct TVSkylineSectionFeed: View {
     /// Section rows to page through, in order (already filtered to
     /// non-empty, non-featured by the caller).
     let sections: [ResolvedSection]
-    /// Marquee scale. Both call sites pass `.home` so the pages render
-    /// identically; kept as a parameter only for call-site clarity.
+    /// Marquee scale. Every Skyline landing currently uses `.home` so the
+    /// pages render identically; kept as a parameter for explicit variants.
     var marqueeScale: TVFocusMarquee.Scale = .home
     /// Focus hand-down token from the shell — claims the first card on entry.
     var focusRequest: Int = 0
+    /// Return token from a card-pushed detail page. Every row receives it, but
+    /// only the row that owned focus before the push may reclaim its last card.
+    var detailReturnFocusRequest: Int = 0
     /// Whether the top menu currently holds focus. A late content load must
     /// not steal focus while the user is up in the menu.
     var isTopMenuFocused: Bool = false
     /// Up at the first page hands focus to the top bar.
     let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
-    let onItemTap: (String) -> Void
+    let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
     /// Optional Home-only action. Library feeds leave this nil.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     /// Optional Home-only watched-state mutation. Library feeds leave this nil.
@@ -67,6 +70,7 @@ struct TVSkylineSectionFeed: View {
             scrollingRows
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(edges: .bottom)
+                .offset(y: ContinuumTheme.Skyline.landingContentVerticalOffset)
 
             // Floats over the band above the row; never focusable or hit-testable.
             TVFocusMarquee(
@@ -74,6 +78,7 @@ struct TVSkylineSectionFeed: View {
                 enrichment: marqueeModel.enrichment,
                 scale: marqueeScale
             )
+            .offset(y: ContinuumTheme.Skyline.landingContentVerticalOffset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -156,6 +161,7 @@ struct TVSkylineSectionFeed: View {
             prefersDefaultFocusOnFirstItem: isFirstRow,
             defaultFocusPriority: .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
+            detailReturnFocusRequest: detailReturnFocusRequest,
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
             onItemFocus: { item in
                 focusRestorationOwnerSectionId = section.id
@@ -166,7 +172,14 @@ struct TVSkylineSectionFeed: View {
             onMoveDown: nil,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
-                set: { _ in }
+                set: { ownsRestoration in
+                    // A row may reassert ownership while its context menu is
+                    // dismissing. Ignore false writes—the next real card focus,
+                    // top-menu focus, or row change remains authoritative.
+                    if ownsRestoration {
+                        focusRestorationOwnerSectionId = section.id
+                    }
+                }
             )
         )
     }
@@ -201,7 +214,13 @@ struct TVSkylineSectionFeed: View {
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
-        marqueeModel.preview(TVMarqueeContent(item: item, rowTitle: section.title))
+        marqueeModel.preview(
+            TVMarqueeContent(
+                item: item,
+                rowTitle: section.title,
+                isContinueWatching: section.isContinueWatchingSection
+            )
+        )
     }
 
     /// Cold-entry backdrop: the marquee normally waits for the first card's
@@ -214,7 +233,13 @@ struct TVSkylineSectionFeed: View {
         guard marqueeModel.content == nil,
               let section = sections.first,
               let item = section.items.first else { return }
-        marqueeModel.seed(TVMarqueeContent(item: item, rowTitle: section.title))
+        marqueeModel.seed(
+            TVMarqueeContent(
+                item: item,
+                rowTitle: section.title,
+                isContinueWatching: section.isContinueWatchingSection
+            )
+        )
     }
 
 }

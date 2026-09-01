@@ -234,6 +234,12 @@ struct ContinuumTheme {
 
         // MARK: Focus marquee (§5.4/§5.5)
 
+        /// Shared vertical placement for the foreground marquee and row band
+        /// on every Skyline landing. Keeping this in the shared feed prevents
+        /// title logos from rising into the app-level top menu while Home and
+        /// every library Recommended landing retain identical geometry.
+        static let landingContentVerticalOffset: CGFloat = 56
+
         /// Marquee block bottom inset — Home scale. On a 1080p tvOS canvas,
         /// this lands the marquee's bottom edge at the midpoint so the lower
         /// half can hold the focused row plus a peek of the next row.

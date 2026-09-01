@@ -648,8 +648,8 @@ struct LibraryCollectionDetailView: View {
                     items: items,
                     isLoading: isLoading,
                     hasMore: hasMore,
-                    onItemTap: { contentId in
-                        router.navigate(to: .itemDetail(contentId: contentId))
+                    onItemTap: { item in
+                        router.navigate(to: .itemDetail(browseItem: item))
                     },
                     onLoadMore: {
                         Task { await loadMoreIfNeeded() }

@@ -127,6 +127,17 @@ Nuke and NukeUI are distributed under the MIT license, Copyright (c)
   <https://github.com/kean/Nuke/tree/83e19143355b02e9261edb2323b3e1e93287ebb9>
 - Bundled text: `Nuke-MIT.txt`
 
+## ThumbHash decoder
+
+Silo includes an adapted copy of the ThumbHash Swift decoder, distributed
+under the MIT license, Copyright (c) 2023 Evan Wallace. Only the image decode
+path is retained; Silo adds bounds validation, cross-platform image creation,
+and a bounded asynchronous cache around the reference algorithm.
+
+- Exact source:
+  <https://github.com/evanw/thumbhash/tree/a652ce6ed691242f459f468f0a8756cda3b90a82>
+- Bundled text: `ThumbHash-MIT.txt`
+
 ## Release checklist
 
 The bundled notices, license texts, and exact-revision source links above

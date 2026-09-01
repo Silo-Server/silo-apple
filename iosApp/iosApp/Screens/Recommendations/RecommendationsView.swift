@@ -164,7 +164,14 @@ struct RecommendationsView: View {
                 ForEach(Array(viewModel.sections.enumerated()), id: \.element.id) { index, section in
                     SectionRow(
                         section: section,
-                        onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) },
+                        onItemTap: { destinationContentId, item in
+                            router.navigate(
+                                to: .itemDetail(
+                                    destinationContentId: destinationContentId,
+                                    sectionItem: item
+                                )
+                            )
+                        },
                         prefersDefaultFocusOnFirstItem: prefersDefaultFocus(forSectionAt: index),
                         onMoveUp: nil
                     )

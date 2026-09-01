@@ -7,7 +7,7 @@ struct CatalogGrid: View {
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
-    let onItemTap: (String) -> Void
+    let onItemTap: (BrowseItem) -> Void
     let onLoadMore: () -> Void
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -49,7 +49,7 @@ struct CatalogGrid: View {
                     year: item.year,
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
-                    action: { onItemTap(item.contentId) },
+                    action: { onItemTap(item) },
                     playAction: playAction(for: item),
                     contentId: item.contentId,
                     aspect: item.isAudiobook ? .square : .poster

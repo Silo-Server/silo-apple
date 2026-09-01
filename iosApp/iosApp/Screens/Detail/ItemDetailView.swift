@@ -7,11 +7,12 @@ import SwiftUI
 /// 10-foot layout.
 struct ItemDetailView: View {
     let contentId: String
+    var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
 
     var body: some View {
         #if os(tvOS)
-        TVItemDetailView(contentId: contentId)
+        TVItemDetailView(contentId: contentId, seed: tvSeed)
         #else
         ItemDetailPhoneContent(contentId: contentId, onClose: onClose)
         #endif

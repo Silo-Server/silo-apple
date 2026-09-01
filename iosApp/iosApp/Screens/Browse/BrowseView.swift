@@ -102,7 +102,7 @@ struct BrowseView: View {
                     items: viewModel.items,
                     isLoading: viewModel.isLoading,
                     hasMore: viewModel.hasMore,
-                    onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) },
+                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
                     }
@@ -469,7 +469,14 @@ struct LibraryRecommendedView: View {
                 ForEach(viewModel.regularSections) { section in
                     SectionRow(
                         section: section,
-                        onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) }
+                        onItemTap: { destinationContentId, item in
+                            router.navigate(
+                                to: .itemDetail(
+                                    destinationContentId: destinationContentId,
+                                    sectionItem: item
+                                )
+                            )
+                        }
                     )
                 }
             }

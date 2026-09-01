@@ -89,15 +89,37 @@ struct TVMarqueeContent: Equatable {
     let backdropThumbhash: String?
     let fallbackArtworkUrl: String?
     let fallbackArtworkThumbhash: String?
+    /// The item-level overlay bag is retained so Continue Watching can replace
+    /// only file-specific values while preserving ratings and other card data.
+    let baseOverlayData: OverlayData?
+    let contentRatingBadge: String?
+    /// Invalidates saved-file metadata when playback progress reports a newer
+    /// server revision for the same Continue Watching item.
+    let progressUpdatedAt: String?
+    /// Continue Watching resumes the saved file rather than the server's
+    /// globally best-ranked file, so its passive labels must describe that
+    /// same saved file too.
+    let prefersLastUsedPlaybackMetadata: Bool
     /// Episodes carry only their low-res still in the section payload, so the
     /// root hero upgrades to the series backdrop from detail enrichment rather
     /// than blowing the still up full-width.
     let isEpisode: Bool
+    /// Series hierarchy to warm while this card is resting under focus. A
+    /// Series card points at itself; a Continue Watching episode points at its
+    /// parent Series and current season. Other episode rows deliberately leave
+    /// this nil so ordinary browsing does not fan out extra requests.
+    let seriesContextId: String?
+    let seriesContextSeasonNumber: Int?
 }
 
 extension TVMarqueeContent {
-    init(item: SectionItem, rowTitle: String) {
+    init(
+        item: SectionItem,
+        rowTitle: String,
+        isContinueWatching: Bool = false
+    ) {
         let isEpisode = item.type.lowercased() == "episode"
+        let isSeries = SiloMediaType.isSeries(item.type)
 
         var meta: [String] = []
         if isEpisode {
@@ -121,9 +143,8 @@ extension TVMarqueeContent {
         }
 
         var badges = Self.badges(from: item.overlaySummary)
-        if let contentRating = Self.nonEmpty(item.contentRating) {
-            badges.append(contentRating.uppercased())
-        }
+        let contentRatingBadge = Self.nonEmpty(item.contentRating)?.uppercased()
+        if let contentRatingBadge { badges.append(contentRatingBadge) }
 
         self.init(
             id: "\(rowTitle)#\(item.contentId)",
@@ -140,7 +161,17 @@ extension TVMarqueeContent {
             backdropThumbhash: item.backdropThumbhash,
             fallbackArtworkUrl: Self.nonEmpty(item.posterUrl),
             fallbackArtworkThumbhash: item.posterThumbhash,
-            isEpisode: isEpisode
+            baseOverlayData: OverlayData.from(item),
+            contentRatingBadge: contentRatingBadge,
+            progressUpdatedAt: item.progressUpdatedAt,
+            prefersLastUsedPlaybackMetadata: isContinueWatching,
+            isEpisode: isEpisode,
+            seriesContextId: isSeries
+                ? item.contentId
+                : (isEpisode && isContinueWatching ? item.seriesId : nil),
+            seriesContextSeasonNumber: isEpisode && isContinueWatching
+                ? item.seasonNumber
+                : nil
         )
     }
 
@@ -167,7 +198,13 @@ extension TVMarqueeContent {
             backdropThumbhash: nil,
             fallbackArtworkUrl: collection.posterUrl,
             fallbackArtworkThumbhash: collection.posterThumbhash,
-            isEpisode: false
+            baseOverlayData: nil,
+            contentRatingBadge: nil,
+            progressUpdatedAt: nil,
+            prefersLastUsedPlaybackMetadata: false,
+            isEpisode: false,
+            seriesContextId: nil,
+            seriesContextSeasonNumber: nil
         )
     }
 
@@ -243,6 +280,228 @@ extension TVMarqueeContent {
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
         return value
+    }
+}
+
+// MARK: - Continue Watching playback metadata
+
+/// The two existing Home metadata surfaces consume this same projection: the
+/// marquee chips beneath the logo and the configured card-overlay pills. It
+/// changes values only when Continue Watching has an exact saved file id.
+struct TVContinueWatchingPlaybackPresentation: Equatable {
+    let overlayData: OverlayData
+    let badges: [String]
+}
+
+@Observable
+@MainActor
+final class TVContinueWatchingPlaybackMetadataStore {
+    static let shared = TVContinueWatchingPlaybackMetadataStore()
+
+    private(set) var presentations: [String: TVContinueWatchingPlaybackPresentation] = [:]
+
+    @ObservationIgnored private var loadedRevisionByContentId: [String: String] = [:]
+    @ObservationIgnored private var detailByContentId: [String: ItemDetail] = [:]
+    @ObservationIgnored private var requestedRevisionByContentId: [String: String] = [:]
+
+    private init() {}
+
+    func presentation(for contentId: String?) -> TVContinueWatchingPlaybackPresentation? {
+        guard let contentId else { return nil }
+        return presentations[contentId]
+    }
+
+    @discardableResult
+    func load(item: SectionItem) async -> ItemDetail? {
+        await load(
+            contentId: item.contentId,
+            progressUpdatedAt: item.progressUpdatedAt,
+            baseOverlayData: OverlayData.from(item)
+        )
+    }
+
+    @discardableResult
+    func load(
+        contentId: String,
+        progressUpdatedAt: String?,
+        baseOverlayData: OverlayData?
+    ) async -> ItemDetail? {
+        let revision = progressUpdatedAt ?? ""
+        if loadedRevisionByContentId[contentId] == revision,
+           let detail = detailByContentId[contentId] {
+            return detail
+        }
+
+        // A newly reported progress revision may carry a newly selected file,
+        // so bypass an older item-detail cache in that one case. Initial Home
+        // paint can still reuse the normal shared detail cache immediately.
+        let hasChangedRevision = loadedRevisionByContentId[contentId].map { $0 != revision } ?? false
+        if !hasChangedRevision,
+           let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId)) {
+            commit(
+                detail: cached,
+                contentId: contentId,
+                revision: revision,
+                baseOverlayData: baseOverlayData
+            )
+            return cached
+        }
+
+        requestedRevisionByContentId[contentId] = revision
+        guard let detail = try? await MetadataRequestPool.shared.itemDetail(
+            contentId: contentId,
+            // Always key the flight by progress revision. An initial request
+            // and a newer revision can otherwise overlap before either one
+            // publishes `loadedRevisionByContentId`, causing the newer caller
+            // to join the older payload and mislabel it as current.
+            freshnessDiscriminator: "continue-watching:\(revision)"
+        ), requestedRevisionByContentId[contentId] == revision else { return nil }
+
+        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
+        commit(
+            detail: detail,
+            contentId: contentId,
+            revision: revision,
+            baseOverlayData: baseOverlayData
+        )
+        return detail
+    }
+
+    private func commit(
+        detail: ItemDetail,
+        contentId: String,
+        revision: String,
+        baseOverlayData: OverlayData?
+    ) {
+        detailByContentId[contentId] = detail
+        loadedRevisionByContentId[contentId] = revision
+
+        guard let baseOverlayData,
+              let presentation = Self.presentation(
+                  detail: detail,
+                  baseOverlayData: baseOverlayData
+              ) else {
+            presentations.removeValue(forKey: contentId)
+            return
+        }
+        presentations[contentId] = presentation
+    }
+
+    private static func presentation(
+        detail: ItemDetail,
+        baseOverlayData: OverlayData
+    ) -> TVContinueWatchingPlaybackPresentation? {
+        guard let lastFileId = detail.userData?.lastFileId,
+              let version = detail.versions?.first(where: { $0.fileId == lastFileId }) else {
+            // No exact saved version means the existing server summary remains
+            // authoritative; never replace it with a guessed file.
+            return nil
+        }
+
+        let audioTrack = selectedAudioTrack(in: version)
+        let audioCodec = DetailPlaybackFormatting.normalizedAudioCodec(
+            audioTrack?.codec ?? version.codecAudio
+        )
+        let audioLayout = compactAudioLayout(audioTrack)
+        let isAtmos = audioTrack?.channelLayout?
+            .localizedCaseInsensitiveContains("atmos") == true
+        let hdr = dynamicRangeLabel(version)
+
+        var overlayData = baseOverlayData
+        overlayData.resolution = version.resolution
+        overlayData.hdr = hdr
+        overlayData.audio = isAtmos ? "Atmos" : (audioCodec ?? audioLayout)
+        overlayData.audioChannels = audioLayout
+        overlayData.videoCodec = DetailPlaybackFormatting.normalizedVideoCodec(version.codecVideo)
+        overlayData.container = version.container
+        overlayData.multiAudio = (version.audioTracks?.count ?? 0) > 1
+        overlayData.multiSub = (version.subtitleTracks?.count ?? 0) > 1
+
+        var badges: [String] = []
+        if let resolution = prettyResolution(version.resolution) {
+            badges.append(resolution)
+        }
+        if let hdr {
+            badges.append(hdr.localizedCaseInsensitiveContains("dv") ? "DOLBY VISION" : hdr.uppercased())
+        }
+        if isAtmos {
+            badges.append("ATMOS")
+        } else {
+            let audioBadge = [audioCodec, audioLayout]
+                .compactMap { $0 }
+                .reduce(into: [String]()) { values, value in
+                    if !values.contains(where: { $0.caseInsensitiveCompare(value) == .orderedSame }) {
+                        values.append(value)
+                    }
+                }
+                .joined(separator: " ")
+            if !audioBadge.isEmpty { badges.append(audioBadge.uppercased()) }
+        }
+
+        return TVContinueWatchingPlaybackPresentation(
+            overlayData: overlayData,
+            badges: badges
+        )
+    }
+
+    private static func selectedAudioTrack(in version: FileVersion) -> AudioTrack? {
+        guard let tracks = version.audioTracks, !tracks.isEmpty else { return nil }
+        if let effective = version.effectiveAudioTrackIndex {
+            if let streamMatch = tracks.first(where: { $0.index == effective }) {
+                return streamMatch
+            }
+            if tracks.indices.contains(effective) {
+                return tracks[effective]
+            }
+        }
+        return tracks.first(where: { $0.isDefault == true }) ?? tracks.first
+    }
+
+    private static func compactAudioLayout(_ track: AudioTrack?) -> String? {
+        guard let track else { return nil }
+        if let layout = track.channelLayout?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !layout.isEmpty {
+            let lowered = layout.lowercased()
+            if lowered.contains("atmos") { return "Atmos" }
+            if lowered.contains("7.1") { return "7.1" }
+            if lowered.contains("5.1") { return "5.1" }
+            if lowered.contains("stereo") || lowered == "2.0" { return "Stereo" }
+            return layout
+        }
+        switch track.channels {
+        case 1: return "Mono"
+        case 2: return "Stereo"
+        case 6: return "5.1"
+        case 8: return "7.1"
+        case let channels?: return "\(channels)ch"
+        case nil: return nil
+        }
+    }
+
+    private static func dynamicRangeLabel(_ version: FileVersion) -> String? {
+        let tracks = version.videoTracks ?? []
+        if tracks.contains(where: {
+            !($0.dolbyVision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }) {
+            return "DV"
+        }
+        guard version.hdr == true else { return nil }
+        if let range = tracks.compactMap(\.videoRange).first(where: {
+            !$0.isEmpty && $0.caseInsensitiveCompare("sdr") != .orderedSame
+        }) {
+            return range
+        }
+        return "HDR"
+    }
+
+    private static func prettyResolution(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        switch value.lowercased() {
+        case "2160p", "4k", "uhd": return "4K"
+        case "4320p", "8k": return "8K"
+        default: return value.uppercased()
+        }
     }
 }
 
@@ -394,15 +653,51 @@ final class TVFocusMarqueeModel {
             enrichment = cached
             enrichmentState = .completed
             sampleTintIfNeeded(for: backdropURL)
+            // The earlier hierarchy warmup may have been cancelled when focus
+            // moved away after detail enrichment completed. A cached marquee
+            // hit must therefore re-arm only the missing cache pieces.
+            enrichTask = Task {
+                async let seriesContextWarmup: Void = Self.warmSeriesContext(for: candidate)
+                if candidate.prefersLastUsedPlaybackMetadata {
+                    _ = await TVContinueWatchingPlaybackMetadataStore.shared.load(
+                        contentId: contentId,
+                        progressUpdatedAt: candidate.progressUpdatedAt,
+                        baseOverlayData: candidate.baseOverlayData
+                    )
+                }
+                await seriesContextWarmup
+            }
             return
         }
 
         enrichment = nil
         enrichmentState = .loading
         enrichTask = Task { [weak self] in
-            do {
-                let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            // Movie detail needs only the catalog request below. Series detail
+            // also needs seasons + one episode page, so warm that independent
+            // structure concurrently instead of starting it after navigation.
+            // Continue Watching episodes warm the same parent context.
+            async let seriesContextWarmup: Void = Self.warmSeriesContext(for: candidate)
+            let fetchedDetail: ItemDetail?
+            if candidate.prefersLastUsedPlaybackMetadata {
+                fetchedDetail = await TVContinueWatchingPlaybackMetadataStore.shared.load(
+                    contentId: contentId,
+                    progressUpdatedAt: candidate.progressUpdatedAt,
+                    baseOverlayData: candidate.baseOverlayData
+                )
+            } else {
+                fetchedDetail = try? await MetadataRequestPool.shared.itemDetail(
+                    contentId: contentId
+                )
+            }
+
+            if let detail = fetchedDetail {
                 guard !Task.isCancelled, let self else { return }
+                // The marquee already paid for the same catalog request the
+                // detail route needs. Keep the complete payload—not only the
+                // tiny marquee projection—so pressing Select after resting on
+                // a card opens the approved detail layout immediately.
+                ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
                 let enrichment = TVMarqueeEnrichment(detail: detail)
                 self.enrichmentCache[contentId] = enrichment
                 if self.content?.contentId == contentId {
@@ -410,14 +705,113 @@ final class TVFocusMarqueeModel {
                     self.enrichmentState = .completed
                     self.sampleTintIfNeeded(for: self.backdropURL)
                 }
-            } catch {
+            } else {
                 guard !Task.isCancelled, let self,
                       self.content?.contentId == contentId else { return }
                 self.enrichment = nil
                 self.enrichmentState = .failed
                 self.sampleTintIfNeeded(for: self.backdropURL)
             }
+
+            await seriesContextWarmup
         }
+    }
+
+    /// Warm only the hierarchy required to paint the first usable Series
+    /// frame. The selected season mirrors `ItemDetailViewModel` exactly; all
+    /// results land in its existing response cache and are still refreshed by
+    /// the detail screen after navigation.
+    private static func warmSeriesContext(for candidate: TVMarqueeContent) async {
+        guard let seriesId = candidate.seriesContextId, !seriesId.isEmpty else { return }
+
+        async let parentDetailWarmup: Void = warmParentSeriesDetail(
+            seriesId: seriesId,
+            itemContentId: candidate.contentId
+        )
+        async let hierarchyWarmup: Void = warmSeriesHierarchy(
+            seriesId: seriesId,
+            seasonNumber: candidate.seriesContextSeasonNumber
+        )
+        _ = await (parentDetailWarmup, hierarchyWarmup)
+    }
+
+    private static func warmParentSeriesDetail(
+        seriesId: String,
+        itemContentId: String?
+    ) async {
+        let cached: ItemDetail? = ResponseCache.shared.get(CacheKey.itemDetail(seriesId))
+        guard itemContentId != seriesId,
+              cached == nil,
+              let detail = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId),
+              !Task.isCancelled else { return }
+        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(seriesId))
+    }
+
+    private static func warmSeriesHierarchy(
+        seriesId: String,
+        seasonNumber: Int?
+    ) async {
+        let seasonsResponse: SeasonsResponse
+        if let cached: SeasonsResponse = ResponseCache.shared.get(
+            CacheKey.itemSeasons(seriesId)
+        ) {
+            seasonsResponse = cached
+        } else {
+            guard let fetched = try? await MetadataRequestPool.shared.seasons(seriesId: seriesId),
+                  !Task.isCancelled else { return }
+            ResponseCache.shared.set(fetched, for: CacheKey.itemSeasons(seriesId))
+            seasonsResponse = fetched
+        }
+
+        let seasons = seasonsResponse.seasons.sortedForDisplay()
+        let targetSeason = seasonNumber.flatMap { number in
+            seasons.first(where: { $0.seasonNumber == number })
+        } ?? preferredInitialSeason(in: seasons)
+        guard let targetSeason else { return }
+
+        let episodesKey = CacheKey.itemEpisodes(
+            seriesId: seriesId,
+            seasonNumber: targetSeason.seasonNumber
+        )
+        let episodesResponse: EpisodesResponse
+        if let cached: EpisodesResponse = ResponseCache.shared.get(episodesKey) {
+            episodesResponse = cached
+        } else {
+            guard let fetched = try? await MetadataRequestPool.shared.episodes(
+                seriesId: seriesId,
+                seasonNumber: targetSeason.seasonNumber
+            ), !Task.isCancelled else { return }
+            ResponseCache.shared.set(fetched, for: episodesKey)
+            episodesResponse = fetched
+        }
+
+        let stillURLs = episodesResponse.episodes.compactMap { episode in
+            episode.stillUrl.flatMap(URL.init(string:))
+        }
+        if !stillURLs.isEmpty {
+            PosterImageCache.prefetcher.startPrefetching(with: stillURLs)
+        }
+    }
+
+    private static func preferredInitialSeason(in seasons: [Season]) -> Season? {
+        if let inProgress = seasons.first(where: {
+            ($0.userData?.inProgressCount ?? 0) > 0
+        }) {
+            return inProgress
+        }
+        if let partial = seasons.first(where: {
+            guard let userData = $0.userData else { return false }
+            let watched = userData.watchedCount ?? 0
+            return watched > 0 && watched < $0.episodeCount
+        }) {
+            return partial
+        }
+        if let firstUnplayed = seasons.first(where: {
+            !($0.userData?.played ?? false)
+        }) {
+            return firstUnplayed
+        }
+        return seasons.first
     }
 
     private func sampleTintIfNeeded(for urlString: String?) {
@@ -502,6 +896,7 @@ struct TVFocusMarquee: View {
     let scale: Scale
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
 
     /// False until the first content has painted — the initial (seeded)
     /// block snaps in; only content→content swaps crossfade.
@@ -510,7 +905,12 @@ struct TVFocusMarquee: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             if let content {
-                TVMarqueeBlock(content: content, enrichment: enrichment, scale: scale)
+                TVMarqueeBlock(
+                    content: content,
+                    enrichment: enrichment,
+                    badgeOverride: playbackBadgeOverride(for: content),
+                    scale: scale
+                )
                     .id(content.id)
                     .transition(.opacity)
             }
@@ -564,6 +964,17 @@ struct TVFocusMarquee: View {
             .joined(separator: ", ")
     }
 
+    private func playbackBadgeOverride(for content: TVMarqueeContent) -> [String]? {
+        guard content.prefersLastUsedPlaybackMetadata,
+              let presentation = continueWatchingMetadata.presentation(
+                  for: content.contentId
+              ) else {
+            return nil
+        }
+        guard !presentation.badges.isEmpty else { return nil }
+        return presentation.badges + [content.contentRatingBadge].compactMap { $0 }
+    }
+
     /// Polite live region: queue a low-priority announcement that never
     /// interrupts in-progress speech while the user scrubs a row.
     private func announce(_ content: TVMarqueeContent) {
@@ -576,7 +987,8 @@ struct TVFocusMarquee: View {
 // MARK: - Content block
 
 /// One marquee "frame": title (text first, cached logo art may swap
-/// in), badge + meta line, synopsis. The §5.4 eyebrow (source-row title)
+/// in), identity line, synopsis, enrichment, then technical badges. The
+/// §5.4 eyebrow (source-row title)
 /// was dropped by design revision — the row's own header already names
 /// the source, and the marquee leads with the title. Identity is keyed
 /// on the content id by the parent so a content change crossfades whole
@@ -584,6 +996,7 @@ struct TVFocusMarquee: View {
 private struct TVMarqueeBlock: View {
     let content: TVMarqueeContent
     var enrichment: TVMarqueeEnrichment? = nil
+    var badgeOverride: [String]? = nil
     let scale: TVFocusMarquee.Scale
 
     /// Server logo art, swapped in only once decoded — the text title
@@ -599,10 +1012,12 @@ private struct TVMarqueeBlock: View {
     init(
         content: TVMarqueeContent,
         enrichment: TVMarqueeEnrichment? = nil,
+        badgeOverride: [String]? = nil,
         scale: TVFocusMarquee.Scale
     ) {
         self.content = content
         self.enrichment = enrichment
+        self.badgeOverride = badgeOverride
         self.scale = scale
         // A prefetched logo should be on the block's very first frame —
         // waiting for onAppear paints one frame of text title first, which
@@ -615,7 +1030,7 @@ private struct TVMarqueeBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             titleSlot
 
             metaLine
@@ -630,6 +1045,8 @@ private struct TVMarqueeBlock: View {
             }
 
             detailLine
+
+            badgeLine
         }
         .frame(maxWidth: ContinuumTheme.Skyline.marqueeContentWidth, alignment: .leading)
         .onAppear { loadLogoIfCached() }
@@ -708,20 +1125,61 @@ private struct TVMarqueeBlock: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        if !content.badges.isEmpty || !content.metaParts.isEmpty {
+        if !displayedMetaParts.isEmpty {
             HStack(spacing: 10) {
-                ForEach(content.badges, id: \.self) { badge in
-                    badgeChip(badge)
+                if let episodeRatingBadge {
+                    badgeChip(episodeRatingBadge)
                 }
 
-                if !content.metaParts.isEmpty {
-                    Text(content.metaParts.joined(separator: " · "))
-                        .font(.system(size: scale.metaSize, weight: .medium))
-                        .foregroundStyle(Color.continuumSecondaryText)
-                        .lineLimit(1)
+                Text(displayedMetaParts.joined(separator: " · "))
+                    .font(.system(size: scale.metaSize, weight: .medium))
+                    .foregroundStyle(Color.continuumSecondaryText)
+                    .lineLimit(1)
+            }
+            .frame(
+                maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth,
+                alignment: .leading
+            )
+        }
+    }
+
+    /// Continue Watching episodes lead with only their location and title.
+    /// Runtime and remaining-time data stay available to VoiceOver, but no
+    /// longer compete with the episode name in the visible identity row.
+    private var displayedMetaParts: [String] {
+        content.isEpisode ? Array(content.metaParts.prefix(2)) : content.metaParts
+    }
+
+    /// Episode ratings belong with episode identity, immediately before the
+    /// season/episode token. Movie ratings remain in the technical row.
+    private var episodeRatingBadge: String? {
+        content.isEpisode ? content.contentRatingBadge : nil
+    }
+
+    private var displayedTechnicalBadges: [String] {
+        guard let episodeRatingBadge else { return displayedBadges }
+        return displayedBadges.filter {
+            $0.localizedCaseInsensitiveCompare(episodeRatingBadge) != .orderedSame
+        }
+    }
+
+    /// Technical capabilities and rating sit below the async aired/cast line.
+    /// Every media item reserves the same slot, so saved-file enrichment can
+    /// update the labels without moving the Home marquee or its first row.
+    @ViewBuilder
+    private var badgeLine: some View {
+        if content.contentId != nil {
+            HStack(spacing: 10) {
+                ForEach(displayedTechnicalBadges, id: \.self) { badge in
+                    badgeChip(badge)
                 }
             }
+            .frame(height: 27, alignment: .leading)
         }
+    }
+
+    private var displayedBadges: [String] {
+        badgeOverride ?? content.badges
     }
 
     private func badgeChip(_ label: String) -> some View {

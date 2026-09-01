@@ -24,7 +24,12 @@ extension View {
         seasonRowFocused: Bool,
         actionRowFocused: Bool,
         episodeSectionId: String,
-        heroId: String
+        heroId: String,
+        browseFocusKey: String? = nil,
+        browseHoldRequest: Int = 0,
+        browseRestoreRequest: Int = 0,
+        similarRailFocused: Bool = false,
+        similarSectionId: String? = nil
     ) -> some View {
         modifier(
             DetailFocusScrollModifier(
@@ -32,7 +37,12 @@ extension View {
                 seasonRowFocused: seasonRowFocused,
                 actionRowFocused: actionRowFocused,
                 episodeSectionId: episodeSectionId,
-                heroId: heroId
+                heroId: heroId,
+                browseFocusKey: browseFocusKey,
+                browseHoldRequest: browseHoldRequest,
+                browseRestoreRequest: browseRestoreRequest,
+                similarRailFocused: similarRailFocused,
+                similarSectionId: similarSectionId
             )
         )
     }
@@ -44,10 +54,17 @@ private struct DetailFocusScrollModifier: ViewModifier {
     let actionRowFocused: Bool
     let episodeSectionId: String
     let heroId: String
+    let browseFocusKey: String?
+    let browseHoldRequest: Int
+    let browseRestoreRequest: Int
+    let similarRailFocused: Bool
+    let similarSectionId: String?
 
     private enum Region {
         case seasonRow
         case actionRow
+        case browse
+        case similarRail
     }
 
     /// Live mirror of the focus state plus a generation counter, shared with
@@ -64,11 +81,19 @@ private struct DetailFocusScrollModifier: ViewModifier {
     /// Match the pace of the focus engine's own reveal scrolls; the theme's
     /// 0.2s `normalDuration` read as an abrupt snap next to them.
     private static let scrollAnimation = Animation.easeInOut(duration: 0.45)
+    private static let browseScrollAnimation = Animation.smooth(
+        duration: 1.0,
+        extraBounce: 0
+    )
 
     /// Dense early asserts so motion starts immediately even when the first
     /// write is clobbered, then sparse late ones to outlast the engine's
     /// input-deferred reveal after rapid d-pad sequences.
     private static let assertDelays: [Double] = [0.02, 0.15, 0.45, 0.8, 1.1]
+    /// Series row-to-row moves share one fixed viewport. One immediate smooth
+    /// write starts the motion, then a single late write outlasts tvOS's native
+    /// reveal without repeatedly restarting the curve.
+    private static let browseAssertDelays: [Double] = [0, 1.08]
 
     func body(content: Content) -> some View {
         // Mirror focus into the shared state on every render so in-flight
@@ -83,11 +108,45 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 guard focused else { return }
                 assertScroll(to: heroId, anchor: .top, while: .actionRow)
             }
+            .onChange(of: browseFocusKey) { _, focusKey in
+                guard focusKey != nil else {
+                    state.generation &+= 1
+                    return
+                }
+                // Series browsing is a fixed first-viewport experience: the
+                // logo and artwork remain the visual anchor while cards move
+                // horizontally beneath the focused carousel slot.
+                assertScroll(to: heroId, anchor: .top, while: .browse)
+            }
+            .onChange(of: browseHoldRequest) { _, request in
+                guard request > 0, browseFocusKey != nil else { return }
+                // A Season -> Episodes move is already at the approved main
+                // framing. Hold that exact offset through tvOS's short native
+                // reveal window instead of letting it pan down and correcting
+                // back afterward.
+                holdScroll(to: heroId, anchor: .top, while: .browse)
+            }
+            .onChange(of: browseRestoreRequest) { _, request in
+                guard request > 0, browseFocusKey != nil else { return }
+                // Version -> Episodes intentionally returns to the complete
+                // main framing. Use the slower browse curve rather than the
+                // focus engine's abrupt reveal.
+                assertScroll(to: heroId, anchor: .top, while: .browse)
+            }
+            .onChange(of: similarRailFocused) { _, focused in
+                guard focused, let similarSectionId else { return }
+                // Native reveal occasionally pins a poster rail against the
+                // very top edge and loses its section heading. Centering the
+                // complete section keeps the heading and focus lift visible.
+                assertScroll(to: similarSectionId, anchor: .center, while: .similarRail)
+            }
     }
 
     private var currentRegion: Region? {
-        if seasonRowFocused { return .seasonRow }
         if actionRowFocused { return .actionRow }
+        if similarRailFocused { return .similarRail }
+        if seasonRowFocused { return .seasonRow }
+        if browseFocusKey != nil { return .browse }
         return nil
     }
 
@@ -99,11 +158,44 @@ private struct DetailFocusScrollModifier: ViewModifier {
     private func assertScroll(to id: String, anchor: UnitPoint, while region: Region) {
         state.generation &+= 1
         let generation = state.generation
-        for delay in Self.assertDelays {
+        let delays = region == .browse
+            ? Self.browseAssertDelays
+            : Self.assertDelays
+        for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [state] in
                 guard state.generation == generation,
                       state.focusedRegion == region else { return }
-                withAnimation(Self.scrollAnimation) {
+                if region == .browse {
+                    withAnimation(Self.browseScrollAnimation) {
+                        proxy.scrollTo(id, anchor: anchor)
+                    }
+                } else {
+                    withAnimation(Self.scrollAnimation) {
+                        proxy.scrollTo(id, anchor: anchor)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Re-apply the current browse anchor for the few frames in which tvOS
+    /// performs its automatic focus reveal. These writes deliberately carry
+    /// no animation: the viewport is already correct, so animating a return
+    /// would create the very dip/rebound this hold is preventing.
+    private func holdScroll(to id: String, anchor: UnitPoint, while region: Region) {
+        state.generation &+= 1
+        let generation = state.generation
+
+        // Eighteen frames at 40 Hz cover the native single-swipe reveal while
+        // remaining short enough that the next deliberate move is unaffected.
+        for frame in 0...18 {
+            let delay = Double(frame) / 40
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [state] in
+                guard state.generation == generation,
+                      state.focusedRegion == region else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
                     proxy.scrollTo(id, anchor: anchor)
                 }
             }

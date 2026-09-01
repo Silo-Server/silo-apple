@@ -90,8 +90,9 @@ struct TVMainTabView: View {
     /// panel items) is on the stack. When the stack pops back to root,
     /// focus returns to the bar — the explicit "next owner" choice
     /// (docs/tvos-focus.md); leaving it to the engine landed on an
-    /// arbitrary row card. Card-pushed routes (detail pages) never set
-    /// this, so their pops keep the engine's restore-to-card behavior.
+    /// arbitrary row card. Card-pushed routes (detail pages) never set this;
+    /// their pops emit `detailReturnFocusRequest` so the exact launch row/card
+    /// explicitly reclaims focus.
     @State private var barOwnsFocusOnPopToRoot = false
     @State private var topMenuFocusRequest = 0
     /// Bumped by the focus watchdog to drop the bar's `@FocusState` when the
@@ -106,6 +107,9 @@ struct TVMainTabView: View {
     /// d-pad entry"). Starts at 1 so the initial Home content focuses on
     /// first appear.
     @State private var contentFocusRequest = 1
+    /// Card-pushed detail routes return to their exact Skyline owner instead
+    /// of relying on NavigationStack's best-effort focus restoration.
+    @State private var detailReturnFocusRequest = 0
     @Namespace private var tabContentNamespace
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
@@ -119,6 +123,9 @@ struct TVMainTabView: View {
                 rootContent
                     .navigationDestination(for: Route.self) { route in
                         routeContent(for: route)
+                            .environment(\.tvDetailTopMenuReturn) {
+                                returnFromPushedRouteToTopMenu()
+                            }
                     }
             }
 
@@ -189,6 +196,7 @@ struct TVMainTabView: View {
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
                 startFromBeginning: payload.startFromBeginning,
                 resumePositionOverride: payload.resumePosition,
+                prefersLastUsedVersion: payload.prefersLastUsedVersion,
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL,
                 onPlaybackStarted: {
@@ -250,6 +258,8 @@ struct TVMainTabView: View {
                     DispatchQueue.main.async {
                         focusTopMenuIfVisible()
                     }
+                } else {
+                    detailReturnFocusRequest += 1
                 }
             }
         }
@@ -346,7 +356,15 @@ struct TVMainTabView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .onExitCommand {
-            focusTopMenuIfVisible()
+            if router.path.isEmpty {
+                focusTopMenuIfVisible()
+            } else {
+                // The root remains mounted behind NavigationStack pushes.
+                // Its old no-op top-menu request consumed Back/Menu while the
+                // bar was absent, stranding detail pages. On a push, Back owns
+                // exactly one stack pop so focus can restore to the launch card.
+                router.goBack()
+            }
         }
     }
 
@@ -356,6 +374,7 @@ struct TVMainTabView: View {
         case .home:
             HomeView(
                 homeFocusRequest: contentFocusRequest,
+                detailReturnFocusRequest: detailReturnFocusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
@@ -593,6 +612,7 @@ struct TVMainTabView: View {
             focusEntryGeneration: panelFocusEntryGeneration,
             onCommitLibrary: { commitScope(type: type, library: $0, pill: nil) },
             onCommitSection: { commitScope(type: type, library: $0, pill: $1) },
+            onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
             onClose: { closePanel() },
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onExitToContent: { exitPanelToContent() }
@@ -615,6 +635,7 @@ struct TVMainTabView: View {
                 focusEntryGeneration: panelFocusEntryGeneration,
                 onCommitLibrary: { commitShortcut(root: root, library: $0, pill: nil) },
                 onCommitSection: { commitShortcut(root: root, library: $0, pill: $1) },
+                onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
                 onClose: { closePanel() },
                 onPanelFocusChanged: { handlePanelFocusChanged($0) },
                 onExitToContent: { exitPanelToContent() }
@@ -825,6 +846,14 @@ struct TVMainTabView: View {
     private func exitPanelToContent() {
         closePanelForContentHandoff()
         contentFocusRequest += 1
+    }
+
+    private func prefetchLibrarySectionsIfNeeded(_ library: Library) {
+        let cached: SectionsResponse? = ResponseCache.shared.get(
+            CacheKey.librarySections(library.id)
+        )
+        guard cached == nil else { return }
+        StartupContentPrefetcher.prefetchLibrarySections(libraryId: library.id)
     }
 
     /// Commit a cascade selection (§5.3, §F): set + persist the tab scope,
@@ -1106,8 +1135,29 @@ struct TVMainTabView: View {
 
         withAnimation(reduceMotion ? nil : ContinuumTheme.springAnimation) {
             isTopMenuFocusSuppressed = false
+        }
+        // Let the bar's enabled state commit before asking its @FocusState to
+        // claim the selected tab. A swipe-up move can arrive in the same
+        // transaction that unsuppresses the bar; writing both together made
+        // tvOS occasionally reject the claim, forcing another swipe or Back.
+        DispatchQueue.main.async {
+            guard router.path.isEmpty,
+                  isTopMenuFocused,
+                  !isTopMenuFocusSuppressed else { return }
             topMenuFocusRequest += 1
         }
+    }
+
+    /// Up from the topmost detail controls deliberately leaves the pushed
+    /// route and hands focus to the root menu. Back/Menu remains distinct: it
+    /// performs one ordinary pop and restores the Continue Watching card.
+    private func returnFromPushedRouteToTopMenu() {
+        guard !router.path.isEmpty else {
+            focusTopMenuIfVisible()
+            return
+        }
+        barOwnsFocusOnPopToRoot = true
+        router.popToRoot()
     }
 
     private func returnToHomeInMenu() {
@@ -1232,8 +1282,8 @@ struct TVMainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId):
-            ItemDetailView(contentId: contentId)
+        case .itemDetail(let contentId, let tvSeed):
+            ItemDetailView(contentId: contentId, tvSeed: tvSeed)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
         case .player(let contentId, let startFromBeginning, let resumePosition):

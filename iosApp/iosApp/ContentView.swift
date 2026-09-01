@@ -1869,6 +1869,7 @@ struct MainTabView: View {
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
                 startFromBeginning: payload.startFromBeginning,
                 resumePositionOverride: payload.resumePosition,
+                prefersLastUsedVersion: payload.prefersLastUsedVersion,
                 offlineDownloadId: payload.offlineDownloadId,
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL
@@ -2319,7 +2320,7 @@ struct MainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId):
+        case .itemDetail(let contentId, _):
             ItemDetailView(contentId: contentId)
                 // The iOS 26 poster → detail zoom transition
                 // (`.navigationTransition(.zoom(sourceID:in:))`, keyed off
@@ -2601,7 +2602,7 @@ private struct ItemDetailSheet: View {
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
-        case .itemDetail(let contentId):
+        case .itemDetail(let contentId, _):
             ItemDetailView(contentId: contentId)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)

@@ -6,10 +6,13 @@ import SwiftUI
 struct TVDetailCastRail: View {
     let cast: [CastMember]
     let onTap: (String) -> Void
+    /// Non-zero changes explicitly hand focus into the first cast card from
+    /// the composite Series episode carousel.
+    var focusRequest = 0
 
     private let photoWidth: CGFloat = 200
     private let photoHeight: CGFloat = 200
-    private let cardSpacing: CGFloat = 44
+    private let cardSpacing: CGFloat = 60
     private let maxEntries = 24
     @FocusState private var focusedCastId: String?
 
@@ -25,11 +28,15 @@ struct TVDetailCastRail: View {
                     .focused($focusedCastId, equals: member.id)
                 }
             }
-            .padding(.vertical, 24)
+            .padding(.vertical, 12)
         }
         .focusSection()
         .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
         .scrollClipDisabled()
+        .onChange(of: focusRequest) { _, request in
+            guard request > 0, let defaultFocusId else { return }
+            focusedCastId = defaultFocusId
+        }
     }
 
     private var defaultFocusId: String? {
@@ -87,17 +94,17 @@ private struct CastCardLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             photo
             VStack(spacing: 4) {
                 Text(member.name)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.88))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.center)
                 if let character = member.character, !character.isEmpty {
                     Text(character)
-                        .font(.system(size: 18, weight: .regular))
+                        .font(.system(size: 17, weight: .regular))
                         .foregroundColor(.continuumSecondaryText)
                         .lineLimit(1)
                         .multilineTextAlignment(.center)
@@ -116,6 +123,7 @@ private struct CastCardLabel: View {
                 CachedAsyncImage(
                     url: url,
                     targetSize: photoSize,
+                    thumbhash: member.photoThumbhash,
                     contentMode: .fill
                 )
             } else {
