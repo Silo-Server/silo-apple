@@ -357,7 +357,10 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                     .onGeometryChange(for: Bool.self) { proxy in
                         proxy.size.width > 0 && proxy.size.height > 0
                     } action: { isLaidOut in
-                        guard isLaidOut else { return }
+                        // Series mounts a disabled placeholder while its first
+                        // playable episode is still loading. Do not consume
+                        // the page's one-shot focus claim until Play is live.
+                        guard isLaidOut, playTitle != nil else { return }
                         resetInitialPlayFocus()
                     }
                 }

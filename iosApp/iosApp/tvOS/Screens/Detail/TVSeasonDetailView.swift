@@ -55,6 +55,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
@@ -87,6 +88,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                             subtitleSignature: nextUpSubtitleOverrideCleared
                                 ? nil
                                 : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                            preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                             showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
                                 ?? false
                         ),

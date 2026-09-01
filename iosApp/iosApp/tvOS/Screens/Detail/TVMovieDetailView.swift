@@ -73,6 +73,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     private let heroScrollId = "detail-hero"
     private let similarSectionScrollId = "detail-similar-section"
     @State private var focusedEpisodeContentId: String?
+    @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
 
     var body: some View {
         TVDetailPageSurface(backdropURL: detail.backdropUrl) {
@@ -101,6 +102,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                                 subtitleSignature: subtitleOverrideCleared
                                     ? nil
                                     : detail.effectiveSubtitleTrackSignature,
+                                preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                                 showForcedSubtitles: detail.effectiveShowForcedSubtitles ?? false
                             ),
                             actions: { actionColumn },

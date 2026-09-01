@@ -206,6 +206,7 @@ struct TVPlaybackSelectionSummary: Equatable {
         selectedSubtitleTrackIndex: Int?,
         subtitleMode: String?,
         subtitleSignature: SubtitleTrackSignature?,
+        preferredSubtitleLanguage: String?,
         showForcedSubtitles: Bool
     ) -> TVPlaybackSelectionSummary {
         guard let currentVersion else {
@@ -232,7 +233,7 @@ struct TVPlaybackSelectionSummary: Equatable {
             : resolvedAudio
 
         let autoContext = DetailPlaybackFormatting.SubtitleAutoContext(
-            preferredLanguage: nil,
+            preferredLanguage: preferredSubtitleLanguage,
             mode: subtitleMode,
             signature: subtitleSignature,
             audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(

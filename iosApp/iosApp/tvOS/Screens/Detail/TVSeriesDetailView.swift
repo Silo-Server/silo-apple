@@ -86,6 +86,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var outgoingSeasonPage: SeasonPageSnapshot?
     @State private var seasonPanProgress: CGFloat = 1
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let showModeId = "series-show-overview"
@@ -212,6 +213,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 subtitleSignature: nextUpSubtitleOverrideCleared
                     ? nil
                     : matchingPlaybackDetail?.effectiveSubtitleTrackSignature,
+                preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                 showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles ?? false
             ),
             backdropHeight: TVDetailLayout.heroHeight,
