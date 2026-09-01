@@ -11,6 +11,11 @@ struct EpisodeThumbCard: View {
     let item: SectionItem
     var showProgress: Bool = false
     let action: () -> Void
+    /// Some hosts use thumbnail taps for an immediate action rather than
+    /// opening detail. Player "On Deck" is the concrete case: selecting a
+    /// card must start that episode. Ordinary Home and browse thumbnails keep
+    /// the source-aware detail-card presentation.
+    var usesProvidedTapAction: Bool = false
     /// tvOS-only shortcut invoked by the remote's Play/Pause button while
     /// this card owns focus. Select continues to invoke `action`.
     var playAction: (() -> Void)? = nil
@@ -33,6 +38,7 @@ struct EpisodeThumbCard: View {
     @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
+    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     /// Unique per-placement zoom source id (see MediaCard) so the same episode
     /// in two on-screen rows doesn't collide on `contentId`.
     @State private var zoomInstanceID = UUID()
@@ -107,8 +113,15 @@ struct EpisodeThumbCard: View {
     #if !os(tvOS)
     private var iosButton: some View {
         Button {
-            router.pendingZoomSourceID = zoomInstanceID.uuidString
-            action()
+            if usesProvidedTapAction {
+                action()
+            } else {
+                router.pendingZoomSourceID = zoomInstanceID.uuidString
+                router.presentItemDetail(
+                    contentId: item.contentId,
+                    browseSource: detailBrowseSource
+                )
+            }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 thumbnail

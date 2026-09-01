@@ -396,22 +396,26 @@ struct DownloadActionButton: View {
         }
     }
 
-    /// Glyph over caption, sized to match `PhoneLabeledAction` exactly so
-    /// the two sit on one baseline in the refined action row.
+    /// Filled, borderless circle over a caption, sized to match
+    /// `PhoneLabeledAction` exactly so the row sits on one baseline.
     private func labeledGlyph<Glyph: View>(
         tint: Color,
+        active: Bool,
         @ViewBuilder glyph: () -> Glyph
     ) -> some View {
         VStack(spacing: 6) {
             glyph()
-                .frame(height: 22)
+                .frame(width: 42, height: 42)
+                .background(
+                    Circle().fill(Color.white.opacity(active ? 0.18 : 0.10))
+                )
             Text(captionText)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(captionTint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 58)
         .contentShape(Rectangle())
     }
 
@@ -465,7 +469,7 @@ struct DownloadActionButton: View {
         showSpinner: Bool = false
     ) -> some View {
         if style == .labeled {
-            labeledGlyph(tint: tint) {
+            labeledGlyph(tint: tint, active: active) {
                 if showSpinner {
                     ProgressView().controlSize(.small).tint(.white)
                 } else {
@@ -509,7 +513,7 @@ struct DownloadActionButton: View {
     @ViewBuilder
     private func progressLabel(fraction: Double, paused: Bool) -> some View {
         if style == .labeled {
-            labeledGlyph(tint: .white) {
+            labeledGlyph(tint: .white, active: true) {
                 ZStack {
                     Circle()
                         .stroke(Color.white.opacity(0.22), lineWidth: 2)

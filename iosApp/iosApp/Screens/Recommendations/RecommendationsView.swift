@@ -13,16 +13,34 @@ struct RecommendationsView: View {
     var isTopMenuFocused: Bool = false
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
-    @State private var viewModel = RecommendationsViewModel()
+    @State private var viewModel: RecommendationsViewModel
     @State private var currentProfile: UserProfile?
     @State private var savedListSelection: SavedShortcut = .watchlist
     @Environment(AppRouter.self) private var router
 
+    init(
+        focusRequest: Int = 0,
+        isTopMenuFocused: Bool = false,
+        onTopMenuFocusRequest: (() -> Void)? = nil,
+        viewModel: RecommendationsViewModel? = nil
+    ) {
+        self.focusRequest = focusRequest
+        self.isTopMenuFocused = isTopMenuFocused
+        self.onTopMenuFocusRequest = onTopMenuFocusRequest
+        _viewModel = State(initialValue: viewModel ?? RecommendationsViewModel())
+    }
+
     var body: some View {
         rootLayout
             .task {
+                #if os(iOS)
+                async let recommendations: Void = viewModel.loadRecommendations()
+                async let profile: Void = loadCurrentProfile()
+                _ = await (recommendations, profile)
+                #else
                 await viewModel.loadRecommendations()
                 await loadCurrentProfile()
+                #endif
             }
         #if !os(tvOS)
             .refreshable {

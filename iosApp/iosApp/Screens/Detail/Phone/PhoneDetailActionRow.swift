@@ -36,7 +36,9 @@ struct PhoneRefinedPlayButton: View {
 
 // MARK: - Labelled secondary action
 
-/// One named secondary action — glyph over a caption.
+/// One named secondary action — a filled circle with no outline, over a
+/// caption. This mirrors the approved detail treatment: the icon remains a
+/// generous touch target while the caption removes any guesswork.
 ///
 /// The shipping page gives favourite, watchlist, watched, download, and the
 /// overflow menu the same 44pt circular silhouette, centred under Play with
@@ -65,22 +67,20 @@ struct PhoneLabeledAction: View {
             VStack(spacing: 6) {
                 Image(systemName: resolvedIcon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(isActive ? Color.continuumAccent : Color.continuumOnSurface)
-                    .frame(height: 22)
+                    .foregroundStyle(Color.continuumOnSurface)
+                    .frame(width: 42, height: 42)
+                    .background(
+                        Circle().fill(Color.white.opacity(isActive ? 0.18 : 0.10))
+                    )
                     .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
 
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(isActive
-                                     ? Color.continuumAccent
-                                     : Color.continuumOnSurface.opacity(0.6))
+                    .foregroundStyle(Color.continuumOnSurface.opacity(isActive ? 0.92 : 0.6))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            // The glyph-plus-caption stack is only ~38pt tall; the frame
-            // keeps the tap target at the 44pt the old circles gave these
-            // actions. `contentShape` must follow so the padding is tappable.
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -104,13 +104,14 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
                 Image(systemName: icon)
                     .font(.system(size: 19, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface)
-                    .frame(height: 22)
+                    .frame(width: 42, height: 42)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.6))
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
         }
         .accessibilityLabel(label)
