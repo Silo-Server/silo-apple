@@ -417,13 +417,13 @@ struct PlayerView: View {
                     object: nil
                 )
 
-                await ItemDetailCache.shared.refreshAfterPlayback(
+                let refreshedContentIds = await ItemDetailCache.shared.refreshAfterPlayback(
                     contentIds: touchedContentIds
                 )
                 NotificationCenter.default.post(
                     name: .tvPlaybackStateDidRefresh,
                     object: TVPlaybackStateRefreshEvent(
-                        refreshedContentIds: touchedContentIds,
+                        refreshedContentIds: refreshedContentIds,
                         completedContentIds: completedContentIds
                     )
                 )

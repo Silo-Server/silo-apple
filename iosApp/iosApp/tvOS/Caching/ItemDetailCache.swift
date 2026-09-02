@@ -89,7 +89,8 @@ final class ItemDetailCache {
     /// write has completed. Unlike `markStaleFamily`, this is awaited by the
     /// player teardown path so a catalog read can never overtake the watched
     /// mutation and permanently repaint the pre-play state.
-    func refreshAfterPlayback(contentIds: Set<String>) async {
+    @discardableResult
+    func refreshAfterPlayback(contentIds: Set<String>) async -> Set<String> {
         var targets = contentIds
         for contentId in contentIds {
             guard let detail = entries[contentId]?.detail,
@@ -114,6 +115,7 @@ final class ItemDetailCache {
                 coalescesMetadataRequests: false
             )
         }
+        return Set(residentTargets)
     }
 
     /// Drop every cached entry. Called from `AuthService.signOut` and
