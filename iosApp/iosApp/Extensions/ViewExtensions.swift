@@ -9,7 +9,7 @@ struct ContinuumPageBackdrop: View {
     var body: some View {
         #if os(iOS)
         ZStack {
-            Color(hex: "#1D1F1D")
+            Color(hex: "#171917")
 
             RadialGradient(
                 stops: [
