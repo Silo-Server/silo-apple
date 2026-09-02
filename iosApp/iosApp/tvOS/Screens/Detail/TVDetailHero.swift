@@ -149,66 +149,26 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private var backdrop: some View {
         GeometryReader { geometry in
             let resolvedBackdropHeight = backdropHeight ?? heroHeight
-            let artworkWidth = geometry.size.width * 0.64
-            let artworkHeight = min(
-                resolvedBackdropHeight * 0.94,
-                artworkWidth * 9 / 16
+            let artworkSize = TVBackdropArtworkLayout.artworkSize(
+                forViewportWidth: geometry.size.width
             )
-            // The standard Movie mask is shared verbatim. A compact Series
-            // header only changes whether that completed fade may draw beyond
-            // the editorial layout boundary.
-            let bottomFadeEnd: CGFloat = 1
-            let bottomFadeStart = max(0, bottomFadeEnd - 0.30)
 
             if let url = backdropUrl, !url.isEmpty {
                 CachedAsyncImage(
                     url: url,
-                    targetSize: CGSize(width: artworkWidth, height: artworkHeight),
+                    targetSize: artworkSize,
                     thumbhash: backdropThumbhash,
                     contentMode: .fill
                 )
-                .frame(width: artworkWidth, height: artworkHeight)
+                .frame(width: artworkSize.width, height: artworkSize.height)
                 .clipped()
-                .mask {
-                    artworkFadeMask(
-                        bottomFadeStart: bottomFadeStart,
-                        bottomFadeEnd: bottomFadeEnd
-                    )
-                }
+                .mask { TVBackdropArtworkFadeMask() }
                 .frame(
                     width: geometry.size.width,
                     height: resolvedBackdropHeight,
                     alignment: .topTrailing
                 )
             }
-        }
-    }
-
-    /// The image is crisp in the top-right and dissolves into the solid page
-    /// tint on its leading and lower edges. No blur or translucent material.
-    private func artworkFadeMask(
-        bottomFadeStart: CGFloat,
-        bottomFadeEnd: CGFloat
-    ) -> some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black, location: 0.0),
-                .init(color: .black, location: 0.46),
-                .init(color: .clear, location: 1.0),
-            ],
-            startPoint: .trailing,
-            endPoint: .leading
-        )
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0.0),
-                    .init(color: .black, location: bottomFadeStart),
-                    .init(color: .clear, location: max(0.72, bottomFadeEnd)),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
         }
     }
 
