@@ -285,20 +285,14 @@ struct HomeView: View {
     /// away. The fixed utility cluster remains independently overlaid above it.
     private var homeScrollIdentityHeader: some View {
         HStack {
-            Text("SILO")
-                // Match the locked tvOS wordmark exactly. The Skyline metrics
-                // are tvOS-scoped, so repeat their approved values here.
-                .font(.system(size: 26, weight: .heavy))
-                .tracking(26 * 0.34)
-                .foregroundStyle(.white)
-                .accessibilityLabel("Silo")
+            SiloWordmarkView(width: 72)
 
             Spacer(minLength: 8)
         }
         .padding(.horizontal, ContinuumTheme.padding)
         // The ScrollView now begins inside the device safe area, exactly like
-        // the fixed utility overlay. Matching their top inset puts the SILO
-        // baseline on the same row instead of underneath the status clock.
+        // the fixed utility overlay. Matching their top inset keeps the logo
+        // on the same row instead of underneath the status clock.
         .padding(.top, headerTopInset)
         .frame(
             height: topRunwaySpacing(topSafeAreaInset: 0),
