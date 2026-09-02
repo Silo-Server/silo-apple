@@ -15,6 +15,12 @@ enum StartupContentPrefetcher {
     private static let maxHomeArtworkURLs = 12
     #endif
     private static let maxSectionArtworkURLs = 12
+    /// For You shows two eight-card rows in its initial viewport. Logos are
+    /// tiny compared with backdrops, so warm exactly those visible candidates
+    /// rather than waiting for each focus rest to begin its own request.
+    #if os(tvOS)
+    private static let maxRecommendationLogoURLs = 16
+    #endif
     private static let maxBrowseArtworkURLs = 12
     private static let maxProfileArtworkURLs = 8
     private static let browsePageSize = 60
@@ -363,6 +369,9 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.recommendations)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
+            #if os(tvOS)
+            prefetchRecommendationLogos(for: response)
+            #endif
             return response
         } catch {
             if profileScopedGeneration == generation {
@@ -705,6 +714,31 @@ enum StartupContentPrefetcher {
         guard !urls.isEmpty else { return }
         PosterImageCache.prefetcher.startPrefetching(with: urls)
     }
+
+    #if os(tvOS)
+    /// Match `RecommendationsViewModel` ordering so the first two rows the
+    /// user can actually focus are the ones whose logo art is ready first.
+    private static func prefetchRecommendationLogos(for response: SectionsResponse) {
+        let nonEmpty = response.sections.filter { !$0.items.isEmpty }
+        let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
+        let others = nonEmpty.filter { $0.title.lowercased() != "for you" }
+        let initialRows = (forYou + others).prefix(2)
+
+        var urls: [URL] = []
+        var seen = Set<String>()
+        for section in initialRows {
+            for item in section.items.prefix(8) {
+                guard urls.count < maxRecommendationLogoURLs,
+                      let url = normalizedURL(from: item.logoUrl),
+                      seen.insert(url.absoluteString).inserted else { continue }
+                urls.append(url)
+            }
+        }
+
+        guard !urls.isEmpty else { return }
+        PosterImageCache.prefetcher.startPrefetching(with: urls)
+    }
+    #endif
 
     private static func prefetchBrowseArtwork(for response: CatalogResponse) {
         var urls: [URL] = []

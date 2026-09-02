@@ -27,6 +27,8 @@ struct SectionRow: View {
     /// when an unrelated view (e.g. the tvOS top menu) hands focus down into
     /// this row rather than the user d-padding into it.
     var focusRequest: Int = 0
+    /// Optional exact item target for the programmatic focus kick.
+    var focusRequestItemId: String? = nil
     /// tvOS detail-pop token forwarded to `MediaRow`; the row's ownership gate
     /// ensures only the launch row restores its exact previously focused card.
     var detailReturnFocusRequest: Int = 0
@@ -116,6 +118,7 @@ struct SectionRow: View {
             prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
             defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,
+            focusRequestItemId: focusRequestItemId,
             detailReturnFocusRequest: detailReturnFocusRequest,
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
             onOpenContextDetail: nil,

@@ -1,3 +1,33 @@
+enum TVSkylineVerticalMove {
+    case up
+    case down
+}
+
+enum TVSkylineRowMoveTarget: Equatable {
+    case topMenu
+    case row(Int)
+    case none
+}
+
+/// Pure row-boundary routing used by every Skyline landing. Explicit routing
+/// avoids asking the focus engine to discover a row that is still clipped by
+/// the lower-half viewport while the vertical stack is scrolling.
+func tvSkylineRowMoveTarget(
+    currentIndex: Int,
+    rowCount: Int,
+    direction: TVSkylineVerticalMove
+) -> TVSkylineRowMoveTarget {
+    guard rowCount > 0, currentIndex >= 0, currentIndex < rowCount else {
+        return .none
+    }
+    switch direction {
+    case .up:
+        return currentIndex == 0 ? .topMenu : .row(currentIndex - 1)
+    case .down:
+        return currentIndex + 1 < rowCount ? .row(currentIndex + 1) : .none
+    }
+}
+
 #if os(tvOS)
 import SwiftUI
 
@@ -7,9 +37,10 @@ import SwiftUI
 /// so the two stay pixel-identical — the only difference is the sections each
 /// feeds in.
 ///
-/// Row movement is owned by tvOS focus + the vertical scroll view. Each row
-/// remains a native focus section, so row-to-row movement preserves tvOS'
-/// geometric focus behavior instead of forcing the first item.
+/// Rows remain native focus sections. Downward movement stays entirely native
+/// so one remote gesture advances one row with the platform's normal pacing.
+/// Upward movement only intervenes when the clipped band needs help revealing
+/// the preceding row.
 struct TVSkylineSectionFeed: View {
     /// Section rows to page through, in order (already filtered to
     /// non-empty, non-featured by the caller).
@@ -36,8 +67,20 @@ struct TVSkylineSectionFeed: View {
 
     /// Debounced focused-card state driving the marquee + backdrop.
     @State private var marqueeModel = TVFocusMarqueeModel()
-    /// Token handed to row 1 so its first card claims focus on shell entry.
-    @State private var contentFocusToken = 0
+    /// Per-row focus handoff tokens. A single monotonic generation prevents a
+    /// request from colliding with a token that row applied earlier.
+    @State private var rowFocusRequestGeneration = 0
+    @State private var rowFocusRequests: [String: Int] = [:]
+    @State private var rowFocusRequestItemIds: [String: String] = [:]
+    @State private var lastFocusedItemIds: [String: String] = [:]
+    /// Invalidates a queued scroll-then-focus claim when another touchpad
+    /// gesture arrives first. Without this generation, the older async claim
+    /// can run after the newer one and bounce focus back a row.
+    @State private var rowNavigationGeneration = 0
+    /// A touchpad swipe can emit several Up commands while the destination is
+    /// still being revealed. Treat that burst as one gesture so it cannot page
+    /// through several rows before focus has visually settled.
+    @State private var isUpwardRowMoveInFlight = false
     /// Snaps the row band back to the first section before a focus claim.
     /// The band clips rows outside the viewport, and tvOS refuses to focus a
     /// clipped view — so when entry focus fires while the user is parked on a
@@ -88,6 +131,8 @@ struct TVSkylineSectionFeed: View {
         .onChange(of: focusRequest) { _, request in requestEntryFocus(request) }
         .onChange(of: isTopMenuFocused) { _, isFocused in
             if isFocused {
+                rowNavigationGeneration &+= 1
+                isUpwardRowMoveInFlight = false
                 focusRestorationOwnerSectionId = nil
             }
         }
@@ -117,7 +162,11 @@ struct TVSkylineSectionFeed: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                            featuredRow(section, isFirstRow: index == 0)
+                            featuredRow(
+                                section,
+                                at: index,
+                                scrollProxy: scrollProxy
+                            )
                                 .fixedSize(horizontal: false, vertical: true)
                                 .id(section.id)
                         }
@@ -146,7 +195,11 @@ struct TVSkylineSectionFeed: View {
     }
 
     @ViewBuilder
-    private func featuredRow(_ section: ResolvedSection, isFirstRow: Bool) -> some View {
+    private func featuredRow(
+        _ section: ResolvedSection,
+        at index: Int,
+        scrollProxy: ScrollViewProxy
+    ) -> some View {
         SectionRow(
             section: section,
             onItemTap: onItemTap,
@@ -158,17 +211,27 @@ struct TVSkylineSectionFeed: View {
             // movement between rows geometric — only system-initiated
             // resolutions use the preference. The imperative entry token
             // below is unchanged and covers every other entry path.
-            prefersDefaultFocusOnFirstItem: isFirstRow,
+            prefersDefaultFocusOnFirstItem: index == 0,
             defaultFocusPriority: .automatic,
-            focusRequest: isFirstRow ? contentFocusToken : 0,
+            focusRequest: rowFocusRequests[section.id] ?? 0,
+            focusRequestItemId: rowFocusRequestItemIds[section.id],
             detailReturnFocusRequest: detailReturnFocusRequest,
-            onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
+            onMoveUp: {
+                moveFocusUp(
+                    from: index,
+                    scrollProxy: scrollProxy
+                )
+            },
             onItemFocus: { item in
                 focusRestorationOwnerSectionId = section.id
+                lastFocusedItemIds[section.id] = item.contentId
                 previewFocusedItem(item, in: section)
             },
             cardWidth: ContinuumTheme.Skyline.densePosterCardWidth,
             cardVerticalPadding: ContinuumTheme.Skyline.rowBandCardVerticalPadding,
+            // Preserve the original smooth tvOS focus/scroll behavior when
+            // moving down. Programmatic Down paging made one touchpad swipe
+            // produce several rapid row jumps.
             onMoveDown: nil,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
@@ -185,6 +248,64 @@ struct TVSkylineSectionFeed: View {
     }
 
     // MARK: - Focus
+
+    private func moveFocusUp(
+        from index: Int,
+        scrollProxy: ScrollViewProxy
+    ) {
+        guard !isUpwardRowMoveInFlight else { return }
+        switch tvSkylineRowMoveTarget(
+            currentIndex: index,
+            rowCount: sections.count,
+            direction: .up
+        ) {
+        case .topMenu:
+            rowNavigationGeneration &+= 1
+            isUpwardRowMoveInFlight = false
+            focusRestorationOwnerSectionId = nil
+            onTopMenuFocusRequest?()
+        case .row(let targetIndex):
+            let targetSection = sections[targetIndex]
+            let targetItemId = lastFocusedItemIds[targetSection.id]
+                ?? targetSection.items.first?.contentId
+            rowNavigationGeneration &+= 1
+            let navigationGeneration = rowNavigationGeneration
+            isUpwardRowMoveInFlight = true
+            // Ownership changes before the animation so any retry still queued
+            // by the previous row immediately yields instead of stealing focus
+            // back during a rapid touchpad gesture.
+            focusRestorationOwnerSectionId = targetSection.id
+            withAnimation(
+                reduceMotion
+                    ? nil
+                    : .easeInOut(duration: ContinuumTheme.slowDuration)
+            ) {
+                scrollProxy.scrollTo(targetSection.id, anchor: .top)
+            }
+            // Let the preceding row become focusable before claiming it. A
+            // later release ends the gesture burst without accelerating into
+            // another row; a new deliberate press/swipe then moves once more.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                guard navigationGeneration == rowNavigationGeneration else { return }
+                requestRowFocus(targetSection.id, itemId: targetItemId)
+            }
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + ContinuumTheme.slowDuration + 0.12
+            ) {
+                guard navigationGeneration == rowNavigationGeneration else { return }
+                isUpwardRowMoveInFlight = false
+            }
+        case .none:
+            break
+        }
+    }
+
+    private func requestRowFocus(_ sectionId: String, itemId: String? = nil) {
+        focusRestorationOwnerSectionId = sectionId
+        rowFocusRequestItemIds[sectionId] = itemId
+        rowFocusRequestGeneration += 1
+        rowFocusRequests[sectionId] = rowFocusRequestGeneration
+    }
 
     /// Entry focus → the first row's first card. Tokens that arrive before
     /// the rows mount wait as a pending claim. A claim is dropped while the
@@ -204,12 +325,20 @@ struct TVSkylineSectionFeed: View {
         if isTopMenuFocused { return }
         guard request != lastAppliedRequest else { return }
         lastAppliedRequest = request
+        guard let firstSectionId = sections.first?.id else { return }
+        rowNavigationGeneration &+= 1
+        let navigationGeneration = rowNavigationGeneration
+        isUpwardRowMoveInFlight = false
+        focusRestorationOwnerSectionId = firstSectionId
         // Scroll the band home first, then claim on the next turn: the claim
         // is a @FocusState write on the first row's first card, which the
         // engine drops while that card is still clipped out of the viewport.
         entryScrollToken += 1
         DispatchQueue.main.async {
-            contentFocusToken += 1
+            guard navigationGeneration == rowNavigationGeneration,
+                  !isTopMenuFocused,
+                  sections.contains(where: { $0.id == firstSectionId }) else { return }
+            requestRowFocus(firstSectionId, itemId: sections.first?.items.first?.contentId)
         }
     }
 

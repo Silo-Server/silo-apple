@@ -254,6 +254,10 @@ struct ContinuumTheme {
         static let marqueeTitleSizeLibrary: CGFloat = 66
         static let marqueeMetaSizeHome: CGFloat = 20
         static let marqueeMetaSizeLibrary: CGFloat = 19
+        /// Fixed leading slot for the age/content-rating pill. For You often
+        /// backfills this value from item detail; reserving the slot prevents
+        /// the remaining metadata from sliding sideways when it arrives.
+        static let marqueeRatingSlotWidth: CGFloat = 104
         static let marqueeSynopsisSize: CGFloat = 22
         /// Synopsis column cap (§4.1) — narrower than the content block.
         static let marqueeSynopsisMaxWidth: CGFloat = 780

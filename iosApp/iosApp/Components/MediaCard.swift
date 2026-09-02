@@ -546,22 +546,26 @@ private struct FocusableMediaCard<Content: View>: View {
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.continuumSubheadline)
+                        .font(.continuumPosterTitle)
                         .foregroundStyle(
                             isFocused
                                 ? Color.continuumOnSurface
                                 : Color.continuumOnSurface.opacity(0.85)
                         )
-                        // Single line, truncated — keeps poster cards a uniform
-                        // height and the row short under the bottom-anchored marquee.
+                        // A fixed one-line box guarantees even pathological
+                        // titles cannot wrap or paint into the next poster.
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .frame(width: cardWidth, alignment: .leading)
+                        .clipped()
                         .animation(.easeOut(duration: 0.15), value: isFocused)
 
                     if captionStyle.showsMetadata, let year {
                         Text(String(year))
-                            .font(.continuumCaption)
+                            .font(.continuumPosterMetadata)
                             .foregroundStyle(Color.continuumSecondaryText)
+                            .lineLimit(1)
+                            .frame(width: cardWidth, alignment: .leading)
                     }
                 }
                 .frame(width: cardWidth, alignment: .leading)
