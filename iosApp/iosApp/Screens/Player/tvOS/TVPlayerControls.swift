@@ -19,6 +19,10 @@ enum TVPlayerTimeDisplayMode: Equatable {
 /// either hides the HUD, dismisses the overlay, or exits the player
 /// depending on what's on screen.
 struct TVPlayerControls: View {
+    private static let transportHorizontalInset: CGFloat = 80
+    private static let scrubPreviewCardWidth: CGFloat = 340
+    private static let scrubPreviewBottomInset: CGFloat = 300
+
     let viewModel: PlayerViewModel
     let showsTimelinePreview: Bool
     let timeDisplayMode: TVPlayerTimeDisplayMode
@@ -249,7 +253,7 @@ struct TVPlayerControls: View {
                 passiveTimelineBar
                 timeRow
             }
-            .padding(.horizontal, 80)
+            .padding(.horizontal, Self.transportHorizontalInset)
             .padding(.bottom, 48)
         }
         .allowsHitTesting(false)
@@ -300,14 +304,23 @@ struct TVPlayerControls: View {
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
-                scrubPreviewCard(image)
-                    .padding(.bottom, 214)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .transition(.opacity)
-                    .allowsHitTesting(false)
+                GeometryReader { proxy in
+                    scrubPreviewCard(image)
+                        .frame(width: Self.scrubPreviewCardWidth)
+                        .padding(.leading, scrubPreviewLeadingInset(in: proxy.size.width))
+                        .padding(.bottom, Self.scrubPreviewBottomInset)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .bottomLeading
+                        )
+                }
+                .transition(.opacity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             }
             transportStack
-                .padding(.horizontal, 80)
+                .padding(.horizontal, Self.transportHorizontalInset)
                 .padding(.bottom, 48)
         }
         .onAppear {
@@ -361,6 +374,22 @@ struct TVPlayerControls: View {
             tint: Color.black.opacity(0.28)
         )
         .shadow(color: .black.opacity(0.5), radius: 18, y: 7)
+    }
+
+    /// Aligns the preview with the scrubber puck while keeping the complete
+    /// card inside the same horizontal bounds as the transport timeline.
+    private func scrubPreviewLeadingInset(in containerWidth: CGFloat) -> CGFloat {
+        let trackWidth = max(containerWidth - (Self.transportHorizontalInset * 2), 0)
+        let playheadCenter = Self.transportHorizontalInset
+            + (trackWidth * CGFloat(progressFraction))
+        let minimumLeading = Self.transportHorizontalInset
+        let maximumLeading = containerWidth
+            - Self.transportHorizontalInset
+            - Self.scrubPreviewCardWidth
+        return min(
+            max(playheadCenter - (Self.scrubPreviewCardWidth / 2), minimumLeading),
+            maximumLeading
+        )
     }
 
     /// The sleep-timer chip floats in the top-right when active. Buffering is
