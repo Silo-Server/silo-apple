@@ -31,6 +31,11 @@ struct TVItemDetailView: View {
     @State private var failedSeriesRedirectEpisodeContentId: String?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
+    /// Serializes rapid season-tab intent before it reaches the async view
+    /// model. A superseded task must never begin after its replacement and
+    /// make an older season the selected one.
+    @State private var seriesSeasonSelectionTask: Task<Void, Never>?
+    @State private var seriesSeasonSelectionGeneration = 0
     /// Whether remote YouTube trailers should be presented, probed once per
     /// page appearance. Real Apple TVs require the YouTube app because tvOS
     /// has no browser fallback. The simulator deliberately presents the
@@ -81,6 +86,8 @@ struct TVItemDetailView: View {
             viewModel.resumeTrailerFetchIfNeeded()
         }
         .onDisappear {
+            seriesSeasonSelectionTask?.cancel()
+            seriesSeasonSelectionTask = nil
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             viewModel.cancelDeferredEpisodeFavoriteStateRefresh()
             // The coordinator's poll is not owned by `.task`, so it would
@@ -108,6 +115,9 @@ struct TVItemDetailView: View {
             }
         }
         .task(id: contentId) {
+            seriesSeasonSelectionTask?.cancel()
+            seriesSeasonSelectionTask = nil
+            seriesSeasonSelectionGeneration &+= 1
             let navigationContext = TVSeriesDetailNavigationContextStore.take(
                 for: contentId
             )
@@ -124,6 +134,10 @@ struct TVItemDetailView: View {
                 await applySeriesNavigationContext(navigationContext)
             }
             seedSubtitleOverrideIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlaybackStateDidRefresh)) { note in
+            guard let event = note.object as? TVPlaybackStateRefreshEvent else { return }
+            applyCompletedPlaybackRefresh(event)
         }
     }
 
@@ -151,6 +165,49 @@ struct TVItemDetailView: View {
         }
         guard !Task.isCancelled else { return }
         activeSeriesEpisodeContentId = context.episodeContentId
+    }
+
+    /// The cache has already reloaded authoritative watched/progress data when
+    /// this arrives. Advance only the editorial episode selection; the native
+    /// episode rail keeps ownership of focus and scrolling exactly as before.
+    private func applyCompletedPlaybackRefresh(_ event: TVPlaybackStateRefreshEvent) {
+        guard event.refreshedContentIds.contains(contentId),
+              viewModel.detail?.type == "series",
+              !event.completedContentIds.isEmpty else { return }
+
+        let activeWasCompleted = activeSeriesEpisodeContentId.map {
+            event.completedContentIds.contains($0)
+        } ?? false
+        let completedEpisodeIsVisible = viewModel.episodes.contains {
+            event.completedContentIds.contains($0.contentId)
+        }
+        guard activeSeriesEpisodeContentId == nil
+                || activeWasCompleted
+                || completedEpisodeIsVisible else { return }
+
+        if let inProgress = viewModel.episodes.first(where: {
+            $0.userData?.isInProgress == true && !($0.userData?.played ?? false)
+        }) {
+            activeSeriesEpisodeContentId = inProgress.contentId
+            return
+        }
+
+        if let activeSeriesEpisodeContentId,
+           let completedIndex = viewModel.episodes.firstIndex(where: {
+               $0.contentId == activeSeriesEpisodeContentId
+           }),
+           let next = viewModel.episodes.dropFirst(completedIndex + 1).first(where: {
+               !($0.userData?.played ?? false)
+           }) {
+            self.activeSeriesEpisodeContentId = next.contentId
+            return
+        }
+
+        if let nextUnwatched = viewModel.episodes.first(where: {
+            !($0.userData?.played ?? false)
+        }) {
+            activeSeriesEpisodeContentId = nextUnwatched.contentId
+        }
     }
 
     private var preferredAudioTrackIndex: Int? {
@@ -363,6 +420,7 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodesBySeason: viewModel.episodesBySeason,
                 activeEpisodeContentId: activeSeriesEpisodeContentId,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
@@ -388,7 +446,17 @@ struct TVItemDetailView: View {
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onSelectSeason: { season in
                     activeSeriesEpisodeContentId = nil
-                    Task { await viewModel.selectSeason(season) }
+                    seriesSeasonSelectionTask?.cancel()
+                    seriesSeasonSelectionGeneration &+= 1
+                    let generation = seriesSeasonSelectionGeneration
+                    seriesSeasonSelectionTask = Task { @MainActor in
+                        guard !Task.isCancelled,
+                              generation == seriesSeasonSelectionGeneration else { return }
+                        await viewModel.selectSeason(season)
+                        guard !Task.isCancelled,
+                              generation == seriesSeasonSelectionGeneration else { return }
+                        seriesSeasonSelectionTask = nil
+                    }
                 },
                 onActivateEpisode: { id in
                     activeSeriesEpisodeContentId = id
@@ -495,11 +563,6 @@ struct TVItemDetailView: View {
                 id: viewModel.selectedSeason?.contentId,
                 priority: .background
             ) {
-                do {
-                    try await Task.sleep(for: .milliseconds(1_500))
-                } catch {
-                    return
-                }
                 await prefetchAdjacentSeriesSeasons(for: detail)
             }
         } else {
@@ -1149,6 +1212,16 @@ struct TVItemDetailView: View {
             }
             if !stillURLs.isEmpty {
                 PosterImageCache.prefetcher.startPrefetching(with: stillURLs)
+            }
+
+            let sorted = response.episodes.sorted {
+                $0.episodeNumber < $1.episodeNumber
+            }
+            if viewModel.episodesBySeason[season.seasonNumber] == nil {
+                // Feed the route-scoped page cache as well as ResponseCache.
+                // The full season rail can then mount this neighbour before
+                // the first tab movement instead of warming only after it.
+                viewModel.episodesBySeason[season.seasonNumber] = sorted
             }
         }
     }
