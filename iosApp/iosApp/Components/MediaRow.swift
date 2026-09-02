@@ -25,9 +25,6 @@ struct MediaRow: View {
     var onItemPlay: ((SectionItem) -> Void)? = nil
     var onSeeAll: (() -> Void)? = nil
     var showProgress: Bool = false
-    /// Keeps the card as the sole focus target while showing that its detail
-    /// metadata is being prepared before navigation.
-    var loadingItemId: String? = nil
     var icon: String? = nil
     var layout: MediaRowLayout = .poster
     /// Preserve a caller's immediate thumbnail action instead of presenting
@@ -74,9 +71,6 @@ struct MediaRow: View {
     /// focus leaving the row (nil) is deliberately not reported so the
     /// marquee retains the last previewed item while focus is in chrome.
     var onItemFocus: ((SectionItem) -> Void)? = nil
-    /// Raw focus ownership changes for work that must stop when the source
-    /// card is abandoned. Unlike `onItemFocus`, this also reports `nil`.
-    var onFocusedItemIdChange: ((String?) -> Void)? = nil
     /// Optional width for poster/square cards — Skyline's dense landing
     /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
     var cardWidth: CGFloat? = nil
@@ -122,7 +116,6 @@ struct MediaRow: View {
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .onChange(of: focusedItemId) { _, newValue in
-            onFocusedItemIdChange?(newValue)
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
             lastFocusedItemId = newValue
@@ -343,11 +336,6 @@ struct MediaRow: View {
             LazyHStack(spacing: cardSpacing) {
                 ForEach(items) { item in
                     mediaCard(for: item)
-                        .overlay {
-                            if loadingItemId == item.contentId {
-                                pendingNavigationIndicator
-                            }
-                        }
                 }
             }
             #if !os(tvOS)
@@ -426,24 +414,6 @@ struct MediaRow: View {
                 onSetWatched: watchedToggleAction(for: item)
             )
         }
-    }
-
-    private var pendingNavigationIndicator: some View {
-        ZStack {
-            Circle()
-                .fill(Color.black.opacity(0.76))
-                .overlay {
-                    Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
-                }
-
-            ProgressView()
-                .controlSize(.large)
-                .tint(.white)
-        }
-        .frame(width: 76, height: 76)
-        .shadow(color: .black.opacity(0.45), radius: 14, y: 5)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     /// tvOS: bind every card to the row's @FocusState so the row can

@@ -887,6 +887,13 @@ struct TVMainTabView: View {
     }
 
     private func prefetchLibrarySectionsIfNeeded(_ library: Library) {
+        if TVLibraryTabType.series.matches(library) {
+            // This joins the same single-flight section request as the panel
+            // preview, then primes one Series hero. Repeated focus visits are
+            // cache-only and never fan out across the whole rail.
+            StartupContentPrefetcher.prefetchTVSeriesLanding(libraryId: library.id)
+            return
+        }
         let cached: SectionsResponse? = ResponseCache.shared.get(
             CacheKey.librarySections(library.id)
         )
@@ -1052,6 +1059,7 @@ struct TVMainTabView: View {
            let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) {
             libraries = cached.libraries
             ensureSelectedRootIsVisible()
+            prefetchActiveSeriesLanding()
         }
 
         do {
@@ -1063,11 +1071,20 @@ struct TVMainTabView: View {
                 response.libraries.contains { $0.id == libraryId }
             }
             ensureSelectedRootIsVisible()
+            prefetchActiveSeriesLanding()
         } catch {
             // Keep whatever tabs we already have (cached or none) — Home
             // and Calendar always stay reachable, so a transient failure
             // never strands the user.
         }
+    }
+
+    /// Backstop the launch prefetch with the shell's authoritative in-session
+    /// scope. This covers a changed Series-library selection without making
+    /// any other tab wait for the warmup.
+    private func prefetchActiveSeriesLanding() {
+        guard let library = activeLibrary(for: .series) else { return }
+        StartupContentPrefetcher.prefetchTVSeriesLanding(libraryId: library.id)
     }
 
     /// The selected root can stop being visible — a library refresh removes
