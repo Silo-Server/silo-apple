@@ -77,6 +77,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var episodeRailFocusRequest = 0
     @State private var supportingRailFocusRequest = 0
     @State private var modeActivationTask: Task<Void, Never>?
+    @State private var modeFocusAppearanceTask: Task<Void, Never>?
+    @State private var presentedFocusedModeId: String?
     @State private var seasonTransitionMovesForward = true
     @State private var seasonTransitionInFlight = false
     @State private var seasonTransitionTargetId: String?
@@ -165,6 +167,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         .onDisappear {
             modeActivationTask?.cancel()
             modeActivationTask = nil
+            modeFocusAppearanceTask?.cancel()
+            modeFocusAppearanceTask = nil
+            presentedFocusedModeId = nil
             seasonTransitionTask?.cancel()
             seasonTransitionTask = nil
             var transaction = Transaction(animation: nil)
@@ -365,6 +370,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     TVSeriesModeTab(
                         title: "Show",
                         isSelected: isShowingSeriesOverview,
+                        rendersFocusedAppearance: presentedFocusedModeId == showModeId,
                         action: showSeriesOverview
                     )
                     .id(showModeId)
@@ -374,6 +380,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         TVSeriesModeTab(
                             title: seasonLabel(season),
                             isSelected: !isShowingSeriesOverview && selectedSeason?.id == season.id,
+                            rendersFocusedAppearance: presentedFocusedModeId == season.id,
                             action: { activateSeason(season) }
                         )
                         .id(season.id)
@@ -391,11 +398,20 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 priority: .userInitiated
             )
             .onChange(of: selectedModeId) { _, newId in
+                // A click activates immediately, before the focus-paint dwell
+                // finishes. Promote that one focused tab without allowing an
+                // independently cached highlight to survive on the old tab.
+                if focusedModeId == newId {
+                    modeFocusAppearanceTask?.cancel()
+                    modeFocusAppearanceTask = nil
+                    presentedFocusedModeId = newId
+                }
                 withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
                     proxy.scrollTo(newId, anchor: .center)
                 }
             }
             .onChange(of: focusedModeId) { _, focusedId in
+                updateModeFocusAppearance(for: focusedId)
                 guard let focusedId else {
                     modeActivationTask?.cancel()
                     modeActivationTask = nil
@@ -404,6 +420,28 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 primaryFocusRegion = .mode
                 scheduleModeActivation(for: focusedId)
             }
+        }
+    }
+
+    /// Own the row's focus paint in one place so rapid lateral input can show
+    /// at most one white pill. The short dwell still filters the sub-frame
+    /// focus offer produced by a downward gesture into the episode rail.
+    private func updateModeFocusAppearance(for modeId: String?) {
+        modeFocusAppearanceTask?.cancel()
+        modeFocusAppearanceTask = nil
+        presentedFocusedModeId = nil
+
+        guard let modeId else { return }
+        if modeId == selectedModeId {
+            presentedFocusedModeId = modeId
+            return
+        }
+
+        modeFocusAppearanceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, focusedModeId == modeId else { return }
+            presentedFocusedModeId = modeId
+            modeFocusAppearanceTask = nil
         }
     }
 
@@ -931,6 +969,7 @@ private extension View {
 private struct TVSeriesModeTab: View {
     let title: String
     let isSelected: Bool
+    let rendersFocusedAppearance: Bool
     let action: () -> Void
 
     var body: some View {
@@ -940,18 +979,25 @@ private struct TVSeriesModeTab: View {
                 .padding(.horizontal, 24)
                 .frame(height: 52)
         }
-        .buttonStyle(TVSeriesModeTabStyle(isSelected: isSelected))
+        .buttonStyle(
+            TVSeriesModeTabStyle(
+                isSelected: isSelected,
+                rendersFocusedAppearance: rendersFocusedAppearance
+            )
+        )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
 private struct TVSeriesModeTabStyle: ButtonStyle {
     let isSelected: Bool
+    let rendersFocusedAppearance: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         TVSeriesModeTabBody(
             configuration: configuration,
-            isSelected: isSelected
+            isSelected: isSelected,
+            rendersFocusedAppearance: rendersFocusedAppearance
         )
     }
 }
@@ -959,8 +1005,7 @@ private struct TVSeriesModeTabStyle: ButtonStyle {
 private struct TVSeriesModeTabBody: View {
     let configuration: ButtonStyleConfiguration
     let isSelected: Bool
-    @Environment(\.isFocused) private var isFocused
-    @State private var rendersFocusedAppearance = false
+    let rendersFocusedAppearance: Bool
 
     var body: some View {
         configuration.label
@@ -984,28 +1029,6 @@ private struct TVSeriesModeTabBody: View {
                 value: rendersFocusedAppearance
             )
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
-            .task(id: isFocused) {
-                guard isFocused else {
-                    rendersFocusedAppearance = false
-                    return
-                }
-                if isSelected {
-                    rendersFocusedAppearance = true
-                    return
-                }
-                // A downward Siri Remote gesture can briefly offer focus to a
-                // neighboring pill before entering the episode composite.
-                // Ignore that sub-frame transient without delaying the current
-                // selected season or changing normal lateral navigation.
-                try? await Task.sleep(for: .milliseconds(150))
-                guard !Task.isCancelled, isFocused else { return }
-                rendersFocusedAppearance = true
-            }
-            .onChange(of: isSelected) { _, selected in
-                if selected && isFocused {
-                    rendersFocusedAppearance = true
-                }
-            }
     }
 }
 #endif
