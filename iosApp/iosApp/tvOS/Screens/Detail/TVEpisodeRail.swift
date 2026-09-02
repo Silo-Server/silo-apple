@@ -123,14 +123,7 @@ struct TVEpisodeRail: View {
     /// the competing native focus-scroll animation that caused the bump.
     private var anchoredRail: some View {
         GeometryReader { geometry in
-            // Keep the existing leading position, but end the hard crop after
-            // the final card that fits completely. A fractional next card is
-            // therefore hidden rather than sliced at the page's right edge.
-            anchoredButton(
-                viewportWidth: anchoredWholeCardViewportWidth(
-                    availableWidth: geometry.size.width
-                )
-            )
+            anchoredButton(viewportWidth: geometry.size.width)
         }
         .frame(height: anchoredRailHeight)
         .focusSection()
@@ -250,25 +243,6 @@ struct TVEpisodeRail: View {
 
     private var episodeIdentityKey: String {
         episodes.map(\.contentId).joined(separator: "|")
-    }
-
-    /// Width of the largest whole-card group that fits at the current user
-    /// card scale. The left clearance is unchanged; matching trailing room
-    /// lets the final card's Home-style lift remain fully visible too.
-    private func anchoredWholeCardViewportWidth(availableWidth: CGFloat) -> CGFloat {
-        guard availableWidth > 0 else { return 0 }
-
-        let focusClearance = EpisodeHomeHoverMetrics.leadingInset(
-            for: anchoredCardWidth
-        )
-        let step = anchoredCardWidth + cardSpacing
-        let usableWidth = max(anchoredCardWidth, availableWidth - (focusClearance * 2))
-        let fittingCount = max(1, Int(floor((usableWidth + cardSpacing) / step)))
-        let visibleCount = min(max(episodes.count, 1), fittingCount)
-        let cardsWidth = CGFloat(visibleCount) * anchoredCardWidth
-            + CGFloat(max(visibleCount - 1, 0)) * cardSpacing
-
-        return min(availableWidth, focusClearance + cardsWidth + focusClearance)
     }
 
     private func anchoredContentOffset(viewportWidth: CGFloat) -> CGFloat {
@@ -690,23 +664,32 @@ private struct EpisodeCardLabel: View {
                             Text("·")
                                 .font(.system(size: 16, weight: .bold))
                                 .foregroundStyle(Color.continuumOnSurface.opacity(0.48))
+                                .fixedSize(horizontal: true, vertical: false)
                             Text(compactEpisodeTitle)
                                 .font(.system(size: 20, weight: .semibold))
                                 .foregroundStyle(titleColor)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                                .layoutPriority(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        Spacer(minLength: 8)
+                        if !hidesEpisodeTitle {
+                            Spacer(minLength: 8)
+                        }
                     }
-                    // The compact Series caption is always the same 28-point
-                    // line beneath its still. Different title glyphs can no
-                    // longer alter the card's measured height while the rail
-                    // animates from one episode to the next.
+                    // Season tabs keep their label inside the moving control
+                    // and never animate its layout independently. Apply that
+                    // same rule only to the compact Series episode caption.
                     .frame(
+                        width: hidesEpisodeTitle ? cardWidth : nil,
                         height: hidesEpisodeTitle ? 28 : nil,
                         alignment: .topLeading
                     )
+                    .clipped()
+                    .transaction { transaction in
+                        guard hidesEpisodeTitle else { return }
+                        transaction.animation = nil
+                        transaction.disablesAnimations = true
+                    }
 
                     if !hidesEpisodeTitle {
                         HStack(alignment: .firstTextBaseline, spacing: 16) {

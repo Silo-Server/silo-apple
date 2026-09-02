@@ -36,8 +36,13 @@ struct TVBackdropArtworkFadeMask: View {
             LinearGradient(
                 stops: [
                     .init(color: .black, location: 0.0),
-                    .init(color: .black, location: 0.42),
-                    .init(color: .clear, location: 1.0),
+                    .init(color: .black, location: 0.38),
+                    .init(color: .black.opacity(0.88), location: 0.52),
+                    .init(color: .black.opacity(0.58), location: 0.68),
+                    .init(color: .black.opacity(0.24), location: 0.81),
+                    // Reach zero before the detail hero's lower boundary so
+                    // its clip can never reveal a straight artwork edge.
+                    .init(color: .clear, location: 0.90),
                 ],
                 startPoint: .top,
                 endPoint: .bottom

@@ -478,19 +478,24 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             // Allow the newly selected season rail to mount at its settled
             // internal episode offset before the full-width page starts moving.
             await Task.yield()
+            if !reduceMotion {
+                // Give the incoming episode render surface one display frame
+                // to paint before moving it, avoiding a small first-frame hitch.
+                try? await Task.sleep(for: .milliseconds(17))
+            }
             guard !Task.isCancelled,
                   generation == seasonTransitionGeneration else { return }
 
             withAnimation(
                 reduceMotion
                     ? nil
-                    : .smooth(duration: 0.42, extraBounce: 0)
+                    : .timingCurve(0.4, 0, 0.2, 1, duration: 0.46)
             ) {
                 seasonPanProgress = 1
             }
 
             if !reduceMotion {
-                try? await Task.sleep(for: .milliseconds(450))
+                try? await Task.sleep(for: .milliseconds(480))
             } else {
                 await Task.yield()
             }
@@ -541,11 +546,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     /// Holds the episode area to one measured Home-card footprint while each
-    /// season behaves as a full-width carousel page. Only this clipped viewport
-    /// moves; the season tabs, controls, and every lower section remain fixed.
+    /// season behaves as a full-width carousel page. Only this viewport moves;
+    /// the season tabs, controls, and every lower section remain fixed. The
+    /// episode rail owns its own crop, so this wrapper must not cut off the
+    /// trailing page inset the rail deliberately borrows.
     private var smoothlyChangingEpisodeBody: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
+            let viewportWidth = width + TVDetailLayout.horizontalInset
+            let leftClipCanvasWidth = viewportWidth * 2
             let direction: CGFloat = seasonTransitionMovesForward ? 1 : -1
 
             ZStack(alignment: .topLeading) {
@@ -557,7 +566,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                             height: episodeRailReservedHeight,
                             alignment: .topLeading
                         )
-                        .offset(x: -direction * seasonPanProgress * width)
+                        // Preserve the rail's existing layout width, then
+                        // widen only the temporary raster surface so its
+                        // borrowed trailing inset is never cropped.
+                        .frame(
+                            width: viewportWidth,
+                            height: episodeRailReservedHeight,
+                            alignment: .topLeading
+                        )
+                        // The outgoing tab page is immutable. Rasterize it
+                        // once before the existing page offset so episode art
+                        // and its number/title cannot render on separate paths.
+                        .drawingGroup(opaque: false, colorMode: .nonLinear)
+                        .offset(x: -direction * seasonPanProgress * viewportWidth)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
@@ -568,26 +589,47 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         height: episodeRailReservedHeight,
                         alignment: .topLeading
                     )
+                    .frame(
+                        width: viewportWidth,
+                        height: episodeRailReservedHeight,
+                        alignment: .topLeading
+                    )
+                    .lockEpisodeCaptionsForSeasonTabSwitch(
+                        outgoingSeasonPage != nil
+                    )
                     .offset(
                         x: outgoingSeasonPage == nil
                             ? 0
-                            : direction * (1 - seasonPanProgress) * width
+                            : direction * (1 - seasonPanProgress) * viewportWidth
                     )
             }
+            // Retain the settled rail's leading crop, but put the matching
+            // right crop a full page beyond the visible display. Cards can
+            // then cross the screen's trailing edge without a transient cut.
+            .frame(
+                width: leftClipCanvasWidth,
+                height: episodeRailReservedHeight,
+                alignment: .topLeading
+            )
+            .clipped()
         }
         .frame(height: episodeRailReservedHeight, alignment: .topLeading)
-        .clipped()
     }
 
     private var liveEpisodePage: some View {
         ZStack(alignment: .topLeading) {
             episodeBody
                 .id(isLoadingEpisodes ? "loading" : "ready")
-                .transition(.opacity)
+                // The season-page slide already supplies the transition.
+                // Avoid fading its episode paint at the same time, which
+                // briefly dimmed the cards and added competing composition.
+                .transition(outgoingSeasonPage == nil ? .opacity : .identity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.18),
+            reduceMotion || outgoingSeasonPage != nil
+                ? nil
+                : .easeInOut(duration: 0.18),
             value: isLoadingEpisodes
         )
     }
@@ -866,6 +908,20 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: "Details")
             TVDetailFactsSection(detail: detail)
+        }
+    }
+}
+
+private extension View {
+    /// During a Series season-tab page switch only, flatten the incoming page
+    /// before its existing offset animates. Outside that short transition the
+    /// live episode carousel is returned unchanged.
+    @ViewBuilder
+    func lockEpisodeCaptionsForSeasonTabSwitch(_ isSwitching: Bool) -> some View {
+        if isSwitching {
+            drawingGroup(opaque: false, colorMode: .nonLinear)
+        } else {
+            self
         }
     }
 }
