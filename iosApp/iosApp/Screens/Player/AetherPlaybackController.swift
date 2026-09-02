@@ -308,6 +308,12 @@ final class AetherPlaybackController {
     func prepareForReplacement() {
         invalidateActiveLoad(preservingExternalPlaybackPolicy: true)
         engine.deactivatesAudioSessionOnStop = false
+        // Aether otherwise unloads the outgoing AVPlayerItem at the start of
+        // `load`, leaving the shared player layer itemless during the Next Up
+        // mini-player -> full-screen transition. On tvOS that gap can strand
+        // the layer black even though the successor's audio and clock advance.
+        // Arm Aether's one-shot atomic item swap before pausing the old item.
+        engine.prepareForItemReplacement()
         engine.pause()
         refreshExternalPlaybackState()
         publishSystemMediaChanged()
