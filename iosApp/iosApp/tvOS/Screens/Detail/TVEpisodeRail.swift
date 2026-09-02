@@ -123,7 +123,14 @@ struct TVEpisodeRail: View {
     /// the competing native focus-scroll animation that caused the bump.
     private var anchoredRail: some View {
         GeometryReader { geometry in
-            anchoredButton(viewportWidth: geometry.size.width)
+            // Keep the existing leading position, but end the hard crop after
+            // the final card that fits completely. A fractional next card is
+            // therefore hidden rather than sliced at the page's right edge.
+            anchoredButton(
+                viewportWidth: anchoredWholeCardViewportWidth(
+                    availableWidth: geometry.size.width
+                )
+            )
         }
         .frame(height: anchoredRailHeight)
         .focusSection()
@@ -243,6 +250,25 @@ struct TVEpisodeRail: View {
 
     private var episodeIdentityKey: String {
         episodes.map(\.contentId).joined(separator: "|")
+    }
+
+    /// Width of the largest whole-card group that fits at the current user
+    /// card scale. The left clearance is unchanged; matching trailing room
+    /// lets the final card's Home-style lift remain fully visible too.
+    private func anchoredWholeCardViewportWidth(availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth > 0 else { return 0 }
+
+        let focusClearance = EpisodeHomeHoverMetrics.leadingInset(
+            for: anchoredCardWidth
+        )
+        let step = anchoredCardWidth + cardSpacing
+        let usableWidth = max(anchoredCardWidth, availableWidth - (focusClearance * 2))
+        let fittingCount = max(1, Int(floor((usableWidth + cardSpacing) / step)))
+        let visibleCount = min(max(episodes.count, 1), fittingCount)
+        let cardsWidth = CGFloat(visibleCount) * anchoredCardWidth
+            + CGFloat(max(visibleCount - 1, 0)) * cardSpacing
+
+        return min(availableWidth, focusClearance + cardsWidth + focusClearance)
     }
 
     private func anchoredContentOffset(viewportWidth: CGFloat) -> CGFloat {
@@ -654,7 +680,7 @@ private struct EpisodeCardLabel: View {
             still
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text(episodeNumberLabel)
                             .font(.system(size: 16, weight: .bold))
                             .tracking(1.6)
@@ -673,6 +699,14 @@ private struct EpisodeCardLabel: View {
                         }
                         Spacer(minLength: 8)
                     }
+                    // The compact Series caption is always the same 28-point
+                    // line beneath its still. Different title glyphs can no
+                    // longer alter the card's measured height while the rail
+                    // animates from one episode to the next.
+                    .frame(
+                        height: hidesEpisodeTitle ? 28 : nil,
+                        alignment: .topLeading
+                    )
 
                     if !hidesEpisodeTitle {
                         HStack(alignment: .firstTextBaseline, spacing: 16) {
