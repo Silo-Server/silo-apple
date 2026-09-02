@@ -19,6 +19,15 @@ import UIKit
 /// The pipeline is installed as the `ImagePipeline.shared` at first access so
 /// every `LazyImage` / `ImagePipeline.shared` caller picks it up automatically.
 enum PosterImageCache {
+    #if os(tvOS)
+    /// A movie's cast rail is part of the first detail viewport, but its
+    /// portraits used to begin loading only after SwiftUI mounted each card.
+    /// Warm just the first screenful through the same shared Nuke pipeline as
+    /// the hero artwork. `ImagePrefetcher` queues these requests and returns
+    /// immediately, so detail navigation and first paint never wait on them.
+    private static let visibleMovieCastPortraitLimit = 8
+    #endif
+
     private static var memoryWarningObserver: NSObjectProtocol?
 
     /// Call once at app launch before any SwiftUI view renders.
@@ -93,4 +102,26 @@ enum PosterImageCache {
         p.priority = .normal
         return p
     }()
+
+    #if os(tvOS)
+    /// Prefetch only movie portraits. Series cast lives farther down its page
+    /// and deliberately keeps the normal lazy-loading path.
+    static func prefetchVisibleMovieCast(for detail: ItemDetail) {
+        guard detail.type == "movie", let cast = detail.cast else { return }
+
+        var urls: [URL] = []
+        var seen = Set<String>()
+        for member in cast {
+            guard urls.count < visibleMovieCastPortraitLimit else { break }
+            guard let value = member.photoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty,
+                  let url = URL(string: value),
+                  seen.insert(url.absoluteString).inserted else { continue }
+            urls.append(url)
+        }
+
+        guard !urls.isEmpty else { return }
+        prefetcher.startPrefetching(with: urls)
+    }
+    #endif
 }

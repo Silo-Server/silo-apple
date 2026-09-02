@@ -693,6 +693,11 @@ final class TVFocusMarqueeModel {
             return
         }
         if let cached = enrichmentCache[contentId] {
+            if let cachedDetail: ItemDetail = ResponseCache.shared.get(
+                CacheKey.itemDetail(contentId)
+            ) {
+                PosterImageCache.prefetchVisibleMovieCast(for: cachedDetail)
+            }
             enrichment = cached
             enrichmentState = .completed
             sampleTintIfNeeded(for: backdropURL)
@@ -720,6 +725,7 @@ final class TVFocusMarqueeModel {
            let cachedDetail: ItemDetail = ResponseCache.shared.get(
                CacheKey.itemDetail(contentId)
            ) {
+            PosterImageCache.prefetchVisibleMovieCast(for: cachedDetail)
             let cached = TVMarqueeEnrichment(detail: cachedDetail)
             enrichmentCache[contentId] = cached
             enrichment = cached
@@ -754,6 +760,7 @@ final class TVFocusMarqueeModel {
 
             if let detail = fetchedDetail {
                 guard !Task.isCancelled, let self else { return }
+                PosterImageCache.prefetchVisibleMovieCast(for: detail)
                 // The marquee already paid for the same catalog request the
                 // detail route needs. Keep the complete payload—not only the
                 // tiny marquee projection—so pressing Select after resting on
