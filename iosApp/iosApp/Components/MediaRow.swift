@@ -140,6 +140,8 @@ struct MediaRow: View {
               }) ?? items.first,
               focusRestorationOwner?.wrappedValue != false else { return }
         lastAppliedFocusRequest = request
+        focusRestorationGeneration += 1
+        let generation = focusRestorationGeneration
         // Scroll to the requested card first, claim a turn later: a row parked
         // deep in its strip can keep that card unmounted (LazyHStack) or clipped, and
         // the focus engine silently drops @FocusState writes to views it
@@ -150,7 +152,7 @@ struct MediaRow: View {
         }
         DispatchQueue.main.async {
             Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public)")
-            claimRequestedItemFocus(targetItem)
+            claimRequestedItemFocus(targetItem, generation: generation)
         }
     }
 
@@ -161,8 +163,14 @@ struct MediaRow: View {
     /// rows (and their cards) under whatever it had focused. @FocusState
     /// reflects *actual* focus, so a rejected/overridden write reads back as
     /// a different value — retry until the scroll settles and ours is last.
-    private func claimRequestedItemFocus(_ targetItem: SectionItem, attempt: Int = 0) {
-        guard focusRestorationOwner?.wrappedValue != false else { return }
+    private func claimRequestedItemFocus(
+        _ targetItem: SectionItem,
+        generation: Int,
+        attempt: Int = 0
+    ) {
+        guard generation == focusRestorationGeneration,
+              focusRestorationOwner?.wrappedValue != false,
+              items.contains(where: { $0.contentId == targetItem.contentId }) else { return }
         focusedItemId = targetItem.contentId
         lastFocusedItemId = targetItem.contentId
         onItemFocus?(targetItem)
@@ -170,10 +178,16 @@ struct MediaRow: View {
         // settling repairs, or the last mid-flight repair wins after all.
         guard attempt < 8 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard focusRestorationOwner?.wrappedValue != false,
+            guard generation == focusRestorationGeneration,
+                  focusRestorationOwner?.wrappedValue != false,
+                  items.contains(where: { $0.contentId == targetItem.contentId }),
                   focusedItemId != targetItem.contentId else { return }
             Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public)")
-            claimRequestedItemFocus(targetItem, attempt: attempt + 1)
+            claimRequestedItemFocus(
+                targetItem,
+                generation: generation,
+                attempt: attempt + 1
+            )
         }
     }
 

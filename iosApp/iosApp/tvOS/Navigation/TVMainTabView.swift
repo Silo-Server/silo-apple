@@ -1307,6 +1307,7 @@ struct TVMainTabView: View {
             ) else { return }
             await MainActor.run {
                 selectedRoot = .home
+                personalRoot = nil
                 currentProfile = nil
                 libraries = []
                 loadedLibraryAuthority = nil

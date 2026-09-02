@@ -286,8 +286,14 @@ struct TVSkylineSectionFeed: View {
             // later release ends the gesture burst without accelerating into
             // another row; a new deliberate press/swipe then moves once more.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                guard navigationGeneration == rowNavigationGeneration else { return }
-                requestRowFocus(targetSection.id, itemId: targetItemId)
+                guard navigationGeneration == rowNavigationGeneration,
+                      let currentSection = sections.first(where: { $0.id == targetSection.id }),
+                      let currentItemId = targetItemId.flatMap({ candidateId in
+                          currentSection.items.contains(where: { $0.contentId == candidateId })
+                              ? candidateId
+                              : nil
+                      }) ?? currentSection.items.first?.contentId else { return }
+                requestRowFocus(currentSection.id, itemId: currentItemId)
             }
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + ContinuumTheme.slowDuration + 0.12
@@ -337,8 +343,9 @@ struct TVSkylineSectionFeed: View {
         DispatchQueue.main.async {
             guard navigationGeneration == rowNavigationGeneration,
                   !isTopMenuFocused,
-                  sections.contains(where: { $0.id == firstSectionId }) else { return }
-            requestRowFocus(firstSectionId, itemId: sections.first?.items.first?.contentId)
+                  let firstSection = sections.first(where: { $0.id == firstSectionId }),
+                  let firstItemId = firstSection.items.first?.contentId else { return }
+            requestRowFocus(firstSection.id, itemId: firstItemId)
         }
     }
 

@@ -176,7 +176,8 @@ struct EpisodeThumbCard: View {
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
 
-            // Scrim gradient so the episode badge reads over bright stills
+            #if !os(tvOS)
+            // Scrim gradient so the compact episode badge reads over bright stills.
             LinearGradient(
                 colors: [.clear, .black.opacity(0.75)],
                 startPoint: .center,
@@ -184,6 +185,7 @@ struct EpisodeThumbCard: View {
             )
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            #endif
 
             // Server / user-customized overlay badges. `wide` variant
             // gives the bottom corners enough headroom that they don't
