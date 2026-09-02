@@ -21,6 +21,7 @@ struct CachedAsyncImage: View {
     /// visible mark shares the metadata column's true leading edge.
     var alignment: Alignment = .center
     var placeholderStyle: ImagePlaceholderStyle = .surface
+    var onImageLoaded: (() -> Void)? = nil
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -47,6 +48,7 @@ struct CachedAsyncImage: View {
                         )
                         .clipped()
                         .transition(.opacity)
+                        .onAppear(perform: notifyImageLoaded)
                 } else if state.error == nil, let warmedImage {
                     // The startup/grid prefetchers warm the memory cache under
                     // the bare-URL key, while the request above is keyed by
@@ -64,6 +66,7 @@ struct CachedAsyncImage: View {
                             alignment: alignment
                         )
                         .clipped()
+                        .onAppear(perform: notifyImageLoaded)
                 } else if state.error != nil {
                     placeholder(in: geometry.size)
                         .overlay {
@@ -85,6 +88,10 @@ struct CachedAsyncImage: View {
     private func prefetchedImage() -> PlatformImage? {
         guard let url = URL(string: url) else { return nil }
         return ImagePipeline.shared.cache[ImageRequest(url: url)]?.image
+    }
+
+    private func notifyImageLoaded() {
+        onImageLoaded?()
     }
 
     // MARK: - Request construction

@@ -8,6 +8,7 @@ struct AsyncImageView: View {
     var targetSize: CGSize? = nil
     var contentMode: ContentMode = .fill
     var placeholderStyle: ImagePlaceholderStyle = .surface
+    var onImageLoaded: (() -> Void)? = nil
 
     var body: some View {
         CachedAsyncImage(
@@ -15,7 +16,8 @@ struct AsyncImageView: View {
             targetSize: targetSize,
             thumbhash: thumbhash,
             contentMode: contentMode,
-            placeholderStyle: placeholderStyle
+            placeholderStyle: placeholderStyle,
+            onImageLoaded: onImageLoaded
         )
     }
 }

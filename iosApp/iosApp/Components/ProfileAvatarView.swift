@@ -14,6 +14,7 @@ struct ProfileAvatarView: View {
     var size: CGFloat
     var backgroundColor: Color = .continuumSurfaceVariant
     var textColor: Color = .continuumOnSurface
+    @State private var loadedImageURL: String?
 
     var body: some View {
         ZStack {
@@ -21,30 +22,42 @@ struct ProfileAvatarView: View {
                 .fill(backgroundColor)
                 .frame(width: size, height: size)
 
-            // The text/initial fallback is layered beneath the image so that a
-            // failed load — e.g. an expired presigned `avatar_url` — degrades
-            // to it instead of an error placeholder: `.clear` style renders
-            // nothing on both the loading and error branches.
-            if let displayAvatar = displayAvatarText {
-                Text(displayAvatar)
-                    .font(.system(size: fontSize))
-            } else if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased())
-                    .font(.system(size: size * 0.34, weight: .semibold))
-                    .foregroundColor(textColor)
-            } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: size * 0.36))
-                    .foregroundColor(.continuumSecondaryText)
+            // Keep the fallback visible while loading or after an error, then
+            // remove it once the image succeeds. Leaving it permanently under
+            // transparent avatar artwork makes the initial show through.
+            if resolvedImageURL == nil || loadedImageURL != resolvedImageURL {
+                fallbackAvatar
             }
 
             if let imageURL = resolvedImageURL {
-                AsyncImageView(url: imageURL, contentMode: .fill, placeholderStyle: .clear)
+                AsyncImageView(
+                    url: imageURL,
+                    contentMode: .fill,
+                    placeholderStyle: .clear,
+                    onImageLoaded: { loadedImageURL = imageURL }
+                )
                     .frame(width: size, height: size)
                     .clipShape(Circle())
+                    .id(imageURL)
             }
         }
         .frame(width: size, height: size)
+    }
+
+    @ViewBuilder
+    private var fallbackAvatar: some View {
+        if let displayAvatar = displayAvatarText {
+            Text(displayAvatar)
+                .font(.system(size: fontSize))
+        } else if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased())
+                .font(.system(size: size * 0.34, weight: .semibold))
+                .foregroundColor(textColor)
+        } else {
+            Image(systemName: "person.fill")
+                .font(.system(size: size * 0.36))
+                .foregroundColor(.continuumSecondaryText)
+        }
     }
 
     private var displayAvatarText: String? {
