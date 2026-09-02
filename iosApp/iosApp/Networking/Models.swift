@@ -700,6 +700,14 @@ struct Season: Codable, Identifiable, Hashable {
     let userData: SeasonUserData?
     var id: String { contentId }
 
+    /// Consistent label for season pickers and episode-section headings.
+    var downloadDisplayName: String {
+        if isSpecials == true || seasonNumber == 0 {
+            return title ?? "Specials"
+        }
+        return "Season \(seasonNumber)"
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         contentId = try c.decode(String.self, forKey: .contentId)

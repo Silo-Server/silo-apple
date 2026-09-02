@@ -346,6 +346,9 @@ struct DownloadActionButton: View {
                 // premature "started" over a failed create would be the
                 // last the user ever hears of this download.
                 announceStart()
+            } catch DownloadError.registrationAlreadyInFlight {
+                // The original request owns the manager-level Preparing state.
+                // Do not announce a second success or replace it with an error.
             } catch {
                 announceStartFailure()
             }

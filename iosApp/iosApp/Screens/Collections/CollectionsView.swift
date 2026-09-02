@@ -438,6 +438,7 @@ struct LibraryCollectionsView: View {
 
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var gridWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var hSize
 
     private var columns: [GridItem] {
@@ -506,7 +507,7 @@ struct LibraryCollectionsView: View {
                     ) {
                         LibraryCollectionCard(
                             collection: collection,
-                            usesStandardPhoneWidth: usesThreeColumnPhoneLayout
+                            cardWidthOverride: libraryCollectionCardWidthOverride
                         )
                     }
                     .buttonStyle(.plain)
@@ -515,6 +516,14 @@ struct LibraryCollectionsView: View {
                     .accessibilityLabel(libraryCollectionAccessibilityLabel(collection))
                 }
             }
+            #if os(iOS)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                guard abs(width - gridWidth) >= 0.5 else { return }
+                gridWidth = width
+            }
+            #endif
         }
     }
 
@@ -525,17 +534,25 @@ struct LibraryCollectionsView: View {
         false
         #endif
     }
+
+    private var libraryCollectionCardWidthOverride: CGFloat? {
+        guard usesThreeColumnPhoneLayout else { return nil }
+        return AdaptiveColumns.fittedPosterWidth(
+            containerWidth: gridWidth,
+            columnCount: 3,
+            spacing: 12
+        )
+    }
 }
 
 private struct LibraryCollectionCard: View {
     let collection: LibraryCollection
-    let usesStandardPhoneWidth: Bool
+    let cardWidthOverride: CGFloat?
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.posterCardWidth * (usesStandardPhoneWidth
-            ? 1
-            : uiCustomization.cardPresentation.posterSize.scale)
+        cardWidthOverride
+            ?? (ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale)
     }
     private var cardHeight: CGFloat {
         cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)

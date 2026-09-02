@@ -6,12 +6,14 @@ enum DownloadError: LocalizedError {
     case unavailable
     case fileURLUnavailable
     case emptyRegistrationResponse
+    case registrationAlreadyInFlight
 
     var errorDescription: String? {
         switch self {
         case .unavailable: return "Downloads aren't available for this profile."
         case .fileURLUnavailable: return "Could not resolve the download URL."
         case .emptyRegistrationResponse: return "The server didn't create a download."
+        case .registrationAlreadyInFlight: return "This download is already being prepared."
         }
     }
 }
@@ -575,7 +577,9 @@ final class DownloadManager {
         guard downloadsEnabled else { throw DownloadError.unavailable }
 
         let registrationContentId = episodeId ?? contentId
-        guard pendingRegistrationContentIds.insert(registrationContentId).inserted else { return }
+        guard pendingRegistrationContentIds.insert(registrationContentId).inserted else {
+            throw DownloadError.registrationAlreadyInFlight
+        }
         defer { pendingRegistrationContentIds.remove(registrationContentId) }
 
         // Series/season batches are original-quality only per the server

@@ -8,6 +8,7 @@ struct CollectionDetailView: View {
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var gridWidth: CGFloat = 0
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
 
@@ -72,6 +73,14 @@ struct CollectionDetailView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
+            #if os(iOS)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                guard abs(width - gridWidth) >= 0.5 else { return }
+                gridWidth = width
+            }
+            #endif
             .padding(ContinuumTheme.padding)
         }
     }
@@ -101,8 +110,12 @@ struct CollectionDetailView: View {
 
     private var phoneCardWidthOverride: CGFloat? {
         guard usesThreeColumnPhoneLayout else { return nil }
-        return ContinuumTheme.posterCardWidth
-            / uiCustomization.cardPresentation.posterSize.scale
+        let fittedWidth = AdaptiveColumns.fittedPosterWidth(
+            containerWidth: gridWidth,
+            columnCount: 3,
+            spacing: 12
+        )
+        return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
     }
 
     private func loadItems() async {

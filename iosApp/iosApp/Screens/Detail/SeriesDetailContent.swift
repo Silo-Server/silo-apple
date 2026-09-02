@@ -455,10 +455,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private var episodeSectionTitle: String {
         guard let selectedSeason else { return "Episodes" }
-        let seasonLabel = selectedSeason.seasonNumber == 0
-            ? (selectedSeason.title ?? "Specials")
-            : "Season \(selectedSeason.seasonNumber)"
-        return "\(seasonLabel) Episodes"
+        return "\(selectedSeason.downloadDisplayName) Episodes"
     }
 
     private var episodeCountSubtitle: String? {

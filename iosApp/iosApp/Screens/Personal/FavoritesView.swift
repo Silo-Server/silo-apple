@@ -45,6 +45,7 @@ struct IOSPersonalMediaPosterLayout: View {
 
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var gridWidth: CGFloat = 0
     @State private var originID = UUID().uuidString
     @State private var rowScrollPositions: [Int: String] = [:]
 
@@ -84,6 +85,12 @@ struct IOSPersonalMediaPosterLayout: View {
                 )
                 .frame(maxWidth: .infinity)
             }
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard abs(width - gridWidth) >= 0.5 else { return }
+            gridWidth = width
         }
         .environment(
             \.itemDetailBrowseSource,
@@ -149,10 +156,13 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     /// MediaCard scales overrides by the selected global preference. Cancel
-    /// that scale so all three phone columns keep the standard poster width.
+    /// that scale, then cap the standard width to the measured grid cell.
     private var phoneCardWidthOverride: CGFloat {
-        ContinuumTheme.posterCardWidth
-            / uiCustomization.cardPresentation.posterSize.scale
+        AdaptiveColumns.fittedPosterWidth(
+            containerWidth: gridWidth,
+            columnCount: 3,
+            spacing: 8
+        ) / uiCustomization.cardPresentation.posterSize.scale
     }
 
     private var rows: [[BrowseItem]] {

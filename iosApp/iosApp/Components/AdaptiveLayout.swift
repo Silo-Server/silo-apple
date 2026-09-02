@@ -46,6 +46,20 @@ enum AdaptiveColumns {
             return max(minimumCount, standardCount - 1)
         }
     }
+
+    /// Fits a fixed-density grid card inside its actual container while
+    /// preserving the standard poster width whenever enough room is available.
+    static func fittedPosterWidth(
+        containerWidth: CGFloat,
+        columnCount: Int,
+        spacing: CGFloat,
+        maximumWidth: CGFloat = ContinuumTheme.posterCardWidth
+    ) -> CGFloat {
+        guard containerWidth > 0, columnCount > 0 else { return maximumWidth }
+        let totalSpacing = CGFloat(max(0, columnCount - 1)) * spacing
+        let availableWidth = max(1, containerWidth - totalSpacing)
+        return min(maximumWidth, availableWidth / CGFloat(columnCount))
+    }
 }
 
 extension View {

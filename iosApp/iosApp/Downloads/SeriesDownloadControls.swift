@@ -323,7 +323,7 @@ private struct SeriesSeasonDownloadPicker: View {
                         )
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(seasonName(season))
+                            Text(season.downloadDisplayName)
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundColor(.continuumOnSurface)
                             Text("\(season.episodeCount) episode\(season.episodeCount == 1 ? "" : "s")")
@@ -343,13 +343,6 @@ private struct SeriesSeasonDownloadPicker: View {
         #endif
         .continuumScrollContentBackgroundHidden()
         .continuumPageBackground()
-    }
-
-    private func seasonName(_ season: Season) -> String {
-        if season.isSpecials == true || season.seasonNumber == 0 {
-            return season.title ?? "Specials"
-        }
-        return "Season \(season.seasonNumber)"
     }
 }
 
@@ -440,7 +433,7 @@ private struct SeriesEpisodeDownloadPicker: View {
             }
         }
         .continuumPageBackground()
-        .navigationTitle(seasonName)
+        .navigationTitle(season.downloadDisplayName)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -461,13 +454,6 @@ private struct SeriesEpisodeDownloadPicker: View {
         } message: {
             Text(errorMessage ?? "")
         }
-    }
-
-    private var seasonName: String {
-        if season.isSpecials == true || season.seasonNumber == 0 {
-            return season.title ?? "Specials"
-        }
-        return "Season \(season.seasonNumber)"
     }
 
     private var downloadBar: some View {
@@ -537,6 +523,15 @@ private struct SeriesEpisodeDownloadPicker: View {
         }
         .buttonStyle(.plain)
         .disabled(!selectable || isWorking)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(episodeAccessibilityLabel(episode))
+        .accessibilityValue(episodeAccessibilityValue(episode))
+        .accessibilityAddTraits(
+            selectedEpisodeIds.contains(episode.contentId) ? .isSelected : []
+        )
+        .accessibilityHint(
+            selectable ? "Double tap to toggle this episode for download." : ""
+        )
     }
 
     @ViewBuilder
@@ -561,6 +556,20 @@ private struct SeriesEpisodeDownloadPicker: View {
             parts.append("\(runtime) min")
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func episodeAccessibilityLabel(_ episode: EpisodeListItem) -> String {
+        let details = episodeDetailText(episode)
+        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else {
+            return details
+        }
+        return "\(title), \(details)"
+    }
+
+    private func episodeAccessibilityValue(_ episode: EpisodeListItem) -> String {
+        if let status = statusText(for: episode) { return status }
+        return selectedEpisodeIds.contains(episode.contentId) ? "Selected" : "Not selected"
     }
 
     private func statusText(for episode: EpisodeListItem) -> String? {
