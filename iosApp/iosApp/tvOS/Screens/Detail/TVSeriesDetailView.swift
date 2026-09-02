@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import UIKit
 
 /// Single-page Series experience for tvOS. `Show` and every season are
 /// in-place modes: the series backdrop never changes, episode focus updates
@@ -12,14 +13,123 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         case episodes
     }
 
-    /// A frozen copy of the visible season rail. Keeping the outgoing page
-    /// separate from the live incoming rail lets one signed progress value move
-    /// both pages, so reversing direction can never reuse a stale transition.
+    /// Stable data for one page in the full linear season rail. Page geometry
+    /// is owned by the season list; only loaded season content is retained.
     private struct SeasonPageSnapshot {
         let seasonId: String
         let episodes: [EpisodeListItem]
         let currentContentId: String?
         let isLoading: Bool
+    }
+
+    /// Mutable observation storage that deliberately does not invalidate the
+    /// large detail view every display frame. It records the native scroll
+    /// view's presentation offset so a rapid reversal can stop the old motion
+    /// exactly where it is before issuing the newest destination.
+    private final class SeasonScrollTracker {
+        var liveOffset: CGFloat = 0
+    }
+
+    /// Owns only the outer vertical UIScrollView. Locking this concrete scroll
+    /// view leaves every nested horizontal season/episode rail fully native.
+    /// Its return animator can be stopped at the presentation position when a
+    /// rapid Down reverses direction, so an old trip to the hero cannot win.
+    private final class PageScrollCoordinator {
+        weak var scrollView: UIScrollView?
+        private var returnAnimator: UIViewPropertyAnimator?
+        private var animationGeneration = 0
+        private(set) var primaryOwnsViewport = false
+
+        func attach(_ scrollView: UIScrollView) {
+            guard self.scrollView !== scrollView else { return }
+            stopReturnAnimation()
+            self.scrollView = scrollView
+            if primaryOwnsViewport {
+                pinTopAndLock()
+            }
+        }
+
+        func enterPrimary(animated: Bool, reduceMotion: Bool) {
+            primaryOwnsViewport = true
+            stopReturnAnimation()
+            guard let scrollView else { return }
+
+            scrollView.isScrollEnabled = true
+            let target = topOffset(in: scrollView)
+            guard animated,
+                  !reduceMotion,
+                  abs(scrollView.contentOffset.y - target.y) > 0.5 else {
+                scrollView.setContentOffset(target, animated: false)
+                scrollView.isScrollEnabled = false
+                return
+            }
+
+            animationGeneration &+= 1
+            let generation = animationGeneration
+            let timing = UICubicTimingParameters(
+                controlPoint1: CGPoint(x: 0.4, y: 0),
+                controlPoint2: CGPoint(x: 0.2, y: 1)
+            )
+            let animator = UIViewPropertyAnimator(
+                duration: 0.55,
+                timingParameters: timing
+            )
+            returnAnimator = animator
+            animator.addAnimations { [weak scrollView] in
+                scrollView?.setContentOffset(target, animated: false)
+            }
+            animator.addCompletion { [weak self, weak scrollView] _ in
+                guard let self,
+                      self.animationGeneration == generation,
+                      self.primaryOwnsViewport,
+                      let scrollView else { return }
+                self.returnAnimator = nil
+                scrollView.setContentOffset(
+                    self.topOffset(in: scrollView),
+                    animated: false
+                )
+                scrollView.isScrollEnabled = false
+            }
+            animator.startAnimation()
+        }
+
+        func releasePrimary() {
+            primaryOwnsViewport = false
+            stopReturnAnimation()
+            scrollView?.isScrollEnabled = true
+        }
+
+        func detach() {
+            primaryOwnsViewport = false
+            stopReturnAnimation()
+            scrollView?.isScrollEnabled = true
+            scrollView = nil
+        }
+
+        private func pinTopAndLock() {
+            guard let scrollView else { return }
+            scrollView.setContentOffset(topOffset(in: scrollView), animated: false)
+            scrollView.isScrollEnabled = false
+        }
+
+        private func stopReturnAnimation() {
+            animationGeneration &+= 1
+            guard let returnAnimator else { return }
+            self.returnAnimator = nil
+            if returnAnimator.state == .active {
+                returnAnimator.stopAnimation(false)
+                returnAnimator.finishAnimation(at: .current)
+            } else {
+                returnAnimator.stopAnimation(true)
+            }
+        }
+
+        private func topOffset(in scrollView: UIScrollView) -> CGPoint {
+            CGPoint(
+                x: scrollView.contentOffset.x,
+                y: -scrollView.adjustedContentInset.top
+            )
+        }
     }
 
     let detail: ItemDetail
@@ -29,6 +139,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
+    let episodesBySeason: [Int: [EpisodeListItem]]
     let activeEpisodeContentId: String?
     let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
@@ -66,31 +177,33 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @Namespace private var modeFocusNamespace
     @FocusState private var playFocused: Bool
     @FocusState private var showActionRowFocused: Bool
-    @FocusState private var similarRailFocused: Bool
     @FocusState private var focusedModeId: String?
     @State private var isShowingSeriesOverview = true
     @State private var focusedEpisodeContentId: String?
-    @State private var primaryViewportActive = false
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
-    @State private var browseHoldRequest = 0
-    @State private var browseRestoreRequest = 0
     @State private var episodeRailFocusRequest = 0
     @State private var supportingRailFocusRequest = 0
+    @State private var supportingRailFocusGeneration = 0
     @State private var modeActivationTask: Task<Void, Never>?
-    @State private var seasonTransitionMovesForward = true
+    @State private var modeFocusAppearanceTask: Task<Void, Never>?
+    @State private var presentedFocusedModeId: String?
     @State private var seasonTransitionInFlight = false
     @State private var seasonTransitionTargetId: String?
-    @State private var pendingSeasonActivationId: String?
     @State private var seasonTransitionGeneration = 0
     @State private var seasonTransitionTask: Task<Void, Never>?
-    @State private var outgoingSeasonPage: SeasonPageSnapshot?
-    @State private var seasonPanProgress: CGFloat = 1
+    @State private var visibleSeasonId: String?
+    @State private var seasonPageSnapshots: [String: SeasonPageSnapshot] = [:]
+    @State private var seasonPageScrollPosition = ScrollPosition(x: 0)
+    @State private var seasonPageViewportWidth: CGFloat = 0
+    @State private var seasonScrollTracker = SeasonScrollTracker()
+    @State private var pageScrollCoordinator = PageScrollCoordinator()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let showModeId = "series-show-overview"
     private let episodeSectionScrollId = "series-episode-section"
+    private let castSectionScrollId = "series-cast-section"
     private let heroScrollId = "series-hero"
     private let similarSectionScrollId = "series-similar-section"
 
@@ -107,15 +220,30 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                                 .id(episodeSectionScrollId)
                             if let cast = detail.cast, !cast.isEmpty {
                                 castSection(cast: cast)
+                                    .id(castSectionScrollId)
                             }
                             trailersSection
                             similarSection
-                                .focused($similarRailFocused)
                                 .id(similarSectionScrollId)
                             detailsSection
                         }
                         .padding(.horizontal, TVDetailLayout.horizontalInset)
                         .padding(.bottom, TVDetailLayout.pageBottomPadding)
+                    }
+                    .background {
+                        TVSeriesPageScrollResolver { scrollView in
+                            pageScrollCoordinator.attach(scrollView)
+                        }
+                    }
+                }
+                .onChange(of: supportingRailFocusRequest) { _, request in
+                    guard request > 0, hasCast else { return }
+                    if reduceMotion {
+                        scrollProxy.scrollTo(castSectionScrollId, anchor: .center)
+                    } else {
+                        withAnimation(.smooth(duration: 0.55, extraBounce: 0)) {
+                            scrollProxy.scrollTo(castSectionScrollId, anchor: .center)
+                        }
                     }
                 }
                 .ignoresSafeArea()
@@ -126,56 +254,47 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     seasonRowFocused: false,
                     actionRowFocused: showActionRowFocused,
                     episodeSectionId: episodeSectionScrollId,
-                    heroId: heroScrollId,
-                    browseFocusKey: browseFocusKey,
-                    browseHoldRequest: browseHoldRequest,
-                    browseRestoreRequest: browseRestoreRequest,
-                    similarRailFocused: similarRailFocused,
-                    similarSectionId: similarSectionScrollId
+                    heroId: heroScrollId
                 )
-                .task(id: hasPrimaryFocus) {
-                    let focused = hasPrimaryFocus
-                    if focused {
-                        primaryViewportActive = true
-                    } else {
-                        // Keep the first viewport active across the short gap
-                        // between one programmatic focus owner releasing and
-                        // the next one accepting the same remote gesture.
-                        try? await Task.sleep(for: .milliseconds(180))
-                        guard !Task.isCancelled else { return }
-                        primaryViewportActive = false
-                        primaryFocusRegion = .outside
-                    }
-                }
             }
         }
         .onAppear {
             if activeEpisodeContentId != nil {
                 isShowingSeriesOverview = false
             }
+            synchronizeCurrentSeasonPage()
         }
         .onChange(of: activeEpisodeContentId) { _, contentId in
             if contentId != nil {
                 isShowingSeriesOverview = false
             }
         }
-        .onChange(of: selectedSeason?.id) { _, seasonId in
-            startSeasonPanIfReady(for: seasonId)
+        .onChange(of: seasonPageReadinessKey) { _, _ in
+            if seasonTransitionInFlight {
+                startSeasonScrollIfReady()
+            } else {
+                synchronizeCurrentSeasonPage()
+            }
         }
         .onDisappear {
             modeActivationTask?.cancel()
             modeActivationTask = nil
+            modeFocusAppearanceTask?.cancel()
+            modeFocusAppearanceTask = nil
+            presentedFocusedModeId = nil
             seasonTransitionTask?.cancel()
             seasonTransitionTask = nil
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                outgoingSeasonPage = nil
-                seasonPanProgress = 1
+                seasonPageSnapshots.removeAll(keepingCapacity: false)
+                visibleSeasonId = nil
+                seasonPageScrollPosition = ScrollPosition(x: 0)
+                seasonScrollTracker.liveOffset = 0
             }
+            pageScrollCoordinator.detach()
             seasonTransitionInFlight = false
             seasonTransitionTargetId = nil
-            pendingSeasonActivationId = nil
         }
     }
 
@@ -365,6 +484,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     TVSeriesModeTab(
                         title: "Show",
                         isSelected: isShowingSeriesOverview,
+                        rendersFocusedAppearance: presentedFocusedModeId == showModeId,
                         action: showSeriesOverview
                     )
                     .id(showModeId)
@@ -373,7 +493,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     ForEach(seasons) { season in
                         TVSeriesModeTab(
                             title: seasonLabel(season),
-                            isSelected: !isShowingSeriesOverview && selectedSeason?.id == season.id,
+                            isSelected: selectedModeId == season.id,
+                            rendersFocusedAppearance: presentedFocusedModeId == season.id,
                             action: { activateSeason(season) }
                         )
                         .id(season.id)
@@ -391,30 +512,76 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 priority: .userInitiated
             )
             .onChange(of: selectedModeId) { _, newId in
+                // A click activates immediately, before the focus-paint dwell
+                // finishes. Promote that one focused tab without allowing an
+                // independently cached highlight to survive on the old tab.
+                if focusedModeId == newId {
+                    modeFocusAppearanceTask?.cancel()
+                    modeFocusAppearanceTask = nil
+                    presentedFocusedModeId = newId
+                }
                 withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
                     proxy.scrollTo(newId, anchor: .center)
                 }
             }
             .onChange(of: focusedModeId) { _, focusedId in
+                updateModeFocusAppearance(for: focusedId)
                 guard let focusedId else {
                     modeActivationTask?.cancel()
                     modeActivationTask = nil
                     return
                 }
+                let previousRegion = primaryFocusRegion
                 primaryFocusRegion = .mode
+                if previousRegion == .outside {
+                    pageScrollCoordinator.enterPrimary(
+                        animated: true,
+                        reduceMotion: reduceMotion
+                    )
+                } else if previousRegion != .mode {
+                    pageScrollCoordinator.enterPrimary(
+                        animated: false,
+                        reduceMotion: reduceMotion
+                    )
+                }
                 scheduleModeActivation(for: focusedId)
             }
         }
     }
 
+    /// Own the row's focus paint in one place so rapid lateral input can show
+    /// at most one white pill. The short dwell still filters the sub-frame
+    /// focus offer produced by a downward gesture into the episode rail.
+    private func updateModeFocusAppearance(for modeId: String?) {
+        modeFocusAppearanceTask?.cancel()
+        modeFocusAppearanceTask = nil
+        presentedFocusedModeId = nil
+
+        guard let modeId else { return }
+        if modeId == selectedModeId {
+            presentedFocusedModeId = modeId
+            return
+        }
+
+        modeFocusAppearanceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(70))
+            guard !Task.isCancelled, focusedModeId == modeId else { return }
+            presentedFocusedModeId = modeId
+            modeFocusAppearanceTask = nil
+        }
+    }
+
     private var selectedModeId: String {
-        isShowingSeriesOverview ? showModeId : (selectedSeason?.id ?? showModeId)
+        guard !isShowingSeriesOverview else { return showModeId }
+        return seasonTransitionTargetId
+            ?? visibleSeasonId
+            ?? selectedSeason?.id
+            ?? showModeId
     }
 
     private func showSeriesOverview() {
         modeActivationTask?.cancel()
         modeActivationTask = nil
-        pendingSeasonActivationId = nil
         isShowingSeriesOverview = true
         onActivateEpisode(nil)
     }
@@ -424,73 +591,136 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         modeActivationTask = nil
         isShowingSeriesOverview = false
         if seasonTransitionInFlight {
-            // A reversal must not mutate the direction of the page that is
-            // already moving. Retain only the viewer's latest destination and
-            // begin it after the current page settles.
-            pendingSeasonActivationId = season.id == seasonTransitionTargetId
-                ? nil
-                : season.id
+            guard season.id != seasonTransitionTargetId else { return }
+            retargetSeasonTransition(to: season)
             return
         }
-        guard selectedSeason?.id != season.id else {
-            pendingSeasonActivationId = nil
+        guard visibleSeasonId != season.id else {
             return
         }
         beginSeasonTransition(to: season)
     }
 
     private func beginSeasonTransition(to season: Season) {
-        pendingSeasonActivationId = nil
-        if let targetIndex = seasons.firstIndex(where: { $0.id == season.id }),
-           let currentId = selectedSeason?.id,
-           let currentIndex = seasons.firstIndex(where: { $0.id == currentId }) {
-            seasonTransitionMovesForward = targetIndex > currentIndex
-        }
-
-        outgoingSeasonPage = SeasonPageSnapshot(
-            seasonId: selectedSeason?.id ?? "series-season-none",
-            episodes: episodes,
-            currentContentId: displayedEpisode?.contentId,
-            isLoading: isLoadingEpisodes
-        )
+        let currentPage = currentSeasonPageSnapshot
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            seasonPanProgress = 0
+            seasonPageSnapshots[currentPage.seasonId] = currentPage
+            visibleSeasonId = currentPage.seasonId
         }
 
         seasonTransitionTask?.cancel()
+        seasonTransitionTask = nil
         seasonTransitionGeneration &+= 1
         seasonTransitionInFlight = true
         seasonTransitionTargetId = season.id
         onActivateEpisode(nil)
         onSelectSeason(season)
+        startMountedSeasonScrollIfAvailable(to: season.id)
     }
 
-    private func startSeasonPanIfReady(for seasonId: String?) {
-        guard seasonTransitionInFlight,
-              seasonId == seasonTransitionTargetId,
-              outgoingSeasonPage != nil else { return }
-
+    private func retargetSeasonTransition(to season: Season) {
+        // Stop the current native animation at its presentation offset before
+        // giving it a new destination. Without this freeze, several opposing
+        // setContentOffset animations can finish out of order under rapid taps.
         seasonTransitionTask?.cancel()
+        seasonTransitionTask = nil
+        freezeSeasonScrollAtLiveOffset()
+        seasonTransitionGeneration &+= 1
+        seasonTransitionTargetId = season.id
+        onActivateEpisode(nil)
+        onSelectSeason(season)
+        startMountedSeasonScrollIfAvailable(to: season.id)
+    }
+
+    private func startSeasonScrollIfReady() {
+        guard seasonTransitionInFlight,
+              seasonTransitionTask == nil,
+              let targetId = seasonTransitionTargetId,
+              selectedSeason?.id == targetId,
+              let targetSeason = seasons.first(where: { $0.id == targetId }),
+              !isLoadingEpisodes,
+              seasonPageViewportWidth > 0 else { return }
+
+        // The selected season publishes before its episode request completes.
+        // Do not move the old page toward a loading placeholder or stale rows;
+        // the complete incoming rail must be mounted before native scrolling.
+        guard episodes.isEmpty || episodes.allSatisfy({
+            $0.seasonNumber == targetSeason.seasonNumber
+        }) else { return }
+
+        let incomingPage = currentSeasonPageSnapshot
+        guard incomingPage.seasonId == targetId,
+              let destinationOffset = seasonPageOffset(
+                for: targetId,
+                pageWidth: seasonPageViewportWidth
+              ) else { return }
+
+        var mountTransaction = Transaction(animation: nil)
+        mountTransaction.disablesAnimations = true
+        withTransaction(mountTransaction) {
+            // Populate the target's permanent slot before the rail moves. The
+            // old and new seasons now coexist as literal neighbours in one
+            // HStack, rather than swapping through a temporary side page.
+            seasonPageSnapshots[targetId] = incomingPage
+        }
+        startSeasonScroll(
+            to: targetId,
+            destinationOffset: destinationOffset,
+            waitsForPageMount: true
+        )
+    }
+
+    private func startMountedSeasonScrollIfAvailable(to targetId: String) {
+        guard let targetSeason = seasons.first(where: { $0.id == targetId }),
+              let mountedPage = availableSeasonPage(for: targetSeason),
+              let destinationOffset = seasonPageOffset(
+                for: targetId,
+                pageWidth: seasonPageViewportWidth
+              ) else { return }
+        if seasonPageSnapshots[targetId] == nil {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                seasonPageSnapshots[targetId] = mountedPage
+            }
+        }
+        startSeasonScroll(
+            to: targetId,
+            destinationOffset: destinationOffset,
+            waitsForPageMount: false
+        )
+    }
+
+    private func startSeasonScroll(
+        to targetId: String,
+        destinationOffset: CGFloat,
+        waitsForPageMount: Bool
+    ) {
+        guard seasonTransitionInFlight,
+              seasonTransitionTargetId == targetId,
+              seasonTransitionTask == nil else { return }
+
         let generation = seasonTransitionGeneration
         seasonTransitionTask = Task { @MainActor in
-            // Allow the newly selected season rail to mount at its settled
-            // internal episode offset before the full-width page starts moving.
             await Task.yield()
+            if waitsForPageMount && !reduceMotion {
+                try? await Task.sleep(for: .milliseconds(17))
+            }
             guard !Task.isCancelled,
                   generation == seasonTransitionGeneration else { return }
 
             withAnimation(
                 reduceMotion
                     ? nil
-                    : .smooth(duration: 0.42, extraBounce: 0)
+                    : .timingCurve(0.4, 0, 0.2, 1, duration: 0.46)
             ) {
-                seasonPanProgress = 1
+                seasonPageScrollPosition = ScrollPosition(x: destinationOffset)
             }
 
             if !reduceMotion {
-                try? await Task.sleep(for: .milliseconds(450))
+                try? await Task.sleep(for: .milliseconds(480))
             } else {
                 await Task.yield()
             }
@@ -501,21 +731,32 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func finishSeasonTransition() {
+        guard let completedSeasonId = seasonTransitionTargetId else {
+            seasonTransitionInFlight = false
+            seasonTransitionTask = nil
+            return
+        }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            outgoingSeasonPage = nil
-            seasonPanProgress = 1
+            // Stay on the real destination page. There is deliberately no
+            // recenter, page deletion, or content replacement after scrolling.
+            visibleSeasonId = completedSeasonId
+            if let offset = seasonPageOffset(
+                for: completedSeasonId,
+                pageWidth: seasonPageViewportWidth
+            ) {
+                // Programmatic native scrolling can still be completing an
+                // older animation when direction reverses. Pin the final
+                // content offset to the latest requested season so the rail
+                // and selected tab can never settle on different pages.
+                seasonPageScrollPosition = ScrollPosition(x: offset)
+                seasonScrollTracker.liveOffset = offset
+            }
         }
         seasonTransitionInFlight = false
         seasonTransitionTargetId = nil
         seasonTransitionTask = nil
-
-        guard let pendingId = pendingSeasonActivationId else { return }
-        pendingSeasonActivationId = nil
-        guard pendingId != selectedSeason?.id,
-              let pendingSeason = seasons.first(where: { $0.id == pendingId }) else { return }
-        beginSeasonTransition(to: pendingSeason)
     }
 
     /// Season pills behave like tvOS tabs: resting focus activates one without
@@ -527,7 +768,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         guard modeId != selectedModeId else { return }
 
         modeActivationTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(160))
+            try? await Task.sleep(for: .milliseconds(70))
             guard !Task.isCancelled,
                   focusedModeId == modeId,
                   modeId != selectedModeId else { return }
@@ -540,60 +781,199 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
     }
 
-    /// Holds the episode area to one measured Home-card footprint while each
-    /// season behaves as a full-width carousel page. Only this clipped viewport
-    /// moves; the season tabs, controls, and every lower section remain fixed.
-    private var smoothlyChangingEpisodeBody: some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            let direction: CGFloat = seasonTransitionMovesForward ? 1 : -1
-
-            ZStack(alignment: .topLeading) {
-                if let outgoingSeasonPage {
-                    snapshotEpisodeBody(outgoingSeasonPage)
-                        .id(outgoingSeasonPage.seasonId)
-                        .frame(
-                            width: width,
-                            height: episodeRailReservedHeight,
-                            alignment: .topLeading
-                        )
-                        .offset(x: -direction * seasonPanProgress * width)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-
-                liveEpisodePage
-                    .frame(
-                        width: width,
-                        height: episodeRailReservedHeight,
-                        alignment: .topLeading
-                    )
-                    .offset(
-                        x: outgoingSeasonPage == nil
-                            ? 0
-                            : direction * (1 - seasonPanProgress) * width
-                    )
-            }
-        }
-        .frame(height: episodeRailReservedHeight, alignment: .topLeading)
-        .clipped()
+    private var seasonPageReadinessKey: String {
+        let seasonId = selectedSeason?.id ?? "series-season-none"
+        let loadingState = isLoadingEpisodes ? "loading" : "ready"
+        let episodeIds = episodes.map(\.contentId).joined(separator: "|")
+        return "\(seasonId):\(loadingState):\(episodeIds)"
     }
 
-    private var liveEpisodePage: some View {
-        ZStack(alignment: .topLeading) {
-            episodeBody
-                .id(isLoadingEpisodes ? "loading" : "ready")
-                .transition(.opacity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.18),
-            value: isLoadingEpisodes
+    private var currentSeasonPageSnapshot: SeasonPageSnapshot {
+        SeasonPageSnapshot(
+            seasonId: selectedSeason?.id ?? "series-season-none",
+            episodes: episodes,
+            currentContentId: displayedEpisode?.contentId,
+            isLoading: isLoadingEpisodes
         )
     }
 
+    private func synchronizeCurrentSeasonPage() {
+        guard !seasonTransitionInFlight else { return }
+        let page = currentSeasonPageSnapshot
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            seasonPageSnapshots[page.seasonId] = page
+            visibleSeasonId = page.seasonId
+            if let offset = seasonPageOffset(
+                for: page.seasonId,
+                pageWidth: seasonPageViewportWidth
+            ) {
+                seasonPageScrollPosition = ScrollPosition(x: offset)
+                seasonScrollTracker.liveOffset = offset
+            }
+        }
+    }
+
+    /// The fixed season tabs select between full-width episode pages. The
+    /// inner episode carousel remains unchanged; this native outer ScrollView
+    /// moves the complete old and new season rails together as one page.
+    private var smoothlyChangingEpisodeBody: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let viewportWidth = width + TVDetailLayout.horizontalInset
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(seasons) { season in
+                        seasonRailPage(
+                            for: season,
+                            contentWidth: width,
+                            pageWidth: viewportWidth
+                        )
+                        .id(season.id)
+                        // Only the page currently inside the viewport may
+                        // participate in tvOS focus. Cached rails elsewhere on
+                        // the giant strip remain visual neighbours, not rival
+                        // focus destinations.
+                        .disabled(
+                            season.id != (visibleSeasonId ?? selectedSeason?.id)
+                        )
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollPosition($seasonPageScrollPosition)
+            .scrollTargetBehavior(.paging)
+            .scrollDisabled(true)
+            .frame(
+                width: viewportWidth,
+                height: episodeRailReservedHeight,
+                alignment: .topLeading
+            )
+            .clipped()
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.x
+            } action: { _, liveOffset in
+                seasonScrollTracker.liveOffset = liveOffset
+            }
+            .onAppear {
+                updateSeasonPageViewportWidth(viewportWidth)
+            }
+            .onChange(of: viewportWidth) { _, newWidth in
+                updateSeasonPageViewportWidth(newWidth)
+            }
+        }
+        .frame(height: episodeRailReservedHeight, alignment: .topLeading)
+    }
+
+    /// Every real season owns one permanent, page-width position in a single
+    /// linear rail. Unloaded positions stay lightweight, while the current and
+    /// target episode carousels remain attached to their actual season slots.
     @ViewBuilder
-    private func snapshotEpisodeBody(_ snapshot: SeasonPageSnapshot) -> some View {
+    private func seasonRailPage(
+        for season: Season,
+        contentWidth: CGFloat,
+        pageWidth: CGFloat
+    ) -> some View {
+        if let page = availableSeasonPage(for: season) {
+            seasonEpisodeBody(page)
+                .frame(
+                    width: contentWidth,
+                    height: episodeRailReservedHeight,
+                    alignment: .topLeading
+                )
+                .frame(
+                    width: pageWidth,
+                    height: episodeRailReservedHeight,
+                    alignment: .topLeading
+                )
+        } else if !seasonTransitionInFlight, selectedSeason?.id == season.id {
+            seasonEpisodeBody(currentSeasonPageSnapshot)
+                .frame(
+                    width: contentWidth,
+                    height: episodeRailReservedHeight,
+                    alignment: .topLeading
+                )
+                .frame(
+                    width: pageWidth,
+                    height: episodeRailReservedHeight,
+                    alignment: .topLeading
+                )
+        } else {
+            Color.clear
+                .frame(
+                    width: pageWidth,
+                    height: episodeRailReservedHeight,
+                    alignment: .topLeading
+                )
+        }
+    }
+
+    private func availableSeasonPage(for season: Season) -> SeasonPageSnapshot? {
+        if let snapshot = seasonPageSnapshots[season.id] {
+            return snapshot
+        }
+        guard let cachedEpisodes = episodesBySeason[season.seasonNumber] else {
+            return nil
+        }
+        let suggestedContentId = cachedEpisodes.first(where: {
+            $0.userData?.isInProgress == true
+        })?.contentId ?? cachedEpisodes.first(where: {
+            !($0.userData?.played ?? false)
+        })?.contentId ?? cachedEpisodes.first?.contentId
+        return SeasonPageSnapshot(
+            seasonId: season.id,
+            episodes: cachedEpisodes,
+            currentContentId: suggestedContentId,
+            isLoading: false
+        )
+    }
+
+    private func updateSeasonPageViewportWidth(_ width: CGFloat) {
+        guard width > 0, width != seasonPageViewportWidth else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            seasonPageViewportWidth = width
+            let seasonId = visibleSeasonId ?? selectedSeason?.id
+            let offset = seasonId.flatMap {
+                seasonPageOffset(for: $0, pageWidth: width)
+            } ?? 0
+            seasonPageScrollPosition = ScrollPosition(x: offset)
+            seasonScrollTracker.liveOffset = offset
+        }
+        startSeasonScrollIfReady()
+    }
+
+    private func freezeSeasonScrollAtLiveOffset() {
+        guard seasonPageViewportWidth > 0 else { return }
+        let lastOffset = CGFloat(max(seasons.count - 1, 0))
+            * seasonPageViewportWidth
+        let liveOffset = min(
+            max(seasonScrollTracker.liveOffset, 0),
+            lastOffset
+        )
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            seasonPageScrollPosition = ScrollPosition(x: liveOffset)
+        }
+    }
+
+    private func seasonPageOffset(
+        for seasonId: String,
+        pageWidth: CGFloat
+    ) -> CGFloat? {
+        guard pageWidth > 0,
+              let index = seasons.firstIndex(where: { $0.id == seasonId }) else {
+            return nil
+        }
+        return CGFloat(index) * pageWidth
+    }
+
+    @ViewBuilder
+    private func seasonEpisodeBody(_ snapshot: SeasonPageSnapshot) -> some View {
         if snapshot.isLoading {
             TVEpisodeRailPlaceholder(
                 cardWidth: ContinuumTheme.thumbnailCardWidth
@@ -611,13 +991,24 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         } else {
             TVEpisodeRail(
                 episodes: snapshot.episodes,
-                onSelect: { _ in },
+                onSelect: quickPlayEpisode,
+                onPlay: quickPlayEpisode,
+                onFocusedEpisodeChange: focusEpisode,
+                onSetWatched: onSetEpisodeWatched,
+                onSetFavorite: onSetEpisodeFavorite,
                 currentContentId: snapshot.currentContentId,
+                currentContentIsFavorite: snapshot.currentContentId.map {
+                    episodeFavoriteStates[$0] ?? false
+                } ?? false,
+                favoriteStates: episodeFavoriteStates,
                 baseCardWidth: ContinuumTheme.thumbnailCardWidth,
                 cardHeightRatio: ContinuumTheme.thumbnailCardHeight
                     / ContinuumTheme.thumbnailCardWidth,
                 cardSpacing: 40,
-                anchorsFocusedCard: true
+                anchorsFocusedCard: true,
+                onMoveUp: focusSelectedMode,
+                onMoveDown: focusPlaybackSelector,
+                focusRequest: episodeRailFocusRequest
             )
             .padding(.trailing, -TVDetailLayout.horizontalInset)
         }
@@ -633,78 +1024,50 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             + 24
     }
 
-    @ViewBuilder
-    private var episodeBody: some View {
-        if selectedSeason == nil && seasons.isEmpty {
-            EmptyView()
-        } else if isLoadingEpisodes {
-            TVEpisodeRailPlaceholder(
-                cardWidth: ContinuumTheme.thumbnailCardWidth
-                    * uiCustomization.cardPresentation.posterSize.scale,
-                cardHeightRatio: ContinuumTheme.thumbnailCardHeight
-                    / ContinuumTheme.thumbnailCardWidth,
-                cardSpacing: 40,
-                hidesEpisodeTitle: true
-            )
-        } else if episodes.isEmpty {
-            Text("No episodes available")
-                .font(.system(size: 22, weight: .regular))
-                .foregroundColor(.continuumSecondaryText)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        } else {
-            TVEpisodeRail(
-                episodes: episodes,
-                onSelect: quickPlayEpisode,
-                onPlay: quickPlayEpisode,
-                onFocusedEpisodeChange: focusEpisode,
-                onSetWatched: onSetEpisodeWatched,
-                onSetFavorite: onSetEpisodeFavorite,
-                currentContentId: displayedEpisode?.contentId,
-                currentContentIsFavorite: displayedEpisode.map {
-                    episodeFavoriteStates[$0.contentId] ?? false
-                } ?? false,
-                favoriteStates: episodeFavoriteStates,
-                baseCardWidth: ContinuumTheme.thumbnailCardWidth,
-                cardHeightRatio: ContinuumTheme.thumbnailCardHeight
-                    / ContinuumTheme.thumbnailCardWidth,
-                cardSpacing: 40,
-                anchorsFocusedCard: true,
-                onMoveUp: focusSelectedMode,
-                onMoveDown: focusPlaybackSelector,
-                focusRequest: episodeRailFocusRequest
-            )
-            // The body already owns a 100-point page inset. Let only this
-            // Series carousel borrow the trailing inset so its third visible
-            // large card and focus ring remain complete at every step.
-            .padding(.trailing, -TVDetailLayout.horizontalInset)
-        }
-    }
-
     private func focusSelectedMode() {
         focusedModeId = selectedModeId
     }
 
     private func focusPlaybackSelector() {
-        // Selectors now live in the persistent hero action row. Preserve the
-        // carousel's existing Down exit by handing off to the next supporting
-        // rail instead of leaving a dead lower focus target.
-        supportingRailFocusRequest &+= 1
+        focusSupportingRail()
     }
 
     private func focusSupportingRail() {
-        supportingRailFocusRequest &+= 1
+        // The focus engine snapshots scroll eligibility before delivering the
+        // episode rail's move command. Unlock now, then request Cast on the
+        // next main-loop turn so its first focus update receives native reveal.
+        pageScrollCoordinator.releasePrimary()
+        primaryFocusRegion = .outside
+        supportingRailFocusGeneration &+= 1
+        let generation = supportingRailFocusGeneration
+        DispatchQueue.main.async {
+            guard supportingRailFocusGeneration == generation,
+                  primaryFocusRegion == .outside else { return }
+            supportingRailFocusRequest &+= 1
+        }
     }
 
     private func focusEpisode(_ contentId: String?) {
         focusedEpisodeContentId = contentId
         guard let contentId else { return }
 
+        // Cancel a queued Episodes -> Cast handoff if focus has already moved
+        // back into the fixed top viewport before the next focus update.
+        supportingRailFocusGeneration &+= 1
         let previousRegion = primaryFocusRegion
         primaryFocusRegion = .episodes
         switch previousRegion {
         case .mode:
-            browseHoldRequest &+= 1
-        case .outside, .episodes:
+            pageScrollCoordinator.enterPrimary(
+                animated: false,
+                reduceMotion: reduceMotion
+            )
+        case .outside:
+            pageScrollCoordinator.enterPrimary(
+                animated: true,
+                reduceMotion: reduceMotion
+            )
+        case .episodes:
             break
         }
 
@@ -722,15 +1085,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             episode.flatMap { selectedFileId(for: $0) },
             false
         )
-    }
-
-    private var browseFocusKey: String? {
-        primaryViewportActive ? "series-primary" : nil
-    }
-
-    private var hasPrimaryFocus: Bool {
-        focusedEpisodeContentId != nil
-            || focusedModeId != nil
     }
 
     private var moreMenu: some View {
@@ -856,6 +1210,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 focusRequest: supportingRailFocusRequest
             )
         }
+        .padding(.top, 20)
     }
 
     private var hasCast: Bool {
@@ -870,11 +1225,70 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 }
 
+/// Resolves the UIKit scroll view that directly owns the Series page. The
+/// marker sits behind the root vertical content, so its nearest scroll-view
+/// ancestor is never one of the nested horizontal rails.
+private struct TVSeriesPageScrollResolver: UIViewRepresentable {
+    let onResolve: (UIScrollView) -> Void
+
+    func makeUIView(context: Context) -> ResolverView {
+        let view = ResolverView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateUIView(_ uiView: ResolverView, context: Context) {
+        uiView.onResolve = onResolve
+        uiView.resolveIfNeeded()
+    }
+
+    final class ResolverView: UIView {
+        var onResolve: ((UIScrollView) -> Void)?
+        private weak var resolvedScrollView: UIScrollView?
+        private var resolutionScheduled = false
+
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            resolveIfNeeded()
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            resolveIfNeeded()
+        }
+
+        func resolveIfNeeded() {
+            if let resolvedScrollView {
+                onResolve?(resolvedScrollView)
+                return
+            }
+            guard !resolutionScheduled else { return }
+            resolutionScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.resolutionScheduled = false
+                var ancestor = self.superview
+                while let view = ancestor {
+                    if let scrollView = view as? UIScrollView {
+                        self.resolvedScrollView = scrollView
+                        self.onResolve?(scrollView)
+                        return
+                    }
+                    ancestor = view.superview
+                }
+            }
+        }
+    }
+}
+
 /// Stable Show/Season tab used only by the combined Series page. It changes
 /// fill and outline on focus without scaling, so neighboring tabs never move.
 private struct TVSeriesModeTab: View {
     let title: String
     let isSelected: Bool
+    let rendersFocusedAppearance: Bool
     let action: () -> Void
 
     var body: some View {
@@ -884,18 +1298,25 @@ private struct TVSeriesModeTab: View {
                 .padding(.horizontal, 24)
                 .frame(height: 52)
         }
-        .buttonStyle(TVSeriesModeTabStyle(isSelected: isSelected))
+        .buttonStyle(
+            TVSeriesModeTabStyle(
+                isSelected: isSelected,
+                rendersFocusedAppearance: rendersFocusedAppearance
+            )
+        )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
 private struct TVSeriesModeTabStyle: ButtonStyle {
     let isSelected: Bool
+    let rendersFocusedAppearance: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         TVSeriesModeTabBody(
             configuration: configuration,
-            isSelected: isSelected
+            isSelected: isSelected,
+            rendersFocusedAppearance: rendersFocusedAppearance
         )
     }
 }
@@ -903,8 +1324,7 @@ private struct TVSeriesModeTabStyle: ButtonStyle {
 private struct TVSeriesModeTabBody: View {
     let configuration: ButtonStyleConfiguration
     let isSelected: Bool
-    @Environment(\.isFocused) private var isFocused
-    @State private var rendersFocusedAppearance = false
+    let rendersFocusedAppearance: Bool
 
     var body: some View {
         configuration.label
@@ -928,28 +1348,6 @@ private struct TVSeriesModeTabBody: View {
                 value: rendersFocusedAppearance
             )
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
-            .task(id: isFocused) {
-                guard isFocused else {
-                    rendersFocusedAppearance = false
-                    return
-                }
-                if isSelected {
-                    rendersFocusedAppearance = true
-                    return
-                }
-                // A downward Siri Remote gesture can briefly offer focus to a
-                // neighboring pill before entering the episode composite.
-                // Ignore that sub-frame transient without delaying the current
-                // selected season or changing normal lateral navigation.
-                try? await Task.sleep(for: .milliseconds(150))
-                guard !Task.isCancelled, isFocused else { return }
-                rendersFocusedAppearance = true
-            }
-            .onChange(of: isSelected) { _, selected in
-                if selected && isFocused {
-                    rendersFocusedAppearance = true
-                }
-            }
     }
 }
 #endif

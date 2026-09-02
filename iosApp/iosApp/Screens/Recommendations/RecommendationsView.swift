@@ -54,17 +54,7 @@ struct RecommendationsView: View {
     @ViewBuilder
     private var rootLayout: some View {
         #if os(tvOS)
-        ZStack(alignment: .top) {
-            TVRootHeroBackdrop(
-                tintColor: .continuumBackground,
-                artworkURL: nil,
-                artworkThumbhash: nil,
-                isVisible: false
-            )
-
-            pageContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        tvOSPageContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
         VStack(spacing: 0) {
@@ -101,6 +91,99 @@ struct RecommendationsView: View {
         #endif
         #endif
     }
+
+    #if os(tvOS)
+    /// For You uses the exact Skyline page shell as Home. Recommendation
+    /// sections supply only the content; the shared feed owns the backdrop,
+    /// marquee, rail geometry, focus hand-off, and vertical scrolling.
+    @ViewBuilder
+    private var tvOSPageContent: some View {
+        if !viewModel.sections.isEmpty {
+            TVSkylineSectionFeed(
+                sections: viewModel.sections,
+                focusRequest: focusRequest,
+                isTopMenuFocused: isTopMenuFocused,
+                onTopMenuFocusRequest: onTopMenuFocusRequest,
+                onItemTap: { destinationContentId, item in
+                    router.navigate(
+                        to: .itemDetail(
+                            destinationContentId: destinationContentId,
+                            sectionItem: item
+                        )
+                    )
+                }
+            )
+            .task(id: initialMarqueePrewarmKey) {
+                await prewarmInitialMarqueeDetails()
+            }
+        } else if let error = viewModel.error {
+            ErrorView(
+                state: error,
+                onRetry: { Task { await viewModel.loadRecommendations() } }
+            )
+        } else if viewModel.isLoading {
+            Color.clear
+        } else {
+            EmptyStateView(
+                icon: "sparkles.tv",
+                title: "No recommendations yet",
+                subtitle: "Watch or rate a few titles to build your personalised recommendations."
+            )
+        }
+    }
+
+    /// Two rows × eight visible cards, matching the For You viewport. Only
+    /// items missing their lightweight content-rating field need detail
+    /// prewarming, and requests run three at a time to avoid a server burst.
+    private var initialMarqueePrewarmKey: String {
+        initialMarqueeItems.map(\.contentId).joined(separator: "|")
+    }
+
+    private var initialMarqueeItems: [SectionItem] {
+        viewModel.sections.prefix(2).flatMap { section in
+            Array(section.items.prefix(8))
+        }
+    }
+
+    private func prewarmInitialMarqueeDetails() async {
+        let contentIds = initialMarqueeItems.compactMap { item -> String? in
+            let rating = item.contentRating?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard rating?.isEmpty != false else { return nil }
+            let key = CacheKey.itemDetail(item.contentId)
+            let cached: ItemDetail? = ResponseCache.shared.get(key)
+            return cached == nil ? item.contentId : nil
+        }
+
+        let maxConcurrent = 3
+        for batchStart in stride(from: 0, to: contentIds.count, by: maxConcurrent) {
+            guard !Task.isCancelled else { return }
+            let batchEnd = min(batchStart + maxConcurrent, contentIds.count)
+            let batch = Array(contentIds[batchStart..<batchEnd])
+            let details = await withTaskGroup(of: (String, ItemDetail?).self) { group in
+                for contentId in batch {
+                    group.addTask {
+                        let detail = try? await ContinuumAPI.shared.itemDetail(
+                            contentId: contentId
+                        )
+                        return (contentId, detail)
+                    }
+                }
+
+                var results: [(String, ItemDetail)] = []
+                for await (contentId, detail) in group {
+                    if let detail { results.append((contentId, detail)) }
+                }
+                return results
+            }
+
+            guard !Task.isCancelled else { return }
+            for (contentId, detail) in details {
+                ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
+            }
+        }
+    }
+    #endif
 
     /// The Watchlist/Favorites shortcut row renders in every state — the
     /// user's saved lists are reachable from here even when there are no

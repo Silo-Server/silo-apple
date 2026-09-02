@@ -15,6 +15,12 @@ enum StartupContentPrefetcher {
     private static let maxHomeArtworkURLs = 12
     #endif
     private static let maxSectionArtworkURLs = 12
+    /// For You shows two eight-card rows in its initial viewport. Logos are
+    /// tiny compared with backdrops, so warm exactly those visible candidates
+    /// rather than waiting for each focus rest to begin its own request.
+    #if os(tvOS)
+    private static let maxRecommendationLogoURLs = 16
+    #endif
     private static let maxBrowseArtworkURLs = 12
     private static let maxProfileArtworkURLs = 8
     private static let browsePageSize = 60
@@ -31,6 +37,14 @@ enum StartupContentPrefetcher {
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
     private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
+    #if os(tvOS)
+    /// One bounded cold-start warmup for the Series library the top-level tab
+    /// will actually open. This is separate from `librarySectionsTasks`: the
+    /// latter makes the landing page available, while this task also primes
+    /// the first Series hero payload so Select never has to paint a loading
+    /// action pill before the real detail screen.
+    private static var tvSeriesLandingTasks: [Int: Task<Void, Never>] = [:]
+    #endif
     private static var profileScopedGeneration = 0
     private static var homeSectionsGeneration = 0
     private static var profilesGeneration = 0
@@ -43,12 +57,18 @@ enum StartupContentPrefetcher {
         userLibrariesTask?.cancel()
         librarySectionsTasks.values.forEach { $0.cancel() }
         browseFirstPageTasks.values.forEach { $0.cancel() }
+        #if os(tvOS)
+        tvSeriesLandingTasks.values.forEach { $0.cancel() }
+        #endif
 
         homeSectionsTask = nil
         recommendationsTask = nil
         userLibrariesTask = nil
         librarySectionsTasks.removeAll()
         browseFirstPageTasks.removeAll()
+        #if os(tvOS)
+        tvSeriesLandingTasks.removeAll()
+        #endif
     }
 
     static func resetAllPrefetches() {
@@ -363,6 +383,9 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.recommendations)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
+            #if os(tvOS)
+            prefetchRecommendationLogos(for: response)
+            #endif
             return response
         } catch {
             if profileScopedGeneration == generation {
@@ -432,6 +455,52 @@ enum StartupContentPrefetcher {
             _ = try? await fetchLibrarySections(libraryId: libraryId)
         }
     }
+
+    #if os(tvOS)
+    /// Warm the exact cold path used by a Series root tab: its section payload
+    /// plus one initial Series detail. The work is deliberately limited to a
+    /// single card and does not fetch cast portraits; Series cast sits below
+    /// the first viewport and keeps its existing lazy path.
+    static func prefetchTVSeriesLanding(libraryId: Int) {
+        guard tvSeriesLandingTasks[libraryId] == nil else { return }
+        let generation = profileScopedGeneration
+
+        tvSeriesLandingTasks[libraryId] = Task(priority: .userInitiated) {
+            defer {
+                // A task from the prior profile must never clear a replacement
+                // registered for the same numeric library id.
+                if profileScopedGeneration == generation {
+                    tvSeriesLandingTasks[libraryId] = nil
+                }
+            }
+
+            guard let response = try? await fetchLibrarySections(libraryId: libraryId),
+                  !Task.isCancelled,
+                  profileScopedGeneration == generation,
+                  let item = firstSeriesItem(in: response) else { return }
+
+            let key = CacheKey.itemDetail(item.contentId)
+            if let _: ItemDetail = ResponseCache.shared.get(key) { return }
+
+            guard let detail = try? await MetadataRequestPool.shared.itemDetail(
+                contentId: item.contentId
+            ),
+            !Task.isCancelled,
+            profileScopedGeneration == generation else { return }
+
+            ResponseCache.shared.set(detail, for: key)
+        }
+    }
+
+    private static func firstSeriesItem(in response: SectionsResponse) -> SectionItem? {
+        for section in response.sections where !section.isFeatured && !section.items.isEmpty {
+            if let item = section.items.first(where: { SiloMediaType.isSeries($0.type) }) {
+                return item
+            }
+        }
+        return nil
+    }
+    #endif
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
         let generation = profileScopedGeneration
@@ -588,11 +657,29 @@ enum StartupContentPrefetcher {
 
     private static func prefetchActiveLibraryLanding() {
         Task {
-            guard let response = try? await fetchUserLibraries(),
-                  let library = preferredLibrary(from: response.libraries) else {
-                return
+            guard let response = try? await fetchUserLibraries() else { return }
+
+            // Preserve the existing selected-library landing prefetch on every
+            // platform. tvOS additionally has a dedicated Series root tab;
+            // warm its persisted scope during the same launch window instead
+            // of waiting for the user to enter that tab.
+            if let library = preferredLibrary(from: response.libraries) {
+                prefetchLibraryLanding(libraryId: library.id)
             }
-            prefetchLibraryLanding(libraryId: library.id)
+
+            #if os(tvOS)
+            let seriesLibraries = response.libraries
+                .filter { TVLibraryTabType.series.matches($0) }
+                .sorted {
+                    ($0.sortOrder ?? Int.max, $0.id) < ($1.sortOrder ?? Int.max, $1.id)
+                }
+            if let library = TVLibraryScopeStore.shared.resolvedLibrary(
+                for: .series,
+                in: seriesLibraries
+            ) {
+                prefetchTVSeriesLanding(libraryId: library.id)
+            }
+            #endif
         }
     }
 
@@ -705,6 +792,31 @@ enum StartupContentPrefetcher {
         guard !urls.isEmpty else { return }
         PosterImageCache.prefetcher.startPrefetching(with: urls)
     }
+
+    #if os(tvOS)
+    /// Match `RecommendationsViewModel` ordering so the first two rows the
+    /// user can actually focus are the ones whose logo art is ready first.
+    private static func prefetchRecommendationLogos(for response: SectionsResponse) {
+        let nonEmpty = response.sections.filter { !$0.items.isEmpty }
+        let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
+        let others = nonEmpty.filter { $0.title.lowercased() != "for you" }
+        let initialRows = (forYou + others).prefix(2)
+
+        var urls: [URL] = []
+        var seen = Set<String>()
+        for section in initialRows {
+            for item in section.items.prefix(8) {
+                guard urls.count < maxRecommendationLogoURLs,
+                      let url = normalizedURL(from: item.logoUrl),
+                      seen.insert(url.absoluteString).inserted else { continue }
+                urls.append(url)
+            }
+        }
+
+        guard !urls.isEmpty else { return }
+        PosterImageCache.prefetcher.startPrefetching(with: urls)
+    }
+    #endif
 
     private static func prefetchBrowseArtwork(for response: CatalogResponse) {
         var urls: [URL] = []

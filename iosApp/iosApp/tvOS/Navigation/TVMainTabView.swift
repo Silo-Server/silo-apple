@@ -17,6 +17,11 @@ func tvVisibleRootsFocusRearm(
 #if os(tvOS)
 import SwiftUI
 
+private enum TVPersonalRootDestination: Hashable {
+    case watchlist
+    case favorites
+}
+
 /// Root tvOS shell. Owns a custom Skyline top bar instead of relying on
 /// `TabView(.sidebarAdaptable)`, so content can use horizontal remote
 /// navigation without the system sidebar claiming leftward focus.
@@ -27,6 +32,11 @@ import SwiftUI
 struct TVMainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedRoot: TVRootDestination = .home
+    /// Watchlist and Favorites are root-shell pages rather than pushed
+    /// destinations, so the Skyline bar and profile controls remain present.
+    /// The previously selected content root stays underneath and is restored
+    /// when the user backs out of the personal page.
+    @State private var personalRoot: TVPersonalRootDestination?
     /// Seeded from the startup prefetch so the bar's first frame already
     /// shows the active profile's avatar instead of filling it in late.
     @State private var currentProfile: UserProfile? = {
@@ -123,9 +133,6 @@ struct TVMainTabView: View {
                 rootContent
                     .navigationDestination(for: Route.self) { route in
                         routeContent(for: route)
-                            .environment(\.tvDetailTopMenuReturn) {
-                                returnFromPushedRouteToTopMenu()
-                            }
                     }
             }
 
@@ -148,7 +155,9 @@ struct TVMainTabView: View {
                     onEnterPanel: enterPanelFor,
                     onProfilePressed: openProfilePanelImmediately,
                     onContentFocusHandoff: suppressTopMenuFocusForContentHandoff,
-                    onExit: selectedRoot == .home ? nil : returnToHomeInMenu
+                    onExit: personalRoot != nil
+                        ? returnFromPersonalRootInMenu
+                        : (selectedRoot == .home ? nil : returnToHomeInMenu)
                 )
             }
 
@@ -336,14 +345,21 @@ struct TVMainTabView: View {
             Color.continuumBackground
                 .ignoresSafeArea()
 
-            selectedRootContent
+            Group {
+                if let personalRoot {
+                    personalRootContent(personalRoot)
+                        .id(personalRoot)
+                } else {
+                    selectedRootContent
+                        .id(selectedRoot)
+                }
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // §4.2 tab content switch: an explicit 200 ms opacity
                 // crossfade keyed on the selected root, so the incoming page
                 // fades in and the outgoing one fades out in place (it never
                 // slides). The crossfade animation is supplied by `selectRoot`;
                 // Reduce Motion snaps via the `.identity` transition.
-                .id(selectedRoot)
                 .transition(reduceMotion ? .identity : .opacity)
                 .focusScope(tabContentNamespace)
                 // Keep the page from taking remote/pointer events while a
@@ -423,6 +439,28 @@ struct TVMainTabView: View {
         case .calendar:
             CalendarView(
                 focusRequest: contentFocusRequest,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func personalRootContent(_ destination: TVPersonalRootDestination) -> some View {
+        switch destination {
+        case .watchlist:
+            WatchlistView(
+                showsNavigationTitle: false,
+                usesTVTopMenu: true,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: isTopMenuFocused,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
+        case .favorites:
+            FavoritesView(
+                showsNavigationTitle: false,
+                usesTVTopMenu: true,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
         }
@@ -849,6 +887,13 @@ struct TVMainTabView: View {
     }
 
     private func prefetchLibrarySectionsIfNeeded(_ library: Library) {
+        if TVLibraryTabType.series.matches(library) {
+            // This joins the same single-flight section request as the panel
+            // preview, then primes one Series hero. Repeated focus visits are
+            // cache-only and never fan out across the whole rail.
+            StartupContentPrefetcher.prefetchTVSeriesLanding(libraryId: library.id)
+            return
+        }
         let cached: SectionsResponse? = ResponseCache.shared.get(
             CacheKey.librarySections(library.id)
         )
@@ -1014,6 +1059,7 @@ struct TVMainTabView: View {
            let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) {
             libraries = cached.libraries
             ensureSelectedRootIsVisible()
+            prefetchActiveSeriesLanding()
         }
 
         do {
@@ -1025,11 +1071,20 @@ struct TVMainTabView: View {
                 response.libraries.contains { $0.id == libraryId }
             }
             ensureSelectedRootIsVisible()
+            prefetchActiveSeriesLanding()
         } catch {
             // Keep whatever tabs we already have (cached or none) — Home
             // and Calendar always stay reachable, so a transient failure
             // never strands the user.
         }
+    }
+
+    /// Backstop the launch prefetch with the shell's authoritative in-session
+    /// scope. This covers a changed Series-library selection without making
+    /// any other tab wait for the warmup.
+    private func prefetchActiveSeriesLanding() {
+        guard let library = activeLibrary(for: .series) else { return }
+        StartupContentPrefetcher.prefetchTVSeriesLanding(libraryId: library.id)
     }
 
     /// The selected root can stop being visible — a library refresh removes
@@ -1093,6 +1148,7 @@ struct TVMainTabView: View {
         // Reduce Motion snaps (the `.identity` transition + nil animation).
         withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.normalDuration)) {
             selectedRoot = root
+            personalRoot = nil
             openPanel = nil
         }
         panelEntersFocus = false
@@ -1148,18 +1204,6 @@ struct TVMainTabView: View {
         }
     }
 
-    /// Up from the topmost detail controls deliberately leaves the pushed
-    /// route and hands focus to the root menu. Back/Menu remains distinct: it
-    /// performs one ordinary pop and restores the Continue Watching card.
-    private func returnFromPushedRouteToTopMenu() {
-        guard !router.path.isEmpty else {
-            focusTopMenuIfVisible()
-            return
-        }
-        barOwnsFocusOnPopToRoot = true
-        router.popToRoot()
-    }
-
     private func returnToHomeInMenu() {
         selectedRoot = .home
         panelReturnFocus = nil
@@ -1169,6 +1213,12 @@ struct TVMainTabView: View {
             // Home button unfocused after the exit-to-home gesture.
             isTopMenuFocusSuppressed = false
             topMenuFocusRequest += 1
+        }
+    }
+
+    private func returnFromPersonalRootInMenu() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.normalDuration)) {
+            personalRoot = nil
         }
     }
 
@@ -1182,8 +1232,34 @@ struct TVMainTabView: View {
     /// focus to the bar instead of letting the engine free-resolve into
     /// the row band.
     private func navigateFromBar(_ route: Route) {
+        switch route {
+        case .watchlist:
+            showPersonalRoot(.watchlist)
+            return
+        case .favorites:
+            showPersonalRoot(.favorites)
+            return
+        default:
+            break
+        }
+
         barOwnsFocusOnPopToRoot = true
         router.navigate(to: route)
+    }
+
+    private func showPersonalRoot(_ destination: TVPersonalRootDestination) {
+        router.popToRoot()
+        barOwnsFocusOnPopToRoot = false
+        suppressTopMenuFocusForContentHandoff()
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.normalDuration)) {
+            personalRoot = destination
+            openPanel = nil
+        }
+        panelEntersFocus = false
+        panelHasFocus = false
+        DispatchQueue.main.async {
+            contentFocusRequest += 1
+        }
     }
 
     private func switchProfile() {
@@ -1231,6 +1307,7 @@ struct TVMainTabView: View {
             ) else { return }
             await MainActor.run {
                 selectedRoot = .home
+                personalRoot = nil
                 currentProfile = nil
                 libraries = []
                 loadedLibraryAuthority = nil

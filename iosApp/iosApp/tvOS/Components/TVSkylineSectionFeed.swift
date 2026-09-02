@@ -1,3 +1,33 @@
+enum TVSkylineVerticalMove {
+    case up
+    case down
+}
+
+enum TVSkylineRowMoveTarget: Equatable {
+    case topMenu
+    case row(Int)
+    case none
+}
+
+/// Pure row-boundary routing used by every Skyline landing. Explicit routing
+/// avoids asking the focus engine to discover a row that is still clipped by
+/// the lower-half viewport while the vertical stack is scrolling.
+func tvSkylineRowMoveTarget(
+    currentIndex: Int,
+    rowCount: Int,
+    direction: TVSkylineVerticalMove
+) -> TVSkylineRowMoveTarget {
+    guard rowCount > 0, currentIndex >= 0, currentIndex < rowCount else {
+        return .none
+    }
+    switch direction {
+    case .up:
+        return currentIndex == 0 ? .topMenu : .row(currentIndex - 1)
+    case .down:
+        return currentIndex + 1 < rowCount ? .row(currentIndex + 1) : .none
+    }
+}
+
 #if os(tvOS)
 import SwiftUI
 
@@ -7,9 +37,9 @@ import SwiftUI
 /// so the two stay pixel-identical — the only difference is the sections each
 /// feeds in.
 ///
-/// Row movement is owned by tvOS focus + the vertical scroll view. Each row
-/// remains a native focus section, so row-to-row movement preserves tvOS'
-/// geometric focus behavior instead of forcing the first item.
+/// Row-to-row movement belongs to the tvOS focus engine and the vertical
+/// scroll view. Programmatic focus is reserved for entering the page and
+/// returning from detail; ordinary Up/Down movement stays geometric.
 struct TVSkylineSectionFeed: View {
     /// Section rows to page through, in order (already filtered to
     /// non-empty, non-featured by the caller).
@@ -36,7 +66,8 @@ struct TVSkylineSectionFeed: View {
 
     /// Debounced focused-card state driving the marquee + backdrop.
     @State private var marqueeModel = TVFocusMarqueeModel()
-    /// Token handed to row 1 so its first card claims focus on shell entry.
+    /// Token handed only to row 1 when the shell explicitly enters content.
+    /// It is never changed during ordinary row-to-row navigation.
     @State private var contentFocusToken = 0
     /// Snaps the row band back to the first section before a focus claim.
     /// The band clips rows outside the viewport, and tvOS refuses to focus a
@@ -115,7 +146,11 @@ struct TVSkylineSectionFeed: View {
 
             ScrollViewReader { scrollProxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
+                    // Keep every row's focus section mounted. A LazyVStack can
+                    // remove the clipped row immediately above/below, leaving
+                    // the Focus Engine no geometric destination and tempting
+                    // callers to force focus manually.
+                    VStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                             featuredRow(section, isFirstRow: index == 0)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -162,6 +197,9 @@ struct TVSkylineSectionFeed: View {
             defaultFocusPriority: .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
             detailReturnFocusRequest: detailReturnFocusRequest,
+            // This is the sole directional interception: Up from the first
+            // content row crosses the intentional page-to-tab-bar boundary.
+            // Every other vertical move remains native.
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
             onItemFocus: { item in
                 focusRestorationOwnerSectionId = section.id
@@ -204,11 +242,15 @@ struct TVSkylineSectionFeed: View {
         if isTopMenuFocused { return }
         guard request != lastAppliedRequest else { return }
         lastAppliedRequest = request
+        guard let firstSectionId = sections.first?.id else { return }
+        focusRestorationOwnerSectionId = firstSectionId
         // Scroll the band home first, then claim on the next turn: the claim
         // is a @FocusState write on the first row's first card, which the
         // engine drops while that card is still clipped out of the viewport.
         entryScrollToken += 1
         DispatchQueue.main.async {
+            guard !isTopMenuFocused,
+                  sections.first?.id == firstSectionId else { return }
             contentFocusToken += 1
         }
     }

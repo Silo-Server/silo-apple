@@ -1,20 +1,6 @@
 #if os(tvOS)
 import SwiftUI
 
-/// The root shell supplies this only for pushed tvOS detail routes. Up from
-/// the hero action row is an intentional focus boundary: it returns to the
-/// root and gives ownership to the persistent top menu.
-private struct TVDetailTopMenuReturnKey: EnvironmentKey {
-    static let defaultValue: (() -> Void)? = nil
-}
-
-extension EnvironmentValues {
-    var tvDetailTopMenuReturn: (() -> Void)? {
-        get { self[TVDetailTopMenuReturnKey.self] }
-        set { self[TVDetailTopMenuReturnKey.self] = newValue }
-    }
-}
-
 // MARK: - Primary pill
 
 /// VidHub-style primary play button. Solid white, large, dominant —
@@ -332,7 +318,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
-    @Environment(\.tvDetailTopMenuReturn) private var returnToTopMenu
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
@@ -408,10 +393,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
         .onMoveCommand { direction in
-            // This row is the top boundary of the detail focus graph. Keep
-            // left/right native within the row; only Up changes ownership.
+            // This is a hard top boundary for a pushed detail page. Consuming
+            // Up here keeps focus on the action row; it must never behave like
+            // Back/Menu or pop the movie/series page to the root.
             if direction == .up {
-                returnToTopMenu?()
+                return
             }
         }
         .onChange(of: playbackSelectorsFocused) { _, isFocused in

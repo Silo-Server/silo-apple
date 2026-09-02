@@ -25,9 +25,6 @@ struct MediaRow: View {
     var onItemPlay: ((SectionItem) -> Void)? = nil
     var onSeeAll: (() -> Void)? = nil
     var showProgress: Bool = false
-    /// Keeps the card as the sole focus target while showing that its detail
-    /// metadata is being prepared before navigation.
-    var loadingItemId: String? = nil
     var icon: String? = nil
     var layout: MediaRowLayout = .poster
     /// Preserve a caller's immediate thumbnail action instead of presenting
@@ -51,6 +48,10 @@ struct MediaRow: View {
     /// where `.userInitiated` defaultFocus alone doesn't fire because the
     /// focus engine isn't doing the moving.
     var focusRequest: Int = 0
+    /// Optional item to claim for a programmatic row handoff. When absent the
+    /// request retains its existing first-item behavior. Skyline uses this to
+    /// restore the exact card last focused in the preceding row.
+    var focusRequestItemId: String? = nil
     /// Monotonic token emitted when a card-pushed detail route pops. The row
     /// that still owns restoration reclaims its exact last-focused card.
     var detailReturnFocusRequest: Int = 0
@@ -70,9 +71,6 @@ struct MediaRow: View {
     /// focus leaving the row (nil) is deliberately not reported so the
     /// marquee retains the last previewed item while focus is in chrome.
     var onItemFocus: ((SectionItem) -> Void)? = nil
-    /// Raw focus ownership changes for work that must stop when the source
-    /// card is abandoned. Unlike `onItemFocus`, this also reports `nil`.
-    var onFocusedItemIdChange: ((String?) -> Void)? = nil
     /// Optional width for poster/square cards — Skyline's dense landing
     /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
     var cardWidth: CGFloat? = nil
@@ -118,7 +116,6 @@ struct MediaRow: View {
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .onChange(of: focusedItemId) { _, newValue in
-            onFocusedItemIdChange?(newValue)
             guard let newValue,
                   let item = items.first(where: { $0.contentId == newValue }) else { return }
             lastFocusedItemId = newValue
@@ -138,19 +135,24 @@ struct MediaRow: View {
     #if os(tvOS)
     private func applyFocusRequest(_ request: Int, proxy: ScrollViewProxy) {
         guard request > 0, request != lastAppliedFocusRequest,
-              let firstItem = items.first else { return }
+              let targetItem = focusRequestItemId.flatMap({ requestedId in
+                  items.first(where: { $0.contentId == requestedId })
+              }) ?? items.first,
+              focusRestorationOwner?.wrappedValue != false else { return }
         lastAppliedFocusRequest = request
-        // Scroll home first, claim a turn later: a row parked deep in its
-        // strip keeps the first card unmounted (LazyHStack) or clipped, and
+        focusRestorationGeneration += 1
+        let generation = focusRestorationGeneration
+        // Scroll to the requested card first, claim a turn later: a row parked
+        // deep in its strip can keep that card unmounted (LazyHStack) or clipped, and
         // the focus engine silently drops @FocusState writes to views it
         // can't focus. The instant scroll mounts/unclips the card; the
         // deferred write then lands on a focusable target.
         withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.slowDuration)) {
-            proxy.scrollTo(firstItem.id, anchor: .leading)
+            proxy.scrollTo(targetItem.id, anchor: .center)
         }
         DispatchQueue.main.async {
             Self.focusLogger.debug("mediaRow.applyFocus request=\(request, privacy: .public)")
-            claimFirstItemFocus(firstItem)
+            claimRequestedItemFocus(targetItem, generation: generation)
         }
     }
 
@@ -161,17 +163,31 @@ struct MediaRow: View {
     /// rows (and their cards) under whatever it had focused. @FocusState
     /// reflects *actual* focus, so a rejected/overridden write reads back as
     /// a different value — retry until the scroll settles and ours is last.
-    private func claimFirstItemFocus(_ firstItem: SectionItem, attempt: Int = 0) {
-        focusedItemId = firstItem.contentId
-        lastFocusedItemId = firstItem.contentId
-        onItemFocus?(firstItem)
+    private func claimRequestedItemFocus(
+        _ targetItem: SectionItem,
+        generation: Int,
+        attempt: Int = 0
+    ) {
+        guard generation == focusRestorationGeneration,
+              focusRestorationOwner?.wrappedValue != false,
+              items.contains(where: { $0.contentId == targetItem.contentId }) else { return }
+        focusedItemId = targetItem.contentId
+        lastFocusedItemId = targetItem.contentId
+        onItemFocus?(targetItem)
         // Window must outlast the ~300ms animated ride home plus the engine's
         // settling repairs, or the last mid-flight repair wins after all.
         guard attempt < 8 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard focusedItemId != firstItem.contentId else { return }
+            guard generation == focusRestorationGeneration,
+                  focusRestorationOwner?.wrappedValue != false,
+                  items.contains(where: { $0.contentId == targetItem.contentId }),
+                  focusedItemId != targetItem.contentId else { return }
             Self.focusLogger.debug("mediaRow.reclaimFocus attempt=\(attempt + 1, privacy: .public)")
-            claimFirstItemFocus(firstItem, attempt: attempt + 1)
+            claimRequestedItemFocus(
+                targetItem,
+                generation: generation,
+                attempt: attempt + 1
+            )
         }
     }
 
@@ -334,11 +350,6 @@ struct MediaRow: View {
             LazyHStack(spacing: cardSpacing) {
                 ForEach(items) { item in
                     mediaCard(for: item)
-                        .overlay {
-                            if loadingItemId == item.contentId {
-                                pendingNavigationIndicator
-                            }
-                        }
                 }
             }
             #if !os(tvOS)
@@ -417,24 +428,6 @@ struct MediaRow: View {
                 onSetWatched: watchedToggleAction(for: item)
             )
         }
-    }
-
-    private var pendingNavigationIndicator: some View {
-        ZStack {
-            Circle()
-                .fill(Color.black.opacity(0.76))
-                .overlay {
-                    Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
-                }
-
-            ProgressView()
-                .controlSize(.large)
-                .tint(.white)
-        }
-        .frame(width: 76, height: 76)
-        .shadow(color: .black.opacity(0.45), radius: 14, y: 5)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     /// tvOS: bind every card to the row's @FocusState so the row can
@@ -573,10 +566,16 @@ struct MediaRow: View {
     /// "S2 · E10" badge for an episode rendered as a poster, so new episodes
     /// of the same series stay distinguishable. `nil` for non-episodes.
     private func episodeBadge(for item: SectionItem) -> String? {
+        #if os(tvOS)
+        // Landing-page episode cards on Apple TV intentionally reserve their
+        // artwork overlays for the server-controlled CardOverlays system.
+        return nil
+        #else
         guard item.type.lowercased() == "episode",
               let season = item.seasonNumber,
               let episode = item.episodeNumber else { return nil }
         return "S\(season) · E\(episode)"
+        #endif
     }
 
     // MARK: - Metrics

@@ -82,7 +82,7 @@ private struct DetailFocusScrollModifier: ViewModifier {
     /// 0.2s `normalDuration` read as an abrupt snap next to them.
     private static let scrollAnimation = Animation.easeInOut(duration: 0.45)
     private static let browseScrollAnimation = Animation.smooth(
-        duration: 1.0,
+        duration: 0.55,
         extraBounce: 0
     )
 
@@ -90,10 +90,10 @@ private struct DetailFocusScrollModifier: ViewModifier {
     /// write is clobbered, then sparse late ones to outlast the engine's
     /// input-deferred reveal after rapid d-pad sequences.
     private static let assertDelays: [Double] = [0.02, 0.15, 0.45, 0.8, 1.1]
-    /// Series row-to-row moves share one fixed viewport. One immediate smooth
-    /// write starts the motion, then a single late write outlasts tvOS's native
-    /// reveal without repeatedly restarting the curve.
-    private static let browseAssertDelays: [Double] = [0, 1.08]
+    /// Series row-to-row moves share one fixed viewport. A single write owns
+    /// entry into that viewport; a delayed duplicate can fire after a later
+    /// focus move and is visible as a page bounce.
+    private static let browseAssertDelays: [Double] = [0]
 
     func body(content: Content) -> some View {
         // Mirror focus into the shared state on every render so in-flight
@@ -116,7 +116,11 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 // Series browsing is a fixed first-viewport experience: the
                 // logo and artwork remain the visual anchor while cards move
                 // horizontally beneath the focused carousel slot.
-                assertScroll(to: heroId, anchor: .top, while: .browse)
+                if browseRestoreRequest > 0 {
+                    restoreBrowseScroll(to: heroId, anchor: .top)
+                } else {
+                    assertScroll(to: heroId, anchor: .top, while: .browse)
+                }
             }
             .onChange(of: browseHoldRequest) { _, request in
                 guard request > 0, browseFocusKey != nil else { return }
@@ -125,13 +129,6 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 // reveal window instead of letting it pan down and correcting
                 // back afterward.
                 holdScroll(to: heroId, anchor: .top, while: .browse)
-            }
-            .onChange(of: browseRestoreRequest) { _, request in
-                guard request > 0, browseFocusKey != nil else { return }
-                // Version -> Episodes intentionally returns to the complete
-                // main framing. Use the slower browse curve rather than the
-                // focus engine's abrupt reveal.
-                assertScroll(to: heroId, anchor: .top, while: .browse)
             }
             .onChange(of: similarRailFocused) { _, focused in
                 guard focused, let similarSectionId else { return }
@@ -186,10 +183,11 @@ private struct DetailFocusScrollModifier: ViewModifier {
         state.generation &+= 1
         let generation = state.generation
 
-        // Eighteen frames at 40 Hz cover the native single-swipe reveal while
-        // remaining short enough that the next deliberate move is unaffected.
-        for frame in 0...18 {
-            let delay = Double(frame) / 40
+        // Ten frames at 60 Hz cover the native row-to-row reveal. The Series
+        // page explicitly releases this lock before focusing Cast, so these
+        // corrections never compete with its first deliberate page scroll.
+        for frame in 0...9 {
+            let delay = Double(frame) / 60
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [state] in
                 guard state.generation == generation,
                       state.focusedRegion == region else { return }
@@ -198,6 +196,22 @@ private struct DetailFocusScrollModifier: ViewModifier {
                 withTransaction(transaction) {
                     proxy.scrollTo(id, anchor: anchor)
                 }
+            }
+        }
+    }
+
+    /// Returning from a lower supporting rail is the only animated entry into
+    /// the fixed Series viewport. Final position ownership is handled by the
+    /// outer scroll view's idle phase rather than delayed correction timers.
+    private func restoreBrowseScroll(to id: String, anchor: UnitPoint) {
+        state.generation &+= 1
+        let generation = state.generation
+
+        DispatchQueue.main.async { [state] in
+            guard state.generation == generation,
+                  state.focusedRegion == .browse else { return }
+            withAnimation(Self.browseScrollAnimation) {
+                proxy.scrollTo(id, anchor: anchor)
             }
         }
     }

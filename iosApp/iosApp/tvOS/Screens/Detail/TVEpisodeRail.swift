@@ -52,6 +52,7 @@ struct TVEpisodeRail: View {
     @FocusState private var focusedCardId: String?
     @FocusState private var anchoredRailFocused: Bool
     @State private var anchoredIndex = 0
+    @State private var anchoredScrollPosition = ScrollPosition(x: 0)
     @State private var anchoredPlayedOverrides: [String: Bool] = [:]
     @State private var anchoredFavoriteOverrides: [String: Bool] = [:]
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -119,33 +120,35 @@ struct TVEpisodeRail: View {
     }
 
     /// Series uses one focus owner for the entire rail. Cards are passive
-    /// labels and the active index drives a single render offset, eliminating
-    /// the competing native focus-scroll animation that caused the bump.
+    /// labels and the active index drives one native ScrollView position,
+    /// eliminating competing focus owners while leaving scrolling to SwiftUI.
     private var anchoredRail: some View {
         GeometryReader { geometry in
             anchoredButton(viewportWidth: geometry.size.width)
+                .onAppear {
+                    seedAnchoredIndex(viewportWidth: geometry.size.width)
+                }
+                .onChange(of: episodeIdentityKey) { _, _ in
+                    seedAnchoredIndex(viewportWidth: geometry.size.width)
+                }
+                .onChange(of: currentContentId) { _, _ in
+                    guard !anchoredRailFocused else { return }
+                    seedAnchoredIndex(viewportWidth: geometry.size.width)
+                }
+                .onChange(of: focusRequest) { _, request in
+                    guard request > 0 else { return }
+                    seedAnchoredIndex(viewportWidth: geometry.size.width)
+                    anchoredRailFocused = true
+                }
         }
         .frame(height: anchoredRailHeight)
         .focusSection()
-        .onAppear(perform: seedAnchoredIndex)
-        .onChange(of: episodeIdentityKey) { _, _ in
-            seedAnchoredIndex()
-        }
-        .onChange(of: currentContentId) { _, _ in
-            guard !anchoredRailFocused else { return }
-            seedAnchoredIndex()
-        }
         .onChange(of: anchoredRailFocused) { _, isFocused in
             onFocusedEpisodeChange?(isFocused ? anchoredEpisode?.contentId : nil)
         }
         .onChange(of: anchoredIndex) { _, _ in
             guard anchoredRailFocused else { return }
             onFocusedEpisodeChange?(anchoredEpisode?.contentId)
-        }
-        .onChange(of: focusRequest) { _, request in
-            guard request > 0 else { return }
-            seedAnchoredIndex()
-            anchoredRailFocused = true
         }
         .onDisappear {
             onFocusedEpisodeChange?(nil)
@@ -159,8 +162,8 @@ struct TVEpisodeRail: View {
                 onSelect(contentId)
             }
         } label: {
-            ZStack(alignment: .topLeading) {
-                HStack(alignment: .top, spacing: cardSpacing) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: cardSpacing) {
                     ForEach(Array(episodes.enumerated()), id: \.element.contentId) { index, episode in
                         let isHovered = anchoredRailFocused && index == anchoredIndex
                         EpisodeCardLabel(
@@ -187,9 +190,14 @@ struct TVEpisodeRail: View {
                     .leading,
                     EpisodeHomeHoverMetrics.leadingInset(for: anchoredCardWidth)
                 )
+                .padding(
+                    .trailing,
+                    anchoredTrailingInset(viewportWidth: viewportWidth)
+                )
                 .padding(.vertical, 12)
-                .offset(x: -anchoredContentOffset(viewportWidth: viewportWidth))
             }
+            .scrollPosition($anchoredScrollPosition)
+            .scrollDisabled(true)
             .frame(
                 width: viewportWidth,
                 height: anchoredRailHeight,
@@ -200,16 +208,18 @@ struct TVEpisodeRail: View {
         }
         .buttonStyle(TVAnchoredEpisodeButtonStyle())
         .focused($anchoredRailFocused)
-        .onMoveCommand(perform: handleAnchoredMove)
+        .onMoveCommand { direction in
+            handleAnchoredMove(direction, viewportWidth: viewportWidth)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(anchoredAccessibilityLabel)
         .accessibilityValue("Episode \(anchoredIndex + 1) of \(max(episodes.count, 1))")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
-                moveAnchoredSelection(by: 1)
+                moveAnchoredSelection(by: 1, viewportWidth: viewportWidth)
             case .decrement:
-                moveAnchoredSelection(by: -1)
+                moveAnchoredSelection(by: -1, viewportWidth: viewportWidth)
             @unknown default:
                 break
             }
@@ -245,7 +255,10 @@ struct TVEpisodeRail: View {
         episodes.map(\.contentId).joined(separator: "|")
     }
 
-    private func anchoredContentOffset(viewportWidth: CGFloat) -> CGFloat {
+    private func anchoredContentOffset(
+        for index: Int,
+        viewportWidth: CGFloat
+    ) -> CGFloat {
         guard !episodes.isEmpty else { return 0 }
         let step = anchoredCardWidth + cardSpacing
         let contentWidth = CGFloat(episodes.count) * anchoredCardWidth
@@ -256,10 +269,29 @@ struct TVEpisodeRail: View {
         // both edges while the last episode remains entirely visible; any
         // remainder becomes harmless trailing breathing room.
         let maximumOffset = ceil(minimumTrailingOffset / step) * step
-        return min(CGFloat(anchoredIndex) * step, maximumOffset)
+        return min(CGFloat(index) * step, maximumOffset)
     }
 
-    private func seedAnchoredIndex() {
+    /// Adds only the extra scrollable width needed to preserve the rail's
+    /// existing stepped trailing boundary. SwiftUI can then clamp concrete
+    /// scroll positions natively without changing the final card grouping.
+    private func anchoredTrailingInset(viewportWidth: CGFloat) -> CGFloat {
+        guard !episodes.isEmpty else { return 0 }
+        let leadingInset = EpisodeHomeHoverMetrics.leadingInset(for: anchoredCardWidth)
+        let contentWidth = CGFloat(episodes.count) * anchoredCardWidth
+            + CGFloat(max(episodes.count - 1, 0)) * cardSpacing
+        let naturalMaximumOffset = max(
+            0,
+            leadingInset + contentWidth - viewportWidth
+        )
+        let desiredMaximumOffset = anchoredContentOffset(
+            for: episodes.count - 1,
+            viewportWidth: viewportWidth
+        )
+        return max(0, desiredMaximumOffset - naturalMaximumOffset)
+    }
+
+    private func seedAnchoredIndex(viewportWidth: CGFloat) {
         let seededIndex: Int
         if let currentContentId,
            let index = episodes.firstIndex(where: { $0.contentId == currentContentId }) {
@@ -277,15 +309,24 @@ struct TVEpisodeRail: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             anchoredIndex = seededIndex
+            anchoredScrollPosition.scrollTo(
+                x: anchoredContentOffset(
+                    for: seededIndex,
+                    viewportWidth: viewportWidth
+                )
+            )
         }
     }
 
-    private func handleAnchoredMove(_ direction: MoveCommandDirection) {
+    private func handleAnchoredMove(
+        _ direction: MoveCommandDirection,
+        viewportWidth: CGFloat
+    ) {
         switch direction {
         case .left:
-            moveAnchoredSelection(by: -1)
+            moveAnchoredSelection(by: -1, viewportWidth: viewportWidth)
         case .right:
-            moveAnchoredSelection(by: 1)
+            moveAnchoredSelection(by: 1, viewportWidth: viewportWidth)
         case .up:
             onMoveUp?()
         case .down:
@@ -295,15 +336,27 @@ struct TVEpisodeRail: View {
         }
     }
 
-    private func moveAnchoredSelection(by delta: Int) {
+    private func moveAnchoredSelection(
+        by delta: Int,
+        viewportWidth: CGFloat
+    ) {
         let nextIndex = anchoredIndex + delta
         guard episodes.indices.contains(nextIndex) else { return }
-        withAnimation(
-            reduceMotion
-                ? nil
-                : .smooth(duration: 0.30, extraBounce: 0)
-        ) {
-            anchoredIndex = nextIndex
+
+        // Keep focus/selection state out of the scroll animation transaction.
+        // That prevents hero metadata and every card from inheriting the
+        // carousel's animation while the native ScrollView moves its content.
+        anchoredIndex = nextIndex
+        let targetOffset = anchoredContentOffset(
+            for: nextIndex,
+            viewportWidth: viewportWidth
+        )
+        if reduceMotion {
+            anchoredScrollPosition.scrollTo(x: targetOffset)
+        } else {
+            withAnimation(.smooth(duration: 0.30, extraBounce: 0)) {
+                anchoredScrollPosition.scrollTo(x: targetOffset)
+            }
         }
     }
 
@@ -654,7 +707,7 @@ private struct EpisodeCardLabel: View {
             still
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text(episodeNumberLabel)
                             .font(.system(size: 16, weight: .bold))
                             .tracking(1.6)
@@ -664,14 +717,31 @@ private struct EpisodeCardLabel: View {
                             Text("·")
                                 .font(.system(size: 16, weight: .bold))
                                 .foregroundStyle(Color.continuumOnSurface.opacity(0.48))
+                                .fixedSize(horizontal: true, vertical: false)
                             Text(compactEpisodeTitle)
                                 .font(.system(size: 20, weight: .semibold))
                                 .foregroundStyle(titleColor)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                                .layoutPriority(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        Spacer(minLength: 8)
+                        if !hidesEpisodeTitle {
+                            Spacer(minLength: 8)
+                        }
+                    }
+                    // Season tabs keep their label inside the moving control
+                    // and never animate its layout independently. Apply that
+                    // same rule only to the compact Series episode caption.
+                    .frame(
+                        width: hidesEpisodeTitle ? cardWidth : nil,
+                        height: hidesEpisodeTitle ? 28 : nil,
+                        alignment: .topLeading
+                    )
+                    .clipped()
+                    .transaction { transaction in
+                        guard hidesEpisodeTitle else { return }
+                        transaction.animation = nil
+                        transaction.disablesAnimations = true
                     }
 
                     if !hidesEpisodeTitle {

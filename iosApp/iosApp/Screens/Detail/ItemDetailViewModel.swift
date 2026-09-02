@@ -273,6 +273,13 @@ class ItemDetailViewModel {
     ) async -> ItemDetail? {
         guard generation == detailGeneration else { return nil }
 
+        #if os(tvOS)
+        // Non-blocking: the movie cast portraits join the already-installed
+        // shared image pipeline as soon as the existing catalog payload lands.
+        // No metadata request or navigation gate is added here.
+        PosterImageCache.prefetchVisibleMovieCast(for: item)
+        #endif
+
         let initial: ItemDetail
         if supportsPlaybackMetadata(item),
            let cachedWatchDetail: WatchDetail = ResponseCache.shared.get(
@@ -460,6 +467,11 @@ class ItemDetailViewModel {
     func hydrateFromCache(contentId: String) {
         if detail == nil,
            let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId)) {
+            #if os(tvOS)
+            // Start a disk/memory-cache promotion before the cached detail is
+            // published into the first body evaluation.
+            PosterImageCache.prefetchVisibleMovieCast(for: cached)
+            #endif
             detail = cached
             isWatched = cached.userData?.played ?? false
 

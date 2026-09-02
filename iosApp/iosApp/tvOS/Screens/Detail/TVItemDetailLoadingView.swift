@@ -42,10 +42,8 @@ struct TVItemDetailLoadingView: View {
 
     private var cinematicArtwork: some View {
         GeometryReader { geometry in
-            let artworkWidth = geometry.size.width * 0.64
-            let artworkHeight = min(
-                TVDetailLayout.heroHeight * 0.94,
-                artworkWidth * 9 / 16
+            let artworkSize = TVBackdropArtworkLayout.artworkSize(
+                forViewportWidth: geometry.size.width
             )
 
             Group {
@@ -53,7 +51,7 @@ struct TVItemDetailLoadingView: View {
                     AsyncImageView(
                         url: url,
                         thumbhash: seed?.backdropThumbhash,
-                        targetSize: CGSize(width: artworkWidth, height: artworkHeight),
+                        targetSize: artworkSize,
                         contentMode: .fill
                     )
                 } else {
@@ -61,36 +59,13 @@ struct TVItemDetailLoadingView: View {
                         .fill(Color.white.opacity(0.035))
                 }
             }
-            .frame(width: artworkWidth, height: artworkHeight)
+            .frame(width: artworkSize.width, height: artworkSize.height)
             .clipped()
-            .mask { cinematicArtworkMask }
+            .mask { TVBackdropArtworkFadeMask() }
             .frame(
                 width: geometry.size.width,
                 height: TVDetailLayout.heroHeight,
                 alignment: .topTrailing
-            )
-        }
-    }
-
-    private var cinematicArtworkMask: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black, location: 0),
-                .init(color: .black, location: 0.46),
-                .init(color: .clear, location: 1),
-            ],
-            startPoint: .trailing,
-            endPoint: .leading
-        )
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.70),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
             )
         }
     }

@@ -1,6 +1,19 @@
 import AetherEngine
 import SwiftUI
 
+#if os(tvOS)
+/// Published only after final playback progress is committed and every
+/// resident detail model affected by that playback has refreshed.
+struct TVPlaybackStateRefreshEvent {
+    let refreshedContentIds: Set<String>
+    let completedContentIds: Set<String>
+}
+
+extension Notification.Name {
+    static let tvPlaybackStateDidRefresh = Notification.Name("tvPlaybackStateDidRefresh")
+}
+#endif
+
 /// Full-screen video player. Thin shell around `PlayerViewModel` that picks
 /// the platform-appropriate controls overlay. iOS gets touch-driven controls
 /// with bottom sheets; tvOS gets a focus-driven transport bar plus the
@@ -383,17 +396,37 @@ struct PlayerView: View {
             orientationCoordinator.deactivatePlayer()
             #endif
             #if os(tvOS)
-            // Progress/watched state for this item (and its parent
-            // season/series) was mutated server-side during playback.
-            // Flag the detail cache so the next visit to any of those
-            // pages shows corrected userData instead of pre-play values.
-            let touchedContentIds = viewModel.contentIdsNeedingDetailRefresh
-            if touchedContentIds.isEmpty {
-                ItemDetailCache.shared.markStaleFamily(contentId: contentId)
-            } else {
-                for id in touchedContentIds {
-                    ItemDetailCache.shared.markStaleFamily(contentId: id)
-                }
+            // A detail/Home read launched synchronously from this disappear
+            // can beat cleanup's final progress POST and cache the old watched
+            // state. Capture the mutation set now, then invalidate and reload
+            // only after the session bridge has finished its final write.
+            let touchedContentIds = viewModel.contentIdsNeedingDetailRefresh.isEmpty
+                ? Set([contentId])
+                : viewModel.contentIdsNeedingDetailRefresh
+            let completedContentIds = viewModel.completedContentIdsNeedingDetailAdvance
+            Task { @MainActor in
+                await viewModel.waitForCleanupCompletion()
+
+                // A Home request may have started as the cover disappeared.
+                // Retire that generation before asking for the authoritative
+                // Continue Watching row produced by the completed write.
+                StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+                ResponseCache.shared.remove(CacheKey.homeSections)
+                NotificationCenter.default.post(
+                    name: .homeSectionsShouldRefresh,
+                    object: nil
+                )
+
+                let refreshedContentIds = await ItemDetailCache.shared.refreshAfterPlayback(
+                    contentIds: touchedContentIds
+                )
+                NotificationCenter.default.post(
+                    name: .tvPlaybackStateDidRefresh,
+                    object: TVPlaybackStateRefreshEvent(
+                        refreshedContentIds: refreshedContentIds,
+                        completedContentIds: completedContentIds
+                    )
+                )
             }
             #endif
         }

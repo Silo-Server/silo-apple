@@ -76,11 +76,17 @@ struct TVMarqueeContent: Equatable {
     /// Optional server logo art that may replace the text title once
     /// cached — the title always renders as text first.
     let logoUrl: String?
-    /// Codec/HDR + content-rating chips (`4K · DOLBY VISION · ATMOS · TV-MA`).
+    /// Technical capability chips (`4K · DOLBY VISION · ATMOS`).
     let badges: [String]
-    /// Dot-joined meta tokens after the badges: year · genre · runtime,
-    /// or `S2 E7 · episode title · 45 min · 23 min left` for episodes.
+    /// Dot-joined identity tokens: year · genre · runtime, or
+    /// `S2 E7 · episode title · 45 min · 23 min left` for episodes.
     let metaParts: [String]
+    /// Where runtime belongs in `metaParts`. Detail enrichment inserts its
+    /// fallback here when a lightweight section payload omitted runtime.
+    let runtimeMetaIndex: Int
+    /// Runtime already supplied by the section payload, if present. Kept
+    /// separately so a detail fallback can be added without duplicating it.
+    let runtimeText: String?
     let synopsis: String?
     /// A genuine landscape backdrop from the section payload. This must stay
     /// separate from the poster fallback so the hero can wait for detail
@@ -127,24 +133,33 @@ extension TVMarqueeContent {
                 meta.append(token)
             }
             meta.append(item.title)
-            if let length = Self.lengthText(runtimeMinutes: item.runtime, durationSeconds: item.durationSeconds) {
-                meta.append(length)
-            }
-            if let timeLeft = Self.timeLeftText(position: item.positionSeconds, duration: item.durationSeconds) {
-                meta.append(timeLeft)
-            }
         } else {
             if let year = item.year, year > 0 { meta.append(String(year)) }
             if let genre = item.genres?.first(where: { !$0.isEmpty }) { meta.append(genre) }
-            if let length = Self.lengthText(runtimeMinutes: item.runtime, durationSeconds: item.durationSeconds) {
-                meta.append(length)
-            }
-            if let rating = item.ratingImdb { meta.append(String(format: "%.1f", rating)) }
         }
 
-        var badges = Self.badges(from: item.overlaySummary)
+        let runtimeMetaIndex = meta.count
+        let runtimeText = Self.lengthText(
+            runtimeMinutes: item.runtime,
+            durationSeconds: item.durationSeconds
+        )
+        if let runtimeText { meta.append(runtimeText) }
+        if !isEpisode, let rating = item.ratingImdb {
+            meta.append(String(format: "%.1f", rating))
+        }
+        // A runtime is useful everywhere; remaining time is resume-state
+        // information and belongs exclusively to a genuinely started item in
+        // Continue Watching. Unstarted next-up items therefore show no value.
+        if isContinueWatching,
+           let timeLeft = Self.timeLeftText(
+               position: item.positionSeconds,
+               duration: item.durationSeconds
+           ) {
+            meta.append(timeLeft)
+        }
+
+        let badges = Self.badges(from: item.overlaySummary)
         let contentRatingBadge = Self.nonEmpty(item.contentRating)?.uppercased()
-        if let contentRatingBadge { badges.append(contentRatingBadge) }
 
         self.init(
             id: "\(rowTitle)#\(item.contentId)",
@@ -156,6 +171,8 @@ extension TVMarqueeContent {
             logoUrl: item.logoUrl,
             badges: badges,
             metaParts: meta,
+            runtimeMetaIndex: runtimeMetaIndex,
+            runtimeText: runtimeText,
             synopsis: item.overview,
             backdropUrl: Self.nonEmpty(item.backdropUrl),
             backdropThumbhash: item.backdropThumbhash,
@@ -193,6 +210,8 @@ extension TVMarqueeContent {
             logoUrl: nil,
             badges: [],
             metaParts: meta,
+            runtimeMetaIndex: meta.count,
+            runtimeText: nil,
             synopsis: nil,
             backdropUrl: nil,
             backdropThumbhash: nil,
@@ -252,7 +271,8 @@ extension TVMarqueeContent {
     /// progress rules MediaRow uses for its bars.
     private static func timeLeftText(position: Double?, duration: Double?) -> String? {
         guard let position, let duration,
-              duration > 0, position > 60, position / duration < 0.95 else {
+              duration > 0, position > 0, position < duration,
+              position / duration < 0.95 else {
             return nil
         }
         let remaining = max(Int(((duration - position) / 60).rounded(.up)), 1)
@@ -513,6 +533,13 @@ final class TVContinueWatchingPlaybackMetadataStore {
 struct TVMarqueeEnrichment: Equatable {
     /// `Aired Mar 12, 2026 · Pedro Pascal, Bella Ramsey, Anna Torv`
     let detailLine: String?
+    /// Recommendation payloads may omit the age/content rating even though
+    /// item detail carries it. Keep that fallback with the other marquee
+    /// enrichment so For You renders the same leading rating pill as Home.
+    let contentRatingBadge: String?
+    /// Item-detail runtime fills section payloads that omit it (notably some
+    /// recommendation and library rows).
+    let runtimeText: String?
     /// The detail-level backdrop. For episodes this is the series backdrop —
     /// far higher-res than the episode still the section payload carries — so
     /// the root hero swaps to it once enrichment arrives.
@@ -522,6 +549,12 @@ struct TVMarqueeEnrichment: Equatable {
     init(detail: ItemDetail) {
         backdropUrl = detail.backdropUrl
         backdropThumbhash = detail.backdropThumbhash
+        let trimmedRating = detail.contentRating?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        contentRatingBadge = trimmedRating?.isEmpty == false
+            ? trimmedRating?.uppercased()
+            : nil
+        runtimeText = Self.runtimeText(minutes: detail.runtime)
         var parts: [String] = []
         if let airDate = Self.airDateText(detail.airDate) {
             parts.append("Aired \(airDate)")
@@ -545,6 +578,16 @@ struct TVMarqueeEnrichment: Equatable {
             ?? (try? Date(raw, strategy: .iso8601.year().month().day()))
         guard let date else { return nil }
         return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private static func runtimeText(minutes: Int?) -> String? {
+        guard let minutes, minutes > 0 else { return nil }
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let remainder = minutes % 60
+            return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
+        }
+        return "\(minutes) min"
     }
 }
 
@@ -650,6 +693,11 @@ final class TVFocusMarqueeModel {
             return
         }
         if let cached = enrichmentCache[contentId] {
+            if let cachedDetail: ItemDetail = ResponseCache.shared.get(
+                CacheKey.itemDetail(contentId)
+            ) {
+                PosterImageCache.prefetchVisibleMovieCast(for: cachedDetail)
+            }
             enrichment = cached
             enrichmentState = .completed
             sampleTintIfNeeded(for: backdropURL)
@@ -666,6 +714,25 @@ final class TVFocusMarqueeModel {
                     )
                 }
                 await seriesContextWarmup
+            }
+            return
+        }
+
+        // For You prewarms the two visible rows. Consume that shared detail
+        // cache synchronously so rating/runtime/logo-adjacent metadata paints
+        // on the first focused frame instead of repeating the same request.
+        if !candidate.prefersLastUsedPlaybackMetadata,
+           let cachedDetail: ItemDetail = ResponseCache.shared.get(
+               CacheKey.itemDetail(contentId)
+           ) {
+            PosterImageCache.prefetchVisibleMovieCast(for: cachedDetail)
+            let cached = TVMarqueeEnrichment(detail: cachedDetail)
+            enrichmentCache[contentId] = cached
+            enrichment = cached
+            enrichmentState = .completed
+            sampleTintIfNeeded(for: backdropURL)
+            enrichTask = Task {
+                await Self.warmSeriesContext(for: candidate)
             }
             return
         }
@@ -693,6 +760,7 @@ final class TVFocusMarqueeModel {
 
             if let detail = fetchedDetail {
                 guard !Task.isCancelled, let self else { return }
+                PosterImageCache.prefetchVisibleMovieCast(for: detail)
                 // The marquee already paid for the same catalog request the
                 // detail route needs. Keep the complete payload—not only the
                 // tiny marquee projection—so pressing Select after resting on
@@ -956,8 +1024,13 @@ struct TVFocusMarquee: View {
 
     private var accessibilityDescription: String {
         guard let content else { return "" }
-        let parts = [content.eyebrow, content.title]
+        let rating = content.contentRatingBadge ?? enrichment?.contentRatingBadge ?? ""
+        let fallbackRuntime = content.runtimeText == nil
+            ? (enrichment?.runtimeText ?? "")
+            : ""
+        let parts = [content.eyebrow, content.title, rating]
             + content.metaParts
+            + [fallbackRuntime]
             + [content.synopsis ?? "", enrichment?.detailLine ?? ""]
         return parts
             .filter { !$0.isEmpty }
@@ -972,7 +1045,7 @@ struct TVFocusMarquee: View {
             return nil
         }
         guard !presentation.badges.isEmpty else { return nil }
-        return presentation.badges + [content.contentRatingBadge].compactMap { $0 }
+        return presentation.badges
     }
 
     /// Polite live region: queue a low-priority announcement that never
@@ -1125,16 +1198,33 @@ private struct TVMarqueeBlock: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        if !displayedMetaParts.isEmpty {
+        if content.contentId != nil || !displayedMetaParts.isEmpty {
             HStack(spacing: 10) {
-                if let episodeRatingBadge {
-                    badgeChip(episodeRatingBadge)
+                if content.contentId != nil {
+                    ZStack(alignment: .leading) {
+                        Color.clear
+                        if let contentRatingBadge = displayedContentRatingBadge {
+                            badgeChip(contentRatingBadge)
+                        }
+                    }
+                    .frame(
+                        width: ContinuumTheme.Skyline.marqueeRatingSlotWidth,
+                        height: 27,
+                        alignment: .leading
+                    )
+                    // The detail line retains its gentle fade, but a rating
+                    // pill must simply appear inside its already-reserved slot.
+                    .transaction { transaction in
+                        transaction.animation = nil
+                    }
                 }
 
-                Text(displayedMetaParts.joined(separator: " · "))
-                    .font(.system(size: scale.metaSize, weight: .medium))
-                    .foregroundStyle(Color.continuumSecondaryText)
-                    .lineLimit(1)
+                if !displayedMetaParts.isEmpty {
+                    Text(displayedMetaParts.joined(separator: " · "))
+                        .font(.system(size: scale.metaSize, weight: .medium))
+                        .foregroundStyle(Color.continuumSecondaryText)
+                        .lineLimit(1)
+                }
             }
             .frame(
                 maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth,
@@ -1143,34 +1233,34 @@ private struct TVMarqueeBlock: View {
         }
     }
 
-    /// Continue Watching episodes lead with only their location and title.
-    /// Runtime and remaining-time data stay available to VoiceOver, but no
-    /// longer compete with the episode name in the visible identity row.
     private var displayedMetaParts: [String] {
-        content.isEpisode ? Array(content.metaParts.prefix(2)) : content.metaParts
-    }
-
-    /// Episode ratings belong with episode identity, immediately before the
-    /// season/episode token. Movie ratings remain in the technical row.
-    private var episodeRatingBadge: String? {
-        content.isEpisode ? content.contentRatingBadge : nil
-    }
-
-    private var displayedTechnicalBadges: [String] {
-        guard let episodeRatingBadge else { return displayedBadges }
-        return displayedBadges.filter {
-            $0.localizedCaseInsensitiveCompare(episodeRatingBadge) != .orderedSame
+        var parts = content.metaParts
+        if content.runtimeText == nil,
+           let fallbackRuntime = enrichment?.runtimeText {
+            parts.insert(
+                fallbackRuntime,
+                at: min(content.runtimeMetaIndex, parts.count)
+            )
         }
+        return parts
     }
 
-    /// Technical capabilities and rating sit below the async aired/cast line.
+    /// Use the section value immediately when available, then fill omissions
+    /// from the same cached item-detail request that supplies cast/backdrop.
+    private var displayedContentRatingBadge: String? {
+        content.contentRatingBadge ?? enrichment?.contentRatingBadge
+    }
+
+    /// Technical capabilities sit below the async aired/cast line. Content
+    /// ratings consistently lead the identity line above, matching Continue
+    /// Watching across Home, Movies, and Series.
     /// Every media item reserves the same slot, so saved-file enrichment can
     /// update the labels without moving the Home marquee or its first row.
     @ViewBuilder
     private var badgeLine: some View {
         if content.contentId != nil {
             HStack(spacing: 10) {
-                ForEach(displayedTechnicalBadges, id: \.self) { badge in
+                ForEach(displayedBadges, id: \.self) { badge in
                     badgeChip(badge)
                 }
             }
@@ -1201,15 +1291,17 @@ private struct TVMarqueeBlock: View {
 
     // MARK: Logo swap-in
 
-    /// Show cached logo art instantly; otherwise fetch at low priority
-    /// and swap in whenever it lands. The text title is never delayed.
+    /// Show cached logo art instantly; otherwise fetch at normal priority and
+    /// swap in whenever it lands. This is the currently focused title, so it
+    /// should not sit behind speculative poster/backdrop work in the pipeline.
+    /// The text title is never delayed.
     private func loadLogoIfCached() {
         guard let logoUrl = content.logoUrl, !logoUrl.isEmpty,
               let url = URL(string: logoUrl) else {
             return
         }
 
-        let request = ImageRequest(url: url, priority: .low)
+        let request = ImageRequest(url: url, priority: .normal)
         if let cached = ImagePipeline.shared.cache[request] {
             logoImage = cached.image
             return

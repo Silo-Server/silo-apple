@@ -595,6 +595,10 @@ class PlayerViewModel {
     private var realtimeUnavailabilityObserverToken: UUID?
     private var realtimeConnectivityObserverToken: UUID?
     private var cleanupCompletionTask: Task<Void, Never>?
+    /// Natural EOF should not wait for the ten-second periodic reporter. Keep
+    /// the immediate write so teardown/autoplay can await it before claiming
+    /// and stopping the same server session.
+    private var naturalEndProgressTask: Task<Void, Never>?
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
@@ -900,6 +904,11 @@ class PlayerViewModel {
     /// apply to the end-of-playback screen.
     private var nextUpPromptDismissed = false
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
+    /// Items that crossed the same completion boundary used by the final
+    /// server progress report. The tvOS detail page consumes this only after
+    /// that report has finished so it can move its editorial selection to the
+    /// next unwatched episode without racing stale catalog data.
+    private(set) var completedContentIdsNeedingDetailAdvance: Set<String> = []
     var nextUpCarouselItems: [PlayerOnDeckItem] {
         let hiddenIds = Set([lastLoadRequest?.contentId, nextUpEpisode?.contentId].compactMap { $0 })
         return nextUpOnDeckItems.filter { !hiddenIds.contains($0.contentId) }
@@ -2562,6 +2571,29 @@ class PlayerViewModel {
         )
     }
 
+    /// Snapshot every detail surface affected by the current playback item
+    /// before a replacement load or teardown clears `currentWatchDetail`.
+    /// Series and synthetic season ids are included because tvOS keeps the
+    /// combined Series page resident while its episode player is pushed.
+    private func recordCurrentPlaybackMutation(markedCompleted: Bool) {
+        let currentContentId = currentWatchDetail?.contentId ?? lastLoadRequest?.contentId
+        if let currentContentId, !currentContentId.isEmpty {
+            contentIdsNeedingDetailRefresh.insert(currentContentId)
+            if markedCompleted {
+                completedContentIdsNeedingDetailAdvance.insert(currentContentId)
+            }
+        }
+
+        guard let detail = currentWatchDetail,
+              let rawSeriesId = detail.seriesId else { return }
+        let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seriesId.isEmpty else { return }
+        contentIdsNeedingDetailRefresh.insert(seriesId)
+        if let seasonNumber = detail.seasonNumber {
+            contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
+        }
+    }
+
     private func loadAether(
         prepared: PreparedPlayback,
         streamRequest: StreamRequest,
@@ -3323,6 +3355,29 @@ class PlayerViewModel {
             playbackRate: settings.playbackSpeed
         )
 
+        if !isPremature {
+            recordCurrentPlaybackMutation(markedCompleted: true)
+
+            // Aether has already delivered the native terminal event, so
+            // publish the terminal position now rather than waiting for the
+            // periodic reporter's next ten-second tick. Teardown still sends
+            // its authoritative final report; it awaits this task first so
+            // the two writes cannot race the same session lifecycle.
+            if offlinePlaybackContext == nil,
+               currentTime.isFinite,
+               currentTime >= 0 {
+                let priorNaturalEndProgressTask = naturalEndProgressTask
+                let endPosition = currentTime
+                naturalEndProgressTask = Task { [sessionBridge] in
+                    await priorNaturalEndProgressTask?.value
+                    _ = await sessionBridge.reportProgress(
+                        position: endPosition,
+                        isPaused: true
+                    )
+                }
+            }
+        }
+
         // Natural end of an offline download: latch the local watched state
         // immediately (not just at close) so retention/reclaim see it even
         // if the process dies before `cleanup()` runs. DownloadManager is
@@ -3603,6 +3658,16 @@ class PlayerViewModel {
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
+        let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+            isNextUpPresented: showNextUpScreen,
+            hasReachedEndOfFile: hasReachedEndOfFile,
+            currentTime: currentTime,
+            duration: duration,
+            promptSeconds: settings.nextUpPromptSeconds
+        )
+        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        let pendingNaturalEndProgressTask = naturalEndProgressTask
+        naturalEndProgressTask = nil
         lastLoadRequest = request
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
@@ -3661,6 +3726,7 @@ class PlayerViewModel {
                 }
             }
 
+            await pendingNaturalEndProgressTask?.value
             if let snapshotPosition, snapshotPosition.isFinite, snapshotPosition >= 0 {
                 if shouldFinalizeCurrentSession {
                     await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
@@ -5842,6 +5908,16 @@ class PlayerViewModel {
     func cleanup() {
         guard !isDisposed else { return }
         Self.logger.info("PlayerViewModel.cleanup()")
+        let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+            isNextUpPresented: showNextUpScreen,
+            hasReachedEndOfFile: hasReachedEndOfFile,
+            currentTime: currentTime,
+            duration: duration,
+            promptSeconds: settings.nextUpPromptSeconds
+        )
+        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        let pendingNaturalEndProgressTask = naturalEndProgressTask
+        naturalEndProgressTask = nil
         isDisposed = true
         #if os(iOS)
         // A restore waiting on a cover that will now never mount has to be
@@ -5979,6 +6055,7 @@ class PlayerViewModel {
                 await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
             }
             await realtimeClient.unbind()
+            await pendingNaturalEndProgressTask?.value
             if stopServerSessionOnTeardown {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }

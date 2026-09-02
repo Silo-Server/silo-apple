@@ -27,6 +27,8 @@ struct SectionRow: View {
     /// when an unrelated view (e.g. the tvOS top menu) hands focus down into
     /// this row rather than the user d-padding into it.
     var focusRequest: Int = 0
+    /// Optional exact item target for the programmatic focus kick.
+    var focusRequestItemId: String? = nil
     /// tvOS detail-pop token forwarded to `MediaRow`; the row's ownership gate
     /// ensures only the launch row restores its exact previously focused card.
     var detailReturnFocusRequest: Int = 0
@@ -48,11 +50,8 @@ struct SectionRow: View {
     @State private var detailBrowseOriginID = UUID().uuidString
     #endif
 
-    @State private var pendingDetailNavigationItemId: String?
     #if os(tvOS)
     @Environment(AppRouter.self) private var router
-    @State private var detailNavigationTask: Task<Void, Never>?
-    @State private var detailNavigationGeneration = 0
     #endif
 
     private var isContinueWatching: Bool {
@@ -110,12 +109,12 @@ struct SectionRow: View {
             onItemPlay: playItem,
             onSeeAll: onSeeAll,
             showProgress: showProgress,
-            loadingItemId: pendingDetailNavigationItemId,
             icon: isContinueWatching ? "play.circle.fill" : nil,
             layout: layout,
             prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
             defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,
+            focusRequestItemId: focusRequestItemId,
             detailReturnFocusRequest: detailReturnFocusRequest,
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
             onOpenContextDetail: nil,
@@ -125,15 +124,11 @@ struct SectionRow: View {
             },
             onMoveUp: onMoveUp,
             onItemFocus: onItemFocus,
-            onFocusedItemIdChange: { focusedItemId in
-                cancelPendingDetailNavigation(unlessFocusedOn: focusedItemId)
-            },
             cardWidth: cardWidth,
             cardVerticalPadding: cardVerticalPadding,
             onMoveDown: onMoveDown,
             focusRestorationOwner: focusRestorationOwner
         )
-        .onDisappear { cancelPendingDetailNavigation() }
         #if !os(tvOS)
         .environment(
             \.itemDetailBrowseSource,
@@ -174,7 +169,7 @@ struct SectionRow: View {
                let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
                !seriesId.isEmpty,
                let seasonNumber = item.seasonNumber {
-                prepareSeriesDetailAndNavigate(
+                navigateToSeriesDetail(
                     to: seriesId,
                     from: item,
                     seasonNumber: seasonNumber,
@@ -187,7 +182,7 @@ struct SectionRow: View {
         }
 
         if SiloMediaType.isSeries(item.type) {
-            prepareSeriesDetailAndNavigate(to: item.contentId, from: item)
+            navigateToSeriesDetail(to: item.contentId, from: item)
             return
         }
         #endif
@@ -195,64 +190,21 @@ struct SectionRow: View {
     }
 
     #if os(tvOS)
-    /// A cold Series payload cannot be reconstructed safely from an episode
-    /// card. Keep the fully-rendered source rail on screen while joining the
-    /// existing metadata flight, then push only after the destination cache
-    /// can paint a real header on its first frame.
-    private func prepareSeriesDetailAndNavigate(
+    /// Match Movie navigation: push the branded route seed immediately while
+    /// the existing marquee warm-up and destination request pool finish the
+    /// authoritative Series payload and hierarchy in parallel.
+    private func navigateToSeriesDetail(
         to seriesContentId: String,
         from item: SectionItem,
         seasonNumber: Int? = nil,
         episodeContentId: String? = nil
     ) {
-        guard pendingDetailNavigationItemId == nil else { return }
-
-        let cacheKey = CacheKey.itemDetail(seriesContentId)
-        if let _: ItemDetail = ResponseCache.shared.get(cacheKey) {
-            finishSeriesDetailNavigation(
-                to: seriesContentId,
-                from: item,
-                seasonNumber: seasonNumber,
-                episodeContentId: episodeContentId
-            )
-            return
-        }
-
-        pendingDetailNavigationItemId = item.contentId
-        detailNavigationGeneration &+= 1
-        let generation = detailNavigationGeneration
-        detailNavigationTask = Task { @MainActor in
-            defer {
-                if detailNavigationGeneration == generation {
-                    pendingDetailNavigationItemId = nil
-                    detailNavigationTask = nil
-                }
-            }
-
-            do {
-                let detail = try await MetadataRequestPool.shared.itemDetail(
-                    contentId: seriesContentId
-                )
-                try Task.checkCancellation()
-                ResponseCache.shared.set(detail, for: cacheKey)
-            } catch is CancellationError {
-                return
-            } catch {
-                // Preserve the existing retry/error destination when the
-                // preload itself fails; the important cold path still waits
-                // on the populated cache instead of pushing a blank shell.
-            }
-
-            guard !Task.isCancelled,
-                  detailNavigationGeneration == generation,
-                  pendingDetailNavigationItemId == item.contentId else { return }
-            finishSeriesDetailNavigation(
-                to: seriesContentId,
-                from: item,
-                seasonNumber: seasonNumber,
-                episodeContentId: episodeContentId
-            )
-        }
+        finishSeriesDetailNavigation(
+            to: seriesContentId,
+            from: item,
+            seasonNumber: seasonNumber,
+            episodeContentId: episodeContentId
+        )
     }
 
     private func finishSeriesDetailNavigation(
@@ -271,24 +223,6 @@ struct SectionRow: View {
         onItemTap(seriesContentId, item)
     }
 
-    private func cancelPendingDetailNavigation(unlessFocusedOn focusedItemId: String?) {
-        guard let pendingDetailNavigationItemId,
-              focusedItemId != pendingDetailNavigationItemId else { return }
-        detailNavigationGeneration &+= 1
-        detailNavigationTask?.cancel()
-        detailNavigationTask = nil
-        self.pendingDetailNavigationItemId = nil
-    }
-
-    private func cancelPendingDetailNavigation() {
-        detailNavigationGeneration &+= 1
-        detailNavigationTask?.cancel()
-        detailNavigationTask = nil
-        pendingDetailNavigationItemId = nil
-    }
-    #else
-    private func cancelPendingDetailNavigation(unlessFocusedOn focusedItemId: String?) {}
-    private func cancelPendingDetailNavigation() {}
     #endif
 
     /// Home injects a model-owned mutation so its membership-driven rows and

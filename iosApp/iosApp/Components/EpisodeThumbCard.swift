@@ -3,8 +3,9 @@ import SwiftUI
 /// Horizontal (16:9) media card for episode and resume content — used in
 /// "Next Up", "Continue Watching", etc.
 ///
-/// Shows the episode still / backdrop, the series title + episode code
-/// (e.g. "S2 · E3") as an overlay, and the episode title plus runtime beneath.
+/// Shows the episode still / backdrop, series title, and episode metadata.
+/// tvOS keeps the artwork clear except for server-configured card overlays;
+/// compact S/E artwork badges remain available to the touch layouts.
 /// On tvOS the image sits inside a `.card` button for focus lift/parallax and
 /// a FocusState binding drives the title highlight.
 struct EpisodeThumbCard: View {
@@ -72,21 +73,27 @@ struct EpisodeThumbCard: View {
             if uiCustomization.cardPresentation.caption.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(displayTitle)
-                        .font(.continuumSubheadline)
+                        .font(.continuumPosterTitle)
                         .foregroundStyle(
                             isFocused
                                 ? Color.continuumOnSurface
                                 : Color.continuumOnSurface.opacity(0.85)
                         )
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: cardWidth, alignment: .leading)
+                        .clipped()
                         .animation(.easeOut(duration: 0.15), value: isFocused)
 
                     if uiCustomization.cardPresentation.caption.showsMetadata,
                        let subtitle = subtitleLine {
                         Text(subtitle)
-                            .font(.continuumCaption)
+                            .font(.continuumPosterMetadata)
                             .foregroundStyle(Color.continuumSecondaryText)
                             .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(width: cardWidth, alignment: .leading)
+                            .clipped()
                     }
                 }
                 .frame(width: cardWidth, alignment: .leading)
@@ -169,7 +176,8 @@ struct EpisodeThumbCard: View {
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
 
-            // Scrim gradient so the episode badge reads over bright stills
+            #if !os(tvOS)
+            // Scrim gradient so the compact episode badge reads over bright stills.
             LinearGradient(
                 colors: [.clear, .black.opacity(0.75)],
                 startPoint: .center,
@@ -177,6 +185,7 @@ struct EpisodeThumbCard: View {
             )
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            #endif
 
             // Server / user-customized overlay badges. `wide` variant
             // gives the bottom corners enough headroom that they don't
@@ -191,7 +200,10 @@ struct EpisodeThumbCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
             }
 
-            // Episode badge overlay (e.g. "S2 · E3")
+            #if !os(tvOS)
+            // Compact touch-layout episode badge. Apple TV landing cards keep
+            // this corner clear; server-configured quality/audio overlays above
+            // remain unchanged.
             if let badge = episodeBadge {
                 Text(badge)
                     .font(.continuumCaption)
@@ -204,6 +216,7 @@ struct EpisodeThumbCard: View {
                     )
                     .padding(badgeInset)
             }
+            #endif
 
             // Progress bar (resume)
             if showProgress, let p = progressValue, p > 0 {
