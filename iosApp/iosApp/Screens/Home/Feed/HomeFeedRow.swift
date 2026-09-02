@@ -106,7 +106,7 @@ struct HomeFeedRow: View {
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
-                                episodeBadge: episodeBadge(for: item),
+                                episodeAccessibilityLabel: episodeAccessibilityLabel(for: item),
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
@@ -136,10 +136,9 @@ struct HomeFeedRow: View {
         return preferred
     }
 
-    /// "S2 · E10" for an episode drawn as a poster. Episode-discovery rows
-    /// caption with the series name, so without this several episodes of one
-    /// series render as identical cards.
-    private func episodeBadge(for item: SectionItem) -> String? {
+    /// Episode context for accessibility when episode-discovery cards are
+    /// visually captioned with their series name.
+    private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
         guard item.type.lowercased() == "episode",
               let season = item.seasonNumber,
               let episode = item.episodeNumber else { return nil }

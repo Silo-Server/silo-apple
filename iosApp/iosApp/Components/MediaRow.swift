@@ -411,7 +411,7 @@ struct MediaRow: View {
                 onSetWatched: watchedToggleAction(for: item),
                 aspect: layout == .square ? .square : .poster,
                 cardWidthOverride: cardWidth,
-                episodeBadge: episodeBadge(for: item)
+                episodeAccessibilityLabel: episodeAccessibilityLabel(for: item)
             )
         case .thumbnail:
             EpisodeThumbCard(
@@ -563,19 +563,13 @@ struct MediaRow: View {
         item.type.lowercased() == "episode" ? (item.seriesTitle ?? item.title) : item.title
     }
 
-    /// "S2 · E10" badge for an episode rendered as a poster, so new episodes
-    /// of the same series stay distinguishable. `nil` for non-episodes.
-    private func episodeBadge(for item: SectionItem) -> String? {
-        #if os(tvOS)
-        // Landing-page episode cards on Apple TV intentionally reserve their
-        // artwork overlays for the server-controlled CardOverlays system.
-        return nil
-        #else
+    /// Episode context for accessibility when a poster is captioned with its
+    /// series title. Episode numbers are not drawn over card artwork.
+    private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
         guard item.type.lowercased() == "episode",
               let season = item.seasonNumber,
               let episode = item.episodeNumber else { return nil }
         return "S\(season) · E\(episode)"
-        #endif
     }
 
     // MARK: - Metrics

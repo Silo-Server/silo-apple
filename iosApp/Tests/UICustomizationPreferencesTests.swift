@@ -96,7 +96,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(
             mediaCardAccessibilityLabel(
                 title: "The Episode",
-                episodeBadge: "S2 · E10",
+                episodeLabel: "S2 · E10",
                 year: 2026,
                 isWatched: true
             ),

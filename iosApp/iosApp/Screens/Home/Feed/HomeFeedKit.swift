@@ -95,7 +95,7 @@ enum HomeFeedMeta {
         return "S\(season) E\(episode)"
     }
 
-    /// Caption under a resume still — "S2 E4  ·  23m left".
+    /// Caption under a resume still — "23m left".
     ///
     /// Some items carry a resume position but no duration, which left their
     /// card showing a progress bar and no caption while the card beside it had
@@ -112,8 +112,7 @@ enum HomeFeedMeta {
             progressText = nil
         }
 
-        let pieces = [episodeCode(for: item), progressText].compactMap { $0 }
-        return pieces.isEmpty ? nil : pieces.joined(separator: "  ·  ")
+        return progressText
     }
 
     /// The title a card should be captioned with. Episodes caption with the
@@ -292,10 +291,9 @@ struct HomePosterCard: View {
     /// Audiobook covers are square; stretching one into a 2:3 poster crops
     /// its edges off.
     var aspect: MediaCardAspect = .poster
-    /// "S2 · E10" for an episode rendered as a poster. Without it, several
-    /// episodes of one series are captioned identically (they caption with
-    /// the series name) and become indistinguishable cards.
-    var episodeBadge: String? = nil
+    /// Episode context retained for accessibility. Episode numbers are
+    /// intentionally not drawn over poster artwork.
+    var episodeAccessibilityLabel: String? = nil
     /// Long-press actions, matching what `MediaCard` offers elsewhere.
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
@@ -352,8 +350,8 @@ struct HomePosterCard: View {
         .overlay {
             // Home uses the same renderer and resolved profile preferences as
             // Browse, For You, Watchlist, and Favorites. Keep this below the
-            // episode/progress/watched affordances so those controls retain
-            // their established corner priority.
+            // progress and watched affordances so those controls retain their
+            // established corner priority.
             if overlayStore.enabled {
                 CardOverlays(
                     data: OverlayData.from(item),
@@ -367,17 +365,6 @@ struct HomePosterCard: View {
                         style: .continuous
                     )
                 )
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            if let episodeBadge {
-                Text(episodeBadge)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(.black.opacity(0.65)))
-                    .padding(6)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -422,7 +409,9 @@ struct HomePosterCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
-        components.append(contentsOf: [episodeBadge, item.year.map(String.init)].compactMap { $0 })
+        components.append(
+            contentsOf: [episodeAccessibilityLabel, item.year.map(String.init)].compactMap { $0 }
+        )
         if isPlayed {
             components.append("Watched")
         }
@@ -575,6 +564,9 @@ struct HomeStillCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
+        if let episodeCode = HomeFeedMeta.episodeCode(for: item) {
+            components.append(episodeCode)
+        }
         if let resumeCaption = HomeFeedMeta.resumeCaption(for: item) {
             components.append(resumeCaption)
         }
