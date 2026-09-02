@@ -104,7 +104,14 @@ struct RecommendationsView: View {
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: onTopMenuFocusRequest,
-                onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) }
+                onItemTap: { destinationContentId, item in
+                    router.navigate(
+                        to: .itemDetail(
+                            destinationContentId: destinationContentId,
+                            sectionItem: item
+                        )
+                    )
+                }
             )
             .task(id: initialMarqueePrewarmKey) {
                 await prewarmInitialMarqueeDetails()
