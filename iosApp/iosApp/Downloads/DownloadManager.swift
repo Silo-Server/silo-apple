@@ -7,6 +7,7 @@ enum DownloadError: LocalizedError {
     case fileURLUnavailable
     case emptyRegistrationResponse
     case registrationAlreadyInFlight
+    case scopeChangedDuringRegistration
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,7 @@ enum DownloadError: LocalizedError {
         case .fileURLUnavailable: return "Could not resolve the download URL."
         case .emptyRegistrationResponse: return "The server didn't create a download."
         case .registrationAlreadyInFlight: return "This download is already being prepared."
+        case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
         }
     }
 }
@@ -126,6 +128,14 @@ final class DownloadManager {
     /// to the manager (rather than one button) so a detail rebuild cannot make
     /// the preparing indicator disappear during registration.
     private(set) var pendingRegistrationContentIds: Set<String> = []
+    /// Each pending id owns a unique token. An older request may finish after
+    /// sign-out and reactivation, but its defer must never clear a newer
+    /// request for the same content id.
+    private var pendingRegistrationTokens: [String: UUID] = [:]
+    /// Incremented whenever the active server/profile identity is invalidated
+    /// or replaced. Network responses captured under an older generation are
+    /// discarded before they can mutate the newly active scope.
+    private var registrationScopeGeneration: UInt64 = 0
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
     var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
 
@@ -393,8 +403,11 @@ final class DownloadManager {
             releaseHeldSessionEvents()
             return true
         }
-        scopeServerId = serverId
-        scopeProfileId = profileId
+        if serverId != scopeServerId || profileId != scopeProfileId {
+            invalidatePendingRegistrations()
+            scopeServerId = serverId
+            scopeProfileId = profileId
+        }
 
         let loadTask: Task<DownloadStoreFile, Never>
         let loadToken: UUID
@@ -466,7 +479,7 @@ final class DownloadManager {
         retryTasks.removeAll()
         pendingPauseIds.removeAll()
         pendingResumeIds.removeAll()
-        pendingRegistrationContentIds.removeAll()
+        invalidatePendingRegistrations()
         scopeLoadTask?.cancel()
         scopeLoadTask = nil
         scopeLoadToken = nil
@@ -577,10 +590,21 @@ final class DownloadManager {
         guard downloadsEnabled else { throw DownloadError.unavailable }
 
         let registrationContentId = episodeId ?? contentId
-        guard pendingRegistrationContentIds.insert(registrationContentId).inserted else {
+        guard pendingRegistrationTokens[registrationContentId] == nil else {
             throw DownloadError.registrationAlreadyInFlight
         }
-        defer { pendingRegistrationContentIds.remove(registrationContentId) }
+        let registrationToken = UUID()
+        let capturedScopeGeneration = registrationScopeGeneration
+        let capturedServerId = scopeServerId
+        let capturedProfileId = scopeProfileId
+        pendingRegistrationTokens[registrationContentId] = registrationToken
+        pendingRegistrationContentIds.insert(registrationContentId)
+        defer {
+            finishPendingRegistration(
+                contentId: registrationContentId,
+                token: registrationToken
+            )
+        }
 
         // Series/season batches are original-quality only per the server
         // contract; single items may use any advertised public quality preset.
@@ -599,6 +623,11 @@ final class DownloadManager {
             caps: DownloadCaps.current()
         )
         let rows = try await ContinuumAPI.shared.createDownload(request)
+        guard capturedScopeGeneration == registrationScopeGeneration,
+              capturedServerId == scopeServerId,
+              capturedProfileId == scopeProfileId else {
+            throw DownloadError.scopeChangedDuringRegistration
+        }
         guard !rows.isEmpty else { throw DownloadError.emptyRegistrationResponse }
         for row in rows {
             upsertRow(
@@ -613,6 +642,18 @@ final class DownloadManager {
         persist()
         processQueue()
         ensurePolling()
+    }
+
+    private func invalidatePendingRegistrations() {
+        registrationScopeGeneration &+= 1
+        pendingRegistrationTokens.removeAll()
+        pendingRegistrationContentIds.removeAll()
+    }
+
+    private func finishPendingRegistration(contentId: String, token: UUID) {
+        guard pendingRegistrationTokens[contentId] == token else { return }
+        pendingRegistrationTokens.removeValue(forKey: contentId)
+        pendingRegistrationContentIds.remove(contentId)
     }
 
     private func resolvedDownloadQuality(_ requestedQuality: String?) -> String {
