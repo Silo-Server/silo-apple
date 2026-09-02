@@ -123,7 +123,7 @@ struct AudiobookDetailContent: View {
             }
             .ignoresSafeArea(edges: .top)
         }
-        .continuumBackground()
+        .continuumPageBackground()
     }
 
     private var phoneSections: some View {

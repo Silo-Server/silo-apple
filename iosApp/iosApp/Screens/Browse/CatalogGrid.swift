@@ -7,6 +7,9 @@ struct CatalogGrid: View {
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
+    /// Library grids stay three-up on iPhone even when the shared card
+    /// preference is Large. Other CatalogGrid call sites remain adaptive.
+    var forcesThreeColumnsOnPhone = false
     let onItemTap: (BrowseItem) -> Void
     let onLoadMore: () -> Void
     @Environment(AppRouter.self) private var router
@@ -30,7 +33,13 @@ struct CatalogGrid: View {
     #else
     @Environment(\.horizontalSizeClass) private var hSize
     private var columns: [GridItem] {
-        AdaptiveColumns.posters(
+        if usesThreeColumnPhoneLayout {
+            return Array(
+                repeating: GridItem(.flexible(), spacing: 8),
+                count: 3
+            )
+        }
+        return AdaptiveColumns.posters(
             for: hSize,
             posterSize: uiCustomization.cardPresentation.posterSize,
             spacing: 8
@@ -52,7 +61,8 @@ struct CatalogGrid: View {
                     action: { onItemTap(item) },
                     playAction: playAction(for: item),
                     contentId: item.contentId,
-                    aspect: item.isAudiobook ? .square : .poster
+                    aspect: item.isAudiobook ? .square : .poster,
+                    cardWidthOverride: phoneCardWidthOverride
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear {
@@ -97,5 +107,21 @@ struct CatalogGrid: View {
         #else
         return nil
         #endif
+    }
+
+    private var usesThreeColumnPhoneLayout: Bool {
+        #if os(iOS)
+        forcesThreeColumnsOnPhone && UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
+
+    /// MediaCard applies the global poster-size scale after its override. Undo
+    /// that scale here so these phone columns use the standard 120pt card width.
+    private var phoneCardWidthOverride: CGFloat? {
+        guard usesThreeColumnPhoneLayout else { return nil }
+        return ContinuumTheme.posterCardWidth
+            / uiCustomization.cardPresentation.posterSize.scale
     }
 }

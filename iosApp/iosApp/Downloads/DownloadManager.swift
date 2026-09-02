@@ -5,11 +5,13 @@ import OSLog
 enum DownloadError: LocalizedError {
     case unavailable
     case fileURLUnavailable
+    case emptyRegistrationResponse
 
     var errorDescription: String? {
         switch self {
         case .unavailable: return "Downloads aren't available for this profile."
         case .fileURLUnavailable: return "Could not resolve the download URL."
+        case .emptyRegistrationResponse: return "The server didn't create a download."
         }
     }
 }
@@ -50,6 +52,14 @@ final class DownloadManager {
 
     private(set) var scopeServerId: String = ""
     private(set) var scopeProfileId: String = ""
+
+    /// Coalesces the several legitimate app-lifecycle callers that can all ask
+    /// for the same scope at launch. Without this, a late disk read can replace
+    /// a newly registered in-memory download with its older empty snapshot.
+    private var scopeLoadTask: Task<DownloadStoreFile, Never>?
+    private var scopeLoadToken: UUID?
+    private var scopeLoadServerId = ""
+    private var scopeLoadProfileId = ""
 
     private let sessionDelegate = DownloadSessionDelegate()
     private var intentionalCancels: Set<Int> = []
@@ -110,6 +120,10 @@ final class DownloadManager {
     /// whole `file` blob — reassigned on every transfer progress tick — as
     /// their observed state.
     private(set) var downloadsEnabled: Bool = false
+    /// Leaf ids currently waiting for POST /downloads to return. This belongs
+    /// to the manager (rather than one button) so a detail rebuild cannot make
+    /// the preparing indicator disappear during registration.
+    private(set) var pendingRegistrationContentIds: Set<String> = []
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
     var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
 
@@ -167,6 +181,10 @@ final class DownloadManager {
     /// The download record for a leaf content id (movie or episode), if any.
     func record(forContentId contentId: String) -> DownloadRecord? {
         file.records.values.first { $0.contentId == contentId || $0.episodeId == contentId }
+    }
+
+    func isRegistering(contentId: String) -> Bool {
+        pendingRegistrationContentIds.contains(contentId)
     }
 
     func record(id: String) -> DownloadRecord? { file.records[id] }
@@ -375,7 +393,40 @@ final class DownloadManager {
         }
         scopeServerId = serverId
         scopeProfileId = profileId
-        file = await DownloadStore.shared.load(serverId: serverId, profileId: profileId)
+
+        let loadTask: Task<DownloadStoreFile, Never>
+        let loadToken: UUID
+        if let existing = scopeLoadTask,
+           scopeLoadServerId == serverId,
+           scopeLoadProfileId == profileId,
+           let existingToken = scopeLoadToken {
+            loadTask = existing
+            loadToken = existingToken
+        } else {
+            scopeLoadTask?.cancel()
+            let token = UUID()
+            let task = Task {
+                await DownloadStore.shared.load(serverId: serverId, profileId: profileId)
+            }
+            scopeLoadTask = task
+            scopeLoadToken = token
+            scopeLoadServerId = serverId
+            scopeLoadProfileId = profileId
+            loadTask = task
+            loadToken = token
+        }
+
+        let loadedFile = await loadTask.value
+        guard scopeServerId == serverId, scopeProfileId == profileId else { return false }
+        if scopeLoadToken == loadToken {
+            // Exactly one waiter installs this snapshot. Later waiters observe
+            // the already-hydrated `file` instead of assigning it a second time.
+            file = loadedFile
+            scopeLoadTask = nil
+            scopeLoadToken = nil
+            scopeLoadServerId = ""
+            scopeLoadProfileId = ""
+        }
         releaseHeldSessionEvents()
         refreshStorageUsage()
         await backfillEpisodeMetadataIfNeeded()
@@ -413,6 +464,12 @@ final class DownloadManager {
         retryTasks.removeAll()
         pendingPauseIds.removeAll()
         pendingResumeIds.removeAll()
+        pendingRegistrationContentIds.removeAll()
+        scopeLoadTask?.cancel()
+        scopeLoadTask = nil
+        scopeLoadToken = nil
+        scopeLoadServerId = ""
+        scopeLoadProfileId = ""
         scopeServerId = ""
         scopeProfileId = ""
         file = .empty
@@ -517,6 +574,10 @@ final class DownloadManager {
     ) async throws {
         guard downloadsEnabled else { throw DownloadError.unavailable }
 
+        let registrationContentId = episodeId ?? contentId
+        guard pendingRegistrationContentIds.insert(registrationContentId).inserted else { return }
+        defer { pendingRegistrationContentIds.remove(registrationContentId) }
+
         // Series/season batches are original-quality only per the server
         // contract; single items may use any advertised public quality preset.
         let isBatch = series || seasonNumber != nil
@@ -534,6 +595,7 @@ final class DownloadManager {
             caps: DownloadCaps.current()
         )
         let rows = try await ContinuumAPI.shared.createDownload(request)
+        guard !rows.isEmpty else { throw DownloadError.emptyRegistrationResponse }
         for row in rows {
             upsertRow(
                 row,

@@ -34,7 +34,7 @@ struct CollectionsView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle("Collections")
         .continuumNavigationTitleDisplayMode(.large)
         .toolbar {
@@ -211,7 +211,7 @@ struct CollectionsView: View {
                 Spacer()
             }
             .padding(ContinuumTheme.padding)
-            .continuumBackground()
+            .continuumPageBackground()
             .navigationTitle("New Collection")
             .continuumNavigationTitleDisplayMode(.inline)
             .toolbar {
@@ -240,7 +240,7 @@ private struct GroupActionSheet: View {
     var body: some View {
         NavigationStack {
             content
-                .continuumBackground()
+                .continuumPageBackground()
                 .continuumNavigationTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -441,7 +441,13 @@ struct LibraryCollectionsView: View {
     @Environment(\.horizontalSizeClass) private var hSize
 
     private var columns: [GridItem] {
-        AdaptiveColumns.posters(
+        if usesThreeColumnPhoneLayout {
+            return Array(
+                repeating: GridItem(.flexible(), spacing: 12),
+                count: 3
+            )
+        }
+        return AdaptiveColumns.posters(
             for: hSize,
             posterSize: uiCustomization.cardPresentation.posterSize
         )
@@ -471,7 +477,7 @@ struct LibraryCollectionsView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .task(id: libraryId) {
             await viewModel.loadCollections(libraryId: libraryId)
         }
@@ -498,7 +504,10 @@ struct LibraryCollectionsView: View {
                             kind: collection.kind
                         )
                     ) {
-                        LibraryCollectionCard(collection: collection)
+                        LibraryCollectionCard(
+                            collection: collection,
+                            usesStandardPhoneWidth: usesThreeColumnPhoneLayout
+                        )
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
@@ -508,14 +517,25 @@ struct LibraryCollectionsView: View {
             }
         }
     }
+
+    private var usesThreeColumnPhoneLayout: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
 }
 
 private struct LibraryCollectionCard: View {
     let collection: LibraryCollection
+    let usesStandardPhoneWidth: Bool
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        ContinuumTheme.posterCardWidth * (usesStandardPhoneWidth
+            ? 1
+            : uiCustomization.cardPresentation.posterSize.scale)
     }
     private var cardHeight: CGFloat {
         cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
@@ -626,7 +646,7 @@ struct LibraryCollectionDetailView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle(title ?? "Collection")
         .continuumNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)") {
@@ -648,6 +668,7 @@ struct LibraryCollectionDetailView: View {
                     items: items,
                     isLoading: isLoading,
                     hasMore: hasMore,
+                    forcesThreeColumnsOnPhone: true,
                     onItemTap: { item in
                         router.navigate(to: .itemDetail(browseItem: item))
                     },

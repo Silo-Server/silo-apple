@@ -31,7 +31,7 @@ struct FilterView: View {
             .listStyle(.plain)
             .filterScrollContentBackgroundHidden()
             .environment(\.defaultMinListRowHeight, 50)
-            .continuumBackground()
+            .continuumPageBackground()
             .navigationTitle("Filter")
             .continuumNavigationTitleDisplayMode(.inline)
             .toolbar {
@@ -282,7 +282,7 @@ private struct FacetValuePicker: View {
         .listStyle(.plain)
         .filterScrollContentBackgroundHidden()
         .environment(\.defaultMinListRowHeight, 50)
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle(facet.title)
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumNavigationBarSurfaceBackground()

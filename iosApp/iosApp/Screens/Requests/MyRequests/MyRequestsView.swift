@@ -13,7 +13,7 @@ struct MyRequestsView: View {
             if let error = viewModel.error, viewModel.buckets.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await viewModel.load() } })
             } else if viewModel.isLoading && viewModel.buckets.isEmpty {
-                LoadingView()
+                LoadingView(usesPageBackground: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewModel.isEmpty {
                 EmptyStateView(
@@ -25,7 +25,7 @@ struct MyRequestsView: View {
                 bucketList
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle("My Requests")
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumToolbarColorSchemeDark()

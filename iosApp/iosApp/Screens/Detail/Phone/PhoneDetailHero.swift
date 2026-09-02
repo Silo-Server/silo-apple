@@ -1,19 +1,77 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Fully opaque, artwork-matched surface shared by every mobile video-detail
-/// page. The sampled tint is composited over black, so scrolling never exposes
-/// a live material or blur after the artwork itself has left the screen.
+/// Shared reference state for the pinned chrome. Artwork parallax is driven by
+/// a render-time `visualEffect`, so the native scroll view never has to publish
+/// its high-frequency movement through SwiftUI state just to move the image.
+@Observable
+@MainActor
+final class PhoneDetailScrollState {
+    private(set) var offset: CGFloat = 0
+
+    func update(_ rawOffset: CGFloat) {
+        // Nothing in the chrome changes below 150 points or above 480. Folding
+        // those plateaus onto their endpoints avoids invalidating even the
+        // small chrome views while their rendered output is completely static.
+        let clamped = min(max(0, rawOffset), 480)
+        let normalized = clamped <= 150 ? 0 : clamped
+        guard abs(normalized - offset) >= 0.5 else { return }
+        offset = normalized
+    }
+
+    func reset() {
+        offset = 0
+    }
+}
+
+/// The named native scroll coordinate space used by render-time parallax.
+/// A name resolves to the nearest ancestor, so separately presented detail
+/// cards cannot interfere with one another.
+enum PhoneDetailScrollCoordinateSpace {
+    static let name = "phone-detail-scroll"
+}
+
+/// Artwork-matched surface shared by mobile video-detail pages. Compact iPhone
+/// movie/series cards keep a saturated, heavily softened copy of the hero fixed
+/// behind the ScrollView. It supplies the colour field that remains visible as
+/// the sharp artwork drifts away more slowly than the foreground content.
 struct PhoneDetailPageSurface<Content: View>: View {
     let backdropURL: String?
+    let backdropThumbhash: String?
+    let enablesArtworkGlass: Bool
     @ViewBuilder let content: () -> Content
 
     @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         ZStack {
             Color.black
-            sampledTint.opacity(0.42)
+
+            if usesArtworkGlass, let backdropURL, !backdropURL.isEmpty {
+                GeometryReader { geometry in
+                    AsyncImageView(
+                        url: backdropURL,
+                        thumbhash: backdropThumbhash,
+                        contentMode: .fill
+                    )
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .scaleEffect(1.18)
+                    .saturation(1.28)
+                    .brightness(-0.10)
+                    .blur(radius: 46, opaque: true)
+                    .clipped()
+                }
+                .allowsHitTesting(false)
+
+                Color.black.opacity(0.28)
+                sampledTint.opacity(0.10)
+                PhoneDetailGrainOverlay()
+            } else {
+                sampledTint.opacity(0.42)
+            }
+
             content()
         }
         .ignoresSafeArea()
@@ -32,6 +90,145 @@ struct PhoneDetailPageSurface<Content: View>: View {
                 sampledTint = tint
             }
         }
+    }
+
+    private var usesArtworkGlass: Bool {
+        guard enablesArtworkGlass, !reduceTransparency else { return false }
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone
+            && horizontalSizeClass != .regular
+        #else
+        return false
+        #endif
+    }
+}
+
+/// A fixed one-device-pixel monochrome dither. At 1.4% opacity it is not meant
+/// to read as a texture; it only breaks up 8-bit colour steps in large, slowly
+/// changing gradients. The tiny tile is generated once and never animates.
+private struct PhoneDetailGrainOverlay: View {
+    var body: some View {
+        if let texture = PhoneDetailGrainTexture.image {
+            Image(decorative: texture, scale: 3)
+                .resizable(resizingMode: .tile)
+                .interpolation(.none)
+                .blendMode(.overlay)
+                .opacity(0.012)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private enum PhoneDetailGrainTexture {
+    static let image: CGImage? = {
+        let width = 96
+        let height = 96
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        var pixels = [UInt8](repeating: 0, count: width * height)
+
+        for index in pixels.indices {
+            seed ^= seed << 13
+            seed ^= seed >> 7
+            seed ^= seed << 17
+            pixels[index] = UInt8(truncatingIfNeeded: seed >> 24)
+        }
+
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else {
+            return nil
+        }
+
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }()
+}
+
+/// Artwork moves at roughly half foreground speed. Its translation and
+/// scroll-linked dimming are render-time effects derived directly from the
+/// native scroll geometry, avoiding an observable-state update and image-view
+/// rebuild on every frame.
+private struct PhoneDetailParallaxArtwork: View {
+    let url: String?
+    let thumbhash: String?
+    let height: CGFloat
+    let isEnabled: Bool
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let parallaxEnabled = usesParallax
+        ZStack {
+            artwork
+                .frame(height: height)
+                .frame(maxWidth: .infinity)
+                .clipped()
+                .visualEffect { content, proxy in
+                    let minY = proxy.frame(in: .named(PhoneDetailScrollCoordinateSpace.name)).minY
+                    let offset = min(max(0, -minY), 540)
+                    return content.offset(
+                        y: parallaxEnabled ? offset * 0.52 : 0
+                    )
+                }
+
+            Color.black
+                .visualEffect { content, proxy in
+                    let minY = proxy.frame(in: .named(PhoneDetailScrollCoordinateSpace.name)).minY
+                    let offset = min(max(0, -minY), 540)
+                    return content.opacity(
+                        parallaxEnabled
+                            ? 0.30 * min(max(offset / 360, 0), 1)
+                            : 0
+                    )
+                }
+                .allowsHitTesting(false)
+        }
+        .frame(height: height)
+        .clipped()
+        .mask(artworkMask)
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let url, !url.isEmpty {
+            AsyncImageView(url: url, thumbhash: thumbhash, contentMode: .fill)
+        } else {
+            Color.continuumSurface
+        }
+    }
+
+    private var usesParallax: Bool {
+        guard isEnabled, !reduceMotion else { return false }
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone
+            && horizontalSizeClass != .regular
+        #else
+        return false
+        #endif
+    }
+
+    private var artworkMask: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: 0.72),
+                .init(color: .black.opacity(0.76), location: 0.84),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 }
 
@@ -57,6 +254,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// Retained at the call boundary for source compatibility. Detail artwork
     /// intentionally renders no card-overlay badges in this redesigned surface.
     var overlayData: OverlayData? = nil
+    var enablesArtworkParallax = false
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -117,11 +315,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var compactArtwork: some View {
         ZStack(alignment: .bottom) {
-            artwork
-                .frame(height: compactArtworkHeight)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .mask(compactArtworkMask)
+            PhoneDetailParallaxArtwork(
+                url: resolvedArtworkURL,
+                thumbhash: resolvedArtworkThumbhash,
+                height: compactArtworkHeight,
+                isEnabled: enablesArtworkParallax
+            )
 
             LinearGradient(
                 colors: [Color.black.opacity(0.34), .clear],
@@ -135,6 +334,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 .padding(.bottom, 6)
         }
         .frame(height: compactArtworkHeight)
+        .clipped()
         .accessibilityElement(children: .contain)
     }
 
@@ -145,19 +345,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var compactLogoHeight: CGFloat {
         min(max(compactArtworkHeight * 0.24, 104), 138)
-    }
-
-    private var compactArtworkMask: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black, location: 0),
-                .init(color: .black, location: 0.72),
-                .init(color: .black.opacity(0.76), location: 0.84),
-                .init(color: .clear, location: 1),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
     }
 
     // MARK: - Expanded iPad layout

@@ -49,6 +49,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isFindingTrailers: Bool
     /// Called once a terminal status message has been on screen long enough.
     let onTrailerStatusShown: () -> Void
+    /// Reference-backed scroll state observed only by the small parallax and
+    /// pinned-chrome views, keeping the native ScrollView's body stable.
+    let scrollState: PhoneDetailScrollState
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -60,7 +63,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var showDownloadOptions = false
 
     var body: some View {
-        PhoneDetailPageSurface(backdropURL: detail.backdropUrl) {
+        PhoneDetailPageSurface(
+            backdropURL: detail.backdropUrl,
+            backdropThumbhash: detail.backdropThumbhash,
+            enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type)
+        ) {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
                     hero
@@ -69,6 +76,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 .padding(.bottom, 40)
             }
             .ignoresSafeArea(edges: .top)
+            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+                return offset <= 150 ? 0 : min(offset, 480)
+            } action: { _, offset in
+                scrollState.update(offset)
+            }
         }
         .continuumResumePlaybackAlert(
             isPresented: $showResumeDialog,
@@ -105,6 +119,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
+            enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
             actions: { actionStack },
             belowOverview: {
                 VStack(spacing: 14) {

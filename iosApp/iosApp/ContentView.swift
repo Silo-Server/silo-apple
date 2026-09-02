@@ -955,7 +955,7 @@ struct ContentView: View {
         case .onboardingTour:
             #if os(tvOS)
             EmptyStateView(icon: "sparkles", title: "Take the tour on your phone or the web", subtitle: nil)
-                .continuumBackground()
+                .continuumPageBackground()
             #else
             OnboardingTourView(router: router)
             #endif
@@ -974,7 +974,7 @@ struct ContentView: View {
                 title: "Coming Soon",
                 subtitle: "This screen is under construction."
             )
-            .continuumBackground()
+            .continuumPageBackground()
         }
     }
 
@@ -1009,7 +1009,7 @@ struct ContentView: View {
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .continuumPageBackground()
         }
     }
 }
@@ -2397,7 +2397,7 @@ struct MainTabView: View {
         case .downloads:
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .continuumPageBackground()
             #else
             DownloadsView()
             #endif
@@ -2417,20 +2417,20 @@ struct MainTabView: View {
         case .offlineSeriesBrowse(let seriesId):
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .continuumPageBackground()
             #else
             OfflineSeriesBrowseView(seriesId: seriesId)
             #endif
         case .offlineDownloadDetail(let downloadId):
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .continuumPageBackground()
             #else
             OfflineDownloadDetailView(downloadId: downloadId)
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumBackground()
+                .continuumPageBackground()
         }
     }
 
@@ -2559,8 +2559,11 @@ private struct ItemDetailSheet: View {
         router.presentedItemDetail?.contentId ?? presentation.contentId
     }
 
+    /// iPhone detail cards are intentionally fixed to the title that was
+    /// opened. iPad keeps its existing wider, source-aware page deck.
     private var browseSource: ItemDetailBrowseSource? {
-        router.presentedItemDetail?.browseSource ?? presentation.browseSource
+        guard UIDevice.current.userInterfaceIdiom != .phone else { return nil }
+        return router.presentedItemDetail?.browseSource ?? presentation.browseSource
     }
 
     private var pageContentIDs: [String] {

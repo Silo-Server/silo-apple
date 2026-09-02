@@ -56,6 +56,7 @@ struct DownloadActionButton: View {
 
     private var manager: DownloadManager { DownloadManager.shared }
     private var record: DownloadRecord? { manager.record(forContentId: contentId) }
+    private var isRegistrationPending: Bool { manager.isRegistering(contentId: contentId) }
     @State private var confirmingCancel = false
     /// Guard text for the pre-download confirmation; non-nil presents it.
     @State private var largeDownloadWarning: String?
@@ -137,115 +138,127 @@ struct DownloadActionButton: View {
                 Button("Discard Download", role: .destructive, action: cancel)
                 Button("Keep Download", role: .cancel) {}
             }
-            .confirmationDialog(
-                "\(largeDownloadWarning ?? "") Download anyway?",
+            // Keep the large-file gate separate from the cancel menu. Two
+            // confirmation dialogs on one control compete for the same SwiftUI
+            // presentation host and can consume the tap without showing either.
+            .alert(
+                "Large Download",
                 isPresented: Binding(
                     get: { largeDownloadWarning != nil },
                     set: { if !$0 { largeDownloadWarning = nil } }
-                ),
-                titleVisibility: .visible
+                )
             ) {
                 Button("Download Anyway", action: startWithDefaults)
                 if style != .compact {
                     Button("Choose Options…") { showOptions = true }
                 }
                 Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("\(largeDownloadWarning ?? "This download is large.") Download anyway?")
             }
     }
 
     @ViewBuilder
     private var content: some View {
-        switch record?.localStatus {
-        case .none:
-            let button = Button(action: handleDownloadTap) {
-                circleLabel(icon: "arrow.down.to.line", active: false)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Download")
-            if style != .compact {
-                button.contextMenu {
-                    Button { showOptions = true } label: {
-                        Label("Download Options…", systemImage: "slider.horizontal.3")
-                    }
+        if isRegistrationPending, record == nil {
+            circleLabel(icon: "arrow.down.circle", active: true, showSpinner: true)
+                .accessibilityLabel("Registering download")
+                .allowsHitTesting(false)
+        } else {
+            switch record?.localStatus {
+            case .none:
+                let button = Button(action: handleDownloadTap) {
+                    circleLabel(icon: "arrow.down.to.line", active: false)
                 }
-            } else {
-                button
-            }
-
-        case .downloading:
-            Menu {
-                Button(action: pause) {
-                    Label("Pause", systemImage: "pause")
-                }
-                Button(role: .destructive) { confirmingCancel = true } label: {
-                    Label("Cancel Download", systemImage: "xmark.circle")
-                }
-            } label: {
-                progressLabel(fraction: record?.progressFraction ?? 0, paused: false)
-            }
-            .accessibilityLabel("Downloading")
-
-        case .paused:
-            Menu {
-                Button(action: resume) {
-                    Label("Resume", systemImage: "play")
-                }
-                Button(role: .destructive) { confirmingCancel = true } label: {
-                    Label("Cancel Download", systemImage: "xmark.circle")
-                }
-            } label: {
-                progressLabel(fraction: record?.progressFraction ?? 0, paused: true)
-            }
-            .accessibilityLabel("Download paused")
-
-        case .registering, .preparing, .queued, .fetchingAssets:
-            Menu {
-                Button(role: .destructive) { confirmingCancel = true } label: {
-                    Label("Cancel Download", systemImage: "xmark.circle")
-                }
-            } label: {
-                circleLabel(icon: "arrow.down.circle", active: true, showSpinner: true)
-            }
-            .accessibilityLabel("Preparing download")
-
-        case .completed:
-            Menu {
-                Button(role: .destructive, action: delete) {
-                    Label("Delete Download", systemImage: "trash")
-                }
-            } label: {
-                circleLabel(icon: "checkmark.circle.fill", active: true, tint: .green)
-            }
-            .accessibilityLabel("Downloaded")
-
-        case .revoked:
-            Menu {
-                Button(role: .destructive, action: delete) {
-                    Label("Delete Download", systemImage: "trash")
-                }
-            } label: {
-                circleLabel(icon: "checkmark.circle", active: true, tint: .yellow)
-            }
-            .accessibilityLabel("Downloaded (re-download no longer allowed)")
-
-        case .failed:
-            Menu {
+                .buttonStyle(.plain)
+                .accessibilityLabel("Download")
                 if style != .compact {
-                    Button { showOptions = true } label: {
-                        Label("Retry With Options", systemImage: "arrow.clockwise")
+                    button.contextMenu {
+                        Button { showOptions = true } label: {
+                            Label("Download Options…", systemImage: "slider.horizontal.3")
+                        }
                     }
                 } else {
-                    Button(action: retry) {
-                        Label("Try Again", systemImage: "arrow.clockwise")
+                    button
+                }
+
+            case .downloading:
+                Menu {
+                    Button(action: pause) {
+                        Label("Pause", systemImage: "pause")
                     }
+                    Button(role: .destructive) { confirmingCancel = true } label: {
+                        Label("Cancel Download", systemImage: "xmark.circle")
+                    }
+                } label: {
+                    progressLabel(fraction: record?.progressFraction ?? 0, paused: false)
                 }
-                Button(role: .destructive, action: delete) {
-                    Label("Remove", systemImage: "trash")
+                .accessibilityLabel("Downloading")
+                .accessibilityValue(progressAccessibilityValue)
+
+            case .paused:
+                Menu {
+                    Button(action: resume) {
+                        Label("Resume", systemImage: "play")
+                    }
+                    Button(role: .destructive) { confirmingCancel = true } label: {
+                        Label("Cancel Download", systemImage: "xmark.circle")
+                    }
+                } label: {
+                    progressLabel(fraction: record?.progressFraction ?? 0, paused: true)
                 }
-            } label: {
-                circleLabel(icon: "exclamationmark.triangle", active: true, tint: .orange)
+                .accessibilityLabel("Download paused")
+                .accessibilityValue(progressAccessibilityValue)
+
+            case .registering, .preparing, .queued, .fetchingAssets:
+                Menu {
+                    Button(role: .destructive) { confirmingCancel = true } label: {
+                        Label("Cancel Download", systemImage: "xmark.circle")
+                    }
+                } label: {
+                    circleLabel(icon: "arrow.down.circle", active: true, showSpinner: true)
+                }
+                .accessibilityLabel("Preparing download")
+
+            case .completed:
+                Menu {
+                    Button(role: .destructive, action: delete) {
+                        Label("Delete Download", systemImage: "trash")
+                    }
+                } label: {
+                    circleLabel(icon: "checkmark.circle.fill", active: true, tint: .green)
+                }
+                .accessibilityLabel("Downloaded")
+
+            case .revoked:
+                Menu {
+                    Button(role: .destructive, action: delete) {
+                        Label("Delete Download", systemImage: "trash")
+                    }
+                } label: {
+                    circleLabel(icon: "checkmark.circle", active: true, tint: .yellow)
+                }
+                .accessibilityLabel("Downloaded (re-download no longer allowed)")
+
+            case .failed:
+                Menu {
+                    if style != .compact {
+                        Button { showOptions = true } label: {
+                            Label("Retry With Options", systemImage: "arrow.clockwise")
+                        }
+                    } else {
+                        Button(action: retry) {
+                            Label("Try Again", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    Button(role: .destructive, action: delete) {
+                        Label("Remove", systemImage: "trash")
+                    }
+                } label: {
+                    circleLabel(icon: "exclamationmark.triangle", active: true, tint: .orange)
+                }
+                .accessibilityLabel("Download failed")
             }
-            .accessibilityLabel("Download failed")
         }
     }
 
@@ -255,6 +268,7 @@ struct DownloadActionButton: View {
     /// would land on disk (max of the Auto range, or the exact size of the
     /// selected version) warrants confirming first.
     private func handleDownloadTap() {
+        guard !isRegistrationPending, record == nil else { return }
         let estimate = versions.isEmpty
             ? DownloadSizeEstimate.estimate(fileSizes: candidateFileSizes)
             : DownloadSizeEstimate.estimate(versions: versions, fileId: selectedVersionFileId)
@@ -422,6 +436,7 @@ struct DownloadActionButton: View {
     /// A static "Download" caption under a green tick would misreport the
     /// state, so the caption tracks the record like the glyph does.
     private var captionText: String {
+        if isRegistrationPending, record == nil { return "Preparing" }
         switch record?.localStatus {
         case .none: return "Download"
         case .downloading: return "Downloading"
@@ -524,9 +539,7 @@ struct DownloadActionButton: View {
                             style: StrokeStyle(lineWidth: 2, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
-                    Image(systemName: paused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(.white)
+                    progressCenter(fraction: fraction, paused: paused)
                 }
                 .frame(width: 21, height: 21)
             }
@@ -548,11 +561,31 @@ struct DownloadActionButton: View {
                 )
                 .rotationEffect(.degrees(-90))
                 .padding(style == .regular ? 4 : 3)
-            Image(systemName: paused ? "play.fill" : "pause.fill")
-                .font(.system(size: style == .regular ? 10 : 8, weight: .bold))
-                .foregroundColor(.white)
+            progressCenter(fraction: fraction, paused: paused)
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    @ViewBuilder
+    private func progressCenter(fraction: Double, paused: Bool) -> some View {
+        if paused {
+            Image(systemName: "play.fill")
+                .font(.system(size: style == .regular ? 10 : 8, weight: .bold))
+                .foregroundColor(.white)
+        } else {
+            Text("\(progressPercent(fraction))")
+                .font(.system(size: style == .compact ? 7 : 8, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundColor(.white)
+        }
+    }
+
+    private var progressAccessibilityValue: String {
+        "\(progressPercent(record?.progressFraction ?? 0)) percent"
+    }
+
+    private func progressPercent(_ fraction: Double) -> Int {
+        Int((min(max(fraction, 0), 1) * 100).rounded())
     }
 }
 #endif

@@ -25,11 +25,11 @@ struct DownloadReclaimSheet: View {
                         title: "All Caught Up",
                         subtitle: "There are no watched downloads to clear right now."
                     )
-                    .background(Color.continuumBackground)
                 } else {
                     list
                 }
             }
+            .continuumPageBackground()
             .navigationTitle("Free Up Space")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -60,7 +60,6 @@ struct DownloadReclaimSheet: View {
                 Color.clear.frame(height: 24)
             }
         }
-        .background(Color.continuumBackground)
     }
 
     private var header: some View {

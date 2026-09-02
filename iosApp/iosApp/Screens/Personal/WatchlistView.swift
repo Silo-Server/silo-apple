@@ -73,7 +73,7 @@ struct WatchlistView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Watchlist" : nil))
         .task {
             await loadWatchlist()
@@ -100,7 +100,7 @@ struct WatchlistView: View {
                 if filteredIOSItems.isEmpty {
                     iosSelectedSectionEmptyState
                 } else {
-                    IOSPersonalMediaCarouselRows(items: filteredIOSItems) { item, state in
+                    IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
                         guard !state.inWatchlist else { return }
                         withAnimation {
                             items.removeAll { $0.contentId == item.contentId }

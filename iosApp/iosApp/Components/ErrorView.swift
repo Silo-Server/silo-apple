@@ -47,7 +47,6 @@ struct ErrorView: View {
             .padding(.top, ContinuumTheme.smallPadding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .continuumBackground()
     }
 
     private var headline: String {

@@ -2,6 +2,48 @@ import SwiftUI
 
 // MARK: - Common View Modifiers
 
+/// The shared signed-in page canvas. On iOS it is a fixed, fully opaque
+/// charcoal wash with static tonal depth; it never samples page artwork.
+/// Other platforms retain their existing pure-black canvas.
+struct ContinuumPageBackdrop: View {
+    var body: some View {
+        #if os(iOS)
+        ZStack {
+            Color(hex: "#1D1F1D")
+
+            RadialGradient(
+                stops: [
+                    .init(color: .white.opacity(0.035), location: 0),
+                    .init(color: .white.opacity(0.018), location: 0.36),
+                    .init(color: .clear, location: 1),
+                ],
+                center: UnitPoint(x: 0.46, y: 0.42),
+                startRadius: 0,
+                endRadius: 520
+            )
+
+            LinearGradient(
+                stops: [
+                    .init(color: .white.opacity(0.012), location: 0),
+                    .init(color: .clear, location: 0.45),
+                    .init(color: .black.opacity(0.045), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        #else
+        Color.continuumBackground
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        #endif
+    }
+}
+
 enum ContinuumNavigationTitleDisplayMode {
     case automatic
     case inline
@@ -9,9 +51,17 @@ enum ContinuumNavigationTitleDisplayMode {
 }
 
 extension View {
-    /// Apply the standard Continuum dark background.
+    /// Apply the original pure-black Continuum canvas.
     func continuumBackground() -> some View {
         self.background(Color.continuumBackground.ignoresSafeArea())
+    }
+
+    /// Apply the fixed charcoal page canvas without changing semantic black
+    /// ink used by controls, artwork masks, Settings, or media surfaces.
+    func continuumPageBackground() -> some View {
+        self.background {
+            ContinuumPageBackdrop()
+        }
     }
 
     /// Card-style surface with rounded corners — zero elevation (Plezy style).

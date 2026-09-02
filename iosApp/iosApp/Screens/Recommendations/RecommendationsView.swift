@@ -85,7 +85,7 @@ struct RecommendationsView: View {
 
             pageContent
         }
-        .continuumBackground()
+        .continuumPageBackground()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif

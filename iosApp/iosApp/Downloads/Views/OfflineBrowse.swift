@@ -29,9 +29,9 @@ struct OfflineSeriesBrowseView: View {
                     title: "No Downloads",
                     subtitle: "This series has no downloaded episodes."
                 )
-                .background(Color.continuumBackground)
             }
         }
+        .continuumPageBackground()
         .navigationTitle(group?.title ?? "Series")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -92,7 +92,6 @@ struct OfflineSeriesBrowseView: View {
                 Color.clear.frame(height: 30)
             }
         }
-        .background(Color.continuumBackground)
     }
 
     private func seasonChips(_ group: DownloadSeriesGroup) -> some View {
@@ -207,9 +206,9 @@ struct OfflineDownloadDetailView: View {
                 content(record)
             } else {
                 EmptyStateView(icon: "arrow.down.circle", title: "Download Removed", subtitle: nil)
-                    .background(Color.continuumBackground)
             }
         }
+        .continuumPageBackground()
         .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -267,7 +266,6 @@ struct OfflineDownloadDetailView: View {
                 Color.clear.frame(height: 30)
             }
         }
-        .background(Color.continuumBackground)
     }
 
     private func still(_ record: DownloadRecord) -> some View {

@@ -12,7 +12,13 @@ struct CollectionDetailView: View {
     @Environment(\.horizontalSizeClass) private var hSize
 
     private var columns: [GridItem] {
-        AdaptiveColumns.posters(
+        if usesThreeColumnPhoneLayout {
+            return Array(
+                repeating: GridItem(.flexible(), spacing: 12),
+                count: 3
+            )
+        }
+        return AdaptiveColumns.posters(
             for: hSize,
             posterSize: uiCustomization.cardPresentation.posterSize
         )
@@ -34,7 +40,7 @@ struct CollectionDetailView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle("Collection")
         .continuumNavigationTitleDisplayMode(.large)
         .task {
@@ -60,7 +66,8 @@ struct CollectionDetailView: View {
                             router.navigate(to: .itemDetail(browseItem: item))
                         },
                         playAction: playAction(for: item),
-                        contentId: item.contentId
+                        contentId: item.contentId,
+                        cardWidthOverride: phoneCardWidthOverride
                     )
                     .frame(maxWidth: .infinity)
                 }
@@ -82,6 +89,20 @@ struct CollectionDetailView: View {
         #else
         return nil
         #endif
+    }
+
+    private var usesThreeColumnPhoneLayout: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
+
+    private var phoneCardWidthOverride: CGFloat? {
+        guard usesThreeColumnPhoneLayout else { return nil }
+        return ContinuumTheme.posterCardWidth
+            / uiCustomization.cardPresentation.posterSize.scale
     }
 
     private func loadItems() async {

@@ -174,6 +174,8 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                     detail: detail,
                     seasons: seasons,
                     selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber }),
+                    episodes: episodes,
+                    episodesBySeason: episodesBySeason,
                     style: .labeled
                 )
             }

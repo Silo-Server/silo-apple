@@ -37,18 +37,64 @@ struct IOSPersonalMediaSectionPicker: View {
     }
 }
 
-/// Saved titles use compact, Home-like rails rather than stretching two cards
-/// across an iPhone. Six titles is the maximum membership of one rail; larger
-/// lists continue in as many vertically stacked rails as needed.
-struct IOSPersonalMediaCarouselRows: View {
+/// Saved titles use a fixed three-column poster grid on iPhone. iPad retains
+/// the wider Home-like rails that make better use of its additional width.
+struct IOSPersonalMediaPosterLayout: View {
     let items: [BrowseItem]
     let onUserStateChanged: (BrowseItem, MediaItemUserState) -> Void
 
     @Environment(AppRouter.self) private var router
+    @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var originID = UUID().uuidString
     @State private var rowScrollPositions: [Int: String] = [:]
 
+    @ViewBuilder
     var body: some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            phoneGrid
+        } else {
+            tabletCarouselRows
+        }
+    }
+
+    private var phoneGrid: some View {
+        LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
+                count: 3
+            ),
+            spacing: 12
+        ) {
+            ForEach(items) { item in
+                MediaCard(
+                    title: item.title,
+                    posterUrl: item.posterUrl ?? "",
+                    thumbhash: item.posterThumbhash,
+                    year: item.year,
+                    userState: item.userState,
+                    overlayData: OverlayData.from(item),
+                    action: {
+                        router.navigate(to: .itemDetail(contentId: item.contentId))
+                    },
+                    contentId: item.contentId,
+                    cardWidthOverride: phoneCardWidthOverride,
+                    onUserStateChanged: { state in
+                        onUserStateChanged(item, state)
+                    }
+                )
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .environment(
+            \.itemDetailBrowseSource,
+            ItemDetailBrowseSource(
+                originID: originID,
+                contentIDs: items.map(\.contentId)
+            )
+        )
+    }
+
+    private var tabletCarouselRows: some View {
         LazyVStack(alignment: .leading, spacing: 24) {
             ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, rowItems in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -100,6 +146,13 @@ struct IOSPersonalMediaCarouselRows: View {
                 rowScrollPositions[rowIndex] = contentID
             }
         }
+    }
+
+    /// MediaCard scales overrides by the selected global preference. Cancel
+    /// that scale so all three phone columns keep the standard poster width.
+    private var phoneCardWidthOverride: CGFloat {
+        ContinuumTheme.posterCardWidth
+            / uiCustomization.cardPresentation.posterSize.scale
     }
 
     private var rows: [[BrowseItem]] {
@@ -182,7 +235,7 @@ struct FavoritesView: View {
                 if filteredIOSItems.isEmpty {
                     iosSelectedSectionEmptyState
                 } else {
-                    IOSPersonalMediaCarouselRows(items: filteredIOSItems) { item, state in
+                    IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
                         guard !state.isFavorite else { return }
                         withAnimation {
                             items.removeAll { $0.contentId == item.contentId }
@@ -234,7 +287,7 @@ struct FavoritesView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Favorites" : nil))
         .task {
             await loadFavorites()

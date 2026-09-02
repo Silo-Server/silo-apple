@@ -28,6 +28,177 @@ private struct ControlRequestBox: Identifiable {
     var id: String { request.contentId }
     init(_ request: SiloControlPlaybackRequest) { self.request = request }
 }
+
+/// Static top-control layout. Scroll progress is read only by the tiny opacity
+/// leaves below, so changing chrome never rebuilds buttons or their actions.
+private struct PhoneDetailTopChrome: View {
+    let title: String
+    let isScrollGlassEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+    let leadingSystemName: String?
+    let leadingAccessibilityLabel: String?
+    let onLeadingTap: () -> Void
+    let trailingSystemName: String
+    let onTrailingTap: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            PhoneDetailTopGlass(
+                isEnabled: isScrollGlassEnabled,
+                scrollState: scrollState
+            )
+
+            PhoneDetailScrollTitle(
+                title: title,
+                isEnabled: isScrollGlassEnabled,
+                scrollState: scrollState
+            )
+
+            HStack {
+                if let leadingSystemName {
+                    Button(action: onLeadingTap) {
+                        controlIcon(
+                            systemName: leadingSystemName,
+                            size: leadingSystemName == "chevron.left" ? 17 : 16
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(leadingAccessibilityLabel ?? "Back")
+                }
+
+                Spacer(minLength: 20)
+
+                Button(action: onTrailingTap) {
+                    controlIcon(systemName: trailingSystemName, size: 16)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remote Control")
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 9)
+        }
+        .zIndex(20)
+    }
+
+    private func controlIcon(systemName: String, size: CGFloat) -> some View {
+        ZStack {
+            PhoneDetailControlGlass(
+                isScrollGlassEnabled: isScrollGlassEnabled,
+                scrollState: scrollState
+            )
+
+            Image(systemName: systemName)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(
+            width: ContinuumTheme.topBarIconHitSize,
+            height: ContinuumTheme.topBarIconHitSize
+        )
+        .contentShape(Circle())
+    }
+}
+
+/// Dynamic opacity around a stable glass subtree. The expensive native glass
+/// node is equatable and retained while only its compositor alpha changes.
+private struct PhoneDetailTopGlass: View {
+    let isEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    var body: some View {
+        if isEnabled {
+            PhoneDetailStaticGlassStrip(reduceTransparency: reduceTransparency)
+                .equatable()
+                .opacity(phoneDetailSmoothProgress(scrollState.offset, from: 200, to: 360))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct PhoneDetailStaticGlassStrip: View, Equatable {
+    let reduceTransparency: Bool
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                Color(white: 0.16).opacity(0.98)
+            } else {
+                Color.clear
+                    .siloGlass(in: Rectangle(), tint: Color.black.opacity(0.10))
+                    .overlay(Color.white.opacity(0.025))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: ContinuumTheme.topBarIconHitSize + 18)
+    }
+}
+
+private struct PhoneDetailScrollTitle: View {
+    let title: String
+    let isEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+
+    @ViewBuilder
+    var body: some View {
+        if isEnabled {
+            let progress = phoneDetailSmoothProgress(scrollState.offset, from: 400, to: 480)
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .padding(.horizontal, 96)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: ContinuumTheme.topBarIconHitSize,
+                    alignment: .center
+                )
+                .padding(.top, 9)
+                .opacity(progress)
+                .allowsHitTesting(false)
+                .accessibilityHidden(progress < 0.5)
+        }
+    }
+}
+
+private struct PhoneDetailControlGlass: View {
+    let isScrollGlassEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+
+    var body: some View {
+        PhoneDetailStaticControlGlass()
+            .equatable()
+            .opacity(
+                isScrollGlassEnabled
+                    ? 1 - phoneDetailSmoothProgress(scrollState.offset, from: 150, to: 260)
+                    : 1
+            )
+    }
+}
+
+private struct PhoneDetailStaticControlGlass: View, Equatable {
+    var body: some View {
+        Color.clear
+            .frame(
+                width: ContinuumTheme.topBarIconHitSize,
+                height: ContinuumTheme.topBarIconHitSize
+            )
+            .siloGlass(in: Circle(), interactive: true)
+    }
+}
+
+private func phoneDetailSmoothProgress(
+    _ value: CGFloat,
+    from lowerBound: CGFloat,
+    to upperBound: CGFloat
+) -> CGFloat {
+    let progress = min(max((value - lowerBound) / (upperBound - lowerBound), 0), 1)
+    return progress * progress * (3 - (2 * progress))
+}
 #endif
 
 #if !os(tvOS)
@@ -87,8 +258,10 @@ private struct ItemDetailPhoneContent: View {
     @State private var refreshOnPlayerDismiss = false
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
+    @State private var detailScrollState = PhoneDetailScrollState()
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var controlRequestBox: ControlRequestBox?
     @State private var isShowingControlPicker = false
     @State private var isShowingRemoteControl = false
@@ -125,6 +298,7 @@ private struct ItemDetailPhoneContent: View {
             isLoadingNextUpWatchDetail = false
             selectedSeriesEpisodeId = nil
             refreshOnPlayerDismiss = false
+            detailScrollState.reset()
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
@@ -238,60 +412,37 @@ private struct ItemDetailPhoneContent: View {
 
     #if os(iOS)
     private var detailTopControls: some View {
-        HStack {
-            if let onClose {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(
-                            width: ContinuumTheme.topBarIconHitSize,
-                            height: ContinuumTheme.topBarIconHitSize
-                        )
-                        .siloGlass(in: Circle(), interactive: true)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close details")
-            } else if !router.itemDetailPath.isEmpty {
-                Button {
+        let showsClose = onClose != nil
+        let showsBack = !showsClose && !router.itemDetailPath.isEmpty
+
+        return PhoneDetailTopChrome(
+            title: viewModel.detail?.title ?? "",
+            isScrollGlassEnabled: supportsScrollGlassChrome,
+            scrollState: detailScrollState,
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
+            onLeadingTap: {
+                if let onClose {
+                    onClose()
+                } else if !router.itemDetailPath.isEmpty {
                     router.itemDetailPath.removeLast()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(
-                            width: ContinuumTheme.topBarIconHitSize,
-                            height: ContinuumTheme.topBarIconHitSize
-                        )
-                        .siloGlass(in: Circle(), interactive: true)
-                        .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Back")
-            }
+            },
+            trailingSystemName: siloControl.hasActiveSession
+                ? "appletvremote.gen4.fill"
+                : "appletvremote.gen4",
+            onTrailingTap: handleRemoteControlTap
+        )
+    }
 
-            Spacer(minLength: 20)
-
-            Button(action: handleRemoteControlTap) {
-                Image(systemName: siloControl.hasActiveSession
-                    ? "appletvremote.gen4.fill"
-                    : "appletvremote.gen4")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(
-                        width: ContinuumTheme.topBarIconHitSize,
-                        height: ContinuumTheme.topBarIconHitSize
-                    )
-                    .siloGlass(in: Circle(), interactive: true)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remote Control")
+    private var supportsScrollGlassChrome: Bool {
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              horizontalSizeClass != .regular,
+              let detail = viewModel.detail else {
+            return false
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 18)
-        .zIndex(20)
+        return SiloMediaType.isMovieLibrary(detail.type)
+            || SiloMediaType.isSeries(detail.type)
     }
 
     /// Movies and episodes retain the existing cast-and-play behavior. Series
@@ -589,6 +740,7 @@ private struct ItemDetailPhoneContent: View {
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
+                scrollState: detailScrollState,
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
@@ -696,6 +848,7 @@ private struct ItemDetailPhoneContent: View {
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
+                scrollState: detailScrollState,
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
