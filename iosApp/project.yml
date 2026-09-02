@@ -56,8 +56,8 @@ packages:
   # The only media engine in the replacement player. Keep this at an exact
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
-    url: https://github.com/superuser404notfound/AetherEngine
-    revision: 0ae80496ab6f3fda135f43ef195ff10961c0e625
+    url: https://github.com/blurbery/AetherEngine
+    revision: e238d1d2da52b58bffd7f8135bb2b04e32915cee
   Nuke:
     url: https://github.com/kean/Nuke
     from: "12.8.0"

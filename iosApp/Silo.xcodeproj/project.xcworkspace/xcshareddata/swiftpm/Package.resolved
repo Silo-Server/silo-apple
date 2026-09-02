@@ -3,9 +3,9 @@
     {
       "identity" : "aetherengine",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/superuser404notfound/AetherEngine",
+      "location" : "https://github.com/blurbery/AetherEngine",
       "state" : {
-        "revision" : "0ae80496ab6f3fda135f43ef195ff10961c0e625"
+        "revision" : "e238d1d2da52b58bffd7f8135bb2b04e32915cee"
       }
     },
     {
