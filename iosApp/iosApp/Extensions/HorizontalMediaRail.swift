@@ -17,7 +17,17 @@ enum HorizontalMediaRailLayout {
     static var cardAlignment: VerticalAlignment { isPhone ? .top : .center }
     static var scrollAnchor: UnitPoint { isPhone ? .leading : .center }
     static var targetBehavior: ViewAlignedScrollTargetBehavior {
-        .viewAligned(limitBehavior: .always, anchor: isPhone ? .leading : nil)
+        #if os(iOS)
+        // The explicit leading anchor is iOS 26+. iOS 18 keeps the system
+        // anchor, which still snaps whole cards into view.
+        if #available(iOS 26.0, *) {
+            return .viewAligned(limitBehavior: .always, anchor: isPhone ? .leading : nil)
+        } else {
+            return .viewAligned(limitBehavior: .always)
+        }
+        #else
+        return .viewAligned(limitBehavior: .always, anchor: isPhone ? .leading : nil)
+        #endif
     }
 }
 
