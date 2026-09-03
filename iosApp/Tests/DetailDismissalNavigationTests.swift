@@ -1,6 +1,24 @@
 import SwiftUI
+import Observation
 import XCTest
 @testable import Silo
+
+private actor ContinueWatchingResponseGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
@@ -81,6 +99,200 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 1)
         model.initialResumeSeasonNumber = nil
         XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 1)
+    }
+
+    private func resumeLoadFixture() throws -> (ItemDetail, SeasonsResponse, EpisodesResponse) {
+        let decoder = JSONDecoder()
+        return (
+            try decoder.decode(ItemDetail.self, from: Data(#"{"contentId":"resume-speed-series","type":"series","title":"Synthetic series"}"#.utf8)),
+            try decoder.decode(SeasonsResponse.self, from: Data(#"{"seasons":[{"contentId":"resume-speed-season","seasonNumber":3,"episodeCount":2}]}"#.utf8)),
+            try decoder.decode(EpisodesResponse.self, from: Data(#"{"episodes":[{"contentId":"resume-speed-e2","seasonNumber":3,"episodeNumber":2},{"contentId":"resume-speed-e1","seasonNumber":3,"episodeNumber":1}]}"#.utf8))
+        )
+    }
+
+    private func clearResumeLoadFixture() {
+        ResponseCache.shared.removeAll(withPrefix: "item:resume-speed-series")
+    }
+
+    func testContinueWatchingCachedSeasonAndEpisodesPaintWithoutAwaitingNetwork() throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(detail.contentId))
+        ResponseCache.shared.set(seasons, for: CacheKey.itemSeasons(detail.contentId))
+        ResponseCache.shared.set(episodes, for: CacheKey.itemEpisodes(seriesId: detail.contentId, seasonNumber: 3))
+        let model = ItemDetailViewModel()
+        model.initialResumeSeasonNumber = 3
+        model.hydrateFromCache(contentId: detail.contentId)
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 3)
+        XCTAssertEqual(model.episodes.map(\.episodeNumber), [1, 2])
+        XCTAssertEqual(model.episodesBySeason[3], model.episodes)
+        XCTAssertFalse(model.isLoadingEpisodes)
+
+        let posterModel = ItemDetailViewModel()
+        posterModel.hydrateFromCache(contentId: detail.contentId)
+        XCTAssertNil(posterModel.selectedSeason, "Poster initialization must remain unchanged")
+        XCTAssertTrue(posterModel.episodes.isEmpty)
+    }
+
+    func testContinueWatchingRequestsBothResourcesBeforeEitherResponseReturns() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        let seasonStarted = expectation(description: "Seasons dispatched")
+        let episodesStarted = expectation(description: "Episodes dispatched")
+        let gate = ContinueWatchingResponseGate()
+        let model = ItemDetailViewModel()
+        let load = Task {
+            await model.loadContinueWatchingStructure(
+                contentId: detail.contentId, seasonNumber: 3,
+                fetchSeasons: { _ in
+                    seasonStarted.fulfill()
+                    await gate.wait()
+                    return seasons
+                },
+                fetchEpisodes: { _, number in
+                    XCTAssertEqual(number, 3)
+                    episodesStarted.fulfill()
+                    await gate.wait()
+                    return episodes
+                }
+            )
+        }
+        await fulfillment(of: [seasonStarted, episodesStarted], timeout: 2)
+        await gate.open()
+        await load.value
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 3)
+        XCTAssertEqual(model.episodes.map(\.episodeNumber), [1, 2])
+    }
+
+    func testContinueWatchingRefreshDoesNotRebuildUnchangedScrollContent() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        let model = ItemDetailViewModel()
+        model.seasons = seasons.seasons
+        model.selectedSeason = seasons.seasons[0]
+        model.episodes = episodes.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+        model.episodesBySeason[3] = model.episodes
+        let changed = expectation(description: "Unchanged scroll content must not be republished")
+        changed.isInverted = true
+        withObservationTracking {
+            _ = model.seasons
+            _ = model.selectedSeason
+            _ = model.episodes
+            _ = model.episodesBySeason
+            _ = model.isLoadingEpisodes
+        } onChange: {
+            changed.fulfill()
+        }
+        await model.loadContinueWatchingStructure(
+            contentId: detail.contentId, seasonNumber: 3,
+            fetchSeasons: { _ in seasons }, fetchEpisodes: { _, _ in episodes }
+        )
+        await fulfillment(of: [changed], timeout: 0.05)
+        XCTAssertFalse(model.isLoadingEpisodes)
+    }
+
+    func testContinueWatchingEntryCannotOverwriteASeasonTapWhileRequestsArePending() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        let started = expectation(description: "Entry request started")
+        let gate = ContinueWatchingResponseGate()
+        let model = ItemDetailViewModel()
+        model.initialResumeSeasonNumber = 3
+        // A cached manually selected page uses the existing instant tap path.
+        let manualSeason = try JSONDecoder().decode(Season.self, from: Data(
+            #"{"contentId":"manual-season","seasonNumber":1,"episodeCount":0}"#.utf8
+        ))
+        model.episodesBySeason[1] = []
+        let load = Task {
+            await model.loadContinueWatchingStructure(
+                contentId: detail.contentId, seasonNumber: 3,
+                fetchSeasons: { _ in
+                    started.fulfill()
+                    await gate.wait()
+                    return seasons
+                }, fetchEpisodes: { _, _ in episodes }
+            )
+        }
+        await fulfillment(of: [started], timeout: 2)
+        await model.selectSeason(manualSeason)
+        await gate.open()
+        await load.value
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 1)
+        XCTAssertTrue(model.episodes.isEmpty)
+        XCTAssertNil(model.initialResumeSeasonNumber)
+    }
+
+    func testContinueWatchingFailedRefreshKeepsTheCachedPageAndCancellationPublishesNothing() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        let model = ItemDetailViewModel()
+        model.seasons = seasons.seasons
+        model.selectedSeason = seasons.seasons[0]
+        model.episodes = episodes.episodes
+        await model.loadContinueWatchingStructure(
+            contentId: detail.contentId, seasonNumber: 3,
+            fetchSeasons: { _ in throw URLError(.notConnectedToInternet) },
+            fetchEpisodes: { _, _ in throw URLError(.notConnectedToInternet) }
+        )
+        XCTAssertEqual(model.episodes, episodes.episodes)
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 3)
+        XCTAssertFalse(model.isLoadingEpisodes)
+
+        let started = expectation(description: "Cancellable request started")
+        let gate = ContinueWatchingResponseGate()
+        let cancelledModel = ItemDetailViewModel()
+        let load = Task {
+            await cancelledModel.loadContinueWatchingStructure(
+                contentId: detail.contentId, seasonNumber: 3,
+                fetchSeasons: { _ in
+                    started.fulfill()
+                    await gate.wait()
+                    return seasons
+                }, fetchEpisodes: { _, _ in episodes }
+            )
+        }
+        await fulfillment(of: [started], timeout: 2)
+        load.cancel()
+        await gate.open()
+        await load.value
+        XCTAssertTrue(cancelledModel.seasons.isEmpty)
+        XCTAssertTrue(cancelledModel.episodes.isEmpty)
+        XCTAssertNil(cancelledModel.selectedSeason)
+    }
+
+    func testContinueWatchingHierarchyRequestBenchmark() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        let clock = ContinuousClock()
+        var serialMilliseconds: [Double] = []
+        var resumeMilliseconds: [Double] = []
+        let fetchSeasons: @Sendable (String) async throws -> SeasonsResponse = { _ in
+            try await Task.sleep(for: .milliseconds(150))
+            return seasons
+        }
+        let fetchEpisodes: @Sendable (String, Int) async throws -> EpisodesResponse = { _, _ in
+            try await Task.sleep(for: .milliseconds(150))
+            return episodes
+        }
+        func milliseconds(_ duration: Duration) -> Double {
+            Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
+        }
+        for _ in 0..<5 {
+            let serialStart = clock.now
+            _ = try await fetchSeasons(detail.contentId)
+            _ = try await fetchEpisodes(detail.contentId, 3)
+            serialMilliseconds.append(milliseconds(serialStart.duration(to: clock.now)))
+            let model = ItemDetailViewModel()
+            let resumeStart = clock.now
+            await model.loadContinueWatchingStructure(
+                contentId: detail.contentId, seasonNumber: 3,
+                fetchSeasons: fetchSeasons, fetchEpisodes: fetchEpisodes
+            )
+            resumeMilliseconds.append(milliseconds(resumeStart.duration(to: clock.now)))
+            XCTAssertEqual(model.episodes.count, 2)
+        }
+        // Synthetic hierarchy latency only, not server timing or a scroll-FPS claim.
+        print("CW hierarchy benchmark; 5 repetitions; 150ms per resource; serial-ms=\(serialMilliseconds); resume-ms=\(resumeMilliseconds)")
     }
 
     func testRotationLockCapturesTheExactScreenOrientation() {

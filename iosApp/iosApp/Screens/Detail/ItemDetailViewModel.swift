@@ -158,6 +158,18 @@ class ItemDetailViewModel {
         // supersedes it even though it publishes first.
         let generation = beginDetailWrite()
 
+        #if os(iOS)
+        // Continue Watching already identifies the series and season. Start
+        // that structure alongside the catalog instead of serializing all
+        // three requests. Poster opens retain their existing loading path.
+        let resumeSeason = preserveSeasonSelection ? nil : initialResumeSeasonNumber
+        async let resumeStructure: Void = loadContinueWatchingStructure(
+            contentId: contentId,
+            seasonNumber: resumeSeason,
+            detailGeneration: generation
+        )
+        #endif
+
         if detail == nil {
             isLoading = true
         } else {
@@ -205,6 +217,26 @@ class ItemDetailViewModel {
             #if os(tvOS)
             if cachedDetailForRelatedStructure != nil {
                 await cachedRelatedStructureLoad
+            } else {
+                await loadRelatedStructure(
+                    for: enriched,
+                    contentId: contentId,
+                    preserveSeasonSelection: preserveSeasonSelection,
+                    coalescesMetadataRequests: coalescesMetadataRequests
+                )
+            }
+            #elseif os(iOS)
+            if resumeSeason != nil {
+                await resumeStructure
+                if !Task.isCancelled, generation == detailGeneration,
+                   let selectedSeason {
+                    // Secondary seasons/favorites stay outside the resume
+                    // page's initial metadata wave.
+                    startEpisodePagePrefetch(
+                        seriesId: contentId, seasons: seasons, selectedSeason: selectedSeason
+                    )
+                    await refreshEpisodeFavoriteStates(for: episodes)
+                }
             } else {
                 await loadRelatedStructure(
                     for: enriched,
@@ -510,6 +542,11 @@ class ItemDetailViewModel {
                 })
             }
             #else
+            #if os(iOS)
+            if detail.type == "series", let initialResumeSeasonNumber {
+                selectedSeason = seasons.first { $0.seasonNumber == initialResumeSeasonNumber }
+            }
+            #endif
             if detail.type != "series", let seasonNumber = detail.seasonNumber {
                 selectedSeason = seasons.first(where: { $0.seasonNumber == seasonNumber })
             }
@@ -527,6 +564,20 @@ class ItemDetailViewModel {
                 let sorted = cached.episodes.sorted(by: {
                     $0.episodeNumber < $1.episodeNumber
                 })
+                episodes = sorted
+                episodesBySeason[seasonNumber] = sorted
+                loadedSeasonNumber = seasonNumber
+            }
+            #endif
+
+            #if os(iOS)
+            if detail.type == "series", initialResumeSeasonNumber != nil,
+               let seasonNumber = selectedSeason?.seasonNumber,
+               episodes.isEmpty,
+               let cached: EpisodesResponse = ResponseCache.shared.get(
+                   CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber)
+               ) {
+                let sorted = cached.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
                 episodes = sorted
                 episodesBySeason[seasonNumber] = sorted
                 loadedSeasonNumber = seasonNumber
@@ -749,6 +800,70 @@ class ItemDetailViewModel {
     }
 
     // MARK: - Seasons
+
+    #if os(iOS)
+    /// Resume-only entry: one request wave, with no alternate page or scroll
+    /// implementation. Cached content stays painted during revalidation, and
+    /// an intervening season tap wins over this initial selection.
+    func loadContinueWatchingStructure(
+        contentId: String,
+        seasonNumber: Int?,
+        detailGeneration expectedDetailGeneration: Int? = nil,
+        fetchSeasons: @escaping @Sendable (String) async throws -> SeasonsResponse = {
+            try await MetadataRequestPool.shared.seasons(seriesId: $0)
+        },
+        fetchEpisodes: @escaping @Sendable (String, Int) async throws -> EpisodesResponse = {
+            try await MetadataRequestPool.shared.episodes(seriesId: $0, seasonNumber: $1)
+        }
+    ) async {
+        guard let seasonNumber else { return }
+        seriesContentId = contentId
+        let selectionGeneration = episodeLoadGeneration
+        initialResumeSeasonNumber = nil
+        defer {
+            if selectionGeneration == episodeLoadGeneration, isLoadingEpisodes {
+                isLoadingEpisodes = false
+            }
+        }
+        async let episodeResponse = try? fetchEpisodes(contentId, seasonNumber)
+        let seasonResponse = try? await fetchSeasons(contentId)
+        guard !Task.isCancelled,
+              expectedDetailGeneration == nil || expectedDetailGeneration == detailGeneration,
+              selectionGeneration == episodeLoadGeneration else { return }
+
+        if let seasonResponse {
+            ResponseCache.shared.set(seasonResponse, for: CacheKey.itemSeasons(contentId))
+            let sorted = seasonResponse.seasons.sortedForDisplay()
+            if seasons != sorted { seasons = sorted }
+        }
+        let target = seasons.first { $0.seasonNumber == seasonNumber }
+            ?? preferredInitialSeason(seasons: seasons)
+        guard let target else { return }
+        if selectedSeason != target { selectedSeason = target }
+
+        if target.seasonNumber != seasonNumber {
+            // A removed/missing season keeps the existing fallback policy.
+            await selectSeason(target, forceRefresh: true)
+            return
+        }
+
+        if isLoadingEpisodes != episodes.isEmpty { isLoadingEpisodes = episodes.isEmpty }
+        let response = await episodeResponse
+        guard !Task.isCancelled,
+              expectedDetailGeneration == nil || expectedDetailGeneration == detailGeneration,
+              selectionGeneration == episodeLoadGeneration else { return }
+        if let response {
+            ResponseCache.shared.set(response, for: CacheKey.itemEpisodes(
+                seriesId: contentId, seasonNumber: seasonNumber
+            ))
+            let sorted = response.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+            if episodesBySeason[seasonNumber] != sorted { episodesBySeason[seasonNumber] = sorted }
+            if episodes != sorted { episodes = sorted }
+            loadedSeasonNumber = seasonNumber
+        }
+        if isLoadingEpisodes { isLoadingEpisodes = false }
+    }
+    #endif
 
     func loadSeasons(
         seriesId: String,
