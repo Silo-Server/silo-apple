@@ -11,12 +11,17 @@ on:
   push:
     branches: [fix/next-up-persistent-surface]
   workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Optional unchanged upstream commit for a comparative full-suite run
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: player-regression-${{ github.ref }}
+  group: player-regression-${{ github.ref }}-${{ inputs.baseline_ref || 'head' }}
   cancel-in-progress: true
 
 jobs:
@@ -40,6 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ inputs.baseline_ref || github.sha }}
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '26.3'
@@ -48,7 +54,8 @@ jobs:
           curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
           unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
           /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml
-      - name: Validate player
+      - name: Build player
+        id: build
         env:
           SCHEME: ${{ matrix.scheme }}
           DESTINATION: ${{ matrix.destination }}
@@ -60,16 +67,36 @@ jobs:
             # required by Keychain. No certificate or release secret is used.
             xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
               -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
-              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-            ACTION=test-without-building
+              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-build.log
+          else
+            xcodebuild build -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
+              -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+              -resultBundlePath /tmp/player-validation.xcresult \
+              CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
           fi
-          xcodebuild "$ACTION" -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
-            -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+      - name: Package simulator tests for focused visual verification
+        if: matrix.action == 'test' && !inputs.baseline_ref
+        run: ditto -c -k --keepParent /tmp/silo-derived/Build/Products /tmp/Silo-simulator-tests.zip
+      - name: Upload compiled simulator tests
+        if: matrix.action == 'test' && !inputs.baseline_ref
+        uses: actions/upload-artifact@v4
+        with:
+          name: Silo-simulator-tests
+          path: /tmp/Silo-simulator-tests.zip
+          retention-days: 3
+      - name: Run complete iOS suite
+        if: matrix.action == 'test'
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
             -resultBundlePath /tmp/player-validation.xcresult \
-            CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
-        if: matrix.action == 'test' && !cancelled()
+        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled()
         shell: bash
         run: |
           set -euo pipefail
@@ -83,25 +110,16 @@ jobs:
             -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
             -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
-            -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=NO
+            -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: player-validation-${{ matrix.scheme }}
           path: |
+            /tmp/player-build.log
             /tmp/player-validation.log
             /tmp/player-validation.xcresult
             /tmp/preview-transition.mp4
             /tmp/preview-recording.xcresult
           retention-days: 7
-      - name: Package simulator tests for focused visual verification
-        if: matrix.action == 'test' && !cancelled()
-        run: ditto -c -k --keepParent /tmp/silo-derived/Build/Products /tmp/Silo-simulator-tests.zip
-      - name: Upload compiled simulator tests
-        if: matrix.action == 'test' && !cancelled()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Silo-simulator-tests
-          path: /tmp/Silo-simulator-tests.zip
-          retention-days: 3

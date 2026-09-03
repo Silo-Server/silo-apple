@@ -623,7 +623,7 @@ private enum PlayerNextUpFocusTarget: Hashable {
     case autoPlay
 }
 
-private struct PlayerNextUpScreen: View {
+struct PlayerNextUpScreen: View {
     let viewModel: PlayerViewModel
     let onBack: () -> Void
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
@@ -729,7 +729,7 @@ private struct PlayerNextUpScreen: View {
     }
 
     #if !os(tvOS)
-    private var mobileNextUpPanel: some View {
+    var mobileNextUpPanel: some View {
         VStack(spacing: 10) {
             eyebrow
             if let episode = viewModel.nextUpEpisode {

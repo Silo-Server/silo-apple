@@ -17,6 +17,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         let engine: AetherEngine
         var legacy = false
         var reduceMotion = true
+        var nextUpModel: PlayerViewModel?
 
         var body: some View {
             Group {
@@ -34,7 +35,9 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                     } content: {
                         ZStack {
                             Color.black.ignoresSafeArea()
-                            if presentation.preview && presentation.hasPreviewBounds {
+                            if presentation.preview, let nextUpModel {
+                                PlayerNextUpScreen(viewModel: nextUpModel, onBack: {})
+                            } else if presentation.preview && presentation.hasPreviewBounds {
                                 Color.clear
                                     .frame(width: 240, height: 135)
                                     .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
@@ -75,7 +78,19 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         var panel = CGRect.zero
     }
 
+    private func nextUpFixture() throws -> PlayerViewModel {
+        let episode = try JSONDecoder().decode(EpisodeListItem.self, from: Data(
+            #"{"contentId":"synthetic-episode-b","seasonNumber":1,"episodeNumber":2,"title":"The next chapter"}"#.utf8
+        ))
+        let model = PlayerViewModel()
+        model.nextUpEpisode = PlayerNextUpEpisode(episode: episode, seriesId: "synthetic-series", seriesTitle: "Playback regression fixture")
+        model.nextUpCountdownSeconds = 5
+        return model
+    }
+
     func testMobileActionsStayVisibleBesideOrBelowTheSmallerPreview() async throws {
+        let model = try nextUpFixture()
+        defer { model.cleanup() }
         for size in [CGSize(width: 568, height: 320), CGSize(width: 844, height: 390),
                      CGSize(width: 390, height: 844), CGSize(width: 1024, height: 768)] {
             let frames = MobileFrames()
@@ -83,9 +98,9 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                 Color.black.aspectRatio(16 / 9, contentMode: .fit)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.preview = $0 }
             } panel: {
-                // Reserve more than the compact metadata + two action rows
-                // need, with a long On Deck shelf competing for space below.
-                Color.blue.frame(height: 240)
+                // Measure the real production metadata/buttons, with a long
+                // On Deck shelf competing for the remaining space below.
+                PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
             } extras: {
                 Color.gray.frame(height: 1000)
@@ -95,6 +110,13 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             defer { window.isHidden = true; window.rootViewController = nil }
             try await settle(window)
             print("Mobile layout \(size): preview=\(frames.preview), actions=\(frames.panel)")
+            let snapshot = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: snapshot)
+            attachment.name = "Next Up controls \(Int(size.width))x\(Int(size.height))"
+            attachment.lifetime = .keepAlways
+            add(attachment)
             XCTAssertGreaterThan(frames.panel.height, 0)
             XCTAssertGreaterThanOrEqual(frames.panel.minY, 0)
             XCTAssertLessThanOrEqual(frames.panel.maxY, size.height)
@@ -165,8 +187,9 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         let engine = try AetherEngine()
         let presentation = Presentation()
         presentation.preview = true
-        let window = makeWindow(Harness(presentation: presentation, engine: engine, reduceMotion: false))
-        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
+        let model = try nextUpFixture()
+        let window = makeWindow(Harness(presentation: presentation, engine: engine, reduceMotion: false, nextUpModel: model))
+        defer { window.isHidden = true; window.rootViewController = nil; engine.stop(); model.cleanup() }
         try await settle(window)
         let surface = try XCTUnwrap(surfaces(in: window).first)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "v3_h264_aac", withExtension: "mp4"))
