@@ -553,6 +553,7 @@ struct MobilePlayerControls: View {
             }
 
             rotationPill(compact: style == .icons)
+            rotationLockButton
 
             controlButton(systemName: "ellipsis") {
                 activeSheet = .settings
@@ -748,6 +749,20 @@ struct MobilePlayerControls: View {
         .accessibilityIdentifier("player.rotate")
     }
 
+    private var rotationLockButton: some View {
+        let isLocked = orientationCoordinator.isRotationLocked
+        return controlButton(systemName: isLocked ? "lock.fill" : "lock.open", size: 44) {
+            orientationCoordinator.toggleRotationLock()
+            viewModel.resumeAutoHide()
+        }
+        .accessibilityLabel(isLocked ? "Unlock screen rotation" : "Lock screen rotation")
+        .accessibilityValue(isLocked ? "Locked" : "Unlocked")
+        .accessibilityHint(isLocked
+            ? "Allows video to follow phone orientation"
+            : "Stops phone movement rotating video. The rotate button still works")
+        .accessibilityIdentifier("player.rotation-lock")
+    }
+
     private func actionPill(
         systemImage: String,
         title: String,
@@ -856,12 +871,12 @@ struct MobilePlayerControls: View {
 
     // MARK: - Helpers
 
-    private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
+    private func controlButton(systemName: String, size: CGFloat = 40, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: size, height: size)
         }
         // `.circle` keeps each glass control a compact circle instead of the
         // default wider capsule so rows of controls stay dense.

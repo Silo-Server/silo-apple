@@ -4,6 +4,67 @@ import XCTest
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
+    func testRotationLockCapturesTheExactScreenOrientation() {
+        for orientation: UIInterfaceOrientationMask in [.portrait, .landscapeLeft, .landscapeRight] {
+            var state = PlayerRotationState()
+            state.activate()
+            state.toggleLock(at: orientation)
+            XCTAssertTrue(state.isLocked)
+            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+                isPlayerActive: state.isPlayerActive, lockedOrientation: state.lockedOrientation
+            ), orientation)
+            XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
+                isPlayerActive: state.isPlayerActive, preferredOrientation: .allButUpsideDown,
+                lockedOrientation: state.lockedOrientation
+            ), orientation)
+        }
+    }
+
+    func testManualRotationWorksWhileLockedAndKeepsTheNewOrientationLocked() {
+        var state = PlayerRotationState()
+        state.activate()
+        state.toggleLock(at: .portrait)
+        for target: UIInterfaceOrientationMask in [.landscapeRight, .portrait, .landscapeLeft, .portrait] {
+            state.manuallyRotate(to: target)
+            XCTAssertTrue(state.isLocked)
+            XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
+                isPlayerActive: state.isPlayerActive, preferredOrientation: target,
+                lockedOrientation: state.lockedOrientation
+            ), target)
+        }
+    }
+
+    func testUnlockingRestoresPhoneRotationAndClosingClearsTheSessionLock() {
+        var state = PlayerRotationState()
+        state.activate()
+        state.toggleLock(at: .landscapeRight)
+        state.toggleLock(at: .landscapeRight)
+        XCTAssertFalse(state.isLocked)
+        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+            isPlayerActive: state.isPlayerActive, lockedOrientation: state.lockedOrientation
+        ), .allButUpsideDown)
+        state.toggleLock(at: .landscapeLeft)
+        state.deactivate()
+        XCTAssertFalse(state.isLocked)
+        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+            isPlayerActive: state.isPlayerActive, lockedOrientation: state.lockedOrientation
+        ), .portrait)
+        state.activate()
+        XCTAssertFalse(state.isLocked)
+    }
+
+    func testManualRotationDoesNotImplicitlyEnableTheLock() {
+        var state = PlayerRotationState()
+        state.activate()
+        state.manuallyRotate(to: .landscapeRight)
+        state.manuallyRotate(to: .portrait)
+        XCTAssertFalse(state.isLocked)
+        state.deactivate()
+        state.toggleLock(at: .landscapeRight)
+        state.manuallyRotate(to: .landscapeLeft)
+        XCTAssertFalse(state.isLocked)
+    }
+
     func testRotationPillFollowsTheActualInterfaceOrientation() {
         XCTAssertEqual(PlayerScreenOrientation(interfaceOrientation: .portrait)?.toggled, .landscape)
         XCTAssertEqual(PlayerScreenOrientation(interfaceOrientation: .landscapeLeft)?.toggled, .portrait)
