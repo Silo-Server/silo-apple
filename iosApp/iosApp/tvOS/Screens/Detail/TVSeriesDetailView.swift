@@ -32,17 +32,24 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     /// Owns only the outer vertical UIScrollView. Locking this concrete scroll
     /// view leaves every nested horizontal season/episode rail fully native.
-    /// Its return animator can be stopped at the presentation position when a
-    /// rapid Down reverses direction, so an old trip to the hero cannot win.
+    ///
+    /// Every page-level trip — the return to the hero and the descent that
+    /// centers the Cast section — runs through this one animator slot. A new
+    /// trip stops the current one at its presentation position first, so a
+    /// rapid reversal in either direction continues from where the page
+    /// visibly is instead of letting two animations race to the finish.
     private final class PageScrollCoordinator {
         weak var scrollView: UIScrollView?
-        private var returnAnimator: UIViewPropertyAnimator?
+        /// Marker view laid out behind the Cast section; its frame converted
+        /// into the scroll view gives the centering target in content space.
+        weak var supportingAnchorView: UIView?
+        private var pageAnimator: UIViewPropertyAnimator?
         private var animationGeneration = 0
         private(set) var primaryOwnsViewport = false
 
         func attach(_ scrollView: UIScrollView) {
             guard self.scrollView !== scrollView else { return }
-            stopReturnAnimation()
+            stopPageAnimation()
             self.scrollView = scrollView
             if primaryOwnsViewport {
                 pinTopAndLock()
@@ -51,7 +58,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
         func enterPrimary(animated: Bool, reduceMotion: Bool) {
             primaryOwnsViewport = true
-            stopReturnAnimation()
+            stopPageAnimation()
             guard let scrollView else { return }
 
             scrollView.isScrollEnabled = true
@@ -64,6 +71,55 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 return
             }
 
+            animatePage(to: target) { [weak self, weak scrollView] in
+                guard let self, self.primaryOwnsViewport, let scrollView else { return }
+                scrollView.setContentOffset(
+                    self.topOffset(in: scrollView),
+                    animated: false
+                )
+                scrollView.isScrollEnabled = false
+            }
+        }
+
+        /// Centers the Cast section after focus leaves the fixed top viewport.
+        /// Runs in the same animator slot as the return trip so that an Up
+        /// press mid-descent stops this motion where it is and the return
+        /// starts from that exact offset.
+        func revealSupporting(reduceMotion: Bool) {
+            primaryOwnsViewport = false
+            stopPageAnimation()
+            guard let scrollView, let supportingAnchorView else { return }
+
+            scrollView.isScrollEnabled = true
+            let target = centeredOffset(for: supportingAnchorView, in: scrollView)
+            guard !reduceMotion,
+                  abs(scrollView.contentOffset.y - target.y) > 0.5 else {
+                scrollView.setContentOffset(target, animated: false)
+                return
+            }
+
+            // No settle write here. The model offset is already at `target`
+            // once the animation block runs, so the focus engine's own reveal
+            // for the Cast card sees it as visible and stays quiet, while a
+            // later move on to Trailers or Similar must be allowed to win.
+            animatePage(to: target) {}
+        }
+
+        func releasePrimary() {
+            primaryOwnsViewport = false
+            stopPageAnimation()
+            scrollView?.isScrollEnabled = true
+        }
+
+        func detach() {
+            primaryOwnsViewport = false
+            stopPageAnimation()
+            scrollView?.isScrollEnabled = true
+            scrollView = nil
+        }
+
+        private func animatePage(to target: CGPoint, onSettle: @escaping () -> Void) {
+            guard let scrollView else { return }
             animationGeneration &+= 1
             let generation = animationGeneration
             let timing = UICubicTimingParameters(
@@ -74,36 +130,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 duration: 0.55,
                 timingParameters: timing
             )
-            returnAnimator = animator
+            pageAnimator = animator
             animator.addAnimations { [weak scrollView] in
                 scrollView?.setContentOffset(target, animated: false)
             }
-            animator.addCompletion { [weak self, weak scrollView] _ in
-                guard let self,
-                      self.animationGeneration == generation,
-                      self.primaryOwnsViewport,
-                      let scrollView else { return }
-                self.returnAnimator = nil
-                scrollView.setContentOffset(
-                    self.topOffset(in: scrollView),
-                    animated: false
-                )
-                scrollView.isScrollEnabled = false
+            animator.addCompletion { [weak self] _ in
+                guard let self, self.animationGeneration == generation else { return }
+                self.pageAnimator = nil
+                onSettle()
             }
             animator.startAnimation()
-        }
-
-        func releasePrimary() {
-            primaryOwnsViewport = false
-            stopReturnAnimation()
-            scrollView?.isScrollEnabled = true
-        }
-
-        func detach() {
-            primaryOwnsViewport = false
-            stopReturnAnimation()
-            scrollView?.isScrollEnabled = true
-            scrollView = nil
         }
 
         private func pinTopAndLock() {
@@ -112,15 +148,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             scrollView.isScrollEnabled = false
         }
 
-        private func stopReturnAnimation() {
+        private func stopPageAnimation() {
             animationGeneration &+= 1
-            guard let returnAnimator else { return }
-            self.returnAnimator = nil
-            if returnAnimator.state == .active {
-                returnAnimator.stopAnimation(false)
-                returnAnimator.finishAnimation(at: .current)
+            guard let pageAnimator else { return }
+            self.pageAnimator = nil
+            if pageAnimator.state == .active {
+                pageAnimator.stopAnimation(false)
+                pageAnimator.finishAnimation(at: .current)
             } else {
-                returnAnimator.stopAnimation(true)
+                pageAnimator.stopAnimation(true)
             }
         }
 
@@ -128,6 +164,25 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             CGPoint(
                 x: scrollView.contentOffset.x,
                 y: -scrollView.adjustedContentInset.top
+            )
+        }
+
+        /// Equivalent of `scrollTo(id, anchor: .center)` for the anchor view,
+        /// clamped to the scrollable range like the SwiftUI proxy does.
+        private func centeredOffset(for anchor: UIView, in scrollView: UIScrollView) -> CGPoint {
+            let rect = scrollView.convert(anchor.bounds, from: anchor)
+            let viewportHeight = scrollView.bounds.height
+            let minY = -scrollView.adjustedContentInset.top
+            let maxY = max(
+                minY,
+                scrollView.contentSize.height
+                    + scrollView.adjustedContentInset.bottom
+                    - viewportHeight
+            )
+            let centered = rect.midY - viewportHeight / 2
+            return CGPoint(
+                x: scrollView.contentOffset.x,
+                y: min(max(centered, minY), maxY)
             )
         }
     }
@@ -238,13 +293,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 }
                 .onChange(of: supportingRailFocusRequest) { _, request in
                     guard request > 0, hasCast else { return }
-                    if reduceMotion {
-                        scrollProxy.scrollTo(castSectionScrollId, anchor: .center)
-                    } else {
-                        withAnimation(.smooth(duration: 0.55, extraBounce: 0)) {
-                            scrollProxy.scrollTo(castSectionScrollId, anchor: .center)
-                        }
-                    }
+                    // Drive this through the coordinator rather than the
+                    // SwiftUI proxy: a proxy animation cannot be cancelled, so
+                    // a quick Up used to run it against the return trip and
+                    // the page snapped when the loser finished.
+                    pageScrollCoordinator.revealSupporting(reduceMotion: reduceMotion)
                 }
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
@@ -1208,6 +1261,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             )
         }
         .padding(.top, 20)
+        .background {
+            TVSeriesAnchorResolver { anchorView in
+                pageScrollCoordinator.supportingAnchorView = anchorView
+            }
+        }
     }
 
     private var hasCast: Bool {
@@ -1277,6 +1335,25 @@ private struct TVSeriesPageScrollResolver: UIViewRepresentable {
                 }
             }
         }
+    }
+}
+
+/// Invisible marker laid out behind a page section. Its UIView frame is what
+/// the page coordinator converts into scroll content space to center that
+/// section without going through the SwiftUI scroll proxy.
+private struct TVSeriesAnchorResolver: UIViewRepresentable {
+    let onResolve: (UIView) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        onResolve(view)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        onResolve(uiView)
     }
 }
 
