@@ -185,7 +185,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var moreMenu: some View {
-        TVCircleMenuButton(accessibilityLabel: "More options") {
+        TVCircleMenuButton(title: "More", accessibilityLabel: "More options") {
             Button(action: onToggleFavorite) {
                 Label(
                     isFavorite ? "Remove from Favorites" : "Add to Favorites",

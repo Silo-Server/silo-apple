@@ -9,7 +9,9 @@ import NukeUI
 enum TVDetailLayout {
     static let horizontalInset: CGFloat = 100
     static let heroHeight: CGFloat = 690
-    static let heroTopInset: CGFloat = 88
+    /// Shared title baseline for every detail page. Sits low enough that the
+    /// first rail below the 690pt hero bottoms out just above the safe area.
+    static let heroTopInset: CGFloat = 116
     static let heroContentWidth: CGFloat = 1_080
     static let bodySectionSpacing: CGFloat = 64
     static let sectionHeaderSpacing: CGFloat = 14

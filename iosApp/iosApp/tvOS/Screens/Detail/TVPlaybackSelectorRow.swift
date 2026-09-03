@@ -33,7 +33,8 @@ struct TVPlaybackActionSelectors: View {
 
     private var versionMenu: some View {
         TVCircleMenuButton(
-            icon: "movieclapper",
+            icon: "square.stack",
+            title: "Versions",
             accessibilityLabel: "Version, \(versionValue)",
             stabilizesFocusMotion: true
         ) {
@@ -60,6 +61,7 @@ struct TVPlaybackActionSelectors: View {
     private var audioMenu: some View {
         TVCircleMenuButton(
             icon: "speaker.wave.2",
+            title: "Audio Tracks",
             accessibilityLabel: "Audio, \(audioValue)",
             stabilizesFocusMotion: true
         ) {
@@ -86,6 +88,7 @@ struct TVPlaybackActionSelectors: View {
     private var subtitleMenu: some View {
         TVCircleMenuButton(
             icon: "captions.bubble",
+            title: "Subtitles",
             accessibilityLabel: "Subtitles, \(subtitleValue)",
             stabilizesFocusMotion: true
         ) {

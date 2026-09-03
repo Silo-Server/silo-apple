@@ -337,10 +337,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles ?? false
             ),
             backdropHeight: TVDetailLayout.heroHeight,
-            // Keep the mode/season row at its approved fixed anchor. The hero
-            // stays 620 points tall even when the controls move independently.
-            heroHeight: 620,
-            heroTopInset: 46,
+            // The hero shares the standard height and title inset with Movie
+            // so the first viewport bottoms out on the episode rail: the season
+            // row lands at ~690 and the rail finishes just above the bottom
+            // safe area with Cast & Crew fully below the fold.
+            heroHeight: TVDetailLayout.heroHeight,
             editorialContentWidth: TVDetailLayout.heroContentWidth,
             // Raise only the controls by 20 points. The 112-point synopsis slot
             // remains unchanged, so episode copy still renders three full lines.
@@ -1079,6 +1080,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var moreMenu: some View {
         TVCircleMenuButton(
+            title: "More",
             accessibilityLabel: "More options",
             stabilizesFocusMotion: true
         ) {

@@ -890,10 +890,14 @@ class ItemDetailViewModel {
         }) {
             return partial
         }
-        if let firstUnplayed = seasons.first(where: { !($0.userData?.played ?? false) }) {
+        // Specials sort first for display, but a fresh series should open on
+        // its first numbered season rather than the specials bucket.
+        let regular = seasons.filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
+        let candidates = regular.isEmpty ? seasons : regular
+        if let firstUnplayed = candidates.first(where: { !($0.userData?.played ?? false) }) {
             return firstUnplayed
         }
-        return seasons.first
+        return candidates.first
     }
 
     func selectSeason(

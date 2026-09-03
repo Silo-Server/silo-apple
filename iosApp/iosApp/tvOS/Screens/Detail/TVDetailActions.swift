@@ -157,46 +157,61 @@ private struct TVSecondaryPillLabel: View {
 /// one tap away without crowding the primary row.
 struct TVCircleMenuButton<MenuContent: View>: View {
     let icon: String
+    /// Short label revealed while focused ("Versions", "More"). Nil keeps the
+    /// button a fixed icon-only circle.
+    let title: String?
     let accessibilityLabel: String
     let stabilizesFocusMotion: Bool
     @ViewBuilder let menu: () -> MenuContent
 
+    @FocusState private var isFocused: Bool
+
     init(
         icon: String = "ellipsis",
+        title: String? = nil,
         accessibilityLabel: String,
         stabilizesFocusMotion: Bool = false,
         @ViewBuilder menu: @escaping () -> MenuContent
     ) {
         self.icon = icon
+        self.title = title
         self.accessibilityLabel = accessibilityLabel
         self.stabilizesFocusMotion = stabilizesFocusMotion
         self.menu = menu
     }
 
     var body: some View {
-        Menu {
-            menu()
-        } label: {
-            Image(systemName: icon)
-                .font(.system(size: 31, weight: .semibold))
-                .frame(width: 38, height: 38, alignment: .center)
-                .contentTransition(.symbolEffect(.replace))
-        }
-        .menuStyle(.button)
-        .buttonStyle(
-            TVCircleButtonStyle(
-                stabilizesFocusMotion: stabilizesFocusMotion
-            )
+        TVCirclePillSurface(
+            icon: icon,
+            title: title,
+            isFocused: isFocused,
+            isPressed: false,
+            stabilizesFocusMotion: stabilizesFocusMotion
         )
+        .overlay {
+            // The Menu is only the focus/press host. Its UIKit-backed button
+            // applies label size changes without animating them, so it must
+            // not own the pill's geometry; the surface above does.
+            Menu {
+                menu()
+            } label: {
+                Color.clear
+            }
+            .menuStyle(.button)
+            .buttonStyle(TVCircleFocusHostButtonStyle(isPressed: nil))
+            .focused($isFocused)
+        }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
 // MARK: - Circle button
 
-/// Compact icon-only secondary action circle. Infuse keeps these small
-/// and quiet so the primary play button dominates; we do the same. Used
-/// for Favorite / Watchlist / Info in the hero row.
+/// Compact secondary action circle: icon-only at rest so the primary play
+/// button dominates, expanding to icon + title while focused. Used for
+/// Start Over / Watchlist in the hero row.
 struct TVCircleActionButton: View {
     let icon: String
     let iconActive: String?
@@ -205,6 +220,9 @@ struct TVCircleActionButton: View {
     let accessibilityLabel: String
     let stabilizesFocusMotion: Bool
     let action: () -> Void
+
+    @FocusState private var isFocused: Bool
+    @State private var isPressed = false
 
     init(
         icon: String,
@@ -230,19 +248,134 @@ struct TVCircleActionButton: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: resolvedIcon)
+        TVCirclePillSurface(
+            icon: resolvedIcon,
+            title: title,
+            isFocused: isFocused,
+            isPressed: isPressed,
+            stabilizesFocusMotion: stabilizesFocusMotion
+        )
+        .overlay {
+            Button(action: action) {
+                Color.clear
+            }
+            .buttonStyle(TVCircleFocusHostButtonStyle(isPressed: $isPressed))
+            .focused($isFocused)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// The visible pill for `TVCircleMenuButton` / `TVCircleActionButton`.
+/// Icon-only circle at rest; while focused the title fades in beside the
+/// icon and the capsule widens to fit, reflowing the row with it.
+///
+/// Pure SwiftUI on purpose: the focusable control sits in an overlay so no
+/// UIKit-backed host can snap the width. `isFocused` drives an `isExpanded`
+/// state written inside `withAnimation`, which puts the width change and
+/// the neighbours' reflow into one transaction.
+private struct TVCirclePillSurface: View {
+    let icon: String
+    let title: String?
+    let isFocused: Bool
+    let isPressed: Bool
+    let stabilizesFocusMotion: Bool
+
+    @State private var isExpanded = false
+
+    private var canExpand: Bool {
+        guard let title else { return false }
+        return !title.isEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
                 .font(.system(size: 31, weight: .semibold))
                 .frame(width: 38, height: 38, alignment: .center)
                 .contentTransition(.symbolEffect(.replace))
+            if isExpanded, let title {
+                Text(title)
+                    .font(.system(size: 26, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    // Fade in once the capsule has started opening; fade out
+                    // fast so no text is visible while it closes. The clip
+                    // below is the backstop.
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.animation(
+                                TVCircleFocusMotion.reveal.delay(0.06)
+                            ),
+                            removal: .opacity.animation(TVCircleFocusMotion.dismiss)
+                        )
+                    )
+            }
         }
-        .buttonStyle(
-            TVCircleButtonStyle(
-                stabilizesFocusMotion: stabilizesFocusMotion
+        .padding(.horizontal, isExpanded ? 28 : 0)
+        .foregroundColor(isFocused ? .black : .white)
+        // A 76×76 capsule is a circle; the title widens it into a pill
+        // without changing the row height.
+        .frame(minWidth: 76)
+        .frame(height: 76)
+        .background(
+            Capsule().fill(
+                isFocused ? .white : Color.white.opacity(0.10)
             )
         )
-        .accessibilityLabel(accessibilityLabel)
+        .clipShape(Capsule())
+        .scaleEffect(scale)
+        .shadow(
+            color: .black.opacity(isFocused ? 0.34 : 0.0),
+            radius: isFocused ? 16 : 0,
+            y: isFocused ? 6 : 0
+        )
+        .animation(TVCircleFocusMotion.resize, value: isFocused)
+        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isPressed)
+        .onChange(of: isFocused, initial: true) { _, focused in
+            let expanded = focused && canExpand
+            guard expanded != isExpanded else { return }
+            withAnimation(TVCircleFocusMotion.resize) {
+                isExpanded = expanded
+            }
+        }
     }
+
+    private var scale: CGFloat {
+        let base: CGFloat = isFocused && !stabilizesFocusMotion ? 1.1 : 1.0
+        return isPressed ? base * 0.95 : base
+    }
+}
+
+/// Invisible, full-size focus and press host laid over `TVCirclePillSurface`.
+/// Suppresses the system focus halo (the surface paints its own) and mirrors
+/// the press state out so the surface can react to it.
+private struct TVCircleFocusHostButtonStyle: ButtonStyle {
+    let isPressed: Binding<Bool>?
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Capsule())
+            .focusEffectDisabled()
+            .onChange(of: configuration.isPressed) { _, pressed in
+                isPressed?.wrappedValue = pressed
+            }
+    }
+}
+
+/// One motion vocabulary for the expanding circles so the capsule, the
+/// row reflow, and the title all move together.
+enum TVCircleFocusMotion {
+    /// Capsule width and neighbor reflow. A plain smooth ease; springs read
+    /// as wobble on a 10-foot UI.
+    static let resize = Animation.smooth(duration: 0.28, extraBounce: 0)
+    /// Title arriving with the capsule.
+    static let reveal = Animation.easeOut(duration: 0.18)
+    /// Title leaving ahead of the capsule shrink.
+    static let dismiss = Animation.easeIn(duration: 0.08)
 }
 
 // MARK: - Detail action row
@@ -279,8 +412,8 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     let playFocused: FocusState<Bool>.Binding
     let rowFocused: FocusState<Bool>.Binding
     /// Opt-in treatment used by the redesigned Movie and Series pages. Play
-    /// stays a labeled pill; secondary actions retain fixed icon-only circles
-    /// so focus changes never move the row or its neighboring controls.
+    /// stays a labeled pill and no control scales on focus; secondary circles
+    /// still widen to reveal their title, reflowing the row horizontally only.
     var stabilizesFocusMotion = false
     /// Series reserves one compact width across Play/Resume episode labels.
     /// Movies leave this nil so short labels use their natural pill width.
@@ -603,48 +736,4 @@ private struct TVPillButtonBody: View {
 
 }
 
-// MARK: - Circle ButtonStyle
-
-struct TVCircleButtonStyle: ButtonStyle {
-    var stabilizesFocusMotion = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        TVCircleButtonBody(
-            configuration: configuration,
-            stabilizesFocusMotion: stabilizesFocusMotion
-        )
-    }
-}
-
-private struct TVCircleButtonBody: View {
-    let configuration: ButtonStyleConfiguration
-    let stabilizesFocusMotion: Bool
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .foregroundColor(isFocused ? .black : .white)
-            .frame(width: 76, height: 76)
-            .background(
-                Circle().fill(
-                    isFocused ? .white : Color.white.opacity(0.10)
-                )
-            )
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.34 : 0.0),
-                radius: isFocused ? 16 : 0,
-                y: isFocused ? 6 : 0
-            )
-            .focusEffectDisabled()
-            .animation(.easeInOut(duration: 0.18), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused && !stabilizesFocusMotion ? 1.1 : 1.0
-        return configuration.isPressed ? base * 0.95 : base
-    }
-}
 #endif

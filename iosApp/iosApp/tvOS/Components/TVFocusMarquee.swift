@@ -939,12 +939,17 @@ final class TVFocusMarqueeModel {
         }) {
             return partial
         }
-        if let firstUnplayed = seasons.first(where: {
+        // Mirrors ItemDetailViewModel.preferredInitialSeason: specials lead
+        // the display order, but a fresh series opens on its first numbered
+        // season.
+        let regular = seasons.filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
+        let candidates = regular.isEmpty ? seasons : regular
+        if let firstUnplayed = candidates.first(where: {
             !($0.userData?.played ?? false)
         }) {
             return firstUnplayed
         }
-        return seasons.first
+        return candidates.first
     }
 
     private func sampleTintIfNeeded(for urlString: String?) {
