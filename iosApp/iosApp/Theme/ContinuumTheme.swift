@@ -254,10 +254,6 @@ struct ContinuumTheme {
         static let marqueeTitleSizeLibrary: CGFloat = 66
         static let marqueeMetaSizeHome: CGFloat = 20
         static let marqueeMetaSizeLibrary: CGFloat = 19
-        /// Fixed leading slot for the age/content-rating pill. For You often
-        /// backfills this value from item detail; reserving the slot prevents
-        /// the remaining metadata from sliding sideways when it arrives.
-        static let marqueeRatingSlotWidth: CGFloat = 104
         static let marqueeSynopsisSize: CGFloat = 22
         /// Synopsis column cap (§4.1) — narrower than the content block.
         static let marqueeSynopsisMaxWidth: CGFloat = 780
@@ -271,11 +267,18 @@ struct ContinuumTheme {
         static let marqueeLogoMaxHeightLibrary: CGFloat = 150
         /// Codec/HDR badge chip label size (§4.1).
         static let marqueeBadgeSize: CGFloat = 15
-        /// Focus must rest this long before the marquee swaps (§4.2) —
-        /// rolling through cards never thrashes backdrops.
+        /// Focus must rest this long before the backdrop swaps and uncached
+        /// detail requests start (§4.2). Foreground text follows focus
+        /// immediately; this gate only keeps a roll across a row from
+        /// thrashing large backdrops. Matches Android's
+        /// `TvMarqueeFocusRestMillis`.
         static let marqueeRestDebounceMilliseconds = 150
-        /// Marquee text + backdrop crossfade duration (§4.2).
+        /// Backdrop + tint crossfade between rested selections (§4.2).
         static let marqueeCrossfadeDuration: Double = 0.24
+        /// Neighbouring cards on either side of a rested selection whose
+        /// backdrop bytes are pulled into the disk cache at low priority,
+        /// so the next rest skips the network round trip.
+        static let marqueeNeighborBackdropPrefetchRadius = 2
 
         // MARK: Row band under the marquee (§5.7, revised)
 

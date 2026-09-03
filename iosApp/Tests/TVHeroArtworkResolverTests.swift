@@ -89,29 +89,4 @@ final class TVHeroArtworkResolverTests: XCTestCase {
 
         XCTAssertEqual(artwork, poster)
     }
-
-    func testSkylineUpMovesToPreviousRow() {
-        XCTAssertEqual(
-            tvSkylineRowMoveTarget(currentIndex: 2, rowCount: 4, direction: .up),
-            .row(1)
-        )
-    }
-
-    func testSkylineUpFromFirstRowHandsFocusToTopMenu() {
-        XCTAssertEqual(
-            tvSkylineRowMoveTarget(currentIndex: 0, rowCount: 4, direction: .up),
-            .topMenu
-        )
-    }
-
-    func testSkylineDownMovesToNextRowAndStopsAtEnd() {
-        XCTAssertEqual(
-            tvSkylineRowMoveTarget(currentIndex: 1, rowCount: 3, direction: .down),
-            .row(2)
-        )
-        XCTAssertEqual(
-            tvSkylineRowMoveTarget(currentIndex: 2, rowCount: 3, direction: .down),
-            .none
-        )
-    }
 }

@@ -107,6 +107,7 @@ struct TVLibraryGridView: View {
             await viewModel.loadFacetsIfNeeded()
         }
         .onAppear { noteShellFocusRequest(focusRequest) }
+        .onDisappear { viewModel.cancelPosterPrefetch() }
         .onChange(of: focusRequest) { _, request in noteShellFocusRequest(request) }
     }
 
@@ -183,12 +184,13 @@ struct TVLibraryGridView: View {
                         onItemTap: { item in
                             router.navigate(to: .itemDetail(browseItem: item))
                         },
-                        onNearEnd: { index in
+                        onNearEnd: { _ in
                             Task { await viewModel.loadMoreIfNeeded() }
-                            let end = min(index + 48, viewModel.items.count)
-                            viewModel.prefetchPosters(in: index..<end)
                         },
-                        focusRequest: gridFocusRequest
+                        focusRequest: gridFocusRequest,
+                        onRowVisibilityChange: { range, isVisible in
+                            viewModel.setPosterRowVisibility(range, isVisible: isVisible)
+                        }
                     )
                     .padding(.horizontal, ContinuumTheme.safePadding)
                 }

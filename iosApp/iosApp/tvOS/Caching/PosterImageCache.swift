@@ -104,6 +104,52 @@ enum PosterImageCache {
     }()
 
     #if os(tvOS)
+    /// Root-hero backdrop warmer for the cards beside a rested marquee
+    /// selection. Bounded to a handful of URLs and low priority so visible
+    /// cards and the rested backdrop itself always win the pipeline.
+    ///
+    /// Data-only on purpose: tvOS receives w1920 backdrops, which decode to
+    /// roughly 8 MB each. Decoding four of those per rest into a 96 MB
+    /// memory budget on 3 GB Apple TVs would evict dozens of posters and
+    /// keep the two-wide decompression queue busy while the user is still
+    /// navigating. Pulling only the bytes into the disk cache removes the
+    /// network round trip — the dominant cost of a rested swap — and leaves
+    /// the single decode to the moment the backdrop is actually requested.
+    private static let neighborBackdropPrefetcher: ImagePrefetcher = {
+        let prefetcher = ImagePrefetcher(
+            pipeline: ImagePipeline.shared,
+            destination: .diskCache,
+            maxConcurrentRequestCount: 2
+        )
+        prefetcher.priority = .low
+        return prefetcher
+    }()
+    @MainActor private static var warmedNeighborBackdropURLs: Set<URL> = []
+
+    /// Replace the neighbour window: cancel URLs that fell out of it and
+    /// start only the ones not already in flight, in the order given. Called
+    /// once per rested selection, never per focus change, so a roll across a
+    /// row queues nothing.
+    @MainActor
+    static func warmNeighborBackdrops(_ urlStrings: [String]) {
+        var seen = Set<URL>()
+        let urls = urlStrings
+            .compactMap { $0.isEmpty ? nil : URL(string: $0) }
+            .filter { seen.insert($0).inserted }
+        let stale = warmedNeighborBackdropURLs.subtracting(urls)
+        let fresh = urls.filter { !warmedNeighborBackdropURLs.contains($0) }
+        warmedNeighborBackdropURLs = seen
+        if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: Array(stale)) }
+        if !fresh.isEmpty { neighborBackdropPrefetcher.startPrefetching(with: fresh) }
+    }
+
+    @MainActor
+    static func cancelNeighborBackdropWarmup() {
+        guard !warmedNeighborBackdropURLs.isEmpty else { return }
+        neighborBackdropPrefetcher.stopPrefetching(with: Array(warmedNeighborBackdropURLs))
+        warmedNeighborBackdropURLs.removeAll()
+    }
+
     /// Prefetch only movie portraits. Series cast lives farther down its page
     /// and deliberately keeps the normal lazy-loading path.
     static func prefetchVisibleMovieCast(for detail: ItemDetail) {
