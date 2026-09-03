@@ -87,3 +87,13 @@ jobs:
             /tmp/preview-transition.mp4
             /tmp/preview-recording.xcresult
           retention-days: 7
+      - name: Package simulator tests for focused visual verification
+        if: matrix.action == 'test' && !cancelled()
+        run: ditto -c -k --keepParent /tmp/silo-derived/Build/Products /tmp/Silo-simulator-tests.zip
+      - name: Upload compiled simulator tests
+        if: matrix.action == 'test' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Silo-simulator-tests
+          path: /tmp/Silo-simulator-tests.zip
+          retention-days: 3
