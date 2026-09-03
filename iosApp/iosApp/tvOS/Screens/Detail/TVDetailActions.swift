@@ -188,10 +188,12 @@ struct TVCircleMenuButton<MenuContent: View>: View {
             isPressed: false,
             stabilizesFocusMotion: stabilizesFocusMotion
         )
+        .accessibilityHidden(true)
         .overlay {
             // The Menu is only the focus/press host. Its UIKit-backed button
             // applies label size changes without animating them, so it must
-            // not own the pill's geometry; the surface above does.
+            // not own the pill's geometry; the surface above does. It stays
+            // the accessibility element so VoiceOver activation opens it.
             Menu {
                 menu()
             } label: {
@@ -200,10 +202,8 @@ struct TVCircleMenuButton<MenuContent: View>: View {
             .menuStyle(.button)
             .buttonStyle(TVCircleFocusHostButtonStyle(isPressed: nil))
             .focused($isFocused)
+            .accessibilityLabel(accessibilityLabel)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -255,16 +255,17 @@ struct TVCircleActionButton: View {
             isPressed: isPressed,
             stabilizesFocusMotion: stabilizesFocusMotion
         )
+        .accessibilityHidden(true)
         .overlay {
+            // The Button stays the accessibility element so VoiceOver
+            // activation runs `action`; the surface is decorative.
             Button(action: action) {
                 Color.clear
             }
             .buttonStyle(TVCircleFocusHostButtonStyle(isPressed: $isPressed))
             .focused($isFocused)
+            .accessibilityLabel(accessibilityLabel)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(.isButton)
     }
 }
 
