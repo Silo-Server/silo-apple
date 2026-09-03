@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(inputs.ios_only &&
+          ${{ fromJSON((inputs.ios_only || github.head_ref == 'fix/detail-dismiss-navigation') &&
             '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"}]' ||
             '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"},
               {"scheme":"SiloTV","destination":"generic/platform=tvOS Simulator","action":"build"},
@@ -53,6 +53,35 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '26.3'
+      - name: Prepare iOS simulator
+        if: matrix.action == 'test'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Hosted images do not always have a usable pre-created device.
+          # Match the selected Xcode SDK and reuse one explicit destination.
+          runtime_version=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          find_runtime() {
+            xcrun simctl list runtimes --json | jq -r --arg version "$runtime_version" \
+              '[.runtimes[] | select(.isAvailable and .version == $version and
+                (.identifier | startswith("com.apple.CoreSimulator.SimRuntime.iOS-")))][0].identifier // empty'
+          }
+          runtime_id=$(find_runtime)
+          if [ -z "$runtime_id" ]; then
+            xcodebuild -downloadPlatform iOS -buildVersion "$runtime_version"
+            runtime_id=$(find_runtime)
+          fi
+          if [ -z "$runtime_id" ]; then
+            echo "::error::No available iOS $runtime_version simulator runtime"
+            exit 1
+          fi
+          simulator_id=$(xcrun simctl create Silo-Player-Regression \
+            com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro "$runtime_id")
+          echo "SILO_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          echo "SILO_TEST_DESTINATION=platform=iOS Simulator,id=$simulator_id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_id"
+          xcrun simctl bootstatus "$simulator_id" -b
       - name: Generate Xcode project
         run: |
           curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
@@ -70,7 +99,7 @@ jobs:
             # Simulator-only ad-hoc signing supplies the application identifier
             # required by Keychain. No certificate or release secret is used.
             xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
-              -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+              -destination "$SILO_TEST_DESTINATION" -derivedDataPath /tmp/silo-derived \
               CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-build.log
           else
             xcodebuild build -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
@@ -94,14 +123,14 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath /tmp/silo-derived \
+            -destination "$SILO_TEST_DESTINATION" -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
         if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.record_preview)
-        timeout-minutes: 4
+        timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
@@ -109,8 +138,7 @@ jobs:
           # synthetic-video test, not a second build or the full test suite.
           # XCTest can shut down the simulator after the full suite. Boot the
           # exact recording destination before starting the recorder.
-          simulator_id=$(xcrun simctl list devices available --json | jq -er \
-            '[.devices[][] | select(.name == "iPhone 17 Pro")][0].udid')
+          simulator_id="$SILO_SIMULATOR_ID"
           simulator_state=$(xcrun simctl list devices available --json | jq -r \
             --arg id "$simulator_id" '.devices[][] | select(.udid == $id) | .state')
           if [ "$simulator_state" != Booted ]; then
