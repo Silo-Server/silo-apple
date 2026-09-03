@@ -267,8 +267,11 @@ struct EpisodeThumbCard: View {
         item.seriesTitle ?? item.title
     }
 
-    /// Secondary line — episode title for episodes, otherwise year.
+    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
     private var subtitleLine: String? {
+        if let episodeLine = EpisodeCardCaption.line(for: item) {
+            return episodeLine
+        }
         if item.seriesTitle != nil {
             return item.title
         }
@@ -282,8 +285,7 @@ struct EpisodeThumbCard: View {
         var components = [displayTitle]
         if let episodeAccessibilityLabel {
             components.append(episodeAccessibilityLabel)
-        }
-        if let subtitleLine {
+        } else if let subtitleLine {
             components.append(subtitleLine)
         }
         if isPlayed {
@@ -293,10 +295,7 @@ struct EpisodeThumbCard: View {
     }
 
     private var episodeAccessibilityLabel: String? {
-        if let season = item.seasonNumber, let episode = item.episodeNumber {
-            return "S\(season) · E\(episode)"
-        }
-        return nil
+        EpisodeCardCaption.accessibilityLabel(for: item)
     }
 
     private var progressValue: Double? {
