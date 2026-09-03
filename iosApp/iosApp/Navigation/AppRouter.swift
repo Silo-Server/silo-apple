@@ -138,6 +138,23 @@ class AppRouter {
 
     // MARK: - Item Detail Presentation
 
+    /// A Continue Watching episode opens its existing series card, retaining
+    /// the episode/season intent without fetching an intermediate detail page.
+    struct ItemDetailResumeContext: Equatable {
+        let seriesContentId: String
+        let episodeContentId: String
+        let seasonNumber: Int?
+
+        init?(item: SectionItem) {
+            guard item.type.lowercased() == "episode" || item.episodeNumber != nil,
+                  let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !seriesId.isEmpty else { return nil }
+            seriesContentId = seriesId
+            episodeContentId = item.contentId
+            seasonNumber = item.seasonNumber
+        }
+    }
+
     /// iPhone and iPad present catalog details as a native bottom sheet instead
     /// of pushing them into the tab or split-view navigation stack. A fresh UUID
     /// makes reopening the same title after dismissal a new presentation while
@@ -146,10 +163,13 @@ class AppRouter {
         let id = UUID()
         var contentId: String
         let browseSource: ItemDetailBrowseSource?
+        let resumeContext: ItemDetailResumeContext?
 
-        init(contentId: String, browseSource: ItemDetailBrowseSource? = nil) {
+        init(contentId: String, browseSource: ItemDetailBrowseSource? = nil,
+             resumeContext: ItemDetailResumeContext? = nil) {
             self.contentId = contentId
             self.browseSource = browseSource
+            self.resumeContext = resumeContext
         }
     }
 
@@ -374,7 +394,8 @@ class AppRouter {
     /// nested recommendations reached from inside an already-open detail.
     func presentItemDetail(
         contentId: String,
-        browseSource: ItemDetailBrowseSource? = nil
+        browseSource: ItemDetailBrowseSource? = nil,
+        resumeContext: ItemDetailResumeContext? = nil
     ) {
         #if os(iOS)
         recordScreenBreadcrumb(target: "itemDetail", action: "present")
@@ -385,7 +406,8 @@ class AppRouter {
             itemDetailPath = NavigationPath()
             presentedItemDetail = ItemDetailPresentation(
                 contentId: contentId,
-                browseSource: source
+                browseSource: source,
+                resumeContext: resumeContext
             )
         } else {
             itemDetailPath.append(Route.itemDetail(contentId: contentId))
@@ -393,6 +415,18 @@ class AppRouter {
         #else
         navigate(to: .itemDetail(contentId: contentId))
         #endif
+    }
+
+    func presentContinueWatchingDetail(for item: SectionItem, browseSource: ItemDetailBrowseSource? = nil) {
+        #if os(iOS)
+        if let context = ItemDetailResumeContext(item: item) {
+            presentItemDetail(contentId: context.seriesContentId, resumeContext: context)
+            return
+        }
+        #endif
+        // Movies, audio and incomplete legacy episode payloads retain their
+        // existing destination; a missing parent must not make a card inert.
+        presentItemDetail(contentId: item.contentId, browseSource: browseSource)
     }
 
     /// Select a sibling while the iOS detail card stays presented. Keeping the

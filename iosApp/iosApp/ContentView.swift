@@ -2538,7 +2538,11 @@ private struct ItemDetailSheet: View {
             topLeadingRadius: 28, bottomLeadingRadius: 0,
             bottomTrailingRadius: 0, topTrailingRadius: 28, style: .continuous
         )
-        return ItemDetailView(contentId: contentID, onClose: router.dismissItemDetail)
+        return ItemDetailView(
+            contentId: contentID,
+            onClose: router.dismissItemDetail,
+            resumeContext: presentation.resumeContext?.seriesContentId == contentID ? presentation.resumeContext : nil
+        )
             .frame(width: width, height: height)
             .clipShape(shape)
             .contentShape(shape)

@@ -210,6 +210,38 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         view is UIScrollView || view.subviews.contains { hasScrollView(in: $0) }
     }
 
+    func testPlayerGlassButtonsMatchTheDetailControlSize() async throws {
+        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390)] {
+            let frames = MobileFrames()
+            let viewport = HStack {
+                Button {} label: {
+                    Image(systemName: "xmark").frame(width: ContinuumTheme.topBarIconHitSize)
+                }
+                .buttonStyle(MobilePlayerGlassButtonStyle())
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("button-sizing")) } action: { frames.preview = $0 }
+                Button {} label: {
+                    Label("Audio & Subtitles", systemImage: "captions.bubble").padding(.horizontal, 12)
+                }
+                .buttonStyle(MobilePlayerGlassButtonStyle())
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("button-sizing")) } action: { frames.panel = $0 }
+                Menu { Button("Auto") {} } label: { Image(systemName: "slider.horizontal.3") }
+                    .menuStyle(.button)
+                    .buttonStyle(MobilePlayerGlassButtonStyle())
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("button-sizing")) } action: { frames.rotation = $0 }
+            }
+            .frame(width: size.width, height: size.height)
+            .coordinateSpace(name: "button-sizing")
+            let window = makeWindow(viewport)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await settle(window)
+            XCTAssertEqual(frames.preview.width, 44, accuracy: 0.5)
+            for frame in [frames.preview, frames.panel, frames.rotation] {
+                XCTAssertEqual(frame.height, ContinuumTheme.topBarIconHitSize, accuracy: 0.5)
+                XCTAssertGreaterThanOrEqual(frame.width, ContinuumTheme.topBarIconHitSize)
+            }
+        }
+    }
+
     func testPersistentRotationPillKeepsItsSizeAndTopRightPosition() async throws {
         XCTAssertNotNil(UIImage(systemName: "rectangle.landscape.rotate"))
         for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390),

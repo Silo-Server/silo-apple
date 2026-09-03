@@ -99,6 +99,7 @@ struct HomeFeedRow: View {
                                     * uiCustomization.cardPresentation.posterSize.scale,
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
+                                opensResumeContext: isResume,
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
@@ -109,6 +110,7 @@ struct HomeFeedRow: View {
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
+                                opensResumeContext: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
                                 episodeAccessibilityLabel: episodeAccessibilityLabel(for: item),
                                 onRemoveFromContinueWatching: removalAction(for: item),

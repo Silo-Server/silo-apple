@@ -14,6 +14,11 @@ class ItemDetailViewModel {
     // Series-specific state
     var seasons: [Season] = []
     var selectedSeason: Season?
+    #if os(iOS)
+    /// One-shot entry intent from Continue Watching; normal poster opens
+    /// leave this nil and retain the existing initial-season policy.
+    @ObservationIgnored var initialResumeSeasonNumber: Int?
+    #endif
     var episodes: [EpisodeListItem] = []
     /// Parent-series portrait artwork used only when an episode's season has
     /// no poster of its own. Episode artwork is normally a landscape still,
@@ -760,6 +765,9 @@ class ItemDetailViewModel {
             ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
             seasons = response.seasons.sortedForDisplay()
             if autoSelectInitial, let target = preferredInitialSeason(seasons: seasons) {
+                #if os(iOS)
+                initialResumeSeasonNumber = nil
+                #endif
                 #if !os(tvOS)
                 startEpisodePagePrefetch(
                     seriesId: seriesId,
@@ -879,7 +887,13 @@ class ItemDetailViewModel {
     /// prefer one with an episode in progress (Continue Watching state),
     /// then the first partially-watched season, then the first season that
     /// isn't fully played, then fall back to the first season.
-    private func preferredInitialSeason(seasons: [Season]) -> Season? {
+    func preferredInitialSeason(seasons: [Season]) -> Season? {
+        #if os(iOS)
+        if let initialResumeSeasonNumber,
+           let requested = seasons.first(where: { $0.seasonNumber == initialResumeSeasonNumber }) {
+            return requested
+        }
+        #endif
         if let inProgress = seasons.first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
             return inProgress
         }

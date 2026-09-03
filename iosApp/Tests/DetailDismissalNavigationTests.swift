@@ -4,28 +4,83 @@ import XCTest
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
-    func testRotationControlsWaitForTapAndFollowTransportVisibilityInEveryPhase() async throws {
+    func testCloseAndRotationControlsWaitForTapInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
         for phase in ["loading", "playing", "next-up", "error"] {
             model.isLoading = phase == "loading"
             model.showNextUpScreen = phase == "next-up"
             model.error = phase == "error" ? "Synthetic playback error" : nil
-            XCTAssertFalse(model.shouldShowMobileRotationControls, "Hidden before a tap during \(phase)")
+            XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close/rotate/lock stay hidden before a tap during \(phase)")
             model.toggleControls()
-            XCTAssertTrue(model.shouldShowMobileRotationControls, "A tap reveals both buttons during \(phase)")
+            XCTAssertTrue(model.shouldShowMobilePlayerChrome, "A tap reveals all chrome during \(phase)")
             model.toggleControls()
-            XCTAssertFalse(model.shouldShowMobileRotationControls, "A second tap hides both buttons during \(phase)")
+            XCTAssertFalse(model.shouldShowMobilePlayerChrome, "A second tap hides all chrome during \(phase)")
             model.revealControls()
             model.dismissControls()
-            XCTAssertFalse(model.shouldShowMobileRotationControls, "Dismissal hides both buttons during \(phase)")
+            XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Dismissal hides all chrome during \(phase)")
         }
         model.error = nil
         model.isPlaying = true
         model.toggleControls()
         try await Task.sleep(for: .milliseconds(5300))
         XCTAssertFalse(model.showControls)
-        XCTAssertFalse(model.shouldShowMobileRotationControls, "Both buttons auto-hide with transport")
+        XCTAssertFalse(model.shouldShowMobilePlayerChrome, "Close/rotate/lock auto-hide with transport")
+    }
+
+    func testContinueWatchingOpensTheExistingSeriesCardWithTheExactResumeContext() throws {
+        let item = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"episode-s3e2","type":"episode","title":"Second chapter","seriesId":"series","seriesTitle":"A sample series","seasonNumber":3,"episodeNumber":2,"positionSeconds":450,"durationSeconds":2700}"#.utf8
+        ))
+        let router = AppRouter()
+        router.presentContinueWatchingDetail(for: item)
+        let presentation = try XCTUnwrap(router.presentedItemDetail)
+        XCTAssertEqual(presentation.contentId, "series")
+        XCTAssertEqual(presentation.resumeContext?.episodeContentId, "episode-s3e2")
+        XCTAssertEqual(presentation.resumeContext?.seasonNumber, 3)
+        XCTAssertTrue(router.itemDetailPath.isEmpty, "No intermediate episode page may be pushed")
+        XCTAssertNil(router.presentedPlayer, "Opening the card must not start playback")
+        router.dismissItemDetail()
+        router.presentItemDetail(contentId: "series")
+        XCTAssertEqual(router.presentedItemDetail?.contentId, presentation.contentId)
+        XCTAssertNil(router.presentedItemDetail?.resumeContext, "A poster open retains its existing defaults")
+    }
+
+    func testContinueWatchingKeepsMoviesAndMissingParentFallbacksUnchanged() throws {
+        let items = try JSONDecoder().decode([SectionItem].self, from: Data(#"""
+        [
+          {"contentId":"movie","type":"movie","title":"Movie"},
+          {"contentId":"episode","type":"episode","title":"Episode","seriesId":"   "},
+          {"contentId":"audio","type":"audiobook","title":"Audio"}
+        ]
+        """#.utf8))
+        let router = AppRouter()
+        for item in items {
+            router.presentContinueWatchingDetail(for: item)
+            XCTAssertEqual(router.presentedItemDetail?.contentId, item.contentId)
+            XCTAssertNil(router.presentedItemDetail?.resumeContext)
+            router.dismissItemDetail()
+        }
+    }
+
+    func testContinueWatchingSeasonIntentWinsWithoutChangingPosterDefaults() throws {
+        let seasons = try JSONDecoder().decode([Season].self, from: Data(#"""
+        [
+          {"contentId":"season-1","seasonNumber":1,"episodeCount":8},
+          {"contentId":"season-3","seasonNumber":3,"episodeCount":8},
+          {"contentId":"specials","seasonNumber":0,"episodeCount":1}
+        ]
+        """#.utf8))
+        let model = ItemDetailViewModel()
+        XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 1)
+        model.initialResumeSeasonNumber = 3
+        XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 3)
+        model.initialResumeSeasonNumber = 0
+        XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 0)
+        model.initialResumeSeasonNumber = 99
+        XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 1)
+        model.initialResumeSeasonNumber = nil
+        XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 1)
     }
 
     func testRotationLockCapturesTheExactScreenOrientation() {

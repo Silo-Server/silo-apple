@@ -245,9 +245,8 @@ struct PlayerView: View {
                         #else
                         // The full controls overlay (and its close button) only
                         // mounts once the decoder opens the file, so a standalone
-                        // close control has to cover the load/buffer phase —
-                        // otherwise the only way out of a stalled start is
-                        // force-quitting the app. tvOS gets this via Menu in
+                        // close control must remain available through a tap
+                        // during the load/buffer phase. tvOS gets this via Menu in
                         // `onExitCommand`; macOS keeps its controls (and Escape)
                         // during loading.
                         if viewModel.isLoading {
@@ -290,7 +289,7 @@ struct PlayerView: View {
         .overlay(alignment: .topTrailing) {
             MobilePlayerRotationControls(
                 orientationCoordinator: orientationCoordinator,
-                isVisible: viewModel.shouldShowMobileRotationControls
+                isVisible: viewModel.shouldShowMobilePlayerChrome
             ) {
                 viewModel.resumeAutoHide()
             }
@@ -595,8 +594,8 @@ struct PlayerView: View {
     }
 
     #if !os(tvOS)
-    /// Close control shown while the player is still loading/buffering, in
-    /// the same spot (and glass style) as the close button in
+    /// Tap-to-reveal close control while loading and on Next Up, in
+    /// the same spot, size and glass style as the close button in
     /// `MobilePlayerControls`' top strip so the two read as one control.
     private var loadingCloseButton: some View {
         HStack {
@@ -604,10 +603,14 @@ struct PlayerView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
+            #if os(iOS)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
+            #else
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
+            #endif
             .accessibilityLabel("Close Player")
             .accessibilityIdentifier("player.close")
 
@@ -616,6 +619,9 @@ struct PlayerView: View {
         .padding(.horizontal)
         .padding(.top)
         .transition(.opacity)
+        #if os(iOS)
+        .modifier(MobilePlayerChromeVisibility(isVisible: viewModel.shouldShowMobilePlayerChrome))
+        #endif
     }
     #endif
 

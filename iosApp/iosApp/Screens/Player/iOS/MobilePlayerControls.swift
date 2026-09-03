@@ -174,10 +174,9 @@ struct MobilePlayerControls: View {
             Image(systemName: "xmark")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
         .accessibilityLabel("Close Player")
         .accessibilityIdentifier("player.close")
     }
@@ -211,7 +210,8 @@ struct MobilePlayerControls: View {
                     viewModel.resumeAutoHide()
                 }
             }
-            .frame(width: 44, height: 44)
+            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .siloGlass(in: Circle(), interactive: true)
         }
     }
 
@@ -260,10 +260,8 @@ struct MobilePlayerControls: View {
 
     // MARK: - Center
 
-    /// Fixed circle sizes keep the three buttons proportioned as a family
-    /// (content-driven glass sizing made the play disc balloon relative to
-    /// the skips). The play/pause disc is white prominent glass with a dark
-    /// glyph rather than accent-tinted.
+    /// Every circle matches the detail page's 44pt close/remote controls.
+    /// Play/pause keeps its white tint without becoming a larger disc.
     private var centerCluster: some View {
         HStack(spacing: 36) {
             Button {
@@ -272,26 +270,23 @@ struct MobilePlayerControls: View {
                 Image(systemName: "gobackward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Back 10 Seconds")
 
             Button {
                 viewModel.togglePlayPause()
             } label: {
                 Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.black.opacity(0.85))
                     // play.fill reads left-heavy inside a circle;
                     // nudge it toward the optical center.
                     .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    .frame(width: 64, height: 64)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .tint(.white.opacity(0.9))
+            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
@@ -300,10 +295,9 @@ struct MobilePlayerControls: View {
                 Image(systemName: "goforward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Forward 10 Seconds")
         }
     }
@@ -613,21 +607,16 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         }
         .menuStyle(.button)
         // Keep Auto at the top, reading down.
         .menuOrder(.fixed)
 
-        return Group {
-            // The prominent style flags a non-Auto quality cap at a glance.
-            if viewModel.activeQualityId == ApplePlaybackQuality.autoId {
-                menu.buttonStyle(.glass)
-            } else {
-                menu.buttonStyle(.glassProminent)
-            }
-        }
-        .buttonBorderShape(.capsule)
+        return menu
+        .buttonStyle(MobilePlayerGlassButtonStyle(
+            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : .accentColor
+        ))
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(qualityValueText)
     }
@@ -706,8 +695,7 @@ struct MobilePlayerControls: View {
         .menuStyle(.button)
         // Keep Chapter 1 at the top, reading down.
         .menuOrder(.fixed)
-        .buttonStyle(.glass)
-        .buttonBorderShape(style == .icons ? .circle : .capsule)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
@@ -727,12 +715,12 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         } else {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
     }
 
@@ -750,10 +738,9 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     // MARK: - Intro skip
@@ -774,10 +761,9 @@ struct MobilePlayerControls: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .frame(width: 38, height: 38)
+                                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
                         }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
+                        .buttonStyle(MobilePlayerGlassButtonStyle())
                         .accessibilityLabel("Cancel Auto-Skip Intro")
                     }
 
@@ -796,13 +782,12 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .frame(height: ContinuumTheme.topBarIconHitSize)
                     }
                     // White prominent glass with a dark glyph, matching the
                     // play/pause disc — accent-tinted prominent reads as an
                     // app-colored web button over video.
-                    .buttonStyle(.glassProminent)
-                    .tint(.white.opacity(0.9))
+                    .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
                     .accessibilityLabel(
                         viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
                     )
@@ -829,10 +814,9 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .frame(height: ContinuumTheme.topBarIconHitSize)
                 }
-                .buttonStyle(.glassProminent)
-                .tint(.white.opacity(0.9))
+                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
                 .accessibilityLabel("Skip Credits")
             }
             .padding(.horizontal, 24)
@@ -849,12 +833,9 @@ struct MobilePlayerControls: View {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
-        // `.circle` keeps each glass control a compact circle instead of the
-        // default wider capsule so rows of controls stay dense.
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     // MARK: - Sheet identifier
@@ -865,11 +846,40 @@ struct MobilePlayerControls: View {
     }
 }
 
-/// Top-right chrome follows the transport visibility during playback; Next
-/// Up keeps its own controls visible. Equal tap areas keep the lock centred.
+/// Match detail chrome without the extra padding added by native glass
+/// button styles. A 44pt square is circular; longer labels form a 44pt pill.
+struct MobilePlayerGlassButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: ContinuumTheme.topBarIconHitSize)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(Capsule())
+            .siloGlass(in: Capsule(), tint: tint, interactive: true)
+    }
+}
+
+/// Close and rotation controls share the same visibility, hit testing and
+/// accessibility state, including while loading and on Next Up.
+struct MobilePlayerChromeVisibility: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
+            .animation(.easeOut(duration: 0.18), value: isVisible)
+    }
+}
+
+/// Top-right chrome follows transport visibility in every playback phase.
+/// Equal tap areas keep the lock centred through rotation.
 struct MobilePlayerRotationControls: View {
-    static let width: CGFloat = 128
-    static let height: CGFloat = 52
+    static let height = ContinuumTheme.topBarIconHitSize
+    static let width = height * 2 + 24
     static let topClearance: CGFloat = height + 32
 
     let orientationCoordinator: PlayerOrientationCoordinator
@@ -903,12 +913,8 @@ struct MobilePlayerRotationControls: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
         .siloGlass(in: Capsule(), interactive: true)
-        .opacity(isVisible ? 1 : 0)
-        .allowsHitTesting(isVisible)
-        .accessibilityHidden(!isVisible)
-        .animation(.easeOut(duration: 0.18), value: isVisible)
+        .modifier(MobilePlayerChromeVisibility(isVisible: isVisible))
     }
 
     private func icon(_ symbol: String) -> some View {
@@ -916,7 +922,7 @@ struct MobilePlayerRotationControls: View {
             .font(.system(size: 24, weight: .medium))
             .foregroundStyle(.white)
             .frame(width: 32, height: 32)
-            .frame(width: 52, height: 44)
+            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             .contentShape(Rectangle())
     }
 }

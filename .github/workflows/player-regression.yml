@@ -20,6 +20,10 @@ on:
         description: Also record a synthetic playback clip after a manually requested build
         type: boolean
         default: false
+      ios_only:
+        description: Build and validate only the iOS simulator app for an iOS-only change
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,16 +39,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - scheme: Silo
-            destination: 'platform=iOS Simulator,name=iPhone 17 Pro'
-            action: test
-          - scheme: SiloTV
-            destination: 'generic/platform=tvOS Simulator'
-            action: build
-          - scheme: SiloMac
-            destination: 'generic/platform=macOS'
-            action: build
+        include: >-
+          ${{ fromJSON(inputs.ios_only &&
+            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"}]' ||
+            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"},
+              {"scheme":"SiloTV","destination":"generic/platform=tvOS Simulator","action":"build"},
+              {"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build"}]') }}
     steps:
       - uses: actions/checkout@v4
         with:

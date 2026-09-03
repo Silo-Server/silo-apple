@@ -132,6 +132,7 @@ enum HomeFeedMeta {
 private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
+    var continueWatchingItem: SectionItem? = nil
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
@@ -142,10 +143,11 @@ private struct HomeCardTap<Label: View>: View {
     var body: some View {
         Button {
             router.pendingZoomSourceID = zoomInstanceID.uuidString
-            router.presentItemDetail(
-                contentId: contentId,
-                browseSource: detailBrowseSource
-            )
+            if let continueWatchingItem {
+                router.presentContinueWatchingDetail(for: continueWatchingItem, browseSource: detailBrowseSource)
+            } else {
+                router.presentItemDetail(contentId: contentId, browseSource: detailBrowseSource)
+            }
         } label: {
             label()
                 .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
@@ -290,6 +292,7 @@ struct HomePosterCard: View {
     var showsMetadata: Bool = true
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
+    var opensResumeContext = false
     /// Audiobook covers are square; stretching one into a 2:3 poster crops
     /// its edges off.
     var aspect: MediaCardAspect = .poster
@@ -317,7 +320,8 @@ struct HomePosterCard: View {
     var body: some View {
         HomeCardTap(
             contentId: item.contentId,
-            accessibilityLabel: accessibilityDescription
+            accessibilityLabel: accessibilityDescription,
+            continueWatchingItem: opensResumeContext ? item : nil
         ) {
             VStack(alignment: .leading, spacing: 7) {
                 artwork
@@ -435,6 +439,7 @@ struct HomeStillCard: View {
     var width: CGFloat = HomeFeedMetrics.stillWidth
     var showsCaption: Bool = true
     var showsMetadata: Bool = true
+    var opensResumeContext = false
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
@@ -460,7 +465,8 @@ struct HomeStillCard: View {
     var body: some View {
         HomeCardTap(
             contentId: item.contentId,
-            accessibilityLabel: accessibilityDescription
+            accessibilityLabel: accessibilityDescription,
+            continueWatchingItem: opensResumeContext ? item : nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
