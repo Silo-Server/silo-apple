@@ -678,8 +678,8 @@ struct PlayerNextUpScreen: View {
                 #else
                 PlayerNextUpMobileLayout {
                     miniPlayerPane
-                } panel: {
-                    mobileNextUpPanel
+                } panel: { compact in
+                    mobileNextUpPanel(compact: compact)
                 } extras: {
                     if !viewModel.nextUpCarouselItems.isEmpty {
                         onDeckSection
@@ -751,9 +751,11 @@ struct PlayerNextUpScreen: View {
     }
 
     #if !os(tvOS)
-    var mobileNextUpPanel: some View {
-        VStack(spacing: 10) {
-            eyebrow
+    func mobileNextUpPanel(compact: Bool = false) -> some View {
+        VStack(spacing: compact ? 6 : 10) {
+            // Keep every action reachable below the persistent rotation bar
+            // on short landscape screens. Only the redundant eyebrow is omitted.
+            if !compact { eyebrow }
             if let episode = viewModel.nextUpEpisode {
                 metadata(for: episode, compact: true)
             } else if viewModel.isLoadingNextUpEpisode {
@@ -765,7 +767,7 @@ struct PlayerNextUpScreen: View {
                     .font(.headline)
                     .foregroundStyle(.white)
             }
-            actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil)
+            actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil, compact: compact)
             if viewModel.nextUpEpisode != nil {
                 autoPlayToggle
             } else if !viewModel.isLoadingNextUpEpisode {
@@ -882,7 +884,7 @@ struct PlayerNextUpScreen: View {
     }
 
     @ViewBuilder
-    private func actionRow(hasNextEpisode: Bool) -> some View {
+    private func actionRow(hasNextEpisode: Bool, compact: Bool = false) -> some View {
         #if os(tvOS)
         VStack(alignment: .leading, spacing: 18) {
             // Reserve enough room for the primary pill's focused scale and
@@ -952,14 +954,15 @@ struct PlayerNextUpScreen: View {
             }
         }
         #else
-        VStack(spacing: 10) {
+        VStack(spacing: compact ? 6 : 10) {
             HStack(spacing: 12) {
                 if hasNextEpisode {
                     Button(action: { viewModel.playNextEpisodeNow() }) {
                         Label("Play Now", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloPrimaryButton(isLoading: viewModel.isNextUpTransitioning)
+                    .frame(minHeight: 44)
                     .accessibilityIdentifier("next-up-play-now")
                 }
                 if let seconds = viewModel.nextUpCountdownSeconds {
@@ -971,16 +974,18 @@ struct PlayerNextUpScreen: View {
                 if !viewModel.nextUpScreenVideoEnded {
                     Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
                         Text("Keep Watching")
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloSecondaryButton()
+                    .frame(minHeight: 44)
                     .disabled(viewModel.isNextUpTransitioning)
                 }
                 Button(action: onBack) {
                     Label("Back", systemImage: "chevron.left")
-                        .frame(minHeight: 44)
+                        .frame(minHeight: compact ? 24 : 44)
                 }
                 .siloSecondaryButton()
+                .frame(minHeight: 44)
             }
         }
         .font(.callout)

@@ -100,10 +100,10 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             let layout = PlayerNextUpMobileLayout {
                 Color.black.aspectRatio(16 / 9, contentMode: .fit)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.preview = $0 }
-            } panel: {
+            } panel: { compact in
                 // Measure the real production metadata/buttons, with a long
                 // On Deck shelf competing for the remaining space below.
-                PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel
+                PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel(compact: compact)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
             } extras: {
                 Color.gray.frame(height: 1000)

@@ -63,7 +63,7 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
 /// right; narrow screens cap the preview so it cannot push Play Now below them.
 struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View {
     @ViewBuilder let preview: () -> Preview
-    @ViewBuilder let panel: () -> Panel
+    @ViewBuilder let panel: (_ compact: Bool) -> Panel
     @ViewBuilder let extras: () -> Extras
 
     var body: some View {
@@ -84,7 +84,7 @@ struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View 
             VStack(spacing: 16) {
                 layout {
                     preview().frame(width: previewWidth)
-                    panel().frame(maxWidth: sideBySide ? 420 : .infinity)
+                    panel(height < 270).frame(maxWidth: sideBySide ? 420 : .infinity)
                         .layoutPriority(1)
                 }
                 .frame(maxWidth: .infinity)
