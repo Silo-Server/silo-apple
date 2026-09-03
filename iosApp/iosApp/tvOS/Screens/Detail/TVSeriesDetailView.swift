@@ -58,12 +58,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
         func enterPrimary(animated: Bool, reduceMotion: Bool) {
             primaryOwnsViewport = true
+            // Moves between rows inside the fixed viewport (Season row <->
+            // Episodes) ask for `animated: false` because the page should
+            // already be resting at the top. On a double Up from Cast the
+            // first press's return trip is still mid-flight; jumping now is
+            // the snap. Finish that trip as an animation from wherever the
+            // page visibly is instead.
+            let continuesInFlightTrip = pageAnimator?.state == .active
             stopPageAnimation()
             guard let scrollView else { return }
 
             scrollView.isScrollEnabled = true
             let target = topOffset(in: scrollView)
-            guard animated,
+            guard animated || continuesInFlightTrip,
                   !reduceMotion,
                   abs(scrollView.contentOffset.y - target.y) > 0.5 else {
                 scrollView.setContentOffset(target, animated: false)
