@@ -1,0 +1,168 @@
+import AetherEngine
+import AVFoundation
+import Combine
+import SwiftUI
+import XCTest
+@testable import Silo
+
+@MainActor
+final class PlayerSurfaceLayoutTests: XCTestCase {
+    @Observable private final class Presentation {
+        var preview = false
+        var hasPreviewBounds = true
+    }
+
+    private struct Harness: View {
+        let presentation: Presentation
+        let engine: AetherEngine
+        var legacy = false
+        var reduceMotion = true
+
+        var body: some View {
+            Group {
+                if legacy {
+                    // Negative control: the two structural branches used by
+                    // PlayerView before this fix really do recreate the host.
+                    if presentation.preview {
+                        VStack { AetherPlayerSurface(engine: engine).frame(width: 240, height: 135) }
+                    } else {
+                        AetherPlayerSurface(engine: engine)
+                    }
+                } else {
+                    PlayerSurfaceLayout(isPreview: presentation.preview) {
+                        AetherPlayerSurface(engine: engine)
+                    } content: {
+                        ZStack {
+                            Color.black.ignoresSafeArea()
+                            if presentation.preview && presentation.hasPreviewBounds {
+                                Color.clear
+                                    .frame(width: 240, height: 135)
+                                    .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
+                                        .init(bounds: $0)
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+            .environment(\.accessibilityReduceMotion, reduceMotion)
+        }
+    }
+
+    private func surfaces(in view: UIView) -> [AetherPlayerView] {
+        (view as? AetherPlayerView).map { [$0] } ?? view.subviews.flatMap { surfaces(in: $0) }
+    }
+
+    private func settle(_ window: UIWindow) async throws {
+        window.setNeedsLayout()
+        window.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(40))
+        window.layoutIfNeeded()
+    }
+
+    private func makeWindow(_ harness: Harness) -> UIWindow {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 844, height: 390))
+        window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        window.rootViewController = UIHostingController(rootView: harness)
+        window.isHidden = false
+        return window
+    }
+
+    func testTwentyPreviewCyclesKeepOneActualAetherView() async throws {
+        let engine = try AetherEngine()
+        let presentation = Presentation()
+        let window = makeWindow(Harness(presentation: presentation, engine: engine))
+        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
+        try await settle(window)
+        let original = try XCTUnwrap(surfaces(in: window).first)
+        for _ in 0..<20 {
+            presentation.preview = true
+            try await settle(window)
+            XCTAssertEqual(surfaces(in: window).count, 1)
+            XCTAssertTrue(surfaces(in: window).first === original)
+            XCTAssertEqual(original.bounds.width, 240, accuracy: 1)
+            XCTAssertEqual(original.bounds.height, 135, accuracy: 1)
+            presentation.preview = false
+            try await settle(window)
+            XCTAssertTrue(surfaces(in: window).first === original)
+            XCTAssertGreaterThan(original.bounds.width, 240)
+        }
+        print("Preview lifecycle: 40 transitions, 1 Aether view, 0 replacements")
+    }
+
+    func testEarlyExpansionAndMissingPreviewGeometryKeepTheSurface() async throws {
+        let engine = try AetherEngine()
+        let presentation = Presentation()
+        let window = makeWindow(Harness(presentation: presentation, engine: engine))
+        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
+        try await settle(window)
+        let original = try XCTUnwrap(surfaces(in: window).first)
+        presentation.hasPreviewBounds = false
+        presentation.preview = true
+        try await settle(window)
+        XCTAssertTrue(surfaces(in: window).first === original)
+        presentation.preview = false
+        presentation.preview = true
+        presentation.preview = false
+        try await settle(window)
+        XCTAssertEqual(surfaces(in: window).count, 1)
+        XCTAssertTrue(surfaces(in: window).first === original)
+    }
+
+    func testLegacyNegativeControlRecreatesTheVideoView() async throws {
+        let engine = try AetherEngine()
+        let presentation = Presentation()
+        let window = makeWindow(Harness(presentation: presentation, engine: engine, legacy: true))
+        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
+        try await settle(window)
+        let original = try XCTUnwrap(surfaces(in: window).first)
+        presentation.preview = true
+        try await settle(window)
+        XCTAssertFalse(surfaces(in: window).first === original)
+    }
+
+    func testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer() async throws {
+        let engine = try AetherEngine()
+        let presentation = Presentation()
+        presentation.preview = true
+        let window = makeWindow(Harness(presentation: presentation, engine: engine, reduceMotion: false))
+        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
+        try await settle(window)
+        let surface = try XCTUnwrap(surfaces(in: window).first)
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "v3_h264_aac", withExtension: "mp4"))
+        try await engine.load(url: url)
+        engine.play()
+        let player = try XCTUnwrap(engine.currentAVPlayer)
+        let item = try XCTUnwrap(player.currentItem)
+        let layer = try XCTUnwrap(surface.layer.sublayers?.compactMap { $0 as? AVPlayerLayer }.first)
+        let deadline = ContinuousClock.now + .seconds(15)
+        while !layer.isReadyForDisplay && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(layer.isReadyForDisplay, "The synthetic video must actually have a picture before expansion")
+        let position = player.currentTime().seconds
+        var itemChanges = 0
+        let observation = player.publisher(for: \.currentItem, options: [.new]).sink { _ in itemChanges += 1 }
+        defer { observation.cancel() }
+        presentation.preview = false
+        try await settle(window)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(surfaces(in: window).first === surface)
+        XCTAssertTrue(engine.currentAVPlayer === player)
+        XCTAssertTrue(player.currentItem === item)
+        XCTAssertTrue(layer.superlayer === surface.layer)
+        XCTAssertTrue(layer.isReadyForDisplay)
+        XCTAssertGreaterThanOrEqual(player.currentTime().seconds, position)
+        XCTAssertEqual(itemChanges, 0)
+
+        engine.pause()
+        let pausedPosition = player.currentTime().seconds
+        presentation.preview = true
+        try await settle(window)
+        presentation.preview = false
+        try await settle(window)
+        XCTAssertEqual(player.rate, 0, "Resizing must not resume a paused preview")
+        XCTAssertEqual(player.currentTime().seconds, pausedPosition, accuracy: 0.1)
+        XCTAssertEqual(itemChanges, 0)
+    }
+}

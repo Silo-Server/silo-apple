@@ -83,185 +83,191 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
-
-            if let error = viewModel.error {
-                errorView(error)
-            } else {
-                if viewModel.showNextUpScreen {
+        PlayerSurfaceLayout(isPreview: viewModel.showNextUpScreen) {
+            playerSurface()
+                .opacity(viewModel.error == nil ? 1 : 0)
+        } content: {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if viewModel.showNextUpScreen && viewModel.error == nil {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
                         onBack: {
                             if !viewModel.keepWatchingCurrentEpisode() {
                                 dismissPlayer()
                             }
-                        },
-                        miniPlayer: { playerSurface(ignoresSafeArea: false) }
+                        }
                     )
-                    .transition(.opacity)
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            ZStack(alignment: .top) {
+                if let error = viewModel.error {
+                    errorView(error)
                 } else {
-                    playerSurface()
+                    if !viewModel.showNextUpScreen {
 
-                    #if os(tvOS)
-                    // Focus sink with UIKit-backed press capture. Mounted
-                    // whenever the transport overlay is hidden OR a seek
-                    // session is active — in both cases it's the sole target
-                    // for the Siri Remote.
-                    //
-                    // Two modes:
-                    //   • Not in seek mode: Tap Left/Right = quick skip,
-                    //     Tap Down = open the player menu, Tap Up = reveal the
-                    //     full transport HUD, Tap Select = pause and
-                    //     enter the focused timeline,
-                    //     Hold Left/Right = enter seek mode.
-                    //   • In seek mode: Tap Left/Right = adjust rate along
-                    //     the signed ladder, Tap Select = commit + exit,
-                    //     Menu = cancel + exit (handled in onExitCommand).
-                    //     Taps against Up/Down are ignored; holds are no-ops.
-                    // Never while the HUD is presented: the sink and the HUD's
-                    // focus graph would be two owners for the same presses
-                    // (docs/tvos-focus.md), and the sink's Down handler
-                    // force-switches the HUD tab underneath the user.
-                    if !viewModel.isLoading && !viewModel.isHUDPresented &&
-                        (!(viewModel.showIntroSkip || viewModel.showCreditsSkip) || viewModel.isHoldSeeking) &&
-                        (!viewModel.showControls || viewModel.isHoldSeeking) {
-                        TVPressCaptureView(
-                            onArrowTap: { direction in
-                                if viewModel.isHoldSeeking {
+                        #if os(tvOS)
+                        // Focus sink with UIKit-backed press capture. Mounted
+                        // whenever the transport overlay is hidden OR a seek
+                        // session is active — in both cases it's the sole target
+                        // for the Siri Remote.
+                        //
+                        // Two modes:
+                        //   • Not in seek mode: Tap Left/Right = quick skip,
+                        //     Tap Down = open the player menu, Tap Up = reveal the
+                        //     full transport HUD, Tap Select = pause and
+                        //     enter the focused timeline,
+                        //     Hold Left/Right = enter seek mode.
+                        //   • In seek mode: Tap Left/Right = adjust rate along
+                        //     the signed ladder, Tap Select = commit + exit,
+                        //     Menu = cancel + exit (handled in onExitCommand).
+                        //     Taps against Up/Down are ignored; holds are no-ops.
+                        // Never while the HUD is presented: the sink and the HUD's
+                        // focus graph would be two owners for the same presses
+                        // (docs/tvos-focus.md), and the sink's Down handler
+                        // force-switches the HUD tab underneath the user.
+                        if !viewModel.isLoading && !viewModel.isHUDPresented &&
+                            (!(viewModel.showIntroSkip || viewModel.showCreditsSkip) || viewModel.isHoldSeeking) &&
+                            (!viewModel.showControls || viewModel.isHoldSeeking) {
+                            TVPressCaptureView(
+                                onArrowTap: { direction in
+                                    if viewModel.isHoldSeeking {
+                                        switch direction {
+                                        case .left:  viewModel.adjustHoldSeekRate(delta: -1)
+                                        case .right: viewModel.adjustHoldSeekRate(delta: +1)
+                                        case .up, .down: break
+                                        }
+                                    } else {
+                                        switch direction {
+                                        case .left:  viewModel.skipBackward()
+                                        case .right: viewModel.skipForward()
+                                        case .down:  viewModel.openSettingsHUD()
+                                        case .up:    viewModel.revealControls()
+                                        }
+                                    }
+                                },
+                                onArrowHoldBegin: { direction in
+                                    // Only Left / Right enter seek mode. Hold on
+                                    // Up / Down is ignored so it can't be
+                                    // accidentally triggered while skipping.
                                     switch direction {
-                                    case .left:  viewModel.adjustHoldSeekRate(delta: -1)
-                                    case .right: viewModel.adjustHoldSeekRate(delta: +1)
+                                    case .left:  viewModel.beginHoldSeek(forward: false)
+                                    case .right: viewModel.beginHoldSeek(forward: true)
                                     case .up, .down: break
                                     }
-                                } else {
-                                    switch direction {
-                                    case .left:  viewModel.skipBackward()
-                                    case .right: viewModel.skipForward()
-                                    case .down:  viewModel.openSettingsHUD()
-                                    case .up:    viewModel.revealControls()
+                                },
+                                onDirectionalPressBegan: {
+                                    timelinePreviewContactCanToggle = false
+                                },
+                                onTouchSurfaceContactBegan: {
+                                    handleTimelinePreviewContactBegan()
+                                },
+                                onTouchSurfaceContactEnded: {
+                                    handleTimelinePreviewContactEnded()
+                                },
+                                onTouchSurfaceContactCancelled: {
+                                    handleTimelinePreviewContactCancelled()
+                                },
+                                onSelect: {
+                                    if viewModel.isHoldSeeking {
+                                        viewModel.commitHoldSeek()
+                                    } else if viewModel.isPlaying {
+                                        timelinePreviewContactCanToggle = false
+                                        hideTimelinePreview(immediately: true)
+                                        viewModel.pauseForTimelineSelection()
+                                        timelineSelectionRequest = UUID()
+                                    } else {
+                                        viewModel.revealControls()
                                     }
                                 }
-                            },
-                            onArrowHoldBegin: { direction in
-                                // Only Left / Right enter seek mode. Hold on
-                                // Up / Down is ignored so it can't be
-                                // accidentally triggered while skipping.
-                                switch direction {
-                                case .left:  viewModel.beginHoldSeek(forward: false)
-                                case .right: viewModel.beginHoldSeek(forward: true)
-                                case .up, .down: break
-                                }
-                            },
-                            onDirectionalPressBegan: {
-                                timelinePreviewContactCanToggle = false
-                            },
-                            onTouchSurfaceContactBegan: {
-                                handleTimelinePreviewContactBegan()
-                            },
-                            onTouchSurfaceContactEnded: {
-                                handleTimelinePreviewContactEnded()
-                            },
-                            onTouchSurfaceContactCancelled: {
-                                handleTimelinePreviewContactCancelled()
-                            },
-                            onSelect: {
-                                if viewModel.isHoldSeeking {
-                                    viewModel.commitHoldSeek()
-                                } else if viewModel.isPlaying {
-                                    timelinePreviewContactCanToggle = false
-                                    hideTimelinePreview(immediately: true)
-                                    viewModel.pauseForTimelineSelection()
-                                    timelineSelectionRequest = UUID()
-                                } else {
-                                    viewModel.revealControls()
-                                }
-                            }
-                        )
-                        .ignoresSafeArea()
-                    }
+                            )
+                            .ignoresSafeArea()
+                        }
 
-                    // `isLoading` also covers Protocol V3 replans (track or
-                    // quality changes made *from inside the HUD*). Unmounting
-                    // here for those would destroy the HUD's @State/@FocusState
-                    // mid-press and reseed focus on a reset tab, so the HUD
-                    // keeps its host mounted through a replan. A replacement
-                    // load closes the HUD in `resetPublishedLoadState`, so
-                    // cold starts and item changes still unmount as before.
-                    if (!viewModel.isLoading || viewModel.isHUDPresented) && !viewModel.isHoldSeeking {
-                        TVPlayerControls(
-                            viewModel: viewModel,
-                            showsTimelinePreview: isTimelinePreviewVisible,
-                            timeDisplayMode: timelineTimeDisplayMode,
-                            timelineSelectionRequest: timelineSelectionRequest,
-                            onToggleTimeDisplayMode: {
-                                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
-                                    timelineTimeDisplayMode.toggle()
-                                }
-                            },
-                            onDismiss: { dismissPlayer() }
-                        )
-                    }
+                        // `isLoading` also covers Protocol V3 replans (track or
+                        // quality changes made *from inside the HUD*). Unmounting
+                        // here for those would destroy the HUD's @State/@FocusState
+                        // mid-press and reseed focus on a reset tab, so the HUD
+                        // keeps its host mounted through a replan. A replacement
+                        // load closes the HUD in `resetPublishedLoadState`, so
+                        // cold starts and item changes still unmount as before.
+                        if (!viewModel.isLoading || viewModel.isHUDPresented) && !viewModel.isHoldSeeking {
+                            TVPlayerControls(
+                                viewModel: viewModel,
+                                showsTimelinePreview: isTimelinePreviewVisible,
+                                timeDisplayMode: timelineTimeDisplayMode,
+                                timelineSelectionRequest: timelineSelectionRequest,
+                                onToggleTimeDisplayMode: {
+                                    withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                                        timelineTimeDisplayMode.toggle()
+                                    }
+                                },
+                                onDismiss: { dismissPlayer() }
+                            )
+                        }
 
-                    // Speed-indicator chip shown only while a seek session is
-                    // active. The overlay/scrubber is suppressed during the
-                    // session (so the capture view keeps focus), so this chip
-                    // is the sole source of visual feedback until Select
-                    // commits or Menu cancels.
-                    if viewModel.isHoldSeeking {
-                        HoldSeekIndicator(
-                            rate: viewModel.holdSeekRate,
-                            previewTime: viewModel.scrubPreviewTime,
-                            duration: viewModel.duration,
-                            previewImage: viewModel.scrubPreviewImage
-                        )
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                    }
-                    #else
-                    // The full controls overlay (and its close button) only
-                    // mounts once the decoder opens the file, so a standalone
-                    // close control has to cover the load/buffer phase —
-                    // otherwise the only way out of a stalled start is
-                    // force-quitting the app. tvOS gets this via Menu in
-                    // `onExitCommand`; macOS keeps its controls (and Escape)
-                    // during loading.
-                    if viewModel.isLoading {
-                        loadingCloseButton
-                    }
-
-                    if !viewModel.isLoading {
-                        // Invisible gestures (tap-to-toggle, double-tap skip,
-                        // hold-2×, edge swipes, pinch) live in a dedicated
-                        // layer under the button overlay.
-                        MobilePlayerGestureLayer(
-                            viewModel: viewModel,
-                            onDismiss: { dismissPlayer() }
-                        )
-                        MobilePlayerControls(
-                            viewModel: viewModel,
-                            orientationCoordinator: orientationCoordinator,
-                            onDismiss: { dismissPlayer() }
-                        )
-                    }
-                    #endif
-
-                    #if os(tvOS)
-                    if let identity = remoteIdentityNotice {
-                        RemotePlaybackIdentityNotice(identity: identity)
+                        // Speed-indicator chip shown only while a seek session is
+                        // active. The overlay/scrubber is suppressed during the
+                        // session (so the capture view keeps focus), so this chip
+                        // is the sole source of visual feedback until Select
+                        // commits or Menu cancels.
+                        if viewModel.isHoldSeeking {
+                            HoldSeekIndicator(
+                                rate: viewModel.holdSeekRate,
+                                previewTime: viewModel.scrubPreviewTime,
+                                duration: viewModel.duration,
+                                previewImage: viewModel.scrubPreviewImage
+                            )
                             .transition(.opacity)
-                    } else if let notice = viewModel.activeNotice {
-                        PlayerNoticeOverlay(notice: notice)
-                    }
-                    #else
-                    if let notice = viewModel.activeNotice {
-                        PlayerNoticeOverlay(notice: notice)
-                    }
-                    #endif
-                }
+                            .allowsHitTesting(false)
+                        }
+                        #else
+                        // The full controls overlay (and its close button) only
+                        // mounts once the decoder opens the file, so a standalone
+                        // close control has to cover the load/buffer phase —
+                        // otherwise the only way out of a stalled start is
+                        // force-quitting the app. tvOS gets this via Menu in
+                        // `onExitCommand`; macOS keeps its controls (and Escape)
+                        // during loading.
+                        if viewModel.isLoading {
+                            loadingCloseButton
+                        }
 
-                if viewModel.isLoading || viewModel.isBuffering {
-                    PlayerBufferingCapsule()
+                        if !viewModel.isLoading {
+                            // Invisible gestures (tap-to-toggle, double-tap skip,
+                            // hold-2×, edge swipes, pinch) live in a dedicated
+                            // layer under the button overlay.
+                            MobilePlayerGestureLayer(
+                                viewModel: viewModel,
+                                onDismiss: { dismissPlayer() }
+                            )
+                            MobilePlayerControls(
+                                viewModel: viewModel,
+                                orientationCoordinator: orientationCoordinator,
+                                onDismiss: { dismissPlayer() }
+                            )
+                        }
+                        #endif
+
+                        #if os(tvOS)
+                        if let identity = remoteIdentityNotice {
+                            RemotePlaybackIdentityNotice(identity: identity)
+                                .transition(.opacity)
+                        } else if let notice = viewModel.activeNotice {
+                            PlayerNoticeOverlay(notice: notice)
+                        }
+                        #else
+                        if let notice = viewModel.activeNotice {
+                            PlayerNoticeOverlay(notice: notice)
+                        }
+                        #endif
+                    }
+
+                    if viewModel.isLoading || viewModel.isBuffering {
+                        PlayerBufferingCapsule()
+                    }
                 }
             }
         }
@@ -535,9 +541,8 @@ struct PlayerView: View {
     /// `MobilePlayerGestureLayer`, mounted above this surface.
     ///
     /// Aether owns native/software route selection behind this one surface.
-    @ViewBuilder
-    private func playerSurface(ignoresSafeArea: Bool = true) -> some View {
-        let surface = AetherPlayerSurface(engine: viewModel.aetherEngine)
+    private func playerSurface() -> some View {
+        AetherPlayerSurface(engine: viewModel.aetherEngine)
             .background(Color.black)
             .overlay {
                 AetherSubtitleOverlay(
@@ -553,11 +558,6 @@ struct PlayerView: View {
                     subtitleSyncMs: viewModel.settings.subtitleSyncMs
                 )
             }
-        if ignoresSafeArea {
-            surface.ignoresSafeArea()
-        } else {
-            surface
-        }
     }
 
     #if !os(tvOS)
@@ -622,10 +622,9 @@ private enum PlayerNextUpFocusTarget: Hashable {
     case autoPlay
 }
 
-private struct PlayerNextUpScreen<MiniPlayer: View>: View {
+private struct PlayerNextUpScreen: View {
     let viewModel: PlayerViewModel
     let onBack: () -> Void
-    @ViewBuilder let miniPlayer: () -> MiniPlayer
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var onDeckFocusRequest = 0
     @State private var didRequestInitialActionFocus = false
@@ -650,6 +649,9 @@ private struct PlayerNextUpScreen<MiniPlayer: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .defaultScrollAnchor(.top)
                 .scrollClipDisabled()
+                .transformAnchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
+                    $0.viewport = $1
+                }
                 #else
                 screenContent(maxMainWidth: mainContentWidth(for: proxy))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -723,20 +725,16 @@ private struct PlayerNextUpScreen<MiniPlayer: View>: View {
             }
             .frame(maxWidth: .infinity)
         }
+        .transformAnchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
+            $0.viewport = $1
+        }
         #endif
     }
 
     private var miniPlayerPane: some View {
-        ZStack {
-            miniPlayer()
-        }
+        Color.clear
         .aspectRatio(16 / 9, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(0.16), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.55), radius: 34, y: 18)
+        .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) { .init(bounds: $0) }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

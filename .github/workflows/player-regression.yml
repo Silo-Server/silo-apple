@@ -1,0 +1,70 @@
+name: Player regression
+
+on:
+  pull_request:
+    paths:
+      - 'iosApp/iosApp/Screens/Player/**'
+      - 'iosApp/Tests/**'
+      - 'iosApp/project.yml'
+      - 'iosApp/**/Package.resolved'
+      - '.github/workflows/player-regression.yml'
+  push:
+    branches: [fix/next-up-persistent-surface]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: player-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: Silo
+            destination: 'platform=iOS Simulator,name=iPhone 17 Pro'
+            action: test
+          - scheme: SiloTV
+            destination: 'generic/platform=tvOS Simulator'
+            action: build
+          - scheme: SiloMac
+            destination: 'generic/platform=macOS'
+            action: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.3'
+      - name: Generate Xcode project
+        run: |
+          curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml
+      - name: Validate player
+        env:
+          SCHEME: ${{ matrix.scheme }}
+          DESTINATION: ${{ matrix.destination }}
+          ACTION: ${{ matrix.action }}
+        run: |
+          set -o pipefail
+          xcodebuild "$ACTION" -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
+            -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+            -resultBundlePath /tmp/player-validation.xcresult \
+            CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-validation-${{ matrix.scheme }}
+          path: |
+            /tmp/player-validation.log
+            /tmp/player-validation.xcresult
+          retention-days: 7

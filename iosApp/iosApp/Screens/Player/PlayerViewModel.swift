@@ -2333,7 +2333,11 @@ class PlayerViewModel {
     }
 
     private func updateNextUpPresentation(for movieTime: Double) {
-        guard !hasReachedEndOfFile else { return }
+        // A retained native host must not reopen the outgoing episode's
+        // postroll before the successor has presented its own first frame.
+        guard !hasReachedEndOfFile,
+              let epoch = activeAetherLoadEpoch,
+              startedAetherLoadEpoch == epoch else { return }
         if showNextUpScreen {
             updateNextUpCountdownForActivePlayback(at: movieTime)
             return
@@ -2511,9 +2515,27 @@ class PlayerViewModel {
     }
 
     func playNextEpisodeNow() {
-        guard let nextUpEpisode else { return }
+        let contentId: String
+        switch PlayerNextUpPlaybackAction.resolve(
+            candidateId: nextUpEpisode?.contentId,
+            currentId: lastLoadRequest?.contentId
+        ) {
+        case .unavailable:
+            return
+        case .expand:
+            // Presentation only: no prepare, load, seek, or play command.
+            // Preserve a preview that is already playing, paused or buffering.
+            cancelNextUpCountdown()
+            nextUpAutoplayCancelled = true
+            nextUpPromptDismissed = true
+            nextUpScreenVideoEnded = false
+            showNextUpScreen = false
+            return
+        case .load(let id):
+            contentId = id
+        }
         var request = LoadRequest(
-            contentId: nextUpEpisode.contentId,
+            contentId: contentId,
             preferredFileId: nil,
             preferredAudioTrackIndex: nil,
             preferredSubtitleTrackIndex: nil,
