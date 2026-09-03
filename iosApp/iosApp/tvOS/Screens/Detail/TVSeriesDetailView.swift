@@ -201,7 +201,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let showModeId = "series-show-overview"
+    private let noSeasonModeId = "series-season-none"
     private let episodeSectionScrollId = "series-episode-section"
     private let castSectionScrollId = "series-cast-section"
     private let heroScrollId = "series-hero"
@@ -481,15 +481,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    TVSeriesModeTab(
-                        title: "Show",
-                        isSelected: isShowingSeriesOverview,
-                        rendersFocusedAppearance: presentedFocusedModeId == showModeId,
-                        action: showSeriesOverview
-                    )
-                    .id(showModeId)
-                    .focused($focusedModeId, equals: showModeId)
-
                     ForEach(seasons) { season in
                         TVSeriesModeTab(
                             title: seasonLabel(season),
@@ -571,12 +562,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
     }
 
+    /// The season pill stays selected while the hero shows series info, since
+    /// the rail below still lists that season's episodes.
     private var selectedModeId: String {
-        guard !isShowingSeriesOverview else { return showModeId }
-        return seasonTransitionTargetId
+        seasonTransitionTargetId
             ?? visibleSeasonId
             ?? selectedSeason?.id
-            ?? showModeId
+            ?? noSeasonModeId
     }
 
     private func showSeriesOverview() {
@@ -773,16 +765,14 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                   focusedModeId == modeId,
                   modeId != selectedModeId else { return }
 
-            if modeId == showModeId {
-                showSeriesOverview()
-            } else if let season = seasons.first(where: { $0.id == modeId }) {
+            if let season = seasons.first(where: { $0.id == modeId }) {
                 activateSeason(season)
             }
         }
     }
 
     private var seasonPageReadinessKey: String {
-        let seasonId = selectedSeason?.id ?? "series-season-none"
+        let seasonId = selectedSeason?.id ?? noSeasonModeId
         let loadingState = isLoadingEpisodes ? "loading" : "ready"
         let episodeIds = episodes.map(\.contentId).joined(separator: "|")
         return "\(seasonId):\(loadingState):\(episodeIds)"
@@ -790,7 +780,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var currentSeasonPageSnapshot: SeasonPageSnapshot {
         SeasonPageSnapshot(
-            seasonId: selectedSeason?.id ?? "series-season-none",
+            seasonId: selectedSeason?.id ?? noSeasonModeId,
             episodes: episodes,
             currentContentId: displayedEpisode?.contentId,
             isLoading: isLoadingEpisodes
@@ -1092,6 +1082,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             accessibilityLabel: "More options",
             stabilizesFocusMotion: true
         ) {
+            if !isShowingSeriesOverview {
+                Button(action: showSeriesOverview) {
+                    Label("Show Series Info", systemImage: "info.circle")
+                }
+            }
             Button(action: onToggleFavorite) {
                 Label(
                     isFavorite ? "Remove from Favorites" : "Add to Favorites",
