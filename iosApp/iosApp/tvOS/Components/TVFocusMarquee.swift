@@ -706,6 +706,13 @@ final class TVFocusMarqueeModel {
     /// is kept so `resume` can restore the same selection.
     func suspend() {
         isActive = false
+        // Drop any hold left over from an in-flight scroll. The feed can
+        // disappear mid-scroll without ever reporting `.idle`, and a feed
+        // that comes back already at rest has no phase change to release the
+        // hold — `resume` would then pin the restored selection behind the
+        // previous artwork until the user scrolled the band again.
+        isBackdropDeferred = false
+        hasDeferredBackdropUpdate = false
         PosterImageCache.cancelNeighborBackdropWarmup()
         cancelBackdropWork()
         enrichTask?.cancel()

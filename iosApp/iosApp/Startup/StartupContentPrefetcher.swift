@@ -716,7 +716,7 @@ enum StartupContentPrefetcher {
     private static func prefetchHomeArtwork(for response: SectionsResponse) {
         // Each kind is warmed at the size its consumer reads synchronously:
         // cards at the shared card thumbnail, the marquee logo at its native
-        // size, and first-row backdrops at the exact hero decode size. Warming
+        // size, and the initial backdrop at the exact hero decode size. Warming
         // full-size decodes instead used to cost ~4 MB per poster and ~8 MB
         // per backdrop, which overflowed the 96 MB budget on 3 GB Apple TVs
         // and evicted the very cards the warm-up was meant to paint.
@@ -761,16 +761,23 @@ enum StartupContentPrefetcher {
         let contentSections = response.sections.filter { !$0.items.isEmpty }
         if let firstRow = contentSections.first {
             append(firstRow.items.first?.logoUrl, into: &logoURLs, seen: &seenLogos)
+            // Only the marquee's initial selection earns a hero-size decode.
+            // A w1920 backdrop is ~8 MB decoded, so warming the whole first
+            // row would spend the entire 96 MB tvOS budget on artwork the
+            // user may never rest on and evict the very cards this warm-up
+            // exists to paint. The neighbours the user is most likely to
+            // reach are pulled into the disk cache (bytes only) by
+            // `PosterImageCache.warmNeighborBackdrops` once the marquee
+            // rests, which removes the network round trip without a decode.
+            appendBackdrop(firstRow.items.first?.backdropUrl)
             for item in firstRow.items {
                 if episodeSectionTypes.contains(firstRow.sectionType) {
                     // Episode stills render the backdrop as the card art and
                     // the marquee shows the same image as the hero. One
                     // download, two decode sizes.
                     append(item.backdropUrl ?? item.posterUrl, into: &cardURLs, seen: &seenCards)
-                    appendBackdrop(item.backdropUrl)
                 } else {
                     append(item.posterUrl, into: &cardURLs, seen: &seenCards)
-                    appendBackdrop(item.backdropUrl)
                 }
                 if count >= maxHomeArtworkURLs { break }
             }
