@@ -57,7 +57,7 @@ packages:
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
     url: https://github.com/blurbery/AetherEngine
-    revision: e238d1d2da52b58bffd7f8135bb2b04e32915cee
+    revision: 653be639441d3f7d06332a2f995950497ad62e0f
   Nuke:
     url: https://github.com/kean/Nuke
     from: "12.8.0"

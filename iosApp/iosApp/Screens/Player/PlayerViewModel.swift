@@ -320,6 +320,9 @@ class PlayerViewModel {
     var bufferedAheadSeconds: Double = 0
     var playbackStats: PlaybackStats = .empty
     var showNextUpScreen = false
+    /// A Next Up load keeps its preview until the successor's own startup
+    /// milestone. Repeated actions cannot reload it or expand an unready frame.
+    private(set) var isNextUpTransitioning = false
     var nextUpEpisode: PlayerNextUpEpisode?
     var nextUpOnDeckItems: [PlayerOnDeckItem] = []
     var isLoadingNextUpEpisode = false
@@ -1357,6 +1360,16 @@ class PlayerViewModel {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
         handleFileLoaded()
+        if isNextUpTransitioning {
+            isNextUpTransitioning = false
+            showNextUpScreen = false
+            nextUpEpisode = nil
+            nextUpOnDeckItems = []
+            if let detail = currentWatchDetail {
+                loadNextUpCandidate(for: detail)
+                loadNextUpOnDeckItems(for: detail)
+            }
+        }
         if activePreparedProtocolV3 != nil {
             pendingProtocolV3FirstFrameEpoch = epoch
             completeProtocolV3FirstFrameIfCommitted(epoch)
@@ -2333,7 +2346,11 @@ class PlayerViewModel {
     }
 
     private func updateNextUpPresentation(for movieTime: Double) {
-        guard !hasReachedEndOfFile else { return }
+        // A retained native host must not reopen the outgoing episode's
+        // postroll before the successor has presented its own first frame.
+        guard !hasReachedEndOfFile,
+              let epoch = activeAetherLoadEpoch,
+              startedAetherLoadEpoch == epoch else { return }
         if showNextUpScreen {
             updateNextUpCountdownForActivePlayback(at: movieTime)
             return
@@ -2391,6 +2408,7 @@ class PlayerViewModel {
     private func startNextUpCountdownIfNeeded() {
         cancelNextUpCountdown()
         guard showNextUpScreen,
+              !isNextUpTransitioning,
               settings.autoPlayNextEpisode,
               nextUpEpisode != nil,
               !nextUpAutoplayCancelled else {
@@ -2420,6 +2438,7 @@ class PlayerViewModel {
 
     private func updateNextUpCountdownForActivePlayback(at movieTime: Double) {
         guard showNextUpScreen,
+              !isNextUpTransitioning,
               !nextUpScreenVideoEnded,
               settings.autoPlayNextEpisode,
               nextUpEpisode != nil,
@@ -2471,7 +2490,7 @@ class PlayerViewModel {
         // An autoplay load failure may restore the postroll after disposing
         // the old playback pipeline. There is no current episode to resume in
         // that state, so let the shell fall back to closing the player.
-        guard hasActiveAetherSession else { return false }
+        guard hasActiveAetherSession, !isNextUpTransitioning else { return false }
 
         let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
         nextUpAutoplayCancelled = true
@@ -2511,9 +2530,28 @@ class PlayerViewModel {
     }
 
     func playNextEpisodeNow() {
-        guard let nextUpEpisode else { return }
+        let contentId: String
+        switch PlayerNextUpPlaybackAction.resolve(
+            candidateId: nextUpEpisode?.contentId,
+            currentId: lastLoadRequest?.contentId,
+            awaitingPicture: isNextUpTransitioning
+        ) {
+        case .unavailable, .waitForPicture:
+            return
+        case .expand:
+            // Presentation only: no prepare, load, seek, or play command.
+            // Preserve a preview that is already playing, paused or buffering.
+            cancelNextUpCountdown()
+            nextUpAutoplayCancelled = true
+            nextUpPromptDismissed = true
+            nextUpScreenVideoEnded = false
+            showNextUpScreen = false
+            return
+        case .load(let id):
+            contentId = id
+        }
         var request = LoadRequest(
-            contentId: nextUpEpisode.contentId,
+            contentId: contentId,
             preferredFileId: nil,
             preferredAudioTrackIndex: nil,
             preferredSubtitleTrackIndex: nil,
@@ -3491,9 +3529,11 @@ class PlayerViewModel {
         // it, both because its content is stale and because the tvOS controls
         // host stays mounted through `isLoading` whenever this flag is up.
         isHUDPresented = false
-        showNextUpScreen = false
-        nextUpEpisode = nil
-        nextUpOnDeckItems = []
+        showNextUpScreen = isNextUpTransitioning
+        if !isNextUpTransitioning {
+            nextUpEpisode = nil
+            nextUpOnDeckItems = []
+        }
         isLoadingNextUpEpisode = false
         isLoadingNextUpOnDeck = false
         nextUpLookupError = nil
@@ -3658,6 +3698,7 @@ class PlayerViewModel {
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
+        isNextUpTransitioning = origin == .autoplay && showNextUpScreen
         let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: hasReachedEndOfFile,
@@ -3848,8 +3889,13 @@ class PlayerViewModel {
                 // server to resolve a next episode against.
                 if request.offlineDownloadId == nil {
                     self.pushNowPlayingArtwork(contentId: prepared.watchDetail.contentId)
-                    self.loadNextUpCandidate(for: prepared.watchDetail)
-                    self.loadNextUpOnDeckItems(for: prepared.watchDetail)
+                    // The panel still describes the successor being loaded.
+                    // Fetch its following episode only once it has a picture,
+                    // otherwise the visible Play Now target can jump again.
+                    if !self.isNextUpTransitioning {
+                        self.loadNextUpCandidate(for: prepared.watchDetail)
+                        self.loadNextUpOnDeckItems(for: prepared.watchDetail)
+                    }
                 }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
                     serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
@@ -4045,6 +4091,7 @@ class PlayerViewModel {
     /// `error` overlay.
     @MainActor
     private func handleBeginFreshLoadFailure(error: Error, origin: LoadOrigin) {
+        isNextUpTransitioning = false
         let message: String = {
             if case BeginFreshLoadError.startSessionTimeout = error {
                 return "The server didn't respond in time."
