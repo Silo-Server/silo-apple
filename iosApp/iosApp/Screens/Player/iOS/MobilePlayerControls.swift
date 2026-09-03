@@ -150,8 +150,16 @@ struct MobilePlayerControls: View {
 
     private var topStrip: some View {
         HStack(alignment: .center, spacing: 12) {
-            controlButton(systemName: "xmark", action: onDismiss)
-                .accessibilityLabel("Close Player")
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Close Player")
+            .accessibilityIdentifier("player.close")
 
             titleBlock
 

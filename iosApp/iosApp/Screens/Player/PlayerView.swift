@@ -109,6 +109,9 @@ struct PlayerView: View {
             ZStack(alignment: .top) {
                 if let error = viewModel.error {
                     errorView(error)
+                    #if os(iOS)
+                    loadingCloseButton
+                    #endif
                 } else {
                     if !viewModel.showNextUpScreen {
 
@@ -243,10 +246,7 @@ struct PlayerView: View {
                             // Invisible gestures (tap-to-toggle, double-tap skip,
                             // hold-2×, edge swipes, pinch) live in a dedicated
                             // layer under the button overlay.
-                            MobilePlayerGestureLayer(
-                                viewModel: viewModel,
-                                onDismiss: { dismissPlayer() }
-                            )
+                            MobilePlayerGestureLayer(viewModel: viewModel)
                             MobilePlayerControls(
                                 viewModel: viewModel,
                                 orientationCoordinator: orientationCoordinator,
@@ -578,11 +578,12 @@ struct PlayerView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .accessibilityLabel("Close Player")
+            .accessibilityIdentifier("player.close")
 
             Spacer()
         }
