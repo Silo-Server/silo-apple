@@ -267,12 +267,18 @@ struct ContinuumTheme {
         static let marqueeLogoMaxHeightLibrary: CGFloat = 150
         /// Codec/HDR badge chip label size (§4.1).
         static let marqueeBadgeSize: CGFloat = 15
-        /// Delay uncached detail requests while focus passes through cards.
+        /// Focus must rest this long before the backdrop swaps and uncached
+        /// detail requests start (§4.2). Foreground text follows focus
+        /// immediately; this gate only keeps a roll across a row from
+        /// thrashing large backdrops. Matches Android's
+        /// `TvMarqueeFocusRestMillis`.
         static let marqueeRestDebounceMilliseconds = 150
-        /// Foreground content is immediate; backdrop replacement waits for rest.
-        static let marqueeBackdropRestMilliseconds = 2_000
-        /// Only the backdrop crossfades between rested selections.
-        static let marqueeCrossfadeDuration: Double = 0.55
+        /// Backdrop + tint crossfade between rested selections (§4.2).
+        static let marqueeCrossfadeDuration: Double = 0.24
+        /// Neighbouring cards on either side of a rested selection whose
+        /// backdrops are warmed at low priority, so the next rest paints
+        /// from cache on its first frame.
+        static let marqueeNeighborBackdropPrefetchRadius = 2
 
         // MARK: Row band under the marquee (§5.7, revised)
 

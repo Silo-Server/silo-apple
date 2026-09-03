@@ -595,11 +595,12 @@ struct TVMarqueeEnrichment: Equatable {
 // MARK: - Debounce model
 
 /// Focused-card → marquee state shared by the tvOS Home and library
-/// Browse landings. Rows report card focus immediately; the marquee and
-/// backdrop swap only after focus has rested 150 ms (§4.2), so scrubbing
-/// across a row never flashes intermediate backdrops. While focus is in
-/// chrome the last previewed item is retained — rows never report focus
-/// loss, only focus gain.
+/// Browse landings. Rows report card focus immediately; the marquee text
+/// and cached metadata follow on the same frame, while the backdrop swaps
+/// only after focus has rested 150 ms (§4.2), so scrubbing across a row
+/// never flashes intermediate backdrops. While focus is in chrome the last
+/// previewed item is retained — rows never report focus loss, only focus
+/// gain.
 @Observable
 @MainActor
 final class TVFocusMarqueeModel {
@@ -669,9 +670,17 @@ final class TVFocusMarqueeModel {
     }
 
     /// Keep foreground information responsive while rapid focus movement
-    /// leaves the existing backdrop still. Only a rested selection replaces
-    /// the large composited image and starts its palette work.
-    func preview(_ candidate: TVMarqueeContent) {
+    /// leaves the existing backdrop still. Only a rested selection (150 ms,
+    /// §4.2) replaces the large composited image and starts its palette
+    /// work — the same gate Android uses, so a roll across a row never
+    /// flashes intermediate backdrops while a single click still lands the
+    /// new art well under half a second.
+    ///
+    /// `neighborBackdropURLs` are the backdrops of the cards on either side
+    /// of the candidate in its row. Once the candidate rests they are warmed
+    /// into the memory cache at low priority so the user's most likely next
+    /// stop paints on its first frame instead of fading in after a fetch.
+    func preview(_ candidate: TVMarqueeContent, neighborBackdropURLs: [String] = []) {
         guard isActive, candidate != content else { return }
         backdropTask?.cancel()
         tintTask?.cancel()
@@ -680,16 +689,18 @@ final class TVFocusMarqueeModel {
         content = candidate
         loadEnrichment(for: candidate, deferNetwork: true)
         backdropTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(ContinuumTheme.Skyline.marqueeBackdropRestMilliseconds))
+            try? await Task.sleep(for: .milliseconds(ContinuumTheme.Skyline.marqueeRestDebounceMilliseconds))
             guard !Task.isCancelled, let self,
                   self.isActive, self.content == candidate else { return }
             self.backdropContentID = candidate.id
             self.updateBackdropIfReady()
+            PosterImageCache.warmNeighborBackdrops(neighborBackdropURLs)
         }
     }
 
     func suspend() {
         isActive = false
+        PosterImageCache.cancelNeighborBackdropWarmup()
         backdropTask?.cancel()
         enrichTask?.cancel()
         tintTask?.cancel()

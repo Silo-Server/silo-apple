@@ -104,6 +104,48 @@ enum PosterImageCache {
     }()
 
     #if os(tvOS)
+    /// Root-hero backdrop warmer for the cards beside a rested marquee
+    /// selection. Bounded to a handful of URLs, low priority so visible
+    /// cards and the rested backdrop itself always win the pipeline, and
+    /// decoded into the memory cache under the bare-URL key that
+    /// `CachedAsyncImage.prefetchedImage()` reads synchronously — so the
+    /// next rest paints finished art on its first frame.
+    private static let neighborBackdropPrefetcher: ImagePrefetcher = {
+        let p = ImagePrefetcher(
+            pipeline: ImagePipeline.shared,
+            destination: .memoryCache,
+            maxConcurrentRequestCount: 2
+        )
+        p.priority = .low
+        return p
+    }()
+    @MainActor private static var warmedNeighborBackdropURLs: [URL] = []
+
+    /// Replace the neighbour window: cancel URLs that fell out of it and
+    /// start only the ones not already in flight. Called once per rested
+    /// selection, never per focus change, so a roll across a row queues
+    /// nothing.
+    @MainActor
+    static func warmNeighborBackdrops(_ urlStrings: [String]) {
+        var seen = Set<String>()
+        let urls = urlStrings.compactMap { value -> URL? in
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return URL(string: value)
+        }
+        let stale = warmedNeighborBackdropURLs.filter { !urls.contains($0) }
+        let fresh = urls.filter { !warmedNeighborBackdropURLs.contains($0) }
+        warmedNeighborBackdropURLs = urls
+        if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: stale) }
+        if !fresh.isEmpty { neighborBackdropPrefetcher.startPrefetching(with: fresh) }
+    }
+
+    @MainActor
+    static func cancelNeighborBackdropWarmup() {
+        guard !warmedNeighborBackdropURLs.isEmpty else { return }
+        neighborBackdropPrefetcher.stopPrefetching(with: warmedNeighborBackdropURLs)
+        warmedNeighborBackdropURLs.removeAll()
+    }
+
     /// Prefetch only movie portraits. Series cast lives farther down its page
     /// and deliberately keeps the normal lazy-loading path.
     static func prefetchVisibleMovieCast(for detail: ItemDetail) {

@@ -189,8 +189,8 @@ TESTS = r'''
             scrolling.setPosterRowVisibility(start..<(start + 6), isVisible: true)
         }
         check(scrollingSpy.active.count <= 48, "large visibility windows retain the 48-entry cap")
-        check(scrollingSpy.concurrency == 2 && scrollingSpy.destination == .diskCache,
-              "prefetch remains data-only with two concurrent requests")
+        check(scrollingSpy.concurrency == 2 && scrollingSpy.destination == .memoryCache,
+              "prefetch decodes into the memory cache with two concurrent requests")
         scrolling.cancelPosterPrefetch()
         check(scrollingSpy.active.isEmpty, "explicit cancellation stops all work")
 

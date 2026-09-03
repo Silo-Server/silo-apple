@@ -233,8 +233,32 @@ struct TVSkylineSectionFeed: View {
                 item: item,
                 rowTitle: section.title,
                 isContinueWatching: section.isContinueWatchingSection
-            )
+            ),
+            neighborBackdropURLs: neighborBackdropURLs(around: item, in: section)
         )
+    }
+
+    /// Section-level backdrops of the cards on either side of `item` in its
+    /// row. Only direct backdrops qualify: episodes and items without one
+    /// resolve their hero art from detail enrichment, which is a metadata
+    /// request the marquee already rate-limits and must not be duplicated
+    /// here for cards the user may never rest on.
+    private func neighborBackdropURLs(
+        around item: SectionItem,
+        in section: ResolvedSection
+    ) -> [String] {
+        guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return [] }
+        let radius = ContinuumTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
+        let lower = max(0, index - radius)
+        let upper = min(section.items.count - 1, index + radius)
+        guard lower <= upper else { return [] }
+        return (lower...upper).compactMap { neighborIndex -> String? in
+            guard neighborIndex != index else { return nil }
+            let neighbor = section.items[neighborIndex]
+            guard neighbor.type.lowercased() != "episode",
+                  let url = neighbor.backdropUrl, !url.isEmpty else { return nil }
+            return url
+        }
     }
 
     /// Seed the first card as soon as sections exist, so cold entry does not

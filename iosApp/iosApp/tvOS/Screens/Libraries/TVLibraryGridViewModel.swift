@@ -44,9 +44,14 @@ final class TVLibraryGridViewModel {
     private var nextOffset: Int = 0
     @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
+    /// Decoded into the memory cache so a cell scrolling into view paints the
+    /// warmed image on its first frame via `CachedAsyncImage.prefetchedImage()`
+    /// instead of paying the decode + resize on arrival. The window is small
+    /// (two rows either side, 48 URLs) and low priority, so visible cells and
+    /// their own requests still win the pipeline.
     private let posterPrefetcher = ImagePrefetcher(
         pipeline: ImagePipeline.shared,
-        destination: .diskCache,
+        destination: .memoryCache,
         maxConcurrentRequestCount: 2
     )
     private var generation: Int = 0
@@ -159,9 +164,9 @@ final class TVLibraryGridViewModel {
     }
 
     private func prefetchPosters(in range: Range<Int>) {
-        // Keep one bounded window. Data-only prefetch avoids full-resolution
-        // decodes for posters the user may never reach; visible cells request
-        // their own resized image through the same coalescing pipeline.
+        // Keep one bounded window around the visible rows. Visible cells still
+        // request their own resized image through the same coalescing
+        // pipeline; the warmed decode only lets that first frame paint.
         let urls = items[safe: range].prefix(48)
             .compactMap { $0.posterUrl }
             .compactMap { URL(string: $0) }
