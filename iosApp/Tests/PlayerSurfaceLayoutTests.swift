@@ -217,7 +217,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             let frames = MobileFrames()
             let viewport = Color.black
                 .overlay(alignment: .topTrailing) {
-                    MobilePlayerRotationControls(orientationCoordinator: .shared)
+                    MobilePlayerRotationControls(orientationCoordinator: .shared, isVisible: true)
                         .onGeometryChange(for: CGRect.self) {
                             $0.frame(in: .named("rotation-layout"))
                         } action: { frames.rotation = $0 }

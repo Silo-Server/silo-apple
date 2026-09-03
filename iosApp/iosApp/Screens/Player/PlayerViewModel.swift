@@ -281,7 +281,9 @@ class PlayerViewModel {
     var showControls = false
     #if os(iOS)
     var shouldShowMobileRotationControls: Bool {
-        showControls || showNextUpScreen || isLoading || error != nil
+        // Loading and Next Up must not independently reveal player chrome.
+        // The rotation pill follows the same tap/auto-hide state as transport.
+        showControls
     }
     #endif
     var activeNotice: PlayerNotice?

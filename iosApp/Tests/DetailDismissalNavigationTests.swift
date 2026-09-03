@@ -4,20 +4,28 @@ import XCTest
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
-    func testRotationControlsFollowTransportVisibilityExceptOnTheNextUpControlScreen() {
+    func testRotationControlsWaitForTapAndFollowTransportVisibilityInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
-        model.isLoading = false
-        model.showControls = false
-        XCTAssertFalse(model.shouldShowMobileRotationControls)
-        model.showControls = true
-        XCTAssertTrue(model.shouldShowMobileRotationControls)
-        model.dismissControls()
-        XCTAssertFalse(model.shouldShowMobileRotationControls)
-        model.showNextUpScreen = true
-        XCTAssertTrue(model.shouldShowMobileRotationControls)
-        model.showNextUpScreen = false
-        XCTAssertFalse(model.shouldShowMobileRotationControls)
+        for phase in ["loading", "playing", "next-up", "error"] {
+            model.isLoading = phase == "loading"
+            model.showNextUpScreen = phase == "next-up"
+            model.error = phase == "error" ? "Synthetic playback error" : nil
+            XCTAssertFalse(model.shouldShowMobileRotationControls, "Hidden before a tap during \(phase)")
+            model.toggleControls()
+            XCTAssertTrue(model.shouldShowMobileRotationControls, "A tap reveals both buttons during \(phase)")
+            model.toggleControls()
+            XCTAssertFalse(model.shouldShowMobileRotationControls, "A second tap hides both buttons during \(phase)")
+            model.revealControls()
+            model.dismissControls()
+            XCTAssertFalse(model.shouldShowMobileRotationControls, "Dismissal hides both buttons during \(phase)")
+        }
+        model.error = nil
+        model.isPlaying = true
+        model.toggleControls()
+        try await Task.sleep(for: .milliseconds(5300))
+        XCTAssertFalse(model.showControls)
+        XCTAssertFalse(model.shouldShowMobileRotationControls, "Both buttons auto-hide with transport")
     }
 
     func testRotationLockCapturesTheExactScreenOrientation() {

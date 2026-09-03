@@ -93,6 +93,15 @@ struct PlayerView: View {
         } content: {
             ZStack {
                 Color.black.ignoresSafeArea()
+                    #if os(iOS)
+                    .onTapGesture {
+                        // Loaded playback uses MobilePlayerGestureLayer.
+                        // Keep tap-to-reveal available before it mounts too.
+                        if viewModel.isLoading || viewModel.error != nil {
+                            viewModel.toggleControls()
+                        }
+                    }
+                    #endif
                 if viewModel.showNextUpScreen && viewModel.error == nil {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
@@ -663,6 +672,11 @@ struct PlayerNextUpScreen: View {
         GeometryReader { proxy in
             ZStack {
                 Color.black.ignoresSafeArea()
+                    #if os(iOS)
+                    // A background tap reveals/dismisses the rotation pill
+                    // without intercepting Play Now, Back, or Auto Play.
+                    .onTapGesture { viewModel.toggleControls() }
+                    #endif
                 #if !os(iOS)
                 backgroundImage
                 #endif
@@ -771,7 +785,7 @@ struct PlayerNextUpScreen: View {
     #if !os(tvOS)
     func mobileNextUpPanel(compact: Bool = false) -> some View {
         VStack(spacing: compact ? 6 : 10) {
-            // Keep every action reachable below the persistent rotation bar
+            // Keep every action reachable below the rotation bar's reserved area
             // on short landscape screens. Only the redundant eyebrow is omitted.
             if !compact { eyebrow }
             if let episode = viewModel.nextUpEpisode {

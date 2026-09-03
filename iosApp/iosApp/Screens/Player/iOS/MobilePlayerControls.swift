@@ -151,8 +151,8 @@ struct MobilePlayerControls: View {
                 if !compact { titleBlock }
                 Spacer(minLength: 0)
                 if !compact { externalPlaybackControls }
-                // The persistent rotation pill is a sibling overlay, not
-                // part of the controls that fade. Reserve its exact width.
+                // The rotation pill is a sibling overlay that fades with
+                // these controls. Reserve its exact width to avoid overlap.
                 Color.clear
                     .frame(width: MobilePlayerRotationControls.width,
                            height: MobilePlayerRotationControls.height)
@@ -873,7 +873,7 @@ struct MobilePlayerRotationControls: View {
     static let topClearance: CGFloat = height + 32
 
     let orientationCoordinator: PlayerOrientationCoordinator
-    var isVisible = true
+    let isVisible: Bool
     var onInteraction: () -> Void = {}
 
     var body: some View {
