@@ -279,6 +279,11 @@ class PlayerViewModel {
     var bufferingProgress: Double?
     var error: String?
     var showControls = false
+    #if os(iOS)
+    var shouldShowMobileRotationControls: Bool {
+        showControls || showNextUpScreen || isLoading || error != nil
+    }
+    #endif
     var activeNotice: PlayerNotice?
     var remoteDismissToken: UUID?
     var audioTracks: [PlayerTrack] = []
@@ -907,6 +912,10 @@ class PlayerViewModel {
     /// apply to the end-of-playback screen.
     private var nextUpPromptDismissed = false
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
+    #if os(iOS)
+    @ObservationIgnored
+    private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
+    #endif
     /// Items that crossed the same completion boundary used by the final
     /// server progress report. The tvOS detail page consumes this only after
     /// that report has finished so it can move its editorial selection to the
@@ -3406,12 +3415,18 @@ class PlayerViewModel {
                currentTime >= 0 {
                 let priorNaturalEndProgressTask = naturalEndProgressTask
                 let endPosition = currentTime
+                #if os(iOS)
+                let refreshHome = refreshHomeAfterPlaybackWrite
+                #endif
                 naturalEndProgressTask = Task { [sessionBridge] in
                     await priorNaturalEndProgressTask?.value
-                    _ = await sessionBridge.reportProgress(
+                    let result = await sessionBridge.reportProgress(
                         position: endPosition,
                         isPaused: true
                     )
+                    #if os(iOS)
+                    if result == .success { refreshHome?() }
+                    #endif
                 }
             }
         }
@@ -3695,6 +3710,11 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
+        #if os(iOS)
+        if refreshHomeAfterPlaybackWrite == nil {
+            refreshHomeAfterPlaybackWrite = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
+        }
+        #endif
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
@@ -3774,6 +3794,9 @@ class PlayerViewModel {
                 } else {
                     await self.sessionBridge.reportProgress(position: snapshotPosition, isPaused: true)
                 }
+                #if os(iOS)
+                self.refreshHomeAfterPlaybackWrite?()
+                #endif
             }
             guard !Task.isCancelled,
                   !self.isDisposed,
@@ -6106,6 +6129,9 @@ class PlayerViewModel {
             if stopServerSessionOnTeardown {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }
+            #if os(iOS)
+            refreshHomeAfterPlaybackWrite?()
+            #endif
         }
     }
 

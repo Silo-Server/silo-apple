@@ -49,7 +49,7 @@ struct PhoneEpisodeRail: View {
             .phoneMediaRailBounds()
         }
         .contentMargins(.horizontal, HorizontalMediaRailLayout.isPhone ? ContinuumTheme.safePadding : 0, for: .scrollContent)
-        .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+        .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
         .scrollPosition(id: $visibleEpisodeId, anchor: HorizontalMediaRailLayout.scrollAnchor)
         .onAppear {
             visibleEpisodeId = currentContentId ?? episodes.first?.contentId

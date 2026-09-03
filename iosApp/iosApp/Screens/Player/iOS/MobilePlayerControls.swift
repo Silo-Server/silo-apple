@@ -865,15 +865,15 @@ struct MobilePlayerControls: View {
     }
 }
 
-/// Always mounted at the player's top-right, independently of transport
-/// auto-hide, loading, errors, and Next Up. Fixed glyphs and equal tap areas
-/// keep the lock centred when the screen rotates or the lock changes state.
+/// Top-right chrome follows the transport visibility during playback; Next
+/// Up keeps its own controls visible. Equal tap areas keep the lock centred.
 struct MobilePlayerRotationControls: View {
     static let width: CGFloat = 128
     static let height: CGFloat = 52
     static let topClearance: CGFloat = height + 32
 
     let orientationCoordinator: PlayerOrientationCoordinator
+    var isVisible = true
     var onInteraction: () -> Void = {}
 
     var body: some View {
@@ -905,6 +905,10 @@ struct MobilePlayerRotationControls: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .siloGlass(in: Capsule(), interactive: true)
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
+        .accessibilityHidden(!isVisible)
+        .animation(.easeOut(duration: 0.18), value: isVisible)
     }
 
     private func icon(_ symbol: String) -> some View {

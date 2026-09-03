@@ -4,6 +4,22 @@ import XCTest
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
+    func testRotationControlsFollowTransportVisibilityExceptOnTheNextUpControlScreen() {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        model.isLoading = false
+        model.showControls = false
+        XCTAssertFalse(model.shouldShowMobileRotationControls)
+        model.showControls = true
+        XCTAssertTrue(model.shouldShowMobileRotationControls)
+        model.dismissControls()
+        XCTAssertFalse(model.shouldShowMobileRotationControls)
+        model.showNextUpScreen = true
+        XCTAssertTrue(model.shouldShowMobileRotationControls)
+        model.showNextUpScreen = false
+        XCTAssertFalse(model.shouldShowMobileRotationControls)
+    }
+
     func testRotationLockCapturesTheExactScreenOrientation() {
         for orientation: UIInterfaceOrientationMask in [.portrait, .landscapeLeft, .landscapeRight] {
             var state = PlayerRotationState()

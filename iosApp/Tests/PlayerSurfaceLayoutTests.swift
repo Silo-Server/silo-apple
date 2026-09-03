@@ -79,6 +79,15 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         var preview = CGRect.zero
         var panel = CGRect.zero
         var rotation = CGRect.zero
+        var viewport = CGRect.zero
+        var extrasAppeared = false
+    }
+
+    private struct MeasuredFramesKey: PreferenceKey {
+        static var defaultValue: [String: CGRect] { [:] }
+        static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+            value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+        }
     }
 
     private func nextUpFixture() throws -> PlayerViewModel {
@@ -91,7 +100,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         return model
     }
 
-    func testMobileActionsStayVisibleBesideOrBelowTheSmallerPreview() async throws {
+    func testMobileActionsStayBelowThePreviewAndFitBothOrientations() async throws {
         let model = try nextUpFixture()
         defer { model.cleanup() }
         for size in [CGSize(width: 568, height: 320), CGSize(width: 844, height: 390),
@@ -101,12 +110,12 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                 Color.black.aspectRatio(16 / 9, contentMode: .fit)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.preview = $0 }
             } panel: { compact in
-                // Measure the real production metadata/buttons, with a long
-                // On Deck shelf competing for the remaining space below.
+                // Measure the real production metadata/buttons.
                 PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel(compact: compact)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
             } extras: {
                 Color.gray.frame(height: 1000)
+                    .onAppear { frames.extrasAppeared = true }
             }
             let viewport = layout
                 .frame(width: size.width, height: size.height - MobilePlayerRotationControls.topClearance)
@@ -129,13 +138,76 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(frames.panel.minY, MobilePlayerRotationControls.topClearance)
             XCTAssertLessThanOrEqual(frames.panel.maxY, size.height)
             XCTAssertLessThanOrEqual(frames.panel.maxX, size.width)
-            if size.width > size.height {
-                XCTAssertGreaterThan(frames.panel.minX, frames.preview.maxX)
-            } else {
-                XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
-                XCTAssertLessThanOrEqual(frames.preview.width, 260)
-            }
+            XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
+            XCTAssertGreaterThan(frames.preview.height, 30)
+            XCTAssertLessThanOrEqual(frames.preview.width, 300)
+            XCTAssertEqual(frames.preview.midX, frames.panel.midX, accuracy: 1)
+            XCTAssertFalse(frames.extrasAppeared, "iOS must not mount an On Deck shelf")
         }
+    }
+
+    func testFullNextUpScreenFitsArtworkAndPopulatedOnDeckDataThroughRepeatedRotation() async throws {
+        let model = try nextUpFixture()
+        // A non-nil still exercises the complete background-artwork branch.
+        // Empty URL paints its placeholder without contacting any server.
+        let episode = try JSONDecoder().decode(EpisodeListItem.self, from: Data(
+            #"{"contentId":"synthetic-episode","seasonNumber":1,"episodeNumber":2,"title":"A longer episode title for a narrow screen","stillUrl":""}"#.utf8
+        ))
+        model.nextUpEpisode = PlayerNextUpEpisode(episode: episode, seriesId: "fixture", seriesTitle: "Synthetic series title")
+        model.nextUpOnDeckItems = try (0..<8).map { index in
+            let item = try JSONDecoder().decode(SectionItem.self, from: Data(
+                "{\"contentId\":\"fixture-deck-\(index)\",\"type\":\"movie\",\"title\":\"On Deck fixture \(index)\"}".utf8
+            ))
+            return PlayerOnDeckItem(item: item)
+        }
+        let state = Presentation()
+        state.viewport = CGSize(width: 390, height: 844)
+        let frames = MobileFrames()
+        let viewport = FullNextUpHarness(presentation: state, model: model)
+            .overlayPreferenceValue(PlayerPreviewBoundsKey.self) { anchors in
+                GeometryReader { proxy in
+                    Color.clear.preference(key: MeasuredFramesKey.self, value: [
+                        "preview": anchors.bounds.map { proxy[$0] } ?? .zero,
+                        "panel": anchors.actions.map { proxy[$0] } ?? .zero,
+                        "viewport": CGRect(origin: .zero, size: proxy.size)
+                    ])
+                }
+            }
+            .onPreferenceChange(MeasuredFramesKey.self) { value in
+                frames.preview = value["preview"] ?? .zero
+                frames.panel = value["panel"] ?? .zero
+                frames.viewport = value["viewport"] ?? .zero
+            }
+        let window = makeWindow(viewport)
+        defer { window.isHidden = true; window.rootViewController = nil; model.cleanup() }
+        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390),
+                     CGSize(width: 568, height: 320), CGSize(width: 390, height: 844),
+                     CGSize(width: 844, height: 390), CGSize(width: 1024, height: 768)] {
+            state.viewport = size
+            try await settle(window)
+            XCTAssertGreaterThan(frames.preview.height, 30)
+            XCTAssertGreaterThan(frames.panel.height, 0)
+            XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
+            XCTAssertGreaterThanOrEqual(frames.preview.minY, MobilePlayerRotationControls.topClearance)
+            XCTAssertGreaterThanOrEqual(frames.panel.minX, 0)
+            XCTAssertLessThanOrEqual(frames.panel.maxX, frames.viewport.width + 1)
+            XCTAssertLessThanOrEqual(frames.panel.maxY, frames.viewport.height + 1)
+            XCTAssertEqual(frames.preview.midX, frames.panel.midX, accuracy: 1)
+            XCTAssertFalse(hasScrollView(in: window), "On Deck must not render on iOS")
+        }
+    }
+
+    private struct FullNextUpHarness: View {
+        let presentation: Presentation
+        let model: PlayerViewModel
+        var body: some View {
+            PlayerNextUpScreen(viewModel: model, onBack: {})
+                .frame(width: presentation.viewport?.width, height: presentation.viewport?.height)
+        }
+    }
+
+    private func hasScrollView(in view: UIView) -> Bool {
+        view is UIScrollView || view.subviews.contains { hasScrollView(in: $0) }
     }
 
     func testPersistentRotationPillKeepsItsSizeAndTopRightPosition() async throws {
@@ -262,6 +334,21 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         var itemChanges = 0
         let observation = player.publisher(for: \.currentItem, options: [.new]).sink { _ in itemChanges += 1 }
         defer { observation.cancel() }
+        // Resize the actual playing Next Up screen before expanding it, not
+        // just an isolated panel. The preview must remain the same ready layer.
+        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390),
+                     CGSize(width: 390, height: 844)] {
+            presentation.viewport = size
+            try await settle(window)
+            XCTAssertTrue(surfaces(in: window).first === surface)
+            XCTAssertTrue(engine.currentAVPlayer === player)
+            XCTAssertTrue(player.currentItem === item)
+            XCTAssertTrue(layer.superlayer === surface.layer)
+            XCTAssertTrue(layer.isReadyForDisplay)
+            XCTAssertGreaterThan(surface.bounds.height, 30)
+            XCTAssertEqual(itemChanges, 0)
+        }
+        presentation.viewport = nil
         presentation.preview = false
         try await settle(window)
         try await Task.sleep(for: .milliseconds(350))

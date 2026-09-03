@@ -54,7 +54,7 @@ struct HomeFeedRow: View {
     @ViewBuilder
     private var rowScroller: some View {
         cardsScroll
-            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+            .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
             .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
             .environment(\.itemDetailBrowseSource, detailBrowseSource)
             .onAppear {
@@ -71,7 +71,11 @@ struct HomeFeedRow: View {
             }
             #if os(iOS)
             .onChange(of: router.presentedItemDetail) { _, presentation in
-                guard presentation?.browseSource?.originID == detailBrowseSource.originID,
+                // Only iPad's horizontally paged detail deck drives its source
+                // row. An iPhone detail opens in place; scrolling the row while
+                // its zoom transition is restoring it creates a visible drift.
+                guard !HorizontalMediaRailLayout.isPhone,
+                      presentation?.browseSource?.originID == detailBrowseSource.originID,
                       let contentID = presentation?.contentId,
                       section.items.contains(where: { $0.contentId == contentID })
                 else { return }

@@ -104,7 +104,7 @@ final class HorizontalMediaRailTests: XCTestCase {
         }
     }
 
-    func testRealHomeRowsUseNativeBoundsWithoutDisablingThePageBounce() async throws {
+    func testRealHomeRowsKeepTheirBoundsAndPositionAfterDetailReturn() async throws {
         let items = try items()
         let posters = try (0..<6).map { index in
             try JSONDecoder().decode(SectionItem.self, from: Data(
@@ -117,12 +117,13 @@ final class HorizontalMediaRailTests: XCTestCase {
                             isCustom: nil, customized: nil,
                             items: kind == "continue_watching" ? items : posters)
         }
+        let router = AppRouter()
         let window = makeWindow(ScrollView(.vertical) {
             VStack {
                 ForEach(rows) { HomeFeedRow(section: $0) }
                 Color.clear.frame(height: 1000)
             }
-        }.environment(AppRouter()).environmentObject(OverlayPrefsStore()))
+        }.environment(router).environmentObject(OverlayPrefsStore()))
         defer { window.isHidden = true; window.rootViewController = nil }
         try await settle(window)
         let page = try XCTUnwrap(scrollViews(in: window).first)
@@ -137,6 +138,22 @@ final class HorizontalMediaRailTests: XCTestCase {
             XCTAssertTrue(rail.isScrollEnabled)
             XCTAssertTrue(rail.isDirectionalLockEnabled)
             XCTAssertEqual(rail.contentOffset.x, -rail.adjustedContentInset.left, accuracy: 1)
+        }
+        let posterRail = try XCTUnwrap(rails.max(by: { $0.contentSize.width < $1.contentSize.width }))
+        for offset in [-posterRail.adjustedContentInset.left, 142 - posterRail.adjustedContentInset.left] {
+            posterRail.setContentOffset(CGPoint(x: offset, y: 0), animated: false)
+            try await settle(window)
+            let before = posterRail.contentOffset.x
+            router.presentItemDetail(contentId: posters[4].contentId, browseSource: ItemDetailBrowseSource(
+                originID: "home:trending", contentIDs: posters.map(\.contentId)
+            ))
+            try await settle(window)
+            XCTAssertEqual(posterRail.contentOffset.x, before, accuracy: 1)
+            router.dismissItemDetail()
+            try await settle(window)
+            XCTAssertEqual(posterRail.contentOffset.x, before, accuracy: 1)
+            XCTAssertFalse(posterRail.bouncesHorizontally)
+            XCTAssertTrue(page.bouncesVertically)
         }
     }
 }

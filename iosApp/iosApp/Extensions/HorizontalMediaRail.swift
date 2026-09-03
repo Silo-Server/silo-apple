@@ -16,6 +16,9 @@ enum HorizontalMediaRailLayout {
 
     static var cardAlignment: VerticalAlignment { isPhone ? .top : .center }
     static var scrollAnchor: UnitPoint { isPhone ? .leading : .center }
+    static var targetBehavior: ViewAlignedScrollTargetBehavior {
+        .viewAligned(limitBehavior: .always, anchor: isPhone ? .leading : nil)
+    }
 }
 
 extension View {
@@ -70,6 +73,12 @@ final class PhoneMediaRailBoundsView: UIView {
         configureEnclosingRail()
     }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Reassert after a detail cover/zoom restores SwiftUI's scroll host.
+        configureEnclosingRail()
+    }
+
     func configureEnclosingRail() {
         var ancestor = superview
         while let view = ancestor {
@@ -77,11 +86,11 @@ final class PhoneMediaRailBoundsView: UIView {
                 // Native scrolling/deceleration stays in charge. Unlike
                 // .basedOnSize, these flags also stop long rails overscrolling
                 // past their first/last card and drifting vertically on a drag.
-                rail.bouncesHorizontally = false
-                rail.bouncesVertically = false
-                rail.alwaysBounceHorizontal = false
-                rail.alwaysBounceVertical = false
-                rail.isDirectionalLockEnabled = true
+                if rail.bouncesHorizontally { rail.bouncesHorizontally = false }
+                if rail.bouncesVertically { rail.bouncesVertically = false }
+                if rail.alwaysBounceHorizontal { rail.alwaysBounceHorizontal = false }
+                if rail.alwaysBounceVertical { rail.alwaysBounceVertical = false }
+                if !rail.isDirectionalLockEnabled { rail.isDirectionalLockEnabled = true }
                 return
             }
             ancestor = view.superview

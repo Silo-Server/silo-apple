@@ -102,9 +102,6 @@ struct PlayerView: View {
                             }
                         }
                     )
-                    #if os(iOS)
-                    .padding(.top, MobilePlayerRotationControls.topClearance)
-                    #endif
                 }
             }
         }
@@ -116,6 +113,9 @@ struct PlayerView: View {
                     loadingCloseButton
                     #endif
                 } else {
+                    #if os(iOS)
+                    if viewModel.showNextUpScreen { loadingCloseButton }
+                    #endif
                     if !viewModel.showNextUpScreen {
 
                         #if os(tvOS)
@@ -279,7 +279,10 @@ struct PlayerView: View {
         }
         #if os(iOS)
         .overlay(alignment: .topTrailing) {
-            MobilePlayerRotationControls(orientationCoordinator: orientationCoordinator) {
+            MobilePlayerRotationControls(
+                orientationCoordinator: orientationCoordinator,
+                isVisible: viewModel.shouldShowMobileRotationControls
+            ) {
                 viewModel.resumeAutoHide()
             }
             .padding(.horizontal)
@@ -660,7 +663,9 @@ struct PlayerNextUpScreen: View {
         GeometryReader { proxy in
             ZStack {
                 Color.black.ignoresSafeArea()
+                #if !os(iOS)
                 backgroundImage
+                #endif
 
                 #if os(tvOS)
                 ScrollView(.vertical, showsIndicators: false) {
@@ -680,13 +685,26 @@ struct PlayerNextUpScreen: View {
                     miniPlayerPane
                 } panel: { compact in
                     mobileNextUpPanel(compact: compact)
+                        .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) { .init(actions: $0) }
                 } extras: {
+                    #if !os(iOS)
                     if !viewModel.nextUpCarouselItems.isEmpty {
                         onDeckSection
                     }
+                    #endif
                 }
+                #if os(iOS)
+                .padding(.top, MobilePlayerRotationControls.topClearance)
+                #endif
                 #endif
             }
+            #if os(iOS)
+            // Artwork is decoration, not a sibling allowed to enlarge this
+            // ZStack's ideal size. Pin the entire screen to the real viewport.
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .background { backgroundImage }
+            .clipped()
+            #endif
         }
         #if os(tvOS)
         .ignoresSafeArea()
@@ -769,7 +787,11 @@ struct PlayerNextUpScreen: View {
             }
             actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil, compact: compact)
             if viewModel.nextUpEpisode != nil {
+                #if os(iOS)
+                if !compact { autoPlayToggle }
+                #else
                 autoPlayToggle
+                #endif
             } else if !viewModel.isLoadingNextUpEpisode {
                 Text(finishedMessage)
                     .font(.caption)
@@ -986,11 +1008,18 @@ struct PlayerNextUpScreen: View {
                 }
                 .siloSecondaryButton()
                 .frame(minHeight: 44)
+                #if os(iOS)
+                if compact && hasNextEpisode { autoPlayToggle }
+                #endif
             }
         }
         .font(.callout)
         .lineLimit(1)
+        #if os(iOS)
+        .frame(maxWidth: compact ? 560 : 380)
+        #else
         .frame(maxWidth: 380)
+        #endif
         #endif
     }
 
@@ -1044,6 +1073,15 @@ struct PlayerNextUpScreen: View {
     }
 
     private var finishedMessage: String {
+        #if os(iOS)
+        if viewModel.nextUpStartError != nil {
+            return "Couldn't start the next episode. Try again or go back."
+        }
+        if viewModel.nextUpLookupError != nil {
+            return "Couldn't load the next episode. Go back to choose something else."
+        }
+        return "No next episode is available."
+        #else
         if let startError = viewModel.nextUpStartError {
             let suffix = viewModel.nextUpCarouselItems.isEmpty
                 ? "Try again or go back."
@@ -1057,6 +1095,7 @@ struct PlayerNextUpScreen: View {
             return "No next episode is available."
         }
         return "No next episode is available. Pick something from On Deck instead."
+        #endif
     }
 
     private func focusPreferredAction() {

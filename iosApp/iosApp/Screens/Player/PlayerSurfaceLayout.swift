@@ -7,6 +7,7 @@ struct PlayerPreviewBoundsKey: PreferenceKey {
     struct Value {
         var bounds: Anchor<CGRect>?
         var viewport: Anchor<CGRect>?
+        var actions: Anchor<CGRect>?
     }
 
     static var defaultValue: Value { Value() }
@@ -15,6 +16,7 @@ struct PlayerPreviewBoundsKey: PreferenceKey {
         let next = nextValue()
         value.bounds = next.bounds ?? value.bounds
         value.viewport = next.viewport ?? value.viewport
+        value.actions = next.actions ?? value.actions
     }
 }
 
@@ -58,9 +60,8 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
     }
 }
 
-/// The preview and primary actions never live inside a scroll view on mobile.
-/// Only the optional On Deck shelf scrolls. Wide screens put actions on the
-/// right; narrow screens cap the preview so it cannot push Play Now below them.
+/// iOS keeps one vertical preview/actions stack through rotation. The Mac
+/// retains its side-by-side layout and optional On Deck shelf.
 struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View {
     @ViewBuilder let preview: () -> Preview
     @ViewBuilder let panel: (_ compact: Bool) -> Panel
@@ -68,6 +69,16 @@ struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View 
 
     var body: some View {
         GeometryReader { proxy in
+            #if os(iOS)
+            let compact = proxy.size.width > proxy.size.height
+            PlayerNextUpStackLayout(compact: compact) {
+                preview()
+                panel(compact)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, compact ? 8 : 16)
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            #else
             let horizontalInset = max(20, max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing) + 12)
             let topInset = max(16, proxy.safeAreaInsets.top + 12)
             let bottomInset = max(16, proxy.safeAreaInsets.bottom + 12)
@@ -97,6 +108,36 @@ struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View 
             .frame(width: width, height: height, alignment: .top)
             .frame(maxWidth: .infinity)
             .padding(.top, topInset)
+            #endif
         }
     }
 }
+
+#if os(iOS)
+/// Measure the actual action panel first, then fit the preview above it.
+/// Keeping the same stack and video anchor across sizes avoids reparenting
+/// the playing surface or guessing how much room the text and buttons need.
+struct PlayerNextUpStackLayout: Layout {
+    var compact: Bool
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        let panelWidth = min(bounds.width, compact ? 560 : 380)
+        let panelSize = subviews[1].sizeThatFits(.init(width: panelWidth, height: nil))
+        let gap: CGFloat = compact ? 8 : 16
+        let availableHeight = max(0, bounds.height - panelSize.height - gap)
+        let previewWidth = min(compact ? 280 : 300, bounds.width, availableHeight * 16 / 9)
+        let previewHeight = previewWidth * 9 / 16
+        let totalHeight = previewHeight + gap + panelSize.height
+        let top = bounds.minY + max(0, (bounds.height - totalHeight) / 2)
+        subviews[0].place(at: CGPoint(x: bounds.midX, y: top), anchor: .top,
+                          proposal: .init(width: previewWidth, height: previewHeight))
+        subviews[1].place(at: CGPoint(x: bounds.midX, y: top + previewHeight + gap), anchor: .top,
+                          proposal: .init(width: panelWidth, height: panelSize.height))
+    }
+}
+#endif

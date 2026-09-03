@@ -101,9 +101,6 @@ struct HomeView: View {
             guard !viewModel.sections.isEmpty else { return }
             Task { await viewModel.loadSections() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.loadSections() }
-        }
         #else
         ZStack(alignment: .top) {
             homeFeedBackground
@@ -197,6 +194,11 @@ struct HomeView: View {
         }
         #endif
         }
+        #if os(iOS) || os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.loadSections() }
+        }
+        #endif
         .alert(
             "Couldn’t Update Item",
             isPresented: $viewModel.isShowingActionError
