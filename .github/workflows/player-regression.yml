@@ -84,7 +84,10 @@ jobs:
           xcrun simctl bootstatus "$simulator_id" -b
       - name: Generate Xcode project
         run: |
+          set -euo pipefail
           curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
+          # Pin the official 2.43.0 release asset before unpacking/executing it.
+          echo "a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f  /tmp/xcodegen.zip" | shasum -a 256 -c -
           unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
           /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml
       - name: Build player

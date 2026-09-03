@@ -83,7 +83,7 @@ final class HorizontalMediaRailTests: XCTestCase {
             let frames = Frames()
             let content = HStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 10) {
                 ForEach(items) { item in
-                    HomeStillCard(item: item, width: 170)
+                    HomeStillCard(item: item, width: 170, opensResumeContext: true)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("cards")) } action: {
                             frames.cards[item.contentId] = $0
                         }
@@ -101,6 +101,37 @@ final class HorizontalMediaRailTests: XCTestCase {
             XCTAssertGreaterThan(movie.height, 100)
             XCTAssertEqual(movie.minY, episode.minY, accuracy: 0.5)
             XCTAssertEqual(movie.height, episode.height, accuracy: 0.5)
+        }
+    }
+
+    func testOnlyContinueWatchingReservesAMissingResumeCaption() async throws {
+        for item in try items() {
+            let frames = Frames()
+            let content = HStack(alignment: .top, spacing: 10) {
+                HomeStillCard(item: item, width: 170)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("cards")) } action: {
+                        frames.cards["ordinary"] = $0
+                    }
+                HomeStillCard(item: item, width: 170, opensResumeContext: true)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("cards")) } action: {
+                        frames.cards["resume"] = $0
+                    }
+            }
+            .coordinateSpace(name: "cards")
+            .environment(AppRouter())
+            .environmentObject(OverlayPrefsStore())
+            let window = makeWindow(content)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await settle(window)
+            let ordinary = try XCTUnwrap(frames.cards["ordinary"])
+            let resume = try XCTUnwrap(frames.cards["resume"])
+            if HomeFeedMeta.resumeCaption(for: item) == nil {
+                XCTAssertGreaterThan(resume.height, ordinary.height + 5,
+                                     "Next Up must not reserve an invisible Continue Watching caption")
+            } else {
+                XCTAssertEqual(resume.height, ordinary.height, accuracy: 0.5,
+                               "A visible progress caption must remain on either card")
+            }
         }
     }
 

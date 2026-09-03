@@ -577,7 +577,8 @@ struct HomeStillCard: View {
             }
 
             if showsMetadata,
-               HorizontalMediaRailLayout.isPhone || HomeFeedMeta.resumeCaption(for: item) != nil {
+               (opensResumeContext && HorizontalMediaRailLayout.isPhone)
+                   || HomeFeedMeta.resumeCaption(for: item) != nil {
                 // Keep phone resume cards the same height when only some items have
                 // a remaining-time caption, including as lazy cards enter/leave.
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")

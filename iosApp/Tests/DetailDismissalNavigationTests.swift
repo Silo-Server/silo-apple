@@ -191,6 +191,51 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertFalse(model.isLoadingEpisodes)
     }
 
+    func testContinueWatchingHierarchySuccessDoesNotConsumePendingCatalogIntent() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        let model = ItemDetailViewModel()
+        model.initialResumeSeasonNumber = 3
+        let loaded = await model.loadContinueWatchingStructure(
+            contentId: detail.contentId, seasonNumber: model.initialResumeSeasonNumber,
+            fetchSeasons: { _ in seasons }, fetchEpisodes: { _, _ in episodes }
+        )
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 3)
+        XCTAssertEqual(model.initialResumeSeasonNumber, 3,
+                       "Hierarchy success alone must not consume the intent while catalog can still fail")
+        XCTAssertNil(model.detail, "This response arrived before a successful catalog load")
+    }
+
+    func testContinueWatchingHierarchyFailuresRetainTheRequestedSeasonForRetry() async throws {
+        let (detail, seasons, episodes) = try resumeLoadFixture()
+        defer { clearResumeLoadFixture() }
+        for failedResource in ["seasons", "episodes", "both"] {
+            let model = ItemDetailViewModel()
+            model.initialResumeSeasonNumber = 3
+            let loaded = await model.loadContinueWatchingStructure(
+                contentId: detail.contentId, seasonNumber: model.initialResumeSeasonNumber,
+                fetchSeasons: { _ in
+                    if failedResource != "episodes" { throw URLError(.notConnectedToInternet) }
+                    return seasons
+                },
+                fetchEpisodes: { _, _ in
+                    if failedResource != "seasons" { throw URLError(.notConnectedToInternet) }
+                    return episodes
+                }
+            )
+            XCTAssertFalse(loaded)
+            XCTAssertEqual(model.initialResumeSeasonNumber, 3)
+            let retried = await model.loadContinueWatchingStructure(
+                contentId: detail.contentId, seasonNumber: model.initialResumeSeasonNumber,
+                fetchSeasons: { _ in seasons }, fetchEpisodes: { _, _ in episodes }
+            )
+            XCTAssertTrue(retried)
+            XCTAssertEqual(model.selectedSeason?.seasonNumber, 3)
+            XCTAssertEqual(model.episodes.map(\.episodeNumber), [1, 2])
+        }
+    }
+
     func testContinueWatchingEntryCannotOverwriteASeasonTapWhileRequestsArePending() async throws {
         let (detail, seasons, episodes) = try resumeLoadFixture()
         defer { clearResumeLoadFixture() }
@@ -241,6 +286,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
         let started = expectation(description: "Cancellable request started")
         let gate = ContinueWatchingResponseGate()
         let cancelledModel = ItemDetailViewModel()
+        cancelledModel.initialResumeSeasonNumber = 3
         let load = Task {
             await cancelledModel.loadContinueWatchingStructure(
                 contentId: detail.contentId, seasonNumber: 3,
@@ -258,6 +304,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertTrue(cancelledModel.seasons.isEmpty)
         XCTAssertTrue(cancelledModel.episodes.isEmpty)
         XCTAssertNil(cancelledModel.selectedSeason)
+        XCTAssertEqual(cancelledModel.initialResumeSeasonNumber, 3,
+                       "Cancellation must not consume the pending resume entry")
     }
 
     func testContinueWatchingHierarchyRequestBenchmark() async throws {
