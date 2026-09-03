@@ -105,15 +105,20 @@ enum PosterImageCache {
 
     #if os(tvOS)
     /// Root-hero backdrop warmer for the cards beside a rested marquee
-    /// selection. Bounded to a handful of URLs, low priority so visible
-    /// cards and the rested backdrop itself always win the pipeline, and
-    /// decoded into the memory cache under the bare-URL key that
-    /// `CachedAsyncImage.prefetchedImage()` reads synchronously — so the
-    /// next rest paints finished art on its first frame.
+    /// selection. Bounded to a handful of URLs and low priority so visible
+    /// cards and the rested backdrop itself always win the pipeline.
+    ///
+    /// Data-only on purpose: tvOS receives w1920 backdrops, which decode to
+    /// roughly 8 MB each. Decoding four of those per rest into a 96 MB
+    /// memory budget on 3 GB Apple TVs would evict dozens of posters and
+    /// keep the two-wide decompression queue busy while the user is still
+    /// navigating. Pulling only the bytes into the disk cache removes the
+    /// network round trip — the dominant cost of a rested swap — and leaves
+    /// the single decode to the moment the backdrop is actually requested.
     private static let neighborBackdropPrefetcher: ImagePrefetcher = {
         let p = ImagePrefetcher(
             pipeline: ImagePipeline.shared,
-            destination: .memoryCache,
+            destination: .diskCache,
             maxConcurrentRequestCount: 2
         )
         p.priority = .low

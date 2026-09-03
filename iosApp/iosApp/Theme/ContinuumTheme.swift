@@ -276,8 +276,8 @@ struct ContinuumTheme {
         /// Backdrop + tint crossfade between rested selections (§4.2).
         static let marqueeCrossfadeDuration: Double = 0.24
         /// Neighbouring cards on either side of a rested selection whose
-        /// backdrops are warmed at low priority, so the next rest paints
-        /// from cache on its first frame.
+        /// backdrop bytes are pulled into the disk cache at low priority,
+        /// so the next rest skips the network round trip.
         static let marqueeNeighborBackdropPrefetchRadius = 2
 
         // MARK: Row band under the marquee (§5.7, revised)

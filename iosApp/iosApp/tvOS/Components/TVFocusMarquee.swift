@@ -677,9 +677,9 @@ final class TVFocusMarqueeModel {
     /// new art well under half a second.
     ///
     /// `neighborBackdropURLs` are the backdrops of the cards on either side
-    /// of the candidate in its row. Once the candidate rests they are warmed
-    /// into the memory cache at low priority so the user's most likely next
-    /// stop paints on its first frame instead of fading in after a fetch.
+    /// of the candidate in its row. Once the candidate rests their bytes are
+    /// pulled into the disk cache at low priority so the user's most likely
+    /// next stop skips the network round trip and only pays one decode.
     func preview(_ candidate: TVMarqueeContent, neighborBackdropURLs: [String] = []) {
         guard isActive, candidate != content else { return }
         backdropTask?.cancel()
