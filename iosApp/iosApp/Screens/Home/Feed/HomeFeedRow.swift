@@ -55,7 +55,7 @@ struct HomeFeedRow: View {
     private var rowScroller: some View {
         cardsScroll
             .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-            .scrollPosition(id: $visibleItemId, anchor: .center)
+            .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
             .environment(\.itemDetailBrowseSource, detailBrowseSource)
             .onAppear {
                 let initialId = validSelectionId(
@@ -85,7 +85,7 @@ struct HomeFeedRow: View {
 
     private var cardsScroll: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(section.items) { item in
                     Group {
                         if usesStills {
@@ -116,6 +116,7 @@ struct HomeFeedRow: View {
                 }
             }
             .scrollTargetLayout()
+            .phoneMediaRailBounds()
         }
         .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
         .scrollClipDisabled()

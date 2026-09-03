@@ -570,11 +570,14 @@ struct HomeStillCard: View {
                     .truncationMode(.tail)
             }
 
-            if showsMetadata, let subtitle = HomeFeedMeta.resumeCaption(for: item) {
-                Text(subtitle)
+            if showsMetadata,
+               HorizontalMediaRailLayout.isPhone || HomeFeedMeta.resumeCaption(for: item) != nil {
+                // Keep phone resume cards the same height when only some items have
+                // a remaining-time caption, including as lazy cards enter/leave.
+                Text(HomeFeedMeta.resumeCaption(for: item) ?? "")
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
-                    .lineLimit(1)
+                    .lineLimit(1, reservesSpace: HorizontalMediaRailLayout.isPhone)
             }
         }
         .frame(width: width, alignment: .leading)
