@@ -397,6 +397,7 @@ struct MediaRow: View {
                 posterUrl: item.posterUrl ?? "",
                 thumbhash: item.posterThumbhash,
                 year: item.year,
+                subtitle: EpisodeCardCaption.line(for: item),
                 progress: progressValue(for: item),
                 userState: item.userState,
                 overlayData: OverlayData.from(item),
@@ -564,12 +565,9 @@ struct MediaRow: View {
     }
 
     /// Episode context for accessibility when a poster is captioned with its
-    /// series title. Episode numbers are not drawn over card artwork.
+    /// series title.
     private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
-        guard item.type.lowercased() == "episode",
-              let season = item.seasonNumber,
-              let episode = item.episodeNumber else { return nil }
-        return "S\(season) · E\(episode)"
+        EpisodeCardCaption.accessibilityLabel(for: item)
     }
 
     // MARK: - Metrics

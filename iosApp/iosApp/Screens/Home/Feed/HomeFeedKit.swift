@@ -90,9 +90,11 @@ enum HomeFeedMeta {
         return parts.joined(separator: "  ·  ")
     }
 
-    static func episodeCode(for item: SectionItem) -> String? {
-        guard let season = item.seasonNumber, let episode = item.episodeNumber else { return nil }
-        return "S\(season) E\(episode)"
+    /// Secondary caption line under a card title: "S01E02 · Pilot" for
+    /// episodes, otherwise the year. One line, so every card in a row keeps
+    /// the same height.
+    static func cardSecondLine(for item: SectionItem) -> String? {
+        EpisodeCardCaption.line(for: item) ?? item.year.map(String.init)
     }
 
     /// Caption under a resume still — "23m left".
@@ -397,11 +399,13 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if showsMetadata, let year = item.year {
-                Text(String(year))
+            if showsMetadata, let secondLine = HomeFeedMeta.cardSecondLine(for: item) {
+                Text(secondLine)
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
         .frame(width: width, alignment: .leading)
@@ -409,9 +413,11 @@ struct HomePosterCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
-        components.append(
-            contentsOf: [episodeAccessibilityLabel, item.year.map(String.init)].compactMap { $0 }
-        )
+        if let episodeAccessibilityLabel {
+            components.append(episodeAccessibilityLabel)
+        } else if let year = item.year {
+            components.append(String(year))
+        }
         if isPlayed {
             components.append("Watched")
         }
@@ -552,6 +558,18 @@ struct HomeStillCard: View {
                 .foregroundStyle(Color.continuumOnSurface)
                 .lineLimit(1)
 
+            if showsMetadata {
+                // Episode code + title (or the year for movies). Space is
+                // reserved even when empty so a row mixing episodes and
+                // movies keeps one caption height.
+                Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(Color.continuumOnSurface.opacity(0.7))
+                    .monospacedDigit()
+                    .lineLimit(1, reservesSpace: true)
+                    .truncationMode(.tail)
+            }
+
             if showsMetadata, let subtitle = HomeFeedMeta.resumeCaption(for: item) {
                 Text(subtitle)
                     .font(.system(size: 11, weight: .regular))
@@ -564,8 +582,10 @@ struct HomeStillCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
-        if let episodeCode = HomeFeedMeta.episodeCode(for: item) {
-            components.append(episodeCode)
+        if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item) {
+            components.append(episodeLabel)
+        } else if let year = item.year {
+            components.append(String(year))
         }
         if let resumeCaption = HomeFeedMeta.resumeCaption(for: item) {
             components.append(resumeCaption)

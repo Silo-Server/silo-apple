@@ -139,10 +139,7 @@ struct HomeFeedRow: View {
     /// Episode context for accessibility when episode-discovery cards are
     /// visually captioned with their series name.
     private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
-        guard item.type.lowercased() == "episode",
-              let season = item.seasonNumber,
-              let episode = item.episodeNumber else { return nil }
-        return "S\(season) · E\(episode)"
+        EpisodeCardCaption.accessibilityLabel(for: item)
     }
 
     /// Removal is only offered where it means something — a resume row.

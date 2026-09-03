@@ -60,6 +60,10 @@ struct MediaCard: View {
     let posterUrl: String
     var thumbhash: String? = nil
     var year: Int? = nil
+    /// Secondary caption line drawn in place of the year — episode cards pass
+    /// "S01E02 · Pilot" so the code and episode title sit under the series
+    /// name. Always one line; see `EpisodeCardCaption`.
+    var subtitle: String? = nil
     var progress: Double? = nil
     var userState: MediaItemUserState? = nil
     /// Data for the optional overlay badges (resolution, ratings, …).
@@ -138,6 +142,7 @@ struct MediaCard: View {
         FocusableMediaCard(
             title: title,
             year: year,
+            subtitle: subtitle,
             episodeAccessibilityLabel: episodeAccessibilityLabel,
             captionStyle: uiCustomization.cardPresentation.caption,
             cardWidth: cardWidth,
@@ -411,10 +416,15 @@ struct MediaCard: View {
 
     @ViewBuilder
     private var yearText: some View {
-        if let year {
-            Text(String(year))
+        if let secondLine = subtitle ?? year.map(String.init) {
+            Text(secondLine)
                 .font(.continuumCaption)
                 .foregroundColor(.continuumSecondaryText)
+                // One line, tail-truncated: an episode title must never wrap
+                // and push the row below it.
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: cardWidth, alignment: .leading)
         }
     }
 
@@ -472,6 +482,8 @@ extension View {
 private struct FocusableMediaCard<Content: View>: View {
     let title: String
     let year: Int?
+    /// Replaces the year on the metadata line when present.
+    let subtitle: String?
     let episodeAccessibilityLabel: String?
     let captionStyle: CardCaptionStyle
     let cardWidth: CGFloat
@@ -522,12 +534,15 @@ private struct FocusableMediaCard<Content: View>: View {
                         .clipped()
                         .animation(.easeOut(duration: 0.15), value: isFocused)
 
-                    if captionStyle.showsMetadata, let year {
-                        Text(String(year))
+                    if captionStyle.showsMetadata,
+                       let secondLine = subtitle ?? year.map(String.init) {
+                        Text(secondLine)
                             .font(.continuumPosterMetadata)
                             .foregroundStyle(Color.continuumSecondaryText)
                             .lineLimit(1)
+                            .truncationMode(.tail)
                             .frame(width: cardWidth, alignment: .leading)
+                            .clipped()
                     }
                 }
                 .frame(width: cardWidth, alignment: .leading)
