@@ -181,6 +181,32 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         ))
     }
 
+    func testPeriodicProgressReloadsOnlyAfterSuccessWithChangedAuthorization() {
+        let active = ["Authorization": "Bearer old-token"]
+        let refreshed = ["authorization": "Bearer new-token"]
+
+        XCTAssertTrue(AetherAuthenticationRecoveryPolicy.shouldReloadAfterProgress(
+            .success,
+            activeHeaders: active,
+            currentHeaders: refreshed
+        ))
+        XCTAssertFalse(AetherAuthenticationRecoveryPolicy.shouldReloadAfterProgress(
+            .success,
+            activeHeaders: refreshed,
+            currentHeaders: refreshed
+        ))
+        XCTAssertFalse(AetherAuthenticationRecoveryPolicy.shouldReloadAfterProgress(
+            .missingSession,
+            activeHeaders: active,
+            currentHeaders: refreshed
+        ))
+        XCTAssertFalse(AetherAuthenticationRecoveryPolicy.shouldReloadAfterProgress(
+            .transientFailure,
+            activeHeaders: active,
+            currentHeaders: refreshed
+        ))
+    }
+
     func testHeaderAuthenticatedStreamRejectsAbsoluteAndNonMediaRoutes() {
         for raw in [
             "https://dev.example.test/api/v1/stream/session-1",
