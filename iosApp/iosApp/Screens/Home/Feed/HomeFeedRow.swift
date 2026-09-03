@@ -14,6 +14,8 @@ struct HomeFeedRow: View {
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var visibleItemId: String?
+    @Environment(AppRouter.self) private var router
 
     private var isResume: Bool { HomeFeed.isResume(section) }
 
@@ -45,9 +47,51 @@ struct HomeFeedRow: View {
                 style: headerStyle
             )
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: cardSpacing) {
-                    ForEach(section.items) { item in
+            rowScroller
+        }
+    }
+
+    @ViewBuilder
+    private var rowScroller: some View {
+        cardsScroll
+            .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+            .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
+            .environment(\.itemDetailBrowseSource, detailBrowseSource)
+            .onAppear {
+                let initialId = validSelectionId(
+                    preferred: visibleItemId ?? section.items.first?.contentId
+                )
+                visibleItemId = initialId
+            }
+            .onChange(of: section.items.map(\.contentId)) { _, newIds in
+                let preferred = newIds.contains(visibleItemId ?? "")
+                    ? visibleItemId
+                    : newIds.first
+                visibleItemId = preferred
+            }
+            #if os(iOS)
+            .onChange(of: router.presentedItemDetail) { _, presentation in
+                // Only iPad's horizontally paged detail deck drives its source
+                // row. An iPhone detail opens in place; scrolling the row while
+                // its zoom transition is restoring it creates a visible drift.
+                guard !HorizontalMediaRailLayout.isPhone,
+                      presentation?.browseSource?.originID == detailBrowseSource.originID,
+                      let contentID = presentation?.contentId,
+                      section.items.contains(where: { $0.contentId == contentID })
+                else { return }
+
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    visibleItemId = contentID
+                }
+            }
+            #endif
+    }
+
+    private var cardsScroll: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+                ForEach(section.items) { item in
+                    Group {
                         if usesStills {
                             HomeStillCard(
                                 item: item,
@@ -55,6 +99,7 @@ struct HomeFeedRow: View {
                                     * uiCustomization.cardPresentation.posterSize.scale,
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
+                                opensResumeContext: isResume,
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
@@ -65,29 +110,43 @@ struct HomeFeedRow: View {
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
+                                opensResumeContext: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
-                                episodeBadge: episodeBadge(for: item),
+                                episodeAccessibilityLabel: episodeAccessibilityLabel(for: item),
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
                         }
                     }
+                    .id(item.contentId)
                 }
-                .scrollTargetLayout()
             }
-            .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
-            .scrollClipDisabled()
+            .scrollTargetLayout()
+            .phoneMediaRailBounds()
         }
+        .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
+        .scrollClipDisabled()
     }
 
-    /// "S2 · E10" for an episode drawn as a poster. Episode-discovery rows
-    /// caption with the series name, so without this several episodes of one
-    /// series render as identical cards.
-    private func episodeBadge(for item: SectionItem) -> String? {
-        guard item.type.lowercased() == "episode",
-              let season = item.seasonNumber,
-              let episode = item.episodeNumber else { return nil }
-        return "S\(season) · E\(episode)"
+    private var detailBrowseSource: ItemDetailBrowseSource {
+        ItemDetailBrowseSource(
+            originID: "home:\(section.id)",
+            contentIDs: section.items.map(\.contentId)
+        )
+    }
+
+    private func validSelectionId(preferred: String?) -> String? {
+        guard let preferred,
+              section.items.contains(where: { $0.contentId == preferred }) else {
+            return section.items.first?.contentId
+        }
+        return preferred
+    }
+
+    /// Episode context for accessibility when episode-discovery cards are
+    /// visually captioned with their series name.
+    private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
+        EpisodeCardCaption.accessibilityLabel(for: item)
     }
 
     /// Removal is only offered where it means something — a resume row.

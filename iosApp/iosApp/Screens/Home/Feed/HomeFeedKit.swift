@@ -90,12 +90,14 @@ enum HomeFeedMeta {
         return parts.joined(separator: "  ·  ")
     }
 
-    static func episodeCode(for item: SectionItem) -> String? {
-        guard let season = item.seasonNumber, let episode = item.episodeNumber else { return nil }
-        return "S\(season) E\(episode)"
+    /// Secondary caption line under a card title: "S01E02 · Pilot" for
+    /// episodes, otherwise the year. One line, so every card in a row keeps
+    /// the same height.
+    static func cardSecondLine(for item: SectionItem) -> String? {
+        EpisodeCardCaption.line(for: item) ?? item.year.map(String.init)
     }
 
-    /// Caption under a resume still — "S2 E4  ·  23m left".
+    /// Caption under a resume still — "23m left".
     ///
     /// Some items carry a resume position but no duration, which left their
     /// card showing a progress bar and no caption while the card beside it had
@@ -112,8 +114,7 @@ enum HomeFeedMeta {
             progressText = nil
         }
 
-        let pieces = [episodeCode(for: item), progressText].compactMap { $0 }
-        return pieces.isEmpty ? nil : pieces.joined(separator: "  ·  ")
+        return progressText
     }
 
     /// The title a card should be captioned with. Episodes caption with the
@@ -131,16 +132,22 @@ enum HomeFeedMeta {
 private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
+    var continueWatchingItem: SectionItem? = nil
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     @Environment(\.zoomNamespace) private var zoomNamespace
     @State private var zoomInstanceID = UUID()
 
     var body: some View {
         Button {
             router.pendingZoomSourceID = zoomInstanceID.uuidString
-            router.navigate(to: .itemDetail(contentId: contentId))
+            if let continueWatchingItem {
+                router.presentContinueWatchingDetail(for: continueWatchingItem, browseSource: detailBrowseSource)
+            } else {
+                router.presentItemDetail(contentId: contentId, browseSource: detailBrowseSource)
+            }
         } label: {
             label()
                 .zoomTransitionSource(id: zoomInstanceID.uuidString, in: zoomNamespace)
@@ -285,13 +292,13 @@ struct HomePosterCard: View {
     var showsMetadata: Bool = true
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
+    var opensResumeContext = false
     /// Audiobook covers are square; stretching one into a 2:3 poster crops
     /// its edges off.
     var aspect: MediaCardAspect = .poster
-    /// "S2 · E10" for an episode rendered as a poster. Without it, several
-    /// episodes of one series are captioned identically (they caption with
-    /// the series name) and become indistinguishable cards.
-    var episodeBadge: String? = nil
+    /// Episode context retained for accessibility. Episode numbers are
+    /// intentionally not drawn over poster artwork.
+    var episodeAccessibilityLabel: String? = nil
     /// Long-press actions, matching what `MediaCard` offers elsewhere.
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
@@ -313,7 +320,8 @@ struct HomePosterCard: View {
     var body: some View {
         HomeCardTap(
             contentId: item.contentId,
-            accessibilityLabel: accessibilityDescription
+            accessibilityLabel: accessibilityDescription,
+            continueWatchingItem: opensResumeContext ? item : nil
         ) {
             VStack(alignment: .leading, spacing: 7) {
                 artwork
@@ -348,8 +356,8 @@ struct HomePosterCard: View {
         .overlay {
             // Home uses the same renderer and resolved profile preferences as
             // Browse, For You, Watchlist, and Favorites. Keep this below the
-            // episode/progress/watched affordances so those controls retain
-            // their established corner priority.
+            // progress and watched affordances so those controls retain their
+            // established corner priority.
             if overlayStore.enabled {
                 CardOverlays(
                     data: OverlayData.from(item),
@@ -363,17 +371,6 @@ struct HomePosterCard: View {
                         style: .continuous
                     )
                 )
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            if let episodeBadge {
-                Text(episodeBadge)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(.black.opacity(0.65)))
-                    .padding(6)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -406,11 +403,13 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if showsMetadata, let year = item.year {
-                Text(String(year))
+            if showsMetadata, let secondLine = HomeFeedMeta.cardSecondLine(for: item) {
+                Text(secondLine)
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
         .frame(width: width, alignment: .leading)
@@ -418,7 +417,11 @@ struct HomePosterCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
-        components.append(contentsOf: [episodeBadge, item.year.map(String.init)].compactMap { $0 })
+        if let episodeAccessibilityLabel {
+            components.append(episodeAccessibilityLabel)
+        } else if let year = item.year {
+            components.append(String(year))
+        }
         if isPlayed {
             components.append("Watched")
         }
@@ -436,6 +439,7 @@ struct HomeStillCard: View {
     var width: CGFloat = HomeFeedMetrics.stillWidth
     var showsCaption: Bool = true
     var showsMetadata: Bool = true
+    var opensResumeContext = false
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
@@ -461,7 +465,8 @@ struct HomeStillCard: View {
     var body: some View {
         HomeCardTap(
             contentId: item.contentId,
-            accessibilityLabel: accessibilityDescription
+            accessibilityLabel: accessibilityDescription,
+            continueWatchingItem: opensResumeContext ? item : nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
@@ -559,11 +564,29 @@ struct HomeStillCard: View {
                 .foregroundStyle(Color.continuumOnSurface)
                 .lineLimit(1)
 
-            if showsMetadata, let subtitle = HomeFeedMeta.resumeCaption(for: item) {
-                Text(subtitle)
+            if showsMetadata {
+                // Episode code + title (or the year for movies). Space is
+                // reserved even when empty so a row mixing episodes and
+                // movies keeps one caption height.
+                Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(Color.continuumOnSurface.opacity(0.7))
+                    .monospacedDigit()
+                    .lineLimit(1, reservesSpace: true)
+                    .truncationMode(.tail)
+            }
+
+            if showsMetadata,
+               (opensResumeContext && HorizontalMediaRailLayout.isPhone)
+                   || HomeFeedMeta.resumeCaption(for: item) != nil {
+                // Keep phone resume cards the same height when only some items have
+                // a remaining-time caption, including as lazy cards enter/leave.
+                Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
                     .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
                     .lineLimit(1)
+                    .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)
+                    .accessibilityHidden(HomeFeedMeta.resumeCaption(for: item) == nil)
             }
         }
         .frame(width: width, alignment: .leading)
@@ -571,6 +594,11 @@ struct HomeStillCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
+        if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item) {
+            components.append(episodeLabel)
+        } else if let year = item.year {
+            components.append(String(year))
+        }
         if let resumeCaption = HomeFeedMeta.resumeCaption(for: item) {
             components.append(resumeCaption)
         }

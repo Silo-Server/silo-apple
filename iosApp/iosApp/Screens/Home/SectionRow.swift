@@ -1,12 +1,22 @@
 import SwiftUI
 
+extension ResolvedSection {
+    var isContinueWatchingSection: Bool {
+        let type = sectionType.lowercased()
+        return type == "continue_watching" || type == "in_progress"
+    }
+}
+
 /// A single section row on the home screen.
 /// Wraps MediaRow and handles "continue watching" progress display.
 /// Picks the thumbnail layout for episode-centric sections (Next Up,
 /// and Continue Watching resume rows).
 struct SectionRow: View {
     let section: ResolvedSection
-    let onItemTap: (String) -> Void
+    /// Destination ID plus the card that initiated navigation. Continue
+    /// Watching may substitute a parent Series ID while retaining the episode
+    /// card as context for the detail route seed.
+    let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
     var onSeeAll: (() -> Void)? = nil
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
@@ -17,6 +27,11 @@ struct SectionRow: View {
     /// when an unrelated view (e.g. the tvOS top menu) hands focus down into
     /// this row rather than the user d-padding into it.
     var focusRequest: Int = 0
+    /// Optional exact item target for the programmatic focus kick.
+    var focusRequestItemId: String? = nil
+    /// tvOS detail-pop token forwarded to `MediaRow`; the row's ownership gate
+    /// ensures only the launch row restores its exact previously focused card.
+    var detailReturnFocusRequest: Int = 0
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: card-focus reports forwarded from `MediaRow` so hosts
     /// can drive the Skyline focus marquee with `(item, row title)`.
@@ -31,13 +46,16 @@ struct SectionRow: View {
     var onMoveDown: (() -> Void)? = nil
     /// Live tvOS ownership gate for context-menu focus restoration.
     var focusRestorationOwner: Binding<Bool>? = nil
+    #if !os(tvOS)
+    @State private var detailBrowseOriginID = UUID().uuidString
+    #endif
 
     #if os(tvOS)
     @Environment(AppRouter.self) private var router
     #endif
 
     private var isContinueWatching: Bool {
-        section.sectionType == "continue_watching" || section.sectionType == "in_progress"
+        section.isContinueWatchingSection
     }
 
     private var hasEpisodeItems: Bool {
@@ -87,7 +105,7 @@ struct SectionRow: View {
         MediaRow(
             title: section.title,
             items: section.items,
-            onItemTap: onItemTap,
+            onItemTap: selectItem,
             onItemPlay: playItem,
             onSeeAll: onSeeAll,
             showProgress: showProgress,
@@ -96,7 +114,11 @@ struct SectionRow: View {
             prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
             defaultFocusPriority: defaultFocusPriority,
             focusRequest: focusRequest,
+            focusRequestItemId: focusRequestItemId,
+            detailReturnFocusRequest: detailReturnFocusRequest,
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
+            onOpenContextDetail: nil,
+            showsPlayInContextMenu: isContinueWatching,
             onSetWatched: { item, played in
                 await setWatched(item, played: played)
             },
@@ -107,6 +129,15 @@ struct SectionRow: View {
             onMoveDown: onMoveDown,
             focusRestorationOwner: focusRestorationOwner
         )
+        #if !os(tvOS)
+        .environment(
+            \.itemDetailBrowseSource,
+            ItemDetailBrowseSource(
+                originID: detailBrowseOriginID,
+                contentIDs: section.items.map(\.contentId)
+            )
+        )
+        #endif
     }
 
     private func playItem(_ item: SectionItem) {
@@ -114,11 +145,85 @@ struct SectionRow: View {
         router.presentPlayer(
             contentId: item.contentId,
             resumePosition: item.positionSeconds,
+            prefersLastUsedVersion: isContinueWatching,
             posterURL: item.posterUrl,
             backdropURL: item.backdropUrl
         )
         #endif
     }
+
+    /// Continue Watching Select opens context instead of immediately playing:
+    /// episodes land on their parent Series with the exact season and episode
+    /// active, while movies retain their own detail page. Direct Resume/Play
+    /// remains available from the remote Play/Pause command and long press.
+    private func selectItem(_ contentId: String) {
+        guard let item = section.items.first(where: { $0.contentId == contentId }) else {
+            return
+        }
+
+        #if os(tvOS)
+        if isContinueWatching {
+            let isEpisode = item.type.lowercased() == "episode"
+                || item.episodeNumber != nil
+            if isEpisode,
+               let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !seriesId.isEmpty,
+               let seasonNumber = item.seasonNumber {
+                navigateToSeriesDetail(
+                    to: seriesId,
+                    from: item,
+                    seasonNumber: seasonNumber,
+                    episodeContentId: item.contentId
+                )
+            } else {
+                onItemTap(item.contentId, item)
+            }
+            return
+        }
+
+        if SiloMediaType.isSeries(item.type) {
+            navigateToSeriesDetail(to: item.contentId, from: item)
+            return
+        }
+        #endif
+        onItemTap(contentId, item)
+    }
+
+    #if os(tvOS)
+    /// Match Movie navigation: push the branded route seed immediately while
+    /// the existing marquee warm-up and destination request pool finish the
+    /// authoritative Series payload and hierarchy in parallel.
+    private func navigateToSeriesDetail(
+        to seriesContentId: String,
+        from item: SectionItem,
+        seasonNumber: Int? = nil,
+        episodeContentId: String? = nil
+    ) {
+        finishSeriesDetailNavigation(
+            to: seriesContentId,
+            from: item,
+            seasonNumber: seasonNumber,
+            episodeContentId: episodeContentId
+        )
+    }
+
+    private func finishSeriesDetailNavigation(
+        to seriesContentId: String,
+        from item: SectionItem,
+        seasonNumber: Int?,
+        episodeContentId: String?
+    ) {
+        if let seasonNumber, let episodeContentId {
+            TVSeriesDetailNavigationContextStore.stage(
+                seriesContentId: seriesContentId,
+                seasonNumber: seasonNumber,
+                episodeContentId: episodeContentId
+            )
+        }
+        onItemTap(seriesContentId, item)
+    }
+
+    #endif
 
     /// Home injects a model-owned mutation so its membership-driven rows and
     /// cache update immediately. Shared SectionRow callers retain the original

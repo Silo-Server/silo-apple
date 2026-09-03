@@ -68,7 +68,7 @@ struct CalendarDayShelf: View {
 
     private var shelfContent: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(events) { event in
                     CalendarEventCard(
                         event: event,
@@ -79,6 +79,7 @@ struct CalendarDayShelf: View {
             }
             .padding(.horizontal, ContinuumTheme.safePadding)
             .padding(.vertical, verticalCardPadding)
+            .phoneMediaRailBounds()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         #if os(tvOS)

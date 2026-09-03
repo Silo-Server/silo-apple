@@ -6,9 +6,9 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: 0ae80496ab6f3fda135f43ef195ff10961c0e625 (release 6.34.0)
+  Revision: 653be639441d3f7d06332a2f995950497ad62e0f (release 6.34.0 + native item handoff and session retirement fixes)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source: https://github.com/superuser404notfound/AetherEngine/tree/0ae80496ab6f3fda135f43ef195ff10961c0e625
+  Source: https://github.com/blurbery/AetherEngine/tree/653be639441d3f7d06332a2f995950497ad62e0f
   Rebuild: the Package.swift and source tree at that revision
 
 FFmpegBuild and embedded media frameworks
@@ -57,6 +57,13 @@ Nuke and NukeUI
   Revision: 83e19143355b02e9261edb2323b3e1e93287ebb9 (release 12.9.0)
   License: MIT
   Source: https://github.com/kean/Nuke/tree/83e19143355b02e9261edb2323b3e1e93287ebb9
+
+ThumbHash decoder
+  Revision: a652ce6ed691242f459f468f0a8756cda3b90a82
+  License: MIT
+  Source: https://github.com/evanw/thumbhash/tree/a652ce6ed691242f459f468f0a8756cda3b90a82
+  Silo includes an adapted copy of the reference Swift decode path with input
+  validation, cross-platform image creation, and a bounded asynchronous cache.
 
 SMBClient 0.3.1 is present in SwiftPM's resolution graph only because
 AetherEngine publishes a separate optional AetherEngineSMB product. Silo links

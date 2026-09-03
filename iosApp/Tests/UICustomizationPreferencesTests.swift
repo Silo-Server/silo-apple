@@ -96,7 +96,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(
             mediaCardAccessibilityLabel(
                 title: "The Episode",
-                episodeBadge: "S2 · E10",
+                episodeLabel: "S2 · E10",
                 year: 2026,
                 isWatched: true
             ),
@@ -409,8 +409,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         ])
         XCTAssertEqual(
             projectedMainTabDestinations(primaryMenu: menu).map(\.id),
-            [.app(.home)],
-            "authored categories with no matching profile library must not render dead roots"
+            [.app(.home), .app(.recommendations), .app(.calendar)],
+            "unavailable library categories must fall back to app roots without rendering dead library roots"
         )
 
         let mixed = Library(id: 4, name: "Mixed", type: "mixed", sortOrder: 0, posterUrl: nil)
@@ -512,7 +512,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
             primaryMenu: menu,
             availableLibraries: staleSnapshot.availableLibraries(for: secondProfile)
         )
-        XCTAssertEqual(staleProjection.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            staleProjection.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)],
+            "a previous profile's library must stay hidden while the app fallback remains available"
+        )
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(
                 .library(library.id),
@@ -538,7 +542,11 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 libraries: []
             ).availableLibraries(for: secondProfile)
         )
-        XCTAssertEqual(revokedProjection.map(\.id), [.app(.home)])
+        XCTAssertEqual(
+            revokedProjection.map(\.id),
+            [.app(.home), .app(.recommendations), .app(.calendar)],
+            "revoking library access must restore app roots without retaining the library pin"
+        )
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(
                 .library(library.id),

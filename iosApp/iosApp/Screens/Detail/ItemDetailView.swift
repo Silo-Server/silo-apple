@@ -7,12 +7,15 @@ import SwiftUI
 /// 10-foot layout.
 struct ItemDetailView: View {
     let contentId: String
+    var tvSeed: TVItemDetailRouteSeed? = nil
+    var onClose: (() -> Void)? = nil
+    var resumeContext: AppRouter.ItemDetailResumeContext? = nil
 
     var body: some View {
         #if os(tvOS)
-        TVItemDetailView(contentId: contentId)
+        TVItemDetailView(contentId: contentId, seed: tvSeed)
         #else
-        ItemDetailPhoneContent(contentId: contentId)
+        ItemDetailPhoneContent(contentId: contentId, onClose: onClose, resumeContext: resumeContext)
         #endif
     }
 }
@@ -25,6 +28,177 @@ private struct ControlRequestBox: Identifiable {
     let request: SiloControlPlaybackRequest
     var id: String { request.contentId }
     init(_ request: SiloControlPlaybackRequest) { self.request = request }
+}
+
+/// Static top-control layout. Scroll progress is read only by the tiny opacity
+/// leaves below, so changing chrome never rebuilds buttons or their actions.
+private struct PhoneDetailTopChrome: View {
+    let title: String
+    let isScrollGlassEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+    let leadingSystemName: String?
+    let leadingAccessibilityLabel: String?
+    let onLeadingTap: () -> Void
+    let trailingSystemName: String
+    let onTrailingTap: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            PhoneDetailTopGlass(
+                isEnabled: isScrollGlassEnabled,
+                scrollState: scrollState
+            )
+
+            PhoneDetailScrollTitle(
+                title: title,
+                isEnabled: isScrollGlassEnabled,
+                scrollState: scrollState
+            )
+
+            HStack {
+                if let leadingSystemName {
+                    Button(action: onLeadingTap) {
+                        controlIcon(
+                            systemName: leadingSystemName,
+                            size: leadingSystemName == "chevron.left" ? 17 : 16
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(leadingAccessibilityLabel ?? "Back")
+                }
+
+                Spacer(minLength: 20)
+
+                Button(action: onTrailingTap) {
+                    controlIcon(systemName: trailingSystemName, size: 16)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remote Control")
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 9)
+        }
+        .zIndex(20)
+    }
+
+    private func controlIcon(systemName: String, size: CGFloat) -> some View {
+        ZStack {
+            PhoneDetailControlGlass(
+                isScrollGlassEnabled: isScrollGlassEnabled,
+                scrollState: scrollState
+            )
+
+            Image(systemName: systemName)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(
+            width: ContinuumTheme.topBarIconHitSize,
+            height: ContinuumTheme.topBarIconHitSize
+        )
+        .contentShape(Circle())
+    }
+}
+
+/// Dynamic opacity around a stable glass subtree. The expensive native glass
+/// node is equatable and retained while only its compositor alpha changes.
+private struct PhoneDetailTopGlass: View {
+    let isEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder
+    var body: some View {
+        if isEnabled {
+            PhoneDetailStaticGlassStrip(reduceTransparency: reduceTransparency)
+                .equatable()
+                .opacity(phoneDetailSmoothProgress(scrollState.offset, from: 200, to: 360))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct PhoneDetailStaticGlassStrip: View, Equatable {
+    let reduceTransparency: Bool
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                Color(white: 0.16).opacity(0.98)
+            } else {
+                Color.clear
+                    .siloGlass(in: Rectangle(), tint: Color.black.opacity(0.10))
+                    .overlay(Color.white.opacity(0.025))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: ContinuumTheme.topBarIconHitSize + 18)
+    }
+}
+
+private struct PhoneDetailScrollTitle: View {
+    let title: String
+    let isEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+
+    @ViewBuilder
+    var body: some View {
+        if isEnabled {
+            let progress = phoneDetailSmoothProgress(scrollState.offset, from: 400, to: 480)
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .padding(.horizontal, 96)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: ContinuumTheme.topBarIconHitSize,
+                    alignment: .center
+                )
+                .padding(.top, 9)
+                .opacity(progress)
+                .allowsHitTesting(false)
+                .accessibilityHidden(progress < 0.5)
+        }
+    }
+}
+
+private struct PhoneDetailControlGlass: View {
+    let isScrollGlassEnabled: Bool
+    let scrollState: PhoneDetailScrollState
+
+    var body: some View {
+        PhoneDetailStaticControlGlass()
+            .equatable()
+            .opacity(
+                isScrollGlassEnabled
+                    ? 1 - phoneDetailSmoothProgress(scrollState.offset, from: 150, to: 260)
+                    : 1
+            )
+    }
+}
+
+private struct PhoneDetailStaticControlGlass: View, Equatable {
+    var body: some View {
+        Color.clear
+            .frame(
+                width: ContinuumTheme.topBarIconHitSize,
+                height: ContinuumTheme.topBarIconHitSize
+            )
+            .siloGlass(in: Circle(), interactive: true)
+    }
+}
+
+private func phoneDetailSmoothProgress(
+    _ value: CGFloat,
+    from lowerBound: CGFloat,
+    to upperBound: CGFloat
+) -> CGFloat {
+    let progress = min(max((value - lowerBound) / (upperBound - lowerBound), 0), 1)
+    return progress * progress * (3 - (2 * progress))
 }
 #endif
 
@@ -63,6 +237,8 @@ private struct UnreachablePlayRequest: Identifiable {
 
 private struct ItemDetailPhoneContent: View {
     let contentId: String
+    var onClose: (() -> Void)? = nil
+    var resumeContext: AppRouter.ItemDetailResumeContext? = nil
 
     @State private var viewModel = ItemDetailViewModel()
     @State private var preferredVersionFileId: Int?
@@ -73,12 +249,24 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
     @State private var nextUpWatchDetail: WatchDetail?
+    /// Keeps the playback selector's footprint occupied while a newly focused
+    /// episode is resolving its files and tracks. The series page renders a
+    /// same-size skeleton from this state instead of collapsing the stack.
+    @State private var isLoadingNextUpWatchDetail = false
+    /// Series pages select episodes in place. Nil means the normal next-up
+    /// episode is active; tapping a card pins that episode without pushing a
+    /// second detail route.
+    @State private var selectedSeriesEpisodeId: String?
     @State private var refreshOnPlayerDismiss = false
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
+    @State private var detailScrollState = PhoneDetailScrollState()
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var controlRequestBox: ControlRequestBox?
+    @State private var isShowingControlPicker = false
+    @State private var isShowingRemoteControl = false
     #endif
     @Environment(AppRouter.self) private var router
 
@@ -93,6 +281,11 @@ private struct ItemDetailPhoneContent: View {
             }
         }
         .continuumBackground()
+        #if os(iOS)
+        // Detail chrome and selector checks stay monochrome over per-title
+        // artwork; the app accent blue looked unrelated to this visual system.
+        .tint(.white)
+        #endif
         .continuumNavigationTitleDisplayMode(.inline)
         .continuumNavigationBarBackgroundHidden()
         .task(id: contentId) {
@@ -104,7 +297,15 @@ private struct ItemDetailPhoneContent: View {
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             nextUpWatchDetail = nil
+            isLoadingNextUpWatchDetail = false
+            #if os(iOS)
+            selectedSeriesEpisodeId = resumeContext?.episodeContentId
+            viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
+            #else
+            selectedSeriesEpisodeId = nil
+            #endif
             refreshOnPlayerDismiss = false
+            detailScrollState.reset()
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
@@ -121,6 +322,7 @@ private struct ItemDetailPhoneContent: View {
             // keep running (and retaining the view model) after the route
             // pops. Same reasoning as `PersonDetailView.stopMetadataRefresh`.
             viewModel.stopTrailerFetch()
+            viewModel.stopEpisodePagePrefetch()
         }
         .onChange(of: router.presentedPlayer?.id) { oldValue, newValue in
             guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss else { return }
@@ -194,28 +396,76 @@ private struct ItemDetailPhoneContent: View {
                 : "You're offline. Connect to a network to stream, or play a downloaded title.")
         }
         #if os(iOS)
-        .toolbar {
-            if let detail = viewModel.detail, isDirectlyPlayable(detail) {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        playOnTV(currentControlRequest(for: detail))
-                    } label: {
-                        Image(systemName: siloControl.hasActiveSession
-                            ? "appletvremote.gen4.fill"
-                            : "appletvremote.gen4")
-                    }
-                    .tint(.continuumOnSurface)
-                    .accessibilityLabel("Remote Control")
-                }
-            }
+        // The native navigation bar reserved a solid black strip above the
+        // artwork. The card owns its controls instead: the image now reaches
+        // the rounded top edge and both controls float directly over it.
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .top) {
+            detailTopControls
         }
         .sheet(item: $controlRequestBox) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
+        }
+        .sheet(isPresented: $isShowingControlPicker) {
+            SiloControlTargetPickerView(request: nil, controller: siloControl)
+        }
+        .sheet(isPresented: $isShowingRemoteControl) {
+            SiloControlRemoteView(controller: siloControl)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         #endif
     }
 
     #if os(iOS)
+    private var detailTopControls: some View {
+        let showsClose = onClose != nil
+        let showsBack = !showsClose && !router.itemDetailPath.isEmpty
+
+        return PhoneDetailTopChrome(
+            title: viewModel.detail?.title ?? "",
+            isScrollGlassEnabled: supportsScrollGlassChrome,
+            scrollState: detailScrollState,
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
+            onLeadingTap: {
+                if let onClose {
+                    onClose()
+                } else if !router.itemDetailPath.isEmpty {
+                    router.itemDetailPath.removeLast()
+                }
+            },
+            trailingSystemName: siloControl.hasActiveSession
+                ? "appletvremote.gen4.fill"
+                : "appletvremote.gen4",
+            onTrailingTap: handleRemoteControlTap
+        )
+    }
+
+    private var supportsScrollGlassChrome: Bool {
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              horizontalSizeClass != .regular,
+              let detail = viewModel.detail else {
+            return false
+        }
+        return SiloMediaType.isMovieLibrary(detail.type)
+            || SiloMediaType.isSeries(detail.type)
+    }
+
+    /// Movies and episodes retain the existing cast-and-play behavior. Series
+    /// overview cards still show the same remote pill; there it opens the
+    /// connected remote or the TV picker because the container has no single
+    /// playable file of its own.
+    private func handleRemoteControlTap() {
+        if let detail = viewModel.detail, isDirectlyPlayable(detail) {
+            playOnTV(currentControlRequest(for: detail))
+        } else if siloControl.hasActiveSession || siloControl.isReconnecting {
+            isShowingRemoteControl = true
+        } else {
+            isShowingControlPicker = true
+        }
+    }
+
     /// True when the loaded detail routes to `MovieDetailContent` — the only
     /// branch whose primary item maps to a single playback request. Series,
     /// season, and audiobook containers have no single "this item" to cast.
@@ -396,14 +646,23 @@ private struct ItemDetailPhoneContent: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpWatchDetail: nextUpWatchDetail,
+                isLoadingSelectedEpisodePlayback: isLoadingNextUpWatchDetail,
+                selectedEpisodeContentId: playbackEpisode(for: detail)?.contentId,
                 onSelectSeason: { season in
+                    selectedSeriesEpisodeId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
+                    let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
+                    let episode = viewModel.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
                         ? nil
-                        : viewModel.episodes.first(where: { $0.contentId == id })?.userData?.positionSeconds
-                    if let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
+                        : playableResumePosition(
+                            position: episode?.userData?.positionSeconds,
+                            duration: episode?.userData?.durationSeconds
+                        )
+                    if usesSelectedEpisodeControls,
+                       let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
                         presentPlayerFromDetail(
                             contentId: id,
                             fileId: fileId,
@@ -415,13 +674,22 @@ private struct ItemDetailPhoneContent: View {
                     } else {
                         presentPlayerFromDetail(
                             contentId: id,
+                            fileId: usesSelectedEpisodeControls ? fileId : nil,
+                            audioTrackIndex: usesSelectedEpisodeControls
+                                ? preferredNextUpAudioTrackIndex : nil,
+                            subtitleTrackIndex: usesSelectedEpisodeControls
+                                ? preferredNextUpSubtitleTrackIndex : nil,
                             startFromBeginning: startFromBeginning,
                             resumePosition: resumePosition
                         )
                     }
                 },
                 onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    // The rail has already completed its native deceleration by
+                    // the time it reports a centered card. Publishing this
+                    // without a second animation prevents the whole vertical
+                    // detail stack from participating in the selection change.
+                    selectedSeriesEpisodeId = id
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
@@ -479,12 +747,13 @@ private struct ItemDetailPhoneContent: View {
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
+                scrollState: detailScrollState,
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
                 }
             )
-            .task(id: nextUpEpisodeContentId(for: detail)) {
+            .task(id: playbackEpisodeContentId(for: detail)) {
                 await loadNextUpWatchDetail(for: detail)
             }
         } else {
@@ -503,6 +772,7 @@ private struct ItemDetailPhoneContent: View {
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
                 episodeSeriesPosterUrl: viewModel.episodeSeriesPosterUrl,
                 episodeSeriesPosterThumbhash: viewModel.episodeSeriesPosterThumbhash,
+                episodeSeriesLogoUrl: viewModel.episodeSeriesLogoUrl,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
                     if let fileId = playbackFileId(for: detail) {
@@ -585,6 +855,7 @@ private struct ItemDetailPhoneContent: View {
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
+                scrollState: detailScrollState,
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
                         .id(detail.contentId)
@@ -849,23 +1120,55 @@ private struct ItemDetailPhoneContent: View {
         nextUpEpisode(for: detail)?.contentId
     }
 
+    /// Series detail keeps one active episode on the main page. The user's
+    /// explicit card selection wins; otherwise retain the existing in-progress
+    /// then first-unwatched next-up policy. Season detail continues to use the
+    /// unmodified next-up path.
+    private func playbackEpisode(for detail: ItemDetail) -> EpisodeListItem? {
+        if detail.type == "series",
+           let selectedSeriesEpisodeId,
+           let selected = viewModel.episodes.first(where: {
+               $0.contentId == selectedSeriesEpisodeId
+           }) {
+            return selected
+        }
+        return nextUpEpisode(for: detail)
+    }
+
+    private func playbackEpisodeContentId(for detail: ItemDetail) -> String? {
+        playbackEpisode(for: detail)?.contentId
+    }
+
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
-        guard let nextUp = nextUpEpisode(for: detail) else {
+        guard let nextUp = playbackEpisode(for: detail) else {
             nextUpWatchDetail = nil
+            isLoadingNextUpWatchDetail = false
             preferredNextUpFileId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             return
         }
 
+        let requestedContentId = nextUp.contentId
+        isLoadingNextUpWatchDetail = true
         nextUpWatchDetail = nil
         preferredNextUpFileId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
 
+        defer {
+            // A cancelled request may finish after the user has already
+            // centered another episode. Only the request that still owns the
+            // current selection is allowed to remove its skeleton.
+            if playbackEpisode(for: detail)?.contentId == requestedContentId {
+                isLoadingNextUpWatchDetail = false
+            }
+        }
+
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: nextUp.contentId)
-            guard !Task.isCancelled else { return }
+            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: requestedContentId)
+            guard !Task.isCancelled,
+                  playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
             nextUpWatchDetail = watchDetail
             preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                 version: effectiveVersion(for: watchDetail, versionFileId: nil),
@@ -874,7 +1177,8 @@ private struct ItemDetailPhoneContent: View {
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
             nextUpWatchDetail = nil
         }
     }

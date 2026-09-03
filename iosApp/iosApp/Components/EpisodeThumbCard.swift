@@ -3,20 +3,29 @@ import SwiftUI
 /// Horizontal (16:9) media card for episode and resume content — used in
 /// "Next Up", "Continue Watching", etc.
 ///
-/// Shows the episode still / backdrop, the series title + episode code
-/// (e.g. "S2 · E3") as an overlay, and the episode title plus runtime beneath.
+/// Shows the episode still / backdrop, series title, and episode metadata.
+/// Episode numbering stays in accessibility and detail metadata rather than
+/// being drawn over the artwork.
 /// On tvOS the image sits inside a `.card` button for focus lift/parallax and
 /// a FocusState binding drives the title highlight.
 struct EpisodeThumbCard: View {
     let item: SectionItem
     var showProgress: Bool = false
     let action: () -> Void
+    /// Some hosts use thumbnail taps for an immediate action rather than
+    /// opening detail. Player "On Deck" is the concrete case: selecting a
+    /// card must start that episode. Ordinary Home and browse thumbnails keep
+    /// the source-aware detail-card presentation.
+    var usesProvidedTapAction: Bool = false
     /// tvOS-only shortcut invoked by the remote's Play/Pause button while
     /// this card owns focus. Select continues to invoke `action`.
     var playAction: (() -> Void)? = nil
     /// tvOS-only: parent row's focus tracking binding. See
     /// `MediaCard.focusedItemId` for the contract.
     var focusedItemId: FocusState<String?>.Binding? = nil
+    var contextPlayTitle: String? = nil
+    var contextDetailTitle: String? = nil
+    var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
@@ -25,6 +34,7 @@ struct EpisodeThumbCard: View {
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
     #endif
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. Lets the
     /// tapped thumbnail act as the `.matchedTransitionSource` for the zoom into
@@ -33,6 +43,7 @@ struct EpisodeThumbCard: View {
     @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
+    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     /// Unique per-placement zoom source id (see MediaCard) so the same episode
     /// in two on-screen rows doesn't collide on `contentId`.
     @State private var zoomInstanceID = UUID()
@@ -62,21 +73,27 @@ struct EpisodeThumbCard: View {
             if uiCustomization.cardPresentation.caption.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(displayTitle)
-                        .font(.continuumSubheadline)
+                        .font(.continuumPosterTitle)
                         .foregroundStyle(
                             isFocused
                                 ? Color.continuumOnSurface
                                 : Color.continuumOnSurface.opacity(0.85)
                         )
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: cardWidth, alignment: .leading)
+                        .clipped()
                         .animation(.easeOut(duration: 0.15), value: isFocused)
 
                     if uiCustomization.cardPresentation.caption.showsMetadata,
                        let subtitle = subtitleLine {
                         Text(subtitle)
-                            .font(.continuumCaption)
+                            .font(.continuumPosterMetadata)
                             .foregroundStyle(Color.continuumSecondaryText)
                             .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(width: cardWidth, alignment: .leading)
+                            .clipped()
                     }
                 }
                 .frame(width: cardWidth, alignment: .leading)
@@ -86,6 +103,10 @@ struct EpisodeThumbCard: View {
         .focusSection()
         .onChange(of: item.userState?.played) { _, _ in
             playedOverride = nil
+        }
+        .task(id: continueWatchingMetadataTaskId) {
+            guard onRemoveFromContinueWatching != nil else { return }
+            _ = await continueWatchingMetadata.load(item: item)
         }
         #else
         Group {
@@ -107,8 +128,15 @@ struct EpisodeThumbCard: View {
     #if !os(tvOS)
     private var iosButton: some View {
         Button {
-            router.pendingZoomSourceID = zoomInstanceID.uuidString
-            action()
+            if usesProvidedTapAction {
+                action()
+            } else {
+                router.pendingZoomSourceID = zoomInstanceID.uuidString
+                router.presentItemDetail(
+                    contentId: item.contentId,
+                    browseSource: detailBrowseSource
+                )
+            }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 thumbnail
@@ -148,7 +176,8 @@ struct EpisodeThumbCard: View {
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
 
-            // Scrim gradient so the episode badge reads over bright stills
+            #if !os(tvOS)
+            // Scrim keeps bottom overlays and progress legible over bright stills.
             LinearGradient(
                 colors: [.clear, .black.opacity(0.75)],
                 startPoint: .center,
@@ -156,32 +185,18 @@ struct EpisodeThumbCard: View {
             )
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            #endif
 
             // Server / user-customized overlay badges. `wide` variant
-            // gives the bottom corners enough headroom that they don't
-            // collide with the S/E text + progress bar.
+            // gives the bottom corners enough headroom for the progress bar.
             if overlayStore.enabled {
                 CardOverlays(
-                    data: OverlayData.from(item),
+                    data: resolvedOverlayData,
                     prefs: overlayStore.prefs,
                     variant: .wide
                 )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
-            }
-
-            // Episode badge overlay (e.g. "S2 · E3")
-            if let badge = episodeBadge {
-                Text(badge)
-                    .font(.continuumCaption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, badgeHPadding)
-                    .padding(.vertical, badgeVPadding)
-                    .background(
-                        Capsule().fill(Color.black.opacity(0.65))
-                    )
-                    .padding(badgeInset)
             }
 
             // Progress bar (resume)
@@ -223,6 +238,20 @@ struct EpisodeThumbCard: View {
         playedOverride ?? (item.userState?.played == true)
     }
 
+    private var resolvedOverlayData: OverlayData {
+        #if os(tvOS)
+        if onRemoveFromContinueWatching != nil,
+           let presentation = continueWatchingMetadata.presentation(for: item.contentId) {
+            return presentation.overlayData
+        }
+        #endif
+        return OverlayData.from(item)
+    }
+
+    private var continueWatchingMetadataTaskId: String {
+        "\(item.contentId)#\(item.progressUpdatedAt ?? "")#\(onRemoveFromContinueWatching != nil)"
+    }
+
     // MARK: - Derived data
 
     /// Prefer backdrop/still artwork; fall back to poster.
@@ -238,8 +267,11 @@ struct EpisodeThumbCard: View {
         item.seriesTitle ?? item.title
     }
 
-    /// Secondary line — episode title for episodes, otherwise year.
+    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
     private var subtitleLine: String? {
+        if let episodeLine = EpisodeCardCaption.line(for: item) {
+            return episodeLine
+        }
         if item.seriesTitle != nil {
             return item.title
         }
@@ -251,10 +283,9 @@ struct EpisodeThumbCard: View {
 
     private var accessibilityDescription: String {
         var components = [displayTitle]
-        if let episodeBadge {
-            components.append(episodeBadge)
-        }
-        if let subtitleLine {
+        if let episodeAccessibilityLabel {
+            components.append(episodeAccessibilityLabel)
+        } else if let subtitleLine {
             components.append(subtitleLine)
         }
         if isPlayed {
@@ -263,12 +294,8 @@ struct EpisodeThumbCard: View {
         return components.joined(separator: ", ")
     }
 
-    /// "S1 · E4" badge if we have season+episode numbers.
-    private var episodeBadge: String? {
-        if let season = item.seasonNumber, let episode = item.episodeNumber {
-            return "S\(season) · E\(episode)"
-        }
-        return nil
+    private var episodeAccessibilityLabel: String? {
+        EpisodeCardCaption.accessibilityLabel(for: item)
     }
 
     private var progressValue: Double? {
@@ -282,22 +309,6 @@ struct EpisodeThumbCard: View {
     }
 
     // MARK: - Metrics
-
-    private var badgeHPadding: CGFloat {
-        #if os(tvOS)
-        return 14
-        #else
-        return 8
-        #endif
-    }
-
-    private var badgeVPadding: CGFloat {
-        #if os(tvOS)
-        return 7
-        #else
-        return 4
-        #endif
-    }
 
     private var badgeInset: CGFloat {
         #if os(tvOS)
@@ -362,11 +373,26 @@ struct EpisodeThumbCard: View {
     #endif
 
     private var hasContextActions: Bool {
-        onSetWatched != nil || onRemoveFromContinueWatching != nil
+        (contextPlayTitle != nil && playAction != nil)
+            || onOpenContextDetail != nil
+            || onSetWatched != nil
+            || onRemoveFromContinueWatching != nil
     }
 
     @ViewBuilder
     private var contextActions: some View {
+        if let contextPlayTitle, let playAction {
+            Button(action: playAction) {
+                Label(contextPlayTitle, systemImage: "play.fill")
+            }
+        }
+
+        if let contextDetailTitle, let onOpenContextDetail {
+            Button(action: onOpenContextDetail) {
+                Label(contextDetailTitle, systemImage: "info.circle")
+            }
+        }
+
         if let onSetWatched {
             Button {
                 let played = !isPlayed

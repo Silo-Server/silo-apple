@@ -288,7 +288,7 @@ struct CreateProfileView: View {
     private var iOSLayout: some View {
         NavigationStack {
             ZStack {
-                Color.continuumBackground.ignoresSafeArea()
+                ContinuumPageBackdrop()
 
                 ScrollView {
                     VStack(spacing: ContinuumTheme.largePadding) {

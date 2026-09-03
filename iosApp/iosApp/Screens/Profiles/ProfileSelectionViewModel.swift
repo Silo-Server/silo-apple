@@ -58,9 +58,18 @@ class ProfileSelectionViewModel {
                 profileId: profile.id,
                 requiresPIN: profile.hasPin
             )
+            #if os(iOS)
+            // Identity is committed at this point, so reveal Home immediately.
+            // Optional settings and content warm-up must never hold the profile
+            // card on screen behind a slow server request.
+            router.resetToHome()
+            StartupContentPrefetcher.prefetchAuthenticatedContent()
+            Task { await PlayerSettings.shared.refreshFromServer() }
+            #else
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
+            #endif
         } catch {
             self.error = ErrorState(error)
         }
@@ -76,9 +85,15 @@ class ProfileSelectionViewModel {
             pin: pin,
             requiresPIN: profile.hasPin
         )
+        #if os(iOS)
+        router.resetToHome()
+        StartupContentPrefetcher.prefetchAuthenticatedContent()
+        Task { await PlayerSettings.shared.refreshFromServer() }
+        #else
         StartupContentPrefetcher.prefetchAuthenticatedContent()
         await PlayerSettings.shared.refreshFromServer()
         router.resetToHome()
+        #endif
     }
 
     /// The picker itself has no active profile, but the server requires the

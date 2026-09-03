@@ -55,6 +55,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
@@ -70,12 +71,28 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         seriesTitle: nil,
                         logoUrl: nil,
                         backdropUrl: detail.backdropUrl,
+                        backdropThumbhash: detail.backdropThumbhash,
                         eyebrow: detail.seriesTitle,
                         sourceTokens: sourceTokens,
                         ratingChip: nil,
                         overview: detail.overview,
                         factsLine: [],
                         starringText: TVHeroMetadata.starringText(from: detail),
+                        playbackSummary: TVPlaybackSelectionSummary.make(
+                            currentVersion: effectiveNextUpVersion,
+                            selectedVersionFileId: selectedNextUpFileId,
+                            selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+                            selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                            subtitleMode: nextUpSubtitleOverrideCleared
+                                ? nil
+                                : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                            subtitleSignature: nextUpSubtitleOverrideCleared
+                                ? nil
+                                : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                            preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
+                            showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
+                                ?? false
+                        ),
                         actions: { actionColumn },
                         belowSynopsis: belowSynopsis
                     )
@@ -110,24 +127,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            actionRow
-            if nextUpEpisode != nil {
-                TVPlaybackSelectorRow(
-                    versions: nextUpVersions,
-                    currentVersion: effectiveNextUpVersion,
-                    selectedVersionFileId: selectedNextUpFileId,
-                    selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    subtitleMode: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleMode,
-                    subtitleSignature: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
-                    onSelectVersion: onSelectNextUpVersion,
-                    onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
-                )
-            }
-        }
+        actionRow
     }
 
     private var nextUpVersions: [FileVersion] {
@@ -136,7 +136,10 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     private var actionRow: some View {
         TVDetailActionRow(
-            playTitle: nextUpEpisode.map(playButtonLabel(for:)),
+            playTitle: nextUpEpisode.map {
+                $0.userData?.isInProgress == true ? "Resume" : "Play"
+            },
+            playSubtitle: nextUpEpisode.map(playButtonSubtitle(for:)),
             onPlay: {
                 guard let nextUp = nextUpEpisode else { return }
                 onPlayEpisode(nextUp.contentId, selectedNextUpFileId, false)
@@ -147,33 +150,54 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                     onPlayEpisode(nextUp.contentId, selectedNextUpFileId, true)
                 }
                 : nil,
-            isFavorite: isFavorite,
-            onToggleFavorite: onToggleFavorite,
             inWatchlist: inWatchlist,
             onToggleWatchlist: onToggleWatchlist,
-            isWatched: isWatched,
-            watchedLabelMark: "Mark Season Watched",
-            watchedLabelUnmark: "Mark Season Unwatched",
-            onToggleWatched: onToggleWatched,
+            focusResetKey: detail.contentId,
             initialFocusScope: .season(key: selectedSeason?.contentId),
             focusNamespace: detailFocusNamespace,
             playFocused: $playFocused,
             rowFocused: $actionRowFocused,
-            moreMenu: {
-                if hasMoreMenu {
-                    moreMenu
+            playbackSelectors: {
+                if nextUpEpisode != nil {
+                    TVPlaybackActionSelectors(
+                        versions: nextUpVersions,
+                        currentVersion: effectiveNextUpVersion,
+                        selectedVersionFileId: selectedNextUpFileId,
+                        selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+                        selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                        subtitleMode: nextUpSubtitleOverrideCleared
+                            ? nil
+                            : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                        subtitleSignature: nextUpSubtitleOverrideCleared
+                            ? nil
+                            : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                        showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
+                            ?? false,
+                        onSelectVersion: onSelectNextUpVersion,
+                        onSelectAudioTrack: onSelectNextUpAudioTrack,
+                        onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+                    )
                 }
-            }
+            },
+            moreMenu: { moreMenu }
         )
-    }
-
-    private var hasMoreMenu: Bool {
-        detail.seriesId != nil
     }
 
     @ViewBuilder
     private var moreMenu: some View {
-        TVCircleMenuButton(accessibilityLabel: "More options") {
+        TVCircleMenuButton(title: "More", accessibilityLabel: "More options") {
+            Button(action: onToggleFavorite) {
+                Label(
+                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: isFavorite ? "heart.fill" : "heart"
+                )
+            }
+            Button(action: onToggleWatched) {
+                Label(
+                    isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                    systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                )
+            }
             if let seriesId = detail.seriesId {
                 Button {
                     onNavigateToItem(seriesId)
@@ -194,11 +218,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
         return episodes.first
     }
 
-    private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        if episode.userData?.isInProgress == true {
-            return "Resume E\(episode.episodeNumber)"
-        }
-        return "Play E\(episode.episodeNumber)"
+    private func playButtonSubtitle(for episode: EpisodeListItem) -> String {
+        "S\(episode.seasonNumber):E\(episode.episodeNumber)"
     }
 
     private var effectiveNextUpVersion: FileVersion? {

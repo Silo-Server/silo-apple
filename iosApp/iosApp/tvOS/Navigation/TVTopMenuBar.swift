@@ -343,12 +343,11 @@ struct TVTopMenuBar: View {
 
     // MARK: - Clusters
 
+    /// Brand logo (mark + wordmark asset), sized to the bar row so it sits
+    /// on the same centre line as the tab capsules and trailing icons.
     private var wordmark: some View {
-        Text("SILO")
-            .font(.system(size: ContinuumTheme.Skyline.wordmarkSize, weight: .heavy))
-            .tracking(ContinuumTheme.Skyline.wordmarkTracking)
-            .foregroundStyle(.white)
-            .accessibilityLabel("Silo")
+        SiloWordmarkView(width: ContinuumTheme.Skyline.wordmarkWidth)
+            .frame(height: ContinuumTheme.Skyline.barHeight)
             .accessibilityHidden(true)
     }
 
@@ -518,7 +517,7 @@ struct TVTopMenuBar: View {
         }
     }
 
-    private func requestMenuFocus() {
+    private func requestMenuFocus(attempt: Int = 0) {
         guard !isFocusSuppressed else {
             Self.logger.debug("topMenu.requestMenuFocus blocked suppressed=true")
             return
@@ -540,6 +539,18 @@ struct TVTopMenuBar: View {
         }
         let item = focusedItem.map { String(describing: $0) } ?? "nil"
         Self.logger.debug("topMenu.requestMenuFocus focusedItem=\(item, privacy: .public)")
+
+        // A quick Siri Remote swipe can make the focus engine finish its row
+        // repair after this write. Re-assert only if the bar still owns the
+        // handoff and the claim was actually dropped; once focus lands—or the
+        // user moves away—the retry cancels itself and never fights navigation.
+        guard attempt < 2 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard !isFocusSuppressed,
+                  isMenuFocused,
+                  focusedItem == nil else { return }
+            requestMenuFocus(attempt: attempt + 1)
+        }
     }
 
     // MARK: - Search

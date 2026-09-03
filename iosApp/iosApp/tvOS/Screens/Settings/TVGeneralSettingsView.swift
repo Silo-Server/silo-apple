@@ -10,6 +10,7 @@ struct TVGeneralSettingsPane: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = TVNavPreferences.shared
     @State private var activePicker: PickerKind?
+    @State private var showsHomeSectionsEditor = false
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
@@ -42,6 +43,25 @@ struct TVGeneralSettingsPane: View {
             .accessibilityHint(launchPreferences.behavior.tvDescription)
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
+
+            TVSettingsSectionHeader("HOME SECTIONS")
+
+            Button { showsHomeSectionsEditor = true } label: {
+                HStack(spacing: 16) {
+                    Image(systemName: "rectangle.3.group")
+                        .font(.system(size: 22, weight: .medium))
+                    Text("Home Sections")
+                        .font(.system(size: 26))
+                    Spacer(minLength: 16)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 18, weight: .semibold))
+                        .opacity(0.55)
+                }
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused(detailFocus, equals: .generalHomeSections)
+
+            TVSettingsFooter("Choose which Home rows are visible and edit the order in which they appear on this Apple TV.")
 
             if let message = preferences.capabilityMessage {
                 TVSettingsSectionHeader("SERVER SUPPORT")
@@ -130,6 +150,9 @@ struct TVGeneralSettingsPane: View {
         }
         .fullScreenCover(item: $activePicker) { picker in
             pickerSheet(for: picker)
+        }
+        .fullScreenCover(isPresented: $showsHomeSectionsEditor) {
+            TVHomeSectionsCustomizationSheet()
         }
         .fullScreenCover(isPresented: $showsMenuEditor) {
             TVMenuCustomizationSheet(libraries: libraries)
@@ -296,6 +319,330 @@ struct TVGeneralSettingsPane: View {
     }
 
     private static let customPresetId = "custom"
+}
+
+/// Apple TV editor for the populated rows returned by `/home/sections`.
+/// Visibility is always available through the eye control; Edit reveals
+/// explicit remote-friendly move buttons because tvOS has no touch drag
+/// gesture. Every mutation persists immediately for the active server/profile.
+private struct TVHomeSectionsCustomizationSheet: View {
+    private enum FocusTarget: Hashable {
+        case edit
+        case done
+        case moveUp(String)
+        case moveDown(String)
+        case visibility(String)
+    }
+
+    @State private var preferences = HomeSectionPreferences.shared
+    @State private var sections: [ResolvedSection] = []
+    @State private var isLoading = false
+    @State private var loadFailed = false
+    @State private var isEditing = false
+    @State private var isClosing = false
+    @FocusState private var focusedControl: FocusTarget?
+    @Namespace private var editorFocusScope
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.resetFocus) private var resetFocus
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    sectionHeader("HOME SECTIONS")
+
+                    editorControlsCard
+
+                    if arrangedSections.isEmpty, isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .tint(.continuumOnSurface)
+                            Spacer()
+                        }
+                        .frame(height: 160)
+                    } else if arrangedSections.isEmpty {
+                        TVSettingsFooter(
+                            loadFailed
+                                ? "Silo couldn’t refresh the Home rows. Try again when the server is reachable."
+                                : "Home has no populated rows to arrange yet."
+                        )
+                    } else {
+                        VStack(spacing: 10) {
+                            ForEach(arrangedSections) { section in
+                                sectionRow(section)
+                            }
+                        }
+                        .focusSection()
+
+                        TVSettingsFooter(
+                            isEditing
+                                ? "Use the arrow buttons to move rows. The new order saves immediately."
+                                : "Open eye: visible on Home. Closed eye: hidden. Hidden rows leave no gap—the next visible row takes the same Home position."
+                        )
+                    }
+                }
+                .frame(maxWidth: 1120, alignment: .leading)
+                .padding(.horizontal, 72)
+                .padding(.vertical, 36)
+            }
+            .navigationTitle("Home Sections")
+            .background(Color.continuumBackground.ignoresSafeArea())
+            .task {
+                await loadSections()
+            }
+        }
+        .focusScope(editorFocusScope)
+        .focusSection()
+        .defaultFocus($focusedControl, .done, priority: .userInitiated)
+        .onAppear(perform: claimFocus)
+        .onChange(of: focusedControl) { _, target in
+            if target == nil, !isClosing {
+                claimFocus()
+            }
+        }
+        .onExitCommand(perform: close)
+        .onDisappear { isClosing = true }
+    }
+
+    private var arrangedSections: [ResolvedSection] {
+        preferences.arrangedSections(sections, includingHidden: true)
+    }
+
+    private var editorControlsCard: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Home Sections")
+                    .font(.system(size: 26, weight: .medium))
+
+                Text(isEditing ? "Move rows into your preferred order." : "Choose which rows appear on Home.")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.continuumSecondaryText)
+            }
+
+            Spacer(minLength: 24)
+
+            Button(isEditing ? "Done Editing" : "Edit") {
+                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                    isEditing.toggle()
+                }
+            }
+            .buttonStyle(TVHomeSectionsControlButtonStyle())
+            .focused($focusedControl, equals: .edit)
+            .disabled(arrangedSections.count < 2)
+
+            Button("Done", action: close)
+                .buttonStyle(TVHomeSectionsControlButtonStyle())
+                .focused($focusedControl, equals: .done)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.continuumChromeRestingFill)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+        }
+        .focusSection()
+    }
+
+    private func sectionRow(_ section: ResolvedSection) -> some View {
+        let isVisible = preferences.isVisible(section.id)
+        let index = arrangedSections.firstIndex(where: { $0.id == section.id }) ?? 0
+
+        return HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(section.title)
+                    .font(.system(size: 26, weight: .medium))
+                    .lineLimit(1)
+
+                Text("\(section.items.count) item\(section.items.count == 1 ? "" : "s")")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.continuumSecondaryText)
+            }
+            .opacity(isVisible ? 1 : 0.42)
+
+            Spacer(minLength: 16)
+
+            if isEditing {
+                Button {
+                    move(section, by: -1)
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(TVHomeSectionsControlButtonStyle(compact: true))
+                .focused($focusedControl, equals: .moveUp(section.id))
+                .disabled(index == 0)
+                .accessibilityLabel("Move \(section.title) earlier")
+
+                Button {
+                    move(section, by: 1)
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(TVHomeSectionsControlButtonStyle(compact: true))
+                .focused($focusedControl, equals: .moveDown(section.id))
+                .disabled(index == arrangedSections.count - 1)
+                .accessibilityLabel("Move \(section.title) later")
+            }
+
+            Button {
+                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                    preferences.setVisible(!isVisible, sectionId: section.id)
+                }
+            } label: {
+                Image(systemName: isVisible ? "eye" : "eye.slash")
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(TVHomeSectionsControlButtonStyle(compact: true))
+            .focused($focusedControl, equals: .visibility(section.id))
+            .accessibilityLabel(isVisible ? "Hide \(section.title)" : "Show \(section.title)")
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.continuumChromeRestingFill)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+        }
+    }
+
+    private func move(_ section: ResolvedSection, by offset: Int) {
+        var ids = arrangedSections.map(\.id)
+        guard let index = ids.firstIndex(of: section.id) else { return }
+        let target = index + offset
+        guard ids.indices.contains(target) else { return }
+        ids.swapAt(index, target)
+        let retarget: FocusTarget?
+        if target == 0 {
+            retarget = .moveDown(section.id)
+        } else if target == ids.count - 1 {
+            retarget = .moveUp(section.id)
+        } else {
+            retarget = nil
+        }
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            preferences.setOrder(ids)
+            if let retarget {
+                focusedControl = retarget
+            }
+        }
+        if let retarget {
+            Task { @MainActor in
+                await Task.yield()
+                guard isEditing, !isClosing else { return }
+                focusedControl = retarget
+            }
+        }
+    }
+
+    /// Claim an always-enabled control inside this presented focus scope. If
+    /// tvOS briefly clears the sheet's focus while resolving a swipe, the nil
+    /// observer above reclaims it here instead of allowing the settings rows
+    /// behind the full-screen presentation to become the active graph.
+    private func claimFocus() {
+        guard !isClosing else { return }
+        focusedControl = .done
+        Task { @MainActor in
+            await Task.yield()
+            guard !isClosing else { return }
+            resetFocus(in: editorFocusScope)
+            focusedControl = .done
+        }
+    }
+
+    private func close() {
+        guard !isClosing else { return }
+        isClosing = true
+        dismiss()
+    }
+
+    private func loadSections() async {
+        preferences.refresh()
+
+        if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
+            sections = cached.sections.filter { !$0.items.isEmpty }
+        }
+
+        isLoading = sections.isEmpty
+        loadFailed = false
+        defer { isLoading = false }
+
+        do {
+            let response = try await StartupContentPrefetcher.fetchHomeSections()
+            guard !Task.isCancelled else { return }
+            sections = response.sections.filter { !$0.items.isEmpty }
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadFailed = sections.isEmpty
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+            .tracking(2)
+            .foregroundStyle(Color.continuumSecondaryText)
+    }
+}
+
+/// Compact in-card control chrome for the Home Sections editor. The resting
+/// state keeps a dark platter and bright glyph, avoiding tvOS's default white
+/// bordered-button treatment that hid the eye until focus arrived.
+private struct TVHomeSectionsControlButtonStyle: ButtonStyle {
+    var compact = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        TVHomeSectionsControlButtonBody(
+            configuration: configuration,
+            compact: compact
+        )
+    }
+}
+
+private struct TVHomeSectionsControlButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let compact: Bool
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        configuration.label
+            .font(.system(size: compact ? 24 : 20, weight: .semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, compact ? 0 : 22)
+            .frame(minWidth: 64, minHeight: 64)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isFocused ? Color.continuumOnSurface : Color.continuumSurfaceElevated.opacity(0.9))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        isFocused ? Color.clear : Color.continuumChromeRestingBorder,
+                        lineWidth: 1
+                    )
+            }
+            .scaleEffect(configuration.isPressed ? 0.97 : (isFocused ? 1.04 : 1))
+            .shadow(
+                color: isFocused ? Color.continuumAccent.opacity(0.16) : .clear,
+                radius: 16
+            )
+            .focusEffectDisabled()
+            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+    }
+
+    private var foreground: Color {
+        guard isEnabled else { return Color.continuumSecondaryText.opacity(0.5) }
+        return isFocused ? .continuumBackground : .continuumOnSurface
+    }
 }
 
 private struct TVMenuCustomizationSheet: View {

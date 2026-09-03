@@ -11,15 +11,16 @@ import SwiftUI
 /// - touch & hold          → 2× playback while held (chip at top center)
 /// - drag on left edge     → screen brightness (vertical gauge)
 /// - drag on right edge    → player volume (vertical gauge)
-/// - downward swipe center → dismiss the player
 /// - pinch                 → cycle video gravity (fit / fill / stretch)
+///
+/// Center drags never dismiss playback. Exit is an explicit close-button
+/// action; edge brightness/volume gestures remain available.
 ///
 /// The layer is mounted only while playback is loaded. When the controls
 /// overlay is visible its scrim sits above this layer and captures touches,
 /// so these gestures apply to the "clean" viewing state.
 struct MobilePlayerGestureLayer: View {
     let viewModel: PlayerViewModel
-    let onDismiss: () -> Void
 
     private enum EdgeAdjustment { case brightness, volume }
 
@@ -32,7 +33,7 @@ struct MobilePlayerGestureLayer: View {
     @State private var skipFlashHideTask: Task<Void, Never>?
 
     /// Which edge gauge the in-flight drag is adjusting, decided once from
-    /// the drag's start location. Nil for center drags (dismiss candidates).
+    /// the drag's start location. Nil for center drags, which do nothing.
     @State private var activeAdjustment: EdgeAdjustment?
     /// Brightness/volume value captured when the drag began; the drag
     /// applies a delta on top so the level never jumps to the touch point.
@@ -79,7 +80,7 @@ struct MobilePlayerGestureLayer: View {
                             viewModel.endHoldFastForward()
                         }
                     }
-                    .simultaneousGesture(edgeAndDismissDrag(in: size))
+                    .simultaneousGesture(edgeAdjustmentDrag(in: size))
                     .simultaneousGesture(videoGravityPinchGesture)
 
                 feedbackOverlays(in: size)
@@ -130,7 +131,7 @@ struct MobilePlayerGestureLayer: View {
         }
     }
 
-    private func edgeAndDismissDrag(in size: CGSize) -> some Gesture {
+    private func edgeAdjustmentDrag(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 14)
             .onChanged { value in
                 if dragBaseline == nil {
@@ -160,15 +161,8 @@ struct MobilePlayerGestureLayer: View {
                     viewModel.applyUserVolume(Float(fraction))
                 }
             }
-            .onEnded { value in
-                if activeAdjustment == nil {
-                    // Center drag: a decisive, mostly-vertical downward swipe
-                    // dismisses the player.
-                    if value.translation.height > 140,
-                       abs(value.translation.width) < value.translation.height * 0.6 {
-                        onDismiss()
-                    }
-                } else {
+            .onEnded { _ in
+                if activeAdjustment != nil {
                     scheduleGaugeHide()
                 }
                 activeAdjustment = nil

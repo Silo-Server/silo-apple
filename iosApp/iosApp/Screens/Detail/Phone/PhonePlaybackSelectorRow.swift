@@ -28,6 +28,67 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
     }
 }
 
+/// Opaque, low-cost placeholder for the common version/audio/subtitle card.
+/// It deliberately mirrors `PhonePlaybackSelectorRow`'s three 44pt rows so an
+/// episode change never removes or inserts vertical space while networking.
+struct PhonePlaybackSelectorSkeleton: View {
+    static let standardHeight: CGFloat = 133
+
+    private let kinds: [PhonePlaybackSelectorKind] = [.version, .audio, .subtitles]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(kinds.enumerated()), id: \.element.id) { index, kind in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.06))
+                        .frame(height: 0.5)
+                        .padding(.leading, 30)
+                }
+
+                HStack(spacing: 10) {
+                    Image(systemName: kind.icon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.24))
+                        .frame(width: 20, alignment: .leading)
+
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                        .frame(width: kind == .subtitles ? 64 : 50, height: 10)
+
+                    Spacer(minLength: 12)
+
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.white.opacity(0.16))
+                        .frame(width: skeletonValueWidth(for: kind), height: 10)
+                }
+                .frame(height: 44)
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: Self.standardHeight)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                )
+        )
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func skeletonValueWidth(for kind: PhonePlaybackSelectorKind) -> CGFloat {
+        switch kind {
+        case .version: return 126
+        case .audio: return 102
+        case .subtitles: return 42
+        case .edition: return 82
+        }
+    }
+}
+
 struct PhonePlaybackSelectorRow: View {
     let versions: [FileVersion]
     let currentVersion: FileVersion?

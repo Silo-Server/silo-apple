@@ -1,6 +1,56 @@
 #if os(tvOS)
 import SwiftUI
 
+/// One backdrop footprint shared by Skyline landings and item details.
+/// tvOS content is rendered in a 16:9 logical viewport, so deriving the
+/// height from the available width keeps the artwork request, crop, and mask
+/// identical even when the detail hero itself is shorter than the viewport.
+enum TVBackdropArtworkLayout {
+    static let widthFraction: CGFloat = 0.64
+    static let heightFraction: CGFloat = 0.70
+
+    static func artworkSize(forViewportWidth viewportWidth: CGFloat) -> CGSize {
+        let viewportHeight = viewportWidth * 9 / 16
+        return CGSize(
+            width: viewportWidth * widthFraction,
+            height: viewportHeight * heightFraction
+        )
+    }
+}
+
+/// Shared corner falloff for the root marquee and movie/series details.
+/// Keeping one mask prevents the artwork edge from visibly changing while
+/// the already-focused card opens its seeded detail route.
+struct TVBackdropArtworkFadeMask: View {
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0.0),
+                .init(color: .black, location: 0.32),
+                .init(color: .clear, location: 1.0),
+            ],
+            startPoint: .trailing,
+            endPoint: .leading
+        )
+        .mask {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.38),
+                    .init(color: .black.opacity(0.88), location: 0.52),
+                    .init(color: .black.opacity(0.58), location: 0.68),
+                    .init(color: .black.opacity(0.24), location: 0.81),
+                    // Reach zero before the detail hero's lower boundary so
+                    // its clip can never reveal a straight artwork edge.
+                    .init(color: .clear, location: 0.90),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+}
+
 /// Page-level ambient hero backdrop for root tvOS screens.
 ///
 /// Keeping this behind the whole page instead of inside the hero/marquee
@@ -29,10 +79,6 @@ struct TVRootHeroBackdrop: View {
     /// one — only artwork→artwork swaps get the ambient crossfade.
     @State private var hasDisplayedArtwork = false
 
-    /// Crisp art occupies the upper-right corner; the corner mask fades it
-    /// out toward the leading edge and the bottom into the sampled wash.
-    private let artWidthFraction: CGFloat = 0.64
-    private let artHeightFraction: CGFloat = 0.70
     /// Near-crisp by request (§ user direction). Bump a little only if the
     /// server's backdrop is low-res enough to show compression artifacts.
     private let artBlur: CGFloat = 0
@@ -93,21 +139,22 @@ struct TVRootHeroBackdrop: View {
     @ViewBuilder
     private var backdropImage: some View {
         GeometryReader { geometry in
-            let artWidth = geometry.size.width * artWidthFraction
-            let artHeight = geometry.size.height * artHeightFraction
+            let artworkSize = TVBackdropArtworkLayout.artworkSize(
+                forViewportWidth: geometry.size.width
+            )
 
             if let artworkURL, !artworkURL.isEmpty {
                 AsyncImageView(
                     url: artworkURL,
                     thumbhash: artworkThumbhash,
-                    targetSize: CGSize(width: artWidth, height: artHeight),
+                    targetSize: artworkSize,
                     contentMode: .fill
                 )
                 .id(artworkURL)
-                .frame(width: artWidth, height: artHeight)
+                .frame(width: artworkSize.width, height: artworkSize.height)
                 .clipped()
                 .blur(radius: artBlur)
-                .mask { cornerFadeMask }
+                .mask { TVBackdropArtworkFadeMask() }
                 // Anchor the art block to the screen's top-right corner; the
                 // mask keeps only that corner opaque, so the corner reads as
                 // fully painted with no gap and the art dissolves inward.
@@ -124,33 +171,6 @@ struct TVRootHeroBackdrop: View {
             }
         }
         .ignoresSafeArea()
-    }
-
-    /// Corner falloff: opaque only at the top-right, fading to clear toward
-    /// the leading edge (horizontal ramp) and the bottom (vertical ramp).
-    /// Nesting the two ramps as masks multiplies their alpha, so the art
-    /// dissolves into the sampled wash on its left and below.
-    private var cornerFadeMask: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black, location: 0.0),
-                .init(color: .black, location: 0.32),
-                .init(color: .clear, location: 1.0),
-            ],
-            startPoint: .trailing,
-            endPoint: .leading
-        )
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0.0),
-                    .init(color: .black, location: 0.42),
-                    .init(color: .clear, location: 1.0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
     }
 
     /// Full-width black ramp pinned to the top so the wordmark, tabs, and

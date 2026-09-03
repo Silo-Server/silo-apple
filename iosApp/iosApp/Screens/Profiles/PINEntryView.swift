@@ -37,7 +37,7 @@ struct PINEntryView: View {
 
     private var phoneBody: some View {
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            ContinuumPageBackdrop()
 
             VStack(spacing: 32) {
                 header(avatarSize: 64)

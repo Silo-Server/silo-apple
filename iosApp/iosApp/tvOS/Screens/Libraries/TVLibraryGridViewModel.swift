@@ -1,6 +1,7 @@
 #if os(tvOS)
 import Foundation
 import Observation
+import Nuke
 
 /// View model backing the tvOS library grid. Purpose-built for 100k-item
 /// libraries; does not share state with the iOS `BrowseViewModel`, but both
@@ -41,7 +42,18 @@ final class TVLibraryGridViewModel {
 
     private var snapshot: String? = nil
     private var nextOffset: Int = 0
-    private var prefetchedPosterURLs: Set<URL> = []
+    @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
+    @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
+    /// Decoded into the memory cache so a cell scrolling into view paints the
+    /// warmed image on its first frame via `CachedAsyncImage.prefetchedImage()`
+    /// instead of paying the decode + resize on arrival. The window is small
+    /// (two rows either side, 48 URLs) and low priority, so visible cells and
+    /// their own requests still win the pipeline.
+    private let posterPrefetcher = ImagePrefetcher(
+        pipeline: ImagePipeline.shared,
+        destination: .memoryCache,
+        maxConcurrentRequestCount: 2
+    )
     private var generation: Int = 0
 
     init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
@@ -128,31 +140,62 @@ final class TVLibraryGridViewModel {
         }
     }
 
-    func prefetchPosters(in range: Range<Int>) {
-        let urls = items[safe: range]
-            .compactMap { $0.posterUrl }
-            .compactMap { URL(string: $0) }
-        let newURLs = urls.filter { prefetchedPosterURLs.insert($0).inserted }
-        guard !newURLs.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: newURLs)
+    func setPosterRowVisibility(_ range: Range<Int>, isVisible: Bool) {
+        guard !range.isEmpty else { return }
+        if isVisible {
+            visiblePosterRows[range.lowerBound] = range
+        } else {
+            visiblePosterRows.removeValue(forKey: range.lowerBound)
+        }
+        refreshPosterPrefetch()
     }
 
-    func cancelPrefetch(in range: Range<Int>) {
-        let urls = items[safe: range]
+    /// Data can change while the same row positions remain visible.
+    private func refreshPosterPrefetch() {
+        let rows = visiblePosterRows.values
+        guard let first = rows.map(\.lowerBound).min(),
+              let last = rows.map(\.upperBound).max(),
+              let widestRow = rows.map(\.count).max() else {
+            cancelPosterPrefetch()
+            return
+        }
+        // Two rows either side of the visible band.
+        let nearbyCount = widestRow * 2
+        prefetchPosters(in: (first - nearbyCount)..<(last + nearbyCount))
+    }
+
+    /// `range` may overrun `items`; the safe subscript clamps it.
+    private func prefetchPosters(in range: Range<Int>) {
+        // Keep one bounded window around the visible rows. Visible cells still
+        // request their own resized image through the same coalescing
+        // pipeline; the warmed decode only lets that first frame paint.
+        let urls = items[safe: range].prefix(48)
             .compactMap { $0.posterUrl }
             .compactMap { URL(string: $0) }
-        guard !urls.isEmpty else { return }
-        urls.forEach { prefetchedPosterURLs.remove($0) }
-        PosterImageCache.prefetcher.stopPrefetching(with: urls)
+        let desiredURLs = Set(urls)
+        let staleURLs = prefetchedPosterURLs.subtracting(desiredURLs)
+        let newURLs = urls.filter { !prefetchedPosterURLs.contains($0) }
+        prefetchedPosterURLs = desiredURLs
+        posterPrefetcher.stopPrefetching(with: Array(staleURLs))
+        posterPrefetcher.startPrefetching(with: newURLs)
+    }
+
+    func cancelPosterPrefetch() {
+        stopPosterPrefetchRequests()
+        visiblePosterRows.removeAll()
+    }
+
+    private func stopPosterPrefetchRequests() {
+        posterPrefetcher.stopPrefetching()
+        prefetchedPosterURLs.removeAll()
     }
 
     // MARK: - Fetch logic
 
     private func reload() async {
-        if !prefetchedPosterURLs.isEmpty {
-            PosterImageCache.prefetcher.stopPrefetching(with: Array(prefetchedPosterURLs))
-            prefetchedPosterURLs.removeAll()
-        }
+        // A cache-backed reload can preserve the grid's row identities and
+        // visibility. Cancel old URLs without discarding that geometry.
+        stopPosterPrefetchRequests()
         generation += 1
         items = []
         nextOffset = 0
@@ -160,6 +203,7 @@ final class TVLibraryGridViewModel {
         snapshot = nil
         error = nil
         hydratePage1FromCache()
+        refreshPosterPrefetch()
         await fetchPage(reset: true)
     }
 
@@ -206,6 +250,7 @@ final class TVLibraryGridViewModel {
                 if snapshot == nil { snapshot = response.snapshot }
             }
             hasMore = response.hasMore ?? false
+            refreshPosterPrefetch()
         } catch {
             guard myGeneration == generation else { return }
             if items.isEmpty {

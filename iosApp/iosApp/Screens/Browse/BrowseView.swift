@@ -34,7 +34,7 @@ struct BrowseView: View {
                 emptyContent
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .overlay(alignment: .top) {
             // Grid is painted from cache but the server can't be reached —
             // flag the staleness instead of letting refresh fail silently.
@@ -83,6 +83,7 @@ struct BrowseView: View {
             }
             .frame(maxWidth: .infinity)
         }
+        .reportsPageChromeScroll()
     }
 
     private var scrollContent: some View {
@@ -102,7 +103,8 @@ struct BrowseView: View {
                     items: viewModel.items,
                     isLoading: viewModel.isLoading,
                     hasMore: viewModel.hasMore,
-                    onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) },
+                    forcesThreeColumnsOnPhone: libraryId != nil,
+                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
                     }
@@ -110,6 +112,7 @@ struct BrowseView: View {
                 .padding(.horizontal, ContinuumTheme.padding)
             }
         }
+        .reportsPageChromeScroll()
     }
 
     // MARK: - Search Bar
@@ -339,7 +342,7 @@ struct LibraryDetailView: View {
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .task {
             await loadLibraryMetadataIfNeeded()
         }
@@ -454,7 +457,7 @@ struct LibraryRecommendedView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
-        .continuumBackground()
+        .continuumPageBackground()
         .task(id: libraryId) {
             await viewModel.loadSections(libraryId: libraryId)
         }
@@ -469,13 +472,21 @@ struct LibraryRecommendedView: View {
                 ForEach(viewModel.regularSections) { section in
                     SectionRow(
                         section: section,
-                        onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) }
+                        onItemTap: { destinationContentId, item in
+                            router.navigate(
+                                to: .itemDetail(
+                                    destinationContentId: destinationContentId,
+                                    sectionItem: item
+                                )
+                            )
+                        }
                     )
                 }
             }
             .padding(.bottom, ContinuumTheme.largePadding)
         }
         .continuumScrollEdgeEffect()
+        .reportsPageChromeScroll()
     }
 
     private var refreshStatusTopPadding: CGFloat {

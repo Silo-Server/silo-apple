@@ -29,9 +29,9 @@ struct OfflineSeriesBrowseView: View {
                     title: "No Downloads",
                     subtitle: "This series has no downloaded episodes."
                 )
-                .background(Color.continuumBackground)
             }
         }
+        .continuumPageBackground()
         .navigationTitle(group?.title ?? "Series")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -92,7 +92,6 @@ struct OfflineSeriesBrowseView: View {
                 Color.clear.frame(height: 30)
             }
         }
-        .background(Color.continuumBackground)
     }
 
     private func seasonChips(_ group: DownloadSeriesGroup) -> some View {
@@ -207,9 +206,9 @@ struct OfflineDownloadDetailView: View {
                 content(record)
             } else {
                 EmptyStateView(icon: "arrow.down.circle", title: "Download Removed", subtitle: nil)
-                    .background(Color.continuumBackground)
             }
         }
+        .continuumPageBackground()
         .navigationTitle("")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -267,7 +266,6 @@ struct OfflineDownloadDetailView: View {
                 Color.clear.frame(height: 30)
             }
         }
-        .background(Color.continuumBackground)
     }
 
     private func still(_ record: DownloadRecord) -> some View {
@@ -495,9 +493,9 @@ struct OfflineDownloadDetailView: View {
 
 // MARK: - Shared hero
 
-/// A compact cinematic header for the offline browse screens. Backdrop art
-/// degrades to a gradient (artwork thumbhashes aren't decoded yet), keeping
-/// the chrome strictly monochrome.
+/// A compact cinematic header for the offline browse screens. The downloaded
+/// poster's ThumbHash keeps its artwork identity available before local poster
+/// data is ready.
 private struct OfflineBrowseHero: View {
     let title: String
     let eyebrow: String

@@ -464,6 +464,7 @@ final class ServerRegistry {
             AICapabilities.shared.reset()
             ImageSizeCapability.shared.reset()
             RequestsFeatureStore.shared.reset()
+            CurrentProfileStore.shared.reset()
             SubtitleProvidersStore.shared.reset()
             RequestsEventBus.shared.reset()
             // Re-probe against the just-activated server: a switch between
@@ -472,6 +473,7 @@ final class ServerRegistry {
             // until the next foreground. Fire-and-forget — the probe
             // degrades to disabled on any failure.
             Task { await RequestsFeatureStore.shared.refresh() }
+            Task { await CurrentProfileStore.shared.refresh() }
             // Same shape: without a re-probe the destination server's
             // image-size support would stay unknown, and TV requests would
             // silently fall back to the server's default image variants.
@@ -748,12 +750,14 @@ final class ServerRegistry {
                 AICapabilities.shared.reset()
                 ImageSizeCapability.shared.reset()
                 RequestsFeatureStore.shared.reset()
+                CurrentProfileStore.shared.reset()
                 SubtitleProvidersStore.shared.reset()
                 RequestsEventBus.shared.reset()
                 // Same rationale as `switchTo`: the fallback server may
                 // already be signed in, with no auth-state change to
                 // trigger the usual probe.
                 Task { await RequestsFeatureStore.shared.refresh() }
+                Task { await CurrentProfileStore.shared.refresh() }
                 Task { await ImageSizeCapability.shared.refresh() }
                 Task { await SubtitleProvidersStore.shared.refresh() }
             }

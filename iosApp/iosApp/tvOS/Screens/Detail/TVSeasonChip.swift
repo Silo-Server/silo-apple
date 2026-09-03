@@ -13,9 +13,9 @@ struct TVSeasonChip: View {
     var body: some View {
         Button(action: onSelect) {
             Text(chipLabel)
-                .font(.system(size: 22, weight: isSelected ? .semibold : .medium))
-                .padding(.horizontal, 26)
-                .padding(.vertical, 14)
+                .font(.system(size: 20, weight: isSelected ? .semibold : .medium))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
         }
         .buttonStyle(TVSeasonChipStyle(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -47,6 +47,7 @@ private struct TVSeasonChipBody: View {
             .foregroundColor(foregroundColor)
             .background(background)
             .scaleEffect(scale)
+            .focusEffectDisabled()
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
             .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
     }
@@ -58,17 +59,17 @@ private struct TVSeasonChipBody: View {
 
     @ViewBuilder
     private var background: some View {
-        if isSelected {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white)
-        } else if isFocused {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
+        if isFocused {
+            Capsule().fill(Color.white)
+        } else if isSelected {
+            Capsule().fill(Color.white.opacity(0.20))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+            Capsule().fill(Color.white.opacity(0.05))
         }
     }
 
     private var foregroundColor: Color {
-        if isSelected { return .black }
+        if isFocused { return .black }
         return .white
     }
 }
@@ -99,7 +100,7 @@ struct TVSeasonChipRow: View {
                         .focused($focusedSeasonId, equals: season.id)
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, 4)
             }
             .scrollClipDisabled()
             .focusSection()

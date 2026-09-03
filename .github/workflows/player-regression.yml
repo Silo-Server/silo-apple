@@ -1,0 +1,177 @@
+name: Player regression
+
+on:
+  pull_request:
+    paths:
+      - 'iosApp/iosApp/Screens/Player/**'
+      - 'iosApp/Tests/**'
+      - 'iosApp/project.yml'
+      - 'iosApp/**/Package.resolved'
+      - '.github/workflows/player-regression.yml'
+  push:
+    branches: [fix/next-up-persistent-surface]
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Optional unchanged upstream commit for a comparative full-suite run
+        type: string
+        required: false
+      record_preview:
+        description: Also record a synthetic playback clip after a manually requested build
+        type: boolean
+        default: false
+      ios_only:
+        description: Build and validate only the iOS simulator app for an iOS-only change
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: player-regression-${{ github.ref }}-${{ inputs.baseline_ref || 'head' }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(inputs.ios_only &&
+            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"}]' ||
+            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"},
+              {"scheme":"SiloTV","destination":"generic/platform=tvOS Simulator","action":"build"},
+              {"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build"}]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.baseline_ref || github.sha }}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.3'
+      - name: Prepare iOS simulator
+        if: matrix.action == 'test'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Hosted images do not always have a usable pre-created device.
+          # Match the selected Xcode SDK and reuse one explicit destination.
+          runtime_version=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          find_runtime() {
+            xcrun simctl list runtimes --json | jq -r --arg version "$runtime_version" \
+              '[.runtimes[] | select(.isAvailable and .version == $version and
+                (.identifier | startswith("com.apple.CoreSimulator.SimRuntime.iOS-")))][0].identifier // empty'
+          }
+          runtime_id=$(find_runtime)
+          if [ -z "$runtime_id" ]; then
+            xcodebuild -downloadPlatform iOS -buildVersion "$runtime_version"
+            runtime_id=$(find_runtime)
+          fi
+          if [ -z "$runtime_id" ]; then
+            echo "::error::No available iOS $runtime_version simulator runtime"
+            exit 1
+          fi
+          simulator_id=$(xcrun simctl create Silo-Player-Regression \
+            com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro "$runtime_id")
+          echo "SILO_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          echo "SILO_TEST_DESTINATION=platform=iOS Simulator,id=$simulator_id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_id"
+          xcrun simctl bootstatus "$simulator_id" -b
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
+          # Pin the official 2.43.0 release asset before unpacking/executing it.
+          echo "a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f  /tmp/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml
+      - name: Build player
+        id: build
+        env:
+          SCHEME: ${{ matrix.scheme }}
+          DESTINATION: ${{ matrix.destination }}
+          ACTION: ${{ matrix.action }}
+        run: |
+          set -o pipefail
+          if [ "$ACTION" = test ]; then
+            # Simulator-only ad-hoc signing supplies the application identifier
+            # required by Keychain. No certificate or release secret is used.
+            xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
+              -destination "$SILO_TEST_DESTINATION" -derivedDataPath /tmp/silo-derived \
+              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-build.log
+          else
+            xcodebuild build -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
+              -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+              -resultBundlePath /tmp/player-validation.xcresult \
+              CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
+          fi
+      - name: Package simulator tests for focused visual verification
+        if: matrix.action == 'test' && !inputs.baseline_ref
+        run: ditto -c -k --keepParent /tmp/silo-derived/Build/Products /tmp/Silo-simulator-tests.zip
+      - name: Upload compiled simulator tests
+        if: matrix.action == 'test' && !inputs.baseline_ref
+        uses: actions/upload-artifact@v4
+        with:
+          name: Silo-simulator-tests
+          path: /tmp/Silo-simulator-tests.zip
+          retention-days: 3
+      - name: Run complete iOS suite
+        if: matrix.action == 'test'
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
+            -destination "$SILO_TEST_DESTINATION" -derivedDataPath /tmp/silo-derived \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
+            -resultBundlePath /tmp/player-validation.xcresult \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
+      - name: Record synthetic preview expansion and successor playback
+        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.record_preview)
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Reuse the compiled test bundle. This records only the bounded
+          # synthetic-video test, not a second build or the full test suite.
+          # XCTest can shut down the simulator after the full suite. Boot the
+          # exact recording destination before starting the recorder.
+          simulator_id="$SILO_SIMULATOR_ID"
+          simulator_state=$(xcrun simctl list devices available --json | jq -r \
+            --arg id "$simulator_id" '.devices[][] | select(.udid == $id) | .state')
+          if [ "$simulator_state" != Booted ]; then
+            xcrun simctl boot "$simulator_id"
+          fi
+          xcrun simctl bootstatus "$simulator_id" -b
+          xcrun simctl io "$simulator_id" recordVideo /tmp/preview-transition.mp4 &
+          recorder_pid=$!
+          trap 'kill -INT "$recorder_pid" 2>/dev/null || true; wait "$recorder_pid" || true' EXIT
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath /tmp/silo-derived \
+            -parallel-testing-enabled NO \
+            -destination-timeout 60 \
+            -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
+            -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
+            -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+          kill -INT "$recorder_pid"
+          wait "$recorder_pid"
+          trap - EXIT
+          test -s /tmp/preview-transition.mp4
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-validation-${{ matrix.scheme }}
+          path: |
+            /tmp/player-build.log
+            /tmp/player-validation.log
+            /tmp/player-validation.xcresult
+            /tmp/preview-transition.mp4
+            /tmp/preview-recording.xcresult
+          retention-days: 7

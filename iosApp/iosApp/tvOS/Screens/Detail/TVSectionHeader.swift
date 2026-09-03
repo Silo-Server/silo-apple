@@ -13,13 +13,13 @@ struct TVSectionHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             if let label, !label.isEmpty {
                 Text(label.uppercased())
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: 17, weight: .bold))
                     .tracking(3.0)
                     .foregroundColor(.continuumOnSurface.opacity(0.55))
             }
 
             Text(title)
-                .font(.system(size: 42, weight: .semibold))
+                .font(.system(size: 36, weight: .semibold))
                 .foregroundColor(.continuumOnSurface)
         }
     }

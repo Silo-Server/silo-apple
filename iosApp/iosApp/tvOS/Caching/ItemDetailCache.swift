@@ -36,10 +36,19 @@ final class ItemDetailCache {
     /// the cache deliberately doesn't kick off network work.
     func viewModel(for contentId: String) -> ItemDetailViewModel {
         if let existing = entries[contentId] {
+            // A source-card preload may have completed after this model was
+            // first created. Re-adopt the response before the destination's
+            // first body evaluation instead of returning an older empty shell.
+            existing.hydrateFromCache(contentId: contentId)
             touch(contentId)
             return existing
         }
         let vm = ItemDetailViewModel()
+        // Home/library focus enrichment may already have fetched the full
+        // catalog payload before the user presses Select. Hydrate it here so
+        // TVItemDetailView's very first body evaluation can paint that cached
+        // hero instead of waiting for its `.task` to begin.
+        vm.hydrateFromCache(contentId: contentId)
         entries[contentId] = vm
         order.append(contentId)
         evictIfNeeded()
@@ -76,6 +85,39 @@ final class ItemDetailCache {
         refresh(contentId)
     }
 
+    /// Refresh resident detail models only after the player's final progress
+    /// write has completed. Unlike `markStaleFamily`, this is awaited by the
+    /// player teardown path so a catalog read can never overtake the watched
+    /// mutation and permanently repaint the pre-play state.
+    @discardableResult
+    func refreshAfterPlayback(contentIds: Set<String>) async -> Set<String> {
+        var targets = contentIds
+        for contentId in contentIds {
+            guard let detail = entries[contentId]?.detail,
+                  let rawSeriesId = detail.seriesId else { continue }
+            let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !seriesId.isEmpty else { continue }
+            targets.insert(seriesId)
+            if let seasonNumber = detail.seasonNumber {
+                targets.insert("\(seriesId)-S\(seasonNumber)")
+            }
+        }
+
+        // Most-recently visited first: in the normal Series -> player return,
+        // the visible combined Series page updates before any older cached
+        // episode/season page. Each model keeps painting its cached payload
+        // while this non-coalesced authoritative refresh runs.
+        let residentTargets = order.reversed().filter { targets.contains($0) }
+        for contentId in residentTargets {
+            guard let viewModel = entries[contentId] else { continue }
+            await viewModel.loadDetail(
+                contentId: contentId,
+                coalescesMetadataRequests: false
+            )
+        }
+        return Set(residentTargets)
+    }
+
     /// Drop every cached entry. Called from `AuthService.signOut` and
     /// profile-switch to keep per-profile userData from leaking across
     /// accounts.
@@ -88,7 +130,14 @@ final class ItemDetailCache {
 
     private func refresh(_ contentId: String) {
         guard let vm = entries[contentId] else { return }
-        Task { await vm.loadDetail(contentId: contentId) }
+        // This path follows a progress/watched mutation. It must not join a
+        // steady-state request that may have left the server before the write.
+        Task {
+            await vm.loadDetail(
+                contentId: contentId,
+                coalescesMetadataRequests: false
+            )
+        }
     }
 
     private func touch(_ contentId: String) {

@@ -19,7 +19,7 @@ struct EditProfileView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.continuumBackground.ignoresSafeArea()
+                ContinuumPageBackdrop()
 
                 ScrollView {
                     VStack(spacing: ContinuumTheme.largePadding) {

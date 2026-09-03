@@ -16,21 +16,45 @@ struct CachedAsyncImage: View {
     var targetSize: CGSize? = nil
     var thumbhash: String? = nil
     var contentMode: ContentMode = .fill
+    /// Placement inside this view's resolved frame. Artwork keeps the
+    /// centered default; transparent logos opt into `.bottomLeading` so the
+    /// visible mark shares the metadata column's true leading edge.
+    var alignment: Alignment = .center
     var placeholderStyle: ImagePlaceholderStyle = .surface
+    var onImageLoaded: (() -> Void)? = nil
 
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if os(tvOS)
+    @Environment(\.tvArtworkLoadingEnabled) private var artworkLoadingEnabled
+    #else
+    private let artworkLoadingEnabled = true
+    #endif
 
     var body: some View {
         GeometryReader { geometry in
             let resolvedSize = targetSize ?? geometry.size
-            LazyImage(request: request(for: resolvedSize)) { state in
+            let warmedImage = prefetchedImage()
+            let loadAnimation: Animation? = reduceMotion || warmedImage != nil
+                ? nil
+                : .easeOut(duration: ContinuumTheme.slowDuration)
+            LazyImage(
+                request: artworkLoadingEnabled ? request(for: resolvedSize) : nil,
+                transaction: Transaction(animation: loadAnimation)
+            ) { state in
                 if let image = state.image {
                     image
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .frame(
+                            width: geometry.size.width,
+                            height: geometry.size.height,
+                            alignment: alignment
+                        )
                         .clipped()
-                } else if state.error == nil, let warmed = prefetchedImage() {
+                        .transition(.opacity)
+                        .onAppear(perform: notifyImageLoaded)
+                } else if state.error == nil, let warmedImage {
                     // The startup/grid prefetchers warm the memory cache under
                     // the bare-URL key, while the request above is keyed by
                     // URL + resize processor — a miss for Nuke's synchronous
@@ -38,12 +62,17 @@ struct CachedAsyncImage: View {
                     // makes a prefetched card render finished on its first
                     // frame; the downsampled result then swaps in with
                     // identical pixels, so the handoff is invisible.
-                    Image(platformImage: warmed)
+                    Image(platformImage: warmedImage)
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .frame(
+                            width: geometry.size.width,
+                            height: geometry.size.height,
+                            alignment: alignment
+                        )
                         .clipped()
-                } else if state.error != nil {
+                        .onAppear(perform: notifyImageLoaded)
+                } else if state.error != nil && artworkLoadingEnabled {
                     placeholder(in: geometry.size)
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
@@ -56,8 +85,7 @@ struct CachedAsyncImage: View {
                 }
             }
             .priority(.normal)
-            .transition(.opacity)
-            .animation(.easeOut(duration: ContinuumTheme.slowDuration), value: url)
+            .onDisappear(.cancel)
         }
     }
 
@@ -66,6 +94,10 @@ struct CachedAsyncImage: View {
     private func prefetchedImage() -> PlatformImage? {
         guard let url = URL(string: url) else { return nil }
         return ImagePipeline.shared.cache[ImageRequest(url: url)]?.image
+    }
+
+    private func notifyImageLoaded() {
+        onImageLoaded?()
     }
 
     // MARK: - Request construction
@@ -98,6 +130,21 @@ struct CachedAsyncImage: View {
         .frame(width: size.width, height: size.height)
     }
 }
+
+#if os(tvOS)
+private struct TVArtworkLoadingEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Focusable rows stay mounted offscreen. Their image requests can still
+    /// be cancelled independently when the row leaves the vertical viewport.
+    var tvArtworkLoadingEnabled: Bool {
+        get { self[TVArtworkLoadingEnabledKey.self] }
+        set { self[TVArtworkLoadingEnabledKey.self] = newValue }
+    }
+}
+#endif
 
 enum ImagePlaceholderStyle {
     case surface

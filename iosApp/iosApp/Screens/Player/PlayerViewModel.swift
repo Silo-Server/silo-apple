@@ -279,6 +279,13 @@ class PlayerViewModel {
     var bufferingProgress: Double?
     var error: String?
     var showControls = false
+    #if os(iOS)
+    var shouldShowMobilePlayerChrome: Bool {
+        // Loading and Next Up must not independently reveal player chrome.
+        // Close and rotation follow the same tap/auto-hide state as transport.
+        showControls
+    }
+    #endif
     var activeNotice: PlayerNotice?
     var remoteDismissToken: UUID?
     var audioTracks: [PlayerTrack] = []
@@ -320,6 +327,9 @@ class PlayerViewModel {
     var bufferedAheadSeconds: Double = 0
     var playbackStats: PlaybackStats = .empty
     var showNextUpScreen = false
+    /// A Next Up load keeps its preview until the successor's own startup
+    /// milestone. Repeated actions cannot reload it or expand an unready frame.
+    private(set) var isNextUpTransitioning = false
     var nextUpEpisode: PlayerNextUpEpisode?
     var nextUpOnDeckItems: [PlayerOnDeckItem] = []
     var isLoadingNextUpEpisode = false
@@ -595,6 +605,10 @@ class PlayerViewModel {
     private var realtimeUnavailabilityObserverToken: UUID?
     private var realtimeConnectivityObserverToken: UUID?
     private var cleanupCompletionTask: Task<Void, Never>?
+    /// Natural EOF should not wait for the ten-second periodic reporter. Keep
+    /// the immediate write so teardown/autoplay can await it before claiming
+    /// and stopping the same server session.
+    private var naturalEndProgressTask: Task<Void, Never>?
 
     /// Build the live-subtitle coordinator with adapters bound to this VM. The
     /// adapters touch the VM's playback + live-track + notice surface, so they
@@ -793,6 +807,9 @@ class PlayerViewModel {
         /// Explicit quality for this load (mid-stream quality-change replan);
         /// wins over `PlayerSettings.preferredQuality` in the bridge.
         var preferredQualityOverride: String? = nil
+        /// Continue Watching only: select the server's last-used source file
+        /// before applying the profile-wide automatic quality preference.
+        var prefersLastUsedVersion = false
 
         /// Rebuild a request for the same playback session while retaining the
         /// user's temporary quality choice. Recovery must not fall back to the
@@ -815,6 +832,7 @@ class PlayerViewModel {
                 preferredQualityOverride: preferredQualityOverride
             )
             request.preferredProtocolV3SubtitleIndex = preferredProtocolV3SubtitleIndex
+            request.prefersLastUsedVersion = prefersLastUsedVersion
             return request
         }
 
@@ -896,6 +914,15 @@ class PlayerViewModel {
     /// apply to the end-of-playback screen.
     private var nextUpPromptDismissed = false
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
+    #if os(iOS)
+    @ObservationIgnored
+    private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
+    #endif
+    /// Items that crossed the same completion boundary used by the final
+    /// server progress report. The tvOS detail page consumes this only after
+    /// that report has finished so it can move its editorial selection to the
+    /// next unwatched episode without racing stale catalog data.
+    private(set) var completedContentIdsNeedingDetailAdvance: Set<String> = []
     var nextUpCarouselItems: [PlayerOnDeckItem] {
         let hiddenIds = Set([lastLoadRequest?.contentId, nextUpEpisode?.contentId].compactMap { $0 })
         return nextUpOnDeckItems.filter { !hiddenIds.contains($0.contentId) }
@@ -1344,6 +1371,16 @@ class PlayerViewModel {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
         handleFileLoaded()
+        if isNextUpTransitioning {
+            isNextUpTransitioning = false
+            showNextUpScreen = false
+            nextUpEpisode = nil
+            nextUpOnDeckItems = []
+            if let detail = currentWatchDetail {
+                loadNextUpCandidate(for: detail)
+                loadNextUpOnDeckItems(for: detail)
+            }
+        }
         if activePreparedProtocolV3 != nil {
             pendingProtocolV3FirstFrameEpoch = epoch
             completeProtocolV3FirstFrameIfCommitted(epoch)
@@ -2320,7 +2357,11 @@ class PlayerViewModel {
     }
 
     private func updateNextUpPresentation(for movieTime: Double) {
-        guard !hasReachedEndOfFile else { return }
+        // A retained native host must not reopen the outgoing episode's
+        // postroll before the successor has presented its own first frame.
+        guard !hasReachedEndOfFile,
+              let epoch = activeAetherLoadEpoch,
+              startedAetherLoadEpoch == epoch else { return }
         if showNextUpScreen {
             updateNextUpCountdownForActivePlayback(at: movieTime)
             return
@@ -2378,6 +2419,7 @@ class PlayerViewModel {
     private func startNextUpCountdownIfNeeded() {
         cancelNextUpCountdown()
         guard showNextUpScreen,
+              !isNextUpTransitioning,
               settings.autoPlayNextEpisode,
               nextUpEpisode != nil,
               !nextUpAutoplayCancelled else {
@@ -2407,6 +2449,7 @@ class PlayerViewModel {
 
     private func updateNextUpCountdownForActivePlayback(at movieTime: Double) {
         guard showNextUpScreen,
+              !isNextUpTransitioning,
               !nextUpScreenVideoEnded,
               settings.autoPlayNextEpisode,
               nextUpEpisode != nil,
@@ -2458,7 +2501,7 @@ class PlayerViewModel {
         // An autoplay load failure may restore the postroll after disposing
         // the old playback pipeline. There is no current episode to resume in
         // that state, so let the shell fall back to closing the player.
-        guard hasActiveAetherSession else { return false }
+        guard hasActiveAetherSession, !isNextUpTransitioning else { return false }
 
         let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
         nextUpAutoplayCancelled = true
@@ -2498,21 +2541,57 @@ class PlayerViewModel {
     }
 
     func playNextEpisodeNow() {
-        guard let nextUpEpisode else { return }
-        let request = LoadRequest(
-            contentId: nextUpEpisode.contentId,
+        let contentId: String
+        switch PlayerNextUpPlaybackAction.resolve(
+            candidateId: nextUpEpisode?.contentId,
+            currentId: lastLoadRequest?.contentId,
+            awaitingPicture: isNextUpTransitioning
+        ) {
+        case .unavailable, .waitForPicture:
+            return
+        case .expand:
+            // Presentation only: no prepare, load, seek, or play command.
+            // Preserve a preview that is already playing, paused or buffering.
+            cancelNextUpCountdown()
+            nextUpAutoplayCancelled = true
+            nextUpPromptDismissed = true
+            nextUpScreenVideoEnded = false
+            showNextUpScreen = false
+            return
+        case .load(let id):
+            contentId = id
+        }
+        var request = LoadRequest(
+            contentId: contentId,
             preferredFileId: nil,
             preferredAudioTrackIndex: nil,
             preferredSubtitleTrackIndex: nil,
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
+        request.preferredQualityOverride = nextEpisodeQualityOverride
         beginFreshLoad(
             request: request,
             progressPosition: completionProgressPositionForCurrentItem(),
             finalizeCurrentSession: true,
             origin: .autoplay
         )
+    }
+
+    /// File ids do not carry across episodes, but their effective quality can.
+    /// Preserve an explicit in-player rung; when playback is on Auto, carry
+    /// the source resolution Auto actually selected. The normal ranked
+    /// fallback remains in force if the next episode has no compatible match.
+    private var nextEpisodeQualityOverride: String? {
+        let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
+        if active != ApplePlaybackQuality.autoId {
+            return active
+        }
+        guard let resolution = currentSelectedVersion?.resolution,
+              !resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return ApplePlaybackQuality.protocolV3QualityId(resolution)
     }
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
@@ -2539,6 +2618,29 @@ class PlayerViewModel {
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds
         )
+    }
+
+    /// Snapshot every detail surface affected by the current playback item
+    /// before a replacement load or teardown clears `currentWatchDetail`.
+    /// Series and synthetic season ids are included because tvOS keeps the
+    /// combined Series page resident while its episode player is pushed.
+    private func recordCurrentPlaybackMutation(markedCompleted: Bool) {
+        let currentContentId = currentWatchDetail?.contentId ?? lastLoadRequest?.contentId
+        if let currentContentId, !currentContentId.isEmpty {
+            contentIdsNeedingDetailRefresh.insert(currentContentId)
+            if markedCompleted {
+                completedContentIdsNeedingDetailAdvance.insert(currentContentId)
+            }
+        }
+
+        guard let detail = currentWatchDetail,
+              let rawSeriesId = detail.seriesId else { return }
+        let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seriesId.isEmpty else { return }
+        contentIdsNeedingDetailRefresh.insert(seriesId)
+        if let seasonNumber = detail.seasonNumber {
+            contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
+        }
     }
 
     private func loadAether(
@@ -2797,7 +2899,7 @@ class PlayerViewModel {
         let existingLiveTracks = subtitleTracks.filter {
             SubtitleTrackIdSpace.isAILive($0.trackId)
         }
-        audioTracks = engine.audioTracks.enumerated().map { ordinal, track in
+        let aetherAudioTracks = engine.audioTracks.enumerated().map { ordinal, track in
             PlayerTrack(
                 trackId: Int64(track.id),
                 kind: .audio,
@@ -2815,6 +2917,11 @@ class PlayerViewModel {
                 srcId: ordinal
             )
         }
+        audioTracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
+            aetherTracks: aetherAudioTracks,
+            plan: activePreparedProtocolV3?.plan,
+            version: currentSelectedVersion
+        )
         let aetherSubtitleTracks = engine.subtitleTracks.map { track in
             let appTrackID = aetherPlaybackController.appSubtitleID(forAetherID: track.id)
             return PlayerTrack(
@@ -2866,7 +2973,8 @@ class PlayerViewModel {
         }
         chapters = mediaChapters.isEmpty ? serverProvidedChapters : mediaChapters
 
-        selectedAudioId = engine.activeAudioTrackIndex.map(Int64.init)
+        selectedAudioId = audioTracks.first(where: \.isSelected)?.trackId
+            ?? engine.activeAudioTrackIndex.map(Int64.init)
         // A locally-registered sidecar is selected client-side, so the plan —
         // which predates the track — must not republish over it. Once the
         // server publishes that ordinal the plan is authoritative again.
@@ -2891,8 +2999,12 @@ class PlayerViewModel {
         // load is established; `loadAether` re-enters this method at that point.
         let loadIsEstablished = isAetherLoadEstablished
 
+        // Catalog fallback rows are picker state for server-owned replans; only
+        // a track Aether actually published may drive its local selection API.
         if let wantedIndex = pendingAudioFfIndex,
-           let match = audioTracks.first(where: { audioSelectionIndex(for: $0) == wantedIndex }) {
+           let match = aetherAudioTracks.first(where: {
+               audioSelectionIndex(for: $0) == wantedIndex
+           }) {
             switch DeferredTrackSelectionGate.outcome(
                 isLoadEstablished: loadIsEstablished,
                 engineAlreadyMatches: engine.activeAudioTrackIndex.map(Int64.init) == match.trackId
@@ -3292,6 +3404,35 @@ class PlayerViewModel {
             playbackRate: settings.playbackSpeed
         )
 
+        if !isPremature {
+            recordCurrentPlaybackMutation(markedCompleted: true)
+
+            // Aether has already delivered the native terminal event, so
+            // publish the terminal position now rather than waiting for the
+            // periodic reporter's next ten-second tick. Teardown still sends
+            // its authoritative final report; it awaits this task first so
+            // the two writes cannot race the same session lifecycle.
+            if offlinePlaybackContext == nil,
+               currentTime.isFinite,
+               currentTime >= 0 {
+                let priorNaturalEndProgressTask = naturalEndProgressTask
+                let endPosition = currentTime
+                #if os(iOS)
+                let refreshHome = refreshHomeAfterPlaybackWrite
+                #endif
+                naturalEndProgressTask = Task { [sessionBridge] in
+                    await priorNaturalEndProgressTask?.value
+                    let result = await sessionBridge.reportProgress(
+                        position: endPosition,
+                        isPaused: true
+                    )
+                    #if os(iOS)
+                    if result == .success { refreshHome?() }
+                    #endif
+                }
+            }
+        }
+
         // Natural end of an offline download: latch the local watched state
         // immediately (not just at close) so retention/reclaim see it even
         // if the process dies before `cleanup()` runs. DownloadManager is
@@ -3405,9 +3546,11 @@ class PlayerViewModel {
         // it, both because its content is stale and because the tvOS controls
         // host stays mounted through `isLoading` whenever this flag is up.
         isHUDPresented = false
-        showNextUpScreen = false
-        nextUpEpisode = nil
-        nextUpOnDeckItems = []
+        showNextUpScreen = isNextUpTransitioning
+        if !isNextUpTransitioning {
+            nextUpEpisode = nil
+            nextUpOnDeckItems = []
+        }
         isLoadingNextUpEpisode = false
         isLoadingNextUpOnDeck = false
         nextUpLookupError = nil
@@ -3569,9 +3712,25 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
+        #if os(iOS)
+        if refreshHomeAfterPlaybackWrite == nil {
+            refreshHomeAfterPlaybackWrite = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
+        }
+        #endif
         #if os(tvOS)
         PosterImageCache.trimDecodedMemory()
         #endif
+        isNextUpTransitioning = origin == .autoplay && showNextUpScreen
+        let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+            isNextUpPresented: showNextUpScreen,
+            hasReachedEndOfFile: hasReachedEndOfFile,
+            currentTime: currentTime,
+            duration: duration,
+            promptSeconds: settings.nextUpPromptSeconds
+        )
+        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        let pendingNaturalEndProgressTask = naturalEndProgressTask
+        naturalEndProgressTask = nil
         lastLoadRequest = request
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
@@ -3630,12 +3789,16 @@ class PlayerViewModel {
                 }
             }
 
+            await pendingNaturalEndProgressTask?.value
             if let snapshotPosition, snapshotPosition.isFinite, snapshotPosition >= 0 {
                 if shouldFinalizeCurrentSession {
                     await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
                 } else {
                     await self.sessionBridge.reportProgress(position: snapshotPosition, isPaused: true)
                 }
+                #if os(iOS)
+                self.refreshHomeAfterPlaybackWrite?()
+                #endif
             }
             guard !Task.isCancelled,
                   !self.isDisposed,
@@ -3751,8 +3914,13 @@ class PlayerViewModel {
                 // server to resolve a next episode against.
                 if request.offlineDownloadId == nil {
                     self.pushNowPlayingArtwork(contentId: prepared.watchDetail.contentId)
-                    self.loadNextUpCandidate(for: prepared.watchDetail)
-                    self.loadNextUpOnDeckItems(for: prepared.watchDetail)
+                    // The panel still describes the successor being loaded.
+                    // Fetch its following episode only once it has a picture,
+                    // otherwise the visible Play Now target can jump again.
+                    if !self.isNextUpTransitioning {
+                        self.loadNextUpCandidate(for: prepared.watchDetail)
+                        self.loadNextUpOnDeckItems(for: prepared.watchDetail)
+                    }
                 }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
                     serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
@@ -3905,6 +4073,7 @@ class PlayerViewModel {
                     startFromBeginning: request.startFromBeginning,
                     resumePosition: resumePosition,
                     allowNearEndResume: allowNearEndResume,
+                    prefersLastUsedVersion: request.prefersLastUsedVersion,
                     preferredQualityOverride: request.preferredQualityOverride
                 )
             }
@@ -3933,6 +4102,7 @@ class PlayerViewModel {
                 startFromBeginning: request.startFromBeginning,
                 resumePosition: resumePosition,
                 allowNearEndResume: allowNearEndResume,
+                prefersLastUsedVersion: request.prefersLastUsedVersion,
                 preferredQualityOverride: request.preferredQualityOverride
             )
         }
@@ -3946,6 +4116,7 @@ class PlayerViewModel {
     /// `error` overlay.
     @MainActor
     private func handleBeginFreshLoadFailure(error: Error, origin: LoadOrigin) {
+        isNextUpTransitioning = false
         let message: String = {
             if case BeginFreshLoadError.startSessionTimeout = error {
                 return "The server didn't respond in time."
@@ -4130,9 +4301,10 @@ class PlayerViewModel {
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool,
         resumePositionOverride: Double? = nil,
+        prefersLastUsedVersion: Bool = false,
         offlineDownloadId: String? = nil
     ) {
-        let request = LoadRequest(
+        var request = LoadRequest(
             contentId: contentId,
             preferredFileId: preferredFileId,
             preferredAudioTrackIndex: preferredAudioTrackIndex,
@@ -4141,6 +4313,7 @@ class PlayerViewModel {
             startFromBeginning: startFromBeginning,
             offlineDownloadId: offlineDownloadId
         )
+        request.prefersLastUsedVersion = prefersLastUsedVersion
         beginFreshLoad(
             request: request,
             progressPosition: currentTime,
@@ -5807,6 +5980,16 @@ class PlayerViewModel {
     func cleanup() {
         guard !isDisposed else { return }
         Self.logger.info("PlayerViewModel.cleanup()")
+        let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+            isNextUpPresented: showNextUpScreen,
+            hasReachedEndOfFile: hasReachedEndOfFile,
+            currentTime: currentTime,
+            duration: duration,
+            promptSeconds: settings.nextUpPromptSeconds
+        )
+        recordCurrentPlaybackMutation(markedCompleted: currentItemCompleted)
+        let pendingNaturalEndProgressTask = naturalEndProgressTask
+        naturalEndProgressTask = nil
         isDisposed = true
         #if os(iOS)
         // A restore waiting on a cover that will now never mount has to be
@@ -5944,9 +6127,13 @@ class PlayerViewModel {
                 await realtimeClient.removeUnavailabilityObserver(unavailabilityToken)
             }
             await realtimeClient.unbind()
+            await pendingNaturalEndProgressTask?.value
             if stopServerSessionOnTeardown {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }
+            #if os(iOS)
+            refreshHomeAfterPlaybackWrite?()
+            #endif
         }
     }
 

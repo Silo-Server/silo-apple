@@ -93,7 +93,7 @@ struct DownloadOptionsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .continuumScrollContentBackgroundHidden()
-            .background(Color.continuumBackground)
+            .continuumPageBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

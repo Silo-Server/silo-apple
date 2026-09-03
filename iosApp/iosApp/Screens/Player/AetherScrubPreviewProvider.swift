@@ -83,8 +83,10 @@ final class AetherScrubPreviewProvider {
 
     /// Requests only the latest scrub target. The short trailing debounce,
     /// single pending slot, and prompt extractor shutdown bound work during a
-    /// fast drag. Both session and request generations fence late cache/decode
-    /// results before publication.
+    /// fast drag. A valid local request keeps the last successful still visible
+    /// until a replacement succeeds; cache misses are not lifecycle boundaries.
+    /// Both session and request generations fence late cache/decode results
+    /// before publication.
     ///
     /// Targets the loaded transport cannot express — chiefly a backward scrub
     /// before a re-anchored HLS plan's `timeline_offset_seconds` — are dropped
@@ -108,11 +110,11 @@ final class AetherScrubPreviewProvider {
         }
 
         requestGeneration &+= 1
-        onPreview?(nil)
         guard case let .local(playerTime) = spec.timeline.seekDisposition(
             forSourceTime: sourceTime
         ) else {
             pendingRequest = nil
+            onPreview?(nil)
             return
         }
         pendingRequest = PendingRequest(
@@ -191,9 +193,8 @@ final class AetherScrubPreviewProvider {
                   requestGeneration == request.requestGeneration else {
                 continue
             }
-            onPreview?(image.map {
-                Preview(image: $0, sourceTime: request.sourceTime)
-            })
+            guard let image else { continue }
+            onPreview?(Preview(image: image, sourceTime: request.sourceTime))
         }
     }
 

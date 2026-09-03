@@ -51,7 +51,11 @@ enum PlayerPresentationRestoration {
         pendingAdoption = (viewModel, payload.contentId)
         // A fresh identity is what makes `fullScreenCover(item:)` re-present
         // even if the router is still holding the outgoing payload.
-        presenter.presentedPlayer = payload.reopened()
+        var reopened = payload.reopened()
+        // The user may have closed the original detail while PiP was active.
+        // Restore above the currently visible owner, never an absent sheet.
+        reopened.detailPresentationID = presenter.presentedItemDetail?.id
+        presenter.presentedPlayer = reopened
         return true
     }
 
@@ -85,8 +89,10 @@ extension AppRouter.PlayerPresentation {
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
             resumePosition: resumePosition,
+            prefersLastUsedVersion: prefersLastUsedVersion,
             returnToContentId: returnToContentId,
             offlineDownloadId: offlineDownloadId,
+            detailPresentationID: detailPresentationID,
             posterURL: posterURL,
             backdropURL: backdropURL
         )

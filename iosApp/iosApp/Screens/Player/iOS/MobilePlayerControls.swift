@@ -8,7 +8,7 @@ import SwiftUI
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule
 ///   scrubber with buffered range + intro tint + chapter ticks + scrub
 ///   preview bubble, then a labeled action row (Quality menu, Audio &
-///   Subtitles sheet, Chapters menu, orientation Lock, More → settings sheet)
+///   Subtitles sheet, Chapters menu, More → settings sheet)
 ///
 /// The whole thing is wrapped in a tap-to-toggle gesture; auto-hide after 3 s
 /// of inactivity. The view is stateful only for sheet presentation and the
@@ -17,7 +17,6 @@ import SwiftUI
 /// swipes) live in `MobilePlayerGestureLayer` underneath this overlay.
 struct MobilePlayerControls: View {
     let viewModel: PlayerViewModel
-    let orientationCoordinator: PlayerOrientationCoordinator
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
@@ -53,7 +52,7 @@ struct MobilePlayerControls: View {
                             .onTapGesture { viewModel.toggleControls() }
 
                         VStack(spacing: 0) {
-                            topStrip
+                            topStrip(compact: proxy.size.width < proxy.size.height)
                                 .opacity(recedingOpacity)
                             Spacer()
                             centerCluster
@@ -145,44 +144,74 @@ struct MobilePlayerControls: View {
 
     // MARK: - Top strip
 
-    private var topStrip: some View {
-        HStack(alignment: .center, spacing: 12) {
-            controlButton(systemName: "xmark", action: onDismiss)
-                .accessibilityLabel("Close Player")
-
-            titleBlock
-
-            Spacer(minLength: 12)
-
-            if pictureInPicture.isSupported, pictureInPicture.hasSource {
-                controlButton(
-                    systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
-                ) {
-                    pictureInPicture.toggle()
-                }
-                // AVKit can report `possible == false` during the final active
-                // transition; the user must still be able to stop PiP.
-                .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
-                .accessibilityLabel(
-                    pictureInPicture.isActive
-                        ? "Stop Picture in Picture"
-                        : "Start Picture in Picture"
-                )
+    private func topStrip(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                closeButton
+                if !compact { titleBlock }
+                Spacer(minLength: 0)
+                if !compact { externalPlaybackControls }
+                // The rotation pill is a sibling overlay that fades with
+                // these controls. Reserve its exact width to avoid overlap.
+                Color.clear
+                    .frame(width: MobilePlayerRotationControls.width,
+                           height: MobilePlayerRotationControls.height)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
-
-            if viewModel.supportsExternalPlayback {
-                AirPlayRoutePicker { isPresentingRoutes in
-                    // The route sheet is a UIKit presentation the auto-hide
-                    // timer knows nothing about; pin the controls so it can't
-                    // dismantle the picker mid-selection.
-                    if isPresentingRoutes {
-                        viewModel.pinControlsVisible()
-                    } else {
-                        viewModel.resumeAutoHide()
-                    }
+            if compact {
+                HStack(spacing: 12) {
+                    titleBlock
+                    Spacer(minLength: 12)
+                    externalPlaybackControls
                 }
-                .frame(width: 44, height: 44)
             }
+        }
+    }
+
+    private var closeButton: some View {
+        Button(action: onDismiss) {
+            Image(systemName: "xmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+        }
+        .buttonStyle(MobilePlayerGlassButtonStyle())
+        .accessibilityLabel("Close Player")
+        .accessibilityIdentifier("player.close")
+    }
+
+    @ViewBuilder
+    private var externalPlaybackControls: some View {
+        if pictureInPicture.isSupported, pictureInPicture.hasSource {
+            controlButton(
+                systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
+            ) {
+                pictureInPicture.toggle()
+            }
+            // AVKit can report `possible == false` during the final active
+            // transition; the user must still be able to stop PiP.
+            .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
+            .accessibilityLabel(
+                pictureInPicture.isActive
+                    ? "Stop Picture in Picture"
+                    : "Start Picture in Picture"
+            )
+        }
+
+        if viewModel.supportsExternalPlayback {
+            AirPlayRoutePicker { isPresentingRoutes in
+                // The route sheet is a UIKit presentation the auto-hide
+                // timer knows nothing about; pin the controls so it can't
+                // dismantle the picker mid-selection.
+                if isPresentingRoutes {
+                    viewModel.pinControlsVisible()
+                } else {
+                    viewModel.resumeAutoHide()
+                }
+            }
+            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .siloGlass(in: Circle(), interactive: true)
         }
     }
 
@@ -231,10 +260,8 @@ struct MobilePlayerControls: View {
 
     // MARK: - Center
 
-    /// Fixed circle sizes keep the three buttons proportioned as a family
-    /// (content-driven glass sizing made the play disc balloon relative to
-    /// the skips). The play/pause disc is white prominent glass with a dark
-    /// glyph rather than accent-tinted.
+    /// Every circle matches the detail page's 44pt close/remote controls.
+    /// Play/pause keeps its white tint without becoming a larger disc.
     private var centerCluster: some View {
         HStack(spacing: 36) {
             Button {
@@ -243,26 +270,23 @@ struct MobilePlayerControls: View {
                 Image(systemName: "gobackward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .siloGlassButtonStyle()
-            .buttonBorderShape(.circle)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Back 10 Seconds")
 
             Button {
                 viewModel.togglePlayPause()
             } label: {
                 Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.black.opacity(0.85))
                     // play.fill reads left-heavy inside a circle;
                     // nudge it toward the optical center.
                     .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    .frame(width: 64, height: 64)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .siloGlassProminentButtonStyle()
-            .buttonBorderShape(.circle)
-            .tint(.white.opacity(0.9))
+            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
@@ -271,10 +295,9 @@ struct MobilePlayerControls: View {
                 Image(systemName: "goforward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .siloGlassButtonStyle()
-            .buttonBorderShape(.circle)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Forward 10 Seconds")
         }
     }
@@ -500,12 +523,12 @@ struct MobilePlayerControls: View {
 
     private enum ActionRowStyle {
         case full      // labeled pills, value on the Quality pill
-        case compact   // shorter labels, lock folds to a circle
-        case icons     // circles everywhere except the Quality value pill
+        case compact   // shorter labels
+        case icons     // icon controls; Quality remains a pill
     }
 
     /// Labeled pill row. `ViewThatFits` tries the full labels first, then
-    /// compact ones, then icon circles, so the row never truncates or wraps
+    /// compact ones, then icon controls, so the row never truncates or wraps
     /// — an iPhone in portrait with chapters present lands on `.icons`.
     private var actionRow: some View {
         ViewThatFits(in: .horizontal) {
@@ -540,8 +563,6 @@ struct MobilePlayerControls: View {
                 chaptersMenu(style: style)
                     .accessibilityLabel("Chapters")
             }
-
-            lockControl(compact: style != .full)
 
             controlButton(systemName: "ellipsis") {
                 activeSheet = .settings
@@ -586,21 +607,16 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         }
         .menuStyle(.button)
         // Keep Auto at the top, reading down.
         .menuOrder(.fixed)
 
-        return Group {
-            // The prominent style flags a non-Auto quality cap at a glance.
-            if viewModel.activeQualityId == ApplePlaybackQuality.autoId {
-                menu.siloGlassButtonStyle()
-            } else {
-                menu.siloGlassProminentButtonStyle()
-            }
-        }
-        .buttonBorderShape(.capsule)
+        return menu
+        .buttonStyle(MobilePlayerGlassButtonStyle(
+            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : .accentColor
+        ))
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(qualityValueText)
     }
@@ -679,8 +695,7 @@ struct MobilePlayerControls: View {
         .menuStyle(.button)
         // Keep Chapter 1 at the top, reading down.
         .menuOrder(.fixed)
-        .siloGlassButtonStyle()
-        .buttonBorderShape(style == .icons ? .circle : .capsule)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
@@ -700,34 +715,13 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         } else {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
-    }
-
-    private func lockControl(compact: Bool) -> some View {
-        let isLocked = orientationCoordinator.isLandscapeLocked
-        return Group {
-            if compact {
-                controlButton(systemName: isLocked ? "lock.fill" : "lock.open") {
-                    orientationCoordinator.togglePlayerMode()
-                }
-            } else {
-                actionPill(systemImage: isLocked ? "lock.fill" : "lock.open", title: "Lock") {
-                    orientationCoordinator.togglePlayerMode()
-                }
-            }
-        }
-        .accessibilityLabel(isLocked ? "Landscape Locked" : "Rotate Freely")
-        .accessibilityHint(
-            isLocked
-                ? "Allows portrait rotation during playback"
-                : "Locks playback to landscape"
-        )
     }
 
     private func actionPill(
@@ -744,10 +738,9 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         }
-        .siloGlassButtonStyle()
-        .buttonBorderShape(.capsule)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     // MARK: - Intro skip
@@ -768,10 +761,9 @@ struct MobilePlayerControls: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .frame(width: 38, height: 38)
+                                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
                         }
-                        .siloGlassButtonStyle()
-                        .buttonBorderShape(.circle)
+                        .buttonStyle(MobilePlayerGlassButtonStyle())
                         .accessibilityLabel("Cancel Auto-Skip Intro")
                     }
 
@@ -790,13 +782,12 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .frame(height: ContinuumTheme.topBarIconHitSize)
                     }
                     // White prominent glass with a dark glyph, matching the
                     // play/pause disc — accent-tinted prominent reads as an
                     // app-colored web button over video.
-                    .siloGlassProminentButtonStyle()
-                    .tint(.white.opacity(0.9))
+                    .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
                     .accessibilityLabel(
                         viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
                     )
@@ -823,10 +814,9 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .frame(height: ContinuumTheme.topBarIconHitSize)
                 }
-                .siloGlassProminentButtonStyle()
-                .tint(.white.opacity(0.9))
+                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
                 .accessibilityLabel("Skip Credits")
             }
             .padding(.horizontal, 24)
@@ -843,12 +833,9 @@ struct MobilePlayerControls: View {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
-        // `.circle` keeps each glass control a compact circle instead of the
-        // default wider capsule so rows of controls stay dense.
-        .siloGlassButtonStyle()
-        .buttonBorderShape(.circle)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     // MARK: - Sheet identifier
@@ -856,6 +843,87 @@ struct MobilePlayerControls: View {
     private enum PlayerSheet: Identifiable {
         case tracks, aiSubtitles, subtitleSearch, settings
         var id: Self { self }
+    }
+}
+
+/// Match detail chrome without the extra padding added by native glass
+/// button styles. A 44pt square is circular; longer labels form a 44pt pill.
+struct MobilePlayerGlassButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: ContinuumTheme.topBarIconHitSize)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(Capsule())
+            .siloGlass(in: Capsule(), tint: tint, interactive: true)
+    }
+}
+
+/// Close and rotation controls share the same visibility, hit testing and
+/// accessibility state, including while loading and on Next Up.
+struct MobilePlayerChromeVisibility: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
+            .animation(.easeOut(duration: 0.18), value: isVisible)
+    }
+}
+
+/// Top-right chrome follows transport visibility in every playback phase.
+/// Equal tap areas keep the lock centred through rotation.
+struct MobilePlayerRotationControls: View {
+    static let height = ContinuumTheme.topBarIconHitSize
+    static let width = height * 2 + 24
+    static let topClearance: CGFloat = height + 32
+
+    let orientationCoordinator: PlayerOrientationCoordinator
+    let isVisible: Bool
+    var onInteraction: () -> Void = {}
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                orientationCoordinator.togglePlayerOrientation()
+                onInteraction()
+            } label: {
+                icon("rectangle.landscape.rotate")
+            }
+            .accessibilityLabel("Rotate to \(orientationCoordinator.nextPlayerOrientation.title)")
+            .accessibilityHint("Rotates the screen without interrupting playback")
+            .accessibilityIdentifier("player.rotate")
+
+            Button {
+                orientationCoordinator.toggleRotationLock()
+                onInteraction()
+            } label: {
+                icon(orientationCoordinator.isRotationLocked ? "lock" : "lock.open")
+            }
+            .accessibilityLabel(orientationCoordinator.isRotationLocked ? "Unlock screen rotation" : "Lock screen rotation")
+            .accessibilityValue(orientationCoordinator.isRotationLocked ? "Locked" : "Unlocked")
+            .accessibilityHint(orientationCoordinator.isRotationLocked
+                ? "Allows video to follow phone orientation"
+                : "Stops phone movement rotating video. The rotate button still works")
+            .accessibilityIdentifier("player.rotation-lock")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .siloGlass(in: Capsule(), interactive: true)
+        .modifier(MobilePlayerChromeVisibility(isVisible: isVisible))
+    }
+
+    private func icon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 24, weight: .medium))
+            .foregroundStyle(.white)
+            .frame(width: 32, height: 32)
+            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .contentShape(Rectangle())
     }
 }
 #endif

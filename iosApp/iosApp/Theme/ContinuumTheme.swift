@@ -149,9 +149,9 @@ struct ContinuumTheme {
         static let barIconSize: CGFloat = 58
         /// Gap between the search button and the avatar.
         static let barTrailingSpacing: CGFloat = 22
-        static let wordmarkSize: CGFloat = 26
-        /// Wordmark letter tracking — +0.34 em.
-        static let wordmarkTracking: CGFloat = 26 * 0.34
+        /// Width of the logo asset in the top bar. The asset is ~1.9:1, so
+        /// this renders about 50pt tall inside the 64pt bar row.
+        static let wordmarkWidth: CGFloat = 96
         /// Bar opacity while focus is down in the content zone (§5.1).
         static let barDimmedOpacity: Double = 0.7
 
@@ -234,6 +234,12 @@ struct ContinuumTheme {
 
         // MARK: Focus marquee (§5.4/§5.5)
 
+        /// Shared vertical placement for the foreground marquee and row band
+        /// on every Skyline landing. Keeping this in the shared feed prevents
+        /// title logos from rising into the app-level top menu while Home and
+        /// every library Recommended landing retain identical geometry.
+        static let landingContentVerticalOffset: CGFloat = 56
+
         /// Marquee block bottom inset — Home scale. On a 1080p tvOS canvas,
         /// this lands the marquee's bottom edge at the midpoint so the lower
         /// half can hold the focused row plus a peek of the next row.
@@ -261,11 +267,18 @@ struct ContinuumTheme {
         static let marqueeLogoMaxHeightLibrary: CGFloat = 150
         /// Codec/HDR badge chip label size (§4.1).
         static let marqueeBadgeSize: CGFloat = 15
-        /// Focus must rest this long before the marquee swaps (§4.2) —
-        /// rolling through cards never thrashes backdrops.
+        /// Focus must rest this long before the backdrop swaps and uncached
+        /// detail requests start (§4.2). Foreground text follows focus
+        /// immediately; this gate only keeps a roll across a row from
+        /// thrashing large backdrops. Matches Android's
+        /// `TvMarqueeFocusRestMillis`.
         static let marqueeRestDebounceMilliseconds = 150
-        /// Marquee text + backdrop crossfade duration (§4.2).
+        /// Backdrop + tint crossfade between rested selections (§4.2).
         static let marqueeCrossfadeDuration: Double = 0.24
+        /// Neighbouring cards on either side of a rested selection whose
+        /// backdrop bytes are pulled into the disk cache at low priority,
+        /// so the next rest skips the network round trip.
+        static let marqueeNeighborBackdropPrefetchRadius = 2
 
         // MARK: Row band under the marquee (§5.7, revised)
 
