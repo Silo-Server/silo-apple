@@ -216,8 +216,10 @@ struct LibrariesTabView: View {
     @State private var isLoading = true
     @State private var error: ErrorState?
     @State private var showPicker = false
-    @State private var currentProfile: UserProfile?
     @State private var navPrefs = AppNavPreferences.shared
+    /// Feeds the glass strip behind the hoisted top chrome. Tab content reads
+    /// it from the environment so each tab's ScrollView can report its offset.
+    @State private var chromeScrollState = PageChromeScrollState()
 
     /// Persist the last-selected library per authored root so visiting Series
     /// cannot replace the Movies or aggregate selection. Fixed-library roots
@@ -284,7 +286,6 @@ struct LibrariesTabView: View {
             // under the new destination.
             applyLibrarySelection()
             await loadLibraries()
-            await loadCurrentProfile()
         }
         .onChange(of: navPrefs.showAudiobooks) {
             applyLibrarySelection()
@@ -318,8 +319,14 @@ struct LibrariesTabView: View {
             // Forces the whole tab subtree to reset when switching
             // libraries, so stale content never flashes on screen.
             .id(activeLibrary.id)
+            .environment(chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 topChrome(activeLibrary: activeLibrary)
+                    // Same scroll-driven glass as the Detail page chrome so
+                    // the selector and actions stay legible over posters.
+                    .background {
+                        PageChromeGlass(scrollState: chromeScrollState)
+                    }
             }
     }
 
@@ -344,7 +351,6 @@ struct LibrariesTabView: View {
                     fixedLibraryId: fixedLibraryId,
                     visibleLibraryCount: visibleLibraries.count
                 ),
-                profile: currentProfile,
                 onLibraryTap: { showPicker = true },
                 onSearch: { router.navigate(to: .search) },
                 onOpenSettings: { router.navigate(to: .settings) },
@@ -479,17 +485,6 @@ struct LibrariesTabView: View {
         }
     }
 
-    /// Load the currently-selected profile so we can render its avatar in
-    /// the top bar. Non-fatal on failure — we fall back to a generic icon.
-    private func loadCurrentProfile() async {
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-    }
 }
 
 // MARK: - Top Bar
@@ -499,7 +494,6 @@ struct LibrariesTabView: View {
 private struct LibrariesTopBar: View {
     let activeLibrary: Library
     let canSwitch: Bool
-    let profile: UserProfile?
     let onLibraryTap: () -> Void
     let onSearch: () -> Void
     let onOpenSettings: () -> Void
@@ -521,7 +515,6 @@ private struct LibrariesTopBar: View {
             Spacer(minLength: 8)
 
             TabTopBarActions(
-                profile: profile,
                 onSearch: onSearch,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,

@@ -24,19 +24,18 @@ struct HomeView: View {
     #endif
     #if !os(tvOS)
     @State private var homeSectionPreferences = HomeSectionPreferences.shared
-    @State private var currentProfile: UserProfile?
     @State private var isRefreshing = false
     @State private var refreshStartedAt: Date?
     @State private var refreshHideTask: Task<Void, Never>?
+    /// Feeds the glass strip behind the floating header as rows scroll under it.
+    @State private var chromeScrollState = PageChromeScrollState()
     #if os(iOS)
-    @State private var isShowingControlPicker = false
-    @Environment(SiloControlClient.self) private var siloControl
-    /// Breathing room between the status-bar safe area and the floating header,
-    /// so the logo + action icons sit comfortably below the Dynamic Island
-    /// rather than crowding it (matching Plex's tight-but-relaxed top spacing).
-    private let headerTopInset: CGFloat = 4
+    /// Breathing room between the status-bar safe area and the floating
+    /// header. Uses the same value as the Libraries and For You top chrome so
+    /// the shared action cluster sits at one height on every root page.
+    private let headerTopInset: CGFloat = ContinuumTheme.smallPadding
     /// The LazyVStack already contributes its normal section spacing after the
-    /// scroll-owned wordmark. Adding a second large header gap pushed the first
+    /// header runway. Adding a second large header gap pushed the first
     /// visible row far down the screen whenever an earlier Home row was hidden.
     private let headerToContentGap: CGFloat = 0
     #endif
@@ -133,46 +132,41 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(spacing: 12) {
-                #if os(iOS)
-                // The wordmark lives inside the vertical ScrollView and leaves
-                // with the page. Only the three glass utilities stay pinned.
-                Spacer(minLength: 8)
-                #else
+            HStack(alignment: .center, spacing: 12) {
+                #if !os(iOS)
                 SidebarToggleButton()
-                SiloWordmarkView(width: 72)
-                Spacer(minLength: 8)
                 #endif
+                // The wordmark is pinned with the utilities so it stays put
+                // over the glass strip instead of scrolling away with the feed.
+                // It occupies the same 44pt row as the icon buttons so its
+                // centre lines up with theirs.
+                SiloWordmarkView(width: 72)
+                    .frame(height: ContinuumTheme.topBarIconHitSize)
+                Spacer(minLength: 8)
 
-                // Trailing action cluster: cast / search / profile, evenly
-                // spaced as one group so the gaps between glyphs are uniform
-                // (matching Plex's top-right icon row).
-                HStack(spacing: ContinuumTheme.topBarIconSpacing) {
-                    #if os(iOS)
-                    SiloControlModeButton(controller: siloControl, usesGlass: true) {
-                        isShowingControlPicker = true
-                    }
-                    #endif
-
-                    TabTopBarActions(
-                        profile: currentProfile,
-                        usesGlass: true,
-                        onSearch: { router.navigate(to: .search) },
-                        onOpenSettings: { router.navigate(to: .settings) },
-                        onOpenRequests: { router.navigate(to: .requestsHub) },
-                        onSwitchProfile: {
-                            router.switchProfile()
-                        },
-                        onSwitchServer: { router.navigate(to: .serverList) },
-                        onSignOut: { router.signOutAndReset() }
-                    )
-                }
+                // Trailing action cluster shared by every root page.
+                TabTopBarActions(
+                    onSearch: { router.navigate(to: .search) },
+                    onOpenSettings: { router.navigate(to: .settings) },
+                    onOpenRequests: { router.navigate(to: .requestsHub) },
+                    onSwitchProfile: {
+                        router.switchProfile()
+                    },
+                    onSwitchServer: { router.navigate(to: .serverList) },
+                    onSignOut: { router.signOutAndReset() }
+                )
             }
             .padding(.horizontal, ContinuumTheme.padding)
             #if os(iOS)
             .padding(.top, headerTopInset)
             #endif
             .padding(.bottom, ContinuumTheme.smallPadding)
+            // Same scroll-driven glass as the Detail page chrome so the
+            // utilities stay legible over bright artwork once rows scroll
+            // underneath.
+            .background {
+                PageChromeGlass(scrollState: chromeScrollState)
+            }
 
             if isRefreshing {
                 RefreshStatusPill()
@@ -197,16 +191,10 @@ struct HomeView: View {
         .task {
             homeSectionPreferences.refresh()
             await viewModel.loadSections()
-            await loadCurrentProfile()
         }
         .refreshable {
             await refreshHome()
         }
-        #if os(iOS)
-        .sheet(isPresented: $isShowingControlPicker) {
-            SiloControlTargetPickerView(request: nil, controller: siloControl)
-        }
-        #endif
         #endif
         }
         .alert(
@@ -226,16 +214,11 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                    #if os(iOS)
-                    homeScrollIdentityHeader
-                        .id(HomeFocusTarget.topSpacer)
-                    #else
-                    // Preserve the existing non-iOS runway while the iOS
-                    // wordmark becomes part of the scrolling feed.
+                    // Clear runway under the pinned header so the first row
+                    // starts below the wordmark and utilities.
                     Color.clear
-                        .frame(height: topRunwaySpacing(topSafeAreaInset: geometry.safeAreaInsets.top))
+                        .frame(height: topRunwaySpacing(topSafeAreaInset: runwaySafeAreaInset(geometry)))
                         .id(HomeFocusTarget.topSpacer)
-                    #endif
 
                     ForEach(displayedSections) { section in
                         HomeFeedRow(
@@ -248,6 +231,7 @@ struct HomeView: View {
                 }
                 .padding(.bottom, HomeFeedMetrics.bottomRunway)
             }
+            .reportsPageChromeScroll(to: chromeScrollState)
             #if os(macOS)
             .continuumScrollEdgeEffect()
             #endif
@@ -279,32 +263,6 @@ struct HomeView: View {
         ContinuumPageBackdrop()
     }
 
-    #if os(iOS)
-    /// Scroll-owned Home identity. Its frame exactly replaces the former clear
-    /// runway, so first-row spacing is unchanged while the logo can now scroll
-    /// away. The fixed utility cluster remains independently overlaid above it.
-    private var homeScrollIdentityHeader: some View {
-        HStack {
-            SiloWordmarkView(width: 72)
-
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, ContinuumTheme.padding)
-        // The ScrollView now begins inside the device safe area, exactly like
-        // the fixed utility overlay. Matching their top inset keeps the logo
-        // on the same row instead of underneath the status clock.
-        .padding(.top, headerTopInset)
-        .frame(
-            height: topRunwaySpacing(topSafeAreaInset: 0),
-            alignment: .top
-        )
-        // A large sheet leaves the status-bar region visible by design. Hide
-        // the scroll-owned wordmark while details are presented so it never
-        // ghosts above the card's rounded top edge.
-        .opacity(router.presentedItemDetail == nil ? 1 : 0)
-        .animation(.easeOut(duration: 0.12), value: router.presentedItemDetail == nil)
-    }
-    #endif
 
     private func refreshHome() async {
         await MainActor.run {
@@ -343,17 +301,6 @@ struct HomeView: View {
         }
     }
 
-    /// Load the currently-selected profile so we can render its avatar in
-    /// the top bar. Non-fatal on failure — we fall back to a generic icon.
-    private func loadCurrentProfile() async {
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-    }
     #endif
 
     // MARK: - Navigation
@@ -380,6 +327,16 @@ struct HomeView: View {
     #if !os(tvOS)
     private var sectionSpacing: CGFloat {
         ContinuumTheme.largePadding
+    }
+
+    /// On iOS the ScrollView already starts inside the safe area, so the
+    /// runway must not count the status-bar inset a second time.
+    private func runwaySafeAreaInset(_ geometry: GeometryProxy) -> CGFloat {
+        #if os(iOS)
+        return 0
+        #else
+        return geometry.safeAreaInsets.top
+        #endif
     }
 
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {

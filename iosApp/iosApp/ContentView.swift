@@ -232,6 +232,7 @@ struct ContentView: View {
                 await ImageSizeCapability.shared.refresh()
                 await RequestsFeatureStore.shared.refresh()
                 await SubtitleProvidersStore.shared.refresh()
+                await CurrentProfileStore.shared.refresh()
                 await uiCustomization.refresh()
                 #if os(iOS)
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
