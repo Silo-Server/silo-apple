@@ -6,12 +6,10 @@ import SwiftUI
 struct AudioMiniPlayerView: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     var style: NowPlayingBarStyle = .card
-    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    @Environment(\.nowPlayingAccessoryIsInline) private var isInline
 
     /// `.inline` is the minimized-tab-bar slot — collapse to a single line so the
     /// bar fits the compact pill without truncating.
-    private var isInline: Bool { placement == .inline }
-
     var body: some View {
         let player = audioStore.player
         if player.hasActiveSession {

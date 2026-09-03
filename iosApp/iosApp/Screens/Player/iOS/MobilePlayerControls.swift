@@ -211,7 +211,7 @@ struct MobilePlayerControls: View {
                 }
             }
             .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
-            .siloGlass(in: Circle(), interactive: true)
+            .siloPlayerGlass(in: Circle(), interactive: true)
         }
     }
 
@@ -496,7 +496,7 @@ struct MobilePlayerControls: View {
             }
         }
         .padding(7)
-        .siloGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .fixedSize()
     }
 
@@ -857,7 +857,7 @@ struct MobilePlayerGlassButtonStyle: ButtonStyle {
             .frame(height: ContinuumTheme.topBarIconHitSize)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .contentShape(Capsule())
-            .siloGlass(in: Capsule(), tint: tint, interactive: true)
+            .siloPlayerGlass(in: Capsule(), tint: tint, interactive: true)
     }
 }
 
@@ -913,7 +913,7 @@ struct MobilePlayerRotationControls: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
-        .siloGlass(in: Capsule(), interactive: true)
+        .siloPlayerGlass(in: Capsule(), interactive: true)
         .modifier(MobilePlayerChromeVisibility(isVisible: isVisible))
     }
 

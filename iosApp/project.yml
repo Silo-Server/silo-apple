@@ -2,7 +2,7 @@ name: Silo
 options:
   bundleIdPrefix: org.siloserver.silo
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
     macOS: "26.0"
     tvOS: "26.0"
   createIntermediateGroups: true

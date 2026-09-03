@@ -69,11 +69,64 @@ enum SharedStorage {
     }
 }
 
+enum SideloadKeychainFallbackPolicy {
+    private static let canonicalAccessGroup = "org.siloserver.silo.shared"
+
+    static func isEnabled(buildChannel: String, isPreIOS26: Bool) -> Bool {
+        buildChannel == "sideload" && isPreIOS26
+    }
+
+    static func resolvedAccessGroup(
+        from configuredValue: String,
+        allowsUnprefixedSideloadGroup: Bool
+    ) -> String? {
+        if configuredValue.hasSuffix(".\(canonicalAccessGroup)") {
+            return configuredValue
+        }
+        if allowsUnprefixedSideloadGroup,
+           configuredValue == canonicalAccessGroup {
+            return configuredValue
+        }
+        return nil
+    }
+
+    static func teamPrefix(from resolvedAccessGroup: String) -> String? {
+        let sharedGroupSuffix = ".\(canonicalAccessGroup)"
+        guard resolvedAccessGroup.hasSuffix(sharedGroupSuffix) else { return nil }
+        return String(resolvedAccessGroup.dropLast(sharedGroupSuffix.count)) + "."
+    }
+}
+
 private enum RuntimeConfiguration {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
         category: "RuntimeConfiguration"
     )
+
+    /// Third-party re-signers commonly cannot preserve Silo's shared
+    /// Keychain entitlement. On legacy iOS, keep core authentication usable
+    /// by allowing the explicitly stamped sideload build to use the app's
+    /// implicit Keychain group when Security reports that exact mismatch.
+    /// Release/dev builds, iOS 26+, tvOS, and macOS retain the shared-only
+    /// behavior.
+    static let allowsAppLocalKeychainFallback: Bool = {
+        #if os(iOS) && !DEBUG
+        let rawChannel = Bundle.main.object(forInfoDictionaryKey: "SiloBuildChannel") as? String
+        let buildChannel = rawChannel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let isPreIOS26: Bool
+        if #available(iOS 26.0, *) {
+            isPreIOS26 = false
+        } else {
+            isPreIOS26 = true
+        }
+        return SideloadKeychainFallbackPolicy.isEnabled(
+            buildChannel: buildChannel,
+            isPreIOS26: isPreIOS26
+        )
+        #else
+        return false
+        #endif
+    }()
 
     static let sharedKeychainAccessGroup: String? = {
         guard let group = Bundle.main.object(
@@ -82,8 +135,11 @@ private enum RuntimeConfiguration {
             logger.error("Missing ContinuumKeychainAccessGroup Info.plist value; shared auth tokens may not persist.")
             return nil
         }
-        if group.hasSuffix(".org.siloserver.silo.shared") {
-            return group
+        if let resolved = SideloadKeychainFallbackPolicy.resolvedAccessGroup(
+            from: group,
+            allowsUnprefixedSideloadGroup: allowsAppLocalKeychainFallback
+        ) {
+            return resolved
         }
         logger.error("Unexpected ContinuumKeychainAccessGroup value: \(group, privacy: .public)")
         return nil
@@ -105,8 +161,8 @@ private enum RuntimeConfiguration {
 
     static let legacyTeamPrefix: String? = {
         if let group = sharedKeychainAccessGroup,
-           let dot = group.firstIndex(of: ".") {
-            return String(group[...dot])
+           let prefix = SideloadKeychainFallbackPolicy.teamPrefix(from: group) {
+            return prefix
         }
         logger.error("Could not derive team prefix from ContinuumKeychainAccessGroup; legacy keychain migration will only try the default access group.")
         return nil
@@ -190,15 +246,18 @@ struct SharedKeychain {
     let accessGroup: String?
     let audience: KeychainAudience
     let usesUserIndependentKeychain: Bool
+    let allowsAppLocalFallback: Bool
 
     init(service: String = SharedStorage.keychainService,
          accessGroup: String? = SharedStorage.keychainAccessGroup,
          audience: KeychainAudience = .currentUser,
-         usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain) {
+         usesUserIndependentKeychain: Bool = RuntimeConfiguration.usesUserIndependentKeychain,
+         allowsAppLocalFallback: Bool = RuntimeConfiguration.allowsAppLocalKeychainFallback) {
         self.service = service
         self.accessGroup = accessGroup
         self.audience = audience
         self.usesUserIndependentKeychain = usesUserIndependentKeychain
+        self.allowsAppLocalFallback = allowsAppLocalFallback
     }
 
     func withAudience(_ audience: KeychainAudience) -> SharedKeychain {
@@ -206,7 +265,8 @@ struct SharedKeychain {
             service: service,
             accessGroup: accessGroup,
             audience: audience,
-            usesUserIndependentKeychain: usesUserIndependentKeychain
+            usesUserIndependentKeychain: usesUserIndependentKeychain,
+            allowsAppLocalFallback: allowsAppLocalFallback
         )
     }
 
@@ -219,27 +279,36 @@ struct SharedKeychain {
             Self.logger.error("Failed to encode keychain value for account \(account, privacy: .public).")
             return false
         }
-        var query = baseQuery(account: account)
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess { return true }
-        if updateStatus != errSecItemNotFound {
-            Self.logger.error("Keychain update failed for account \(account, privacy: .public): status=\(updateStatus, privacy: .public)")
+        let status = write(data, for: account, accessGroup: accessGroup)
+        if status == errSecSuccess { return true }
+        if shouldUseAppLocalFallback(for: status) {
+            let fallbackStatus = write(data, for: account, accessGroup: nil)
+            if fallbackStatus == errSecSuccess {
+                Self.logger.notice("Shared Keychain entitlement unavailable; wrote app-local value.")
+                return true
+            }
+            Self.logger.error("App-local Keychain fallback write failed: status=\(fallbackStatus, privacy: .public)")
             return false
         }
-        query.merge(attributes) { _, new in new }
-        let addStatus = SecItemAdd(query as CFDictionary, nil)
-        if addStatus == errSecSuccess { return true }
-        Self.logger.error("Keychain add failed for account \(account, privacy: .public): status=\(addStatus, privacy: .public)")
+        Self.logger.error("Keychain write failed for account \(account, privacy: .public): status=\(status, privacy: .public)")
         return false
     }
 
     func get(_ account: String) -> String? {
-        if let found = read(account: account, accessGroup: accessGroup) {
+        let configuredRead = readResult(account: account, accessGroup: accessGroup)
+        if let found = configuredRead.value {
             return found
+        }
+        if shouldUseAppLocalFallback(for: configuredRead.status) {
+            let fallbackRead = readResult(account: account, accessGroup: nil)
+            if fallbackRead.status != errSecSuccess,
+               fallbackRead.status != errSecItemNotFound {
+                Self.logger.error("App-local Keychain fallback read failed: status=\(fallbackRead.status, privacy: .public)")
+            }
+            // The app-local group is the active store for this build. Return
+            // directly instead of passing through legacy migration, which
+            // would otherwise delete the same value it just found.
+            return fallbackRead.value
         }
         #if os(tvOS)
         // Account credentials written before Runs-as-Current-User were stored
@@ -293,9 +362,25 @@ struct SharedKeychain {
 
     @discardableResult
     func delete(_ account: String) -> Bool {
-        let query = baseQuery(account: account)
-        let status = SecItemDelete(query as CFDictionary)
-        if status == errSecSuccess || status == errSecItemNotFound { return true }
+        let status = deleteStatus(account: account, accessGroup: accessGroup)
+        if status == errSecSuccess || status == errSecItemNotFound {
+            guard allowsAppLocalFallback, accessGroup != nil else { return true }
+            let cleanupStatus = deleteStatus(account: account, accessGroup: nil)
+            if cleanupStatus == errSecSuccess || cleanupStatus == errSecItemNotFound {
+                return true
+            }
+            Self.logger.error("App-local Keychain cleanup failed: status=\(cleanupStatus, privacy: .public)")
+            return false
+        }
+        if shouldUseAppLocalFallback(for: status) {
+            let fallbackStatus = deleteStatus(account: account, accessGroup: nil)
+            if fallbackStatus == errSecSuccess || fallbackStatus == errSecItemNotFound {
+                Self.logger.notice("Shared Keychain entitlement unavailable; deleted app-local value.")
+                return true
+            }
+            Self.logger.error("App-local Keychain fallback delete failed: status=\(fallbackStatus, privacy: .public)")
+            return false
+        }
         Self.logger.error("Keychain delete failed for account \(account, privacy: .public): status=\(status, privacy: .public)")
         return false
     }
@@ -303,13 +388,42 @@ struct SharedKeychain {
     // MARK: - Private
 
     private func read(account: String, accessGroup: String?) -> String? {
+        readResult(account: account, accessGroup: accessGroup).value
+    }
+
+    private func readResult(account: String, accessGroup: String?) -> (status: OSStatus, value: String?) {
         var query = baseQuery(account: account, accessGroup: accessGroup)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard status == errSecSuccess, let data = result as? Data else {
+            return (status, nil)
+        }
+        return (status, String(data: data, encoding: .utf8))
+    }
+
+    private func write(_ data: Data, for account: String, accessGroup: String?) -> OSStatus {
+        var query = baseQuery(account: account, accessGroup: accessGroup)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        guard updateStatus == errSecItemNotFound else { return updateStatus }
+        query.merge(attributes) { _, new in new }
+        return SecItemAdd(query as CFDictionary, nil)
+    }
+
+    private func deleteStatus(account: String, accessGroup: String?) -> OSStatus {
+        let query = baseQuery(account: account, accessGroup: accessGroup)
+        return SecItemDelete(query as CFDictionary)
+    }
+
+    private func shouldUseAppLocalFallback(for status: OSStatus) -> Bool {
+        allowsAppLocalFallback
+            && accessGroup != nil
+            && status == errSecMissingEntitlement
     }
 
     private func deleteLegacy(account: String, accessGroup: String?) {
