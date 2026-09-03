@@ -21,12 +21,25 @@ import UIKit
 /// every `LazyImage` / `ImagePipeline.shared` caller picks it up automatically.
 enum PosterImageCache {
     /// Longest edge, in pixels, of the decode the prefetchers park in the
-    /// memory cache for poster, still, cover, and portrait artwork. Larger
-    /// than any card on any surface, so the warmed decode always paints at
-    /// least as sharp as the card's own request, and small enough (about
-    /// 0.7 MB for a 2:3 poster) that a whole warmed feed fits the constrained
-    /// tvOS budget instead of evicting itself.
-    static let cardWarmMaxPixelSize: Float = 512
+    /// memory cache for poster, still, cover, and portrait artwork. Sized to
+    /// cover every Skyline landing card at the display's native scale
+    /// (Apple TV 4K renders at 2x: a 176 pt dense poster is 528 px tall), so
+    /// the warmed decode paints at least as sharp as the card's own request.
+    /// About 1.1 MB for a 2:3 poster at 2x, so a whole warmed feed still fits
+    /// the constrained tvOS budget instead of evicting itself. Library grid
+    /// cards are larger and keep their own decode.
+    static let cardWarmMaxPixelSize: Float = Float(320 * displayScale)
+
+    /// Native display scale used to turn point sizes into decode pixel sizes
+    /// off the main thread. `UITraitCollection.current` reports 0 outside a
+    /// UIKit context, so read the screen directly.
+    static let displayScale: CGFloat = {
+        #if canImport(UIKit)
+        return max(1, UIScreen.main.scale)
+        #else
+        return 2
+        #endif
+    }()
 
     /// Longest edge, in pixels, for palette sampling decodes.
     static let paletteSampleMaxPixelSize: Float = 64
@@ -263,8 +276,12 @@ enum PosterImageCache {
     /// is a straight memory-cache hit with no second decode.
     static func prefetchHeroBackdrops(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        let pixelSize = TVBackdropArtworkLayout.artworkSize(
+        let pointSize = TVBackdropArtworkLayout.artworkSize(
             forViewportWidth: TVBackdropArtworkLayout.viewportWidth
+        )
+        let pixelSize = CGSize(
+            width: pointSize.width * displayScale,
+            height: pointSize.height * displayScale
         )
         prefetcher.startPrefetching(with: urls.map { displayRequest(url: $0, pixelSize: pixelSize) })
     }

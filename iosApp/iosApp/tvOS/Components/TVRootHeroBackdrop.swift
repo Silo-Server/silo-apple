@@ -143,31 +143,36 @@ struct TVRootHeroBackdrop: View {
                 forViewportWidth: geometry.size.width
             )
 
-            if let artworkURL, !artworkURL.isEmpty {
-                AsyncImageView(
-                    url: artworkURL,
-                    thumbhash: artworkThumbhash,
-                    targetSize: artworkSize,
-                    contentMode: .fill
-                )
-                .id(artworkURL)
-                .frame(width: artworkSize.width, height: artworkSize.height)
-                .clipped()
-                .mask { TVBackdropArtworkFadeMask() }
-                // Anchor the art block to the screen's top-right corner; the
-                // mask keeps only that corner opaque, so the corner reads as
-                // fully painted with no gap and the art dissolves inward.
-                .frame(
-                    width: geometry.size.width,
-                    height: geometry.size.height,
-                    alignment: .topTrailing
-                )
-                .transition(
-                    reduceMotion || !hasDisplayedArtwork
-                        ? .identity
-                        : .opacity.animation(.easeInOut(duration: crossfadeDuration))
-                )
+            // The mask wraps the crossfading pair rather than each image, so
+            // a swap renders one masked offscreen pass instead of two
+            // full-resolution ones while both artworks are on screen.
+            ZStack {
+                if let artworkURL, !artworkURL.isEmpty {
+                    AsyncImageView(
+                        url: artworkURL,
+                        thumbhash: artworkThumbhash,
+                        targetSize: artworkSize,
+                        contentMode: .fill
+                    )
+                    .id(artworkURL)
+                    .transition(
+                        reduceMotion || !hasDisplayedArtwork
+                            ? .identity
+                            : .opacity.animation(.easeInOut(duration: crossfadeDuration))
+                    )
+                }
             }
+            .frame(width: artworkSize.width, height: artworkSize.height)
+            .clipped()
+            .mask { TVBackdropArtworkFadeMask() }
+            // Anchor the art block to the screen's top-right corner; the
+            // mask keeps only that corner opaque, so the corner reads as
+            // fully painted with no gap and the art dissolves inward.
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height,
+                alignment: .topTrailing
+            )
         }
         .ignoresSafeArea()
     }

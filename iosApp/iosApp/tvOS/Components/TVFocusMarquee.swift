@@ -654,6 +654,11 @@ final class TVFocusMarqueeModel {
     private var backdropContentID: String?
     /// False while the feed is offscreen; every entry point is a no-op then.
     private var isActive = true
+    /// True while the host's row band is mid-scroll. Swapping the large
+    /// composited backdrop during the row-change animation competes with it
+    /// for GPU time, so the swap waits for the scroll to settle.
+    private var isBackdropDeferred = false
+    private var hasDeferredBackdropUpdate = false
     private var enrichmentState: TVHeroEnrichmentState = .notStarted
     private var lastSampledTintURL: String?
     /// Per-item enrichment cache so scrubbing back over a row never
@@ -736,8 +741,23 @@ final class TVFocusMarqueeModel {
         lastSampledTintURL = nil
     }
 
+    /// Hold backdrop swaps while `deferred` is true; the latest pending swap
+    /// applies as soon as the hold is released.
+    func setBackdropDeferred(_ deferred: Bool) {
+        guard isBackdropDeferred != deferred else { return }
+        isBackdropDeferred = deferred
+        if !deferred, hasDeferredBackdropUpdate {
+            hasDeferredBackdropUpdate = false
+            updateBackdropIfReady()
+        }
+    }
+
     private func updateBackdropIfReady() {
         guard isActive, let content, backdropContentID == content.id else { return }
+        if isBackdropDeferred {
+            hasDeferredBackdropUpdate = true
+            return
+        }
         if let artwork = resolvedArtwork {
             displayedArtwork = artwork
             sampleTintIfNeeded(for: artwork.url)

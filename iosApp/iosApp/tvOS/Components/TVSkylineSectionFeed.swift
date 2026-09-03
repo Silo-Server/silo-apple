@@ -133,6 +133,12 @@ struct TVSkylineSectionFeed: View {
                     .padding(.bottom, trailingPreviewPadding)
                 }
                 .scrollTargetBehavior(.viewAligned)
+                // Row changes animate the band; the marquee holds its backdrop
+                // swap until the scroll settles so the two never composite in
+                // the same frames.
+                .onScrollPhaseChange { _, phase in
+                    marqueeModel.setBackdropDeferred(phase != .idle)
+                }
                 // Animated ride home; the first card's focus claim is
                 // re-asserted by MediaRow until the scroll settles, so the
                 // animation can't lose the claim to mid-flight focus repairs.
