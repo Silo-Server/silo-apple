@@ -81,19 +81,20 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             let frames = MobileFrames()
             let layout = PlayerNextUpMobileLayout {
                 Color.black.aspectRatio(16 / 9, contentMode: .fit)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frames.preview = $0 }
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.preview = $0 }
             } panel: {
                 // Reserve more than the compact metadata + two action rows
                 // need, with a long On Deck shelf competing for space below.
                 Color.blue.frame(height: 240)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frames.panel = $0 }
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
             } extras: {
                 Color.gray.frame(height: 1000)
             }
-            let window = makeWindow(layout, attachToScene: false)
-            window.frame = CGRect(origin: .zero, size: size)
+            let window = makeWindow(layout.frame(width: size.width, height: size.height)
+                .coordinateSpace(name: "mobile-layout").ignoresSafeArea())
             defer { window.isHidden = true; window.rootViewController = nil }
             try await settle(window)
+            print("Mobile layout \(size): preview=\(frames.preview), actions=\(frames.panel)")
             XCTAssertGreaterThan(frames.panel.height, 0)
             XCTAssertGreaterThanOrEqual(frames.panel.minY, 0)
             XCTAssertLessThanOrEqual(frames.panel.maxY, size.height)
@@ -169,7 +170,12 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         try await settle(window)
         let surface = try XCTUnwrap(surfaces(in: window).first)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "v3_h264_aac", withExtension: "mp4"))
-        try await engine.load(url: url)
+        // Hosted CI simulators report no VideoToolbox hardware decoder and
+        // the normal probe chooses software. Use the native URL route to
+        // exercise AVPlayer/layer retention with the same local MP4 fixture.
+        var options = LoadOptions()
+        options.nativeRemoteHLS = true
+        try await engine.load(url: url, options: options)
         engine.play()
         let player = try XCTUnwrap(engine.currentAVPlayer)
         let item = try XCTUnwrap(player.currentItem)
@@ -214,7 +220,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         presentation.hasPreviewBounds = false
         presentation.preview = true
         engine.prepareForItemReplacement()
-        try await engine.load(url: url)
+        try await engine.load(url: url, options: options)
         presentation.hasPreviewBounds = true
         engine.play()
         let successorDeadline = ContinuousClock.now + .seconds(15)

@@ -53,7 +53,7 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
                 }
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
-                .accessibilityHidden(true)
+                .accessibilityHidden(isPreview)
             }
     }
 }

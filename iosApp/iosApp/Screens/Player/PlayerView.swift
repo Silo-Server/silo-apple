@@ -86,6 +86,7 @@ struct PlayerView: View {
         PlayerSurfaceLayout(isPreview: viewModel.showNextUpScreen) {
             playerSurface()
                 .opacity(viewModel.error == nil ? 1 : 0)
+                .accessibilityHidden(viewModel.error != nil)
         } content: {
             ZStack {
                 Color.black.ignoresSafeArea()

@@ -55,13 +55,21 @@ jobs:
           ACTION: ${{ matrix.action }}
         run: |
           set -o pipefail
+          if [ "$ACTION" = test ]; then
+            # Simulator-only ad-hoc signing supplies the application identifier
+            # required by Keychain. No certificate or release secret is used.
+            xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
+              -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+            ACTION=test-without-building
+          fi
           xcodebuild "$ACTION" -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
             -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
-        if: matrix.action == 'test'
+        if: matrix.action == 'test' && !cancelled()
         shell: bash
         run: |
           set -euo pipefail
