@@ -48,7 +48,7 @@ struct PhoneSimilarRail: View {
 
     private var rail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 12) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 12) {
                 ForEach(items) { item in
                     Button {
                         onSelect(item.contentId)
@@ -62,6 +62,7 @@ struct PhoneSimilarRail: View {
             }
             .padding(.horizontal, ContinuumTheme.safePadding)
             .padding(.vertical, 4)
+            .phoneMediaRailBounds()
         }
     }
 

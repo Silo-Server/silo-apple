@@ -47,6 +47,7 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
                     card(item)
                 }
             }
+            .phoneMediaRailBounds()
         }
         #endif
     }

@@ -291,6 +291,10 @@ final class PersonDetailViewModel {
 
 struct PersonDetailView: View {
     @State private var viewModel: PersonDetailViewModel
+    #if os(iOS)
+    @Environment(\.detailPullBackAction) private var goBack
+    @Environment(\.dismiss) private var dismiss
+    #endif
 
     init(personId: Int) {
         _viewModel = State(initialValue: PersonDetailViewModel(personId: personId))
@@ -298,6 +302,11 @@ struct PersonDetailView: View {
 
     var body: some View {
         rootContent
+            #if os(iOS)
+            .environment(\.detailPullBackAction, {
+                if let goBack { goBack() } else { dismiss() }
+            })
+            #endif
             .onAppear {
                 viewModel.resumeMetadataRefreshIfNeeded()
             }
@@ -328,14 +337,26 @@ struct PersonDetailView: View {
         #if os(tvOS)
         TVPersonDetailContent(person: person, viewModel: viewModel)
         #else
+        #if os(iOS)
+        // On iOS this pull means Back, including actor pages opened from
+        // outside a title's detail sheet. Do not start a metadata refresh too.
+        PhonePersonDetailContent(person: person, viewModel: viewModel)
+        #else
+        refreshablePersonContent(person: person)
+        #endif
+        #endif
+    }
+
+    #if !os(tvOS)
+    private func refreshablePersonContent(person: Person) -> some View {
         PhonePersonDetailContent(person: person, viewModel: viewModel)
             .refreshable {
                 async let overlayRefresh: Void = OverlayPrefsStore.shared.refresh()
                 await viewModel.reload()
                 await overlayRefresh
             }
-        #endif
     }
+    #endif
 }
 
 #if os(tvOS)
@@ -515,6 +536,7 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.bottom, ContinuumTheme.largePadding)
         }
+        .detailScrollDismissal()
         .continuumPageBackground()
     }
 

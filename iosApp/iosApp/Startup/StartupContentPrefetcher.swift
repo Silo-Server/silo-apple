@@ -140,6 +140,19 @@ enum StartupContentPrefetcher {
         homeSectionsTask = nil
     }
 
+    /// Capture the active profile/server generation when a player is created.
+    /// Call only AFTER its progress write completes. A late previous-profile
+    /// player must never invalidate or refresh the new profile's Home cache.
+    static func homeRefreshAfterPlaybackWrite() -> @MainActor () -> Void {
+        let generation = profileScopedGeneration
+        return {
+            guard generation == profileScopedGeneration else { return }
+            invalidateHomeSectionsInFlight()
+            ResponseCache.shared.remove(CacheKey.homeSections)
+            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        }
+    }
+
     static func fetchHomeSections() async throws -> SectionsResponse {
         let profileGeneration = profileScopedGeneration
         let homeGeneration = homeSectionsGeneration

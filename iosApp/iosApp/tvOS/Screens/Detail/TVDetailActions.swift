@@ -391,8 +391,8 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
 
     private enum ActionID: Hashable {
         case play
-        case playbackSelectors
         case startOver
+        case playbackSelectors
         case watchlist
         case more
     }
@@ -454,11 +454,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                     }
                 }
 
-                actionSlot {
-                    playbackSelectors()
-                        .focused($playbackSelectorsFocused)
-                }
-
                 if let onStartOver {
                     actionSlot {
                         TVCircleActionButton(
@@ -470,6 +465,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                         )
                         .focused($focusedAction, equals: .startOver)
                     }
+                }
+
+                actionSlot {
+                    playbackSelectors()
+                        .focused($playbackSelectorsFocused)
                 }
             }
 

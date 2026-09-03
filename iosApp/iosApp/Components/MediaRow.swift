@@ -346,7 +346,7 @@ struct MediaRow: View {
 
     private func scrollStrip(_ rowProxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(items) { item in
                     mediaCard(for: item)
                 }
@@ -355,6 +355,7 @@ struct MediaRow: View {
             .padding(.horizontal, ContinuumTheme.safePadding)
             #endif
             .padding(.vertical, verticalCardPadding)
+            .phoneMediaRailBounds()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         #if os(tvOS)

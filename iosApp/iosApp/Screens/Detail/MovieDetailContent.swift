@@ -77,6 +77,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             }
             .ignoresSafeArea(edges: .top)
             .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            .detailScrollDismissal()
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
                 return offset <= 150 ? 0 : min(offset, 480)
