@@ -45,6 +45,7 @@ struct PhoneTrailersRail: View {
             }
             .padding(.horizontal, ContinuumTheme.safePadding)
             .padding(.vertical, 4)
+            .phoneMediaRailBounds()
         }
     }
 }

@@ -40,6 +40,7 @@ struct PlayerView: View {
     let posterURLHint: String?
     let backdropURLHint: String?
     let onPlaybackStarted: (() -> Void)?
+    let onDismissRequested: (() -> Void)?
 
     @State private var viewModel = PlayerViewModel()
     @State private var didNotifyPlaybackStarted = false
@@ -67,7 +68,8 @@ struct PlayerView: View {
         offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
         backdropURLHint: String? = nil,
-        onPlaybackStarted: (() -> Void)? = nil
+        onPlaybackStarted: (() -> Void)? = nil,
+        onDismissRequested: (() -> Void)? = nil
     ) {
         self.contentId = contentId
         self.preferredFileId = preferredFileId
@@ -80,6 +82,7 @@ struct PlayerView: View {
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
         self.onPlaybackStarted = onPlaybackStarted
+        self.onDismissRequested = onDismissRequested
     }
 
     var body: some View {
@@ -90,6 +93,15 @@ struct PlayerView: View {
         } content: {
             ZStack {
                 Color.black.ignoresSafeArea()
+                    #if os(iOS)
+                    .onTapGesture {
+                        // Loaded playback uses MobilePlayerGestureLayer.
+                        // Keep tap-to-reveal available before it mounts too.
+                        if viewModel.isLoading || viewModel.error != nil {
+                            viewModel.toggleControls()
+                        }
+                    }
+                    #endif
                 if viewModel.showNextUpScreen && viewModel.error == nil {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
@@ -106,7 +118,13 @@ struct PlayerView: View {
             ZStack(alignment: .top) {
                 if let error = viewModel.error {
                     errorView(error)
+                    #if os(iOS)
+                    loadingCloseButton
+                    #endif
                 } else {
+                    #if os(iOS)
+                    if viewModel.showNextUpScreen { loadingCloseButton }
+                    #endif
                     if !viewModel.showNextUpScreen {
 
                         #if os(tvOS)
@@ -227,9 +245,8 @@ struct PlayerView: View {
                         #else
                         // The full controls overlay (and its close button) only
                         // mounts once the decoder opens the file, so a standalone
-                        // close control has to cover the load/buffer phase —
-                        // otherwise the only way out of a stalled start is
-                        // force-quitting the app. tvOS gets this via Menu in
+                        // close control must remain available through a tap
+                        // during the load/buffer phase. tvOS gets this via Menu in
                         // `onExitCommand`; macOS keeps its controls (and Escape)
                         // during loading.
                         if viewModel.isLoading {
@@ -240,13 +257,9 @@ struct PlayerView: View {
                             // Invisible gestures (tap-to-toggle, double-tap skip,
                             // hold-2×, edge swipes, pinch) live in a dedicated
                             // layer under the button overlay.
-                            MobilePlayerGestureLayer(
-                                viewModel: viewModel,
-                                onDismiss: { dismissPlayer() }
-                            )
+                            MobilePlayerGestureLayer(viewModel: viewModel)
                             MobilePlayerControls(
                                 viewModel: viewModel,
-                                orientationCoordinator: orientationCoordinator,
                                 onDismiss: { dismissPlayer() }
                             )
                         }
@@ -272,6 +285,21 @@ struct PlayerView: View {
                 }
             }
         }
+        #if os(iOS)
+        .overlay(alignment: .topTrailing) {
+            MobilePlayerRotationControls(
+                orientationCoordinator: orientationCoordinator,
+                isVisible: viewModel.shouldShowMobilePlayerChrome
+            ) {
+                viewModel.resumeAutoHide()
+            }
+            .padding(.horizontal)
+            .padding(.top)
+        }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+            orientationCoordinator.refreshInterfaceOrientation()
+        }
+        #endif
         #if os(tvOS)
         // Physical Play/Pause on the Siri remote always toggles playback
         // and brings the transport bar back.
@@ -446,7 +474,11 @@ struct PlayerView: View {
 
     private func dismissPlayer() {
         viewModel.cleanup()
-        dismiss()
+        if let onDismissRequested {
+            onDismissRequested()
+        } else {
+            dismiss()
+        }
     }
 
     #if os(iOS)
@@ -562,8 +594,8 @@ struct PlayerView: View {
     }
 
     #if !os(tvOS)
-    /// Close control shown while the player is still loading/buffering, in
-    /// the same spot (and glass style) as the close button in
+    /// Tap-to-reveal close control while loading and on Next Up, in
+    /// the same spot, size and glass style as the close button in
     /// `MobilePlayerControls`' top strip so the two read as one control.
     private var loadingCloseButton: some View {
         HStack {
@@ -571,17 +603,25 @@ struct PlayerView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
+            #if os(iOS)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
+            #else
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
+            #endif
             .accessibilityLabel("Close Player")
+            .accessibilityIdentifier("player.close")
 
             Spacer()
         }
         .padding(.horizontal)
         .padding(.top)
         .transition(.opacity)
+        #if os(iOS)
+        .modifier(MobilePlayerChromeVisibility(isVisible: viewModel.shouldShowMobilePlayerChrome))
+        #endif
     }
     #endif
 
@@ -638,7 +678,14 @@ struct PlayerNextUpScreen: View {
         GeometryReader { proxy in
             ZStack {
                 Color.black.ignoresSafeArea()
+                    #if os(iOS)
+                    // A background tap reveals/dismisses the rotation pill
+                    // without intercepting Play Now, Back, or Auto Play.
+                    .onTapGesture { viewModel.toggleControls() }
+                    #endif
+                #if !os(iOS)
                 backgroundImage
+                #endif
 
                 #if os(tvOS)
                 ScrollView(.vertical, showsIndicators: false) {
@@ -656,15 +703,28 @@ struct PlayerNextUpScreen: View {
                 #else
                 PlayerNextUpMobileLayout {
                     miniPlayerPane
-                } panel: {
-                    mobileNextUpPanel
+                } panel: { compact in
+                    mobileNextUpPanel(compact: compact)
+                        .anchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) { .init(actions: $0) }
                 } extras: {
+                    #if !os(iOS)
                     if !viewModel.nextUpCarouselItems.isEmpty {
                         onDeckSection
                     }
+                    #endif
                 }
+                #if os(iOS)
+                .padding(.top, MobilePlayerRotationControls.topClearance)
+                #endif
                 #endif
             }
+            #if os(iOS)
+            // Artwork is decoration, not a sibling allowed to enlarge this
+            // ZStack's ideal size. Pin the entire screen to the real viewport.
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .background { backgroundImage }
+            .clipped()
+            #endif
         }
         #if os(tvOS)
         .ignoresSafeArea()
@@ -729,9 +789,11 @@ struct PlayerNextUpScreen: View {
     }
 
     #if !os(tvOS)
-    var mobileNextUpPanel: some View {
-        VStack(spacing: 10) {
-            eyebrow
+    func mobileNextUpPanel(compact: Bool = false) -> some View {
+        VStack(spacing: compact ? 6 : 10) {
+            // Keep every action reachable below the rotation bar's reserved area
+            // on short landscape screens. Only the redundant eyebrow is omitted.
+            if !compact { eyebrow }
             if let episode = viewModel.nextUpEpisode {
                 metadata(for: episode, compact: true)
             } else if viewModel.isLoadingNextUpEpisode {
@@ -743,9 +805,13 @@ struct PlayerNextUpScreen: View {
                     .font(.headline)
                     .foregroundStyle(.white)
             }
-            actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil)
+            actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil, compact: compact)
             if viewModel.nextUpEpisode != nil {
+                #if os(iOS)
+                if !compact { autoPlayToggle }
+                #else
                 autoPlayToggle
+                #endif
             } else if !viewModel.isLoadingNextUpEpisode {
                 Text(finishedMessage)
                     .font(.caption)
@@ -860,7 +926,7 @@ struct PlayerNextUpScreen: View {
     }
 
     @ViewBuilder
-    private func actionRow(hasNextEpisode: Bool) -> some View {
+    private func actionRow(hasNextEpisode: Bool, compact: Bool = false) -> some View {
         #if os(tvOS)
         VStack(alignment: .leading, spacing: 18) {
             // Reserve enough room for the primary pill's focused scale and
@@ -930,14 +996,15 @@ struct PlayerNextUpScreen: View {
             }
         }
         #else
-        VStack(spacing: 10) {
+        VStack(spacing: compact ? 6 : 10) {
             HStack(spacing: 12) {
                 if hasNextEpisode {
                     Button(action: { viewModel.playNextEpisodeNow() }) {
                         Label("Play Now", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloPrimaryButton(isLoading: viewModel.isNextUpTransitioning)
+                    .frame(minHeight: 44)
                     .accessibilityIdentifier("next-up-play-now")
                 }
                 if let seconds = viewModel.nextUpCountdownSeconds {
@@ -949,21 +1016,30 @@ struct PlayerNextUpScreen: View {
                 if !viewModel.nextUpScreenVideoEnded {
                     Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
                         Text("Keep Watching")
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloSecondaryButton()
+                    .frame(minHeight: 44)
                     .disabled(viewModel.isNextUpTransitioning)
                 }
                 Button(action: onBack) {
                     Label("Back", systemImage: "chevron.left")
-                        .frame(minHeight: 44)
+                        .frame(minHeight: compact ? 24 : 44)
                 }
                 .siloSecondaryButton()
+                .frame(minHeight: 44)
+                #if os(iOS)
+                if compact && hasNextEpisode { autoPlayToggle }
+                #endif
             }
         }
         .font(.callout)
         .lineLimit(1)
+        #if os(iOS)
+        .frame(maxWidth: compact ? 560 : 380)
+        #else
         .frame(maxWidth: 380)
+        #endif
         #endif
     }
 
@@ -1017,6 +1093,15 @@ struct PlayerNextUpScreen: View {
     }
 
     private var finishedMessage: String {
+        #if os(iOS)
+        if viewModel.nextUpStartError != nil {
+            return "Couldn't start the next episode. Try again or go back."
+        }
+        if viewModel.nextUpLookupError != nil {
+            return "Couldn't load the next episode. Go back to choose something else."
+        }
+        return "No next episode is available."
+        #else
         if let startError = viewModel.nextUpStartError {
             let suffix = viewModel.nextUpCarouselItems.isEmpty
                 ? "Try again or go back."
@@ -1030,6 +1115,7 @@ struct PlayerNextUpScreen: View {
             return "No next episode is available."
         }
         return "No next episode is available. Pick something from On Deck instead."
+        #endif
     }
 
     private func focusPreferredAction() {

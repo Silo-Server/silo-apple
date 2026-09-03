@@ -54,8 +54,8 @@ struct HomeFeedRow: View {
     @ViewBuilder
     private var rowScroller: some View {
         cardsScroll
-            .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-            .scrollPosition(id: $visibleItemId, anchor: .center)
+            .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+            .scrollPosition(id: $visibleItemId, anchor: HorizontalMediaRailLayout.scrollAnchor)
             .environment(\.itemDetailBrowseSource, detailBrowseSource)
             .onAppear {
                 let initialId = validSelectionId(
@@ -71,7 +71,11 @@ struct HomeFeedRow: View {
             }
             #if os(iOS)
             .onChange(of: router.presentedItemDetail) { _, presentation in
-                guard presentation?.browseSource?.originID == detailBrowseSource.originID,
+                // Only iPad's horizontally paged detail deck drives its source
+                // row. An iPhone detail opens in place; scrolling the row while
+                // its zoom transition is restoring it creates a visible drift.
+                guard !HorizontalMediaRailLayout.isPhone,
+                      presentation?.browseSource?.originID == detailBrowseSource.originID,
                       let contentID = presentation?.contentId,
                       section.items.contains(where: { $0.contentId == contentID })
                 else { return }
@@ -85,7 +89,7 @@ struct HomeFeedRow: View {
 
     private var cardsScroll: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(section.items) { item in
                     Group {
                         if usesStills {
@@ -95,6 +99,7 @@ struct HomeFeedRow: View {
                                     * uiCustomization.cardPresentation.posterSize.scale,
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
+                                opensResumeContext: isResume,
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
@@ -105,6 +110,7 @@ struct HomeFeedRow: View {
                                 showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
+                                opensResumeContext: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
                                 episodeAccessibilityLabel: episodeAccessibilityLabel(for: item),
                                 onRemoveFromContinueWatching: removalAction(for: item),
@@ -116,6 +122,7 @@ struct HomeFeedRow: View {
                 }
             }
             .scrollTargetLayout()
+            .phoneMediaRailBounds()
         }
         .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
         .scrollClipDisabled()

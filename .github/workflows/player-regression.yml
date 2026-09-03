@@ -16,6 +16,14 @@ on:
         description: Optional unchanged upstream commit for a comparative full-suite run
         type: string
         required: false
+      record_preview:
+        description: Also record a synthetic playback clip after a manually requested build
+        type: boolean
+        default: false
+      ios_only:
+        description: Build and validate only the iOS simulator app for an iOS-only change
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,16 +39,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - scheme: Silo
-            destination: 'platform=iOS Simulator,name=iPhone 17 Pro'
-            action: test
-          - scheme: SiloTV
-            destination: 'generic/platform=tvOS Simulator'
-            action: build
-          - scheme: SiloMac
-            destination: 'generic/platform=macOS'
-            action: build
+        include: >-
+          ${{ fromJSON(inputs.ios_only &&
+            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"}]' ||
+            '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test"},
+              {"scheme":"SiloTV","destination":"generic/platform=tvOS Simulator","action":"build"},
+              {"scheme":"SiloMac","destination":"generic/platform=macOS","action":"build"}]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,7 +84,10 @@ jobs:
           xcrun simctl bootstatus "$simulator_id" -b
       - name: Generate Xcode project
         run: |
+          set -euo pipefail
           curl -fsSL -o /tmp/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
+          # Pin the official 2.43.0 release asset before unpacking/executing it.
+          echo "a4847ed77d3341a4d24049bc4424a3babca4c94ff1dcaaee923eaca2b32c678f  /tmp/xcodegen.zip" | shasum -a 256 -c -
           unzip -q /tmp/xcodegen.zip -d /tmp/xcodegen-dist
           /tmp/xcodegen-dist/xcodegen/bin/xcodegen generate --spec iosApp/project.yml
       - name: Build player
@@ -125,7 +132,7 @@ jobs:
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
-        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled()
+        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.record_preview)
         timeout-minutes: 10
         shell: bash
         run: |
@@ -148,6 +155,8 @@ jobs:
             -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
+            -destination-timeout 60 \
+            -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
             -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
             -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
           kill -INT "$recorder_pid"

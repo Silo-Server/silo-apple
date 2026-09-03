@@ -44,11 +44,13 @@ struct PhoneEpisodeRail: View {
                 }
             }
             .scrollTargetLayout()
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, HorizontalMediaRailLayout.isPhone ? 0 : ContinuumTheme.safePadding)
             .padding(.vertical, 4)
+            .phoneMediaRailBounds()
         }
-        .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-        .scrollPosition(id: $visibleEpisodeId, anchor: .center)
+        .contentMargins(.horizontal, HorizontalMediaRailLayout.isPhone ? ContinuumTheme.safePadding : 0, for: .scrollContent)
+        .scrollTargetBehavior(HorizontalMediaRailLayout.targetBehavior)
+        .scrollPosition(id: $visibleEpisodeId, anchor: HorizontalMediaRailLayout.scrollAnchor)
         .onAppear {
             visibleEpisodeId = currentContentId ?? episodes.first?.contentId
         }

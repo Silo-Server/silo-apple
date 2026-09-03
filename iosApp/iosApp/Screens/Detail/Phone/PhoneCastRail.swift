@@ -16,7 +16,7 @@ struct PhoneCastRail: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(cast.prefix(maxEntries)) { member in
                     Button {
                         if let personId = member.personId { onTap(personId) }
@@ -46,6 +46,7 @@ struct PhoneCastRail: View {
             }
             .padding(.horizontal, ContinuumTheme.safePadding)
             .padding(.vertical, 4)
+            .phoneMediaRailBounds()
         }
     }
 

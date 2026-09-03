@@ -51,6 +51,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             .padding(.bottom, 40)
         }
         .ignoresSafeArea(edges: .top)
+        .detailScrollDismissal()
         .continuumResumePlaybackAlert(
             isPresented: $showResumeDialog,
             stoppedAt: resumeTimestamp

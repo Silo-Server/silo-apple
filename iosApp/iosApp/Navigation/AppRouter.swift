@@ -138,6 +138,23 @@ class AppRouter {
 
     // MARK: - Item Detail Presentation
 
+    /// A Continue Watching episode opens its existing series card, retaining
+    /// the episode/season intent without fetching an intermediate detail page.
+    struct ItemDetailResumeContext: Equatable {
+        let seriesContentId: String
+        let episodeContentId: String
+        let seasonNumber: Int?
+
+        init?(item: SectionItem) {
+            guard item.type.lowercased() == "episode" || item.episodeNumber != nil,
+                  let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !seriesId.isEmpty else { return nil }
+            seriesContentId = seriesId
+            episodeContentId = item.contentId
+            seasonNumber = item.seasonNumber
+        }
+    }
+
     /// iPhone and iPad present catalog details as a native bottom sheet instead
     /// of pushing them into the tab or split-view navigation stack. A fresh UUID
     /// makes reopening the same title after dismissal a new presentation while
@@ -146,10 +163,13 @@ class AppRouter {
         let id = UUID()
         var contentId: String
         let browseSource: ItemDetailBrowseSource?
+        let resumeContext: ItemDetailResumeContext?
 
-        init(contentId: String, browseSource: ItemDetailBrowseSource? = nil) {
+        init(contentId: String, browseSource: ItemDetailBrowseSource? = nil,
+             resumeContext: ItemDetailResumeContext? = nil) {
             self.contentId = contentId
             self.browseSource = browseSource
+            self.resumeContext = resumeContext
         }
     }
 
@@ -179,6 +199,10 @@ class AppRouter {
         let returnToContentId: String?
         /// Set for offline playback of a completed download.
         var offlineDownloadId: String? = nil
+        /// The iOS detail sheet that owns this cover. Nil means the app root.
+        /// Keep ownership stable while the player is presented, rather than
+        /// attaching competing covers to the root and the sheet.
+        var detailPresentationID: UUID? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -246,7 +270,7 @@ class AppRouter {
             ))
         }
         #else
-        presentedPlayer = PlayerPresentation(
+        var presentation = PlayerPresentation(
             contentId: contentId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,
@@ -258,6 +282,10 @@ class AppRouter {
             posterURL: posterURL,
             backdropURL: backdropURL
         )
+        #if os(iOS)
+        presentation.detailPresentationID = presentedItemDetail?.id
+        #endif
+        presentedPlayer = presentation
         #endif
     }
 
@@ -285,7 +313,7 @@ class AppRouter {
             resumePosition: resumePosition
         ))
         #else
-        presentedPlayer = PlayerPresentation(
+        var presentation = PlayerPresentation(
             contentId: contentId,
             fileId: nil,
             audioTrackIndex: nil,
@@ -298,10 +326,41 @@ class AppRouter {
             posterURL: nil,
             backdropURL: nil
         )
+        #if os(iOS)
+        presentation.detailPresentationID = presentedItemDetail?.id
+        #endif
+        presentedPlayer = presentation
         #endif
     }
 
     // MARK: - Actions
+
+    #if os(iOS)
+    /// Each presentation site sees only the player it owns.
+    func playerPresentation(forDetailID detailID: UUID?) -> PlayerPresentation? {
+        guard let presentedPlayer, presentedPlayer.detailPresentationID == detailID else { return nil }
+        return presentedPlayer
+    }
+
+    /// An outgoing cover must not close a newer player or the detail below it.
+    func dismissPlayerPresentation(id: UUID) {
+        guard presentedPlayer?.id == id else { return }
+        presentedPlayer = nil
+    }
+
+    /// A pull-down on a pushed actor/episode page means Back, not close sheet.
+    func goBackInItemDetail() {
+        guard presentedItemDetail != nil, !itemDetailPath.isEmpty else { return }
+        itemDetailPath.removeLast()
+    }
+
+    func itemDetailPresentationDidDismiss() {
+        // The sheet binding clears its item before this callback. A delayed
+        // callback from an old sheet must not erase a newly opened detail.
+        guard presentedItemDetail == nil else { return }
+        itemDetailPath = NavigationPath()
+    }
+    #endif
 
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {
@@ -335,7 +394,8 @@ class AppRouter {
     /// nested recommendations reached from inside an already-open detail.
     func presentItemDetail(
         contentId: String,
-        browseSource: ItemDetailBrowseSource? = nil
+        browseSource: ItemDetailBrowseSource? = nil,
+        resumeContext: ItemDetailResumeContext? = nil
     ) {
         #if os(iOS)
         recordScreenBreadcrumb(target: "itemDetail", action: "present")
@@ -346,7 +406,8 @@ class AppRouter {
             itemDetailPath = NavigationPath()
             presentedItemDetail = ItemDetailPresentation(
                 contentId: contentId,
-                browseSource: source
+                browseSource: source,
+                resumeContext: resumeContext
             )
         } else {
             itemDetailPath.append(Route.itemDetail(contentId: contentId))
@@ -354,6 +415,18 @@ class AppRouter {
         #else
         navigate(to: .itemDetail(contentId: contentId))
         #endif
+    }
+
+    func presentContinueWatchingDetail(for item: SectionItem, browseSource: ItemDetailBrowseSource? = nil) {
+        #if os(iOS)
+        if let context = ItemDetailResumeContext(item: item) {
+            presentItemDetail(contentId: context.seriesContentId, resumeContext: context)
+            return
+        }
+        #endif
+        // Movies, audio and incomplete legacy episode payloads retain their
+        // existing destination; a missing parent must not make a card inert.
+        presentItemDetail(contentId: item.contentId, browseSource: browseSource)
     }
 
     /// Select a sibling while the iOS detail card stays presented. Keeping the

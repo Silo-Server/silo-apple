@@ -9,12 +9,13 @@ struct ItemDetailView: View {
     let contentId: String
     var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
+    var resumeContext: AppRouter.ItemDetailResumeContext? = nil
 
     var body: some View {
         #if os(tvOS)
         TVItemDetailView(contentId: contentId, seed: tvSeed)
         #else
-        ItemDetailPhoneContent(contentId: contentId, onClose: onClose)
+        ItemDetailPhoneContent(contentId: contentId, onClose: onClose, resumeContext: resumeContext)
         #endif
     }
 }
@@ -237,6 +238,7 @@ private struct UnreachablePlayRequest: Identifiable {
 private struct ItemDetailPhoneContent: View {
     let contentId: String
     var onClose: (() -> Void)? = nil
+    var resumeContext: AppRouter.ItemDetailResumeContext? = nil
 
     @State private var viewModel = ItemDetailViewModel()
     @State private var preferredVersionFileId: Int?
@@ -296,7 +298,12 @@ private struct ItemDetailPhoneContent: View {
             preferredNextUpSubtitleTrackIndex = nil
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
+            #if os(iOS)
+            selectedSeriesEpisodeId = resumeContext?.episodeContentId
+            viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
+            #else
             selectedSeriesEpisodeId = nil
+            #endif
             refreshOnPlayerDismiss = false
             detailScrollState.reset()
             await viewModel.loadDetail(contentId: contentId)
