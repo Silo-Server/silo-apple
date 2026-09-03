@@ -4,10 +4,12 @@ import Foundation
 /// is an expansion, not permission to replace that episode again.
 enum PlayerNextUpPlaybackAction: Equatable {
     case unavailable
+    case waitForPicture
     case expand
     case load(String)
 
-    static func resolve(candidateId: String?, currentId: String?) -> Self {
+    static func resolve(candidateId: String?, currentId: String?, awaitingPicture: Bool = false) -> Self {
+        if awaitingPicture { return .waitForPicture }
         guard let candidateId else { return .unavailable }
         return candidateId == currentId ? .expand : .load(candidateId)
     }

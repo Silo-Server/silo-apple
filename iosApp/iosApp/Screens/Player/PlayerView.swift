@@ -878,6 +878,7 @@ private struct PlayerNextUpScreen: View {
                         .frame(width: 220)
                     }
                     .buttonStyle(TVPillButtonStyle(kind: .primary))
+                    .disabled(viewModel.isNextUpTransitioning)
                     .focused($focusedTarget, equals: .playNow)
                     .prefersDefaultFocus(true, in: defaultFocusNamespace)
                 }
@@ -901,6 +902,7 @@ private struct PlayerNextUpScreen: View {
                         .frame(width: 250)
                     }
                     .buttonStyle(TVPillButtonStyle(kind: .secondary))
+                    .disabled(viewModel.isNextUpTransitioning)
                     .focused($focusedTarget, equals: .keepWatching)
                     .prefersDefaultFocus(!hasNextEpisode, in: defaultFocusNamespace)
                 }
@@ -934,7 +936,7 @@ private struct PlayerNextUpScreen: View {
                         Label("Play Now", systemImage: "play.fill")
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    .siloPrimaryButton()
+                    .siloPrimaryButton(isLoading: viewModel.isNextUpTransitioning)
                     .accessibilityIdentifier("next-up-play-now")
                 }
                 if let seconds = viewModel.nextUpCountdownSeconds {
@@ -949,6 +951,7 @@ private struct PlayerNextUpScreen: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .siloSecondaryButton()
+                    .disabled(viewModel.isNextUpTransitioning)
                 }
                 Button(action: onBack) {
                     Label("Back", systemImage: "chevron.left")

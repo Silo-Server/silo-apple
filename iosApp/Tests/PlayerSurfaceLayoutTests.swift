@@ -214,8 +214,8 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         presentation.hasPreviewBounds = false
         presentation.preview = true
         engine.prepareForItemReplacement()
-        presentation.preview = false
         try await engine.load(url: url)
+        presentation.hasPreviewBounds = true
         engine.play()
         let successorDeadline = ContinuousClock.now + .seconds(15)
         while !engine.hasFirstFrameReadyForDisplay && ContinuousClock.now < successorDeadline {
@@ -223,6 +223,8 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         }
         XCTAssertTrue(engine.hasFirstFrameReadyForDisplay)
         XCTAssertTrue(layer.isReadyForDisplay)
+        presentation.preview = false
+        try await settle(window)
         XCTAssertTrue(surfaces(in: window).first === surface)
         XCTAssertTrue(engine.currentAVPlayer === player)
         XCTAssertTrue(layer.superlayer === surface.layer)

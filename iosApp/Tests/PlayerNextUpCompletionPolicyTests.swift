@@ -18,7 +18,7 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
                 loads += 1
                 // beginFreshLoad sets lastLoadRequest synchronously, before awaits.
                 currentId = id
-            case .expand, .unavailable:
+            case .expand, .unavailable, .waitForPicture:
                 break
             }
         }
@@ -29,6 +29,21 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
         XCTAssertEqual(
             PlayerNextUpPlaybackAction.resolve(candidateId: nil, currentId: "episode-a"),
             .unavailable
+        )
+    }
+
+    func testEarlyRepeatedPlayNowWaitsForTheSuccessorsPicture() {
+        for candidate in ["episode-b", "episode-c", nil] {
+            XCTAssertEqual(
+                PlayerNextUpPlaybackAction.resolve(
+                    candidateId: candidate, currentId: "episode-b", awaitingPicture: true
+                ),
+                .waitForPicture
+            )
+        }
+        XCTAssertEqual(
+            PlayerNextUpPlaybackAction.resolve(candidateId: "episode-b", currentId: "episode-b"),
+            .expand
         )
     }
 
