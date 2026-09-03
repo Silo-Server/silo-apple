@@ -386,10 +386,33 @@ final class DetailDismissalNavigationTests: XCTestCase {
         state.deactivate()
         XCTAssertFalse(state.isLocked)
         XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
-            isPlayerActive: state.isPlayerActive, lockedOrientation: state.lockedOrientation
+            isPlayerActive: state.isPlayerActive, lockedOrientation: state.lockedOrientation,
+            browsingOrientations: .portrait
         ), .portrait)
         state.activate()
         XCTAssertFalse(state.isLocked)
+    }
+
+    func testPersistedLandscapeLockOpensTheSessionLockedAndMapsBackToTheRemoteMode() {
+        var state = PlayerRotationState()
+        state.activate(lockedOrientation: .landscapeRight)
+        XCTAssertTrue(state.isLocked)
+        XCTAssertEqual(state.persistedOrientationMode, .landscapeLocked)
+        state.toggleLock(at: .landscapeRight)
+        XCTAssertEqual(state.persistedOrientationMode, .rotateFreely)
+        // A portrait lock has no remote representation; leave the stored mode alone.
+        state.toggleLock(at: .portrait)
+        XCTAssertNil(state.persistedOrientationMode)
+        state.manuallyRotate(to: .landscapeLeft)
+        XCTAssertEqual(state.persistedOrientationMode, .landscapeLocked)
+    }
+
+    func testBrowsingStaysPortraitOnPhoneAndRotatesOnPad() {
+        XCTAssertEqual(PlayerOrientationCoordinator.browsingOrientations(isPad: false), .portrait)
+        XCTAssertEqual(PlayerOrientationCoordinator.browsingOrientations(isPad: true), .allButUpsideDown)
+        XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
+            isPlayerActive: false, preferredOrientation: .landscape, browsingOrientations: .allButUpsideDown
+        ), .landscape)
     }
 
     func testManualRotationDoesNotImplicitlyEnableTheLock() {
@@ -423,7 +446,7 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testAQueuedVideoRotationCannotUnlockBrowsingPages() {
         for mask: UIInterfaceOrientationMask in [.portrait, .landscape, .landscapeLeft, .landscapeRight, .all] {
             XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
-                isPlayerActive: false, preferredOrientation: mask
+                isPlayerActive: false, preferredOrientation: mask, browsingOrientations: .portrait
             ), .portrait)
         }
     }
@@ -437,7 +460,9 @@ final class DetailDismissalNavigationTests: XCTestCase {
     }
 
     func testLeavingVideoRestoresPortraitEvenWhenTheDeviceStaysLandscape() {
-        let browsing = PlayerOrientationCoordinator.orientationMask(isPlayerActive: false)
+        let browsing = PlayerOrientationCoordinator.orientationMask(
+            isPlayerActive: false, browsingOrientations: .portrait
+        )
         XCTAssertEqual(browsing, .portrait)
         XCTAssertFalse(browsing.contains(.landscapeLeft))
         XCTAssertFalse(browsing.contains(.landscapeRight))
