@@ -25,7 +25,6 @@ enum PlayerScreenOrientation: Equatable {
 
     var toggled: Self { self == .portrait ? .landscape : .portrait }
     var title: String { self == .portrait ? "Portrait" : "Landscape" }
-    var symbolName: String { self == .portrait ? "rectangle.portrait" : "rectangle" }
     var mask: UIInterfaceOrientationMask { self == .portrait ? .portrait : .landscape }
 }
 

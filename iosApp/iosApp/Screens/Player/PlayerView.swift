@@ -102,6 +102,9 @@ struct PlayerView: View {
                             }
                         }
                     )
+                    #if os(iOS)
+                    .padding(.top, MobilePlayerRotationControls.topClearance)
+                    #endif
                 }
             }
         }
@@ -249,7 +252,6 @@ struct PlayerView: View {
                             MobilePlayerGestureLayer(viewModel: viewModel)
                             MobilePlayerControls(
                                 viewModel: viewModel,
-                                orientationCoordinator: orientationCoordinator,
                                 onDismiss: { dismissPlayer() }
                             )
                         }
@@ -275,6 +277,18 @@ struct PlayerView: View {
                 }
             }
         }
+        #if os(iOS)
+        .overlay(alignment: .topTrailing) {
+            MobilePlayerRotationControls(orientationCoordinator: orientationCoordinator) {
+                viewModel.resumeAutoHide()
+            }
+            .padding(.horizontal)
+            .padding(.top)
+        }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+            orientationCoordinator.refreshInterfaceOrientation()
+        }
+        #endif
         #if os(tvOS)
         // Physical Play/Pause on the Siri remote always toggles playback
         // and brings the transport bar back.

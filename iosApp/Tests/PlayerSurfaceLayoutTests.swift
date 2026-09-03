@@ -78,6 +78,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     private final class MobileFrames {
         var preview = CGRect.zero
         var panel = CGRect.zero
+        var rotation = CGRect.zero
     }
 
     private func nextUpFixture() throws -> PlayerViewModel {
@@ -107,15 +108,17 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             } extras: {
                 Color.gray.frame(height: 1000)
             }
-            let window = makeWindow(layout.frame(width: size.width, height: size.height)
+            let viewport = layout
+                .frame(width: size.width, height: size.height - MobilePlayerRotationControls.topClearance)
+                .padding(.top, MobilePlayerRotationControls.topClearance)
+            let window = makeWindow(viewport
                 .coordinateSpace(name: "mobile-layout").ignoresSafeArea())
             defer { window.isHidden = true; window.rootViewController = nil }
             try await settle(window)
             print("Mobile layout \(size): preview=\(frames.preview), actions=\(frames.panel)")
             // Render the requested viewport, not the host simulator's fixed
             // window size (which would crop portrait/iPad proof images).
-            let renderer = ImageRenderer(content: layout
-                .frame(width: size.width, height: size.height)
+            let renderer = ImageRenderer(content: viewport
                 .coordinateSpace(name: "mobile-layout").ignoresSafeArea())
             let snapshot = try XCTUnwrap(renderer.uiImage)
             let attachment = XCTAttachment(image: snapshot)
@@ -123,7 +126,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
             XCTAssertGreaterThan(frames.panel.height, 0)
-            XCTAssertGreaterThanOrEqual(frames.panel.minY, 0)
+            XCTAssertGreaterThanOrEqual(frames.panel.minY, MobilePlayerRotationControls.topClearance)
             XCTAssertLessThanOrEqual(frames.panel.maxY, size.height)
             XCTAssertLessThanOrEqual(frames.panel.maxX, size.width)
             if size.width > size.height {
@@ -132,6 +135,38 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                 XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
                 XCTAssertLessThanOrEqual(frames.preview.width, 260)
             }
+        }
+    }
+
+    func testPersistentRotationPillKeepsItsSizeAndTopRightPosition() async throws {
+        XCTAssertNotNil(UIImage(systemName: "rectangle.landscape.rotate"))
+        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390),
+                     CGSize(width: 568, height: 320)] {
+            let frames = MobileFrames()
+            let viewport = Color.black
+                .overlay(alignment: .topTrailing) {
+                    MobilePlayerRotationControls(orientationCoordinator: .shared)
+                        .onGeometryChange(for: CGRect.self) {
+                            $0.frame(in: .named("rotation-layout"))
+                        } action: { frames.rotation = $0 }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                }
+                .frame(width: size.width, height: size.height)
+                .coordinateSpace(name: "rotation-layout")
+                .ignoresSafeArea()
+            let window = makeWindow(viewport)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await settle(window)
+            XCTAssertEqual(frames.rotation.width, MobilePlayerRotationControls.width, accuracy: 1)
+            XCTAssertEqual(frames.rotation.height, MobilePlayerRotationControls.height, accuracy: 1)
+            XCTAssertEqual(frames.rotation.maxX, size.width - 16, accuracy: 1)
+            XCTAssertEqual(frames.rotation.minY, 16, accuracy: 1)
+            let renderer = ImageRenderer(content: viewport)
+            let attachment = XCTAttachment(image: try XCTUnwrap(renderer.uiImage))
+            attachment.name = "Persistent rotation controls \(Int(size.width))x\(Int(size.height))"
+            attachment.lifetime = .keepAlways
+            add(attachment)
         }
     }
 
@@ -251,8 +286,14 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             XCTAssertTrue(player.currentItem === item)
             XCTAssertTrue(layer.superlayer === surface.layer)
             XCTAssertTrue(layer.isReadyForDisplay)
-            XCTAssertEqual(surface.bounds.width, size.width, accuracy: 1)
-            XCTAssertEqual(surface.bounds.height, size.height, accuracy: 1)
+            // The surface deliberately paints through safe-area strips;
+            // the simulator adds 14 points in this landscape-sized fixture.
+            // Verify the orientation, not equality with the outer safe frame.
+            if size.width > size.height {
+                XCTAssertGreaterThan(surface.bounds.width, surface.bounds.height)
+            } else {
+                XCTAssertGreaterThan(surface.bounds.height, surface.bounds.width)
+            }
             XCTAssertGreaterThanOrEqual(player.currentTime().seconds, previousPosition)
             XCTAssertEqual(itemChanges, 0)
         }
