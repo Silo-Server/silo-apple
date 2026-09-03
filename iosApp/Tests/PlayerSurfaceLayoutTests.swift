@@ -7,7 +7,7 @@ import XCTest
 
 @MainActor
 final class PlayerSurfaceLayoutTests: XCTestCase {
-    @Observable private final class Presentation {
+    @Observable final class Presentation {
         var preview = false
         var hasPreviewBounds = true
     }

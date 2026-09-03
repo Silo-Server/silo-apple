@@ -57,6 +57,7 @@ jobs:
           set -o pipefail
           xcodebuild "$ACTION" -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
             -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
+            -parallel-testing-enabled NO \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
@@ -72,6 +73,7 @@ jobs:
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
             -derivedDataPath /tmp/silo-derived \
+            -parallel-testing-enabled NO \
             -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
             -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=NO
       - name: Upload validation evidence
