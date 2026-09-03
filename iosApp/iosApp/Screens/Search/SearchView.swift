@@ -51,7 +51,7 @@ struct SearchView: View {
             .continuumFormWidth(tvSearchContentWidth)
 #endif
         }
-        .continuumBackground()
+        .continuumPageBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, tvSearchSafeHorizontalPadding)
         #endif

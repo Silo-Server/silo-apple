@@ -174,6 +174,8 @@ struct SeasonDetailContent<BelowOverview: View>: View {
                     detail: detail,
                     seasons: seasons,
                     selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber }),
+                    episodes: episodes,
+                    episodesBySeason: episodesBySeason,
                     style: .labeled
                 )
             }
@@ -277,10 +279,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             $0.seasonNumber == detail.seasonNumber
         })
         guard let season else { return "Episodes" }
-        let label = season.seasonNumber == 0
-            ? (season.title ?? "Specials")
-            : "Season \(season.seasonNumber)"
-        return "\(label) Episodes"
+        return "\(season.downloadDisplayName) Episodes"
     }
 
     @ViewBuilder

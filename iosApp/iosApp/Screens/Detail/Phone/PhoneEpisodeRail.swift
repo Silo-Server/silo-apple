@@ -127,14 +127,8 @@ private struct PhoneEpisodeCard: View {
             still
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(PhoneEpisodeFormatting.cardNumberLabel(for: episode))
-                            .font(.system(size: 10, weight: .bold))
-                            .tracking(1.0)
-                            .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
-                        if isCurrent {
-                            nowViewingTag
-                        }
+                    if isCurrent {
+                        nowViewingTag
                     }
 
                     Text(PhoneEpisodeFormatting.title(for: episode))

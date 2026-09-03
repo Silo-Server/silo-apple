@@ -319,7 +319,7 @@ struct PersonDetailView: View {
             Color.clear
         } else {
             EmptyStateView(icon: "person", title: "Person not found")
-                .continuumBackground()
+                .continuumPageBackground()
         }
     }
 
@@ -388,7 +388,7 @@ private struct TVPersonDetailContent: View {
             }
             .padding(.bottom, 72)
         }
-        .continuumBackground()
+        .continuumPageBackground()
     }
 
     private var header: some View {
@@ -515,7 +515,7 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.bottom, ContinuumTheme.largePadding)
         }
-        .continuumBackground()
+        .continuumPageBackground()
     }
 
     private var header: some View {

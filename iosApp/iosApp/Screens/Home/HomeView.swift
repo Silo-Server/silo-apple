@@ -28,11 +28,6 @@ struct HomeView: View {
     @State private var isRefreshing = false
     @State private var refreshStartedAt: Date?
     @State private var refreshHideTask: Task<Void, Never>?
-    /// The settled Continue Watching card drives an opaque, fixed page wash.
-    /// It never enters the vertical layout, so changing cards cannot move rows.
-    @State private var focusedContinueWatchingItem: SectionItem?
-    @State private var homeArtworkTint = Color(red: 0.04, green: 0.12, blue: 0.14)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if os(iOS)
     @State private var isShowingControlPicker = false
     @Environment(SiloControlClient.self) private var siloControl
@@ -204,9 +199,6 @@ struct HomeView: View {
             await viewModel.loadSections()
             await loadCurrentProfile()
         }
-        .task(id: focusedContinueWatchingArtworkURL) {
-            await loadHomeArtworkTint()
-        }
         .refreshable {
             await refreshHome()
         }
@@ -249,12 +241,7 @@ struct HomeView: View {
                         HomeFeedRow(
                             section: section,
                             onRemoveFromContinueWatching: dismissContinueWatching,
-                            onSetWatched: setWatched,
-                            onCenteredResumeItemChange: { item in
-                                guard HomeFeed.isResume(section),
-                                      item?.contentId != focusedContinueWatchingItem?.contentId else { return }
-                                focusedContinueWatchingItem = item
-                            }
+                            onSetWatched: setWatched
                         )
                         .id(HomeFocusTarget.row(section.id))
                     }
@@ -287,67 +274,9 @@ struct HomeView: View {
     }
 
     #if !os(tvOS)
-    /// Fully opaque and blur-free: Home paints only the sampled artwork colour,
-    /// never the artwork itself. A soft tonal bloom sits around the Continue
-    /// Watching zone so the colour feels feathered like the detail surface
-    /// without introducing a live material, image or black underlay.
-    @ViewBuilder
+    /// Home uses the same fixed canvas as the rest of the signed-in app.
     private var homeFeedBackground: some View {
-        #if os(iOS)
-        ZStack {
-            // The sampled tint is the opaque page itself. No image or black
-            // backing is painted behind Home.
-            homeArtworkTint
-                .brightness(-0.055)
-
-            RadialGradient(
-                stops: [
-                    .init(color: .white.opacity(0.10), location: 0),
-                    .init(color: .white.opacity(0.055), location: 0.26),
-                    .init(color: .white.opacity(0.018), location: 0.58),
-                    .init(color: .clear, location: 1),
-                ],
-                center: UnitPoint(x: 0.46, y: 0.48),
-                startRadius: 0,
-                endRadius: 470
-            )
-
-            LinearGradient(
-                stops: [
-                    .init(color: .white.opacity(0.025), location: 0),
-                    .init(color: .clear, location: 0.24),
-                    .init(color: .white.opacity(0.025), location: 0.48),
-                    .init(color: .clear, location: 0.82),
-                    .init(color: .white.opacity(0.012), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        #else
-        Color.continuumBackground
-        #endif
-    }
-
-    private var focusedContinueWatchingArtworkURL: String? {
-        let backdrop = visibleFocusedContinueWatchingItem?.backdropUrl?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let backdrop, !backdrop.isEmpty { return backdrop }
-
-        let poster = visibleFocusedContinueWatchingItem?.posterUrl?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return poster?.isEmpty == false ? poster : nil
-    }
-
-    private var visibleFocusedContinueWatchingItem: SectionItem? {
-        guard let focusedContinueWatchingItem else { return nil }
-        let remainsVisible = displayedSections.contains { section in
-            HomeFeed.isResume(section)
-                && section.items.contains(where: {
-                    $0.contentId == focusedContinueWatchingItem.contentId
-                })
-        }
-        return remainsVisible ? focusedContinueWatchingItem : nil
+        ContinuumPageBackdrop()
     }
 
     #if os(iOS)
@@ -356,20 +285,14 @@ struct HomeView: View {
     /// away. The fixed utility cluster remains independently overlaid above it.
     private var homeScrollIdentityHeader: some View {
         HStack {
-            Text("SILO")
-                // Match the locked tvOS wordmark exactly. The Skyline metrics
-                // are tvOS-scoped, so repeat their approved values here.
-                .font(.system(size: 26, weight: .heavy))
-                .tracking(26 * 0.34)
-                .foregroundStyle(.white)
-                .accessibilityLabel("Silo")
+            SiloWordmarkView(width: 72)
 
             Spacer(minLength: 8)
         }
         .padding(.horizontal, ContinuumTheme.padding)
         // The ScrollView now begins inside the device safe area, exactly like
-        // the fixed utility overlay. Matching their top inset puts the SILO
-        // baseline on the same row instead of underneath the status clock.
+        // the fixed utility overlay. Matching their top inset keeps the logo
+        // on the same row instead of underneath the status clock.
         .padding(.top, headerTopInset)
         .frame(
             height: topRunwaySpacing(topSafeAreaInset: 0),
@@ -382,34 +305,6 @@ struct HomeView: View {
         .animation(.easeOut(duration: 0.12), value: router.presentedItemDetail == nil)
     }
     #endif
-
-    private func loadHomeArtworkTint() async {
-        let fallback = Color(red: 0.04, green: 0.12, blue: 0.14)
-        guard let rawURL = focusedContinueWatchingArtworkURL,
-              let url = URL(string: rawURL) else {
-            setHomeArtworkTint(fallback)
-            return
-        }
-
-        if let cached = HeroBackdropPalette.cachedTint(for: url) {
-            setHomeArtworkTint(cached)
-        }
-
-        guard let sampled = await HeroBackdropPalette.tintColor(for: url),
-              !Task.isCancelled,
-              focusedContinueWatchingArtworkURL == rawURL else { return }
-        setHomeArtworkTint(sampled)
-    }
-
-    private func setHomeArtworkTint(_ tint: Color) {
-        if reduceMotion {
-            homeArtworkTint = tint
-        } else {
-            withAnimation(.easeInOut(duration: 0.24)) {
-                homeArtworkTint = tint
-            }
-        }
-    }
 
     private func refreshHome() async {
         await MainActor.run {

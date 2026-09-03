@@ -707,41 +707,20 @@ private struct EpisodeCardLabel: View {
             still
             if captionStyle.showsTitle {
                 VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(episodeNumberLabel)
-                            .font(.system(size: 16, weight: .bold))
-                            .tracking(1.6)
-                            .foregroundStyle(Color.continuumOnSurface.opacity(0.62))
-                            .fixedSize(horizontal: true, vertical: false)
-                        if hidesEpisodeTitle, let compactEpisodeTitle {
-                            Text("·")
-                                .font(.system(size: 16, weight: .bold))
-                                .foregroundStyle(Color.continuumOnSurface.opacity(0.48))
-                                .fixedSize(horizontal: true, vertical: false)
-                            Text(compactEpisodeTitle)
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(titleColor)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if !hidesEpisodeTitle {
-                            Spacer(minLength: 8)
-                        }
-                    }
-                    // Season tabs keep their label inside the moving control
-                    // and never animate its layout independently. Apply that
-                    // same rule only to the compact Series episode caption.
-                    .frame(
-                        width: hidesEpisodeTitle ? cardWidth : nil,
-                        height: hidesEpisodeTitle ? 28 : nil,
-                        alignment: .topLeading
-                    )
-                    .clipped()
-                    .transaction { transaction in
-                        guard hidesEpisodeTitle else { return }
-                        transaction.animation = nil
-                        transaction.disablesAnimations = true
+                    if hidesEpisodeTitle, let compactEpisodeTitle {
+                        // Keep the compact Series caption inside the moving
+                        // control without animating its layout independently.
+                        Text(compactEpisodeTitle)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(titleColor)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(width: cardWidth, height: 28, alignment: .topLeading)
+                            .clipped()
+                            .transaction { transaction in
+                                transaction.animation = nil
+                                transaction.disablesAnimations = true
+                            }
                     }
 
                     if !hidesEpisodeTitle {
@@ -771,10 +750,6 @@ private struct EpisodeCardLabel: View {
     private var titleColor: Color {
         if isCurrent { return .continuumOnSurface }
         return isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
-    }
-
-    private var episodeNumberLabel: String {
-        "EPISODE \(episode.episodeNumber)"
     }
 
     private var compactEpisodeTitle: String? {

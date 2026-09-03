@@ -104,17 +104,11 @@ struct PhoneEpisodeListRow: View {
 
     private var metadata: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(PhoneEpisodeFormatting.compactNumberLabel(for: episode))
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-
-                if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
-                    Text(metadataLine)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+            if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
+                Text(metadataLine)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
 
             Text(PhoneEpisodeFormatting.title(for: episode))

@@ -48,6 +48,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isFindingTrailers: Bool
     /// Called once a terminal status message has been on screen long enough.
     let onTrailerStatusShown: () -> Void
+    /// Reference-backed scroll state observed only by the small parallax and
+    /// pinned-chrome views, keeping the native ScrollView's body stable.
+    let scrollState: PhoneDetailScrollState
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -63,7 +66,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @State private var pendingEpisodePlayRequest: PendingEpisodePlayRequest?
 
     var body: some View {
-        PhoneDetailPageSurface(backdropURL: detail.backdropUrl) {
+        PhoneDetailPageSurface(
+            backdropURL: detail.backdropUrl,
+            backdropThumbhash: detail.backdropThumbhash,
+            enablesArtworkGlass: true
+        ) {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
                     hero
@@ -72,6 +79,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 .padding(.bottom, 40)
             }
             .ignoresSafeArea(edges: .top)
+            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+                return offset <= 150 ? 0 : min(offset, 480)
+            } action: { _, offset in
+                scrollState.update(offset)
+            }
         }
         .continuumResumePlaybackAlert(
             isPresented: Binding(
@@ -125,6 +139,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail),
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
+            enablesArtworkParallax: true,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
             // Play/actions, show overview and credits, translation affordance,
@@ -184,6 +199,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                         detail: detail,
                         seasons: seasons,
                         selectedSeason: selectedSeason,
+                        episodes: episodes,
+                        episodesBySeason: episodesBySeason,
                         style: .labeled
                     )
                 }
@@ -438,10 +455,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private var episodeSectionTitle: String {
         guard let selectedSeason else { return "Episodes" }
-        let seasonLabel = selectedSeason.seasonNumber == 0
-            ? (selectedSeason.title ?? "Specials")
-            : "Season \(selectedSeason.seasonNumber)"
-        return "\(seasonLabel) Episodes"
+        return "\(selectedSeason.downloadDisplayName) Episodes"
     }
 
     private var episodeCountSubtitle: String? {

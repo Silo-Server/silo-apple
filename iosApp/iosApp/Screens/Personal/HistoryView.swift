@@ -27,7 +27,7 @@ struct HistoryView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle("History")
         .continuumNavigationTitleDisplayMode(.large)
         .task {

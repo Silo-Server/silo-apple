@@ -9,14 +9,6 @@ enum PhoneEpisodeFormatting {
         episode.title ?? "Episode \(episode.episodeNumber)"
     }
 
-    static func cardNumberLabel(for episode: EpisodeListItem) -> String {
-        "EPISODE \(episode.episodeNumber)"
-    }
-
-    static func compactNumberLabel(for episode: EpisodeListItem) -> String {
-        String(format: "S%02dE%02d", episode.seasonNumber, episode.episodeNumber)
-    }
-
     static func metadataLine(for episode: EpisodeListItem) -> String? {
         var parts: [String] = []
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {

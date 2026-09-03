@@ -23,11 +23,11 @@ struct RequestDetailView: View {
                 loadedContent(detail)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.load() } })
-                    .continuumBackground()
+                    .continuumPageBackground()
             } else {
-                LoadingView()
+                LoadingView(usesPageBackground: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .continuumBackground()
+                    .continuumPageBackground()
             }
         }
         .task(id: viewModel.tmdbId) {
@@ -56,7 +56,7 @@ struct RequestDetailView: View {
             phoneContent(detail)
             #endif
         }
-        .continuumBackground()
+        .continuumPageBackground()
         #if os(tvOS)
         .background(alignment: .top) {
             tvBackdrop(detail)

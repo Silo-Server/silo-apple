@@ -13,10 +13,6 @@ struct HomeFeedRow: View {
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
-    /// Continue Watching reports only the card that has finished settling in
-    /// the center. Home uses it to change a fixed backdrop wash; no feed layout
-    /// state depends on this callback.
-    var onCenteredResumeItemChange: ((SectionItem?) -> Void)? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var visibleItemId: String?
     @Environment(AppRouter.self) private var router
@@ -66,18 +62,12 @@ struct HomeFeedRow: View {
                     preferred: visibleItemId ?? section.items.first?.contentId
                 )
                 visibleItemId = initialId
-                publishResumeSelection(initialId)
             }
             .onChange(of: section.items.map(\.contentId)) { _, newIds in
                 let preferred = newIds.contains(visibleItemId ?? "")
                     ? visibleItemId
                     : newIds.first
                 visibleItemId = preferred
-                publishResumeSelection(preferred)
-            }
-            .onScrollPhaseChange { _, newPhase in
-                guard newPhase == .idle else { return }
-                publishResumeSelection(visibleItemId)
             }
             #if os(iOS)
             .onChange(of: router.presentedItemDetail) { _, presentation in
@@ -116,7 +106,7 @@ struct HomeFeedRow: View {
                                 showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,
-                                episodeBadge: episodeBadge(for: item),
+                                episodeAccessibilityLabel: episodeAccessibilityLabel(for: item),
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
                             )
@@ -146,18 +136,9 @@ struct HomeFeedRow: View {
         return preferred
     }
 
-    private func publishResumeSelection(_ id: String?) {
-        guard isResume, let onCenteredResumeItemChange else { return }
-        let selected = id.flatMap { id in
-            section.items.first(where: { $0.contentId == id })
-        }
-        onCenteredResumeItemChange(selected)
-    }
-
-    /// "S2 · E10" for an episode drawn as a poster. Episode-discovery rows
-    /// caption with the series name, so without this several episodes of one
-    /// series render as identical cards.
-    private func episodeBadge(for item: SectionItem) -> String? {
+    /// Episode context for accessibility when episode-discovery cards are
+    /// visually captioned with their series name.
+    private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
         guard item.type.lowercased() == "episode",
               let season = item.seasonNumber,
               let episode = item.episodeNumber else { return nil }

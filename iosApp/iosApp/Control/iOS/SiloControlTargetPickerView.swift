@@ -20,7 +20,7 @@ struct SiloControlTargetPickerView: View {
                     searchingState
                 }
             }
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .continuumPageBackground()
             .navigationTitle("Remote Control")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

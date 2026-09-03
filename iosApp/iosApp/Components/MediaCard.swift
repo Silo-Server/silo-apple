@@ -10,13 +10,13 @@ enum MediaCardAspect {
 
 func mediaCardAccessibilityLabel(
     title: String,
-    episodeBadge: String?,
+    episodeLabel: String?,
     year: Int?,
     isWatched: Bool
 ) -> String {
     var components = [title]
-    if let episodeBadge, !episodeBadge.isEmpty {
-        components.append(episodeBadge)
+    if let episodeLabel, !episodeLabel.isEmpty {
+        components.append(episodeLabel)
     }
     if let year {
         components.append(String(year))
@@ -88,10 +88,9 @@ struct MediaCard: View {
     /// rows (§5.6) pass 208 so two rows + the marquee fit above the fold;
     /// the poster keeps its 2:3 ratio.
     var cardWidthOverride: CGFloat? = nil
-    /// "S2 · E10" badge drawn over the bottom-leading corner of the poster
-    /// for episodes rendered in a poster row (e.g. "Recently Released
-    /// Episodes"). `nil` for movies / series / audiobooks.
-    var episodeBadge: String? = nil
+    /// Episode context retained for the card's accessibility label. Episode
+    /// numbers are intentionally not drawn over poster artwork.
+    var episodeAccessibilityLabel: String? = nil
     /// Fires after a favorite/watchlist toggle from the card's context
     /// menu commits server-side, with the item's new state. Favorites /
     /// Watchlist grids use it to drop the card from the list in place.
@@ -139,7 +138,7 @@ struct MediaCard: View {
         FocusableMediaCard(
             title: title,
             year: year,
-            episodeBadge: episodeBadge,
+            episodeAccessibilityLabel: episodeAccessibilityLabel,
             captionStyle: uiCustomization.cardPresentation.caption,
             cardWidth: cardWidth,
             action: action,
@@ -352,20 +351,6 @@ struct MediaCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
             }
 
-            // Episode badge (e.g. "S2 · E10") for episodes shown as posters,
-            // so new episodes of the same series stay distinguishable.
-            if let episodeBadge {
-                Text(episodeBadge)
-                    .font(.continuumCaption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, episodeBadgeHPadding)
-                    .padding(.vertical, episodeBadgeVPadding)
-                    .background(Capsule().fill(Color.black.opacity(0.65)))
-                    .padding(episodeBadgeInset)
-                    .frame(width: cardWidth, height: cardHeight, alignment: .bottomLeading)
-            }
-
             // Progress bar at bottom of poster (inside rounded corners)
             if let progress, progress > 0 {
                 VStack {
@@ -408,7 +393,7 @@ struct MediaCard: View {
     private var accessibilityDescription: String {
         mediaCardAccessibilityLabel(
             title: title,
-            episodeBadge: episodeBadge,
+            episodeLabel: episodeAccessibilityLabel,
             year: year,
             isWatched: isPlayed
         )
@@ -459,29 +444,6 @@ struct MediaCard: View {
         #endif
     }
 
-    private var episodeBadgeHPadding: CGFloat {
-        #if os(tvOS)
-        return 14
-        #else
-        return 8
-        #endif
-    }
-
-    private var episodeBadgeVPadding: CGFloat {
-        #if os(tvOS)
-        return 7
-        #else
-        return 4
-        #endif
-    }
-
-    private var episodeBadgeInset: CGFloat {
-        #if os(tvOS)
-        return 14
-        #else
-        return 6
-        #endif
-    }
 }
 
 // MARK: - Zoom transition source helper
@@ -510,7 +472,7 @@ extension View {
 private struct FocusableMediaCard<Content: View>: View {
     let title: String
     let year: Int?
-    let episodeBadge: String?
+    let episodeAccessibilityLabel: String?
     let captionStyle: CardCaptionStyle
     let cardWidth: CGFloat
     let action: () -> Void
@@ -614,7 +576,7 @@ private struct FocusableMediaCard<Content: View>: View {
     private var accessibilityDescription: String {
         mediaCardAccessibilityLabel(
             title: title,
-            episodeBadge: episodeBadge,
+            episodeLabel: episodeAccessibilityLabel,
             year: year,
             isWatched: isWatched
         )

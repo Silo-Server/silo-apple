@@ -58,7 +58,7 @@ struct CalendarView: View {
         // No standalone title bar: the search / profile actions live inside
         // the floating calendar card so the agenda reclaims that height.
         phoneContent
-            .continuumBackground()
+            .continuumPageBackground()
         #if os(iOS)
             .toolbar(.hidden, for: .navigationBar)
         #endif

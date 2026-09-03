@@ -267,7 +267,7 @@ struct LibrariesTabView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
@@ -628,7 +628,7 @@ private struct LibraryPickerSheet: View {
             .padding(.horizontal, ContinuumTheme.padding)
             .padding(.vertical, ContinuumTheme.padding)
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle("Libraries")
     }
 }

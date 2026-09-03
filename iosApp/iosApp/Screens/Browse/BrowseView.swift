@@ -34,7 +34,7 @@ struct BrowseView: View {
                 emptyContent
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .overlay(alignment: .top) {
             // Grid is painted from cache but the server can't be reached —
             // flag the staleness instead of letting refresh fail silently.
@@ -102,6 +102,7 @@ struct BrowseView: View {
                     items: viewModel.items,
                     isLoading: viewModel.isLoading,
                     hasMore: viewModel.hasMore,
+                    forcesThreeColumnsOnPhone: libraryId != nil,
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
@@ -339,7 +340,7 @@ struct LibraryDetailView: View {
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .task {
             await loadLibraryMetadataIfNeeded()
         }
@@ -454,7 +455,7 @@ struct LibraryRecommendedView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
-        .continuumBackground()
+        .continuumPageBackground()
         .task(id: libraryId) {
             await viewModel.loadSections(libraryId: libraryId)
         }

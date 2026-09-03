@@ -38,6 +38,7 @@ struct DownloadsView: View {
                 content
             }
         }
+        .continuumPageBackground()
         .navigationTitle(isSelecting ? "\(selection.count) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
@@ -166,7 +167,6 @@ struct DownloadsView: View {
             .padding(.bottom, 8)
             .animation(.easeInOut(duration: 0.2), value: isSelecting)
         }
-        .background(Color.continuumBackground)
     }
 
     @ViewBuilder
