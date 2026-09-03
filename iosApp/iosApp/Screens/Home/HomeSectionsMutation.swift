@@ -24,6 +24,19 @@ enum HomeSectionsMutation {
         )
     }
 
+    /// Removes a dismissed Next Up episode. The server surfaces Next Up both
+    /// as its own row and merged into Continue Watching, so both must drop it.
+    static func removingNextUpItem(
+        contentId: String,
+        from sections: [ResolvedSection]
+    ) -> [ResolvedSection] {
+        removingItem(
+            contentId: contentId,
+            from: sections,
+            sectionTypes: completedItemSectionTypes
+        )
+    }
+
     /// Removes a newly completed item from rows whose membership is derived
     /// from playback state. Other Home rows can still show the same title.
     static func removingCompletedItem(

@@ -32,17 +32,24 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     /// Owns only the outer vertical UIScrollView. Locking this concrete scroll
     /// view leaves every nested horizontal season/episode rail fully native.
-    /// Its return animator can be stopped at the presentation position when a
-    /// rapid Down reverses direction, so an old trip to the hero cannot win.
+    ///
+    /// Every page-level trip — the return to the hero and the descent that
+    /// centers the Cast section — runs through this one animator slot. A new
+    /// trip stops the current one at its presentation position first, so a
+    /// rapid reversal in either direction continues from where the page
+    /// visibly is instead of letting two animations race to the finish.
     private final class PageScrollCoordinator {
         weak var scrollView: UIScrollView?
-        private var returnAnimator: UIViewPropertyAnimator?
+        /// Marker view laid out behind the Cast section; its frame converted
+        /// into the scroll view gives the centering target in content space.
+        weak var supportingAnchorView: UIView?
+        private var pageAnimator: UIViewPropertyAnimator?
         private var animationGeneration = 0
         private(set) var primaryOwnsViewport = false
 
         func attach(_ scrollView: UIScrollView) {
             guard self.scrollView !== scrollView else { return }
-            stopReturnAnimation()
+            stopPageAnimation()
             self.scrollView = scrollView
             if primaryOwnsViewport {
                 pinTopAndLock()
@@ -51,12 +58,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
         func enterPrimary(animated: Bool, reduceMotion: Bool) {
             primaryOwnsViewport = true
-            stopReturnAnimation()
+            // Moves between rows inside the fixed viewport (Season row <->
+            // Episodes) ask for `animated: false` because the page should
+            // already be resting at the top. On a double Up from Cast the
+            // first press's return trip is still mid-flight; jumping now is
+            // the snap. Finish that trip as an animation from wherever the
+            // page visibly is instead.
+            let continuesInFlightTrip = pageAnimator?.state == .active
+            stopPageAnimation()
             guard let scrollView else { return }
 
             scrollView.isScrollEnabled = true
             let target = topOffset(in: scrollView)
-            guard animated,
+            guard animated || continuesInFlightTrip,
                   !reduceMotion,
                   abs(scrollView.contentOffset.y - target.y) > 0.5 else {
                 scrollView.setContentOffset(target, animated: false)
@@ -64,6 +78,55 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 return
             }
 
+            animatePage(to: target) { [weak self, weak scrollView] in
+                guard let self, self.primaryOwnsViewport, let scrollView else { return }
+                scrollView.setContentOffset(
+                    self.topOffset(in: scrollView),
+                    animated: false
+                )
+                scrollView.isScrollEnabled = false
+            }
+        }
+
+        /// Centers the Cast section after focus leaves the fixed top viewport.
+        /// Runs in the same animator slot as the return trip so that an Up
+        /// press mid-descent stops this motion where it is and the return
+        /// starts from that exact offset.
+        func revealSupporting(reduceMotion: Bool) {
+            primaryOwnsViewport = false
+            stopPageAnimation()
+            guard let scrollView, let supportingAnchorView else { return }
+
+            scrollView.isScrollEnabled = true
+            let target = centeredOffset(for: supportingAnchorView, in: scrollView)
+            guard !reduceMotion,
+                  abs(scrollView.contentOffset.y - target.y) > 0.5 else {
+                scrollView.setContentOffset(target, animated: false)
+                return
+            }
+
+            // No settle write here. The model offset is already at `target`
+            // once the animation block runs, so the focus engine's own reveal
+            // for the Cast card sees it as visible and stays quiet, while a
+            // later move on to Trailers or Similar must be allowed to win.
+            animatePage(to: target) {}
+        }
+
+        func releasePrimary() {
+            primaryOwnsViewport = false
+            stopPageAnimation()
+            scrollView?.isScrollEnabled = true
+        }
+
+        func detach() {
+            primaryOwnsViewport = false
+            stopPageAnimation()
+            scrollView?.isScrollEnabled = true
+            scrollView = nil
+        }
+
+        private func animatePage(to target: CGPoint, onSettle: @escaping () -> Void) {
+            guard let scrollView else { return }
             animationGeneration &+= 1
             let generation = animationGeneration
             let timing = UICubicTimingParameters(
@@ -74,36 +137,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 duration: 0.55,
                 timingParameters: timing
             )
-            returnAnimator = animator
+            pageAnimator = animator
             animator.addAnimations { [weak scrollView] in
                 scrollView?.setContentOffset(target, animated: false)
             }
-            animator.addCompletion { [weak self, weak scrollView] _ in
-                guard let self,
-                      self.animationGeneration == generation,
-                      self.primaryOwnsViewport,
-                      let scrollView else { return }
-                self.returnAnimator = nil
-                scrollView.setContentOffset(
-                    self.topOffset(in: scrollView),
-                    animated: false
-                )
-                scrollView.isScrollEnabled = false
+            animator.addCompletion { [weak self] _ in
+                guard let self, self.animationGeneration == generation else { return }
+                self.pageAnimator = nil
+                onSettle()
             }
             animator.startAnimation()
-        }
-
-        func releasePrimary() {
-            primaryOwnsViewport = false
-            stopReturnAnimation()
-            scrollView?.isScrollEnabled = true
-        }
-
-        func detach() {
-            primaryOwnsViewport = false
-            stopReturnAnimation()
-            scrollView?.isScrollEnabled = true
-            scrollView = nil
         }
 
         private func pinTopAndLock() {
@@ -112,15 +155,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             scrollView.isScrollEnabled = false
         }
 
-        private func stopReturnAnimation() {
+        private func stopPageAnimation() {
             animationGeneration &+= 1
-            guard let returnAnimator else { return }
-            self.returnAnimator = nil
-            if returnAnimator.state == .active {
-                returnAnimator.stopAnimation(false)
-                returnAnimator.finishAnimation(at: .current)
+            guard let pageAnimator else { return }
+            self.pageAnimator = nil
+            if pageAnimator.state == .active {
+                pageAnimator.stopAnimation(false)
+                pageAnimator.finishAnimation(at: .current)
             } else {
-                returnAnimator.stopAnimation(true)
+                pageAnimator.stopAnimation(true)
             }
         }
 
@@ -128,6 +171,25 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             CGPoint(
                 x: scrollView.contentOffset.x,
                 y: -scrollView.adjustedContentInset.top
+            )
+        }
+
+        /// Equivalent of `scrollTo(id, anchor: .center)` for the anchor view,
+        /// clamped to the scrollable range like the SwiftUI proxy does.
+        private func centeredOffset(for anchor: UIView, in scrollView: UIScrollView) -> CGPoint {
+            let rect = scrollView.convert(anchor.bounds, from: anchor)
+            let viewportHeight = scrollView.bounds.height
+            let minY = -scrollView.adjustedContentInset.top
+            let maxY = max(
+                minY,
+                scrollView.contentSize.height
+                    + scrollView.adjustedContentInset.bottom
+                    - viewportHeight
+            )
+            let centered = rect.midY - viewportHeight / 2
+            return CGPoint(
+                x: scrollView.contentOffset.x,
+                y: min(max(centered, minY), maxY)
             )
         }
     }
@@ -201,7 +263,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let showModeId = "series-show-overview"
+    private let noSeasonModeId = "series-season-none"
     private let episodeSectionScrollId = "series-episode-section"
     private let castSectionScrollId = "series-cast-section"
     private let heroScrollId = "series-hero"
@@ -238,13 +300,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 }
                 .onChange(of: supportingRailFocusRequest) { _, request in
                     guard request > 0, hasCast else { return }
-                    if reduceMotion {
-                        scrollProxy.scrollTo(castSectionScrollId, anchor: .center)
-                    } else {
-                        withAnimation(.smooth(duration: 0.55, extraBounce: 0)) {
-                            scrollProxy.scrollTo(castSectionScrollId, anchor: .center)
-                        }
-                    }
+                    // Drive this through the coordinator rather than the
+                    // SwiftUI proxy: a proxy animation cannot be cancelled, so
+                    // a quick Up used to run it against the return trip and
+                    // the page snapped when the loser finished.
+                    pageScrollCoordinator.revealSupporting(reduceMotion: reduceMotion)
                 }
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
@@ -337,10 +397,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles ?? false
             ),
             backdropHeight: TVDetailLayout.heroHeight,
-            // Keep the mode/season row at its approved fixed anchor. The hero
-            // stays 620 points tall even when the controls move independently.
-            heroHeight: 620,
-            heroTopInset: 46,
+            // The hero shares the standard height and title inset with Movie
+            // so the first viewport bottoms out on the episode rail: the season
+            // row lands at ~690 and the rail finishes just above the bottom
+            // safe area with Cast & Crew fully below the fold.
+            heroHeight: TVDetailLayout.heroHeight,
             editorialContentWidth: TVDetailLayout.heroContentWidth,
             // Raise only the controls by 20 points. The 112-point synopsis slot
             // remains unchanged, so episode copy still renders three full lines.
@@ -481,15 +542,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    TVSeriesModeTab(
-                        title: "Show",
-                        isSelected: isShowingSeriesOverview,
-                        rendersFocusedAppearance: presentedFocusedModeId == showModeId,
-                        action: showSeriesOverview
-                    )
-                    .id(showModeId)
-                    .focused($focusedModeId, equals: showModeId)
-
                     ForEach(seasons) { season in
                         TVSeriesModeTab(
                             title: seasonLabel(season),
@@ -571,12 +623,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
     }
 
+    /// The season pill stays selected while the hero shows series info, since
+    /// the rail below still lists that season's episodes.
     private var selectedModeId: String {
-        guard !isShowingSeriesOverview else { return showModeId }
-        return seasonTransitionTargetId
+        seasonTransitionTargetId
             ?? visibleSeasonId
             ?? selectedSeason?.id
-            ?? showModeId
+            ?? noSeasonModeId
     }
 
     private func showSeriesOverview() {
@@ -773,16 +826,14 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                   focusedModeId == modeId,
                   modeId != selectedModeId else { return }
 
-            if modeId == showModeId {
-                showSeriesOverview()
-            } else if let season = seasons.first(where: { $0.id == modeId }) {
+            if let season = seasons.first(where: { $0.id == modeId }) {
                 activateSeason(season)
             }
         }
     }
 
     private var seasonPageReadinessKey: String {
-        let seasonId = selectedSeason?.id ?? "series-season-none"
+        let seasonId = selectedSeason?.id ?? noSeasonModeId
         let loadingState = isLoadingEpisodes ? "loading" : "ready"
         let episodeIds = episodes.map(\.contentId).joined(separator: "|")
         return "\(seasonId):\(loadingState):\(episodeIds)"
@@ -790,7 +841,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var currentSeasonPageSnapshot: SeasonPageSnapshot {
         SeasonPageSnapshot(
-            seasonId: selectedSeason?.id ?? "series-season-none",
+            seasonId: selectedSeason?.id ?? noSeasonModeId,
             episodes: episodes,
             currentContentId: displayedEpisode?.contentId,
             isLoading: isLoadingEpisodes
@@ -1089,9 +1140,15 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var moreMenu: some View {
         TVCircleMenuButton(
+            title: "More",
             accessibilityLabel: "More options",
             stabilizesFocusMotion: true
         ) {
+            if !isShowingSeriesOverview {
+                Button(action: showSeriesOverview) {
+                    Label("Show Series Info", systemImage: "info.circle")
+                }
+            }
             Button(action: onToggleFavorite) {
                 Label(
                     isFavorite ? "Remove from Favorites" : "Add to Favorites",
@@ -1211,6 +1268,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             )
         }
         .padding(.top, 20)
+        .background {
+            TVSeriesAnchorResolver { anchorView in
+                pageScrollCoordinator.supportingAnchorView = anchorView
+            }
+        }
     }
 
     private var hasCast: Bool {
@@ -1280,6 +1342,25 @@ private struct TVSeriesPageScrollResolver: UIViewRepresentable {
                 }
             }
         }
+    }
+}
+
+/// Invisible marker laid out behind a page section. Its UIView frame is what
+/// the page coordinator converts into scroll content space to center that
+/// section without going through the SwiftUI scroll proxy.
+private struct TVSeriesAnchorResolver: UIViewRepresentable {
+    let onResolve: (UIView) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        onResolve(view)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        onResolve(uiView)
     }
 }
 

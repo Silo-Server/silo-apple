@@ -101,6 +101,18 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 1)
     }
 
+    func testPreferredInitialSeasonFallsBackToUnplayedSpecials() throws {
+        let seasons = try JSONDecoder().decode([Season].self, from: Data(#"""
+        [
+          {"contentId":"specials","seasonNumber":0,"isSpecials":true,"episodeCount":1},
+          {"contentId":"season-1","seasonNumber":1,"episodeCount":8,"userData":{"played":true,"watchedCount":8}},
+          {"contentId":"season-2","seasonNumber":2,"episodeCount":8,"userData":{"played":true,"watchedCount":8}}
+        ]
+        """#.utf8))
+        let model = ItemDetailViewModel()
+        XCTAssertEqual(model.preferredInitialSeason(seasons: seasons)?.seasonNumber, 0)
+    }
+
     private func resumeLoadFixture() throws -> (ItemDetail, SeasonsResponse, EpisodesResponse) {
         let decoder = JSONDecoder()
         return (

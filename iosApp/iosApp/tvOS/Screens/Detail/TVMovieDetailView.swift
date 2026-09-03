@@ -209,6 +209,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     @ViewBuilder
     private var moreMenu: some View {
         TVCircleMenuButton(
+            title: "More",
             accessibilityLabel: "More options",
             stabilizesFocusMotion: true
         ) {
