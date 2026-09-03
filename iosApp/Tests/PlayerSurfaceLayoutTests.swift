@@ -60,12 +60,51 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         window.layoutIfNeeded()
     }
 
-    private func makeWindow(_ harness: Harness) -> UIWindow {
+    private func makeWindow<Content: View>(_ content: Content, attachToScene: Bool = true) -> UIWindow {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 844, height: 390))
-        window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-        window.rootViewController = UIHostingController(rootView: harness)
+        if attachToScene {
+            window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        }
+        window.rootViewController = UIHostingController(rootView: content)
         window.isHidden = false
         return window
+    }
+
+    private final class MobileFrames {
+        var preview = CGRect.zero
+        var panel = CGRect.zero
+    }
+
+    func testMobileActionsStayVisibleBesideOrBelowTheSmallerPreview() async throws {
+        for size in [CGSize(width: 568, height: 320), CGSize(width: 844, height: 390),
+                     CGSize(width: 390, height: 844), CGSize(width: 1024, height: 768)] {
+            let frames = MobileFrames()
+            let layout = PlayerNextUpMobileLayout {
+                Color.black.aspectRatio(16 / 9, contentMode: .fit)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frames.preview = $0 }
+            } panel: {
+                // Reserve more than the compact metadata + two action rows
+                // need, with a long On Deck shelf competing for space below.
+                Color.blue.frame(height: 240)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frames.panel = $0 }
+            } extras: {
+                Color.gray.frame(height: 1000)
+            }
+            let window = makeWindow(layout, attachToScene: false)
+            window.frame = CGRect(origin: .zero, size: size)
+            defer { window.isHidden = true; window.rootViewController = nil }
+            try await settle(window)
+            XCTAssertGreaterThan(frames.panel.height, 0)
+            XCTAssertGreaterThanOrEqual(frames.panel.minY, 0)
+            XCTAssertLessThanOrEqual(frames.panel.maxY, size.height)
+            XCTAssertLessThanOrEqual(frames.panel.maxX, size.width)
+            if size.width > size.height {
+                XCTAssertGreaterThan(frames.panel.minX, frames.preview.maxX)
+            } else {
+                XCTAssertGreaterThan(frames.panel.minY, frames.preview.maxY)
+                XCTAssertLessThanOrEqual(frames.preview.width, 260)
+            }
+        }
     }
 
     func testTwentyPreviewCyclesKeepOneActualAetherView() async throws {

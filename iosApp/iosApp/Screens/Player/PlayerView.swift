@@ -653,14 +653,21 @@ private struct PlayerNextUpScreen: View {
                     $0.viewport = $1
                 }
                 #else
-                screenContent(maxMainWidth: mainContentWidth(for: proxy))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.horizontal, horizontalPadding)
-                    .padding(.vertical, verticalPadding)
+                PlayerNextUpMobileLayout {
+                    miniPlayerPane
+                } panel: {
+                    mobileNextUpPanel
+                } extras: {
+                    if !viewModel.nextUpCarouselItems.isEmpty {
+                        onDeckSection
+                    }
+                }
                 #endif
             }
         }
+        #if os(tvOS)
         .ignoresSafeArea()
+        #endif
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCountdownSeconds)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpEpisode)
         .animation(.easeInOut(duration: 0.2), value: viewModel.nextUpCarouselItems)
@@ -716,20 +723,38 @@ private struct PlayerNextUpScreen: View {
                 .frame(maxWidth: 650, alignment: .leading)
         }
         #else
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: sectionSpacing) {
-                miniPlayerPane
-                    .frame(maxWidth: 620)
-                nextUpPanel
-                    .frame(maxWidth: 620)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .transformAnchorPreference(key: PlayerPreviewBoundsKey.self, value: .bounds) {
-            $0.viewport = $1
-        }
+        EmptyView()
         #endif
     }
+
+    #if !os(tvOS)
+    private var mobileNextUpPanel: some View {
+        VStack(spacing: 10) {
+            eyebrow
+            if let episode = viewModel.nextUpEpisode {
+                metadata(for: episode, compact: true)
+            } else if viewModel.isLoadingNextUpEpisode {
+                Text("Finding the next episode")
+                    .font(.callout)
+                    .foregroundStyle(.white)
+            } else {
+                Text(viewModel.nextUpScreenVideoEnded ? "End of playback" : "Almost finished")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+            }
+            actionRow(hasNextEpisode: viewModel.nextUpEpisode != nil)
+            if viewModel.nextUpEpisode != nil {
+                autoPlayToggle
+            } else if !viewModel.isLoadingNextUpEpisode {
+                Text(finishedMessage)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.62))
+                    .lineLimit(2)
+            }
+        }
+        .multilineTextAlignment(.center)
+    }
+    #endif
 
     private var miniPlayerPane: some View {
         Color.clear
@@ -796,7 +821,7 @@ private struct PlayerNextUpScreen: View {
         }
     }
 
-    private func metadata(for episode: PlayerNextUpEpisode) -> some View {
+    private func metadata(for episode: PlayerNextUpEpisode, compact: Bool = false) -> some View {
         VStack(alignment: isTV ? .leading : .center, spacing: isTV ? 12 : 7) {
             if let seriesTitle = episode.seriesTitle, !seriesTitle.isEmpty {
                 Text(seriesTitle)
@@ -812,17 +837,17 @@ private struct PlayerNextUpScreen: View {
                     .foregroundStyle(.white)
             }
             .font(.system(size: subtitleSize, weight: .semibold))
-            .lineLimit(2)
+            .lineLimit(compact ? 1 : 2)
             .multilineTextAlignment(isTV ? .leading : .center)
 
             let metadataLine = episodeMetadataLine(for: episode)
-            if !metadataLine.isEmpty {
+            if !compact && !metadataLine.isEmpty {
                 Text(metadataLine)
                     .font(.system(size: captionSize, weight: .medium))
                     .foregroundStyle(.white.opacity(0.46))
             }
 
-            if let overview = episode.overview, !overview.isEmpty {
+            if !compact, let overview = episode.overview, !overview.isEmpty {
                 Text(overview)
                     .font(.system(size: bodySize))
                     .lineLimit(isTV ? 3 : 2)
@@ -903,33 +928,38 @@ private struct PlayerNextUpScreen: View {
         }
         #else
         VStack(spacing: 10) {
-            if hasNextEpisode {
-                Button(action: { viewModel.playNextEpisodeNow() }) {
-                    Label("Play Now", systemImage: "play.fill")
+            HStack(spacing: 12) {
+                if hasNextEpisode {
+                    Button(action: { viewModel.playNextEpisodeNow() }) {
+                        Label("Play Now", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .siloPrimaryButton()
+                    .accessibilityIdentifier("next-up-play-now")
                 }
-                .siloPrimaryButton()
-                .frame(maxWidth: .infinity)
+                if let seconds = viewModel.nextUpCountdownSeconds {
+                    CountdownRing(seconds: seconds, totalSeconds: viewModel.nextUpCountdownTotalSeconds)
+                }
             }
 
-            if !viewModel.nextUpScreenVideoEnded {
-                Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
-                    Label("Keep Watching", systemImage: "rectangle.inset.filled")
+            HStack(spacing: 10) {
+                if !viewModel.nextUpScreenVideoEnded {
+                    Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
+                        Text("Keep Watching")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .siloSecondaryButton()
+                }
+                Button(action: onBack) {
+                    Label("Back", systemImage: "chevron.left")
+                        .frame(minHeight: 44)
                 }
                 .siloSecondaryButton()
-                .frame(maxWidth: .infinity)
-            }
-
-            Button(action: onBack) {
-                Label("Back", systemImage: "chevron.left")
-            }
-            .siloSecondaryButton()
-            .frame(maxWidth: .infinity)
-
-            if let seconds = viewModel.nextUpCountdownSeconds {
-                CountdownRing(seconds: seconds, totalSeconds: viewModel.nextUpCountdownTotalSeconds)
             }
         }
-        .frame(maxWidth: 280)
+        .font(.callout)
+        .lineLimit(1)
+        .frame(maxWidth: 380)
         #endif
     }
 

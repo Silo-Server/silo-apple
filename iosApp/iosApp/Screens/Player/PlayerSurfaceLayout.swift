@@ -57,3 +57,46 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
             }
     }
 }
+
+/// The preview and primary actions never live inside a scroll view on mobile.
+/// Only the optional On Deck shelf scrolls. Wide screens put actions on the
+/// right; narrow screens cap the preview so it cannot push Play Now below them.
+struct PlayerNextUpMobileLayout<Preview: View, Panel: View, Extras: View>: View {
+    @ViewBuilder let preview: () -> Preview
+    @ViewBuilder let panel: () -> Panel
+    @ViewBuilder let extras: () -> Extras
+
+    var body: some View {
+        GeometryReader { proxy in
+            let horizontalInset = max(20, max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing) + 12)
+            let topInset = max(16, proxy.safeAreaInsets.top + 12)
+            let bottomInset = max(16, proxy.safeAreaInsets.bottom + 12)
+            let width = max(0, min(1100, proxy.size.width - horizontalInset * 2))
+            let height = max(0, proxy.size.height - topInset - bottomInset)
+            let sideBySide = (width >= 500 && width > height) || width >= 760
+            let previewWidth = sideBySide
+                ? min(480, width * 0.43, height * 0.7 * 16 / 9)
+                : min(260, width, height * 0.22 * 16 / 9)
+            let layout = sideBySide
+                ? AnyLayout(HStackLayout(alignment: .center, spacing: 24))
+                : AnyLayout(VStackLayout(alignment: .center, spacing: 14))
+
+            VStack(spacing: 16) {
+                layout {
+                    preview().frame(width: previewWidth)
+                    panel().frame(maxWidth: sideBySide ? 420 : .infinity)
+                        .layoutPriority(1)
+                }
+                .frame(maxWidth: .infinity)
+                .layoutPriority(1)
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    extras()
+                }
+            }
+            .frame(width: width, height: height, alignment: .top)
+            .frame(maxWidth: .infinity)
+            .padding(.top, topInset)
+        }
+    }
+}
