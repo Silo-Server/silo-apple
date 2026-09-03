@@ -149,9 +149,9 @@ struct ContinuumTheme {
         static let barIconSize: CGFloat = 58
         /// Gap between the search button and the avatar.
         static let barTrailingSpacing: CGFloat = 22
-        static let wordmarkSize: CGFloat = 26
-        /// Wordmark letter tracking — +0.34 em.
-        static let wordmarkTracking: CGFloat = 26 * 0.34
+        /// Width of the logo asset in the top bar. The asset is ~1.9:1, so
+        /// this renders about 50pt tall inside the 64pt bar row.
+        static let wordmarkWidth: CGFloat = 96
         /// Bar opacity while focus is down in the content zone (§5.1).
         static let barDimmedOpacity: Double = 0.7
 

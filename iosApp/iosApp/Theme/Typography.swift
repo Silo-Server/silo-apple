@@ -21,10 +21,10 @@ extension Font {
     /// Movie/series names directly beneath artwork. Kept quieter than general
     /// subheadlines so dense eight-across rows remain readable rather than
     /// visually shouting over the posters.
-    static let continuumPosterTitle = Font.system(size: 20, weight: .medium)
+    static let continuumPosterTitle = Font.system(size: 24, weight: .medium)
 
     /// Year, episode title, and other secondary poster-card metadata.
-    static let continuumPosterMetadata = Font.system(size: 17, weight: .regular)
+    static let continuumPosterMetadata = Font.system(size: 20, weight: .regular)
 
     /// Body text — descriptions, synopses (26pt regular)
     static let continuumBody = Font.system(size: 26)
