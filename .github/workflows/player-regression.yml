@@ -16,6 +16,10 @@ on:
         description: Optional unchanged upstream commit for a comparative full-suite run
         type: string
         required: false
+      record_preview:
+        description: Also record a synthetic playback clip after a manually requested build
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -96,7 +100,8 @@ jobs:
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
-        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled()
+        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.record_preview)
+        timeout-minutes: 4
         shell: bash
         run: |
           set -euo pipefail
@@ -119,6 +124,8 @@ jobs:
             -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
+            -destination-timeout 60 \
+            -test-timeouts-enabled YES -maximum-test-execution-time-allowance 60 \
             -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
             -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
           kill -INT "$recorder_pid"
