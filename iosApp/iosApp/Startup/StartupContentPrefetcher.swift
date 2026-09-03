@@ -723,12 +723,17 @@ enum StartupContentPrefetcher {
         var cardURLs: [URL] = []
         var backdropURLs: [URL] = []
         var logoURLs: [URL] = []
-        var seen = Set<String>()
+        // Deduplicated per bucket: the same URL is a different cache key as
+        // a card thumbnail and as the hero decode, so an episode still that
+        // is also the marquee backdrop legitimately belongs to both.
+        var seenCards = Set<String>()
+        var seenBackdrops = Set<String>()
+        var seenLogos = Set<String>()
         // Tracked separately: reading the arrays while one is bound as an
         // `inout` bucket is an exclusivity violation.
         var count = 0
 
-        func append(_ urlString: String?, into bucket: inout [URL]) {
+        func append(_ urlString: String?, into bucket: inout [URL], seen: inout Set<String>) {
             guard count < maxHomeArtworkURLs,
                   let url = normalizedURL(from: urlString),
                   seen.insert(url.absoluteString).inserted else {
@@ -736,6 +741,14 @@ enum StartupContentPrefetcher {
             }
             bucket.append(url)
             count += 1
+        }
+
+        /// Hero backdrops render only on tvOS; other platforms must not
+        /// spend their smaller budget on requests that are never started.
+        func appendBackdrop(_ urlString: String?) {
+            #if os(tvOS)
+            append(urlString, into: &backdropURLs, seen: &seenBackdrops)
+            #endif
         }
 
         // No client renders a featured hero anymore — featured sections show
@@ -747,15 +760,17 @@ enum StartupContentPrefetcher {
         // harmless.)
         let contentSections = response.sections.filter { !$0.items.isEmpty }
         if let firstRow = contentSections.first {
-            append(firstRow.items.first?.logoUrl, into: &logoURLs)
+            append(firstRow.items.first?.logoUrl, into: &logoURLs, seen: &seenLogos)
             for item in firstRow.items {
                 if episodeSectionTypes.contains(firstRow.sectionType) {
-                    // Episode thumbs already render the backdrop, so the card
-                    // art and the first-row art are one fetch.
-                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs)
+                    // Episode stills render the backdrop as the card art and
+                    // the marquee shows the same image as the hero. One
+                    // download, two decode sizes.
+                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs, seen: &seenCards)
+                    appendBackdrop(item.backdropUrl)
                 } else {
-                    append(item.posterUrl, into: &cardURLs)
-                    append(item.backdropUrl, into: &backdropURLs)
+                    append(item.posterUrl, into: &cardURLs, seen: &seenCards)
+                    appendBackdrop(item.backdropUrl)
                 }
                 if count >= maxHomeArtworkURLs { break }
             }
@@ -763,9 +778,9 @@ enum StartupContentPrefetcher {
         for section in contentSections.dropFirst() {
             for item in section.items {
                 if episodeSectionTypes.contains(section.sectionType) {
-                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs)
+                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs, seen: &seenCards)
                 } else {
-                    append(item.posterUrl, into: &cardURLs)
+                    append(item.posterUrl, into: &cardURLs, seen: &seenCards)
                 }
                 if count >= maxHomeArtworkURLs { break }
             }

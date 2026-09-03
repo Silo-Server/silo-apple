@@ -7,9 +7,10 @@ import os
 ///
 /// Enabled only when the process is launched with the `-perfHitchLog`
 /// argument (for example through `devicectl device process launch`), so a
-/// normal launch pays nothing. A `CADisplayLink` on the main run loop
-/// records every callback that arrives more than half a frame late — the
-/// signature of the main thread being busy through a vsync — and prints a
+/// normal launch pays nothing. A `CADisplayLink` on the main run loop flags a
+/// frame as a hitch when either the callback cadence skipped a vsync (the
+/// main thread was blocked, so intermediate callbacks were dropped) or the
+/// callback itself ran past the frame's display deadline. It prints a
 /// ten-second summary with the hitch count, total late time, and the worst
 /// single hitch. Lines go to stderr so a console-attached launch shows them
 /// without unified-log filtering, and to the `perf.hitch` os_log category.
@@ -54,13 +55,22 @@ final class TVFrameHitchMonitor {
             return
         }
 
-        let frameDuration = link.duration > 0 ? link.duration : 1.0 / 60.0
+        // Derive the frame period from the link's own schedule so adaptive
+        // refresh rates are handled; `duration` is undefined before the
+        // first callback.
+        let scheduled = link.targetTimestamp - now
+        let frameDuration = scheduled > 0 ? scheduled : 1.0 / 60.0
         let interval = now - lastTimestamp
         frameCount += 1
 
-        // Late by more than half a frame: the callback missed at least one
-        // vsync. Small jitter under that threshold is display-link noise.
-        let late = interval - frameDuration
+        // Two ways to miss a frame. A blocked main thread drops callbacks,
+        // so consecutive timestamps land more than one period apart. A
+        // callback that starts after its target display time has already
+        // lost that frame even when the cadence looks regular. Report the
+        // larger of the two; jitter under half a frame is display-link noise.
+        let skipped = interval - frameDuration
+        let overDeadline = CACurrentMediaTime() - link.targetTimestamp
+        let late = max(skipped, overDeadline)
         if late > frameDuration * 0.5 {
             hitchCount += 1
             lateTotal += late

@@ -18,7 +18,7 @@ The authoritative dependency lock is
 | AetherEngine 6.34.0 | `0ae80496ab6f3fda135f43ef195ff10961c0e625` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 2.4.3 | `b2185fa842b829cd53d182a5e9a53182c1d9c84c` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.0.0 | `89be93431c2a5f2e54fb77e93059071b8d2ddb3a` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
-| Nuke and NukeUI 12.9.0 | `83e19143355b02e9261edb2323b3e1e93287ebb9` | Swift package targets linked into each host app | MIT |
+| Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
 SwiftPM also resolves SMBClient 0.3.1 because AetherEngine publishes an
 optional `AetherEngineSMB` product. Silo depends only on the `AetherEngine`
@@ -124,7 +124,7 @@ Nuke and NukeUI are distributed under the MIT license, Copyright (c)
 2015-2026 Alexander Grebenyuk.
 
 - Exact source:
-  <https://github.com/kean/Nuke/tree/83e19143355b02e9261edb2323b3e1e93287ebb9>
+  <https://github.com/kean/Nuke/tree/30f7a7e72e0607d304fbf69c799474bd5fb6d1ce>
 - Bundled text: `Nuke-MIT.txt`
 
 ## ThumbHash decoder

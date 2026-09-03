@@ -54,9 +54,9 @@ LibDovi / libdovi
   packaging license and quietvoid's controlling MIT text are included here.
 
 Nuke and NukeUI
-  Revision: 83e19143355b02e9261edb2323b3e1e93287ebb9 (release 12.9.0)
+  Revision: 30f7a7e72e0607d304fbf69c799474bd5fb6d1ce (release 13.2.0)
   License: MIT
-  Source: https://github.com/kean/Nuke/tree/83e19143355b02e9261edb2323b3e1e93287ebb9
+  Source: https://github.com/kean/Nuke/tree/30f7a7e72e0607d304fbf69c799474bd5fb6d1ce
 
 ThumbHash decoder
   Revision: a652ce6ed691242f459f468f0a8756cda3b90a82
