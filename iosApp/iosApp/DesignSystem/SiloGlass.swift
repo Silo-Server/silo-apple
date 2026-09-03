@@ -28,13 +28,14 @@ extension View {
     /// materials alike — make the render server re-sample and re-blur the
     /// covered video region on every video frame, which A12-class Apple
     /// TVs pay for as a visible spike whenever the player menu is up.
-    /// Low-power devices draw a non-sampling translucent fill instead;
+    /// Low-power devices and iOS 18 (whose oldest supported phone is the
+    /// A12 iPhone XS) draw a non-sampling translucent fill instead;
     /// everything else gets standard Silo glass.
     @ViewBuilder
-    func siloPlayerGlass(in shape: some Shape, tint: Color? = nil) -> some View {
+    func siloPlayerGlass(in shape: some Shape, tint: Color? = nil, interactive: Bool = false) -> some View {
         #if os(iOS)
         if #available(iOS 26.0, *) {
-            self.siloGlass(in: shape, tint: tint)
+            self.siloGlass(in: shape, tint: tint, interactive: interactive)
         } else {
             // Avoid per-frame backdrop sampling over video on A12-era phones.
             self.background(shape.fill(Color(white: 0.10).opacity(0.88)))
@@ -43,7 +44,7 @@ extension View {
         if DevicePower.isLowPowerAppleTV {
             self.background(shape.fill(Color(white: 0.10).opacity(0.88)))
         } else {
-            self.siloGlass(in: shape, tint: tint)
+            self.siloGlass(in: shape, tint: tint, interactive: interactive)
         }
         #endif
     }
