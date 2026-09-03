@@ -68,8 +68,7 @@ struct TVRootHeroBackdrop: View {
     let artworkURL: String?
     let artworkThumbhash: String?
     var isVisible: Bool = true
-    /// Artwork/tint crossfade duration. Focus-marquee hosts pass the §4.2
-    /// 240 ms swap; other surfaces keep the slower ambient default.
+    /// Artwork/tint crossfade duration, shared with rested marquee swaps.
     var crossfadeDuration: Double = 0.55
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

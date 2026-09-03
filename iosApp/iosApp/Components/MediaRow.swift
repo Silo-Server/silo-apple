@@ -115,13 +115,12 @@ struct MediaRow: View {
         #if os(tvOS)
         .focusSection()
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
-        .onChange(of: focusedItemId) { _, newValue in
-            guard let newValue,
-                  let item = items.first(where: { $0.contentId == newValue }) else { return }
+        .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { newValue in
+            guard let item = items.first(where: { $0.contentId == newValue }) else { return }
             lastFocusedItemId = newValue
             Self.focusLogger.debug("mediaRow.focus changed")
             onItemFocus?(item)
-        }
+        })
         .onChange(of: items.map(\.contentId)) { oldIds, newIds in
             restoreFocusAfterItemRemoval(from: oldIds, to: newIds)
         }
@@ -619,6 +618,19 @@ struct MediaRow: View {
 }
 
 #if os(tvOS)
+/// Observe focus outside the row's body so moving between cards does not
+/// reconstruct the LazyHStack, artwork requests, and context-menu closures.
+private struct TVRowFocusObserver: ViewModifier {
+    let focusedItemId: FocusState<String?>.Binding
+    let onItemFocus: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: focusedItemId.wrappedValue) { _, itemId in
+            if let itemId { onItemFocus(itemId) }
+        }
+    }
+}
+
 /// Bridges the row's boundary up/down move commands to the host. Only
 /// attaches an `onMoveCommand` when at least one handler is supplied, so a
 /// row that should stay out of the focus path (e.g. a non-paged row)

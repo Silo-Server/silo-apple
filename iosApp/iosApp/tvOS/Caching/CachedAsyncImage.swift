@@ -25,6 +25,11 @@ struct CachedAsyncImage: View {
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if os(tvOS)
+    @Environment(\.tvArtworkLoadingEnabled) private var artworkLoadingEnabled
+    #else
+    private let artworkLoadingEnabled = true
+    #endif
 
     var body: some View {
         GeometryReader { geometry in
@@ -34,7 +39,7 @@ struct CachedAsyncImage: View {
                 ? nil
                 : .easeOut(duration: ContinuumTheme.slowDuration)
             LazyImage(
-                request: request(for: resolvedSize),
+                request: artworkLoadingEnabled ? request(for: resolvedSize) : nil,
                 transaction: Transaction(animation: loadAnimation)
             ) { state in
                 if let image = state.image {
@@ -67,7 +72,7 @@ struct CachedAsyncImage: View {
                         )
                         .clipped()
                         .onAppear(perform: notifyImageLoaded)
-                } else if state.error != nil {
+                } else if state.error != nil && artworkLoadingEnabled {
                     placeholder(in: geometry.size)
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
@@ -80,6 +85,7 @@ struct CachedAsyncImage: View {
                 }
             }
             .priority(.normal)
+            .onDisappear(.cancel)
         }
     }
 
@@ -124,6 +130,21 @@ struct CachedAsyncImage: View {
         .frame(width: size.width, height: size.height)
     }
 }
+
+#if os(tvOS)
+private struct TVArtworkLoadingEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Focusable rows stay mounted offscreen. Their image requests can still
+    /// be cancelled independently when the row leaves the vertical viewport.
+    var tvArtworkLoadingEnabled: Bool {
+        get { self[TVArtworkLoadingEnabledKey.self] }
+        set { self[TVArtworkLoadingEnabledKey.self] = newValue }
+    }
+}
+#endif
 
 enum ImagePlaceholderStyle {
     case surface

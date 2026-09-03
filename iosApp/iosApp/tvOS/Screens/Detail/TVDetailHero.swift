@@ -70,9 +70,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// Optional short editorial line placed in a capsule above the title
     /// (e.g. "New Episode Friday", "Continuing Series"). Hidden when nil.
     let eyebrow: String?
-    /// Source/genre line shown under the title. Text items are
-    /// pipe-separated; a single optional rating token is rendered as an
-    /// outlined chip at the end of the row.
+    /// Source/genre labels shown under the title. The optional outlined
+    /// rating chip leads the metadata, followed by dot-separated text.
     let sourceTokens: [String]
     let ratingChip: String?
     /// Short description shown in the hero. Clamped to 3 lines.
@@ -388,6 +387,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     private func factsRow(includeSourceTokens: Bool) -> some View {
         if !factsLine.isEmpty || (includeSourceTokens && !sourceTokens.isEmpty) || ratingChip != nil {
             HStack(spacing: 14) {
+                if let ratingChip, !ratingChip.isEmpty {
+                    ratingBadge(ratingChip)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+
                 ForEach(Array(factsLine.enumerated()), id: \.offset) { index, token in
                     if index > 0 { metadataDivider }
                     factsItem(token)
@@ -400,13 +404,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                             .font(.system(size: 24, weight: .medium))
                             .foregroundColor(Color.white.opacity(0.90))
                     }
-                }
-
-                if let ratingChip, !ratingChip.isEmpty {
-                    if !factsLine.isEmpty || (includeSourceTokens && !sourceTokens.isEmpty) {
-                        metadataDivider
-                    }
-                    ratingBadge(ratingChip)
                 }
             }
         }

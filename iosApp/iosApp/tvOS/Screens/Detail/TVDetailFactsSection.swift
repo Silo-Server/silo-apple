@@ -19,7 +19,7 @@ struct TVDetailFactsSection: View {
     // unreachable — pressing Down from the Cast rail finds no target below
     // and the section never scrolls on-screen. Making the whole block one
     // passive focus target (Select is a no-op) lets the engine land on it
-    // and scroll it fully into view, the same idiom `TVSelectorValue` uses
+    // and scroll it fully into view, matching the other passive detail rows
     // for single-option pills.
     @FocusState private var isFocused: Bool
 

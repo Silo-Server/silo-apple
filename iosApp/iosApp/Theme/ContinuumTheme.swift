@@ -254,10 +254,6 @@ struct ContinuumTheme {
         static let marqueeTitleSizeLibrary: CGFloat = 66
         static let marqueeMetaSizeHome: CGFloat = 20
         static let marqueeMetaSizeLibrary: CGFloat = 19
-        /// Fixed leading slot for the age/content-rating pill. For You often
-        /// backfills this value from item detail; reserving the slot prevents
-        /// the remaining metadata from sliding sideways when it arrives.
-        static let marqueeRatingSlotWidth: CGFloat = 104
         static let marqueeSynopsisSize: CGFloat = 22
         /// Synopsis column cap (§4.1) — narrower than the content block.
         static let marqueeSynopsisMaxWidth: CGFloat = 780
@@ -271,11 +267,12 @@ struct ContinuumTheme {
         static let marqueeLogoMaxHeightLibrary: CGFloat = 150
         /// Codec/HDR badge chip label size (§4.1).
         static let marqueeBadgeSize: CGFloat = 15
-        /// Focus must rest this long before the marquee swaps (§4.2) —
-        /// rolling through cards never thrashes backdrops.
+        /// Delay uncached detail requests while focus passes through cards.
         static let marqueeRestDebounceMilliseconds = 150
-        /// Marquee text + backdrop crossfade duration (§4.2).
-        static let marqueeCrossfadeDuration: Double = 0.24
+        /// Foreground content is immediate; backdrop replacement waits for rest.
+        static let marqueeBackdropRestMilliseconds = 2_000
+        /// Only the backdrop crossfades between rested selections.
+        static let marqueeCrossfadeDuration: Double = 0.55
 
         // MARK: Row band under the marquee (§5.7, revised)
 

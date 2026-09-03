@@ -1,0 +1,45 @@
+name: tvOS validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'iosApp/**'
+      - '.github/workflows/tvos-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tvos-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.3'
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen-dist"
+          "$RUNNER_TEMP/xcodegen-dist/xcodegen/bin/xcodegen" generate --spec iosApp/project.yml
+      - name: Archive tvOS without signing or publishing
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          xcodebuild archive -project iosApp/Silo.xcodeproj -scheme SiloTV \
+            -configuration Release -destination 'generic/platform=tvOS' \
+            -archivePath "$RUNNER_TEMP/SiloTV.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/silo-derived" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= CODE_SIGN_ENTITLEMENTS=

@@ -9,8 +9,8 @@ import SwiftUI
 ///   rows of items appears. That's a generous lead time on a 100-item page,
 ///   which gives
 ///   the network room to complete before the user reaches the bottom.
-/// - Prefetch: the same callback arms Nuke to fetch posters in the next
-///   window. The grid itself does not touch the image cache.
+/// - Prefetch: row visibility reports let the caller cancel stale work and
+///   warm a bounded nearby window. The grid does not touch the image cache.
 /// - Columns: caller picks `columnCount` (default 6). Drop to 5 when a
 ///   side-rail (alphabet jumper etc.) eats horizontal space, or the
 ///   fixed `posterCardWidth` cards start overlapping each other.
@@ -27,6 +27,7 @@ struct TVCatalogGrid: View {
     var cardWidth: CGFloat = ContinuumTheme.posterCardWidth
     var prefersDefaultFocusOnFirstItem: Bool = false
     var focusRequest: Int = 0
+    var onRowVisibilityChange: ((Range<Int>, Bool) -> Void)? = nil
 
     @Namespace private var gridFocusNamespace
     @FocusState private var focusedItemId: String?
@@ -96,6 +97,12 @@ struct TVCatalogGrid: View {
                 }
                 .frame(maxWidth: .infinity)
                 .focusSection()
+                .onScrollVisibilityChange(threshold: 0.01) { isVisible in
+                    onRowVisibilityChange?(
+                        rowStart..<min(rowStart + resolvedColumnCount, items.count),
+                        isVisible
+                    )
+                }
             }
         }
         .focusScope(gridFocusNamespace)

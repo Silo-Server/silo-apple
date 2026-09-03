@@ -1,6 +1,7 @@
 #if os(tvOS)
 import Foundation
 import Observation
+import Nuke
 
 /// View model backing the tvOS library grid. Purpose-built for 100k-item
 /// libraries; does not share state with the iOS `BrowseViewModel`, but both
@@ -41,7 +42,13 @@ final class TVLibraryGridViewModel {
 
     private var snapshot: String? = nil
     private var nextOffset: Int = 0
-    private var prefetchedPosterURLs: Set<URL> = []
+    @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
+    @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
+    private let posterPrefetcher = ImagePrefetcher(
+        pipeline: ImagePipeline.shared,
+        destination: .diskCache,
+        maxConcurrentRequestCount: 2
+    )
     private var generation: Int = 0
 
     init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
@@ -128,31 +135,49 @@ final class TVLibraryGridViewModel {
         }
     }
 
-    func prefetchPosters(in range: Range<Int>) {
-        let urls = items[safe: range]
-            .compactMap { $0.posterUrl }
-            .compactMap { URL(string: $0) }
-        let newURLs = urls.filter { prefetchedPosterURLs.insert($0).inserted }
-        guard !newURLs.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: newURLs)
+    func setPosterRowVisibility(_ range: Range<Int>, isVisible: Bool) {
+        guard !range.isEmpty else { return }
+        if isVisible {
+            visiblePosterRows[range.lowerBound] = range
+        } else {
+            visiblePosterRows.removeValue(forKey: range.lowerBound)
+        }
+        guard let first = visiblePosterRows.values.map(\.lowerBound).min(),
+              let last = visiblePosterRows.values.map(\.upperBound).max() else {
+            cancelPosterPrefetch()
+            return
+        }
+        let nearbyCount = (visiblePosterRows.values.map(\.count).max() ?? 6) * 2
+        let lowerBound = min(items.count, max(0, first - nearbyCount))
+        let upperBound = max(lowerBound, min(items.count, last + nearbyCount))
+        prefetchPosters(in: lowerBound..<upperBound)
     }
 
-    func cancelPrefetch(in range: Range<Int>) {
-        let urls = items[safe: range]
+    private func prefetchPosters(in range: Range<Int>) {
+        // Keep one bounded window. Data-only prefetch avoids full-resolution
+        // decodes for posters the user may never reach; visible cells request
+        // their own resized image through the same coalescing pipeline.
+        let urls = items[safe: range].prefix(48)
             .compactMap { $0.posterUrl }
             .compactMap { URL(string: $0) }
-        guard !urls.isEmpty else { return }
-        urls.forEach { prefetchedPosterURLs.remove($0) }
-        PosterImageCache.prefetcher.stopPrefetching(with: urls)
+        let desiredURLs = Set(urls)
+        let staleURLs = prefetchedPosterURLs.subtracting(desiredURLs)
+        let newURLs = urls.filter { !prefetchedPosterURLs.contains($0) }
+        prefetchedPosterURLs = desiredURLs
+        posterPrefetcher.stopPrefetching(with: Array(staleURLs))
+        posterPrefetcher.startPrefetching(with: newURLs)
+    }
+
+    func cancelPosterPrefetch() {
+        posterPrefetcher.stopPrefetching()
+        prefetchedPosterURLs.removeAll()
+        visiblePosterRows.removeAll()
     }
 
     // MARK: - Fetch logic
 
     private func reload() async {
-        if !prefetchedPosterURLs.isEmpty {
-            PosterImageCache.prefetcher.stopPrefetching(with: Array(prefetchedPosterURLs))
-            prefetchedPosterURLs.removeAll()
-        }
+        cancelPosterPrefetch()
         generation += 1
         items = []
         nextOffset = 0
