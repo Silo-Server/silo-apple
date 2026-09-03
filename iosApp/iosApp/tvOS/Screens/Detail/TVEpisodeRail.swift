@@ -727,10 +727,16 @@ private struct EpisodeCardLabel: View {
         return isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
     }
 
+    /// "S01E02 · Pilot" — the same code Home puts on episode cards, so the
+    /// Series carousel makes each episode's position obvious at a glance.
     private var compactEpisodeTitle: String? {
+        let code = EpisodeCardCaption.code(
+            season: episode.seasonNumber,
+            episode: episode.episodeNumber
+        )
         guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty else { return nil }
-        return title
+              !title.isEmpty else { return code }
+        return "\(code) · \(title)"
     }
 
     private var episodeMetadataLine: String? {
