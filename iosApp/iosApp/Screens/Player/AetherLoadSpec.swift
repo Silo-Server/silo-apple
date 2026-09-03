@@ -70,6 +70,17 @@ enum AetherAuthenticationRecoveryPolicy {
         return authorizationHeader(in: failedHeaders) != refreshed
     }
 
+    static func shouldReloadAfterProgress(
+        _ result: PlaybackProgressReportResult,
+        activeHeaders: [String: String],
+        currentHeaders: [String: String]
+    ) -> Bool {
+        result == .success && shouldReload(
+            failedHeaders: activeHeaders,
+            refreshedHeaders: currentHeaders
+        )
+    }
+
     private static func authorizationHeader(in headers: [String: String]) -> String? {
         headers.first { key, _ in
             key.caseInsensitiveCompare("Authorization") == .orderedSame

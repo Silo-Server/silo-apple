@@ -1484,8 +1484,69 @@ class PlayerViewModel {
     private func attemptProtocolV3AuthenticationReload(
         after failure: PlaybackErrorInfo
     ) -> Bool {
-        guard AetherAuthenticationRecoveryPolicy.isExpiredBearerFailure(failure),
+        guard AetherAuthenticationRecoveryPolicy.isExpiredBearerFailure(failure) else {
+            return false
+        }
+        return beginProtocolV3AuthenticationReload(
+            fallbackClassification: failure.kind.rawValue,
+            fallbackMessage: failure.message
+        )
+    }
+
+    /// The periodic progress request uses the live API credential and owns its
+    /// refresh. If that request rotated the bearer, rebuild Aether before its
+    /// next source request can reuse the credential frozen at asset creation.
+    private func attemptProtocolV3AuthenticationReloadAfterProgress(
+        _ result: PlaybackProgressReportResult
+    ) async {
+        guard result == .success,
               protocolV3ReplanTask == nil,
+              let protocolV3 = activePreparedProtocolV3,
+              protocolV3.serverFeatures.contains(
+                  PlaybackProtocolV3.headerAuthenticatedMediaFeature
+              ),
+              let sessionId = activePlaybackSessionId,
+              let failedSpec = aetherPlaybackController.activeSpec,
+              failedSpec.planID == protocolV3.plan.planId,
+              failedSpec.sessionID == sessionId,
+              committedProtocolV3LoadEpoch != nil,
+              let session = await sessionBridge.committedProtocolV3Session(
+                  planId: protocolV3.plan.planId,
+                  sessionId: sessionId
+              ),
+              let streamRequest = await makeStreamRequest(
+                  session: session,
+                  additionalHeaders: protocolV3.plan.stream.headers,
+                  requiresHeaderAuthenticatedMedia: true,
+                  allowsAuthorizedMediaOrigins:
+                      protocolV3.negotiatedAuthorizedMediaOrigins
+              ),
+              activePlaybackSessionId == sessionId,
+              activePreparedProtocolV3?.plan.planId == protocolV3.plan.planId,
+              aetherPlaybackController.activeSpec?.planID == failedSpec.planID,
+              aetherPlaybackController.activeSpec?.sessionID == sessionId,
+              AetherAuthenticationRecoveryPolicy.shouldReloadAfterProgress(
+                  result,
+                  activeHeaders: failedSpec.options.httpHeaders,
+                  currentHeaders: streamRequest.headers
+              ) else {
+            return
+        }
+
+        _ = beginProtocolV3AuthenticationReload(
+            fallbackClassification: "authorization_rotated",
+            fallbackMessage: "Playback authorization changed while media was active.",
+            refreshedStreamRequest: streamRequest
+        )
+    }
+
+    @discardableResult
+    private func beginProtocolV3AuthenticationReload(
+        fallbackClassification: String,
+        fallbackMessage: String,
+        refreshedStreamRequest: StreamRequest? = nil
+    ) -> Bool {
+        guard protocolV3ReplanTask == nil,
               let protocolV3 = activePreparedProtocolV3,
               protocolV3.serverFeatures.contains(
                   PlaybackProtocolV3.headerAuthenticatedMediaFeature
@@ -1500,11 +1561,17 @@ class PlayerViewModel {
             return false
         }
 
+        if let refreshedStreamRequest,
+           !AetherAuthenticationRecoveryPolicy.shouldReload(
+               failedHeaders: failedSpec.options.httpHeaders,
+               refreshedHeaders: refreshedStreamRequest.headers
+           ) {
+            return false
+        }
+
         let planId = protocolV3.plan.planId
         let resumePosition = currentTime.isFinite ? max(0, currentTime) : 0
         let failedHeaders = failedSpec.options.httpHeaders
-        let fallbackClassification = failure.kind.rawValue
-        let fallbackMessage = failure.message
 
         progressTask?.cancel()
         progressTask = nil
@@ -1514,9 +1581,15 @@ class PlayerViewModel {
         streamLoadGeneration &+= 1
         let recoveryGeneration = streamLoadGeneration
 
-        Self.logger.warning(
-            "Protocol V3 media credential expired; refreshing and reloading plan \(planId, privacy: .public) at source position \(resumePosition, privacy: .public)"
-        )
+        if refreshedStreamRequest == nil {
+            Self.logger.warning(
+                "Protocol V3 media credential expired; refreshing and reloading plan \(planId, privacy: .public) at source position \(resumePosition, privacy: .public)"
+            )
+        } else {
+            Self.logger.info(
+                "Protocol V3 media credential rotated; proactively reloading plan \(planId, privacy: .public) at source position \(resumePosition, privacy: .public)"
+            )
+        }
 
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
@@ -1550,13 +1623,15 @@ class PlayerViewModel {
             }
 
             do {
-                // This request uses the normal API transport, whose 401 path
-                // refreshes TokenStore before retrying. Its result is otherwise
-                // best-effort; the header comparison below is authoritative.
-                _ = await self.sessionBridge.reportProgress(
-                    position: resumePosition,
-                    isPaused: !self.aetherPlaybackController.shouldPlayWhenReady
-                )
+                if refreshedStreamRequest == nil {
+                    // This request uses the normal API transport, whose 401 path
+                    // refreshes TokenStore before retrying. Its result is otherwise
+                    // best-effort; the header comparison below is authoritative.
+                    _ = await self.sessionBridge.reportProgress(
+                        position: resumePosition,
+                        isPaused: !self.aetherPlaybackController.shouldPlayWhenReady
+                    )
+                }
                 try self.requireCurrentStreamLoad(recoveryGeneration)
                 guard self.activePlaybackSessionId == sessionId,
                       self.activePreparedProtocolV3?.plan.planId == planId,
@@ -1575,14 +1650,20 @@ class PlayerViewModel {
                     activeQualityId: self.activeQualityId,
                     protocolV3: protocolV3
                 )
-                guard let streamRequest = await self.makeStreamRequest(
-                    session: session,
-                    additionalHeaders: protocolV3.plan.stream.headers,
-                    requiresHeaderAuthenticatedMedia: true,
-                    allowsAuthorizedMediaOrigins:
-                        protocolV3.negotiatedAuthorizedMediaOrigins
-                ) else {
-                    throw AetherLoadSpec.ValidationError.invalidStreamURL(session.streamUrl)
+                let streamRequest: StreamRequest
+                if let refreshedStreamRequest {
+                    streamRequest = refreshedStreamRequest
+                } else {
+                    guard let resolved = await self.makeStreamRequest(
+                        session: session,
+                        additionalHeaders: protocolV3.plan.stream.headers,
+                        requiresHeaderAuthenticatedMedia: true,
+                        allowsAuthorizedMediaOrigins:
+                            protocolV3.negotiatedAuthorizedMediaOrigins
+                    ) else {
+                        throw AetherLoadSpec.ValidationError.invalidStreamURL(session.streamUrl)
+                    }
+                    streamRequest = resolved
                 }
                 try self.requireCurrentStreamLoad(recoveryGeneration)
                 guard AetherAuthenticationRecoveryPolicy.shouldReload(
@@ -7187,6 +7268,8 @@ class PlayerViewModel {
                         reason: "progress",
                         observedPosition: self.currentTime
                     )
+                } else {
+                    await self.attemptProtocolV3AuthenticationReloadAfterProgress(result)
                 }
             }
         }
