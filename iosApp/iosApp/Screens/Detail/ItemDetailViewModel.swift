@@ -1031,13 +1031,15 @@ class ItemDetailViewModel {
             return partial
         }
         // Specials sort first for display, but a fresh series should open on
-        // its first numbered season rather than the specials bucket.
+        // its first numbered season rather than the specials bucket. Once
+        // every numbered season is played, an unplayed Specials still wins
+        // over a fully watched one.
         let regular = seasons.filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
-        let candidates = regular.isEmpty ? seasons : regular
-        if let firstUnplayed = candidates.first(where: { !($0.userData?.played ?? false) }) {
+        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
+        if let firstUnplayed = regular.first(where: isUnplayed) ?? seasons.first(where: isUnplayed) {
             return firstUnplayed
         }
-        return candidates.first
+        return regular.first ?? seasons.first
     }
 
     func selectSeason(
