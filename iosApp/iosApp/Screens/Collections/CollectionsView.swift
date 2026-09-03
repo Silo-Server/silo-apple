@@ -466,6 +466,7 @@ struct LibraryCollectionsView: View {
                     .padding(ContinuumTheme.padding)
                     .padding(.bottom, ContinuumTheme.largePadding)
                 }
+                .reportsPageChromeScroll()
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
             } else if viewModel.isLoading {

@@ -110,6 +110,7 @@ struct WatchlistView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+        .reportsPageChromeScroll()
         #else
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
@@ -138,6 +139,7 @@ struct WatchlistView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+        .reportsPageChromeScroll()
         #endif
     }
 

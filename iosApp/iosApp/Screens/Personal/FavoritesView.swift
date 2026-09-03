@@ -255,6 +255,7 @@ struct FavoritesView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+        .reportsPageChromeScroll()
     }
 
     private var filteredIOSItems: [BrowseItem] {
@@ -344,6 +345,7 @@ struct FavoritesView: View {
             }
             .padding(ContinuumTheme.padding)
         }
+        .reportsPageChromeScroll()
         #endif
     }
 

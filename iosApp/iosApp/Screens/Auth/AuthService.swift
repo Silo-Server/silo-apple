@@ -211,6 +211,7 @@ final class AuthService: @unchecked Sendable {
             await AICapabilities.shared.refresh()
             await ImageSizeCapability.shared.refresh()
             await RequestsFeatureStore.shared.refresh()
+            await CurrentProfileStore.shared.refresh(force: true)
             // Unlike the two above, this one gates *enablement* of an entry
             // point that stays visible either way, and it defaults to
             // available — so a slow or failing probe never hides anything.
@@ -528,6 +529,7 @@ final class AuthService: @unchecked Sendable {
         AICapabilities.shared.reset()
         ImageSizeCapability.shared.reset()
         RequestsFeatureStore.shared.reset()
+        CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
         #if os(tvOS)
@@ -697,6 +699,7 @@ final class AuthService: @unchecked Sendable {
         AICapabilities.shared.reset()
         ImageSizeCapability.shared.reset()
         RequestsFeatureStore.shared.reset()
+        CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
         #if os(tvOS)

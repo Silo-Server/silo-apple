@@ -14,8 +14,12 @@ struct RecommendationsView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel: RecommendationsViewModel
-    @State private var currentProfile: UserProfile?
     @State private var savedListSelection: SavedShortcut = .watchlist
+    #if !os(tvOS)
+    /// Feeds the shared glass strip behind the pinned header as rows scroll
+    /// under it, matching Home and the Library tab.
+    @State private var chromeScrollState = PageChromeScrollState()
+    #endif
     @Environment(AppRouter.self) private var router
 
     init(
@@ -33,14 +37,7 @@ struct RecommendationsView: View {
     var body: some View {
         rootLayout
             .task {
-                #if os(iOS)
-                async let recommendations: Void = viewModel.loadRecommendations()
-                async let profile: Void = loadCurrentProfile()
-                _ = await (recommendations, profile)
-                #else
                 await viewModel.loadRecommendations()
-                await loadCurrentProfile()
-                #endif
             }
         #if !os(tvOS)
             .refreshable {
@@ -57,40 +54,51 @@ struct RecommendationsView: View {
         tvOSPageContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                SidebarToggleButton()
-
-                Text("Recommendations")
-                    .font(.continuumTitle)
-                    .foregroundColor(.continuumOnSurface)
-
-                Spacer(minLength: 8)
-
-                TabTopBarActions(
-                    profile: currentProfile,
-                    onSearch: { router.navigate(to: .search) },
-                    onOpenSettings: { router.navigate(to: .settings) },
-                    onOpenRequests: { router.navigate(to: .requestsHub) },
-                    onSwitchProfile: {
-                        router.switchProfile()
-                    },
-                    onSwitchServer: { router.navigate(to: .serverList) },
-                    onSignOut: { router.signOutAndReset() }
-                )
+        // Content scrolls under the pinned header, which sits in a top
+        // safe-area inset with the shared glass strip behind it (same
+        // structure as `LibrariesTabView`).
+        pageContent
+            .environment(chromeScrollState)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                topChrome
+                    .background {
+                        PageChromeGlass(scrollState: chromeScrollState)
+                    }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.smallPadding)
-
-            pageContent
-        }
         .continuumPageBackground()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
         #endif
     }
+
+    #if !os(tvOS)
+    private var topChrome: some View {
+        HStack(spacing: 12) {
+            SidebarToggleButton()
+
+            Text("Recommendations")
+                .font(.continuumTitle)
+                .foregroundColor(.continuumOnSurface)
+
+            Spacer(minLength: 8)
+
+            TabTopBarActions(
+                onSearch: { router.navigate(to: .search) },
+                onOpenSettings: { router.navigate(to: .settings) },
+                onOpenRequests: { router.navigate(to: .requestsHub) },
+                onSwitchProfile: {
+                    router.switchProfile()
+                },
+                onSwitchServer: { router.navigate(to: .serverList) },
+                onSignOut: { router.signOutAndReset() }
+            )
+        }
+        .padding(.horizontal, ContinuumTheme.padding)
+        .padding(.top, ContinuumTheme.smallPadding)
+        .padding(.bottom, ContinuumTheme.smallPadding)
+    }
+    #endif
 
     #if os(tvOS)
     /// For You uses the exact Skyline page shell as Home. Recommendation
@@ -265,6 +273,7 @@ struct RecommendationsView: View {
             #endif
             .padding(.bottom, ContinuumTheme.largePadding)
         }
+        .reportsPageChromeScroll()
     }
 
     /// Shown when the server has no recommendation sections: rather than an
@@ -290,17 +299,6 @@ struct RecommendationsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Load the currently-selected profile so we can render its avatar in
-    /// the top bar. Non-fatal on failure — we fall back to a generic icon.
-    private func loadCurrentProfile() async {
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-    }
 
     private var sectionSpacing: CGFloat {
         #if os(tvOS)

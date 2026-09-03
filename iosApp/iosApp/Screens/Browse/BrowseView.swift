@@ -83,6 +83,7 @@ struct BrowseView: View {
             }
             .frame(maxWidth: .infinity)
         }
+        .reportsPageChromeScroll()
     }
 
     private var scrollContent: some View {
@@ -111,6 +112,7 @@ struct BrowseView: View {
                 .padding(.horizontal, ContinuumTheme.padding)
             }
         }
+        .reportsPageChromeScroll()
     }
 
     // MARK: - Search Bar
@@ -484,6 +486,7 @@ struct LibraryRecommendedView: View {
             .padding(.bottom, ContinuumTheme.largePadding)
         }
         .continuumScrollEdgeEffect()
+        .reportsPageChromeScroll()
     }
 
     private var refreshStatusTopPadding: CGFloat {
