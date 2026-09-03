@@ -60,7 +60,7 @@ packages:
     revision: 653be639441d3f7d06332a2f995950497ad62e0f
   Nuke:
     url: https://github.com/kean/Nuke
-    from: "12.8.0"
+    from: "13.2.0"
 
 targets:
   Silo:

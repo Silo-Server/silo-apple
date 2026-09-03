@@ -1,4 +1,5 @@
 {
+  "originHash" : "b7c5b14da80f57c3689e219e5a42cefed8e7994487f250297681a712439324ca",
   "pins" : [
     {
       "identity" : "aetherengine",
@@ -31,8 +32,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kean/Nuke",
       "state" : {
-        "revision" : "83e19143355b02e9261edb2323b3e1e93287ebb9",
-        "version" : "12.9.0"
+        "revision" : "30f7a7e72e0607d304fbf69c799474bd5fb6d1ce",
+        "version" : "13.2.0"
       }
     },
     {
@@ -45,5 +46,5 @@
       }
     }
   ],
-  "version" : 2
+  "version" : 3
 }

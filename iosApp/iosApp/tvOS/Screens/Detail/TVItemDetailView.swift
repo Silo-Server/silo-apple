@@ -1210,9 +1210,7 @@ struct TVItemDetailView: View {
             let stillURLs = response.episodes.compactMap { episode in
                 episode.stillUrl.flatMap(URL.init(string:))
             }
-            if !stillURLs.isEmpty {
-                PosterImageCache.prefetcher.startPrefetching(with: stillURLs)
-            }
+            PosterImageCache.prefetchCardArtwork(stillURLs)
 
             let sorted = response.episodes.sorted {
                 $0.episodeNumber < $1.episodeNumber

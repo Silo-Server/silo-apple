@@ -13,12 +13,81 @@ import UIKit
 ///
 /// - A decoded memory cache sized for the platform's playback headroom
 /// - 1 GB on-disk data cache keyed by URL
-/// - Background decoding + downsampling to the actual render size
+/// - ImageIO thumbnail decoding straight to the render size, so a w780
+///   poster is never decoded at full resolution just to draw a 176 pt card
 /// - A prefetcher the grid can use to warm posters N rows ahead
 ///
 /// The pipeline is installed as the `ImagePipeline.shared` at first access so
 /// every `LazyImage` / `ImagePipeline.shared` caller picks it up automatically.
 enum PosterImageCache {
+    /// Longest edge, in pixels, of the decode the prefetchers park in the
+    /// memory cache for poster, still, cover, and portrait artwork. Larger
+    /// than any card on any surface, so the warmed decode always paints at
+    /// least as sharp as the card's own request, and small enough (about
+    /// 0.7 MB for a 2:3 poster) that a whole warmed feed fits the constrained
+    /// tvOS budget instead of evicting itself.
+    static let cardWarmMaxPixelSize: Float = 512
+
+    /// Longest edge, in pixels, for palette sampling decodes.
+    static let paletteSampleMaxPixelSize: Float = 64
+
+    // MARK: - Requests
+
+    /// Display request that decodes directly at `pixelSize` (aspect-fill
+    /// cover) through ImageIO's thumbnail path. Decoding at the target size
+    /// costs a fraction of the CPU and memory of decoding the full image and
+    /// resizing it, and the result needs no separate decompression pass.
+    /// ImageIO never upscales, so a small source stays at its native size.
+    static func displayRequest(url: URL, pixelSize: CGSize, priority: ImageRequest.Priority = .normal) -> ImageRequest {
+        var request = ImageRequest(url: url, priority: priority)
+        request.thumbnail = ImageRequest.ThumbnailOptions(
+            size: pixelSize,
+            unit: .pixels,
+            contentMode: .aspectFill
+        )
+        return request
+    }
+
+    /// The request the prefetchers warm for card artwork. Cards look this key
+    /// up synchronously on their first frame (`warmedCardImage(for:)`).
+    static func cardWarmRequest(for url: URL) -> ImageRequest {
+        var request = ImageRequest(url: url)
+        request.thumbnail = ImageRequest.ThumbnailOptions(maxPixelSize: cardWarmMaxPixelSize)
+        return request
+    }
+
+    /// Cheap request for average-color / palette sampling.
+    static func paletteSampleRequest(for url: URL) -> ImageRequest {
+        var request = ImageRequest(url: url, priority: .low)
+        request.thumbnail = ImageRequest.ThumbnailOptions(maxPixelSize: paletteSampleMaxPixelSize)
+        return request
+    }
+
+    /// Synchronous memory-cache lookup of a warmed card decode. Cheap
+    /// dictionary access, safe to call from a view body.
+    static func warmedCardImage(for url: URL) -> PlatformImage? {
+        ImagePipeline.shared.cache[cardWarmRequest(for: url)]?.image
+    }
+
+    /// Warm card artwork (posters, stills, covers, portraits, avatars) into
+    /// the memory cache at the shared card size.
+    static func prefetchCardArtwork(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        prefetcher.startPrefetching(with: urls.map(cardWarmRequest(for:)))
+    }
+
+    static func stopPrefetchingCardArtwork(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        prefetcher.stopPrefetching(with: urls.map(cardWarmRequest(for:)))
+    }
+
+    /// Warm full-size artwork under its bare-URL key. Only for art whose
+    /// consumers read the unprocessed decode synchronously (marquee logos).
+    static func prefetchOriginalArtwork(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        prefetcher.startPrefetching(with: urls)
+    }
+
     #if os(tvOS)
     /// A movie's cast rail is part of the first detail viewport, but its
     /// portraits used to begin loading only after SwiftUI mounted each card.
@@ -32,6 +101,12 @@ enum PosterImageCache {
 
     /// Call once at app launch before any SwiftUI view renders.
     static func install() {
+        #if DEBUG
+        // os_signpost intervals for every fetch, decode, and processing step
+        // (subsystem "com.github.kean.Nuke"). Visible in Instruments'
+        // os_signpost track and via `log stream` on a debug device build.
+        ImagePipeline.Configuration.isSignpostLoggingEnabled = true
+        #endif
         ImagePipeline.shared = makePipeline()
         installMemoryPressureObserverIfNeeded()
     }
@@ -45,6 +120,16 @@ enum PosterImageCache {
 
     private static func makePipeline() -> ImagePipeline {
         return ImagePipeline { config in
+            // Nuke's default loader also routes every response through a
+            // 150 MB Foundation URLCache, so each image was written to flash
+            // twice (URLCache + the DataCache below) and validated twice on
+            // every read. The DataCache is the only disk cache we want.
+            config.dataLoader = {
+                let session = URLSessionConfiguration.default
+                session.urlCache = nil
+                return DataLoader(configuration: session)
+            }()
+
             // Memory cache for decoded UIImages.
             let memoryCache = ImageCache()
             memoryCache.costLimit = decodedMemoryCacheBudgetBytes
@@ -57,7 +142,11 @@ enum PosterImageCache {
                 config.dataCache = dataCache
             }
 
-            // Decode on a background queue — never block the main thread.
+            // Thumbnail decodes do the whole decode + downsample in the
+            // decoding stage and skip decompression, so give that stage the
+            // two slots decompression used to have. Nuke's default of one
+            // serialises every poster in a freshly revealed row.
+            config.imageDecodingQueue.maxConcurrentOperationCount = 2
             config.imageDecompressingQueue.maxConcurrentOperationCount = 2
         }
     }
@@ -166,8 +255,18 @@ enum PosterImageCache {
             urls.append(url)
         }
 
+        prefetchCardArtwork(urls)
+    }
+
+    /// Warm the root hero backdrops the marquee will display, decoded at the
+    /// exact size `TVRootHeroBackdrop` requests so the first rested backdrop
+    /// is a straight memory-cache hit with no second decode.
+    static func prefetchHeroBackdrops(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        prefetcher.startPrefetching(with: urls)
+        let pixelSize = TVBackdropArtworkLayout.artworkSize(
+            forViewportWidth: TVBackdropArtworkLayout.viewportWidth
+        )
+        prefetcher.startPrefetching(with: urls.map { displayRequest(url: $0, pixelSize: pixelSize) })
     }
     #endif
 }

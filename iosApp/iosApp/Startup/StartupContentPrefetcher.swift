@@ -714,17 +714,28 @@ enum StartupContentPrefetcher {
     }
 
     private static func prefetchHomeArtwork(for response: SectionsResponse) {
-        var urls: [URL] = []
+        // Each kind is warmed at the size its consumer reads synchronously:
+        // cards at the shared card thumbnail, the marquee logo at its native
+        // size, and first-row backdrops at the exact hero decode size. Warming
+        // full-size decodes instead used to cost ~4 MB per poster and ~8 MB
+        // per backdrop, which overflowed the 96 MB budget on 3 GB Apple TVs
+        // and evicted the very cards the warm-up was meant to paint.
+        var cardURLs: [URL] = []
+        var backdropURLs: [URL] = []
+        var logoURLs: [URL] = []
         var seen = Set<String>()
+        // Tracked separately: reading the arrays while one is bound as an
+        // `inout` bucket is an exclusivity violation.
+        var count = 0
 
-        func append(_ urlString: String?) {
-            guard urls.count < maxHomeArtworkURLs,
-                  let url = normalizedURL(from: urlString) else {
+        func append(_ urlString: String?, into bucket: inout [URL]) {
+            guard count < maxHomeArtworkURLs,
+                  let url = normalizedURL(from: urlString),
+                  seen.insert(url.absoluteString).inserted else {
                 return
             }
-            let key = url.absoluteString
-            guard seen.insert(key).inserted else { return }
-            urls.append(url)
+            bucket.append(url)
+            count += 1
         }
 
         // No client renders a featured hero anymore — featured sections show
@@ -736,33 +747,36 @@ enum StartupContentPrefetcher {
         // harmless.)
         let contentSections = response.sections.filter { !$0.items.isEmpty }
         if let firstRow = contentSections.first {
-            append(firstRow.items.first?.logoUrl)
+            append(firstRow.items.first?.logoUrl, into: &logoURLs)
             for item in firstRow.items {
                 if episodeSectionTypes.contains(firstRow.sectionType) {
                     // Episode thumbs already render the backdrop, so the card
                     // art and the first-row art are one fetch.
-                    append(item.backdropUrl ?? item.posterUrl)
+                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs)
                 } else {
-                    append(item.posterUrl)
-                    append(item.backdropUrl)
+                    append(item.posterUrl, into: &cardURLs)
+                    append(item.backdropUrl, into: &backdropURLs)
                 }
-                if urls.count >= maxHomeArtworkURLs { break }
+                if count >= maxHomeArtworkURLs { break }
             }
         }
         for section in contentSections.dropFirst() {
             for item in section.items {
                 if episodeSectionTypes.contains(section.sectionType) {
-                    append(item.backdropUrl ?? item.posterUrl)
+                    append(item.backdropUrl ?? item.posterUrl, into: &cardURLs)
                 } else {
-                    append(item.posterUrl)
+                    append(item.posterUrl, into: &cardURLs)
                 }
-                if urls.count >= maxHomeArtworkURLs { break }
+                if count >= maxHomeArtworkURLs { break }
             }
-            if urls.count >= maxHomeArtworkURLs { break }
+            if count >= maxHomeArtworkURLs { break }
         }
 
-        guard !urls.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: urls)
+        PosterImageCache.prefetchOriginalArtwork(logoURLs)
+        PosterImageCache.prefetchCardArtwork(cardURLs)
+        #if os(tvOS)
+        PosterImageCache.prefetchHeroBackdrops(backdropURLs)
+        #endif
 
         // Warm the marquee's initial tint: tvOS seeds the marquee with the
         // first row's first item on cold entry, and a cached sample lets the
@@ -802,8 +816,7 @@ enum StartupContentPrefetcher {
             if urls.count >= maxCount { break }
         }
 
-        guard !urls.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: urls)
+        PosterImageCache.prefetchCardArtwork(urls)
     }
 
     #if os(tvOS)
@@ -826,8 +839,7 @@ enum StartupContentPrefetcher {
             }
         }
 
-        guard !urls.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: urls)
+        PosterImageCache.prefetchOriginalArtwork(urls)
     }
     #endif
 
@@ -845,8 +857,7 @@ enum StartupContentPrefetcher {
             urls.append(url)
         }
 
-        guard !urls.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: urls)
+        PosterImageCache.prefetchCardArtwork(urls)
     }
 
     private static func prefetchProfileArtwork(for profiles: [UserProfile]) {
@@ -878,8 +889,7 @@ enum StartupContentPrefetcher {
             urls.append(url)
         }
 
-        guard !urls.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: urls)
+        PosterImageCache.prefetchCardArtwork(urls)
     }
 
     private static func validateProfileScopedGeneration(_ generation: Int) throws {

@@ -6,6 +6,9 @@ import SwiftUI
 /// height from the available width keeps the artwork request, crop, and mask
 /// identical even when the detail hero itself is shorter than the viewport.
 enum TVBackdropArtworkLayout {
+    /// tvOS renders every screen into a 1920 pt wide logical canvas, so the
+    /// hero artwork size is fixed and can be computed off the main thread.
+    static let viewportWidth: CGFloat = 1920
     static let widthFraction: CGFloat = 0.64
     static let heightFraction: CGFloat = 0.70
 
@@ -79,9 +82,6 @@ struct TVRootHeroBackdrop: View {
     /// one — only artwork→artwork swaps get the ambient crossfade.
     @State private var hasDisplayedArtwork = false
 
-    /// Near-crisp by request (§ user direction). Bump a little only if the
-    /// server's backdrop is low-res enough to show compression artifacts.
-    private let artBlur: CGFloat = 0
     /// Full-width top scrim height so the menu bar stays legible over the
     /// bright art now sitting directly behind the tabs and profile avatar.
     private let topScrimHeight: CGFloat = 190
@@ -153,7 +153,6 @@ struct TVRootHeroBackdrop: View {
                 .id(artworkURL)
                 .frame(width: artworkSize.width, height: artworkSize.height)
                 .clipped()
-                .blur(radius: artBlur)
                 .mask { TVBackdropArtworkFadeMask() }
                 // Anchor the art block to the screen's top-right corner; the
                 // mask keeps only that corner opaque, so the corner reads as

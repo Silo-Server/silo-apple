@@ -176,8 +176,8 @@ final class TVLibraryGridViewModel {
         let staleURLs = prefetchedPosterURLs.subtracting(desiredURLs)
         let newURLs = urls.filter { !prefetchedPosterURLs.contains($0) }
         prefetchedPosterURLs = desiredURLs
-        posterPrefetcher.stopPrefetching(with: Array(staleURLs))
-        posterPrefetcher.startPrefetching(with: newURLs)
+        posterPrefetcher.stopPrefetching(with: staleURLs.map(PosterImageCache.cardWarmRequest(for:)))
+        posterPrefetcher.startPrefetching(with: newURLs.map(PosterImageCache.cardWarmRequest(for:)))
     }
 
     func cancelPosterPrefetch() {
