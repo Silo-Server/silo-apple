@@ -4,41 +4,40 @@ import XCTest
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
-    func testRotationPillAlternatesExactOrientationsForEitherSavedMode() {
-        for mode in [PlayerOrientationMode.rotateFreely, .landscapeLocked] {
-            var orientation = PlayerScreenOrientation.landscape
-            for index in 0..<20 {
-                orientation = orientation.toggled
-                let expected: UIInterfaceOrientationMask = index.isMultiple(of: 2) ? .portrait : .landscape
-                XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
-                    isPlayerActive: true, playerMode: mode, requestedOrientation: orientation
-                ), expected)
-            }
+    func testRotationPillFollowsTheActualInterfaceOrientation() {
+        XCTAssertEqual(PlayerScreenOrientation(interfaceOrientation: .portrait)?.toggled, .landscape)
+        XCTAssertEqual(PlayerScreenOrientation(interfaceOrientation: .landscapeLeft)?.toggled, .portrait)
+        XCTAssertEqual(PlayerScreenOrientation(interfaceOrientation: .landscapeRight)?.toggled, .portrait)
+        XCTAssertNil(PlayerScreenOrientation(interfaceOrientation: .unknown))
+    }
+
+    func testManualRotationRequestsDoNotLockSubsequentPhoneRotation() {
+        for orientation in [PlayerScreenOrientation.portrait, .landscape] {
+            XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
+                isPlayerActive: true, preferredOrientation: orientation.mask
+            ), orientation.mask)
+            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true), .allButUpsideDown)
         }
     }
 
-    func testPlayerRotationOverrideCannotUnlockBrowsingPages() {
-        for orientation in [PlayerScreenOrientation.portrait, .landscape] {
-            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
-                isPlayerActive: false, playerMode: .rotateFreely, requestedOrientation: orientation
+    func testAQueuedVideoRotationCannotUnlockBrowsingPages() {
+        for mask: UIInterfaceOrientationMask in [.portrait, .landscape, .landscapeLeft, .landscapeRight, .all] {
+            XCTAssertEqual(PlayerOrientationCoordinator.geometryMask(
+                isPlayerActive: false, preferredOrientation: mask
             ), .portrait)
         }
     }
 
-    func testBrowsingIsPortraitRegardlessOfTheSavedPlayerMode() {
-        for mode in [PlayerOrientationMode.rotateFreely, .landscapeLocked] {
-            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: false, playerMode: mode), .portrait)
-        }
-    }
-
-    func testVideoStillAllowsLandscapeAndRespectsItsRotationSetting() {
-        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true, playerMode: .landscapeLocked), .landscape)
-        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true, playerMode: .rotateFreely), .allButUpsideDown)
+    func testVideoAllowsPortraitAndBothLandscapeDirections() {
+        let playback = PlayerOrientationCoordinator.orientationMask(isPlayerActive: true)
+        XCTAssertTrue(playback.contains(.portrait))
+        XCTAssertTrue(playback.contains(.landscapeLeft))
+        XCTAssertTrue(playback.contains(.landscapeRight))
+        XCTAssertFalse(playback.contains(.portraitUpsideDown))
     }
 
     func testLeavingVideoRestoresPortraitEvenWhenTheDeviceStaysLandscape() {
-        XCTAssertTrue(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true, playerMode: .landscapeLocked).contains(.landscapeLeft))
-        let browsing = PlayerOrientationCoordinator.orientationMask(isPlayerActive: false, playerMode: .landscapeLocked)
+        let browsing = PlayerOrientationCoordinator.orientationMask(isPlayerActive: false)
         XCTAssertEqual(browsing, .portrait)
         XCTAssertFalse(browsing.contains(.landscapeLeft))
         XCTAssertFalse(browsing.contains(.landscapeRight))
