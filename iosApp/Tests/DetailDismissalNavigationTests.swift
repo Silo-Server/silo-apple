@@ -4,6 +4,46 @@ import XCTest
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
+    func testRotationPillAlternatesExactOrientationsForEitherSavedMode() {
+        for mode in [PlayerOrientationMode.rotateFreely, .landscapeLocked] {
+            var orientation = PlayerScreenOrientation.landscape
+            for index in 0..<20 {
+                orientation = orientation.toggled
+                let expected: UIInterfaceOrientationMask = index.isMultiple(of: 2) ? .portrait : .landscape
+                XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+                    isPlayerActive: true, playerMode: mode, requestedOrientation: orientation
+                ), expected)
+            }
+        }
+    }
+
+    func testPlayerRotationOverrideCannotUnlockBrowsingPages() {
+        for orientation in [PlayerScreenOrientation.portrait, .landscape] {
+            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(
+                isPlayerActive: false, playerMode: .rotateFreely, requestedOrientation: orientation
+            ), .portrait)
+        }
+    }
+
+    func testBrowsingIsPortraitRegardlessOfTheSavedPlayerMode() {
+        for mode in [PlayerOrientationMode.rotateFreely, .landscapeLocked] {
+            XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: false, playerMode: mode), .portrait)
+        }
+    }
+
+    func testVideoStillAllowsLandscapeAndRespectsItsRotationSetting() {
+        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true, playerMode: .landscapeLocked), .landscape)
+        XCTAssertEqual(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true, playerMode: .rotateFreely), .allButUpsideDown)
+    }
+
+    func testLeavingVideoRestoresPortraitEvenWhenTheDeviceStaysLandscape() {
+        XCTAssertTrue(PlayerOrientationCoordinator.orientationMask(isPlayerActive: true, playerMode: .landscapeLocked).contains(.landscapeLeft))
+        let browsing = PlayerOrientationCoordinator.orientationMask(isPlayerActive: false, playerMode: .landscapeLocked)
+        XCTAssertEqual(browsing, .portrait)
+        XCTAssertFalse(browsing.contains(.landscapeLeft))
+        XCTAssertFalse(browsing.contains(.landscapeRight))
+    }
+
     func testPlayerFromDetailHasOneOwnerAndReturnsToTheSameNestedPage() throws {
         let router = AppRouter()
         router.presentItemDetail(contentId: "series")

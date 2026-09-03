@@ -8,7 +8,7 @@ import SwiftUI
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule
 ///   scrubber with buffered range + intro tint + chapter ticks + scrub
 ///   preview bubble, then a labeled action row (Quality menu, Audio &
-///   Subtitles sheet, Chapters menu, orientation Lock, More → settings sheet)
+///   Subtitles sheet, Chapters menu, rotation pill, More → settings sheet)
 ///
 /// The whole thing is wrapped in a tap-to-toggle gesture; auto-hide after 3 s
 /// of inactivity. The view is stateful only for sheet presentation and the
@@ -69,6 +69,9 @@ struct MobilePlayerControls: View {
                         .padding(.bottom, 2)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
+                    }
+                    .onChange(of: proxy.size, initial: true) { _, _ in
+                        orientationCoordinator.refreshInterfaceOrientation()
                     }
                 }
                 .transition(.opacity)
@@ -500,12 +503,12 @@ struct MobilePlayerControls: View {
 
     private enum ActionRowStyle {
         case full      // labeled pills, value on the Quality pill
-        case compact   // shorter labels, lock folds to a circle
-        case icons     // circles everywhere except the Quality value pill
+        case compact   // shorter labels
+        case icons     // icon controls; Quality and rotation remain pills
     }
 
     /// Labeled pill row. `ViewThatFits` tries the full labels first, then
-    /// compact ones, then icon circles, so the row never truncates or wraps
+    /// compact ones, then icon controls, so the row never truncates or wraps
     /// — an iPhone in portrait with chapters present lands on `.icons`.
     private var actionRow: some View {
         ViewThatFits(in: .horizontal) {
@@ -541,7 +544,7 @@ struct MobilePlayerControls: View {
                     .accessibilityLabel("Chapters")
             }
 
-            lockControl(compact: style != .full)
+            rotationPill(compact: style == .icons)
 
             controlButton(systemName: "ellipsis") {
                 activeSheet = .settings
@@ -709,25 +712,32 @@ struct MobilePlayerControls: View {
         }
     }
 
-    private func lockControl(compact: Bool) -> some View {
-        let isLocked = orientationCoordinator.isLandscapeLocked
-        return Group {
-            if compact {
-                controlButton(systemName: isLocked ? "lock.fill" : "lock.open") {
-                    orientationCoordinator.togglePlayerMode()
-                }
-            } else {
-                actionPill(systemImage: isLocked ? "lock.fill" : "lock.open", title: "Lock") {
-                    orientationCoordinator.togglePlayerMode()
+    private func rotationPill(compact: Bool) -> some View {
+        let target = orientationCoordinator.nextPlayerOrientation
+        return Button {
+            orientationCoordinator.togglePlayerOrientation()
+            viewModel.resumeAutoHide()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: target.symbolName)
+                    .font(.system(size: 14, weight: .semibold))
+                if compact {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                } else {
+                    Text(target.title)
+                        .font(.system(size: 12, weight: .semibold))
                 }
             }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(minWidth: 56, minHeight: 44)
         }
-        .accessibilityLabel(isLocked ? "Landscape Locked" : "Rotate Freely")
-        .accessibilityHint(
-            isLocked
-                ? "Allows portrait rotation during playback"
-                : "Locks playback to landscape"
-        )
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .accessibilityLabel("Rotate to \(target.title)")
+        .accessibilityHint("Rotates the screen without interrupting playback")
+        .accessibilityIdentifier("player.rotate")
     }
 
     private func actionPill(

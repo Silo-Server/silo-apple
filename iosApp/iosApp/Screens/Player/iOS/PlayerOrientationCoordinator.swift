@@ -13,20 +13,43 @@ final class SiloAppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
-/// Centralized orientation policy for the iPhone player shell. Playback code
+enum PlayerScreenOrientation: Equatable {
+    case portrait
+    case landscape
+
+    var toggled: Self { self == .portrait ? .landscape : .portrait }
+    var title: String { self == .portrait ? "Portrait" : "Landscape" }
+    var symbolName: String { self == .portrait ? "rectangle.portrait" : "rectangle" }
+    var mask: UIInterfaceOrientationMask { self == .portrait ? .portrait : .landscape }
+}
+
+/// Centralized orientation policy for the iOS app and player shell. Playback code
 /// should stay unaware of this; the coordinator only manages UIKit masks and
 /// scene geometry updates while the full-screen player is visible.
 @Observable
 final class PlayerOrientationCoordinator {
     static let shared = PlayerOrientationCoordinator()
-    static let appDefaultOrientations: UIInterfaceOrientationMask = .allButUpsideDown
+    static let appDefaultOrientations: UIInterfaceOrientationMask = .portrait
 
     private(set) var playerMode = PlayerSettings.shared.playerOrientationMode
     private(set) var isPlayerActive = false
+    private(set) var requestedOrientation: PlayerScreenOrientation?
+    private(set) var observedOrientation: PlayerScreenOrientation = .portrait
 
     var supportedOrientations: UIInterfaceOrientationMask {
-        guard isPlayerActive else { return Self.appDefaultOrientations }
-        return playerMode.isLandscapeLocked ? .landscape : Self.appDefaultOrientations
+        Self.orientationMask(isPlayerActive: isPlayerActive, playerMode: playerMode,
+                             requestedOrientation: requestedOrientation)
+    }
+
+    static func orientationMask(
+        isPlayerActive: Bool, playerMode: PlayerOrientationMode,
+        requestedOrientation: PlayerScreenOrientation? = nil
+    ) -> UIInterfaceOrientationMask {
+        guard isPlayerActive else { return appDefaultOrientations }
+        if let requestedOrientation { return requestedOrientation.mask }
+        // Info.plist must continue advertising landscape so video can use it.
+        // The delegate restricts every non-player page to portrait at runtime.
+        return playerMode.isLandscapeLocked ? .landscape : .allButUpsideDown
     }
 
     private init() {}
@@ -37,13 +60,35 @@ final class PlayerOrientationCoordinator {
 
     func activatePlayer() {
         playerMode = PlayerSettings.shared.playerOrientationMode
+        requestedOrientation = nil
+        refreshInterfaceOrientation()
         isPlayerActive = true
         applyCurrentPolicy(rotateIntoLandscape: playerMode.isLandscapeLocked)
     }
 
     func deactivatePlayer() {
         isPlayerActive = false
+        requestedOrientation = nil
         applyCurrentPolicy(rotateIntoLandscape: false, attemptDeviceRotation: true)
+    }
+
+    var nextPlayerOrientation: PlayerScreenOrientation {
+        (requestedOrientation ?? observedOrientation).toggled
+    }
+
+    func refreshInterfaceOrientation() {
+        guard let current = currentInterfaceOrientation(), current != .unknown else { return }
+        observedOrientation = current.isLandscape ? .landscape : .portrait
+    }
+
+    /// An explicit rotation for this playback session, without changing the
+    /// profile's saved auto-rotation setting or reloading the video.
+    func togglePlayerOrientation() {
+        guard isPlayerActive else { return }
+        refreshInterfaceOrientation()
+        let target = nextPlayerOrientation
+        requestedOrientation = target
+        applyCurrentPolicy(rotateIntoLandscape: target == .landscape, attemptDeviceRotation: true)
     }
 
     func togglePlayerMode() {
@@ -51,7 +96,8 @@ final class PlayerOrientationCoordinator {
     }
 
     func setPlayerMode(_ mode: PlayerOrientationMode) {
-        guard playerMode != mode else { return }
+        guard playerMode != mode || requestedOrientation != nil else { return }
+        requestedOrientation = nil
         playerMode = mode
         PlayerSettings.shared.setPlayerOrientationMode(mode)
         guard isPlayerActive else { return }
