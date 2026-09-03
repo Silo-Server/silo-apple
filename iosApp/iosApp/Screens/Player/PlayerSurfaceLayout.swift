@@ -40,7 +40,7 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
                             RoundedRectangle(cornerRadius: isPreview ? 8 : 0)
                                 .stroke(.white.opacity(isPreview ? 0.16 : 0), lineWidth: 1)
                         }
-                        .shadow(color: .black.opacity(isPreview ? 0.55 : 0), radius: 34, y: 18)
+                        .shadow(color: .black.opacity(isPreview ? 0.55 : 0), radius: isPreview ? 34 : 0, y: isPreview ? 18 : 0)
                         .position(x: frame.midX, y: frame.midY)
                         // Respect the original ScrollView's clipping even though
                         // the video itself is a persistent sibling of that view.

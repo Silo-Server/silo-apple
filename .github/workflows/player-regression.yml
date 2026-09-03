@@ -59,6 +59,21 @@ jobs:
             -destination "$DESTINATION" -derivedDataPath /tmp/silo-derived \
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
+      - name: Record synthetic preview expansion and successor playback
+        if: matrix.action == 'test'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Reuse the compiled test bundle. This records only the bounded
+          # synthetic-video test, not a second build or the full test suite.
+          xcrun simctl io booted recordVideo /tmp/preview-transition.mp4 &
+          recorder_pid=$!
+          trap 'kill -INT "$recorder_pid" 2>/dev/null || true; wait "$recorder_pid" || true' EXIT
+          xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -derivedDataPath /tmp/silo-derived \
+            -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
+            -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=NO
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,4 +82,6 @@ jobs:
           path: |
             /tmp/player-validation.log
             /tmp/player-validation.xcresult
+            /tmp/preview-transition.mp4
+            /tmp/preview-recording.xcresult
           retention-days: 7

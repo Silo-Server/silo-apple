@@ -164,5 +164,32 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         XCTAssertEqual(player.rate, 0, "Resizing must not resume a paused preview")
         XCTAssertEqual(player.currentTime().seconds, pausedPosition, accuracy: 0.1)
         XCTAssertEqual(itemChanges, 0)
+
+        // Next pressed before a preview can lay out: one actual successor
+        // load, using the same player/view/layer, with its own first-frame latch.
+        var nilItems = 0
+        let nilObservation = player.publisher(for: \.currentItem, options: [.new]).sink {
+            if $0 == nil { nilItems += 1 }
+        }
+        defer { nilObservation.cancel() }
+        presentation.hasPreviewBounds = false
+        presentation.preview = true
+        engine.prepareForItemReplacement()
+        presentation.preview = false
+        try await engine.load(url: url)
+        engine.play()
+        let successorDeadline = ContinuousClock.now + .seconds(15)
+        while !engine.hasFirstFrameReadyForDisplay && ContinuousClock.now < successorDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(engine.hasFirstFrameReadyForDisplay)
+        XCTAssertTrue(layer.isReadyForDisplay)
+        XCTAssertTrue(surfaces(in: window).first === surface)
+        XCTAssertTrue(engine.currentAVPlayer === player)
+        XCTAssertTrue(layer.superlayer === surface.layer)
+        XCTAssertFalse(player.currentItem === item)
+        XCTAssertEqual(itemChanges, 1)
+        XCTAssertEqual(nilItems, 0)
+        print("Synthetic next episode: 1 item swap, 0 nil items, same view/player/layer, successor first frame ready")
     }
 }
