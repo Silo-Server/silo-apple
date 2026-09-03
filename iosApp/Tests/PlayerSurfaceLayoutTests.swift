@@ -45,7 +45,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                     }
                 }
             }
-            .environment(\.accessibilityReduceMotion, reduceMotion)
+            .transaction { $0.disablesAnimations = reduceMotion }
         }
     }
 
