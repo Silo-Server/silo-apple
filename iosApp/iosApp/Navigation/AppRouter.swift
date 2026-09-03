@@ -213,6 +213,23 @@ class AppRouter {
 
     var presentedPlayer: PlayerPresentation?
 
+    #if os(tvOS)
+    /// True while a `PlayerView` is on screen. The tvOS shell's root
+    /// `onExitCommand` still receives Back when the player has no focused
+    /// descendant (for example during its loading phase). Popping the player
+    /// there with `path.removeLast()` races the in-flight transition and can
+    /// leave the route underneath rendered as a blank frame; the shell asks
+    /// the player to exit through its own `dismiss()` instead.
+    var isPlayerViewPresented = false
+    /// Bumped by `requestPlayerExit()`. The presented player observes it and
+    /// runs its normal teardown-then-dismiss path.
+    var playerExitRequest = 0
+
+    func requestPlayerExit() {
+        playerExitRequest &+= 1
+    }
+    #endif
+
     // MARK: - Tab Selection
 
     /// One-shot tab-switch request, consumed (and cleared) by `MainTabView`,

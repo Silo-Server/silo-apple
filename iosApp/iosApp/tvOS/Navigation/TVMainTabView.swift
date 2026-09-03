@@ -374,6 +374,13 @@ struct TVMainTabView: View {
         .onExitCommand {
             if router.path.isEmpty {
                 focusTopMenuIfVisible()
+            } else if router.isPlayerViewPresented {
+                // Back reached the shell because nothing inside the pushed
+                // player owns focus. Let the player exit through its own
+                // `dismiss()`: a programmatic `path.removeLast()` here skips
+                // the player's teardown and can desync the stack from the
+                // path, which shows up as a black detail page underneath.
+                router.requestPlayerExit()
             } else {
                 // The root remains mounted behind NavigationStack pushes.
                 // Its old no-op top-menu request consumed Back/Menu while the

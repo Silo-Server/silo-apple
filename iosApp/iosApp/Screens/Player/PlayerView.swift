@@ -49,6 +49,7 @@ struct PlayerView: View {
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     #endif
     #if os(tvOS)
+    @Environment(AppRouter.self) private var router
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
     @State private var isTimelinePreviewVisible = false
     @State private var timelineTimeDisplayMode: TVPlayerTimeDisplayMode = .elapsedRemaining
@@ -128,6 +129,22 @@ struct PlayerView: View {
                     if !viewModel.showNextUpScreen {
 
                         #if os(tvOS)
+                        // `onExitCommand` only fires when a descendant owns
+                        // focus. Neither the press sink nor the transport
+                        // controls mount while a load is in flight, so without
+                        // this anchor a Back press during loading falls through
+                        // to the shell, which pops the route programmatically
+                        // instead of going through `dismissPlayer()`. Unmounts
+                        // as soon as a real control exists, so the engine hands
+                        // focus to that control rather than leaving it here.
+                        if viewModel.isLoading && !viewModel.isHUDPresented {
+                            Color.clear
+                                .frame(width: 1, height: 1)
+                                .focusable()
+                                .focusEffectDisabled()
+                                .accessibilityHidden(true)
+                        }
+
                         // Focus sink with UIKit-backed press capture. Mounted
                         // whenever the transport overlay is hidden OR a seek
                         // session is active — in both cases it's the sole target
@@ -360,7 +377,19 @@ struct PlayerView: View {
             guard newValue != nil else { return }
             dismissPlayer()
         }
+        #if os(tvOS)
+        .onChange(of: router.playerExitRequest) { _, _ in
+            // The shell forwards a Back press that never reached this view's
+            // `onExitCommand`. Skip if teardown has already started so the
+            // route is popped exactly once.
+            guard !viewModel.needsReplacementForPresentation else { return }
+            dismissPlayer()
+        }
+        #endif
         .onAppear {
+            #if os(tvOS)
+            router.isPlayerViewPresented = true
+            #endif
             #if os(iOS)
             // A Picture in Picture restore re-presents this cover for a session
             // that is still playing. Adopt that view model instead of minting a
@@ -416,6 +445,7 @@ struct PlayerView: View {
         #endif
         .onDisappear {
             #if os(tvOS)
+            router.isPlayerViewPresented = false
             timelinePreviewHideTask?.cancel()
             timelinePreviewHideTask = nil
             #endif
