@@ -648,7 +648,11 @@ final class TVFocusMarqueeModel {
     private var backdropTask: Task<Void, Never>?
     private var tintTask: Task<Void, Never>?
     private var enrichTask: Task<Void, Never>?
+    /// The content whose backdrop may be shown. `nil` while a previewed
+    /// selection has not rested yet, so enrichment landing early cannot
+    /// swap the backdrop ahead of the 150 ms gate.
     private var backdropContentID: String?
+    /// False while the feed is offscreen; every entry point is a no-op then.
     private var isActive = true
     private var enrichmentState: TVHeroEnrichmentState = .notStarted
     private var lastSampledTintURL: String?
@@ -664,9 +668,7 @@ final class TVFocusMarqueeModel {
     func seed(_ candidate: TVMarqueeContent) {
         guard isActive, content == nil else { return }
         content = candidate
-        backdropContentID = candidate.id
-        loadEnrichment(for: candidate)
-        updateBackdropIfReady()
+        restImmediately(on: candidate)
     }
 
     /// Keep foreground information responsive while rapid focus movement
@@ -682,10 +684,7 @@ final class TVFocusMarqueeModel {
     /// next stop skips the network round trip and only pays one decode.
     func preview(_ candidate: TVMarqueeContent, neighborBackdropURLs: [String] = []) {
         guard isActive, candidate != content else { return }
-        backdropTask?.cancel()
-        tintTask?.cancel()
-        lastSampledTintURL = nil
-        backdropContentID = nil
+        cancelBackdropWork()
         content = candidate
         loadEnrichment(for: candidate, deferNetwork: true)
         backdropTask = Task { [weak self] in
@@ -698,26 +697,43 @@ final class TVFocusMarqueeModel {
         }
     }
 
+    /// Feed left the screen: stop every in-flight task and warmup. `content`
+    /// is kept so `resume` can restore the same selection.
     func suspend() {
         isActive = false
         PosterImageCache.cancelNeighborBackdropWarmup()
-        backdropTask?.cancel()
+        cancelBackdropWork()
         enrichTask?.cancel()
-        tintTask?.cancel()
-        backdropTask = nil
         enrichTask = nil
-        tintTask = nil
-        backdropContentID = nil
-        lastSampledTintURL = nil
     }
 
+    /// Feed is back on screen: show the retained selection without waiting
+    /// for a fresh focus report or the rest debounce.
     func resume() {
         guard !isActive else { return }
         isActive = true
         guard let content else { return }
-        backdropContentID = content.id
-        loadEnrichment(for: content)
+        restImmediately(on: content)
+    }
+
+    /// Treat `candidate` as already rested: point the backdrop at it, then
+    /// load enrichment (which may itself complete the backdrop synchronously
+    /// from cache) and apply whatever artwork is resolvable now.
+    private func restImmediately(on candidate: TVMarqueeContent) {
+        backdropContentID = candidate.id
+        loadEnrichment(for: candidate)
         updateBackdropIfReady()
+    }
+
+    /// Cancel the pending rest and palette work and forget which content
+    /// the backdrop belongs to. The displayed artwork itself stays put.
+    private func cancelBackdropWork() {
+        backdropTask?.cancel()
+        tintTask?.cancel()
+        backdropTask = nil
+        tintTask = nil
+        backdropContentID = nil
+        lastSampledTintURL = nil
     }
 
     private func updateBackdropIfReady() {
@@ -742,8 +758,10 @@ final class TVFocusMarqueeModel {
 
     /// The §9 backfill: fields the section payload doesn't carry (air
     /// date, cast) come from the item-detail endpoint after the marquee
-    /// has already displayed — never blocking it, cached per item, and
-    /// rate-limited by the rest debounce upstream.
+    /// has already displayed — never blocking it and cached per item.
+    /// Cached detail applies synchronously; with `deferNetwork` any network
+    /// work waits out the rest debounce so a roll across a row requests
+    /// nothing.
     private func loadEnrichment(for candidate: TVMarqueeContent, deferNetwork: Bool = false) {
         enrichTask?.cancel()
         guard let contentId = candidate.contentId else {

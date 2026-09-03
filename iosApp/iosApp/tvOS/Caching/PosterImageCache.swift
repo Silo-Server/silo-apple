@@ -116,38 +116,37 @@ enum PosterImageCache {
     /// network round trip — the dominant cost of a rested swap — and leaves
     /// the single decode to the moment the backdrop is actually requested.
     private static let neighborBackdropPrefetcher: ImagePrefetcher = {
-        let p = ImagePrefetcher(
+        let prefetcher = ImagePrefetcher(
             pipeline: ImagePipeline.shared,
             destination: .diskCache,
             maxConcurrentRequestCount: 2
         )
-        p.priority = .low
-        return p
+        prefetcher.priority = .low
+        return prefetcher
     }()
-    @MainActor private static var warmedNeighborBackdropURLs: [URL] = []
+    @MainActor private static var warmedNeighborBackdropURLs: Set<URL> = []
 
     /// Replace the neighbour window: cancel URLs that fell out of it and
-    /// start only the ones not already in flight. Called once per rested
-    /// selection, never per focus change, so a roll across a row queues
-    /// nothing.
+    /// start only the ones not already in flight, in the order given. Called
+    /// once per rested selection, never per focus change, so a roll across a
+    /// row queues nothing.
     @MainActor
     static func warmNeighborBackdrops(_ urlStrings: [String]) {
-        var seen = Set<String>()
-        let urls = urlStrings.compactMap { value -> URL? in
-            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
-            return URL(string: value)
-        }
-        let stale = warmedNeighborBackdropURLs.filter { !urls.contains($0) }
+        var seen = Set<URL>()
+        let urls = urlStrings
+            .compactMap { $0.isEmpty ? nil : URL(string: $0) }
+            .filter { seen.insert($0).inserted }
+        let stale = warmedNeighborBackdropURLs.subtracting(urls)
         let fresh = urls.filter { !warmedNeighborBackdropURLs.contains($0) }
-        warmedNeighborBackdropURLs = urls
-        if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: stale) }
+        warmedNeighborBackdropURLs = seen
+        if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: Array(stale)) }
         if !fresh.isEmpty { neighborBackdropPrefetcher.startPrefetching(with: fresh) }
     }
 
     @MainActor
     static func cancelNeighborBackdropWarmup() {
         guard !warmedNeighborBackdropURLs.isEmpty else { return }
-        neighborBackdropPrefetcher.stopPrefetching(with: warmedNeighborBackdropURLs)
+        neighborBackdropPrefetcher.stopPrefetching(with: Array(warmedNeighborBackdropURLs))
         warmedNeighborBackdropURLs.removeAll()
     }
 

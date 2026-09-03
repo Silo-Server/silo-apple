@@ -152,17 +152,19 @@ final class TVLibraryGridViewModel {
 
     /// Data can change while the same row positions remain visible.
     private func refreshPosterPrefetch() {
-        guard let first = visiblePosterRows.values.map(\.lowerBound).min(),
-              let last = visiblePosterRows.values.map(\.upperBound).max() else {
+        let rows = visiblePosterRows.values
+        guard let first = rows.map(\.lowerBound).min(),
+              let last = rows.map(\.upperBound).max(),
+              let widestRow = rows.map(\.count).max() else {
             cancelPosterPrefetch()
             return
         }
-        let nearbyCount = (visiblePosterRows.values.map(\.count).max() ?? 6) * 2
-        let lowerBound = min(items.count, max(0, first - nearbyCount))
-        let upperBound = max(lowerBound, min(items.count, last + nearbyCount))
-        prefetchPosters(in: lowerBound..<upperBound)
+        // Two rows either side of the visible band.
+        let nearbyCount = widestRow * 2
+        prefetchPosters(in: (first - nearbyCount)..<(last + nearbyCount))
     }
 
+    /// `range` may overrun `items`; the safe subscript clamps it.
     private func prefetchPosters(in range: Range<Int>) {
         // Keep one bounded window around the visible rows. Visible cells still
         // request their own resized image through the same coalescing

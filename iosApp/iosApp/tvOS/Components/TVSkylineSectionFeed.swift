@@ -249,10 +249,8 @@ struct TVSkylineSectionFeed: View {
     ) -> [String] {
         guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return [] }
         let radius = ContinuumTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
-        let lower = max(0, index - radius)
-        let upper = min(section.items.count - 1, index + radius)
-        guard lower <= upper else { return [] }
-        return (lower...upper).compactMap { neighborIndex -> String? in
+        let window = section.items.indices.clamped(to: (index - radius)..<(index + radius + 1))
+        return window.compactMap { neighborIndex -> String? in
             guard neighborIndex != index else { return nil }
             let neighbor = section.items[neighborIndex]
             guard neighbor.type.lowercased() != "episode",

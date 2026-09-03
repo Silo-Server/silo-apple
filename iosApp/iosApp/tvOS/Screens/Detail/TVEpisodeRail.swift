@@ -328,17 +328,17 @@ struct TVEpisodeRail: View {
     }
 
     private func anchorFocusedSelection(
-        at nextIndex: Int,
+        at index: Int,
         viewportWidth: CGFloat
     ) {
-        guard episodes.indices.contains(nextIndex) else { return }
+        guard episodes.indices.contains(index) else { return }
 
         // Keep focus/selection state out of the scroll animation transaction.
         // That prevents hero metadata and every card from inheriting the
         // carousel's animation while the native ScrollView moves its content.
-        anchoredIndex = nextIndex
+        anchoredIndex = index
         let targetOffset = anchoredContentOffset(
-            for: nextIndex,
+            for: index,
             viewportWidth: viewportWidth
         )
         if reduceMotion {
