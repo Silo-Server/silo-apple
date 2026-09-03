@@ -102,15 +102,29 @@ jobs:
           set -euo pipefail
           # Reuse the compiled test bundle. This records only the bounded
           # synthetic-video test, not a second build or the full test suite.
-          xcrun simctl io booted recordVideo /tmp/preview-transition.mp4 &
+          # XCTest can shut down the simulator after the full suite. Boot the
+          # exact recording destination before starting the recorder.
+          simulator_id=$(xcrun simctl list devices available --json | jq -er \
+            '[.devices[][] | select(.name == "iPhone 17 Pro")][0].udid')
+          simulator_state=$(xcrun simctl list devices available --json | jq -r \
+            --arg id "$simulator_id" '.devices[][] | select(.udid == $id) | .state')
+          if [ "$simulator_state" != Booted ]; then
+            xcrun simctl boot "$simulator_id"
+          fi
+          xcrun simctl bootstatus "$simulator_id" -b
+          xcrun simctl io "$simulator_id" recordVideo /tmp/preview-transition.mp4 &
           recorder_pid=$!
           trap 'kill -INT "$recorder_pid" 2>/dev/null || true; wait "$recorder_pid" || true' EXIT
           xcodebuild test-without-building -project iosApp/Silo.xcodeproj -scheme Silo \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath /tmp/silo-derived \
             -parallel-testing-enabled NO \
             -only-testing:SiloTests/PlayerSurfaceLayoutTests/testPlayingPreviewExpandsWithoutReplacingItemOrLosingItsLayer \
             -resultBundlePath /tmp/preview-recording.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+          kill -INT "$recorder_pid"
+          wait "$recorder_pid"
+          trap - EXIT
+          test -s /tmp/preview-transition.mp4
       - name: Upload validation evidence
         if: always()
         uses: actions/upload-artifact@v4

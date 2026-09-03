@@ -110,9 +110,12 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             defer { window.isHidden = true; window.rootViewController = nil }
             try await settle(window)
             print("Mobile layout \(size): preview=\(frames.preview), actions=\(frames.panel)")
-            let snapshot = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-            }
+            // Render the requested viewport, not the host simulator's fixed
+            // window size (which would crop portrait/iPad proof images).
+            let renderer = ImageRenderer(content: layout
+                .frame(width: size.width, height: size.height)
+                .coordinateSpace(name: "mobile-layout").ignoresSafeArea())
+            let snapshot = try XCTUnwrap(renderer.uiImage)
             let attachment = XCTAttachment(image: snapshot)
             attachment.name = "Next Up controls \(Int(size.width))x\(Int(size.height))"
             attachment.lifetime = .keepAlways
@@ -208,6 +211,16 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertTrue(layer.isReadyForDisplay, "The synthetic video must actually have a picture before expansion")
+        func attachFrame(_ name: String) {
+            let snapshot = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: snapshot)
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        attachFrame("Before expansion - playing synthetic preview")
         let position = player.currentTime().seconds
         var itemChanges = 0
         let observation = player.publisher(for: \.currentItem, options: [.new]).sink { _ in itemChanges += 1 }
@@ -222,6 +235,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         XCTAssertTrue(layer.isReadyForDisplay)
         XCTAssertGreaterThanOrEqual(player.currentTime().seconds, position)
         XCTAssertEqual(itemChanges, 0)
+        attachFrame("After expansion - same synthetic video item")
 
         engine.pause()
         let pausedPosition = player.currentTime().seconds
