@@ -142,6 +142,11 @@ final class TVLibraryGridViewModel {
         } else {
             visiblePosterRows.removeValue(forKey: range.lowerBound)
         }
+        refreshPosterPrefetch()
+    }
+
+    /// Data can change while the same row positions remain visible.
+    private func refreshPosterPrefetch() {
         guard let first = visiblePosterRows.values.map(\.lowerBound).min(),
               let last = visiblePosterRows.values.map(\.upperBound).max() else {
             cancelPosterPrefetch()
@@ -169,15 +174,21 @@ final class TVLibraryGridViewModel {
     }
 
     func cancelPosterPrefetch() {
+        stopPosterPrefetchRequests()
+        visiblePosterRows.removeAll()
+    }
+
+    private func stopPosterPrefetchRequests() {
         posterPrefetcher.stopPrefetching()
         prefetchedPosterURLs.removeAll()
-        visiblePosterRows.removeAll()
     }
 
     // MARK: - Fetch logic
 
     private func reload() async {
-        cancelPosterPrefetch()
+        // A cache-backed reload can preserve the grid's row identities and
+        // visibility. Cancel old URLs without discarding that geometry.
+        stopPosterPrefetchRequests()
         generation += 1
         items = []
         nextOffset = 0
@@ -185,6 +196,7 @@ final class TVLibraryGridViewModel {
         snapshot = nil
         error = nil
         hydratePage1FromCache()
+        refreshPosterPrefetch()
         await fetchPage(reset: true)
     }
 
@@ -231,6 +243,7 @@ final class TVLibraryGridViewModel {
                 if snapshot == nil { snapshot = response.snapshot }
             }
             hasMore = response.hasMore ?? false
+            refreshPosterPrefetch()
         } catch {
             guard myGeneration == generation else { return }
             if items.isEmpty {
