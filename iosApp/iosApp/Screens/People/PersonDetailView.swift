@@ -293,6 +293,7 @@ struct PersonDetailView: View {
     @State private var viewModel: PersonDetailViewModel
     #if os(iOS)
     @Environment(\.detailPullBackAction) private var goBack
+    @Environment(\.dismiss) private var dismiss
     #endif
 
     init(personId: Int) {
@@ -301,6 +302,11 @@ struct PersonDetailView: View {
 
     var body: some View {
         rootContent
+            #if os(iOS)
+            .environment(\.detailPullBackAction, {
+                if let goBack { goBack() } else { dismiss() }
+            })
+            #endif
             .onAppear {
                 viewModel.resumeMetadataRefreshIfNeeded()
             }
@@ -332,12 +338,9 @@ struct PersonDetailView: View {
         TVPersonDetailContent(person: person, viewModel: viewModel)
         #else
         #if os(iOS)
-        if goBack != nil {
-            // In a detail stack this pull means Back, not refresh metadata.
-            PhonePersonDetailContent(person: person, viewModel: viewModel)
-        } else {
-            refreshablePersonContent(person: person)
-        }
+        // On iOS this pull means Back, including actor pages opened from
+        // outside a title's detail sheet. Do not start a metadata refresh too.
+        PhonePersonDetailContent(person: person, viewModel: viewModel)
         #else
         refreshablePersonContent(person: person)
         #endif
