@@ -116,6 +116,67 @@ final class HomeSectionsMutationTests: XCTestCase {
     }
 
     @MainActor
+    func testNextUpCardDismissesOnNextUpSurfaceAndClearsBothRows() async throws {
+        // A Next Up episode merged into Continue Watching has a series but no
+        // progress row. It must not be sent to the continue_watching surface
+        // with a fabricated timestamp, which the server would never match.
+        let target = try makeItem(contentId: "target", progressUpdatedAt: nil, seriesId: "series-1")
+        let other = try makeItem(contentId: "other")
+        let sections = [
+            makeSection(id: "continue", type: "continue_watching", totalCount: 2, items: [target, other]),
+            makeSection(id: "next", type: "next_up", totalCount: 1, items: [target]),
+            makeSection(id: "trending", type: "trending", totalCount: 1, items: [target]),
+        ]
+        ResponseCache.shared.set(SectionsResponse(sections: sections), for: CacheKey.homeSections)
+        defer { ResponseCache.shared.remove(CacheKey.homeSections) }
+
+        var continueWatchingCalls = 0
+        var receivedContentId: String?
+        var receivedSeriesId: String?
+        let viewModel = HomeViewModel(
+            dismissContinueWatching: { _, _ in
+                continueWatchingCalls += 1
+            },
+            dismissNextUp: { contentId, seriesId in
+                receivedContentId = contentId
+                receivedSeriesId = seriesId
+            }
+        )
+
+        await viewModel.dismissContinueWatchingItem(target)
+
+        let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
+        XCTAssertEqual(continueWatchingCalls, 0)
+        XCTAssertEqual(receivedContentId, "target")
+        XCTAssertEqual(receivedSeriesId, "series-1")
+        XCTAssertEqual(viewModel.sections.map { $0.items.map(\.contentId) }, [["other"], [], ["target"]])
+        XCTAssertEqual(cached?.sections.map { $0.items.map(\.contentId) }, [["other"], [], ["target"]])
+        XCTAssertNil(viewModel.actionError)
+    }
+
+    @MainActor
+    func testCardWithoutProgressOrSeriesIsLeftInPlace() async throws {
+        let target = try makeItem(contentId: "target", progressUpdatedAt: nil, seriesId: nil)
+        let sections = [
+            makeSection(id: "continue", type: "continue_watching", totalCount: 1, items: [target]),
+        ]
+        ResponseCache.shared.set(SectionsResponse(sections: sections), for: CacheKey.homeSections)
+        defer { ResponseCache.shared.remove(CacheKey.homeSections) }
+
+        let viewModel = HomeViewModel(
+            dismissContinueWatching: { _, _ in XCTFail("unexpected continue_watching dismissal") },
+            dismissNextUp: { _, _ in XCTFail("unexpected next_up dismissal") }
+        )
+
+        await viewModel.dismissContinueWatchingItem(target)
+
+        let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
+        XCTAssertEqual(viewModel.sections[0].items.map(\.contentId), ["target"])
+        XCTAssertEqual(cached?.sections[0].items.map(\.contentId), ["target"])
+        XCTAssertNil(viewModel.actionError)
+    }
+
+    @MainActor
     func testFailedDismissalPreservesStateAndSurfacesError() async throws {
         let target = try makeItem(contentId: "target")
         let sections = [
@@ -204,16 +265,24 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertTrue(viewModel.isShowingActionError)
     }
 
-    private func makeItem(contentId: String) throws -> SectionItem {
-        let json = """
-        {
-          "contentId": "\(contentId)",
-          "type": "movie",
-          "title": "Test Item",
-          "progressUpdatedAt": "2026-07-10T12:00:00Z"
+    private func makeItem(
+        contentId: String,
+        progressUpdatedAt: String? = "2026-07-10T12:00:00Z",
+        seriesId: String? = nil
+    ) throws -> SectionItem {
+        var fields: [String: Any] = [
+            "contentId": contentId,
+            "type": "movie",
+            "title": "Test Item",
+        ]
+        if let progressUpdatedAt {
+            fields["progressUpdatedAt"] = progressUpdatedAt
         }
-        """
-        return try JSONDecoder().decode(SectionItem.self, from: Data(json.utf8))
+        if let seriesId {
+            fields["seriesId"] = seriesId
+        }
+        let data = try JSONSerialization.data(withJSONObject: fields)
+        return try JSONDecoder().decode(SectionItem.self, from: data)
     }
 
     private func makeSection(

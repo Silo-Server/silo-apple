@@ -468,6 +468,15 @@ actor ContinuumAPI {
         try await http.delete("/api/v1/home/dismissals/continue_watching/\(contentId)")
     }
 
+    /// Next Up episodes carry no progress row, so the server keys their
+    /// dismissal on the parent series instead of `progress_updated_at`.
+    func dismissNextUpItem(contentId: String, seriesId: String) async throws {
+        try await http.putVoid(
+            "/api/v1/home/dismissals/next_up/\(contentId)",
+            body: NextUpDismissalBody(seriesId: seriesId)
+        )
+    }
+
     func librarySections(libraryId: Int) async throws -> SectionsResponse {
         try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
     }
@@ -1086,4 +1095,8 @@ enum APIError: LocalizedError {
 
 private struct HomeDismissalBody: Encodable {
     let progressUpdatedAt: String
+}
+
+private struct NextUpDismissalBody: Encodable {
+    let seriesId: String
 }
