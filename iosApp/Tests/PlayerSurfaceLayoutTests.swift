@@ -10,6 +10,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     @Observable final class Presentation {
         var preview = false
         var hasPreviewBounds = true
+        var viewport: CGSize?
     }
 
     private struct Harness: View {
@@ -48,6 +49,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                     }
                 }
             }
+            .frame(width: presentation.viewport?.width, height: presentation.viewport?.height)
             .transaction { $0.disablesAnimations = reduceMotion }
         }
     }
@@ -236,6 +238,26 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(player.currentTime().seconds, position)
         XCTAssertEqual(itemChanges, 0)
         attachFrame("After expansion - same synthetic video item")
+
+        // The rotation pill changes scene geometry, not playback. Exercise
+        // both resulting viewport shapes on the live native video surface.
+        // Actual UIKit rotation/button delivery is checked interactively.
+        for size in [CGSize(width: 390, height: 844), CGSize(width: 844, height: 390)] {
+            let previousPosition = player.currentTime().seconds
+            presentation.viewport = size
+            try await settle(window)
+            XCTAssertTrue(surfaces(in: window).first === surface)
+            XCTAssertTrue(engine.currentAVPlayer === player)
+            XCTAssertTrue(player.currentItem === item)
+            XCTAssertTrue(layer.superlayer === surface.layer)
+            XCTAssertTrue(layer.isReadyForDisplay)
+            XCTAssertEqual(surface.bounds.width, size.width, accuracy: 1)
+            XCTAssertEqual(surface.bounds.height, size.height, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(player.currentTime().seconds, previousPosition)
+            XCTAssertEqual(itemChanges, 0)
+        }
+        presentation.viewport = nil
+        try await settle(window)
 
         engine.pause()
         let pausedPosition = player.currentTime().seconds
