@@ -1862,6 +1862,9 @@ struct MainTabView: View {
         )) {
             AudioFullPlayerView()
         }
+        #if os(iOS)
+        .modifier(PlayerPresentationModifier(router: router))
+        #else
         .fullScreenCover(item: $router.presentedPlayer) { payload in
             PlayerView(
                 contentId: payload.contentId,
@@ -1875,20 +1878,12 @@ struct MainTabView: View {
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL
             )
-            #if os(iOS)
-            // Recorded here rather than rebuilt inside the player: a Picture in
-            // Picture restore has to re-present this exact payload, and
-            // `PlayerView` never receives `returnToContentId`.
-            .onAppear {
-                PlayerPresentationRestoration.presenter = router
-                PlayerPresentationRestoration.recordPresentation(payload)
-            }
-            #endif
         }
+        #endif
         #if os(iOS)
         .sheet(
             item: $router.presentedItemDetail,
-            onDismiss: { router.dismissItemDetail() }
+            onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
             ItemDetailSheet(presentation: presentation, router: router)
         }
@@ -2482,62 +2477,37 @@ private struct ItemDetailSheet: View {
             GeometryReader { geometry in
                 let pageHeight = geometry.size.height + geometry.safeAreaInsets.bottom
 
-                // A real paged scroll surface, not a release-triggered route
-                // swap. The adjacent detail page is physically beside the
-                // current one, so it follows the finger throughout a held
-                // drag and settles with native UIScrollView physics.
-                ScrollView(.horizontal) {
-                    LazyHStack(spacing: 10) {
-                        ForEach(pageContentIDs, id: \.self) { contentID in
-                            ItemDetailView(
-                                contentId: contentID,
-                                onClose: router.dismissItemDetail
-                            )
-                            .frame(
-                                width: geometry.size.width,
-                                height: pageHeight
-                            )
-                            // Every neighbouring page remains its own card
-                            // throughout an interactive drag. The small glass
-                            // gutter exposes both rounded edges instead of
-                            // smearing two full-bleed colour fields together.
-                            // Only the presented top edge is rounded: rounding
-                            // the off-screen bottom exposed a grey material lip.
-                            .clipShape(
-                                UnevenRoundedRectangle(
-                                    topLeadingRadius: 28,
-                                    bottomLeadingRadius: 0,
-                                    bottomTrailingRadius: 0,
-                                    topTrailingRadius: 28,
-                                    style: .continuous
-                                )
-                            )
-                            .contentShape(
-                                UnevenRoundedRectangle(
-                                    topLeadingRadius: 28,
-                                    bottomLeadingRadius: 0,
-                                    bottomTrailingRadius: 0,
-                                    topTrailingRadius: 28,
-                                    style: .continuous
-                                )
-                            )
-                            .id(contentID)
+                if browseSource == nil {
+                    // iPhone has one detail page. Do not put its vertical
+                    // scroll view inside an unused horizontal scroll view:
+                    // the native sheet should coordinate with that page directly.
+                    detailPage(contentID: currentContentID, width: geometry.size.width, height: pageHeight)
+                } else {
+                    // Keep iPad's source-aware, finger-following page deck.
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 10) {
+                            ForEach(pageContentIDs, id: \.self) { contentID in
+                                detailPage(contentID: contentID, width: geometry.size.width, height: pageHeight)
+                            }
                         }
+                        .scrollTargetLayout()
                     }
-                    .scrollTargetLayout()
-                }
-                .scrollIndicators(.hidden)
-                .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-                .scrollPosition(id: pagingSelection, anchor: .center)
-                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                .frame(height: pageHeight, alignment: .top)
-                .ignoresSafeArea(.container, edges: .bottom)
-                .task(id: currentContentID) {
-                    await prefetchAdjacentDetails()
+                    .scrollIndicators(.hidden)
+                    .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
+                    .scrollPosition(id: pagingSelection, anchor: .center)
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    .frame(height: pageHeight, alignment: .top)
+                    .ignoresSafeArea(.container, edges: .bottom)
+                    .task(id: currentContentID) {
+                        await prefetchAdjacentDetails()
+                    }
                 }
             }
                 .navigationDestination(for: Route.self) { route in
                     destination(for: route)
+                        .environment(\.detailPullBackAction, {
+                            withAnimation { router.goBackInItemDetail() }
+                        })
                 }
                 .toolbarBackground(.hidden, for: .navigationBar)
         }
@@ -2553,11 +2523,26 @@ private struct ItemDetailSheet: View {
         .presentationDragIndicator(.hidden)
         .presentationCornerRadius(28)
         .presentationBackground(.ultraThickMaterial)
-        .presentationContentInteraction(.scrolls)
+        // Nested pages handle a top pull as Back. The sheet's native dismiss
+        // remains available only at the root, preserving the source page.
+        .interactiveDismissDisabled(!router.itemDetailPath.isEmpty)
+        .modifier(PlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
     }
 
     private var currentContentID: String {
         router.presentedItemDetail?.contentId ?? presentation.contentId
+    }
+
+    private func detailPage(contentID: String, width: CGFloat, height: CGFloat) -> some View {
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: 28, bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0, topTrailingRadius: 28, style: .continuous
+        )
+        return ItemDetailView(contentId: contentID, onClose: router.dismissItemDetail)
+            .frame(width: width, height: height)
+            .clipShape(shape)
+            .contentShape(shape)
+            .id(contentID)
     }
 
     /// iPhone detail cards are intentionally fixed to the title that was

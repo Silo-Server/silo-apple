@@ -179,6 +179,10 @@ class AppRouter {
         let returnToContentId: String?
         /// Set for offline playback of a completed download.
         var offlineDownloadId: String? = nil
+        /// The iOS detail sheet that owns this cover. Nil means the app root.
+        /// Keep ownership stable while the player is presented, rather than
+        /// attaching competing covers to the root and the sheet.
+        var detailPresentationID: UUID? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -246,7 +250,7 @@ class AppRouter {
             ))
         }
         #else
-        presentedPlayer = PlayerPresentation(
+        var presentation = PlayerPresentation(
             contentId: contentId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,
@@ -258,6 +262,10 @@ class AppRouter {
             posterURL: posterURL,
             backdropURL: backdropURL
         )
+        #if os(iOS)
+        presentation.detailPresentationID = presentedItemDetail?.id
+        #endif
+        presentedPlayer = presentation
         #endif
     }
 
@@ -285,7 +293,7 @@ class AppRouter {
             resumePosition: resumePosition
         ))
         #else
-        presentedPlayer = PlayerPresentation(
+        var presentation = PlayerPresentation(
             contentId: contentId,
             fileId: nil,
             audioTrackIndex: nil,
@@ -298,10 +306,41 @@ class AppRouter {
             posterURL: nil,
             backdropURL: nil
         )
+        #if os(iOS)
+        presentation.detailPresentationID = presentedItemDetail?.id
+        #endif
+        presentedPlayer = presentation
         #endif
     }
 
     // MARK: - Actions
+
+    #if os(iOS)
+    /// Each presentation site sees only the player it owns.
+    func playerPresentation(forDetailID detailID: UUID?) -> PlayerPresentation? {
+        guard let presentedPlayer, presentedPlayer.detailPresentationID == detailID else { return nil }
+        return presentedPlayer
+    }
+
+    /// An outgoing cover must not close a newer player or the detail below it.
+    func dismissPlayerPresentation(id: UUID) {
+        guard presentedPlayer?.id == id else { return }
+        presentedPlayer = nil
+    }
+
+    /// A pull-down on a pushed actor/episode page means Back, not close sheet.
+    func goBackInItemDetail() {
+        guard presentedItemDetail != nil, !itemDetailPath.isEmpty else { return }
+        itemDetailPath.removeLast()
+    }
+
+    func itemDetailPresentationDidDismiss() {
+        // The sheet binding clears its item before this callback. A delayed
+        // callback from an old sheet must not erase a newly opened detail.
+        guard presentedItemDetail == nil else { return }
+        itemDetailPath = NavigationPath()
+    }
+    #endif
 
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {

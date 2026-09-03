@@ -291,6 +291,9 @@ final class PersonDetailViewModel {
 
 struct PersonDetailView: View {
     @State private var viewModel: PersonDetailViewModel
+    #if os(iOS)
+    @Environment(\.detailPullBackAction) private var goBack
+    #endif
 
     init(personId: Int) {
         _viewModel = State(initialValue: PersonDetailViewModel(personId: personId))
@@ -328,14 +331,29 @@ struct PersonDetailView: View {
         #if os(tvOS)
         TVPersonDetailContent(person: person, viewModel: viewModel)
         #else
+        #if os(iOS)
+        if goBack != nil {
+            // In a detail stack this pull means Back, not refresh metadata.
+            PhonePersonDetailContent(person: person, viewModel: viewModel)
+        } else {
+            refreshablePersonContent(person: person)
+        }
+        #else
+        refreshablePersonContent(person: person)
+        #endif
+        #endif
+    }
+
+    #if !os(tvOS)
+    private func refreshablePersonContent(person: Person) -> some View {
         PhonePersonDetailContent(person: person, viewModel: viewModel)
             .refreshable {
                 async let overlayRefresh: Void = OverlayPrefsStore.shared.refresh()
                 await viewModel.reload()
                 await overlayRefresh
             }
-        #endif
     }
+    #endif
 }
 
 #if os(tvOS)
@@ -515,6 +533,7 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.bottom, ContinuumTheme.largePadding)
         }
+        .detailScrollDismissal()
         .continuumPageBackground()
     }
 

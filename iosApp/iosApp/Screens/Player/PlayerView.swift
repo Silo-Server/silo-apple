@@ -40,6 +40,7 @@ struct PlayerView: View {
     let posterURLHint: String?
     let backdropURLHint: String?
     let onPlaybackStarted: (() -> Void)?
+    let onDismissRequested: (() -> Void)?
 
     @State private var viewModel = PlayerViewModel()
     @State private var didNotifyPlaybackStarted = false
@@ -67,7 +68,8 @@ struct PlayerView: View {
         offlineDownloadId: String? = nil,
         posterURLHint: String? = nil,
         backdropURLHint: String? = nil,
-        onPlaybackStarted: (() -> Void)? = nil
+        onPlaybackStarted: (() -> Void)? = nil,
+        onDismissRequested: (() -> Void)? = nil
     ) {
         self.contentId = contentId
         self.preferredFileId = preferredFileId
@@ -80,6 +82,7 @@ struct PlayerView: View {
         self.posterURLHint = posterURLHint
         self.backdropURLHint = backdropURLHint
         self.onPlaybackStarted = onPlaybackStarted
+        self.onDismissRequested = onDismissRequested
     }
 
     var body: some View {
@@ -446,7 +449,11 @@ struct PlayerView: View {
 
     private func dismissPlayer() {
         viewModel.cleanup()
-        dismiss()
+        if let onDismissRequested {
+            onDismissRequested()
+        } else {
+            dismiss()
+        }
     }
 
     #if os(iOS)
