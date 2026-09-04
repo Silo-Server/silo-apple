@@ -408,6 +408,42 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(observed, "session-allocated")
     }
 
+    func testReplanAgainstUncommittedStartKeepsTheSharedSession() {
+        // Up-next Play: the prior session was already stopped (nil), the start
+        // allocated S1, and a caption-policy replan for S1 arrives before the
+        // start commits. Rolling the start back must not DELETE S1.
+        XCTAssertFalse(
+            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+                candidateSessionId: "S1",
+                priorSessionId: nil,
+                retainingSessionId: "S1"
+            )
+        )
+        // A genuinely superseded candidate is still retired.
+        XCTAssertTrue(
+            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+                candidateSessionId: "S1",
+                priorSessionId: nil,
+                retainingSessionId: "S2"
+            )
+        )
+        XCTAssertTrue(
+            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+                candidateSessionId: "S1",
+                priorSessionId: "S0",
+                retainingSessionId: nil
+            )
+        )
+        // The committed prior session is never the bridge's to retire here.
+        XCTAssertFalse(
+            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+                candidateSessionId: "S0",
+                priorSessionId: "S0",
+                retainingSessionId: nil
+            )
+        )
+    }
+
     func testUncancelledStartDeliversToTheCallerAndNeverReclaims() async throws {
         let reclaimed = PlaybackTestActorBox<String>()
         let value = try await PlaybackCancellationShield.run {

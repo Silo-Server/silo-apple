@@ -778,6 +778,13 @@ class PlayerViewModel {
     /// don't keep re-evaluating (and overriding the user) on every
     /// subsequent track-list update.
     private var prefsResolvedForCurrentItem: Bool = false
+    /// A caption pick that arrived before the current V3 load committed and
+    /// therefore could not replan yet. The resolved pick itself is kept, not
+    /// the preference snapshot that produced it: a system caption request
+    /// resolves from the OS language and would be lost if the generic
+    /// preference snapshot were rerun in its place. Drained once the load's
+    /// server transition commits.
+    private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
@@ -1618,6 +1625,8 @@ class PlayerViewModel {
                     } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                         self.pendingProtocolV3SeekReanchorPosition = nil
                         self.commitSeek(to: queuedTarget, source: "queuedAuthReloadReanchor")
+                    } else {
+                        self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                     }
                 }
             }
@@ -1966,6 +1975,10 @@ class PlayerViewModel {
                     if !self.isDisposed, self.activePreparedProtocolV3 != nil {
                         self.commitSeek(to: queuedTarget, source: "queuedReanchor")
                     }
+                } else if currentStreamLoadGeneration == self.streamLoadGeneration {
+                    // Runs only once this task handle is cleared, so a policy
+                    // replan it issues is accepted rather than rejected as busy.
+                    self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
             }
             do {
@@ -3683,6 +3696,7 @@ class PlayerViewModel {
             || preferredProtocolV3SubtitleIndex != nil
         prefsForCurrentItem = nil
         prefsResolvedForCurrentItem = false
+        deferredAutoSubtitlePick = nil
     }
 
     private func resolvedAudioTrackIndexForResume() -> Int? {
@@ -4058,6 +4072,8 @@ class PlayerViewModel {
                     // session after a failed load.
                     await self.realtimeClient.bind(sessionId: session.sessionId)
                     await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
             } catch is CancellationError {
                 // Tear the abandoned Aether load down before retiring its
@@ -7237,6 +7253,15 @@ class PlayerViewModel {
         guard combinedIndex != activePreparedProtocolV3.plan.selectedTracks.subtitle?.index else {
             return false
         }
+        // Inventory arrives as soon as the engine starts loading, before the
+        // start's server transition has committed. A replan staged then rolls
+        // that transition back and retires the session the engine is opening.
+        // Hold the pick until the load commits; the owning load task drains
+        // it through `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
+        guard committedProtocolV3LoadEpoch != nil else {
+            deferredAutoSubtitlePick = track.map(SubtitleAutoSelection.select) ?? .disable
+            return true
+        }
 
         selectedSubtitleId = track?.trackId
         lastLoadRequest?.preferredProtocolV3SubtitleIndex = combinedIndex
@@ -7246,6 +7271,32 @@ class PlayerViewModel {
             message: "Automatic caption policy selected a different subtitle track."
         )
         return true
+    }
+
+    /// Replays the exact caption pick that arrived while a V3 load was still
+    /// uncommitted. Call only after the load's server transition committed.
+    /// The track is re-resolved against the current inventory by id so a
+    /// pick from a superseded inventory cannot select a row that no longer
+    /// exists. A manual subtitle choice made while the pick was held wins;
+    /// the automatic pick is dropped rather than replayed over it.
+    private func reapplyDeferredAutoSubtitlePolicyIfNeeded() {
+        guard let pick = deferredAutoSubtitlePick else { return }
+        deferredAutoSubtitlePick = nil
+        guard !isDisposed,
+              !hasExplicitSubtitleChoice,
+              activePreparedProtocolV3 != nil,
+              committedProtocolV3LoadEpoch != nil else { return }
+        switch pick {
+        case .noChange:
+            return
+        case .disable:
+            applyAutoSubtitle(.disable)
+        case .select(let deferredTrack):
+            guard let track = subtitleTracks.first(where: { $0.trackId == deferredTrack.trackId }) else {
+                return
+            }
+            applyAutoSubtitle(.select(track))
+        }
     }
 
     private func startProgressReporting() {
