@@ -60,7 +60,7 @@ struct DiagnosticsManifest: Codable, Equatable {
         guard playbackSessionIds.count <= 20 else {
             throw DiagnosticsValidationError.invalidField("playback_session_ids")
         }
-        for id in playbackSessionIds where !id.diagnosticsIsNonEmpty {
+        for id in playbackSessionIds where id.isEmpty {
             throw DiagnosticsValidationError.invalidField("playback_session_ids")
         }
 
@@ -98,19 +98,19 @@ struct DiagnosticsManifest: Codable, Equatable {
         }
 
         func validate() throws {
-            guard capturedAt.diagnosticsIsNonEmpty else {
+            guard !capturedAt.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.captured_at")
             }
-            guard captureSessionID.diagnosticsIsNonEmpty else {
+            guard !captureSessionID.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.capture_session_id")
             }
-            guard appVersion.diagnosticsIsNonEmpty else {
+            guard !appVersion.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.app_version")
             }
-            guard appBuild.diagnosticsIsNonEmpty else {
+            guard !appBuild.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.app_build")
             }
-            guard osVersion.diagnosticsIsNonEmpty else {
+            guard !osVersion.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("report.os_version")
             }
         }
@@ -124,7 +124,7 @@ struct DiagnosticsManifest: Codable, Equatable {
         }
 
         func validate() throws {
-            guard serverInstanceID.diagnosticsIsNonEmpty else {
+            guard !serverInstanceID.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("destination.server_instance_id")
             }
         }
@@ -160,16 +160,16 @@ struct DiagnosticsManifest: Codable, Equatable {
         }
 
         func validate() throws {
-            guard manufacturer.diagnosticsIsNonEmpty else {
+            guard !manufacturer.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("device_summary.manufacturer")
             }
-            guard model.diagnosticsIsNonEmpty else {
+            guard !model.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("device_summary.model")
             }
-            guard os.diagnosticsIsNonEmpty else {
+            guard !os.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("device_summary.os")
             }
-            guard formFactor.diagnosticsIsNonEmpty else {
+            guard !formFactor.isEmpty else {
                 throw DiagnosticsValidationError.invalidField("device_summary.form_factor")
             }
         }

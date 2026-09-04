@@ -82,7 +82,7 @@ xcodebuild build \
 ## VS Code
 
 The checked-in `.vscode` configuration provides recommended extensions,
-unsigned build and test tasks, and SweetPad integration for building, running,
+unsigned build tasks, ad-hoc-signed simulator test tasks, and SweetPad integration for building, running,
 debugging, simulator management, and Swift code intelligence without using the
 Xcode UI.
 

@@ -24,7 +24,6 @@ struct CardOverlays: View {
         case poster      // standard 2:3 poster card
         case wide        // backdrop card (continue watching, hero) — leaves
                          // headroom for the title block / progress bar.
-        case hero        // large backdrop (detail-page hero, featured carousel)
     }
 
     var body: some View {
@@ -83,17 +82,16 @@ struct CardOverlays: View {
     }
 
     private func insets(for position: OverlayPosition, scale: CGFloat) -> EdgeInsets {
-        // `wide` and `hero` variants leave more bottom room because a
+        // Wide cards leave more bottom room because a
         // title block / progress bar typically sits under the image.
         let bottomInset: CGFloat = {
             switch variant {
             case .poster: return 8 * scale
             case .wide:   return 24
-            case .hero:   return 16
             }
         }()
-        let sideInset: CGFloat = variant == .hero ? 16 : 8 * scale
-        let topInset: CGFloat  = variant == .hero ? 16 : 8 * scale
+        let sideInset: CGFloat = 8 * scale
+        let topInset: CGFloat  = 8 * scale
         switch position {
         case .topLeft:
             return EdgeInsets(top: topInset, leading: sideInset, bottom: 0, trailing: 0)
@@ -109,15 +107,11 @@ struct CardOverlays: View {
 
 // MARK: - Single-badge resolution + rendering
 
-/// Resolved values needed to render one badge. Settings preview UI
-/// uses `resolveForPreview` to force a chip even when sample data
-/// doesn't yield a value; the live card path uses `resolve` and lets
-/// the optional return value act as the "should I render?" signal.
+/// Resolved values needed to render one badge. Missing labels suppress the badge.
 struct OverlayBadgeRenderState: Equatable {
     let id: OverlayId
     let label: String
     let iconId: OverlayIconId?
-    let iconOnly: Bool
     let accentColor: Color?
 
     /// Resolve the badge as it would appear on a real card. Returns
@@ -130,29 +124,6 @@ struct OverlayBadgeRenderState: Equatable {
         preset: OverlayPreset
     ) -> OverlayBadgeRenderState? {
         guard let label = def.getValue(data) else { return nil }
-        return build(def: def, label: label, data: data, prefs: prefs, preset: preset)
-    }
-
-    /// Force-resolve with the overlay's label as a fallback. Used by
-    /// the settings UI so every row shows a chip even if the chosen
-    /// sample fixture happens to not populate that overlay.
-    static func resolveForPreview(
-        def: OverlayDef,
-        data: OverlayData,
-        prefs: CardOverlayPrefs,
-        preset: OverlayPreset
-    ) -> OverlayBadgeRenderState {
-        let label = def.getValue(data) ?? def.label.uppercased()
-        return build(def: def, label: label, data: data, prefs: prefs, preset: preset)
-    }
-
-    private static func build(
-        def: OverlayDef,
-        label: String,
-        data: OverlayData,
-        prefs: CardOverlayPrefs,
-        preset: OverlayPreset
-    ) -> OverlayBadgeRenderState {
         let cfg = prefs.items[def.id]
         let dynamicIcon = def.getIcon?(data)
         let iconId = dynamicIcon ?? def.iconId
@@ -162,14 +133,12 @@ struct OverlayBadgeRenderState: Equatable {
             id: def.id,
             label: label,
             iconId: showIcon ? iconId : nil,
-            iconOnly: def.iconOnly,
             accentColor: accent.flatMap { Color(hex: $0) }
         )
     }
 }
 
-/// Renders one resolved badge. Used by `CardOverlays` for live cards
-/// and by the settings UI for per-row badge previews.
+/// Renders one resolved badge on a media card.
 struct OverlayBadgeView: View {
     let state: OverlayBadgeRenderState
     let preset: OverlayPreset
@@ -184,7 +153,7 @@ struct OverlayBadgeView: View {
                     tint: preset.foregroundColor(state.accentColor)
                 )
             }
-            if (!state.iconOnly || state.iconId == nil) && !labelRedundantWithIcon {
+            if !labelRedundantWithIcon {
                 badgeText
             }
         }

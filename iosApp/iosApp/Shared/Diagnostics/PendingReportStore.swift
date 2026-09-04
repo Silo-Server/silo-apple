@@ -70,10 +70,6 @@ struct PendingReport: Identifiable, Equatable {
     let manifest: DiagnosticsManifestDraft
     let state: PendingReportState
 
-    var isExpired: Bool {
-        Date().timeIntervalSince(binding.capturedAtDate) > PendingReportStore.expiryInterval
-    }
-
     func isUploadable(to binding: DiagnosticsBinding) -> Bool {
         self.binding.binding == binding
     }
@@ -723,13 +719,6 @@ final class PendingReportStore {
 
         pruneFingerprintStateLocked(now: now)
         return loadDateMap(Self.seenFingerprintsFile)[fingerprint] != nil
-    }
-
-    func markFingerprintSeen(_ fingerprint: String, now: Date = Date()) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        markFingerprintSeenLocked(fingerprint, now: now)
     }
 
     func canAutoUpload(fingerprint: String, binding: DiagnosticsBinding, now: Date = Date()) -> Bool {

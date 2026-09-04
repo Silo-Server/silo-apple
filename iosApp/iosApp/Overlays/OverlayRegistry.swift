@@ -12,18 +12,6 @@ enum OverlayRegistry {
 
     static let all: [OverlayDef] = tech + ratings + metadata + ribbons
 
-    private static let byId: [OverlayId: OverlayDef] = {
-        var map: [OverlayId: OverlayDef] = [:]
-        for def in all { map[def.id] = def }
-        return map
-    }()
-
-    static func def(for id: OverlayId) -> OverlayDef? { byId[id] }
-
-    static func defs(in category: OverlayCategory) -> [OverlayDef] {
-        all.filter { $0.category == category }
-    }
-
     /// Whether `id` should be hidden because another enabled overlay
     /// already displays the same information. The combined
     /// `resolution_hdr` badge subsumes the standalone `resolution` and
@@ -134,9 +122,6 @@ private extension OverlayRegistry {
     static let tech: [OverlayDef] = [
         OverlayDef(
             id: .resolution,
-            category: .tech,
-            label: "Resolution",
-            description: "Video resolution (4K, 1080p, 720p, etc.)",
             defaultPosition: .topLeft,
             defaultEnabled: true,
             iconId: .monitor,
@@ -147,9 +132,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .hdr,
-            category: .tech,
-            label: "HDR / Dolby Vision",
-            description: "Dynamic range format (HDR10, DV, HLG)",
             defaultPosition: .topLeft,
             defaultEnabled: true,
             iconCapable: true,
@@ -158,9 +140,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .resolutionHdr,
-            category: .tech,
-            label: "Resolution + HDR",
-            description: "Single badge combining resolution and dynamic range (e.g. \"4K DV\").",
             defaultPosition: .topLeft,
             defaultEnabled: false,
             iconCapable: true,
@@ -173,9 +152,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .audio,
-            category: .tech,
-            label: "Audio Codec",
-            description: "Audio codec (Atmos, DTS-HD, TrueHD, etc.)",
             defaultPosition: .topLeft,
             defaultEnabled: true,
             iconCapable: true,
@@ -184,9 +160,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .audioChannels,
-            category: .tech,
-            label: "Audio Channels",
-            description: "Channel layout (Stereo, 5.1, 7.1)",
             defaultPosition: .topLeft,
             defaultEnabled: false,
             iconId: .volume,
@@ -195,9 +168,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .videoCodec,
-            category: .tech,
-            label: "Video Codec",
-            description: "Video codec (H.264, H.265, AV1)",
             defaultPosition: .topLeft,
             defaultEnabled: false,
             iconId: .film,
@@ -207,9 +177,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .container,
-            category: .tech,
-            label: "Container",
-            description: "File container (MKV, MP4, etc.)",
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconCapable: false,
@@ -217,9 +184,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .aspectRatio,
-            category: .tech,
-            label: "Aspect Ratio",
-            description: "Display aspect ratio (16:9, 2.39:1, etc.)",
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .layout,
@@ -228,9 +192,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .releaseType,
-            category: .tech,
-            label: "Release Type",
-            description: "Source format (REMUX, BluRay, WEB-DL, etc.)",
             defaultPosition: .bottomLeft,
             defaultEnabled: true,
             iconCapable: false,
@@ -238,9 +199,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .edition,
-            category: .tech,
-            label: "Edition",
-            description: "Edition label from the best available media version",
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconCapable: false,
@@ -248,9 +206,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .multiAudio,
-            category: .tech,
-            label: "Multi-Audio",
-            description: "Shown when the file has audio in 2+ languages",
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .languages,
@@ -259,9 +214,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .multiSub,
-            category: .tech,
-            label: "Subtitles Available",
-            description: "Shown when the file has any subtitle track",
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .subtitles,
@@ -275,51 +227,35 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    static func formatRating(_ value: Double?, max: Int, suffix: String? = nil) -> String? {
-        guard let value else { return nil }
-        if max == 100 {
-            let intValue = Int(value)
-            return suffix.map { "\(intValue)% \($0)" } ?? "\(intValue)%"
-        }
-        let formatted = String(format: "%.1f", value)
-        return suffix.map { "\(formatted) \($0)" } ?? formatted
+    static func formatRating(_ value: Double?) -> String? {
+        value.map { String(format: "%.1f", $0) }
     }
 
-    static func formatPercent(_ value: Int?, suffix: String? = nil) -> String? {
-        guard let value else { return nil }
-        return suffix.map { "\(value)% \($0)" } ?? "\(value)%"
+    static func formatPercent(_ value: Int?) -> String? {
+        value.map { "\($0)%" }
     }
 
     static let ratings: [OverlayDef] = [
         OverlayDef(
             id: .ratingImdb,
-            category: .ratings,
-            label: "IMDb Rating",
-            description: "IMDb score out of 10",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .star,
             defaultAccent: "#f5c518",
             iconCapable: true,
-            getValue: { formatRating($0.ratingImdb, max: 10) }
+            getValue: { formatRating($0.ratingImdb) }
         ),
         OverlayDef(
             id: .ratingTmdb,
-            category: .ratings,
-            label: "TMDB Rating",
-            description: "TMDB score out of 10",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .star,
             defaultAccent: "#01b4e4",
             iconCapable: true,
-            getValue: { formatRating($0.ratingTmdb, max: 10) }
+            getValue: { formatRating($0.ratingTmdb) }
         ),
         OverlayDef(
             id: .ratingRt,
-            category: .ratings,
-            label: "RT Critics",
-            description: "Rotten Tomatoes critic score",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .tomato,
@@ -329,9 +265,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .ratingRtAudience,
-            category: .ratings,
-            label: "RT Audience",
-            description: "Rotten Tomatoes audience score",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .tomato,
@@ -341,9 +274,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .contentRating,
-            category: .ratings,
-            label: "Age Rating",
-            description: "Content rating (PG-13, TV-MA, R, etc.)",
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .shield,
@@ -382,9 +312,6 @@ private extension OverlayRegistry {
     static let metadata: [OverlayDef] = [
         OverlayDef(
             id: .year,
-            category: .metadata,
-            label: "Year",
-            description: "Release year",
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconCapable: false,
@@ -395,9 +322,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .runtime,
-            category: .metadata,
-            label: "Runtime",
-            description: "Item runtime in hours and minutes",
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconId: .clock,
@@ -406,9 +330,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .originalLanguage,
-            category: .metadata,
-            label: "Language",
-            description: "Original language of the content",
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconId: .globe,
@@ -417,9 +338,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .studio,
-            category: .metadata,
-            label: "Studio",
-            description: "Primary production studio (movies)",
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .building,
@@ -428,9 +346,6 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .network,
-            category: .metadata,
-            label: "Network",
-            description: "Primary network (series)",
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .tv,
@@ -466,27 +381,19 @@ private extension OverlayRegistry {
     static let ribbons: [OverlayDef] = [
         OverlayDef(
             id: .showStatus,
-            category: .ribbons,
-            label: "Show Status",
-            description: "Series lifecycle: Returning, Ended, Cancelled",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .tv,
             iconCapable: true,
-            availabilityNote: "Populated by metadata plugins (TMDB/TVDB updates pending)",
             getValue: { formatShowStatus($0.showStatus) }
         ),
         OverlayDef(
             id: .imdbTop250,
-            category: .ribbons,
-            label: "IMDb Top 250",
-            description: "Rank when present in the IMDb Top 250 chart",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .ribbon,
             defaultAccent: "#f5c518",
             iconCapable: true,
-            availabilityNote: "Requires an IMDb Top 250 data source (planned)",
             getValue: { data in
                 guard let rank = data.imdbTop250 else { return nil }
                 return "#\(rank)"
@@ -494,15 +401,11 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .rtCertifiedFresh,
-            category: .ribbons,
-            label: "RT Certified Fresh",
-            description: "Shown for Rotten Tomatoes Certified Fresh titles",
             defaultPosition: .topRight,
             defaultEnabled: false,
             iconId: .tomato,
             defaultAccent: "#fa320a",
             iconCapable: true,
-            availabilityNote: "Requires Rotten Tomatoes certification data (planned)",
             getValue: { $0.rtCertifiedFresh == true ? "Certified Fresh" : nil }
         ),
     ]

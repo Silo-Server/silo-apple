@@ -1,8 +1,6 @@
 import Foundation
 import CoreText
 
-let subtitleAppearanceSettingKey = "subtitle_appearance"
-
 enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
     case small
     case medium

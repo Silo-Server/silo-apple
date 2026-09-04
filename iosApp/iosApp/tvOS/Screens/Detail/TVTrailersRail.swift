@@ -154,13 +154,6 @@ private struct TrailerCardLabel: View {
         isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
     }
 
-    /// `TrailerRailEntry.title` already falls back to this label when the
-    /// server has no name for the entry — in that case the eyebrow alone
-    /// says everything and repeating it below would read as a bug.
-    private var kindLabel: String {
-        ExtraKindLabels.label(for: entry.kind)
-    }
-
     /// Remote cards say where they go — selecting one leaves the app for
     /// the YouTube app. Local extras show their runtime instead.
     private var secondaryLine: String? {
@@ -296,9 +289,8 @@ struct TVTrailerStatusPill: View {
 /// playback path on tvOS, which has no browser to fall back on (iOS falls
 /// back to the public watch page in the default browser).
 ///
-/// Plain (non-isolated) statics, matching `PlatformScreen` and
-/// `TVFocusDebugOverlay`'s `UIApplication` accessors; every call site is a
-/// view-body / `onAppear` closure on the main thread.
+/// Call sites access these statics from view bodies and lifecycle callbacks
+/// on the main thread.
 enum TVTrailerLaunch {
     /// Keep remote trailer rails visible in the simulator so the complete
     /// movie and series detail hierarchy can be exercised and captured.

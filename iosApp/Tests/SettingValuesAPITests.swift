@@ -2219,6 +2219,11 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.setProfileId(identity.profileId)
         await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
 
+        let originalAccountValue = await tokenStore.refreshAccountIdentity()
+        let originalAccount = try XCTUnwrap(originalAccountValue)
+        let originalRefreshValue = await tokenStore.captureRefreshCredential(expected: originalAccount)
+        let originalRefresh = try XCTUnwrap(originalRefreshValue)
+
         await tokenStore.setServerUrl("http://changed-url.invalid")
         let wrongURLStored = await tokenStore.saveRefreshedTokens(
             "example",
@@ -2232,7 +2237,12 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshAfterWrongURL, "dummy")
 
         await tokenStore.setServerUrl(identity.serverURL)
-        await tokenStore.saveTokens(accessToken: "placeholder", refreshToken: "redacted")
+        let rotated = await tokenStore.saveRefreshedTokens(
+            "placeholder",
+            "redacted",
+            replacing: originalRefresh
+        )
+        XCTAssertTrue(rotated)
         let staleStored = await tokenStore.saveRefreshedTokens(
             "not-a-real",
             "changeme",
@@ -2243,13 +2253,9 @@ final class SettingValuesAPITests: XCTestCase {
         let refreshAfterStale = await tokenStore.getRefreshToken()
         XCTAssertFalse(staleStored)
         XCTAssertEqual(refreshAfterStale, "redacted")
-        let staleCleared = await tokenStore.clearTokensAfterRejectedRefresh(
-            replacing: "dummy",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
+        let staleDisposition = await tokenStore.invalidateRejectedRefresh(originalRefresh)
         let refreshAfterStaleClear = await tokenStore.getRefreshToken()
-        XCTAssertFalse(staleCleared)
+        XCTAssertNil(staleDisposition)
         XCTAssertEqual(refreshAfterStaleClear, "redacted")
 
         let temporary = TemporaryAuthScope(
@@ -2289,6 +2295,11 @@ final class SettingValuesAPITests: XCTestCase {
             "credentials captured from a temporary scope must never redirect into persistent storage"
         )
 
+        let serverAAccountValue = await tokenStore.refreshAccountIdentity()
+        let serverAAccount = try XCTUnwrap(serverAAccountValue)
+        let serverARefreshValue = await tokenStore.captureRefreshCredential(expected: serverAAccount)
+        let serverARefresh = try XCTUnwrap(serverARefreshValue)
+
         await tokenStore.switchActiveServer(serverId: "server-b")
         await tokenStore.setServerUrl("http://server-b.invalid")
         await tokenStore.setProfileId("profile-b")
@@ -2300,15 +2311,11 @@ final class SettingValuesAPITests: XCTestCase {
             expected: identity,
             credentialOwner: .persistentServer(serverId: identity.serverId)
         )
-        let crossServerCleared = await tokenStore.clearTokensAfterRejectedRefresh(
-            replacing: "redacted",
-            expected: identity,
-            credentialOwner: .persistentServer(serverId: identity.serverId)
-        )
+        let crossServerDisposition = await tokenStore.invalidateRejectedRefresh(serverARefresh)
         let serverBAccess = await tokenStore.getAccessToken()
         let serverBRefresh = await tokenStore.getRefreshToken()
         XCTAssertFalse(crossServerStored)
-        XCTAssertFalse(crossServerCleared)
+        XCTAssertNil(crossServerDisposition)
         XCTAssertEqual(serverBAccess, "gateway-token")
         XCTAssertEqual(serverBRefresh, "decoy-token")
     }

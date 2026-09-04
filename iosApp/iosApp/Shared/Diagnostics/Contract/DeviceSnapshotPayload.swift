@@ -21,7 +21,7 @@ struct DeviceSnapshotPayload: Codable, Equatable {
     }
 
     func validate() throws {
-        guard capturedAt.diagnosticsIsNonEmpty else {
+        guard !capturedAt.isEmpty else {
             throw DiagnosticsValidationError.invalidField("device.captured_at")
         }
         guard provenance == .preFailure || provenance == .postRestart else {

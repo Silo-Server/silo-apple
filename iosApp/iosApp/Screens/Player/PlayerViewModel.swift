@@ -108,15 +108,6 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
         return title
     }
 
-    var secondaryTitle: String? {
-        guard let seasonNumber, let episodeNumber else { return nil }
-        let episodeLabel = "S\(seasonNumber):E\(episodeNumber)"
-        if seriesTitle?.isEmpty == false, !title.isEmpty {
-            return "\(episodeLabel) · \(title)"
-        }
-        return episodeLabel
-    }
-
     var progressFraction: Double {
         guard let positionSeconds,
               let durationSeconds,
@@ -124,15 +115,6 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
             return 0
         }
         return min(max(positionSeconds / durationSeconds, 0), 1)
-    }
-
-    var minutesRemaining: Int? {
-        guard let positionSeconds,
-              let durationSeconds,
-              durationSeconds > positionSeconds else {
-            return nil
-        }
-        return max(1, Int(((durationSeconds - positionSeconds) / 60).rounded()))
     }
 
     init(
@@ -154,11 +136,7 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
 }
 
 struct PlayerBackendCapabilities: Equatable {
-    let supportsBufferedAhead: Bool
-    let supportsExternalPrimarySubtitles: Bool
     let supportsSecondarySubtitles: Bool
-    let supportsChapters: Bool
-    let supportsVideoGravity: Bool
     let supportsSubtitleDelay: Bool
     let supportsSubtitleStyling: Bool
 
@@ -167,11 +145,7 @@ struct PlayerBackendCapabilities: Equatable {
         hasTextSubtitleTrack: Bool
     ) -> PlayerBackendCapabilities {
         PlayerBackendCapabilities(
-            supportsBufferedAhead: true,
-            supportsExternalPrimarySubtitles: true,
             supportsSecondarySubtitles: hasTextSubtitleTrack,
-            supportsChapters: true,
-            supportsVideoGravity: true,
             supportsSubtitleDelay: subtitleOverlayControls,
             supportsSubtitleStyling: subtitleOverlayControls
         )
@@ -911,7 +885,6 @@ class PlayerViewModel {
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let introAutoSkipCountdownDefaultSeconds = 5
-    static var nextUpCountdownTotal: Int { nextUpCountdownDefaultSeconds }
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
@@ -3311,7 +3284,6 @@ class PlayerViewModel {
 
     func setVideoGravity(_ gravity: VideoGravity) {
         settings.setVideoGravity(gravity)
-        guard backendCapabilities.supportsVideoGravity else { return }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
     }
 
@@ -3776,12 +3748,6 @@ class PlayerViewModel {
             prefsForCurrentItem = nil
             prefsResolvedForCurrentItem = true
         }
-    }
-
-    private func rearmAdoptedProtocolV3TrackIntent() {
-        guard let plan = activePreparedProtocolV3?.plan,
-              let request = lastLoadRequest else { return }
-        armAdoptedProtocolV3TrackIntent(plan: plan, request: request)
     }
 
     private func armAdoptedProtocolV3TrackIntent(
@@ -5484,7 +5450,7 @@ class PlayerViewModel {
 
     /// **Visibility** predicate for the "Search Subtitles…" entry row: an
     /// active playback session (the synthesized stream URL is session-scoped),
-    /// a known media file, and a backend that can host downloaded sidecars.
+    /// and a known media file.
     /// False for offline/local playback, where the row is meaningless and is
     /// hidden outright.
     ///
@@ -5495,7 +5461,6 @@ class PlayerViewModel {
     var subtitleSearchVisible: Bool {
         activePlaybackSessionId != nil
             && currentSelectedVersion?.fileId != nil
-            && backendCapabilities.supportsExternalPrimarySubtitles
     }
 
     /// **Enablement** predicate: visible *and* the server actually has
@@ -5616,12 +5581,6 @@ class PlayerViewModel {
     /// burn-in-only tracks and would address the wrong track.
     @MainActor
     private func makeSubtitleHandoffContext() -> SubtitleAIController.HandoffContext? {
-        guard backendCapabilities.supportsExternalPrimarySubtitles else {
-            Self.logger.info(
-                "[AI-SUB] backend \(self.activeRouteLabel, privacy: .public) can't host downloaded subtitles; handoff unavailable"
-            )
-            return nil
-        }
         guard let sessionId = activePlaybackSessionId, !sessionId.isEmpty else {
             Self.logger.warning("[AI-SUB] no active session id for subtitle handoff")
             return nil
@@ -5670,13 +5629,6 @@ class PlayerViewModel {
         default:
             return nil
         }
-    }
-
-    static func isCurrentStreamCallback(
-        _ callbackGeneration: UInt64,
-        currentGeneration: UInt64
-    ) -> Bool {
-        callbackGeneration == currentGeneration
     }
 
     static func isUnexpectedBackwardPlaybackTime(
@@ -5732,13 +5684,6 @@ class PlayerViewModel {
         _ descriptor: SidecarSubtitleDescriptor,
         autoSelect: Bool = true
     ) {
-        guard backendCapabilities.supportsExternalPrimarySubtitles else {
-            Self.logger.info(
-                "[AI-SUB] backend \(self.activeRouteLabel, privacy: .public) can't host downloaded subtitles; skipping handoff"
-            )
-            return
-        }
-
         // Remember it (as a `SubtitleUrl`, the cache's shape) so a later
         // route/quality switch re-registers it. De-dupe on combined index.
         if !knownExternalSubtitles.contains(where: { $0.index == descriptor.index }) {
@@ -6560,7 +6505,6 @@ class PlayerViewModel {
     /// path, so without this a quality/route replan leaves the row selected
     /// in the menu with no Aether resource behind it.
     private func reregisterLocallyCreatedSidecarsWithAether() {
-        guard backendCapabilities.supportsExternalPrimarySubtitles else { return }
         var reregistered = false
         for local in locallyRegisteredSidecarSubtitleTracks {
             guard !aetherPlaybackController.containsSubtitle(appTrackID: local.trackId),
@@ -6625,7 +6569,7 @@ class PlayerViewModel {
         }
 
         Self.logger.info(
-            "[CMP-SUB] resolving external subtitles count=\(pending.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) supportsExternal=\(self.backendCapabilities.supportsExternalPrimarySubtitles, privacy: .public) fromKnownCache=\(restoredFromKnownCache, privacy: .public)"
+            "[CMP-SUB] resolving external subtitles count=\(pending.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) supportsExternal=true fromKnownCache=\(restoredFromKnownCache, privacy: .public)"
         )
 
         var descriptors: [SidecarSubtitleDescriptor] = []
@@ -6653,33 +6597,27 @@ class PlayerViewModel {
         if !pending.isEmpty, descriptors.isEmpty {
             Self.logger.warning("[CMP-SUB] no external subtitle descriptors survived URL resolution")
         }
-        if backendCapabilities.supportsExternalPrimarySubtitles {
-            Self.logger.info(
-                "[CMP-SUB] registering sidecar subtitles descriptors=\(descriptors.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public)"
-            )
-            for descriptor in descriptors {
-                let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
-                guard !aetherPlaybackController.containsSubtitle(appTrackID: appTrackID) else { continue }
-                aetherPlaybackController.addExternalSubtitleTrack(
-                    ExternalSubtitleTrack(
-                        url: descriptor.url,
-                        name: descriptor.label,
-                        language: descriptor.language,
-                        isForced: descriptor.forced ?? false,
-                        isHearingImpaired: descriptor.isHearingImpaired ?? false,
-                        isDefault: descriptor.isDefault ?? false,
-                        httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
-                        formatHint: descriptor.codec
-                    ),
-                    appTrackID: appTrackID
-                )
-            }
-            adoptAetherInventory()
-        } else {
-            Self.logger.info(
-                "[CMP-ROUTE] skipping sidecar subtitle registration on backend=\(self.activeRouteLabel, privacy: .public)"
+        Self.logger.info(
+            "[CMP-SUB] registering sidecar subtitles descriptors=\(descriptors.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public)"
+        )
+        for descriptor in descriptors {
+            let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
+            guard !aetherPlaybackController.containsSubtitle(appTrackID: appTrackID) else { continue }
+            aetherPlaybackController.addExternalSubtitleTrack(
+                ExternalSubtitleTrack(
+                    url: descriptor.url,
+                    name: descriptor.label,
+                    language: descriptor.language,
+                    isForced: descriptor.forced ?? false,
+                    isHearingImpaired: descriptor.isHearingImpaired ?? false,
+                    isDefault: descriptor.isDefault ?? false,
+                    httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
+                    formatHint: descriptor.codec
+                ),
+                appTrackID: appTrackID
             )
         }
+        adoptAetherInventory()
     }
 
     /// Aether interprets nil subtitle headers as "inherit every media header."
@@ -7573,7 +7511,7 @@ extension PlayerViewModel {
             playbackSpeed: settings.playbackSpeed,
             videoGravity: settings.videoGravity.rawValue,
             hdrEnabled: settings.hdrEnabled,
-            supportsVideoGravity: backendCapabilities.supportsVideoGravity,
+            supportsVideoGravity: true,
             subtitleSyncMs: settings.subtitleSyncMs,
             subtitlePosition: settings.effectiveSubtitleAppearance.position.rawValue,
             supportsSubtitleDelay: backendCapabilities.supportsSubtitleDelay,

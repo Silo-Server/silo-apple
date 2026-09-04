@@ -1253,11 +1253,7 @@ class ItemDetailViewModel {
         isFavorite.toggle()
         writeBackUserState(contentId: contentId)
         do {
-            if isFavorite {
-                try await SiloAPI.shared.putVoid("/api/v1/favorites/\(contentId)")
-            } else {
-                try await SiloAPI.shared.delete("/api/v1/favorites/\(contentId)")
-            }
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isFavorite.toggle() // Revert on failure
@@ -1271,11 +1267,7 @@ class ItemDetailViewModel {
         inWatchlist.toggle()
         writeBackUserState(contentId: contentId)
         do {
-            if inWatchlist {
-                try await SiloAPI.shared.putVoid("/api/v1/watchlist/\(contentId)")
-            } else {
-                try await SiloAPI.shared.delete("/api/v1/watchlist/\(contentId)")
-            }
+            try await SiloAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             inWatchlist.toggle() // Revert on failure
@@ -1290,11 +1282,7 @@ class ItemDetailViewModel {
         guard let contentId = detail?.contentId else { return }
         isWatched.toggle()
         do {
-            if isWatched {
-                try await SiloAPI.shared.postVoid("/api/v1/watched/\(contentId)")
-            } else {
-                try await SiloAPI.shared.delete("/api/v1/watched/\(contentId)")
-            }
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: isWatched)
             invalidateRelatedCaches(contentId: contentId)
         } catch {
             isWatched.toggle() // Revert on failure

@@ -18,9 +18,6 @@ extension Color {
     /// Primary interactive color — same as text (monochrome UI)
     static let siloPrimary = Color(hex: "#EDEDED")
 
-    /// Kept for backwards compat — same as primary
-    static let siloPrimaryLight = Color(hex: "#EDEDED")
-
     /// Primary text color (#EDEDED)
     static let siloOnSurface = Color(hex: "#EDEDED")
 
@@ -62,11 +59,6 @@ extension Color {
     /// Anchored dropdown panel fill — `glass.strong`, #16171B @ 86% over blur
     static let siloGlassStrong = Color(hex: "#16171B").opacity(0.86)
 
-    /// Shelf/base dropdown fill — `glass.regular`, black @ 55% over blur.
-    static let siloGlassRegular = Color.black.opacity(0.55)
-
-    /// Page scrim behind anchored dropdowns — `scrim.dropdown`, black @ 55%
-    static let siloDropdownScrim = Color.black.opacity(0.55)
 
     // MARK: - Request status dots
 
@@ -88,9 +80,6 @@ extension Color {
 
     /// Outline/border color — white at 12%
     static let siloOutline = Color.white.opacity(0.12)
-
-    /// Overlay for sheets and modals
-    static let siloOverlay = Color.black.opacity(0.6)
 
     /// Divider/separator line color — white at 12%
     static let siloDivider = Color.white.opacity(0.12)

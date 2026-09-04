@@ -1,14 +1,8 @@
 require "base64"
 
-# Root-level Fastfile — covers iOS, tvOS (Android lanes to be added later).
-#
-# Lane overview:
-#   ios beta_ios   — build iOS app, upload to TestFlight
-#   ios beta_tvos  — build tvOS app, upload to TestFlight (must run after beta_ios to avoid
-#                    build number races; enforce ordering in CI)
-#
-# All identifying values (bundle ID, team ID, email, certs repo) come from environment
-# variables. Nothing is hardcoded — this file is safe to commit to a public repo.
+# iOS and tvOS release automation. CI reserves each platform's build number
+# before launching parallel TestFlight builds. Signing credentials come from
+# the environment; bundle identifiers match the checked-in Apple targets.
 
 default_platform(:ios)
 

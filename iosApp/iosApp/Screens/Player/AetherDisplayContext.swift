@@ -39,9 +39,8 @@ enum AetherDisplayContext {
     /// observe. Passing the default `false` there makes an HDR panel look
     /// like an SDR one and declines the HDR10-to-Dolby Vision upgrade.
     ///
-    /// Not the same quantity as `PlatformScreen.potentialEDRHeadroom`, which
-    /// reports what a display *could* make available rather than what it is
-    /// presenting now.
+    /// Potential EDR headroom describes what a display could make available;
+    /// this snapshot describes what it is presenting now.
     @MainActor
     static var panelIsInHDRMode: Bool {
         #if canImport(UIKit)

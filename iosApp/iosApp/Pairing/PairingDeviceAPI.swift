@@ -34,7 +34,7 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
             let str = try container.decode(String.self)
             if let date = Self.isoFractional.date(from: str) { return date }
             if let date = Self.isoWhole.date(from: str) { return date }
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unparseable ISO-8601 date: \(str)")
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unparseable ISO-8601 date")
         }
         self.decoder = decoder
     }
@@ -99,32 +99,6 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
                                               bearer: bearer, body: DeviceApproveRequest(code: userCode))
     }
 
-    func approveRemotePlayback(
-        serverURL: String,
-        bearer: String,
-        profileId: String,
-        profileToken: String?,
-        userCode: String
-    ) async throws {
-        let _: EmptyResponse = try await post(
-            serverURL,
-            "/api/v1/auth/device/approve-handoff",
-            bearer: bearer,
-            profileId: profileId,
-            profileToken: profileToken,
-            body: DeviceApproveRequest(code: userCode)
-        )
-    }
-
-    func denyRemotePlayback(serverURL: String, bearer: String, userCode: String) async throws {
-        let _: EmptyResponse = try await post(
-            serverURL,
-            "/api/v1/auth/device/deny",
-            bearer: bearer,
-            body: DeviceApproveRequest(code: userCode)
-        )
-    }
-
     private struct EmptyResponse: Codable {}
 
     // MARK: Transport
@@ -143,8 +117,6 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         _ serverURL: String,
         _ path: String,
         bearer: String?,
-        profileId: String? = nil,
-        profileToken: String? = nil,
         body: B
     ) async throws -> R {
         guard let url = URL(string: serverURL.appending(path)) else { throw APIError.badURL }
@@ -152,19 +124,15 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        applyHeaders(&request, bearer: bearer, profileId: profileId, profileToken: profileToken)
+        applyHeaders(&request, bearer: bearer)
         return try await send(request)
     }
 
     private func applyHeaders(
         _ request: inout URLRequest,
-        bearer: String?,
-        profileId: String? = nil,
-        profileToken: String? = nil
+        bearer: String?
     ) {
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
-        if let profileId { request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id") }
-        if let profileToken { request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token") }
         AppleDeviceIdentity.current.applyHeaders(to: &request)
     }
 
@@ -173,7 +141,6 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         guard let http = response as? HTTPURLResponse else { throw APIError.http(-1) }
         guard (200..<300).contains(http.statusCode) else { throw APIError.http(http.statusCode) }
         if R.self == EmptyResponse.self { return EmptyResponse() as! R }
-        do { return try decoder.decode(R.self, from: data) }
-        catch { throw APIError.decode }
+        return try decoder.decode(R.self, from: data)
     }
 }

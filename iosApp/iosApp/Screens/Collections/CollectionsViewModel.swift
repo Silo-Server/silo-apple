@@ -78,7 +78,7 @@ class CollectionsViewModel {
         }
         error = nil
         do {
-            let response: CollectionsResponse = try await SiloAPI.shared.get("/api/v1/collections")
+            let response: CollectionsResponse = try await SiloAPI.shared.collections()
             ResponseCache.shared.set(response, for: CacheKey.collections)
             collections = response.collections ?? []
             groups = sortGroups(response.groups ?? [])
@@ -134,9 +134,8 @@ class CollectionsViewModel {
         guard !name.isEmpty else { return }
 
         do {
-            let _: UserCollection = try await SiloAPI.shared.post(
-                "/api/v1/collections",
-                body: CreateCollectionRequest(name: name, collectionType: "manual")
+            let _: UserCollection = try await SiloAPI.shared.createCollection(
+                name: name, collectionType: "manual"
             )
             newCollectionName = ""
             showCreateSheet = false
@@ -152,7 +151,7 @@ class CollectionsViewModel {
 
     func deleteCollection(id: String) async {
         do {
-            try await SiloAPI.shared.delete("/api/v1/collections/\(id)")
+            try await SiloAPI.shared.deleteCollection(id: id)
             collections.removeAll { $0.id == id }
             rebuildSections()
             writeBackCache()

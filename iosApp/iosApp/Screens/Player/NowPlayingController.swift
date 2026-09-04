@@ -1,9 +1,8 @@
+#if os(iOS)
 import Foundation
 import MediaPlayer
 import OSLog
-#if canImport(UIKit)
 import UIKit
-#endif
 
 /// Bridges a SiloControl remote-media session into `MPNowPlayingInfoCenter` +
 /// the shared `MPRemoteCommandCenter`. Library video and audiobook playback
@@ -182,7 +181,6 @@ final class NowPlayingController {
                 )
                 return
             }
-            #if canImport(UIKit)
             guard let image = UIImage(data: data) else {
                 Self.logger.warning("Artwork decode failed")
                 return
@@ -192,11 +190,6 @@ final class NowPlayingController {
                 guard self.currentArtworkURL == url else { return }
                 self.applyArtwork(image)
             }
-            #else
-            // macOS Now Playing doesn't take MPMediaItemArtwork the same way;
-            // skip publishing rather than misuse the API.
-            _ = data
-            #endif
         } catch is CancellationError {
             return
         } catch {
@@ -206,7 +199,6 @@ final class NowPlayingController {
         }
     }
 
-    #if canImport(UIKit)
     private func applyArtwork(_ image: UIImage?) {
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         if let image {
@@ -217,11 +209,6 @@ final class NowPlayingController {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
-    #else
-    private func applyArtwork(_ image: Any?) {
-        // No-op on macOS for this client. macOS surfaces playback differently.
-    }
-    #endif
 
     // MARK: - Remote commands
 
@@ -322,3 +309,4 @@ final class NowPlayingController {
         center.nextTrackCommand.isEnabled = handlers.map { $0.next != nil && $0.isNextEnabled() } ?? false
     }
 }
+#endif

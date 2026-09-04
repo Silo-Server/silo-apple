@@ -546,18 +546,6 @@ final class AudioPlayerViewModel {
         }
     }
 
-    private func retireActiveSession() {
-        let session = activeSession
-        activeSession = nil
-        activeTrackIndex = nil
-        activeTimeline = nil
-        activeEngineEpoch = nil
-        guard let session else { return }
-        Task { [weak self] in
-            await self?.stopPlaybackSession(session, reason: "audio track retired")
-        }
-    }
-
     private func requireCurrentLoad(_ generation: Int) throws {
         guard !Task.isCancelled, generation == loadGeneration, context != nil else {
             throw CancellationError()

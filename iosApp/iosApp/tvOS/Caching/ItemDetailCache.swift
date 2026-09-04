@@ -80,11 +80,6 @@ final class ItemDetailCache {
         }
     }
 
-    /// Refresh a single entry. No-op if we don't hold one.
-    func markStale(contentId: String) {
-        refresh(contentId)
-    }
-
     /// Refresh resident detail models only after the player's final progress
     /// write has completed. Unlike `markStaleFamily`, this is awaited by the
     /// player teardown path so a catalog read can never overtake the watched

@@ -64,18 +64,6 @@ extension View {
         }
     }
 
-    /// Card-style surface with rounded corners — zero elevation (Plezy style).
-    func siloCard() -> some View {
-        self
-            .background(Color.siloSurface)
-            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
-    }
-
-    /// Standard content padding on all sides.
-    func siloPadding() -> some View {
-        self.padding(SiloTheme.padding)
-    }
-
     /// Hide the view conditionally.
     @ViewBuilder
     func hidden(_ isHidden: Bool) -> some View {
@@ -126,22 +114,6 @@ extension View {
         }
         #else
         self.scrollEdgeEffectStyle(.soft, for: .top)
-        #endif
-    }
-
-    /// Extends hero artwork through surrounding chrome on Apple 26+. Earlier
-    /// iOS versions retain the legacy clipped artwork without the new system
-    /// mirroring effect.
-    @ViewBuilder
-    func siloBackgroundExtensionEffect() -> some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            self.backgroundExtensionEffect()
-        } else {
-            self.clipped()
-        }
-        #else
-        self.backgroundExtensionEffect()
         #endif
     }
 
@@ -526,20 +498,6 @@ extension View {
         }
         #else
         self.buttonStyle(.glass)
-        #endif
-    }
-
-    /// Prominent counterpart to `siloGlassButtonStyle()`.
-    @ViewBuilder
-    func siloGlassProminentButtonStyle() -> some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            self.buttonStyle(.glassProminent)
-        } else {
-            self.buttonStyle(.borderedProminent)
-        }
-        #else
-        self.buttonStyle(.glassProminent)
         #endif
     }
 

@@ -11,10 +11,6 @@ import XCTest
 /// kotlinx default) and can still send `set_hdr_enabled`. Either mismatch is a
 /// hard decode error, and `FramedJSONSession` tears the whole connection down
 /// on decode errors — so these are session-fatal, not cosmetic.
-///
-/// NOTE: as with `SiloControlTests`, this project has no unit-test target
-/// wired into `project.yml` yet, so these are not currently compiled or
-/// executed.
 final class SiloControlWireCompatibilityTests: XCTestCase {
 
     // MARK: - State: encoding for old peers

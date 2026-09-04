@@ -31,17 +31,17 @@ struct SubtitleSettingsView: View {
         .navigationTitle("")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
-        .onChange(of: viewModel.editorSubtitleLanguage) { _, _ in
-            Task { await viewModel.saveProfilePrefs() }
+        .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
+            Task { await viewModel.prefs.saveSubtitlePrefs() }
         }
-        .onChange(of: viewModel.editorSubtitleMode) { _, _ in
-            Task { await viewModel.saveProfilePrefs() }
+        .onChange(of: viewModel.prefs.subtitleMode) { _, _ in
+            Task { await viewModel.prefs.saveSubtitlePrefs() }
         }
-        .onChange(of: viewModel.editorShowForcedSubtitles) { _, _ in
-            Task { await viewModel.saveProfilePrefs() }
+        .onChange(of: viewModel.prefs.showForcedSubtitles) { _, _ in
+            Task { await viewModel.prefs.saveSubtitlePrefs() }
         }
-        .onChange(of: viewModel.editorPreferredMetadataLanguage) { _, _ in
-            Task { await viewModel.saveMetadataLanguage() }
+        .onChange(of: viewModel.prefs.preferredMetadataLanguage) { _, _ in
+            Task { await viewModel.prefs.saveMetadataLanguage() }
         }
     }
 
@@ -49,8 +49,9 @@ struct SubtitleSettingsView: View {
 
     @ViewBuilder
     private var metadataLanguageSection: some View {
+        @Bindable var prefs = viewModel.prefs
         Section {
-            Picker("Metadata Language", selection: $viewModel.editorPreferredMetadataLanguage) {
+            Picker("Metadata Language", selection: $prefs.preferredMetadataLanguage) {
                 Text(
                     SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
                         ?? "Library default"
@@ -72,7 +73,7 @@ struct SubtitleSettingsView: View {
             Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .disabled(viewModel.settingsServerUpgradeRequired)
+        .disabled(viewModel.prefs.serverUpgradeRequired)
         .listRowBackground(Color.siloSurfaceElevated)
     }
 
@@ -80,8 +81,9 @@ struct SubtitleSettingsView: View {
 
     @ViewBuilder
     private var profileBackedSection: some View {
+        @Bindable var prefs = viewModel.prefs
         Section {
-            Picker("Language", selection: $viewModel.editorSubtitleLanguage) {
+            Picker("Language", selection: $prefs.subtitleLanguage) {
                 Text(
                     SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
                         ?? "None"
@@ -97,7 +99,7 @@ struct SubtitleSettingsView: View {
             .pickerStyle(.navigationLink)
             #endif
 
-            Picker("Behavior", selection: $viewModel.editorSubtitleMode) {
+            Picker("Behavior", selection: $prefs.subtitleMode) {
                 ForEach(SubtitleMode.allCases, id: \.rawValue) { mode in
                     Text(mode.displayLabel).tag(mode.rawValue)
                 }
@@ -112,8 +114,8 @@ struct SubtitleSettingsView: View {
             Toggle(
                 "Show Forced Subtitles",
                 isOn: Binding(
-                    get: { viewModel.editorShowForcedSubtitles == "on" },
-                    set: { viewModel.editorShowForcedSubtitles = $0 ? "on" : "off" }
+                    get: { viewModel.prefs.showForcedSubtitles == "on" },
+                    set: { viewModel.prefs.showForcedSubtitles = $0 ? "on" : "off" }
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
@@ -125,7 +127,7 @@ struct SubtitleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.subtitleMatchesSystemAppearance {
                     Text("Language, display behavior, forced captions, and CC/SDH preference follow this device's Accessibility settings.")
-                } else if viewModel.settingsServerUpgradeRequired {
+                } else if viewModel.prefs.serverUpgradeRequired {
                     Text(ProfilePrefsEditor.serverUpgradeMessage)
                         .foregroundStyle(Color.siloError)
                 } else {
@@ -135,14 +137,14 @@ struct SubtitleSettingsView: View {
                             .foregroundStyle(Color.siloWarning)
                     }
                 }
-                if let state = viewModel.prefSaveState,
-                   !(viewModel.settingsServerUpgradeRequired && state == .serverUpgradeRequired) {
+                if let state = viewModel.prefs.saveState,
+                   !(viewModel.prefs.serverUpgradeRequired && state == .serverUpgradeRequired) {
                     saveStateView(state)
                 }
             }
             .foregroundStyle(Color.siloSecondaryText)
         }
-        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
+        .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
         .listRowBackground(Color.siloSurfaceElevated)
     }
 
@@ -379,7 +381,7 @@ struct SubtitleSettingsView: View {
     }
 
     @ViewBuilder
-    private func saveStateView(_ state: SettingsViewModel.PrefSaveState) -> some View {
+    private func saveStateView(_ state: ProfilePrefsEditor.PrefSaveState) -> some View {
         switch state {
         case .saving:
             Text("Saving…")

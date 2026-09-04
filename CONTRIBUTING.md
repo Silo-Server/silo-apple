@@ -27,7 +27,7 @@ generated project.
 ## Validate your change
 
 Build every affected platform and run the focused XCTest targets. A typical
-unsigned iOS gate is:
+iOS build and simulator test gate is:
 
 ```sh
 cd iosApp
@@ -41,8 +41,11 @@ xcodebuild test \
   -project Silo.xcodeproj \
   -scheme Silo \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  CODE_SIGNING_ALLOWED=NO
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
 ```
+
+Simulator tests use ad-hoc signing so Keychain-dependent tests have an application
+identity; they do not require a distribution certificate.
 
 The `SiloTests` bundle belongs to the `Silo` scheme; there are currently no
 separate tvOS or macOS test bundles. Use `SiloTV` with a tvOS simulator for tvOS

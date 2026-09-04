@@ -1,0 +1,28 @@
+name: CI scripts
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/ci/**'
+      - '.github/workflows/ci-scripts.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ci/**'
+      - '.github/workflows/ci-scripts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test release input parsing
+        run: |
+          bash scripts/ci/resolve-marketing-version.test.sh
+          bash scripts/ci/resolve-platform.test.sh

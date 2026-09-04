@@ -28,7 +28,7 @@
 //  and refreshed after every save so card views always see the shape
 //  they just persisted.
 //
-//  Mirrors the `PlaybackPrefsStore` pattern: a `@MainActor`
+//  A `@MainActor`
 //  observable singleton, idempotent hydration, and a `clear()` hook
 //  for sign-out so the next user doesn't briefly see the previous
 //  user's badge layout.

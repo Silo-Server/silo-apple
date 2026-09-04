@@ -9,8 +9,6 @@ import SwiftUI
 extension Color {
     static let auroraInk = Color.siloOnSurface
     static let auroraAccent = Color.siloBrandOrange
-    static let auroraNightTop = Color(hex: "#081117")
-    static let auroraNightMid = Color(hex: "#030608")
     static let auroraNightBottom = Color.siloBackground
     static let auroraGlassTint = Color.siloSurfaceVariant
 

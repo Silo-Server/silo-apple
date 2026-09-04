@@ -89,10 +89,6 @@ private struct GroupAccumulator {
         groups.append((match: "any", rules: rules))
     }
 
-    mutating func addBool(field: String, value: Bool) {
-        groups.append((match: "all", rules: [Rule(field: field, op: "is", values: [value ? "true" : "false"])]))
-    }
-
     mutating func add(field: String, op: String, value: String) {
         groups.append((match: "all", rules: [Rule(field: field, op: op, values: [value])]))
     }

@@ -18,7 +18,6 @@ enum OverlayPresets {
     }
 
     private static let minimal = OverlayPreset(
-        id: .minimal,
         fontSize: 9,
         textWeight: .semibold,
         textCase: .uppercase,
@@ -29,7 +28,6 @@ enum OverlayPresets {
         iconSize: 10,
         preferIcon: false,
         gap: 2,
-        accentStrategy: .text,
         backgroundColor: { _ in .clear },
         foregroundColor: { accent in accent ?? Color.white.opacity(0.85) },
         borderColor: { _ in nil },
@@ -38,7 +36,6 @@ enum OverlayPresets {
     )
 
     private static let classic = OverlayPreset(
-        id: .classic,
         fontSize: 10,
         textWeight: .semibold,
         textCase: .uppercase,
@@ -49,9 +46,12 @@ enum OverlayPresets {
         iconSize: 11,
         preferIcon: false,
         gap: 4,
-        accentStrategy: .background,
         backgroundColor: { accent in
-            if let accent { return accent.mix(with: Color.black.opacity(0.6), amount: 0.72) }
+            if let accent {
+                // Hex accents are opaque. Mix RGB separately from opacity to
+                // preserve the existing straight-alpha sRGB recipe.
+                return accent.mix(with: .black, by: 0.28, in: .device).opacity(0.888)
+            }
             return Color.black.opacity(0.6)
         },
         foregroundColor: { _ in .white },
@@ -61,7 +61,6 @@ enum OverlayPresets {
     )
 
     private static let vibrant = OverlayPreset(
-        id: .vibrant,
         fontSize: 10,
         textWeight: .bold,
         textCase: .uppercase,
@@ -72,7 +71,6 @@ enum OverlayPresets {
         iconSize: 12,
         preferIcon: true,
         gap: 4,
-        accentStrategy: .background,
         backgroundColor: { accent in accent ?? Color(white: 0.86) },
         foregroundColor: { accent in accent == nil ? .black : .white },
         borderColor: { _ in nil },
@@ -81,7 +79,6 @@ enum OverlayPresets {
     )
 
     private static let pill = OverlayPreset(
-        id: .pill,
         fontSize: 10,
         textWeight: .semibold,
         textCase: .uppercase,
@@ -92,11 +89,12 @@ enum OverlayPresets {
         iconSize: 12,
         preferIcon: true,
         gap: 4,
-        accentStrategy: .background,
         backgroundColor: { accent in
-            let base = Color(red: 20/255, green: 20/255, blue: 30/255).opacity(0.7)
-            if let accent { return accent.mix(with: base, amount: 0.8) }
-            return base
+            let base = Color(red: 20/255, green: 20/255, blue: 30/255)
+            if let accent {
+                return accent.mix(with: base, by: 0.2, in: .device).opacity(0.94)
+            }
+            return base.opacity(0.7)
         },
         foregroundColor: { _ in .white },
         borderColor: { _ in Color.white.opacity(0.15) },
@@ -105,7 +103,6 @@ enum OverlayPresets {
     )
 
     private static let square = OverlayPreset(
-        id: .square,
         fontSize: 9,
         textWeight: .bold,
         textCase: .uppercase,
@@ -116,49 +113,10 @@ enum OverlayPresets {
         iconSize: 10,
         preferIcon: false,
         gap: 2,
-        accentStrategy: .border,
         backgroundColor: { _ in Color.black.opacity(0.8) },
         foregroundColor: { accent in accent ?? .white },
         borderColor: { accent in accent },
         backdropMaterial: nil,
         textShadow: false
     )
-}
-
-// MARK: - Color helpers
-
-extension Color {
-
-    /// Linear blend between `self` and `other`, where `amount=0` returns
-    /// `other` and `amount=1` returns `self`. Used to mirror CSS's
-    /// `color-mix(in srgb, accent X%, baseY%)` from the web presets.
-    func mix(with other: Color, amount: CGFloat) -> Color {
-        let a = max(0, min(1, amount))
-        let lhs = self.rgbComponents
-        let rhs = other.rgbComponents
-        return Color(
-            red:   lhs.r * a + rhs.r * (1 - a),
-            green: lhs.g * a + rhs.g * (1 - a),
-            blue:  lhs.b * a + rhs.b * (1 - a),
-            opacity: lhs.o * a + rhs.o * (1 - a)
-        )
-    }
-
-    /// Decompose a SwiftUI `Color` into RGBA floats. `UIColor.getRed`
-    /// returns false for color spaces it can't bridge (rare — sRGB
-    /// literals and hex-derived colors succeed). The earlier version
-    /// of this function ignored the return value, which could leave
-    /// `r/g/b` at zero on tvOS and produce a fully transparent
-    /// classic/pill preset background. We now fall back to 50% gray
-    /// so the blended background is at least visible.
-    fileprivate var rgbComponents: (r: CGFloat, g: CGFloat, b: CGFloat, o: CGFloat) {
-        #if canImport(UIKit)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        if UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a) {
-            return (r, g, b, a)
-        }
-        #endif
-        return (0.5, 0.5, 0.5, 1)
-    }
-
 }
