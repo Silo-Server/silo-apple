@@ -168,10 +168,15 @@ struct TVSkylineSectionFeed: View {
             // the first card so it renders already focused instead of growing
             // a few frames after the page paints. `.automatic` keeps d-pad
             // movement between rows geometric — only system-initiated
-            // resolutions use the preference. The imperative entry token
-            // below is unchanged and covers every other entry path.
+            // resolutions use the preference. While the top menu owns focus
+            // the priority is raised to `.userInitiated`: a Down press from
+            // the bar is resolved natively by the engine (the bar's
+            // `onMoveCommand` only fires when no native move exists), and
+            // without the preference it lands on whichever card sits under
+            // the centered tab instead of the left-most one. The imperative
+            // entry token below is unchanged and covers every other entry path.
             prefersDefaultFocusOnFirstItem: isFirstRow,
-            defaultFocusPriority: .automatic,
+            defaultFocusPriority: isTopMenuFocused ? .userInitiated : .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
             detailReturnFocusRequest: detailReturnFocusRequest,
             // This is the sole directional interception: Up from the first

@@ -153,6 +153,7 @@ struct TVMainTabView: View {
                     onSearch: { navigateFromBar(.search) },
                     onDwell: handleDwell(_:),
                     onEnterPanel: enterPanelFor,
+                    onEnterContent: enterContentFromBar,
                     onProfilePressed: openProfilePanelImmediately,
                     onContentFocusHandoff: suppressTopMenuFocusForContentHandoff,
                     onExit: personalRoot != nil
@@ -873,6 +874,26 @@ struct TVMainTabView: View {
         panelEntersFocus = false
         panelHasFocus = false
         suppressTopMenuFocusForContentHandoff()
+    }
+
+    /// D-pad down on a bar element with no panel (Home, Calendar, Search).
+    /// Without this the engine resolves Down geometrically and lands on the
+    /// card under the centered tab, so the entry point drifts with which tab
+    /// is focused. Use the same explicit hand-down `selectRoot` uses, which
+    /// every root page resolves to its first (left-most) item.
+    private func enterContentFromBar() {
+        guard router.path.isEmpty else { return }
+        closePanelForContentHandoff()
+        suppressTopMenuFocusForContentHandoff()
+        // The current content stays mounted here (same `.id`), so this has
+        // the reselect shape from `selectRoot`: a synchronous bump lands the
+        // row's focus claim in the same transaction as the bar's disable +
+        // focus teardown, and the engine's repair from the resigning tab
+        // wins, stranding focus in the menu. Defer one turn so the claim
+        // applies after the bar has fully resigned.
+        DispatchQueue.main.async {
+            contentFocusRequest += 1
+        }
     }
 
     /// D-pad down past the last cascade row leaves the menu for the page
