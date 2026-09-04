@@ -47,11 +47,32 @@ struct ApplePushDisplayAuthState: Equatable {
     /// has no PIN; required by the server for PIN-protected profiles, whose
     /// display fetches otherwise 403 with `profile_unverified`.
     let profileToken: String
+    /// Long-lived display token from Apple push registration. Preferred over
+    /// `accessToken`: the extension cannot refresh an expired access token,
+    /// and access tokens expire within hours while pushes arrive whenever.
+    /// Empty on servers that predate the token; the access token then
+    /// remains the credential.
+    let displayToken: String
+
+    init(serverURL: String, profileID: String, accessToken: String, profileToken: String, displayToken: String = "") {
+        self.serverURL = serverURL
+        self.profileID = profileID
+        self.accessToken = accessToken
+        self.profileToken = profileToken
+        self.displayToken = displayToken
+    }
 
     var isUsable: Bool {
         !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !profileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !bearerToken.isEmpty
+    }
+
+    /// The credential sent as `Authorization: Bearer`.
+    var bearerToken: String {
+        let display = displayToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !display.isEmpty { return display }
+        return accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -93,7 +114,8 @@ struct ApplePushDisplayStateReader {
             serverURL: defaults.string(forKey: SharedStorage.serverUrlKey) ?? "",
             profileID: defaults.string(forKey: SharedStorage.profileIdKey) ?? "",
             accessToken: keychain.get(SharedStorage.mirroredAccessTokenAccount) ?? "",
-            profileToken: keychain.get(SharedStorage.mirroredProfileTokenAccount) ?? ""
+            profileToken: keychain.get(SharedStorage.mirroredProfileTokenAccount) ?? "",
+            displayToken: keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
         )
         return state.isUsable ? state : nil
     }
@@ -118,7 +140,7 @@ final class ApplePushDisplayClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 4
-        request.setValue("Bearer \(state.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(state.bearerToken)", forHTTPHeaderField: "Authorization")
         request.setValue(state.profileID, forHTTPHeaderField: "X-Profile-Id")
         if !state.profileToken.isEmpty {
             request.setValue(state.profileToken, forHTTPHeaderField: "X-Profile-Token")

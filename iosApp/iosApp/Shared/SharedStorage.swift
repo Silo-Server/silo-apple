@@ -30,6 +30,12 @@ enum SharedStorage {
     static let mirroredAccessTokenAccount = "com.continuum.topshelf.accessToken"
     static let mirroredProfileTokenAccount = "com.continuum.topshelf.profileToken"
 
+    /// Long-lived, profile-scoped token the server returns from Apple push
+    /// registration. The Notification Service extension prefers it over the
+    /// mirrored access token because it cannot refresh an expired one.
+    /// Written by `ApplePushRegistrationCoordinator`, cleared with the mirrors.
+    static let applePushDisplayTokenAccount = "com.continuum.push.displayToken"
+
     static func accessTokenAccount(for serverID: String) -> String {
         "com.continuum.\(serverID).accessToken"
     }

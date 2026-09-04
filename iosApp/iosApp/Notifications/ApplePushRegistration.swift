@@ -17,6 +17,32 @@ struct ApplePushRegistrationResponse: Decodable {
     let serverDeviceId: String
     let enabled: Bool
     let pushMode: String
+    /// Long-lived, profile-scoped token for the Notification Service
+    /// extension's display fetch. Absent on older servers.
+    let displayToken: String?
+}
+
+/// Persists the registration's display token where the Notification Service
+/// extension reads it. Kept separate from `TokenStore`'s access/profile
+/// mirrors because it is minted per registration, not per sign-in.
+struct ApplePushDisplayTokenStore {
+    var keychain: SharedKeychain = SharedKeychain(audience: TokenStore.profileCredentialAudience)
+
+    /// Returns `true` when the token was written, or when there was nothing
+    /// to write and any stale token was removed.
+    func hasToken() -> Bool {
+        let stored = keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
+        return !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @discardableResult
+    func store(_ token: String?) -> Bool {
+        let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            return keychain.delete(SharedStorage.applePushDisplayTokenAccount)
+        }
+        return keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
+    }
 }
 
 enum ApplePushRegistrationWire {
@@ -97,6 +123,8 @@ final class ApplePushRegistrationCoordinator {
     private var inFlightFingerprint: String?
     private var lastSuccessfulFingerprint: String?
     private var endpointUnsupportedForContext: String?
+    private var displayTokenUnavailableForFingerprint: String?
+    private let displayTokenStore = ApplePushDisplayTokenStore()
 
     private init() {}
 
@@ -157,9 +185,18 @@ final class ApplePushRegistrationCoordinator {
 
         let request = makeRegistrationRequest(deviceToken: lastDeviceToken)
         let fingerprint = registrationFingerprint(for: request)
-        guard fingerprint != lastSuccessfulFingerprint,
-              fingerprint != inFlightFingerprint,
+        guard fingerprint != inFlightFingerprint,
               fingerprint != endpointUnsupportedForContext else {
+            return
+        }
+        // Registration is normally deduplicated per fingerprint for the
+        // process lifetime. The display token is the exception: a session
+        // sign-out clears it (TokenStore) without changing the fingerprint,
+        // and a server upgrade starts returning one for an unchanged
+        // registration. Re-register while the slot is empty so the extension
+        // regains its credential without waiting for a token or profile change.
+        if fingerprint == lastSuccessfulFingerprint,
+           displayTokenStore.hasToken() || displayTokenUnavailableForFingerprint == fingerprint {
             return
         }
 
@@ -173,7 +210,13 @@ final class ApplePushRegistrationCoordinator {
             )
             lastSuccessfulFingerprint = fingerprint
             endpointUnsupportedForContext = nil
-            Self.logger.info("Registered APNs token with Silo server_device_id=\(response.serverDeviceId, privacy: .private) enabled=\(response.enabled, privacy: .public)")
+            // Always store, even when nil: a server downgrade or a profile
+            // switch to an older server must not leave a token issued for a
+            // different profile in the extension's slot.
+            let storedDisplayToken = displayTokenStore.store(response.displayToken)
+            // Older servers never return one; stop retrying for this context.
+            displayTokenUnavailableForFingerprint = response.displayToken == nil ? fingerprint : nil
+            Self.logger.info("Registered APNs token with Silo server_device_id=\(response.serverDeviceId, privacy: .private) enabled=\(response.enabled, privacy: .public) displayToken=\(response.displayToken != nil, privacy: .public) stored=\(storedDisplayToken, privacy: .public)")
         } catch HTTPError.http(let statusCode, _) where statusCode == 404 || statusCode == 405 {
             endpointUnsupportedForContext = fingerprint
             Self.logger.info("Apple push device endpoint is not available on this Silo server yet")

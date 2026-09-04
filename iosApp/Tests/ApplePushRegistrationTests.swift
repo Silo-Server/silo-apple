@@ -129,6 +129,62 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertEqual(content.userInfo["silo_url"] as? String, "/item/episode-1")
     }
 
+    func testDisplayAuthStatePrefersDisplayTokenOverAccessToken() {
+        let withDisplay = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "expired-access",
+            profileToken: "",
+            displayToken: " display-token "
+        )
+        XCTAssertTrue(withDisplay.isUsable)
+        XCTAssertEqual(withDisplay.bearerToken, "display-token")
+
+        // Older servers return no display token: the access token still works.
+        let legacy = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "access",
+            profileToken: ""
+        )
+        XCTAssertTrue(legacy.isUsable)
+        XCTAssertEqual(legacy.bearerToken, "access")
+
+        // A display token alone is enough: the access mirror may be gone
+        // after a refresh race while the registration token remains valid.
+        let displayOnly = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "",
+            profileToken: "",
+            displayToken: "display-token"
+        )
+        XCTAssertTrue(displayOnly.isUsable)
+
+        let neither = ApplePushDisplayAuthState(
+            serverURL: "https://silo.example.test",
+            profileID: "profile-1",
+            accessToken: "  ",
+            profileToken: ""
+        )
+        XCTAssertFalse(neither.isUsable)
+    }
+
+    func testRegistrationResponseDecodesOptionalDisplayToken() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let modern = try decoder.decode(ApplePushRegistrationResponse.self, from: Data("""
+        {"id":"push-1","server_device_id":"dev-1","enabled":true,"push_mode":"private_push","display_token":"tok","display_token_expires_at":"2026-10-03T00:00:00Z"}
+        """.utf8))
+        XCTAssertEqual(modern.displayToken, "tok")
+
+        let legacy = try decoder.decode(ApplePushRegistrationResponse.self, from: Data("""
+        {"id":"push-1","server_device_id":"dev-1","enabled":true,"push_mode":"private_push"}
+        """.utf8))
+        XCTAssertNil(legacy.displayToken)
+    }
+
     func testNotificationDisplayURLMapsToAppDeepLink() throws {
         let itemURL = try XCTUnwrap(ApplePushDeepLinkCoordinator.deepLinkURL(from: [
             "silo_url": "/item/episode-1"

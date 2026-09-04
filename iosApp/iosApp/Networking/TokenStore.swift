@@ -1113,6 +1113,9 @@ actor TokenStore {
     private func clearMirroredTokensForExtension() {
         accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
         profileKeychain.delete(SharedStorage.mirroredProfileTokenAccount)
+        // The display token is bound to this session and profile, so it dies
+        // with them; the next registration mints a fresh one.
+        profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount)
         lastMirroredAccessToken = nil
         lastMirroredProfileToken = nil
     }
