@@ -85,7 +85,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 scrollState.update(offset)
             }
         }
-        .continuumResumePlaybackAlert(
+        .siloResumePlaybackAlert(
             isPresented: $showResumeDialog,
             stoppedAt: resumeTimestamp
         ) {
@@ -317,7 +317,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             trailersSection
 
             detailsSection
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
 
             if showsSimilarRail {
                 similarSection
@@ -365,7 +365,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             }
 
             PhoneSectionHeader(title: "\(episodeRailEyebrow) Episodes")
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
 
             PhoneSeasonEpisodeBrowser(
                 seasons: seasons,
@@ -395,7 +395,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "Cast & Crew")
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
     }

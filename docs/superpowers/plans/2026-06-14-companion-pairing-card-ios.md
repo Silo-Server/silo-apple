@@ -32,7 +32,7 @@
 - Regenerate the project after adding/removing files: `xcodegen generate --spec iosApp/project.yml` (writes `iosApp/Silo.xcodeproj`; no `cd` needed).
 - iOS build (no signing): `xcodebuild build -project iosApp/Silo.xcodeproj -scheme Silo -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`
 - tvOS build: same with `-scheme SiloTV -destination 'generic/platform=tvOS Simulator'`.
-- The card deliberately uses **system blue** for its primary button and selection accents (the app's global tint is `.continuumOnSurface`, near-white). Blue matches the native iOS pairing aesthetic the card emulates. This is intentional, not a mistake.
+- The card deliberately uses **system blue** for its primary button and selection accents (the app's global tint is `.siloOnSurface`, near-white). Blue matches the native iOS pairing aesthetic the card emulates. This is intentional, not a mistake.
 
 ---
 
@@ -360,10 +360,10 @@ struct CompanionPairingCard: View {
         VStack(spacing: 0) {
             heroGlyph.padding(.bottom, 16)
             Text("Set Up \(tv.name)")
-                .font(.continuumTitle)
+                .font(.siloTitle)
                 .multilineTextAlignment(.center)
             Text("Sign this Apple TV in using this iPhone.")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.top, 6)
@@ -400,7 +400,7 @@ struct CompanionPairingCard: View {
                     .background(accent, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .foregroundStyle(.white)
                 Text(server.displayName)
-                    .font(.continuumBody)
+                    .font(.siloBody)
                     .foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
@@ -410,7 +410,7 @@ struct CompanionPairingCard: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(
-                isOn ? Color.continuumChromeSelectedFill : Color.continuumChromeRestingFill,
+                isOn ? Color.siloChromeSelectedFill : Color.siloChromeRestingFill,
                 in: RoundedRectangle(cornerRadius: 13, style: .continuous)
             )
         }
@@ -420,15 +420,15 @@ struct CompanionPairingCard: View {
     private func confirm(serverName: String, matchCode: String) -> some View {
         VStack(spacing: 0) {
             Text("Make sure your TV shows")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .foregroundStyle(.secondary)
             Text(matchCode)
-                .font(.continuumPIN)
+                .font(.siloPIN)
                 .textCase(.uppercase)
                 .tracking(8)
                 .padding(.top, 8)
             Text("for \(serverName)")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
             primaryButton("Yes, this matches") { Task { await coordinator?.confirmMatch() } }
@@ -445,11 +445,11 @@ struct CompanionPairingCard: View {
                 .foregroundStyle(.green)
                 .padding(.bottom, 12)
             Text(signedIn.isEmpty ? "Nothing set up" : "Set up \(signedIn.joined(separator: ", "))")
-                .font(.continuumHeadline)
+                .font(.siloHeadline)
                 .multilineTextAlignment(.center)
             if !failed.isEmpty {
                 Text("Couldn’t set up: \(failed.joined(separator: ", "))")
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.top, 4)
@@ -465,7 +465,7 @@ struct CompanionPairingCard: View {
                 .foregroundStyle(.yellow)
                 .padding(.bottom, 12)
             Text(message)
-                .font(.continuumBody)
+                .font(.siloBody)
                 .multilineTextAlignment(.center)
             primaryButton("Close") { animateOut(onClose) }.padding(.top, 22)
         }
@@ -484,8 +484,8 @@ struct CompanionPairingCard: View {
         HStack(spacing: 12) {
             Image(systemName: "appletv.fill").font(.system(size: 22)).frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.continuumHeadline)
-                Text(subtitle).font(.continuumCaption).foregroundStyle(.secondary)
+                Text(title).font(.siloHeadline)
+                Text(subtitle).font(.siloCaption).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -494,8 +494,8 @@ struct CompanionPairingCard: View {
 
     private func progressStep(title: String, subtitle: String) -> some View {
         VStack(spacing: 10) {
-            Text(title).font(.continuumHeadline)
-            Text(subtitle).font(.continuumCaption).foregroundStyle(.secondary)
+            Text(title).font(.siloHeadline)
+            Text(subtitle).font(.siloCaption).foregroundStyle(.secondary)
             ProgressView().padding(.top, 4)
         }
         .padding(.vertical, 8)
@@ -503,7 +503,7 @@ struct CompanionPairingCard: View {
 
     private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.continuumHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
+            Text(title).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
@@ -512,7 +512,7 @@ struct CompanionPairingCard: View {
 
     private func tertiaryButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.continuumBody).frame(maxWidth: .infinity).padding(.vertical, 8)
+            Text(title).font(.siloBody).frame(maxWidth: .infinity).padding(.vertical, 8)
         }
         .buttonStyle(.plain)
         .foregroundStyle(accent)

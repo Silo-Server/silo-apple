@@ -1,6 +1,6 @@
 //
 //  PlaybackRealtimeSubtitleEvents.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Typed decoders for the five AI subtitle live-streaming events that ride
 //  the existing playback control websocket (Milestone 4). The generic

@@ -29,7 +29,7 @@ struct DownloadReclaimSheet: View {
                     list
                 }
             }
-            .continuumPageBackground()
+            .siloPageBackground()
             .navigationTitle("Free Up Space")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -45,7 +45,7 @@ struct DownloadReclaimSheet: View {
                 }
             }
             .safeAreaInset(edge: .bottom) { bottomBar }
-            .continuumToolbarColorSchemeDark()
+            .siloToolbarColorSchemeDark()
         }
     }
 
@@ -55,7 +55,7 @@ struct DownloadReclaimSheet: View {
                 header
                 ForEach(records) { record in
                     row(record)
-                    Divider().overlay(Color.continuumDivider).padding(.leading, 56)
+                    Divider().overlay(Color.siloDivider).padding(.leading, 56)
                 }
                 Color.clear.frame(height: 24)
             }
@@ -66,7 +66,7 @@ struct DownloadReclaimSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(records.count) item\(records.count == 1 ? "" : "s") you've finished watching")
                 .font(.system(size: 13))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
@@ -86,16 +86,16 @@ struct DownloadReclaimSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label(record))
                         .font(.system(size: 13.5, weight: .medium))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
                     Text("Watched")
                         .font(.system(size: 11.5))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                 }
                 Spacer(minLength: 8)
                 Text(DownloadFormatting.bytes(record.fileSize))
                     .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
@@ -120,7 +120,7 @@ struct DownloadReclaimSheet: View {
                     .font(.system(size: 15))
                     .frame(maxWidth: .infinity)
                     .frame(height: 50)
-                    .background(selected.isEmpty ? Color.continuumDisabled : Color.continuumOnSurface)
+                    .background(selected.isEmpty ? Color.siloDisabled : Color.siloOnSurface)
                     .foregroundColor(.black)
                     .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                 }
@@ -129,15 +129,15 @@ struct DownloadReclaimSheet: View {
 
                 Button("Not now") { dismiss() }
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .frame(maxWidth: .infinity)
                     .frame(height: 42)
                     .background(
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .fill(Color.continuumChromeRestingFill)
+                            .fill(Color.siloChromeRestingFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .stroke(Color.continuumChromeRestingBorder, lineWidth: 1)
+                                    .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
                             )
                     )
                     .buttonStyle(.plain)

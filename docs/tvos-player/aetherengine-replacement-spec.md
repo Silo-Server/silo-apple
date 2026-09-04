@@ -532,7 +532,7 @@ Delete or replace all of the following before the first installable candidate:
 - FFmpeg module-map/macOS preparation scripts and Fastlane invocations
 - `SiloPlayerBridging.h` and all target bridging-header settings
 - startup installation of Silo's FFmpeg log filter
-- `iOSApp.swift`'s `ContinuumInstallFFmpegLogFilter` call
+- `iOSApp.swift`'s `SiloInstallFFmpegLogFilter` call
 - custom-engine fixture runners and debug toggles
 - `AudioPlayerEngine`'s AVPlayer implementation
 - old engine/proxy/loopback/FFmpeg implementation tests

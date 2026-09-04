@@ -34,7 +34,7 @@ struct DiagnosticsReportDetailView: View {
                 .disabled(model.isWorking)
             }
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
         .navigationTitle("Report Details")
         .task {
             summary = await model.summary(for: report)

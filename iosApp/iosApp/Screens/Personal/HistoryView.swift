@@ -27,9 +27,9 @@ struct HistoryView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle("History")
-        .continuumNavigationTitleDisplayMode(.large)
+        .siloNavigationTitleDisplayMode(.large)
         .task {
             await viewModel.load(reset: true)
         }
@@ -40,10 +40,10 @@ struct HistoryView: View {
 
     private var gridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+            VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 Text(viewModel.countLabel)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
 
                 CatalogGrid(
                     items: viewModel.items,
@@ -57,9 +57,9 @@ struct HistoryView: View {
                     }
                 )
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
     }
 }

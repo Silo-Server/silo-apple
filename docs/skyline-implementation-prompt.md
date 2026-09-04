@@ -2,7 +2,7 @@
 
 > **Status:** Phase 1 (chrome) is **complete** on `feature/skyline-phase-1`
 > (type-derived tabs · pill row · Libraries/For You roots removed · profile
-> dropdown · `ContinuumTheme.Skyline` tokens). This prompt targets **Phase 2 —
+> dropdown · `SiloTheme.Skyline` tokens). This prompt targets **Phase 2 —
 > the focus marquee** from guide Rev 2. Write the Phase 3 (cascading selector)
 > and Phase 4 (polish & parity) prompts after this phase merges.
 
@@ -33,7 +33,7 @@ Implement **Phase 2 of the Skyline navigation redesign** for the tvOS app: the
    `iosApp/iosApp/Screens/Home/HomeView.swift`,
    `iosApp/iosApp/Screens/Home/FeaturedCarousel.swift`,
    `iosApp/iosApp/tvOS/Components/TVRootHeroBackdrop.swift`,
-   `iosApp/iosApp/Theme/ContinuumTheme.swift` (the `Skyline` namespace).
+   `iosApp/iosApp/Theme/SiloTheme.swift` (the `Skyline` namespace).
 
 ## What Phase 1 already built (do not redo)
 
@@ -57,7 +57,7 @@ Implement **Phase 2 of the Skyline navigation redesign** for the tvOS app: the
 1. **`TVFocusMarquee` component** (new, tvOS-only) per guide §5.4/§5.5: two
    scales — Home (block top 218, title 84, eyebrow 17) and library (top 246,
    title 66, eyebrow 16). Eyebrow = the **source row's title**, preceded by the
-   `marquee.tick` dash (white @ 85%, 26×3, r 2 — add to `ContinuumTheme.Skyline`).
+   `marquee.tick` dash (white @ 85%, 26×3, r 2 — add to `SiloTheme.Skyline`).
    Meta line: codec/HDR badges, then year·genre·runtime, or
    `S2 E7 · episode title · 23 min left` for episodic items. 2-line synopsis,
    max-width 780 (clamp to 1 line if the title wraps to 2). Title falls back to
@@ -112,8 +112,8 @@ any server changes, any iOS/macOS behavior changes.
   Search, Calendar, Recommendations) are also compiled for iOS/macOS — guard
   tvOS-only changes and keep the other platforms building unchanged.
 - Match existing style: types `PascalCase`, the `TV` prefix for tvOS views,
-  tokens from `ContinuumTheme` / `Colors.swift` — no hardcoded values, add new
-  tokens to the theme (`ContinuumTheme.Skyline` exists from Phase 1). No new
+  tokens from `SiloTheme` / `Colors.swift` — no hardcoded values, add new
+  tokens to the theme (`SiloTheme.Skyline` exists from Phase 1). No new
   dependencies. No tests for this UI work unless shared logic changes (per
   `CLAUDE.md`).
 - Branch `feature/skyline-phase-2` stacked on `feature/skyline-phase-1` (or on
@@ -131,7 +131,7 @@ The codebase already encodes several tvOS lessons — preserve them:
   once. Tab switches swap content under the stack; they are not pushes.
 - **The top menu is custom on purpose** (the system `TabView` sidebar steals
   leftward focus). Keep the custom bar; keep `.focusEffectDisabled()` +
-  chrome driven by focus state (`ContinuumFlatButtonStyle` pattern) rather
+  chrome driven by focus state (`SiloFlatButtonStyle` pattern) rather
   than the system halo.
 - **The marquee never participates in focus.** No focusable subviews, no
   `focusSection` membership; the vertical zone model becomes top bar → pill

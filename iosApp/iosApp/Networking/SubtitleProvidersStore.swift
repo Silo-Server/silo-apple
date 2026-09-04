@@ -59,9 +59,9 @@ final class SubtitleProvidersStore {
     /// next account's flag.
     private var generation = 0
 
-    private let api: ContinuumAI
+    private let api: SiloAI
 
-    init(api: ContinuumAI = .shared) {
+    init(api: SiloAI = .shared) {
         self.api = api
     }
 

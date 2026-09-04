@@ -73,7 +73,7 @@ direction A (flat background) is the honest fit.
   `noFeaturedTopSpacing(...)`) is rendered only in the no-featured branch to keep row 1 from
   sliding under the floating header. With the hero permanently gone, this spacer becomes the
   **permanent** first element of the stack.
-- **Background:** **flat OLED** (`Color.continuumBackground` / `.continuumBackground()`).
+- **Background:** **flat OLED** (`Color.siloBackground` / `.siloBackground()`).
   Remove the page-level ambient hero machinery that exists only to back the carousel:
   `heroTintBackground`, `heroBackdropImage`, `heroBackdropFadeMask`, `heroTintColor`,
   `heroBackdropURL`, `heroBackdropThumbhash`, `computedHeroHeight`,

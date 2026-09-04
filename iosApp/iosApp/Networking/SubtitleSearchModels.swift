@@ -1,6 +1,6 @@
 //
 //  SubtitleSearchModels.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Wire types for silo-server's external subtitle-provider search
 //  (OpenSubtitles / SubDL / Subsource). Both calls are synchronous —

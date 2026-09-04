@@ -201,7 +201,7 @@ enum PlayerIdentityBoundary {
 @Observable
 class PlayerViewModel {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Player"
     )
 
@@ -1482,7 +1482,7 @@ class PlayerViewModel {
     }
 
     /// Rebuilds the committed plan with the account bearer currently held by
-    /// `ContinuumAPI`. Protocol V3 media URLs are stable across access-token
+    /// `SiloAPI`. Protocol V3 media URLs are stable across access-token
     /// refreshes, but Aether/AVPlayer freezes request headers at asset load.
     /// A normal authenticated progress request first gives the shared HTTP
     /// client a chance to refresh an expired token; the reload proceeds only
@@ -2282,7 +2282,7 @@ class PlayerViewModel {
             }
 
             do {
-                let response = try await ContinuumAPI.shared.homeSections()
+                let response = try await SiloAPI.shared.homeSections()
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
                 self.isLoadingNextUpOnDeck = false
@@ -2357,7 +2357,7 @@ class PlayerViewModel {
         if let seriesId = nonEmpty(item.seriesId),
            let seasonNumber = item.seasonNumber {
             do {
-                let response = try await ContinuumAPI.shared.episodes(
+                let response = try await SiloAPI.shared.episodes(
                     seriesId: seriesId,
                     seasonNumber: seasonNumber
                 )
@@ -2377,7 +2377,7 @@ class PlayerViewModel {
         }
 
         do {
-            let detail = try await ContinuumAPI.shared.itemDetail(contentId: item.contentId)
+            let detail = try await SiloAPI.shared.itemDetail(contentId: item.contentId)
             if let backdropUrl = nonEmpty(detail.backdropUrl) {
                 return (backdropUrl, detail.backdropThumbhash)
             }
@@ -2403,8 +2403,8 @@ class PlayerViewModel {
         seasonNumber: Int,
         episodeNumber: Int
     ) async throws -> PlayerNextUpEpisode? {
-        async let seasonsTask = ContinuumAPI.shared.seasons(seriesId: seriesId)
-        async let currentEpisodesTask = ContinuumAPI.shared.episodes(
+        async let seasonsTask = SiloAPI.shared.seasons(seriesId: seriesId)
+        async let currentEpisodesTask = SiloAPI.shared.episodes(
             seriesId: seriesId,
             seasonNumber: seasonNumber
         )
@@ -2418,7 +2418,7 @@ class PlayerViewModel {
             !(season.isSpecials ?? false) && season.seasonNumber > seasonNumber
         }
         if let nextSeason {
-            let nextSeasonEpisodes = try await ContinuumAPI.shared.episodes(
+            let nextSeasonEpisodes = try await SiloAPI.shared.episodes(
                 seriesId: seriesId,
                 seasonNumber: nextSeason.seasonNumber
             )
@@ -3341,7 +3341,7 @@ class PlayerViewModel {
         Task { [weak self] in
             let detail: ItemDetail
             do {
-                detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             } catch {
                 Self.logger.warning(
                     "NowPlaying artwork itemDetail fetch failed for \(contentId, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -4978,7 +4978,7 @@ class PlayerViewModel {
                 }
             }
             do {
-                let detail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId)
                 guard !Task.isCancelled,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,
@@ -5533,7 +5533,7 @@ class PlayerViewModel {
         guard let fileId = currentSelectedVersion?.fileId else {
             throw HTTPError.invalidURL("subtitle search requires an active media file")
         }
-        return try await ContinuumAI.shared.searchSubtitles(
+        return try await SiloAI.shared.searchSubtitles(
             SubtitleSearchBody(mediaFileId: fileId, languages: languages)
         )
     }
@@ -5555,10 +5555,10 @@ class PlayerViewModel {
     func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> Bool {
         guard let fileId = currentSelectedVersion?.fileId else { return false }
         do {
-            let subtitle = try await ContinuumAI.shared.downloadSubtitle(
+            let subtitle = try await SiloAI.shared.downloadSubtitle(
                 SubtitleDownloadBody(from: result, mediaFileId: fileId)
             )
-            let downloaded = try await ContinuumAI.shared.downloadedSubtitles(mediaFileId: fileId)
+            let downloaded = try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId)
             // Revalidate after the awaits: if playback moved to a different
             // file while the download was in flight, `makeSubtitleHandoffContext`
             // would now describe the NEW session, and registering the OLD
@@ -6501,8 +6501,8 @@ class PlayerViewModel {
         requiresHeaderAuthenticatedMedia: Bool = false,
         allowsAuthorizedMediaOrigins: Bool = false
     ) async -> StreamRequest? {
-        let serverUrl = await ContinuumAPI.shared.currentServerUrl()
-        let token = await ContinuumAPI.shared.currentAccessToken()
+        let serverUrl = await SiloAPI.shared.currentServerUrl()
+        let token = await SiloAPI.shared.currentAccessToken()
         return StreamRequest.resolve(
             rawURL: session.streamUrl,
             serverURL: serverUrl,
@@ -7628,7 +7628,7 @@ private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
 @MainActor
 private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "LiveSubtitle"
     )
 

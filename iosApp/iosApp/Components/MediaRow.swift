@@ -101,7 +101,7 @@ struct MediaRow: View {
     @State private var lastAppliedDetailReturnFocusRequest = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private static let focusLogger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
     )
     #endif
@@ -146,7 +146,7 @@ struct MediaRow: View {
         // the focus engine silently drops @FocusState writes to views it
         // can't focus. The instant scroll mounts/unclips the card; the
         // deferred write then lands on a focusable target.
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.slowDuration)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.slowDuration)) {
             proxy.scrollTo(targetItem.id, anchor: .center)
         }
         DispatchQueue.main.async {
@@ -316,12 +316,12 @@ struct MediaRow: View {
             if let icon {
                 Image(systemName: icon)
                     .font(.system(size: headerIconSize, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
             }
 
             Text(title)
-                .font(.continuumHeadline)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloHeadline)
+                .foregroundColor(.siloOnSurface)
 
             Spacer()
 
@@ -329,11 +329,11 @@ struct MediaRow: View {
                 Button("See All") {
                     onSeeAll()
                 }
-                .font(.continuumCaption)
-                .foregroundColor(.continuumOnSurface.opacity(0.6))
+                .font(.siloCaption)
+                .foregroundColor(.siloOnSurface.opacity(0.6))
             }
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
     }
 
     // MARK: - Content
@@ -352,7 +352,7 @@ struct MediaRow: View {
                 }
             }
             #if !os(tvOS)
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
@@ -364,7 +364,7 @@ struct MediaRow: View {
         // the engine's scroll-to-focused both align to the margin-inset
         // viewport, so with inner padding they overshoot left by the gutter
         // width and then visibly drift back to the rest position.
-        .contentMargins(.horizontal, ContinuumTheme.safePadding, for: .scrollContent)
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
         // tvOS focus lift expands cards on focus — give them breathing room
         // so they don't clip against the row above/below.
         .scrollClipDisabled()
@@ -576,7 +576,7 @@ struct MediaRow: View {
         #if os(tvOS)
         return 20
         #else
-        return ContinuumTheme.smallPadding
+        return SiloTheme.smallPadding
         #endif
     }
 
@@ -600,7 +600,7 @@ struct MediaRow: View {
         #if os(tvOS)
         return 40
         #else
-        return ContinuumTheme.spacing
+        return SiloTheme.spacing
         #endif
     }
 

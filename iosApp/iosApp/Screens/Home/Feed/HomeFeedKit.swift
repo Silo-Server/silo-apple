@@ -5,7 +5,7 @@ import SwiftUI
 
 /// Layout constants shared by the Design Lab variants.
 ///
-/// These deliberately diverge from `ContinuumTheme` in a few places — the
+/// These deliberately diverge from `SiloTheme` in a few places — the
 /// divergences *are* the proposal, and each one is called out below so the
 /// reasoning survives the experiment.
 enum HomeFeedMetrics {
@@ -31,7 +31,7 @@ enum HomeFeedMetrics {
     static let posterRadius: CGFloat = 10
     static let stillRadius: CGFloat = 12
 
-    /// Screen gutter. Matches `ContinuumTheme.safePadding` so variants stay
+    /// Screen gutter. Matches `SiloTheme.safePadding` so variants stay
     /// aligned with the rest of the app's chrome.
     static let gutter: CGFloat = 16
     static let cardSpacing: CGFloat = 10
@@ -292,9 +292,9 @@ private struct HomeWatchedCheck: View {
     var body: some View {
         Image(systemName: "checkmark")
             .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(Color.continuumBackground)
+            .foregroundStyle(Color.siloBackground)
             .frame(width: 18, height: 18)
-            .background(Circle().fill(Color.continuumOnSurface))
+            .background(Circle().fill(Color.siloOnSurface))
     }
 }
 
@@ -413,7 +413,7 @@ struct HomePosterCard: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(HomeFeedMeta.cardTitle(for: item))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 // One line, always. Reserving two lines (as the shipping card
                 // does) makes every row 17pt taller than it needs to be; letting
                 // it wrap makes row baselines ragged. Truncation is the honest
@@ -424,7 +424,7 @@ struct HomePosterCard: View {
             if showsMetadata, let secondLine = HomeFeedMeta.cardSecondLine(for: item) {
                 Text(secondLine)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.5))
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -614,7 +614,7 @@ struct HomeStillCard: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(HomeFeedMeta.cardTitle(for: item))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
             if showsMetadata {
@@ -623,7 +623,7 @@ struct HomeStillCard: View {
                 // movies keeps one caption height.
                 Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.7))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                     .monospacedDigit()
                     .lineLimit(1, reservesSpace: true)
                     .truncationMode(.tail)
@@ -636,7 +636,7 @@ struct HomeStillCard: View {
                 // a remaining-time caption, including as lazy cards enter/leave.
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                     .lineLimit(1)
                     .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)
                     .accessibilityHidden(HomeFeedMeta.resumeCaption(for: item) == nil)
@@ -691,13 +691,13 @@ struct HomeSectionHeader: View {
             if let icon {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.85))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.85))
             }
 
             Text(title)
                 .font(.system(size: 17, weight: .semibold))
                 .tracking(-0.3)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
             Spacer(minLength: 8)
@@ -706,7 +706,7 @@ struct HomeSectionHeader: View {
                 Button(action: onSeeAll) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.continuumOnSurface.opacity(0.35))
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.35))
                 }
                 .buttonStyle(.plain)
             }
@@ -720,7 +720,7 @@ struct HomeSectionHeader: View {
                 Text(title.uppercased())
                     .font(.system(size: 11, weight: .heavy))
                     .tracking(1.4)
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.72))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.72))
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
@@ -729,7 +729,7 @@ struct HomeSectionHeader: View {
                     Button(action: onSeeAll) {
                         Image(systemName: "arrow.right")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.continuumOnSurface.opacity(0.35))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.35))
                     }
                     .buttonStyle(.plain)
                 }

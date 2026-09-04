@@ -24,7 +24,7 @@ struct TVCatalogGrid: View {
     /// Per-card width. Defaults to the theme poster size; shrink when a
     /// side-rail squeezes the usable width and the default cards would
     /// overflow their grid cells.
-    var cardWidth: CGFloat = ContinuumTheme.posterCardWidth
+    var cardWidth: CGFloat = SiloTheme.posterCardWidth
     var prefersDefaultFocusOnFirstItem: Bool = false
     var focusRequest: Int = 0
     var onRowVisibilityChange: ((Range<Int>, Bool) -> Void)? = nil
@@ -115,7 +115,7 @@ struct TVCatalogGrid: View {
             HStack {
                 Spacer()
                 ProgressView()
-                    .tint(.continuumOnSurface)
+                    .tint(.siloOnSurface)
                     .padding()
                 Spacer()
             }

@@ -142,7 +142,7 @@ struct InterfaceCustomizationView: View {
             if let message = preferences.capabilityMessage {
                 Section {
                     Label(message, systemImage: "server.rack")
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                 }
             }
 
@@ -219,7 +219,7 @@ struct InterfaceCustomizationView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "arrow.turn.down.right")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .foregroundStyle(Color.siloSecondaryText)
                                     .frame(width: 18)
                                 shortcutLabel(for: item, isNestedLibrary: true)
                             }
@@ -312,11 +312,11 @@ struct InterfaceCustomizationView: View {
                 Section {
                     Label(message, systemImage: "icloud.slash")
                         .font(.footnote)
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                 }
             }
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
         .navigationTitle("Interface")
         .task {
             await preferences.refresh()
@@ -450,7 +450,7 @@ struct InterfaceCustomizationView: View {
                     ).uppercased()
                 )
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.continuumSecondaryText.opacity(0.75))
+                    .foregroundStyle(Color.siloSecondaryText.opacity(0.75))
                     .lineLimit(1)
             }
         }
@@ -609,7 +609,7 @@ private struct HomeSectionsCustomizationView: View {
                 }
             }
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
         .navigationTitle("Home Sections")
         #if os(iOS)
         .toolbar {
@@ -636,7 +636,7 @@ private struct HomeSectionsCustomizationView: View {
             } label: {
                 Image(systemName: isVisible ? "eye.fill" : "eye.slash.fill")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(isVisible ? Color.continuumOnSurface : Color.continuumSecondaryText)
+                    .foregroundStyle(isVisible ? Color.siloOnSurface : Color.siloSecondaryText)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
@@ -648,18 +648,18 @@ private struct HomeSectionsCustomizationView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(section.title)
                     .font(.body.weight(.medium))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
 
                 Text("\(section.items.count) item\(section.items.count == 1 ? "" : "s")")
                     .font(.caption)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
 
             Spacer(minLength: 8)
         }
         .opacity(isVisible ? 1 : 0.42)
-        .animation(.easeInOut(duration: ContinuumTheme.fastDuration), value: isVisible)
+        .animation(.easeInOut(duration: SiloTheme.fastDuration), value: isVisible)
     }
 
     private func moveSections(from source: IndexSet, to destination: Int) {

@@ -197,19 +197,19 @@ class HomeViewModel {
 
     init(
         dismissContinueWatching: @escaping DismissContinueWatching = { contentId, progressUpdatedAt in
-            try await ContinuumAPI.shared.dismissContinueWatchingItem(
+            try await SiloAPI.shared.dismissContinueWatchingItem(
                 contentId: contentId,
                 progressUpdatedAt: progressUpdatedAt
             )
         },
         dismissNextUp: @escaping DismissNextUp = { contentId, seriesId in
-            try await ContinuumAPI.shared.dismissNextUpItem(
+            try await SiloAPI.shared.dismissNextUpItem(
                 contentId: contentId,
                 seriesId: seriesId
             )
         },
         setWatched: @escaping SetWatched = { contentId, played in
-            try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
         },
         fetchHomeSections: @escaping FetchHomeSections = {
             try await StartupContentPrefetcher.fetchHomeSections()

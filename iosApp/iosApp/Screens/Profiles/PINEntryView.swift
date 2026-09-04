@@ -37,21 +37,21 @@ struct PINEntryView: View {
 
     private var phoneBody: some View {
         ZStack {
-            ContinuumPageBackdrop()
+            SiloPageBackdrop()
 
             VStack(spacing: 32) {
                 header(avatarSize: 64)
-                    .padding(.top, ContinuumTheme.largePadding + sheetDragIndicatorClearance)
+                    .padding(.top, SiloTheme.largePadding + sheetDragIndicatorClearance)
 
                 pinDots(dotSize: 20, spacing: 20)
 
                 Spacer()
 
                 numberPad
-                    .padding(.horizontal, ContinuumTheme.largePadding)
+                    .padding(.horizontal, SiloTheme.largePadding)
 
                 cancelButton
-                    .padding(.bottom, ContinuumTheme.largePadding)
+                    .padding(.bottom, SiloTheme.largePadding)
             }
         }
     }
@@ -72,7 +72,7 @@ struct PINEntryView: View {
             .frame(width: 620)
             .background(
                 RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated.opacity(0.98))
+                    .fill(Color.siloSurfaceElevated.opacity(0.98))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 34, style: .continuous)
@@ -102,8 +102,8 @@ struct PINEntryView: View {
             )
 
             Text("Enter PIN for \(profile.name)")
-                .font(.continuumSubheadline)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloSubheadline)
+                .foregroundColor(.siloOnSurface)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
         }
@@ -113,7 +113,7 @@ struct PINEntryView: View {
         HStack(spacing: spacing) {
             ForEach(0..<maxDigits, id: \.self) { index in
                 Circle()
-                    .fill(index < pin.count ? Color.continuumPrimary : Color.continuumSurfaceVariant)
+                    .fill(index < pin.count ? Color.siloPrimary : Color.siloSurfaceVariant)
                     .frame(width: dotSize, height: dotSize)
             }
         }
@@ -240,7 +240,7 @@ private struct NumberPadButton: View {
                     .font(.system(size: symbolSize, weight: .semibold))
             } else {
                 Text(label)
-                    .font(.continuumPIN)
+                    .font(.siloPIN)
             }
         }
         .buttonStyle(NumberPadButtonStyle(isFocused: isFocused))
@@ -274,7 +274,7 @@ private struct NumberPadButtonBody: View {
 
     var body: some View {
         configuration.label
-            .foregroundColor(isFocused ? .continuumBackground : .continuumOnSurface)
+            .foregroundColor(isFocused ? .siloBackground : .siloOnSurface)
             .frame(width: NumberPadButton.size, height: NumberPadButton.size)
             .background(background)
             .overlay(border)
@@ -283,17 +283,17 @@ private struct NumberPadButtonBody: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     @ViewBuilder
     private var background: some View {
         #if os(tvOS)
         RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .fill(isFocused ? Color.continuumOnSurface : Color.white.opacity(0.1))
+            .fill(isFocused ? Color.siloOnSurface : Color.white.opacity(0.1))
         #else
         Circle()
-            .fill(Color.continuumSurfaceVariant)
+            .fill(Color.siloSurfaceVariant)
         #endif
     }
 

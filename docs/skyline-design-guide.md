@@ -51,7 +51,7 @@ All dimensions in this guide are **mockup pixels at 1920×1080**, which map:
 | Android TV (Compose) | 1 px = **0.5 dp** (1080p TV ≈ xhdpi → 960×540 dp window) | 32 dp |
 
 Sanity check against existing code: tvOS poster `260×390 pt` ≡ Android `130×195 dp`
-(already true in `ContinuumTheme.swift` / `Spacing.kt`), so existing token files
+(already true in `SiloTheme.swift` / `Spacing.kt`), so existing token files
 already follow this rule. Android text sizes below assume the TV app's global
 0.86 font-scale stays in place — give Compose the sp values listed, not px/2 of type.
 
@@ -133,7 +133,7 @@ FULL-SCREEN (pushed over everything, no top bar):
 
 ## 4. Design tokens
 
-Unchanged from the current apps (`ContinuumTheme.swift`, `Color.kt`): background
+Unchanged from the current apps (`SiloTheme.swift`, `Color.kt`): background
 `#000000`, surface `#0A0A0A`, elevated `#15171C`, primary text `#EDEDED`,
 secondary = primary @ 60%, tertiary @ 38%, hairline white @ 12%, error `#B00020`,
 rating amber `#FFC107`. Radii: 8 / 12 / 18 (+ pill = capsule). No chromatic accent.

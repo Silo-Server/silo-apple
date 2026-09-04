@@ -401,8 +401,8 @@ struct DownloadActionButton: View {
     private var noticeCaption: some View {
         if let startNotice {
             Text(startNotice)
-                .font(.continuumCaption)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloCaption)
+                .foregroundColor(.siloOnSurface)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(.ultraThinMaterial, in: Capsule())

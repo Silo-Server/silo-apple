@@ -1,6 +1,6 @@
 import Foundation
 
-/// Native Swift facade over the Continuum REST API.
+/// Native Swift facade over the Silo REST API.
 ///
 /// Supports two interfaces:
 /// - **Path-based**: ``get(_:query:)``, ``post(_:body:)``, ``put(_:body:)``,
@@ -14,8 +14,8 @@ import Foundation
 /// All HTTP goes through ``HTTPClient/shared``; session state lives in
 /// ``TokenStore/shared``. Refer to [HTTPClient](x-source-tag://HTTPClient)
 /// for auth header injection and 401 refresh semantics.
-actor ContinuumAPI {
-    static let shared = ContinuumAPI()
+actor SiloAPI {
+    static let shared = SiloAPI()
 
     /// Non-private so endpoint methods declared in extensions (e.g. the
     /// downloads API) can reuse the same injected transport.

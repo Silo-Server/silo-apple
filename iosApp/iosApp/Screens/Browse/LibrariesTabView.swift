@@ -269,7 +269,7 @@ struct LibrariesTabView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
@@ -361,12 +361,12 @@ struct LibrariesTabView: View {
                 onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
             )
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.smallPadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.smallPadding)
 
             LibraryPageTabSelector(selectedTab: $selectedTab)
-                .padding(.bottom, ContinuumTheme.padding)
+                .padding(.bottom, SiloTheme.padding)
         }
     }
 
@@ -538,18 +538,18 @@ private struct LibrarySelectorButton: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(library.name)
-                        .font(.continuumTitle)
-                    .foregroundStyle(Color.continuumOnSurface)
+                        .font(.siloTitle)
+                    .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(1)
                     if canSwitch {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.continuumOnSurface)
+                            .foregroundColor(.siloOnSurface)
                     }
                 }
                 Text(typeLabel)
-                    .font(.continuumCaption)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
             }
         }
@@ -618,10 +618,10 @@ private struct LibraryPickerSheet: View {
                     )
                 }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.vertical, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.vertical, SiloTheme.padding)
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle("Libraries")
     }
 }
@@ -637,21 +637,21 @@ private struct LibraryPickerRow: View {
             HStack(spacing: 12) {
                 ZStack {
                     Circle()
-                        .fill(Color.continuumOnSurface.opacity(0.12))
+                        .fill(Color.siloOnSurface.opacity(0.12))
                     Image(systemName: iconName)
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
                 .frame(width: 40, height: 40)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(library.name)
-                        .font(.continuumHeadline)
-                        .foregroundColor(.continuumOnSurface)
+                        .font(.siloHeadline)
+                        .foregroundColor(.siloOnSurface)
                     if let typeLabel {
                         Text(typeLabel)
-                            .font(.continuumCaption)
-                            .foregroundColor(.continuumSecondaryText)
+                            .font(.siloCaption)
+                            .foregroundColor(.siloSecondaryText)
                     }
                 }
 
@@ -660,17 +660,17 @@ private struct LibraryPickerRow: View {
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                    .fill(isSelected ? Color.continuumOnSurface.opacity(0.10) : Color.continuumSurfaceElevated)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                    .fill(isSelected ? Color.siloOnSurface.opacity(0.10) : Color.siloSurfaceElevated)
                     .overlay(
-                        RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                            .stroke(Color.continuumOutline, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                            .stroke(Color.siloOutline, lineWidth: 1)
                     )
             )
         }

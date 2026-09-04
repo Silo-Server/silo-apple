@@ -60,7 +60,7 @@ struct PhoneEpisodeList: View {
                 }
             }
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
         .padding(.vertical, 4)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width

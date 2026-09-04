@@ -45,7 +45,7 @@ struct TVItemDetailView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
     private static let focusLogger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
     )
 
@@ -72,9 +72,9 @@ struct TVItemDetailView: View {
                 TVItemDetailLoadingView(seed: seed)
             }
         }
-        .continuumBackground()
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumNavigationBarBackgroundHidden()
+        .siloBackground()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloNavigationBarBackgroundHidden()
         .onAppear {
             Self.focusLogger.debug("itemDetail.appear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             allowRemoteTrailers = TVTrailerLaunch.canDisplayRemoteCards()

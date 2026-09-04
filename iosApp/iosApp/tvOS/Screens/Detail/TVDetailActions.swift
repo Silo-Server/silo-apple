@@ -399,7 +399,7 @@ private struct TVCirclePillSurface: View {
             y: isFocused ? 6 : 0
         )
         .animation(TVCircleFocusMotion.resize, value: isFocused)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isPressed)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isPressed)
         .onChange(of: isFocused, initial: true) { _, focused in
             let expanded = focused && canExpand
             guard expanded != isExpanded else { return }
@@ -733,7 +733,7 @@ private struct TVPillButtonBody: View {
             )
             .focusEffectDisabled()
             .animation(.easeInOut(duration: 0.18), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var foreground: Color {

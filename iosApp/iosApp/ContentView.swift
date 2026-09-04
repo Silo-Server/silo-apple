@@ -10,14 +10,17 @@ struct ContentView: View {
     @State private var serverRegistry = ServerRegistry.shared
     @State private var audioStore = AudioPlaybackStore()
     @State private var launchPreferences = ProfileLaunchPreferences.shared
+    @State private var deepLinkCoordinator = SiloDeepLinkCoordinator.shared
     @State private var isApplyingProfileReturnPolicy = false
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
     #endif
+    #if DEBUG
     @State private var debugPlayContentId: String?
     @State private var didAttemptDebugAutoPlay = false
     @State private var didAttemptDebugDiagnostics = false
+    #endif
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
     @State private var pendingInitialAuthState: AppRouter.AuthState?
@@ -25,8 +28,18 @@ struct ContentView: View {
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
     /// Deep link URL received before the auth state was ready. Content links
-    /// drain on the next `.authenticated` transition.
+    /// drain on the next `.authenticated` transition. There is intentionally
+    /// only one deferred intent: a newer external URL supersedes an older one.
     @State private var pendingDeepLink: URL?
+    /// Monotonically identifies the newest accepted external navigation
+    /// intent. Async play lookups must still own this revision before they can
+    /// present anything.
+    @State private var deepLinkRevision: UInt = 0
+    @State private var playDeepLinkTask: Task<Void, Never>?
+    /// `downloadsEnabled == false` is ambiguous until the current scope's
+    /// capability refresh finishes. Keep Downloads links queued during that
+    /// window instead of treating the initial false value as authoritative.
+    @State private var isDownloadCapabilityHydrated = false
     /// Shared with every screen that renders cards. Hydrates lazily on
     /// the first .authenticated transition so cards stay visible during
     /// the brief window between sign-in and the overlay-config fetch.
@@ -64,26 +77,29 @@ struct ContentView: View {
             authState: router.authState
         )
         #endif
+        #if DEBUG
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,
             isPresented: debugPlayerPresentation,
             router: router,
             overlayPrefs: overlayPrefs
         ))
+        #endif
         #if os(iOS) || os(tvOS)
         .modifier(DiagnosticsPromptPresentationModifier(
             model: diagnosticsModel,
             isEnabled: router.authState == .authenticated
         ))
         #endif
-        .onReceive(NotificationCenter.default.publisher(for: .continuumDeepLink)) { notification in
-            guard let url = notification.userInfo?["url"] as? URL else { return }
-            #if os(iOS)
-            ApplePushDeepLinkCoordinator.shared.clearPendingDeepLink(matching: url)
-            #endif
-            handleDeepLink(url)
+        .onChange(of: deepLinkCoordinator.pendingURL) { _, _ in
+            drainIncomingDeepLink()
+        }
+        .onChange(of: currentDeepLinkIdentity) { _, _ in
+            playDeepLinkTask?.cancel()
+            playDeepLinkTask = nil
         }
         .onAppear {
+            drainIncomingDeepLink()
             #if os(iOS) || os(tvOS)
             // The first frame SwiftUI actually produced. A launch whose
             // breadcrumbs stop at `process_start` never got here, which
@@ -94,13 +110,8 @@ struct ContentView: View {
             #if os(tvOS)
             ExitSentinel.shared.appDidEnterForeground()
             #endif
-            #if os(iOS)
-            if let url = ApplePushDeepLinkCoordinator.shared.consumePendingDeepLink() {
-                handleDeepLink(url)
-            }
-            #endif
         }
-        .onReceive(NotificationCenter.default.publisher(for: .continuumSessionExpired)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .siloSessionExpired)) { notification in
             guard let event = notification.object as? SessionExpiryEvent,
                   event.disposition == .persistentSessionCleared else { return }
             Task { @MainActor in
@@ -116,7 +127,7 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .continuumProfileSelectionRequired)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .siloProfileSelectionRequired)) { _ in
             guard shouldPresentProfileSelectionAfterRecovery(
                 isLoggedIn: AuthService.shared.isLoggedIn,
                 activeProfileID: AuthService.shared.profileId
@@ -178,6 +189,7 @@ struct ContentView: View {
             markProfileAwayStartForTermination()
         }
         #endif
+        #if DEBUG
         .task {
             // Debug: auto-play from launch argument -debugPlay <contentId>
             if let idx = CommandLine.arguments.firstIndex(of: "-debugPlay"),
@@ -187,12 +199,16 @@ struct ContentView: View {
                 debugPlayContentId = contentId
             }
         }
-        #if DEBUG
         .task {
             await maybeDebugAutoLogin()
         }
         #endif
         .task(id: router.authState) {
+            if router.authState != .authenticated {
+                playDeepLinkTask?.cancel()
+                playDeepLinkTask = nil
+                isDownloadCapabilityHydrated = false
+            }
             #if os(iOS) || os(tvOS)
             if router.authState != .authenticated {
                 // The initial `.loading` state is not an identity boundary.
@@ -205,13 +221,13 @@ struct ContentView: View {
                 diagnosticsModel.reset()
             }
             #endif
+            #if DEBUG
             await maybeAutoPlayForDebug()
+            #endif
             if router.authState == .authenticated {
                 let hasPendingDeepLink = pendingDeepLink != nil
-                if let pending = pendingDeepLink {
-                    pendingDeepLink = nil
-                    handleDeepLink(pending)
-                }
+                isDownloadCapabilityHydrated = false
+                drainPendingDeepLinkIfReady()
                 #if os(tvOS)
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
@@ -238,7 +254,16 @@ struct ContentView: View {
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
                 #endif
                 #if !os(tvOS)
-                await DownloadManager.shared.onAppActive()
+                // Drain a queued Downloads link as soon as the capability is
+                // known. The reconciliation and sync that follow inside
+                // onAppActive() can take several network round-trips on a slow
+                // server and must not hold a notification tap hostage.
+                await DownloadManager.shared.onAppActive {
+                    guard !Task.isCancelled,
+                          router.authState == .authenticated else { return }
+                    isDownloadCapabilityHydrated = true
+                    drainPendingDeepLinkIfReady()
+                }
                 #endif
             }
         }
@@ -596,12 +621,14 @@ struct ContentView: View {
         }
     }
 
+    #if DEBUG
     private var debugPlayerPresentation: Binding<Bool> {
         Binding(
             get: { debugPlayContentId != nil },
             set: { if !$0 { debugPlayContentId = nil } }
         )
     }
+    #endif
 
     /// Resolves a `continuum://` URL to a navigation action. Supported
     /// shapes:
@@ -613,7 +640,39 @@ struct ContentView: View {
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
-    private func handleDeepLink(_ url: URL) {
+    private func drainIncomingDeepLink() {
+        guard let url = deepLinkCoordinator.consumePendingURL() else { return }
+        acceptDeepLink(url)
+    }
+
+    private func drainPendingDeepLinkIfReady() {
+        guard let url = pendingDeepLink else { return }
+        guard !shouldWaitForDownloadCapability(url) else { return }
+        pendingDeepLink = nil
+        handleDeepLink(url, revision: deepLinkRevision)
+    }
+
+    private func shouldWaitForDownloadCapability(_ url: URL) -> Bool {
+        #if os(tvOS)
+        false
+        #else
+        url.host?.lowercased() == "downloads" && !isDownloadCapabilityHydrated
+        #endif
+    }
+
+    /// Accept a newly delivered external navigation intent. Navigation is
+    /// deliberately last-write-wins: replacing an older deferred URL and
+    /// cancelling its async play lookup prevents stale startup work from
+    /// overriding the user's newest tap.
+    private func acceptDeepLink(_ url: URL) {
+        deepLinkRevision &+= 1
+        pendingDeepLink = nil
+        playDeepLinkTask?.cancel()
+        playDeepLinkTask = nil
+        handleDeepLink(url, revision: deepLinkRevision)
+    }
+
+    private func handleDeepLink(_ url: URL, revision: UInt) {
         guard url.scheme?.lowercased() == "continuum",
               let host = url.host?.lowercased() else { return }
 
@@ -627,6 +686,10 @@ struct ContentView: View {
 
         if host == "downloads" {
             guard router.authState == .authenticated else {
+                pendingDeepLink = url
+                return
+            }
+            guard !shouldWaitForDownloadCapability(url) else {
                 pendingDeepLink = url
                 return
             }
@@ -658,7 +721,17 @@ struct ContentView: View {
         case "item":
             router.navigate(to: .itemDetail(contentId: contentId))
         case "play":
-            Task { await routePlayDeepLink(contentId: contentId) }
+            let identity = currentDeepLinkIdentity
+            playDeepLinkTask = Task { @MainActor in
+                await routePlayDeepLink(
+                    contentId: contentId,
+                    revision: revision,
+                    identity: identity
+                )
+                if deepLinkRevision == revision {
+                    playDeepLinkTask = nil
+                }
+            }
         default:
             break
         }
@@ -679,10 +752,39 @@ struct ContentView: View {
     }
     #endif
 
+    private struct DeepLinkIdentity: Equatable {
+        let serverId: String?
+        let profileId: String?
+    }
+
+    private var currentDeepLinkIdentity: DeepLinkIdentity {
+        DeepLinkIdentity(
+            serverId: serverRegistry.activeServerId,
+            profileId: serverRegistry.activeProfileId
+        )
+    }
+
+    private func canCompletePlayDeepLink(
+        revision: UInt,
+        identity: DeepLinkIdentity
+    ) -> Bool {
+        !Task.isCancelled
+            && revision == deepLinkRevision
+            && router.authState == .authenticated
+            && identity == currentDeepLinkIdentity
+    }
+
     @MainActor
-    private func routePlayDeepLink(contentId: String) async {
+    private func routePlayDeepLink(
+        contentId: String,
+        revision: UInt,
+        identity: DeepLinkIdentity
+    ) async {
         do {
-            let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
+            guard canCompletePlayDeepLink(revision: revision, identity: identity) else {
+                return
+            }
             if detail.isAudiobook {
                 audioStore.play(contentId: contentId)
                 return
@@ -691,12 +793,13 @@ struct ContentView: View {
             // Fall through to the existing video route when the type cannot be resolved.
         }
 
-        router.navigate(
-            to: .player(
-                contentId: contentId,
-                startFromBeginning: false,
-                resumePosition: nil
-            )
+        guard canCompletePlayDeepLink(revision: revision, identity: identity) else {
+            return
+        }
+        router.presentPlayer(
+            contentId: contentId,
+            startFromBeginning: false,
+            resumePosition: nil
         )
     }
 
@@ -784,6 +887,7 @@ struct ContentView: View {
     }
     #endif
 
+    #if DEBUG
     private func maybeAutoPlayForDebug() async {
         guard router.authState == .authenticated else { return }
         guard !didAttemptDebugAutoPlay else { return }
@@ -803,7 +907,7 @@ struct ContentView: View {
         didAttemptDebugAutoPlay = true
 
         do {
-            let sections = try await ContinuumAPI.shared.homeSections()
+            let sections = try await SiloAPI.shared.homeSections()
             guard let contentId = sections.sections.lazy
                 .compactMap({ $0.items.first?.contentId })
                 .first else {
@@ -823,7 +927,6 @@ struct ContentView: View {
         return CommandLine.arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    #if DEBUG
     private func debugLaunchArgValue(_ name: String) -> String? {
         guard let index = CommandLine.arguments.firstIndex(of: name),
               index + 1 < CommandLine.arguments.count else {
@@ -895,10 +998,8 @@ struct ContentView: View {
             print("[DebugAutoLogin] failed: \(error)")
         }
     }
-    #endif
-
     private func resolveDebugSearchContentId(query: String) async throws -> String {
-        let response = try await ContinuumAPI.shared.catalog(query: [
+        let response = try await SiloAPI.shared.catalog(query: [
             "source": "query",
             "q": query,
             "limit": "20",
@@ -918,12 +1019,12 @@ struct ContentView: View {
         }
 
         if preferredItem.type == "series" {
-            let seasons = try await ContinuumAPI.shared.seasons(seriesId: preferredItem.contentId)
+            let seasons = try await SiloAPI.shared.seasons(seriesId: preferredItem.contentId)
             guard let firstSeason = seasons.seasons.sorted(by: { $0.seasonNumber < $1.seasonNumber }).first else {
                 throw DebugAutoPlayError.noPlayableEpisode(seriesTitle: preferredItem.title)
             }
 
-            let episodes = try await ContinuumAPI.shared.episodes(
+            let episodes = try await SiloAPI.shared.episodes(
                 seriesId: preferredItem.contentId,
                 seasonNumber: firstSeason.seasonNumber
             )
@@ -943,6 +1044,7 @@ struct ContentView: View {
         print("[DebugPlaySearch] Resolved '\(query)' to \(preferredItem.type) contentId=\(preferredItem.contentId)")
         return preferredItem.contentId
     }
+    #endif
 
     @ViewBuilder
     private func destinationView(for route: Route) -> some View {
@@ -956,7 +1058,7 @@ struct ContentView: View {
         case .onboardingTour:
             #if os(tvOS)
             EmptyStateView(icon: "sparkles", title: "Take the tour on your phone or the web", subtitle: nil)
-                .continuumPageBackground()
+                .siloPageBackground()
             #else
             OnboardingTourView(router: router)
             #endif
@@ -975,7 +1077,7 @@ struct ContentView: View {
                 title: "Coming Soon",
                 subtitle: "This screen is under construction."
             )
-            .continuumPageBackground()
+            .siloPageBackground()
         }
     }
 
@@ -1010,7 +1112,7 @@ struct ContentView: View {
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumPageBackground()
+                .siloPageBackground()
         }
     }
 }
@@ -1438,6 +1540,7 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 }
 #endif
 
+#if DEBUG
 private struct DebugPlayerPresentationModifier: ViewModifier {
     let contentId: String?
     @Binding var isPresented: Bool
@@ -1479,6 +1582,7 @@ private enum DebugAutoPlayError: LocalizedError {
         }
     }
 }
+#endif
 
 // MARK: - Zoom transition namespace
 
@@ -1764,7 +1868,7 @@ struct MainTabView: View {
                 tabLayout
             }
         }
-        .tint(.continuumOnSurface)
+        .tint(.siloOnSurface)
         #if os(iOS)
         .overlay {
             if router.presentedItemDetail != nil {
@@ -1774,7 +1878,7 @@ struct MainTabView: View {
                 // rounded detail card while it is open.
                 Rectangle()
                     .fill(.ultraThickMaterial)
-                    .overlay(Color.continuumGlassStrong.opacity(0.92))
+                    .overlay(Color.siloGlassStrong.opacity(0.92))
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -2072,8 +2176,8 @@ struct MainTabView: View {
         HStack(spacing: 0) {
             Color.clear
                 .frame(
-                    width: ContinuumTheme.topBarIconHitSize,
-                    height: ContinuumTheme.topBarIconHitSize
+                    width: SiloTheme.topBarIconHitSize,
+                    height: SiloTheme.topBarIconHitSize
                 )
                 .accessibilityHidden(true)
 
@@ -2086,8 +2190,8 @@ struct MainTabView: View {
                 Image(systemName: "arrow.left")
                     .font(.body.weight(.semibold))
                     .frame(
-                        width: ContinuumTheme.topBarIconHitSize,
-                        height: ContinuumTheme.topBarIconHitSize
+                        width: SiloTheme.topBarIconHitSize,
+                        height: SiloTheme.topBarIconHitSize
                     )
                     .contentShape(Rectangle())
             }
@@ -2394,7 +2498,7 @@ struct MainTabView: View {
         case .downloads:
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumPageBackground()
+                .siloPageBackground()
             #else
             DownloadsView()
             #endif
@@ -2414,20 +2518,20 @@ struct MainTabView: View {
         case .offlineSeriesBrowse(let seriesId):
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumPageBackground()
+                .siloPageBackground()
             #else
             OfflineSeriesBrowseView(seriesId: seriesId)
             #endif
         case .offlineDownloadDetail(let downloadId):
             #if os(tvOS)
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumPageBackground()
+                .siloPageBackground()
             #else
             OfflineDownloadDetailView(downloadId: downloadId)
             #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .continuumPageBackground()
+                .siloPageBackground()
         }
     }
 
@@ -2448,20 +2552,20 @@ struct MainTabView: View {
                 Button("Switch Profile") {
                     router.switchProfile()
                 }
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
             }
 
             Section {
                 Button("Sign Out") {
                     router.signOutAndReset()
                 }
-                .foregroundColor(.continuumError)
+                .foregroundColor(.siloError)
             }
         }
-        .continuumScrollContentBackgroundHidden()
-        .background(Color.continuumBackground)
+        .siloScrollContentBackgroundHidden()
+        .background(Color.siloBackground)
         .navigationTitle("Settings")
-        .continuumToolbarColorSchemeDark()
+        .siloToolbarColorSchemeDark()
     }
 }
 
@@ -2587,7 +2691,7 @@ private struct ItemDetailSheet: View {
             guard !Task.isCancelled else { return }
             let key = CacheKey.itemDetail(contentID)
             if let _: ItemDetail = ResponseCache.shared.get(key) { continue }
-            guard let detail = try? await ContinuumAPI.shared.itemDetail(contentId: contentID),
+            guard let detail = try? await SiloAPI.shared.itemDetail(contentId: contentID),
                   !Task.isCancelled else { continue }
             ResponseCache.shared.set(detail, for: key)
         }

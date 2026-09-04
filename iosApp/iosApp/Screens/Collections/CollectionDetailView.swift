@@ -41,9 +41,9 @@ struct CollectionDetailView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle("Collection")
-        .continuumNavigationTitleDisplayMode(.large)
+        .siloNavigationTitleDisplayMode(.large)
         .task {
             await loadItems()
         }
@@ -81,7 +81,7 @@ struct CollectionDetailView: View {
                 gridWidth = width
             }
             #endif
-            .padding(ContinuumTheme.padding)
+            .padding(SiloTheme.padding)
         }
     }
 
@@ -131,7 +131,7 @@ struct CollectionDetailView: View {
         }
         error = nil
         do {
-            let response: CatalogResponse = try await ContinuumAPI.shared.get(
+            let response: CatalogResponse = try await SiloAPI.shared.get(
                 "/api/v1/collections/\(collectionId)/items"
             )
             ResponseCache.shared.set(response, for: cacheKey)

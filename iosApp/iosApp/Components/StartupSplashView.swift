@@ -17,7 +17,7 @@ struct StartupSplashView: View {
 
     var body: some View {
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            Color.siloBackground.ignoresSafeArea()
 
             GeometryReader { proxy in
                 let size = surfaceSize(in: proxy.size)

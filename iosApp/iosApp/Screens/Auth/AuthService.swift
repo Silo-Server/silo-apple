@@ -3,7 +3,7 @@ import Foundation
 /// Thin service layer for auth / profile operations backed by the native
 /// Swift `HTTPClient`.
 ///
-/// Shares the same token/profile storage as `ContinuumAPI` via
+/// Shares the same token/profile storage as `SiloAPI` via
 /// ``TokenStore/shared``. Server metadata lives in `ServerRegistry`; active
 /// profile identity is a separate current-user request scope coordinated with
 /// `ProfileLaunchPreferences`.
@@ -173,7 +173,7 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Profiles
 
     func getProfiles() async throws -> [UserProfile] {
-        try await ContinuumAPI.shared.listProfiles()
+        try await SiloAPI.shared.listProfiles()
     }
 
     func selectProfile(
@@ -189,7 +189,7 @@ final class AuthService: @unchecked Sendable {
             throw ProfileTransitionError.temporaryIdentityActive
         }
 
-        let profileToken = try await ContinuumAPI.shared.verifyProfileSelection(
+        let profileToken = try await SiloAPI.shared.verifyProfileSelection(
             profileId: profileId,
             pin: pin
         )
@@ -496,7 +496,7 @@ final class AuthService: @unchecked Sendable {
         guard committed else { return }
         await MainActor.run {
             NotificationCenter.default.post(
-                name: .continuumProfileSelectionRequired,
+                name: .siloProfileSelectionRequired,
                 object: expectedProfileID
             )
         }
@@ -552,7 +552,7 @@ final class AuthService: @unchecked Sendable {
         libraryRestrictionsEnabled: Bool = false,
         allowedLibraryIds: [Int] = []
     ) async throws -> UserProfile {
-        try await ContinuumAPI.shared.createProfile(
+        try await SiloAPI.shared.createProfile(
             name: name,
             avatarEmoji: avatarEmoji,
             pin: pin,

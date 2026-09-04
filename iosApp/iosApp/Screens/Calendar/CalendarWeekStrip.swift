@@ -66,7 +66,7 @@ struct CalendarWeekStrip: View {
             phoneNavButton(systemImage: "chevron.right", action: onNextWeek)
                 .accessibilityLabel("Next week")
         }
-        .animation(ContinuumTheme.springAnimation, value: selectedDay)
+        .animation(SiloTheme.springAnimation, value: selectedDay)
     }
 
     private func phoneNavButton(
@@ -76,12 +76,12 @@ struct CalendarWeekStrip: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.continuumOnSurface.opacity(0.8))
+                .foregroundColor(.siloOnSurface.opacity(0.8))
                 .frame(width: 30, height: 30)
                 .background(Circle().fill(Color.white.opacity(0.07)))
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
         }
-        .buttonStyle(.continuumFlat)
+        .buttonStyle(.siloFlat)
     }
     #endif
 
@@ -113,14 +113,14 @@ struct CalendarWeekStrip: View {
             if !isCurrentWeek {
                 Button("Today", action: onToday)
                     .font(todayFont)
-                    .foregroundColor(isFocused(.today) ? .continuumBackground : .continuumOnSurface)
-                    .buttonStyle(.continuumFlat)
+                    .foregroundColor(isFocused(.today) ? .siloBackground : .siloOnSurface)
+                    .buttonStyle(.siloFlat)
                     .padding(.horizontal, todayHorizontalPadding)
                     .frame(height: chevronHeight)
                     .background(
                         Capsule().fill(
                             isFocused(.today)
-                                ? Color.continuumOnSurface.opacity(0.94)
+                                ? Color.siloOnSurface.opacity(0.94)
                                 : Color.white.opacity(0.08)
                         )
                     )
@@ -133,11 +133,11 @@ struct CalendarWeekStrip: View {
 
             Text(week.monthLabel)
                 .font(monthFont)
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
         .focusSection()
-        .animation(ContinuumTheme.springAnimation, value: isCurrentWeek)
+        .animation(SiloTheme.springAnimation, value: isCurrentWeek)
         .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
         .onAppear { applyFocusRequest(focusRequest) }
     }
@@ -182,18 +182,18 @@ struct CalendarWeekStrip: View {
             Image(systemName: systemImage)
                 .font(chevronFont)
                 .foregroundColor(
-                    isFocused(control) ? .continuumBackground : .continuumOnSurface.opacity(0.7)
+                    isFocused(control) ? .siloBackground : .siloOnSurface.opacity(0.7)
                 )
                 .frame(width: chevronWidth, height: chevronHeight)
                 .background(
                     Circle().fill(
                         isFocused(control)
-                            ? Color.continuumOnSurface.opacity(0.94)
+                            ? Color.siloOnSurface.opacity(0.94)
                             : Color.white.opacity(0.08)
                     )
                 )
         }
-        .buttonStyle(.continuumFlat)
+        .buttonStyle(.siloFlat)
         .applyStripFocus(self, control: control)
     }
 
@@ -255,21 +255,21 @@ private struct CalendarRichDayCell: View {
             VStack(spacing: 5) {
                 Text(weekdayLabel)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
 
                 Text(dayNumber)
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(isSelected ? .continuumBackground : .continuumOnSurface)
+                    .foregroundColor(isSelected ? .siloBackground : .siloOnSurface)
                     .frame(width: 34, height: 34)
                     .background(
                         RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(isSelected ? Color.continuumOnSurface : Color.clear)
+                            .fill(isSelected ? Color.siloOnSurface : Color.clear)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .strokeBorder(
                                 isToday && !isSelected
-                                    ? Color.continuumOnSurface.opacity(0.45)
+                                    ? Color.siloOnSurface.opacity(0.45)
                                     : Color.clear,
                                 lineWidth: 1.5
                             )
@@ -280,7 +280,7 @@ private struct CalendarRichDayCell: View {
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.continuumFlat)
+        .buttonStyle(.siloFlat)
         .animation(.easeInOut(duration: 0.15), value: isSelected)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -291,7 +291,7 @@ private struct CalendarRichDayCell: View {
         if eventCount > 0 {
             Text("\(eventCount)")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.continuumOnSurface.opacity(0.85))
+                .foregroundColor(.siloOnSurface.opacity(0.85))
                 .padding(.horizontal, 6)
                 .frame(height: 16)
                 .background(Capsule().fill(Color.white.opacity(0.10)))
@@ -344,11 +344,11 @@ private struct CalendarDayButton: View {
             }
             .frame(width: buttonWidth, height: buttonHeight)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
                     .fill(backgroundFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
                     .stroke(
                         isToday && !isSelected && !isFocused
                             ? Color.white.opacity(0.35)
@@ -358,8 +358,8 @@ private struct CalendarDayButton: View {
             )
             .scaleEffect(isFocused ? 1.06 : 1.0)
         }
-        .buttonStyle(.continuumFlat)
-        .animation(ContinuumTheme.springAnimation, value: isFocused)
+        .buttonStyle(.siloFlat)
+        .animation(SiloTheme.springAnimation, value: isFocused)
         .animation(.easeInOut(duration: 0.15), value: isSelected)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -381,20 +381,20 @@ private struct CalendarDayButton: View {
     private var inverted: Bool { isSelected || isFocused }
 
     private var primaryColor: Color {
-        inverted ? .continuumBackground : .continuumOnSurface
+        inverted ? .siloBackground : .siloOnSurface
     }
 
     private var secondaryColor: Color {
-        inverted ? Color.continuumBackground.opacity(0.7) : .continuumSecondaryText
+        inverted ? Color.siloBackground.opacity(0.7) : .siloSecondaryText
     }
 
     private var dotColor: Color {
-        inverted ? .continuumBackground : .continuumOnSurface.opacity(0.8)
+        inverted ? .siloBackground : .siloOnSurface.opacity(0.8)
     }
 
     private var backgroundFill: Color {
-        if isFocused { return Color.continuumOnSurface.opacity(0.94) }
-        if isSelected { return Color.continuumOnSurface.opacity(0.88) }
+        if isFocused { return Color.siloOnSurface.opacity(0.94) }
+        if isSelected { return Color.siloOnSurface.opacity(0.88) }
         return Color.white.opacity(0.05)
     }
 

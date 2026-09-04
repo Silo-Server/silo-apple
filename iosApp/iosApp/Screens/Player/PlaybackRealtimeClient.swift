@@ -6,7 +6,7 @@ actor PlaybackRealtimeClient {
     typealias EventHandler = @MainActor (PlaybackRealtimeEventEnvelope) async -> Void
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlaybackRealtime"
     )
 
@@ -277,7 +277,7 @@ actor PlaybackRealtimeClient {
     }
 
     private func makeRequest(sessionId: String) async throws -> URLRequest {
-        let serverUrl = await ContinuumAPI.shared.currentServerUrl()
+        let serverUrl = await SiloAPI.shared.currentServerUrl()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !serverUrl.isEmpty else {
             throw PlaybackRealtimeTransportError.serverUrlNotConfigured
@@ -306,7 +306,7 @@ actor PlaybackRealtimeClient {
         }
 
         var request = URLRequest(url: url)
-        if let token = await ContinuumAPI.shared.currentAccessToken(), !token.isEmpty {
+        if let token = await SiloAPI.shared.currentAccessToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         } else {
             throw PlaybackRealtimeTransportError.missingAccessToken

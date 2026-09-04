@@ -36,8 +36,8 @@ struct SiloControlModeButton: View {
     private func buttonLabel(isActive: Bool) -> some View {
         Image(systemName: "appletvremote.gen4")
             .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(Color.continuumOnSurface)
-            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .foregroundStyle(Color.siloOnSurface)
+            .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             .modifier(ControlModeGlass(enabled: usesGlass, isActive: isActive))
             .contentShape(Circle())
     }
@@ -59,11 +59,11 @@ private struct ControlModeGlass: ViewModifier {
             content.background {
                 if isActive {
                     Circle()
-                        .fill(Color.continuumOnSurface)
+                        .fill(Color.siloOnSurface)
                         .frame(width: 36, height: 36)
                 }
             }
-            .foregroundStyle(isActive ? Color.continuumBackground : Color.continuumOnSurface)
+            .foregroundStyle(isActive ? Color.siloBackground : Color.siloOnSurface)
         }
     }
 }
@@ -74,7 +74,7 @@ private struct ControlModeGlass: ViewModifier {
         SiloControlModeButton(controller: SiloControlClient(), onChooseTarget: {})
     }
     .padding()
-    .background(Color.continuumBackground)
+    .background(Color.siloBackground)
 }
 #endif
 #endif

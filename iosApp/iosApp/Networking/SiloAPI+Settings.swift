@@ -5,7 +5,7 @@ import Foundation
 /// The typed settings endpoints (`/api/v1/settings/contract*`,
 /// `/api/v1/settings/values/*`).
 ///
-/// The methods on ``ContinuumAPI`` itself — `effectiveSettings`,
+/// The methods on ``SiloAPI`` itself — `effectiveSettings`,
 /// `setDeviceSetting`, `getUserSetting` — speak the legacy string-only
 /// registry: every value is a string, the scope is implied by which function
 /// you call, and an unknown key is accepted silently. These speak the contract
@@ -17,7 +17,7 @@ import Foundation
 /// `HTTPClient` coders, so a setting value's own object keys never come near a
 /// key strategy. See the header of SettingValueModels.swift for the reasoning;
 /// the models decode identically under either coder either way.
-extension ContinuumAPI {
+extension SiloAPI {
 
     // MARK: Contract
 

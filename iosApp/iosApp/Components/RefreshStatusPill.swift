@@ -7,12 +7,12 @@ struct RefreshStatusPill: View {
         HStack(spacing: 10) {
             ProgressView()
                 .controlSize(.small)
-                .tint(.continuumOnSurface)
+                .tint(.siloOnSurface)
 
             Text("Refreshing")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .fontWeight(.semibold)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

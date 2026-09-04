@@ -96,7 +96,7 @@ struct CatalogGrid: View {
             HStack {
                 Spacer()
                 ProgressView()
-                    .tint(.continuumOnSurface)
+                    .tint(.siloOnSurface)
                     .padding()
                 Spacer()
             }

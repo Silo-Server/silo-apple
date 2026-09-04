@@ -1,6 +1,6 @@
 //
 //  PlaybackPrefsResolver.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Pure resolution logic that turns the server-provided
 //  `effective_subtitle_*` fields (carried on `WatchDetail`) into a

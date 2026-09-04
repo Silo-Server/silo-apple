@@ -112,13 +112,13 @@ private struct TVLibraryBrowseLoadingView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.continuumBackground
+            Color.siloBackground
 
             LinearGradient(
                 colors: [
-                    Color.continuumSurfaceElevated.opacity(0.72),
-                    Color.continuumBackground.opacity(0.88),
-                    Color.continuumBackground,
+                    Color.siloSurfaceElevated.opacity(0.72),
+                    Color.siloBackground.opacity(0.88),
+                    Color.siloBackground,
                 ],
                 startPoint: .topTrailing,
                 endPoint: .bottomLeading
@@ -129,7 +129,7 @@ private struct TVLibraryBrowseLoadingView: View {
                 Spacer(minLength: 24)
                 rowPlaceholder
             }
-            .padding(.horizontal, ContinuumTheme.Skyline.safeAreaX)
+            .padding(.horizontal, SiloTheme.Skyline.safeAreaX)
             .padding(.top, 188)
             .padding(.bottom, 34)
         }
@@ -164,7 +164,7 @@ private struct TVLibraryBrowseLoadingView: View {
 
                 Text("Loading \(libraryName)")
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.72))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.72))
             }
             .padding(.top, 4)
         }

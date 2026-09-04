@@ -440,7 +440,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(Color.continuumSuccess.opacity(0.9))
+                    .foregroundColor(Color.siloSuccess.opacity(0.9))
                 Text(value)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundColor(Color.white.opacity(0.88))

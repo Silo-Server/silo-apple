@@ -113,7 +113,7 @@ final class SiloControlClient {
     private static let connectTimeout: Duration = .seconds(6)
     private static let persistedTargetKey = "silocontrol.lastTarget"
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "control.client"
     )
 
@@ -937,7 +937,7 @@ final class SiloControlClient {
 
         nowPlayingArtworkTask = Task { [weak self] in
             do {
-                let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
                 try Task.checkCancellation()
                 self?.applyNowPlayingArtwork(from: detail)
             } catch is CancellationError {

@@ -30,7 +30,7 @@ final class OnboardingTourGateModel {
                profileId: profileId
            ) {
             do {
-                try await ContinuumAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
+                try await SiloAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
                     tourId: tourId,
                     lastStep: nil,
                     completed: true,
@@ -52,7 +52,7 @@ final class OnboardingTourGateModel {
             return
         }
 
-        let state = try? await ContinuumAPI.shared.onboardingState()
+        let state = try? await SiloAPI.shared.onboardingState()
         guard !Task.isCancelled,
               AuthService.shared.profileId == profileId else { return }
         guard let state, !state.done else { return }
@@ -73,7 +73,7 @@ final class OnboardingTourGateModel {
         }
 
         do {
-            let user = try await ContinuumAPI.shared.currentUser()
+            let user = try await SiloAPI.shared.currentUser()
             guard user.id == expectedUserId else {
                 LegacyInviteTourSuppression.clear(
                     serverId: serverId,
@@ -82,8 +82,8 @@ final class OnboardingTourGateModel {
                 return false
             }
 
-            let flow = try await ContinuumAPI.shared.onboardingFlow(surface: "phone")
-            try await ContinuumAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
+            let flow = try await SiloAPI.shared.onboardingFlow(surface: "phone")
+            try await SiloAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
                 tourId: flow.tourId,
                 lastStep: nil,
                 completed: false,

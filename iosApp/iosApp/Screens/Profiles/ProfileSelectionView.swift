@@ -426,5 +426,5 @@ struct ProfileSelectionView: View {
     #endif
 }
 
-// `GhostChipButtonStyle` now lives in `Theme/ContinuumButtonStyles.swift`
+// `GhostChipButtonStyle` now lives in `Theme/SiloButtonStyles.swift`
 // (shared with `CreateProfileView`).

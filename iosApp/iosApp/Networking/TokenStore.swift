@@ -104,7 +104,7 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
     case differentGeneration(activeGenerationID: UUID)
 }
 
-/// Persistent, thread-safe store for Continuum session state.
+/// Persistent, thread-safe store for Silo session state.
 ///
 /// Mirrors the surface of the shared Kotlin `TokenManager`, but persists
 /// tokens in the Keychain so login survives app kills. `serverUrl` and

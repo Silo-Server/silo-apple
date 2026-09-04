@@ -29,8 +29,8 @@ struct SubtitleSettingsView: View {
         }
         .settingsListChrome()
         .navigationTitle("")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
         .onChange(of: viewModel.editorSubtitleLanguage) { _, _ in
             Task { await viewModel.saveProfilePrefs() }
         }
@@ -59,7 +59,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option.code)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -67,13 +67,13 @@ struct SubtitleSettingsView: View {
             #endif
         } header: {
             Text("Metadata")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
         .disabled(viewModel.settingsServerUpgradeRequired)
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
     }
 
     // MARK: - Profile prefs (server-backed)
@@ -90,7 +90,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option.code)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -102,7 +102,7 @@ struct SubtitleSettingsView: View {
                     Text(mode.displayLabel).tag(mode.rawValue)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -116,23 +116,23 @@ struct SubtitleSettingsView: View {
                     set: { viewModel.editorShowForcedSubtitles = $0 ? "on" : "off" }
                 )
             )
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
         } header: {
             Text("Profile")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.subtitleMatchesSystemAppearance {
                     Text("Language, display behavior, forced captions, and CC/SDH preference follow this device's Accessibility settings.")
                 } else if viewModel.settingsServerUpgradeRequired {
                     Text(ProfilePrefsEditor.serverUpgradeMessage)
-                        .foregroundStyle(Color.continuumError)
+                        .foregroundStyle(Color.siloError)
                 } else {
                     Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
                     if let overrideMessage = viewModel.prefs.subtitleProfileOverrideMessage {
                         Text("Override active — \(overrideMessage)")
-                            .foregroundStyle(Color.continuumWarning)
+                            .foregroundStyle(Color.siloWarning)
                     }
                 }
                 if let state = viewModel.prefSaveState,
@@ -140,10 +140,10 @@ struct SubtitleSettingsView: View {
                     saveStateView(state)
                 }
             }
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
         }
         .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
     }
 
     // MARK: - Appearance (per-device override)
@@ -159,14 +159,14 @@ struct SubtitleSettingsView: View {
                 .listRowInsets(EdgeInsets())
         } header: {
             Text("Appearance")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             if !manualEditingDisabled && viewModel.subtitleAppearance.isLowLegibilityRisk {
                 Text("Low contrast — dark text without a box or outline can be hard to read.")
-                    .foregroundStyle(Color.continuumError)
+                    .foregroundStyle(Color.siloError)
             }
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
 
         Section {
             Toggle(
@@ -178,8 +178,8 @@ struct SubtitleSettingsView: View {
                     }
                 )
             )
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
 
             Toggle(
                 "Custom Appearance",
@@ -190,8 +190,8 @@ struct SubtitleSettingsView: View {
                     }
                 )
             )
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
             .disabled(manualEditingDisabled)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
@@ -208,9 +208,9 @@ struct SubtitleSettingsView: View {
                     Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
                 }
             }
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
 
         Section {
             Picker("Font Size", selection: appearanceBinding(\.fontSize)) {
@@ -218,7 +218,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -230,7 +230,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -244,8 +244,8 @@ struct SubtitleSettingsView: View {
             )
 
             Toggle("Text Outline", isOn: appearanceBinding(\.textOutline))
-                .foregroundStyle(Color.continuumOnSurface)
-                .tint(.continuumAccent)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloAccent)
 
             ColorChoicePicker(
                 title: "Outline Color",
@@ -256,9 +256,9 @@ struct SubtitleSettingsView: View {
             .opacity(viewModel.subtitleAppearance.textOutline ? 1 : 0.45)
         } header: {
             Text("Text")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
         .disabled(manualEditingDisabled)
         .opacity(manualEditingDisabled ? 0.45 : 1)
 
@@ -268,7 +268,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -288,9 +288,9 @@ struct SubtitleSettingsView: View {
             .opacity(viewModel.subtitleAppearance.backgroundStyle == .box ? 1 : 0.45)
         } header: {
             Text("Background")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
         .disabled(manualEditingDisabled)
         .opacity(manualEditingDisabled ? 0.45 : 1)
 
@@ -300,7 +300,7 @@ struct SubtitleSettingsView: View {
                     Text(option.label).tag(option)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -308,9 +308,9 @@ struct SubtitleSettingsView: View {
             #endif
         } header: {
             Text("Layout")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
         .disabled(manualEditingDisabled)
         .opacity(manualEditingDisabled ? 0.45 : 1)
     }
@@ -336,7 +336,7 @@ struct SubtitleSettingsView: View {
         let committed = Double(viewModel.subtitleAppearance.backgroundOpacity)
         return HStack(spacing: 12) {
             Text("Opacity")
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
             Slider(
                 value: Binding(
                     get: { draftOpacity ?? committed },
@@ -353,10 +353,10 @@ struct SubtitleSettingsView: View {
                 next.backgroundOpacity = percent
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
-            .tint(.continuumAccent)
+            .tint(.siloAccent)
             Text("\(Int(draftOpacity ?? committed))%")
                 .monospacedDigit()
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
                 .frame(minWidth: 44, alignment: .trailing)
         }
         .accessibilityElement(children: .combine)
@@ -387,10 +387,10 @@ struct SubtitleSettingsView: View {
             Text("Saved")
         case .failed(let message):
             Text("Couldn't save: \(message)")
-                .foregroundStyle(Color.continuumError)
+                .foregroundStyle(Color.siloError)
         case .serverUpgradeRequired:
             Text(ProfilePrefsEditor.serverUpgradeMessage)
-                .foregroundStyle(Color.continuumError)
+                .foregroundStyle(Color.siloError)
         }
     }
 }
@@ -414,7 +414,7 @@ private struct ColorChoicePicker: View {
                         .frame(width: 22, height: 22)
                         .overlay(
                             Circle()
-                                .stroke(Color.continuumSecondaryText.opacity(0.35), lineWidth: 1)
+                                .stroke(Color.siloSecondaryText.opacity(0.35), lineWidth: 1)
                         )
                     Text(color.label)
                 }
@@ -422,7 +422,7 @@ private struct ColorChoicePicker: View {
             }
         } label: {
             Text(title)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
         }
         #if os(macOS)
         .pickerStyle(.menu)

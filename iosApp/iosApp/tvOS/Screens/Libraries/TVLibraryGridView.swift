@@ -50,7 +50,7 @@ struct TVLibraryGridView: View {
         subtitle: String? = nil,
         showsHeader: Bool = true,
         showsAlphabetRail: Bool = true,
-        topContentInset: CGFloat = ContinuumTheme.smallPadding,
+        topContentInset: CGFloat = SiloTheme.smallPadding,
         focusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
         onTopMenuFocusRequest: (() -> Void)? = nil
@@ -99,7 +99,7 @@ struct TVLibraryGridView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: openPanel)
-        .continuumBackground()
+        .siloBackground()
         .task {
             if viewModel.items.isEmpty {
                 await viewModel.loadInitial()
@@ -145,7 +145,7 @@ struct TVLibraryGridView: View {
             VStack(alignment: .leading, spacing: 32) {
                 if showsHeader {
                     header
-                        .padding(.horizontal, ContinuumTheme.safePadding)
+                        .padding(.horizontal, SiloTheme.safePadding)
                         .padding(.top, topContentInset)
                 } else {
                     Color.clear
@@ -162,7 +162,7 @@ struct TVLibraryGridView: View {
                     onSort: { openPanel = .sort },
                     onFilter: { openPanel = .filter }
                 )
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
 
                 if viewModel.items.isEmpty && viewModel.isLoading {
                     Color.clear
@@ -192,7 +192,7 @@ struct TVLibraryGridView: View {
                             viewModel.setPosterRowVisibility(range, isVisible: isVisible)
                         }
                     )
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                 }
             }
             .padding(.bottom, 48)
@@ -225,20 +225,20 @@ struct TVLibraryGridView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(libraryName)
                 .font(.system(size: 64, weight: .bold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
 
             if let prefix = selectedPrefix {
                 Text(prefix == "#" ? "Titles starting with a number or symbol" : "Titles starting with \(prefix)")
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloSecondaryText)
             } else if let subtitle {
                 Text(subtitle)
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloSecondaryText)
             } else if let total = totalLabel {
                 Text(total)
-                    .font(.continuumHeadline)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloHeadline)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
     }

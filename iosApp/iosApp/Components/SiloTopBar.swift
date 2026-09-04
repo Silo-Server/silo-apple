@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// A reusable top bar styled for the Continuum dark theme.
-struct ContinuumTopBar<LeadingContent: View, TrailingContent: View>: View {
+/// A reusable top bar styled for the Silo dark theme.
+struct SiloTopBar<LeadingContent: View, TrailingContent: View>: View {
     let title: String
     @ViewBuilder var leading: () -> LeadingContent
     @ViewBuilder var trailing: () -> TrailingContent
@@ -24,16 +24,16 @@ struct ContinuumTopBar<LeadingContent: View, TrailingContent: View>: View {
             Spacer()
 
             Text(title)
-                .font(.continuumTitle)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloTitle)
+                .foregroundColor(.siloOnSurface)
 
             Spacer()
 
             trailing()
                 .frame(width: 44, alignment: .trailing)
         }
-        .padding(.horizontal, ContinuumTheme.padding)
-        .padding(.vertical, ContinuumTheme.smallPadding)
-        .background(Color.continuumBackground)
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.vertical, SiloTheme.smallPadding)
+        .background(Color.siloBackground)
     }
 }

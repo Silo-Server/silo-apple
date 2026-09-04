@@ -18,9 +18,9 @@ struct WatchlistButton: View {
         Button(action: action) {
             Image(systemName: inWatchlist ? "bookmark.fill" : "bookmark")
                 .font(.system(size: iconSize))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .frame(width: buttonSize, height: buttonSize)
-                .background(Circle().fill(Color.continuumSurfaceElevated))
+                .background(Circle().fill(Color.siloSurfaceElevated))
                 .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
         }
         #if os(tvOS)

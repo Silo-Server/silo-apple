@@ -20,7 +20,7 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>ContinuumKeychainAccessGroup</key>
+	<key>SiloKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)org.siloserver.silo.shared</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>

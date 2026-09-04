@@ -24,11 +24,11 @@ struct PhoneDetailFactsSection: View {
                         Text(fact.label.uppercased())
                             .font(.system(size: 11, weight: .bold))
                             .tracking(1.2)
-                            .foregroundColor(.continuumOnSurface.opacity(0.5))
+                            .foregroundColor(.siloOnSurface.opacity(0.5))
                             .frame(width: 100, alignment: .leading)
                         Text(fact.value)
                             .font(.system(size: 14, weight: .regular))
-                            .foregroundColor(.continuumOnSurface)
+                            .foregroundColor(.siloOnSurface)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.vertical, 12)

@@ -10,7 +10,7 @@ struct PlayerBufferingCapsule: View {
                 .scaleEffect(spinnerScale)
 
             Text("Loading…")
-                .font(.continuumSmall.weight(.medium))
+                .font(.siloSmall.weight(.medium))
                 .foregroundStyle(.white.opacity(0.82))
         }
         .padding(.horizontal, horizontalPadding)

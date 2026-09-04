@@ -35,18 +35,18 @@ extension Notification.Name {
     /// active server. `ContentView` observes it and drops to the login
     /// screen — the registry entry is preserved so the user only has to
     /// re-enter credentials.
-    static let continuumSessionExpired = Notification.Name("continuumSessionExpired")
+    static let siloSessionExpired = Notification.Name("siloSessionExpired")
     /// Posted when a playback-only remote handoff session expires. The TV
     /// restores its persistent identity instead of routing the app to login.
     static let temporaryRemoteAuthExpired = Notification.Name("temporaryRemoteAuthExpired")
     /// Posted when the account remains valid but the selected profile was
     /// removed or its saved PIN proof is no longer accepted.
-    static let continuumProfileSelectionRequired = Notification.Name(
-        "continuumProfileSelectionRequired"
+    static let siloProfileSelectionRequired = Notification.Name(
+        "siloProfileSelectionRequired"
     )
 }
 
-/// Central navigation controller for the Continuum iOS app.
+/// Central navigation controller for the Silo iOS app.
 ///
 /// Manages the authentication state machine and the navigation stack.
 /// Observed by ContentView to decide which screen tree to present.
@@ -57,7 +57,7 @@ class AppRouter {
     /// diagnostics binding is purged before control returns, so a breadcrumb
     /// would be dropped. See `signOutAndReset`.
     @ObservationIgnored private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "AppRouter"
     )
 

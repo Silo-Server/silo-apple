@@ -25,7 +25,7 @@ struct AudioCoverPalette: Equatable {
             Color(red: 0.09, green: 0.09, blue: 0.13),
         ],
         center: Color(red: 0.07, green: 0.08, blue: 0.11),
-        accent: .continuumPrimary
+        accent: .siloPrimary
     )
 }
 

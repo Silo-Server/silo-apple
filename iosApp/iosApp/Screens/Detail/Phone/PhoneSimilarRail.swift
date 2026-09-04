@@ -39,7 +39,7 @@ struct PhoneSimilarRail: View {
         // `VStack(spacing: 14)` so the page rhythm is unchanged.
         VStack(alignment: .leading, spacing: 14) {
             PhoneSectionHeader(title: "More Like This")
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
             content()
         }
     }
@@ -60,7 +60,7 @@ struct PhoneSimilarRail: View {
                     .accessibilityLabel(item.accessibilityDescription)
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
@@ -72,17 +72,17 @@ struct PhoneSimilarRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(0..<4, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                        .fill(Color.continuumSurfaceElevated)
+                    RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                        .fill(Color.siloSurfaceElevated)
                         .frame(
-                            width: ContinuumTheme.posterCardWidth
+                            width: SiloTheme.posterCardWidth
                                 * uiCustomization.cardPresentation.posterSize.scale,
-                            height: ContinuumTheme.posterCardHeight
+                            height: SiloTheme.posterCardHeight
                                 * uiCustomization.cardPresentation.posterSize.scale
                         )
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.vertical, 4)
         }
         .allowsHitTesting(false)
@@ -98,7 +98,7 @@ struct PhoneSimilarRail: View {
         items = []
 
         do {
-            let scored = try await ContinuumAPI.shared.recommendationsSimilar(
+            let scored = try await SiloAPI.shared.recommendationsSimilar(
                 contentId: contentId,
                 limit: 12
             )
@@ -108,7 +108,7 @@ struct PhoneSimilarRail: View {
             let resolved = await withTaskGroup(of: (Int, ItemDetail?).self) { group in
                 for (index, ref) in scored.enumerated() {
                     group.addTask {
-                        let detail = try? await ContinuumAPI.shared.itemDetail(
+                        let detail = try? await SiloAPI.shared.itemDetail(
                             contentId: ref.mediaItemId
                         )
                         return (index, detail)
@@ -161,10 +161,10 @@ private struct PhoneSimilarCard: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
     private var cardHeight: CGFloat {
-        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
     }
 
     var body: some View {
@@ -172,15 +172,15 @@ private struct PhoneSimilarCard: View {
             poster
             if uiCustomization.cardPresentation.caption.showsTitle {
                 Text(item.title)
-                    .font(.continuumSubheadline)
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .font(.siloSubheadline)
+                    .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
             }
             if uiCustomization.cardPresentation.caption.showsMetadata, let year = item.year {
                 Text(String(year))
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .frame(width: cardWidth, alignment: .leading)
@@ -193,14 +193,14 @@ private struct PhoneSimilarCard: View {
             AsyncImageView(url: url, thumbhash: item.posterThumbhash, contentMode: .fill)
                 .frame(width: cardWidth, height: cardHeight)
                 .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                .fill(Color.continuumSurfaceElevated)
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                .fill(Color.siloSurfaceElevated)
                 .frame(width: cardWidth, height: cardHeight)
                 .overlay(
                     Image(systemName: "film")
-                        .foregroundColor(.continuumOnSurface.opacity(0.3))
+                        .foregroundColor(.siloOnSurface.opacity(0.3))
                 )
         }
     }

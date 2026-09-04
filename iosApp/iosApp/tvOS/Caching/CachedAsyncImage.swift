@@ -38,7 +38,7 @@ struct CachedAsyncImage: View {
             let warmedImage = prefetchedImage()
             let loadAnimation: Animation? = reduceMotion || warmedImage != nil
                 ? nil
-                : .easeOut(duration: ContinuumTheme.slowDuration)
+                : .easeOut(duration: SiloTheme.slowDuration)
             LazyImage(
                 request: artworkLoadingEnabled ? request(for: resolvedSize) : nil,
                 transaction: Transaction(animation: loadAnimation)
@@ -78,7 +78,7 @@ struct CachedAsyncImage: View {
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
                                 Image(systemName: "film")
-                                    .foregroundColor(.continuumOnSurface.opacity(0.3))
+                                    .foregroundColor(.siloOnSurface.opacity(0.3))
                             }
                         }
                 } else {

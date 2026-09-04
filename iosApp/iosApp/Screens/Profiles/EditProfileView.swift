@@ -19,10 +19,10 @@ struct EditProfileView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                ContinuumPageBackdrop()
+                SiloPageBackdrop()
 
                 ScrollView {
-                    VStack(spacing: ContinuumTheme.largePadding) {
+                    VStack(spacing: SiloTheme.largePadding) {
                         // Avatar picker
                         VStack(spacing: 12) {
                             ProfileAvatarView(
@@ -45,7 +45,7 @@ struct EditProfileView: View {
                                             .frame(width: 40, height: 40)
                                             .background(
                                                 avatarEmoji == emoji
-                                                    ? Color.continuumPrimary.opacity(0.3)
+                                                    ? Color.siloPrimary.opacity(0.3)
                                                     : Color.clear
                                             )
                                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -54,27 +54,27 @@ struct EditProfileView: View {
                                 }
                             }
                         }
-                        .padding(.top, ContinuumTheme.padding)
+                        .padding(.top, SiloTheme.padding)
 
                         // Name field
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Name")
-                                .font(.continuumCaption)
-                                .foregroundColor(.continuumSecondaryText)
+                                .font(.siloCaption)
+                                .foregroundColor(.siloSecondaryText)
 
                             TextField("Profile name", text: $name)
-                                .textFieldStyle(ContinuumTextFieldStyle())
+                                .textFieldStyle(SiloTextFieldStyle())
                                 .autocorrectionDisabled()
                         }
 
                         // PIN field
                         VStack(alignment: .leading, spacing: 6) {
                             Text("PIN (optional)")
-                                .font(.continuumCaption)
-                                .foregroundColor(.continuumSecondaryText)
+                                .font(.siloCaption)
+                                .foregroundColor(.siloSecondaryText)
 
                             TextField("4-digit PIN", text: $pin)
-                                .textFieldStyle(ContinuumTextFieldStyle())
+                                .textFieldStyle(SiloTextFieldStyle())
                                 #if !os(macOS)
                                 .keyboardType(.numberPad)
                                 #endif
@@ -88,21 +88,21 @@ struct EditProfileView: View {
                         Toggle(isOn: $isChild) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Child Profile")
-                                    .font(.continuumBody)
-                                    .foregroundColor(.continuumOnSurface)
+                                    .font(.siloBody)
+                                    .foregroundColor(.siloOnSurface)
 
                                 Text("Restricts content to kid-friendly ratings")
-                                    .font(.continuumCaption)
-                                    .foregroundColor(.continuumSecondaryText)
+                                    .font(.siloCaption)
+                                    .foregroundColor(.siloSecondaryText)
                             }
                         }
-                        .tint(.continuumAccent)
+                        .tint(.siloAccent)
 
                         // Error
                         if let error {
                             Text(error)
-                                .font(.continuumCaption)
-                                .foregroundColor(.continuumError)
+                                .font(.siloCaption)
+                                .foregroundColor(.siloError)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
@@ -113,18 +113,18 @@ struct EditProfileView: View {
                         .siloPrimaryButton(isLoading: isLoading)
                         .disabled(isLoading || name.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    .padding(.horizontal, ContinuumTheme.largePadding)
+                    .padding(.horizontal, SiloTheme.largePadding)
                 }
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .foregroundColor(.continuumPrimary)
+                        .foregroundColor(.siloPrimary)
                 }
             }
             .navigationTitle("Edit Profile")
-            .continuumNavigationTitleDisplayMode(.inline)
-            .continuumToolbarColorSchemeDark()
+            .siloNavigationTitleDisplayMode(.inline)
+            .siloToolbarColorSchemeDark()
         }
         .onAppear {
             name = profile.name

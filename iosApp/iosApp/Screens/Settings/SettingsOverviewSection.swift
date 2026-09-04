@@ -18,17 +18,17 @@ struct SettingsOverviewSection<Content: View>: View {
                 .font(.caption)
                 .bold()
                 .tracking(1.5)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
                 .padding(.horizontal, 4)
 
             VStack(spacing: 0) {
                 content
             }
-            .background(Color.continuumSurfaceElevated.opacity(0.88))
+            .background(Color.siloSurfaceElevated.opacity(0.88))
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .overlay {
                 RoundedRectangle(cornerRadius: 18)
-                    .strokeBorder(Color.continuumOutline, lineWidth: 1)
+                    .strokeBorder(Color.siloOutline, lineWidth: 1)
             }
         }
     }

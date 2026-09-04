@@ -37,7 +37,7 @@ Conceptual north star: **the detail page is the Skyline focus marquee bloomed to
 full screen** — the same backdrop, eyebrow "tick," title, and metadata the
 marquee was already previewing expand into an interactive page.
 
-Reused from `docs/skyline-design-guide.md` and `ContinuumTheme.swift`:
+Reused from `docs/skyline-design-guide.md` and `SiloTheme.swift`:
 
 - Background OLED black `#000000`; surfaces `#0A0A0A` / elevated `#15171C`.
 - Monochrome chrome — primary text `#EDEDED`, secondary @ 60%, tertiary @ 38%,
@@ -48,7 +48,7 @@ Reused from `docs/skyline-design-guide.md` and `ContinuumTheme.swift`:
   labels.
 - Menus, the selector menus, and the overflow menu use Skyline `glass.strong`
   (`#16171B` @ 86% + blur 40).
-- Radii: the squared-control family is **8 pt** (`ContinuumTheme.smallCornerRadius`).
+- Radii: the squared-control family is **8 pt** (`SiloTheme.smallCornerRadius`).
   Cards keep 12 pt; section card backgrounds 18 pt.
 
 ## 3. Scope — locked decisions
@@ -218,7 +218,7 @@ in the same family (audiobooks have square cover art, not a 16:9 still):
 
 ## 10. Motion
 
-Reuse `ContinuumTheme` durations: focus 0.12 s, transitions 0.20 s, crossfades
+Reuse `SiloTheme` durations: focus 0.12 s, transitions 0.20 s, crossfades
 0.30 s. Specifics: squared-control focus ring/scale 0.12 s; synopsis expand/
 collapse 0.20 s height + fade; selector menu open = `glass.strong` scale
 0.96→1.0 + fade. **Reduce Motion:** no scale/expand animation — snap; ring-only

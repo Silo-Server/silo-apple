@@ -6,7 +6,7 @@ final class ProfileLaunchPreferences {
     static let shared = ProfileLaunchPreferences()
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ProfileLaunchPreferences"
     )
 

@@ -1391,7 +1391,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     }
 }
 
-/// Runtime-synthesized response from `ContinuumAPI.libraryCollections`.
+/// Runtime-synthesized response from `SiloAPI.libraryCollections`.
 /// Not decoded from wire JSON directly — `LibraryCollectionsWireResponse`
 /// handles that and is mapped into this shape at the API boundary.
 struct LibraryCollectionsResponse {
@@ -1476,7 +1476,7 @@ struct SyncProgressItem: Codable {
 /// Body for POST /api/v1/playback/start.
 ///
 /// Server shape is **flat** — there is no `client_capabilities` wrapper
-/// (see `Continuum/internal/api/handlers/playback.go::startPlaybackRequest`).
+/// (see `Silo/internal/api/handlers/playback.go::startPlaybackRequest`).
 /// Apple normally requests the selected original file (`playMethod == direct`)
 /// and performs route selection locally. `preserveDirectAudioSelection` tells
 /// the server not to remux solely to map a selected embedded audio track.

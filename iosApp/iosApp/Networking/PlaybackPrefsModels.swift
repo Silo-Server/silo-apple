@@ -1,6 +1,6 @@
 //
 //  PlaybackPrefsModels.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Wire types for the user's playback preferences. The server stores
 //  these at three precedence levels: per-series (highest), per-library,
