@@ -1116,6 +1116,7 @@ actor TokenStore {
         // The display token is bound to this session and profile, so it dies
         // with them; the next registration mints a fresh one.
         profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount)
+        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
         lastMirroredAccessToken = nil
         lastMirroredProfileToken = nil
     }

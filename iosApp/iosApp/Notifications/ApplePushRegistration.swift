@@ -20,28 +20,53 @@ struct ApplePushRegistrationResponse: Decodable {
     /// Long-lived, profile-scoped token for the Notification Service
     /// extension's display fetch. Absent on older servers.
     let displayToken: String?
+    /// RFC 3339 expiry of `displayToken`. Absent with it.
+    let displayTokenExpiresAt: String?
 }
 
 /// Persists the registration's display token where the Notification Service
 /// extension reads it. Kept separate from `TokenStore`'s access/profile
 /// mirrors because it is minted per registration, not per sign-in.
 struct ApplePushDisplayTokenStore {
+    /// Renew this far ahead of expiry so a token never lapses between two
+    /// foregrounds; the server's default lifetime is 30 days.
+    static let renewalLeadTime: TimeInterval = 7 * 24 * 60 * 60
+
     var keychain: SharedKeychain = SharedKeychain(audience: TokenStore.profileCredentialAudience)
+    var defaults: SharedDefaults = .shared
+    var now: () -> Date = Date.init
+
+    /// `true` when a token is stored and is not within `renewalLeadTime` of
+    /// its expiry. A token without a parseable expiry counts as current.
+    func hasCurrentToken() -> Bool {
+        let stored = keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
+        guard !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard let raw = defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey),
+              let expiresAt = Self.parseExpiry(raw) else {
+            return true
+        }
+        return expiresAt.timeIntervalSince(now()) > Self.renewalLeadTime
+    }
 
     /// Returns `true` when the token was written, or when there was nothing
     /// to write and any stale token was removed.
-    func hasToken() -> Bool {
-        let stored = keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
-        return !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     @discardableResult
-    func store(_ token: String?) -> Bool {
+    func store(_ token: String?, expiresAt: String?) -> Bool {
         let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else {
+            defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
             return keychain.delete(SharedStorage.applePushDisplayTokenAccount)
         }
-        return keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
+        let written = keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
+        defaults.set(written ? expiresAt : nil, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+        return written
+    }
+
+    static func parseExpiry(_ raw: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: raw) { return date }
+        return ISO8601DateFormatter().date(from: raw)
     }
 }
 
@@ -123,7 +148,11 @@ final class ApplePushRegistrationCoordinator {
     private var inFlightFingerprint: String?
     private var lastSuccessfulFingerprint: String?
     private var endpointUnsupportedForContext: String?
-    private var displayTokenUnavailableForFingerprint: String?
+    /// Fingerprint the server last answered without a display token, and
+    /// when. Time-bounded rather than process-lifetime so a server upgrade
+    /// is noticed by a long-resident app.
+    private var displayTokenUnavailable: (fingerprint: String, at: Date)?
+    private static let displayTokenUnavailableRetryInterval: TimeInterval = 6 * 60 * 60
     private let displayTokenStore = ApplePushDisplayTokenStore()
 
     private init() {}
@@ -192,12 +221,17 @@ final class ApplePushRegistrationCoordinator {
         // Registration is normally deduplicated per fingerprint for the
         // process lifetime. The display token is the exception: a session
         // sign-out clears it (TokenStore) without changing the fingerprint,
-        // and a server upgrade starts returning one for an unchanged
-        // registration. Re-register while the slot is empty so the extension
-        // regains its credential without waiting for a token or profile change.
-        if fingerprint == lastSuccessfulFingerprint,
-           displayTokenStore.hasToken() || displayTokenUnavailableForFingerprint == fingerprint {
-            return
+        // it expires on its own schedule, and a server upgrade starts
+        // returning one for an unchanged registration. Re-register while the
+        // slot is empty or near expiry so the extension keeps a live
+        // credential without waiting for a token or profile change.
+        if fingerprint == lastSuccessfulFingerprint {
+            if displayTokenStore.hasCurrentToken() { return }
+            if let unavailable = displayTokenUnavailable,
+               unavailable.fingerprint == fingerprint,
+               Date().timeIntervalSince(unavailable.at) < Self.displayTokenUnavailableRetryInterval {
+                return
+            }
         }
 
         inFlightFingerprint = fingerprint
@@ -213,9 +247,9 @@ final class ApplePushRegistrationCoordinator {
             // Always store, even when nil: a server downgrade or a profile
             // switch to an older server must not leave a token issued for a
             // different profile in the extension's slot.
-            let storedDisplayToken = displayTokenStore.store(response.displayToken)
-            // Older servers never return one; stop retrying for this context.
-            displayTokenUnavailableForFingerprint = response.displayToken == nil ? fingerprint : nil
+            let storedDisplayToken = displayTokenStore.store(response.displayToken, expiresAt: response.displayTokenExpiresAt)
+            // Older servers return none; back off for this context for a while.
+            displayTokenUnavailable = response.displayToken == nil ? (fingerprint, Date()) : nil
             Self.logger.info("Registered APNs token with Silo server_device_id=\(response.serverDeviceId, privacy: .private) enabled=\(response.enabled, privacy: .public) displayToken=\(response.displayToken != nil, privacy: .public) stored=\(storedDisplayToken, privacy: .public)")
         } catch HTTPError.http(let statusCode, _) where statusCode == 404 || statusCode == 405 {
             endpointUnsupportedForContext = fingerprint

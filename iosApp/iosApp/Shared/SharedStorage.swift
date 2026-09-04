@@ -35,6 +35,10 @@ enum SharedStorage {
     /// mirrored access token because it cannot refresh an expired one.
     /// Written by `ApplePushRegistrationCoordinator`, cleared with the mirrors.
     static let applePushDisplayTokenAccount = "com.continuum.push.displayToken"
+    /// App Group defaults key: RFC 3339 expiry of the stored display token,
+    /// used by the app to renew it before the extension starts sending an
+    /// expired credential. Not read by the extension.
+    static let applePushDisplayTokenExpiresAtKey = "applePush.displayTokenExpiresAt"
 
     static func accessTokenAccount(for serverID: String) -> String {
         "com.continuum.\(serverID).accessToken"
