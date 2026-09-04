@@ -902,26 +902,26 @@ private struct TVPlaybackSelectionSummaryView: View {
             summaryItem(
                 label: "VERSION",
                 value: summary.version,
-                slotWidth: 245,
-                placeholderWidth: 100
+                slotWidth: 313,
+                placeholderWidth: 128
             )
             summaryItem(
                 label: "AUDIO",
                 value: summary.audio,
-                slotWidth: 285,
-                placeholderWidth: 130
+                slotWidth: 364,
+                placeholderWidth: 166
             )
             summaryItem(
                 label: "SUBTITLES",
                 value: summary.subtitles,
-                slotWidth: 264,
-                placeholderWidth: 60
+                slotWidth: 338,
+                placeholderWidth: 77
             )
         }
         // This matches the compact no-Restart action-row footprint. Starts stay
         // fixed between episodes, while unusually long values scale down inside
         // their own slot instead of wrapping or extending into the artwork.
-        .frame(width: 810, height: 44, alignment: .topLeading)
+        .frame(width: 1_031, height: 44, alignment: .topLeading)
     }
 
     private func summaryItem(
@@ -932,7 +932,7 @@ private struct TVPlaybackSelectionSummaryView: View {
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(label)
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 23, weight: .bold))
                 .tracking(0.9)
                 .foregroundColor(Color.white.opacity(0.48))
                 .lineLimit(1)
@@ -941,7 +941,7 @@ private struct TVPlaybackSelectionSummaryView: View {
             Group {
                 if let value {
                     Text(value)
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: 23, weight: .medium))
                         .foregroundColor(Color.white.opacity(0.82))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
@@ -950,7 +950,7 @@ private struct TVPlaybackSelectionSummaryView: View {
                 } else {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Color.white.opacity(0.14))
-                        .frame(width: placeholderWidth, height: 14)
+                        .frame(width: placeholderWidth, height: 18)
                         .accessibilityHidden(true)
                 }
             }
