@@ -703,13 +703,19 @@ final class TVFocusMarqueeModel {
     /// next stop skips the network round trip and only pays one decode.
     func preview(_ candidate: TVMarqueeContent, neighborBackdropURLs: [String] = []) {
         guard isActive, candidate != content else { return }
+        // A row change is one discrete move whose scroll already holds the
+        // visible swap, so the rest gate would only delay the warm-up. The
+        // band's scroll phase lingers non-idle after the move, so a Left/
+        // Right roll inside the new row must still see the rest gate: only
+        // a change of row (the eyebrow carries the row title) counts.
+        let isRowChange = isBackdropDeferred && candidate.eyebrow != content?.eyebrow
         cancelBackdropWork()
         content = candidate
-        loadEnrichment(for: candidate, deferNetwork: true)
+        // Without the rest gate, episode backdrops (resolved from detail)
+        // have nothing to warm until enrichment starts, so start it now.
+        loadEnrichment(for: candidate, deferNetwork: !isRowChange)
         pendingNeighborBackdropURLs = neighborBackdropURLs
-        // A row change is one discrete move whose scroll already holds the
-        // visible swap, so the rest gate would only delay the warm-up.
-        if isBackdropDeferred {
+        if isRowChange {
             // Each move starts a fresh row animation, so the cap restarts.
             armBackdropHoldCap()
             rest(on: candidate)
