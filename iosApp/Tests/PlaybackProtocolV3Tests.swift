@@ -837,6 +837,45 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(renewal.startFromBeginning)
     }
 
+    func testInitialAutoSubtitleIntentResolvesInCombinedOrdinalOrder() {
+        // Watch detail lists embedded tracks before externals; the V3 combined
+        // ordinal space and the plan inventory list externals first. With two
+        // English full-dialogue tracks the resolver's first match must be the
+        // same track on both sides, or the post-load policy replans (a full
+        // engine reload) on every episode start.
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: 3, codec: "subrip", external: false, path: nil),
+                makeSubtitle(index: 4, codec: "subrip", external: false, path: nil, hearingImpaired: true),
+                makeSubtitle(index: nil, codec: "srt", external: true, path: "a.en.srt"),
+                makeSubtitle(index: nil, codec: "srt", external: true, path: "b.en.srt")
+            ]
+        )
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version,
+            explicitFFmpegIndex: nil,
+            explicitCombinedIndex: nil,
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: false,
+            trackSignature: nil,
+            currentAudioLanguage: "ja"
+        )
+        XCTAssertEqual(
+            intent,
+            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: 0),
+            "first external English track is combined ordinal 0 and must win over the embedded one at ordinal 2"
+        )
+
+        // The same preference over the plan inventory must land on the same ordinal.
+        let candidates = SubtitleTrackCandidates.playerTracks(from: version.subtitleTracks ?? [])
+        XCTAssertEqual(candidates.map(\.isExternal), [true, true, false, false])
+        XCTAssertEqual(candidates.map(\.srcId), [0, 1, nil, nil])
+    }
+
     func testInitialAutoSubtitleIntentIsFrozenIntoProtocolV3Plan() {
         let version = makeVersion(
             container: "mkv",

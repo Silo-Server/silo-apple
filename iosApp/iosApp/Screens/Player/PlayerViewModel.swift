@@ -7250,9 +7250,15 @@ class PlayerViewModel {
                 inventory: activePreparedProtocolV3.plan.subtitle.inventory
             )
         }
-        guard combinedIndex != activePreparedProtocolV3.plan.selectedTracks.subtitle?.index else {
+        let planIndex = activePreparedProtocolV3.plan.selectedTracks.subtitle?.index
+        guard combinedIndex != planIndex else {
             return false
         }
+        // A replan here is a full engine reload on top of a picture that is
+        // already playing, so the decision has to be visible in the log.
+        Self.logger.info(
+            "[CMP-SUB] auto policy disagrees with plan: pick=\(track.map { String($0.trackId) } ?? "off", privacy: .public) combined=\(combinedIndex.map(String.init) ?? "off", privacy: .public) planIndex=\(planIndex.map(String.init) ?? "off", privacy: .public) planMode=\(activePreparedProtocolV3.plan.subtitle.mode, privacy: .public)"
+        )
         // Inventory arrives as soon as the engine starts loading, before the
         // start's server transition has committed. A replan staged then rolls
         // that transition back and retires the session the engine is opening.
