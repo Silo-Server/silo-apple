@@ -22,9 +22,14 @@ actor ContinuumAPI {
     let http: HTTPClient
     private let tokenStore: TokenStore
 
-    init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared) {
+    /// The `/api/v2` pilot operations, on the same transport. v2 has no v1
+    /// fallback: a pilot call that fails stays failed.
+    let v2: APIv2Client
+
+    init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared, v2: APIv2Client? = nil) {
         self.http = http
         self.tokenStore = tokenStore
+        self.v2 = v2 ?? APIv2Client(http: http)
     }
 
     // MARK: - Session state accessors
@@ -384,11 +389,11 @@ actor ContinuumAPI {
     }
 
     func currentUser() async throws -> UserInfo {
-        let user: AuthUser = try await http.get("/api/v1/auth/me")
+        let account = try await v2.currentUser()
         return UserInfo(
-            id: String(user.id),
-            username: user.username,
-            isAdmin: user.role == "admin"
+            id: account.id,
+            username: account.username,
+            isAdmin: account.role == .admin
         )
     }
 
@@ -967,7 +972,7 @@ actor ContinuumAPI {
     /// server treats absent fields as untouched. Used by Settings to
     /// persist subtitle prefs.
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws {
-        try await http.putVoid("/api/v1/profiles/\(profileId)", body: body)
+        _ = try await v2.updateProfile(id: profileId, patch: body.asAPIv2Patch)
     }
 
     // --- Playback ---

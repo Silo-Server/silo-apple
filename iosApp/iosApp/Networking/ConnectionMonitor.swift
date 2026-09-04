@@ -25,9 +25,49 @@ final class ConnectionMonitor {
         case unreachable
     }
 
+    /// What the v2 contract probe (`APIv2Probe`) learned about the active
+    /// server. Orthogonal to reachability: an `.updateRequired` server is
+    /// reachable and still serves v1, but every v2 pilot operation is refused.
+    enum ServerContractStatus: Equatable {
+        case unknown
+        /// The server serves API v2.
+        case v2
+        /// A v1-only alpha server; the user must update it.
+        case updateRequired
+    }
+
     /// Device has a usable network path (Wi-Fi/cellular/wired).
     private(set) var isDeviceOnline = true
     private(set) var serverStatus: ServerStatus = .unknown
+    private(set) var contractStatus: ServerContractStatus = .unknown
+
+    /// Drive the "server update required" message from this.
+    var isServerUpdateRequired: Bool {
+        contractStatus == .updateRequired
+    }
+
+    /// Record the probe outcome for the server the app is connected to. Only
+    /// `.v2` and `.updateServer` are contract evidence; a transport or HTTP
+    /// failure leaves the previous verdict in place, exactly as the
+    /// compatibility rule requires (a timeout is not an old server).
+    func noteContractProbe(_ result: APIv2ProbeResult) {
+        switch result {
+        case .v2:
+            contractStatus = .v2
+        case .updateServer:
+            if contractStatus != .updateRequired {
+                Self.logger.warning("Server answered the v2 probe as v1-only; update required")
+            }
+            contractStatus = .updateRequired
+        case .failure:
+            break
+        }
+    }
+
+    /// Forget the contract verdict, e.g. when the active server changes.
+    func resetContractStatus() {
+        contractStatus = .unknown
+    }
 
     /// Optimistic gate for starting server-backed work: `.unknown` passes so
     /// the first request after launch is never blocked.

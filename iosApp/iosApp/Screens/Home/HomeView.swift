@@ -177,11 +177,19 @@ struct HomeView: View {
                     .padding(.top, 64)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
+            } else if ConnectionMonitor.shared.isServerUpdateRequired {
+                // The server is reachable but v1-only: pilot v2 operations
+                // are refused until it is updated.
+                ServerUpdateRequiredPill()
+                    .padding(.top, 64)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
             }
 
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
+        .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isServerUpdateRequired)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
