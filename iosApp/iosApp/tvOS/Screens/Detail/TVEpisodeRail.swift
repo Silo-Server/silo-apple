@@ -215,11 +215,21 @@ struct TVEpisodeRail: View {
         .buttonStyle(TVAnchoredEpisodeButtonStyle())
         .focused($focusedCardId, equals: episode.contentId)
         .onMoveCommand { direction in
-            // Only the vertical boundaries hand off to another focus region.
-            // Left and Right belong entirely to the native episode buttons.
+            // Vertical boundaries hand off to another focus region. Left and
+            // Right belong to the native episode buttons between cards. The
+            // first and last card are hard horizontal edges: `onMoveCommand`
+            // does not stop the focus engine, so after it resolves the press
+            // pull focus back onto the edge card rather than letting it land
+            // on whatever focusable sits beyond the rail.
             switch direction {
             case .up: onMoveUp?()
             case .down: onMoveDown?()
+            case .left where index == 0,
+                 .right where index == episodes.count - 1:
+                let edgeContentId = episode.contentId
+                DispatchQueue.main.async {
+                    focusedCardId = edgeContentId
+                }
             default: break
             }
         }
