@@ -778,9 +778,13 @@ class PlayerViewModel {
     /// don't keep re-evaluating (and overriding the user) on every
     /// subsequent track-list update.
     private var prefsResolvedForCurrentItem: Bool = false
-    /// A caption-policy replan that arrived before the current V3 load
-    /// committed. Drained once the load's server transition commits.
-    private var hasDeferredAutoSubtitlePolicy = false
+    /// A caption pick that arrived before the current V3 load committed and
+    /// therefore could not replan yet. The resolved pick itself is kept, not
+    /// the preference snapshot that produced it: a system caption request
+    /// resolves from the OS language and would be lost if the generic
+    /// preference snapshot were rerun in its place. Drained once the load's
+    /// server transition commits.
+    private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
@@ -3692,7 +3696,7 @@ class PlayerViewModel {
             || preferredProtocolV3SubtitleIndex != nil
         prefsForCurrentItem = nil
         prefsResolvedForCurrentItem = false
-        hasDeferredAutoSubtitlePolicy = false
+        deferredAutoSubtitlePick = nil
     }
 
     private func resolvedAudioTrackIndexForResume() -> Int? {
@@ -7252,10 +7256,10 @@ class PlayerViewModel {
         // Inventory arrives as soon as the engine starts loading, before the
         // start's server transition has committed. A replan staged then rolls
         // that transition back and retires the session the engine is opening.
-        // Hold the policy until the load commits; the owning load task drains
+        // Hold the pick until the load commits; the owning load task drains
         // it through `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
         guard committedProtocolV3LoadEpoch != nil else {
-            hasDeferredAutoSubtitlePolicy = true
+            deferredAutoSubtitlePick = track.map(SubtitleAutoSelection.select) ?? .disable
             return true
         }
 
@@ -7269,15 +7273,28 @@ class PlayerViewModel {
         return true
     }
 
-    /// Re-runs a caption policy pick that arrived while a V3 load was still
+    /// Replays the exact caption pick that arrived while a V3 load was still
     /// uncommitted. Call only after the load's server transition committed.
+    /// The track is re-resolved against the current inventory by id so a
+    /// pick from a superseded inventory cannot select a row that no longer
+    /// exists.
     private func reapplyDeferredAutoSubtitlePolicyIfNeeded() {
-        guard hasDeferredAutoSubtitlePolicy else { return }
-        hasDeferredAutoSubtitlePolicy = false
+        guard let pick = deferredAutoSubtitlePick else { return }
+        deferredAutoSubtitlePick = nil
         guard !isDisposed,
               activePreparedProtocolV3 != nil,
               committedProtocolV3LoadEpoch != nil else { return }
-        applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
+        switch pick {
+        case .noChange:
+            return
+        case .disable:
+            applyAutoSubtitle(.disable)
+        case .select(let deferredTrack):
+            guard let track = subtitleTracks.first(where: { $0.trackId == deferredTrack.trackId }) else {
+                return
+            }
+            applyAutoSubtitle(.select(track))
+        }
     }
 
     private func startProgressReporting() {

@@ -521,6 +521,8 @@ actor PlaybackSessionBridge {
         }
     }
 
+    /// Records a server-issued candidate plan as pending until Aether commits
+    /// the matching load epoch, preserving the last committed state for rollback.
     private func stageProtocolV3Transition(
         candidateSessionId: String,
         candidatePlanId: String,
