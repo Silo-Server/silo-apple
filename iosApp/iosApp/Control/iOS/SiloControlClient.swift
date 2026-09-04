@@ -65,6 +65,13 @@ final class SiloControlClient {
     private var session: SiloControlSession?
     private var readTask: Task<Void, Never>?
     private var connectionId: UUID?
+    /// Set once the hello frame for `connectionId` is on the wire. A drop
+    /// before that is a failed connect (reported by `connect`'s catch), not a
+    /// lost session, so the read loop and heartbeat must not start a
+    /// reconnect for it — closing a timed-out pre-hello connection would
+    /// otherwise race `fail` and flip a user-visible error into silent
+    /// reconnecting.
+    private var isHandshakeComplete = false
 
     private(set) var isReconnecting = false
     /// True while a silent foreground auto-resume probe is connected but
@@ -99,6 +106,11 @@ final class SiloControlClient {
     private static let heartbeatInterval: Duration = .seconds(3)
     private static let maxMissedHeartbeats = 3
     private static let maxReconnectAttempts = 5
+    /// How long a single connect (TCP + TLS + hello) may take before it counts
+    /// as failed. An outbound `NWConnection` to a TV that's been switched off
+    /// parks in `.waiting` indefinitely, so without a deadline a reconnect
+    /// attempt — and the "Reconnecting…" bar — would never finish.
+    private static let connectTimeout: Duration = .seconds(6)
     private static let persistedTargetKey = "silocontrol.lastTarget"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
@@ -163,16 +175,28 @@ final class SiloControlClient {
         let connectionId = UUID()
         self.session = session
         self.connectionId = connectionId
+        isHandshakeComplete = false
         let stream = await session.open()
         startReadLoop(stream: stream, connectionId: connectionId)
         startHeartbeat(connectionId: connectionId)
 
+        let hello = makeHello()
         do {
-            try await session.send(makeHello())
+            try await Self.withDeadline(
+                Self.connectTimeout,
+                onTimeout: { await session.close() }
+            ) {
+                try await session.send(hello)
+            }
         } catch {
-            fail(error.localizedDescription, connectionId: connectionId, quiet: origin != .user)
+            let message = error is SiloControlConnectTimeout
+                ? "Couldn't reach \(target.name)."
+                : error.localizedDescription
+            fail(message, connectionId: connectionId, quiet: origin != .user)
+            await session.close()
             return false
         }
+        if self.connectionId == connectionId { isHandshakeComplete = true }
         isConnecting = false
         let connected = self.connectionId == connectionId && self.session != nil
         if connected, targetsActiveServer {
@@ -437,6 +461,15 @@ final class SiloControlClient {
         quietDisconnect()
     }
 
+    /// User gave up on an in-flight reconnect: stop trying and forget the
+    /// target so no later foreground probe silently reattaches to it.
+    func cancelReconnect() {
+        guard isReconnecting else { return }
+        Self.logger.info("control: reconnect cancelled by user")
+        forgetPersistedTarget()
+        clearSession()
+    }
+
     /// Tears the session down without touching the persisted target — used
     /// when *we* let go (idle auto-resumed session, failed probe), where a
     /// later foreground should still be allowed to resume.
@@ -565,13 +598,13 @@ final class SiloControlClient {
                     await MainActor.run { self?.handle(message, connectionId: connectionId) }
                 }
                 await MainActor.run {
-                    guard self?.connectionId == connectionId else { return }
-                    self?.beginReconnect(reason: "Lost connection to the TV.")
+                    guard let self, self.isLiveConnection(connectionId) else { return }
+                    self.beginReconnect(reason: "Lost connection to the TV.")
                 }
             } catch {
                 await MainActor.run {
-                    guard self?.connectionId == connectionId else { return }
-                    self?.beginReconnect(reason: error.localizedDescription)
+                    guard let self, self.isLiveConnection(connectionId) else { return }
+                    self.beginReconnect(reason: error.localizedDescription)
                 }
             }
         }
@@ -643,7 +676,7 @@ final class SiloControlClient {
         heartbeatTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.heartbeatInterval)
-                guard let self, self.connectionId == connectionId else { return }
+                guard let self, self.isLiveConnection(connectionId) else { return }
                 self.missedHeartbeats += 1
                 if self.missedHeartbeats > Self.maxMissedHeartbeats {
                     self.beginReconnect(reason: "Lost connection to the TV.")
@@ -654,8 +687,25 @@ final class SiloControlClient {
         }
     }
 
+    /// True while `id` is the current connection and its hello has been sent,
+    /// i.e. a drop now is a lost session rather than a failed connect.
+    private func isLiveConnection(_ id: UUID) -> Bool {
+        connectionId == id && isHandshakeComplete
+    }
+
     private func beginReconnect(reason: String) {
         guard let target = lastTarget else { clearSession(); return }
+        // A reconnect attempt's own read loop / heartbeat reports the failed
+        // connection through here too. Restarting would cancel the running
+        // loop and hand it a fresh attempt budget — an endless
+        // "Reconnecting…" while the TV is off. Let the loop see the failure.
+        // `reconnectTask` is cleared when the loop finishes, so a stale
+        // handle can't block a later drop (e.g. one deferred from the
+        // background and resumed by `appDidBecomeActive`).
+        if isReconnecting, reconnectTask != nil || pendingReconnectReason != nil {
+            Self.logger.debug("control: reconnect already in progress; ignoring \(reason, privacy: .public)")
+            return
+        }
         Self.logger.info("control: beginReconnect reason=\(reason, privacy: .public) appState=\(UIApplication.shared.applicationState.rawValue, privacy: .public)")
         heartbeatTask?.cancel(); heartbeatTask = nil
         readTask?.cancel(); readTask = nil
@@ -683,12 +733,15 @@ final class SiloControlClient {
                     try? await Task.sleep(for: .seconds(Double(attempt - 1)))   // backoff 1,2,3,4s
                 }
                 if Task.isCancelled { return }
-                if await self.connect(to: target, origin: .reconnect) {
+                if await self.connect(to: target, origin: .reconnect), self.session != nil {
                     self.isReconnecting = false
+                    self.reconnectTask = nil
                     return
                 }
+                if Task.isCancelled { return }
             }
             self.isReconnecting = false
+            self.reconnectTask = nil
             Self.logger.info("control: reconnect gave up after \(Self.maxReconnectAttempts, privacy: .public) attempts")
             // Give up — but if the remote cover is open, keep it up showing
             // why (with "Choose a Different TV" as the recovery path) instead
@@ -910,6 +963,34 @@ final class SiloControlClient {
         nowPlayingArtworkTask = nil
         nowPlayingArtworkContentId = nil
         nowPlaying.detach()
+    }
+}
+
+/// Thrown by `SiloControlClient.withDeadline` when the operation outlives it.
+struct SiloControlConnectTimeout: Error {}
+
+extension SiloControlClient {
+    /// Runs `operation` and throws `SiloControlConnectTimeout` if it hasn't
+    /// finished within `deadline`. `onTimeout` runs before the throw and must
+    /// unblock `operation` (e.g. close the connection it is waiting on): the
+    /// group cannot return until both children finish, and a send parked in
+    /// `NWConnection` doesn't observe task cancellation.
+    static func withDeadline<T: Sendable>(
+        _ deadline: Duration,
+        onTimeout: @escaping @Sendable () async -> Void,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: deadline)
+                await onTimeout()
+                throw SiloControlConnectTimeout()
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
     }
 }
 #endif

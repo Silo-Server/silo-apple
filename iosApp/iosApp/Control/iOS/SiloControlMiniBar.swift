@@ -47,7 +47,16 @@ struct SiloControlMiniBar: View {
                     Spacer(minLength: 8)
                     if controller.isReconnecting {
                         ProgressView()
-                            .frame(width: 32, height: 32)
+                            .frame(width: 24, height: 24)
+                        Button {
+                            controller.cancelReconnect()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(width: 32, height: 32)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Stop reconnecting")
                     } else {
                         Button {
                             controller.togglePlayPauseOptimistic()

@@ -114,7 +114,7 @@ struct SiloControlRemoteView: View {
     @ViewBuilder
     private var content: some View {
         if controller.isReconnecting {
-            statusView(title: "Reconnecting…", showSpinner: true)
+            reconnectingView
         } else if let state = controller.state, state.contentId == nil {
             idleConnectedView(state: state)
         } else if let state = controller.state {
@@ -151,10 +151,25 @@ struct SiloControlRemoteView: View {
         .padding(32)
     }
 
-    private func statusView(title: String, showSpinner: Bool) -> some View {
-        VStack(spacing: 14) {
-            if showSpinner { ProgressView() }
-            Text(title).font(.headline).foregroundStyle(Color.continuumSecondaryText)
+    private var reconnectingView: some View {
+        VStack(spacing: 18) {
+            ProgressView()
+            Text("Reconnecting to \(controller.lastTarget?.name ?? "Silo TV")…")
+                .font(.headline)
+                .foregroundStyle(Color.continuumSecondaryText)
+            Text("Make sure the TV is on and on the same network.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Color.continuumSecondaryText)
+            Button {
+                controller.cancelReconnect()
+                dismiss()
+            } label: {
+                Text("Stop Reconnecting")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .tint(Color.continuumOnSurface)
         }
         .padding(32)
     }
