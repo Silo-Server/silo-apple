@@ -447,6 +447,7 @@ struct HomeStillCard: View {
     /// Optimistic watched state, shared with the menu — see `HomePosterCard`.
     @State private var playedOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    @Environment(AppRouter.self) private var router
 
     private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
 
@@ -533,13 +534,7 @@ struct HomeStillCard: View {
                 .stroke(.white.opacity(0.08), lineWidth: 0.5)
         )
         .overlay(alignment: .center) {
-            Image(systemName: "play.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(.black.opacity(0.32)))
-                .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
-                .allowsHitTesting(false)
+            playBadge
         }
         // A watched item can sit in Continue Watching again on a rewatch —
         // the check says "you've finished this before" alongside the rail's
@@ -556,6 +551,39 @@ struct HomeStillCard: View {
             DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
                 .padding(.bottom, 10)
         }
+    }
+
+    /// Quick-start affordance. Tapping the badge plays (or resumes) the item
+    /// directly instead of opening its detail page; the rest of the still
+    /// keeps the detail tap. Sized as a real touch target rather than a
+    /// decorative glyph so a thumb lands on it reliably.
+    @ViewBuilder
+    private var playBadge: some View {
+        let badge = Image(systemName: "play.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 36, height: 36)
+            .background(Circle().fill(.black.opacity(0.32)))
+            .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
+            .contentShape(Circle())
+
+        if SiloMediaType.isDirectlyPlayable(item.type) {
+            Button(action: playItem) { badge }
+                .buttonStyle(.plain)
+                .accessibilityLabel((item.positionSeconds ?? 0) > 0 ? "Resume" : "Play")
+        } else {
+            badge.allowsHitTesting(false)
+        }
+    }
+
+    private func playItem() {
+        router.presentPlayer(
+            contentId: item.contentId,
+            resumePosition: item.positionSeconds,
+            prefersLastUsedVersion: opensResumeContext,
+            posterURL: item.posterUrl,
+            backdropURL: item.backdropUrl
+        )
     }
 
     private var caption: some View {
