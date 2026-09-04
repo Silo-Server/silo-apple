@@ -144,6 +144,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     similarSectionId: similarSectionScrollId
                 )
                 .onPlayPauseCommand(perform: playFocusedEpisodeOrCurrent)
+                .tvActionPopoverHost()
             }
         }
     }
@@ -206,47 +207,74 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
 
     // MARK: - More menu
 
-    @ViewBuilder
+    private enum MoreAction: String {
+        case favorite, watched, trailers, season, series
+    }
+
     private var moreMenu: some View {
         TVCircleMenuButton(
             title: "More",
             accessibilityLabel: "More options",
-            stabilizesFocusMotion: true
-        ) {
-            Button(action: onToggleFavorite) {
-                Label(
-                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                    systemImage: isFavorite ? "heart.fill" : "heart"
-                )
-            }
-            Button(action: onToggleWatched) {
-                Label(
-                    isWatched ? watchedLabelUnmark : watchedLabelMark,
-                    systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
-                )
-            }
-            if supportsTrailerFetch {
-                Button(action: onFindTrailers) {
-                    Label("Find Trailers", systemImage: "film.stack")
+            stabilizesFocusMotion: true,
+            items: {
+                var items: [TVActionPopoverItem] = [
+                    TVActionPopoverItem(
+                        id: MoreAction.favorite.rawValue,
+                        title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                        systemImage: isFavorite ? "heart.fill" : "heart"
+                    ),
+                    TVActionPopoverItem(
+                        id: MoreAction.watched.rawValue,
+                        title: isWatched ? watchedLabelUnmark : watchedLabelMark,
+                        systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                    ),
+                ]
+                if supportsTrailerFetch {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.trailers.rawValue,
+                        title: "Find Trailers",
+                        systemImage: "film.stack"
+                    ))
+                }
+                if detail.seriesId != nil,
+                   let seasonNumber = detail.seasonNumber,
+                   seasonNumber > 0 {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.season.rawValue,
+                        title: "Go to Season",
+                        systemImage: "square.stack"
+                    ))
+                }
+                if detail.seriesId != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.series.rawValue,
+                        title: "Go to Series",
+                        systemImage: "tv"
+                    ))
+                }
+                return items
+            },
+            onSelect: { item in
+                switch MoreAction(rawValue: item.id) {
+                case .favorite:
+                    onToggleFavorite()
+                case .watched:
+                    onToggleWatched()
+                case .trailers:
+                    onFindTrailers()
+                case .season:
+                    if let seriesId = detail.seriesId, let seasonNumber = detail.seasonNumber {
+                        onNavigateToItem("\(seriesId)-S\(seasonNumber)")
+                    }
+                case .series:
+                    if let seriesId = detail.seriesId {
+                        onNavigateToItem(seriesId)
+                    }
+                case .none:
+                    break
                 }
             }
-            if let seriesId = detail.seriesId,
-               let seasonNumber = detail.seasonNumber,
-               seasonNumber > 0 {
-                Button {
-                    onNavigateToItem("\(seriesId)-S\(seasonNumber)")
-                } label: {
-                    Label("Go to Season", systemImage: "square.stack")
-                }
-            }
-            if let seriesId = detail.seriesId {
-                Button {
-                    onNavigateToItem(seriesId)
-                } label: {
-                    Label("Go to Series", systemImage: "tv")
-                }
-            }
-        }
+        )
     }
 
     private var watchedLabelMark: String {

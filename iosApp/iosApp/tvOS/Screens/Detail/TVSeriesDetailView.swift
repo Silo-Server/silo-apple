@@ -316,6 +316,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     episodeSectionId: episodeSectionScrollId,
                     heroId: heroScrollId
                 )
+                .tvActionPopoverHost()
             }
         }
         .onAppear {
@@ -1138,37 +1139,55 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         )
     }
 
+    private enum MoreAction: String {
+        case overview, favorite, watched, trailers
+    }
+
     private var moreMenu: some View {
         TVCircleMenuButton(
             title: "More",
             accessibilityLabel: "More options",
-            stabilizesFocusMotion: true
-        ) {
-            if !isShowingSeriesOverview {
-                Button(action: showSeriesOverview) {
-                    Label("Show Series Info", systemImage: "info.circle")
+            stabilizesFocusMotion: true,
+            items: {
+                var items: [TVActionPopoverItem] = []
+                if !isShowingSeriesOverview {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.overview.rawValue,
+                        title: "Show Series Info",
+                        systemImage: "info.circle"
+                    ))
                 }
-            }
-            Button(action: onToggleFavorite) {
-                Label(
-                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                items.append(TVActionPopoverItem(
+                    id: MoreAction.favorite.rawValue,
+                    title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
                     systemImage: isFavorite ? "heart.fill" : "heart"
-                )
-            }
-            if selectedSeason != nil {
-                Button(action: onToggleWatched) {
-                    Label(
-                        isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                ))
+                if selectedSeason != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.watched.rawValue,
+                        title: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
                         systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
-                    )
+                    ))
+                }
+                if supportsTrailerFetch {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.trailers.rawValue,
+                        title: "Find Trailers",
+                        systemImage: "film.stack"
+                    ))
+                }
+                return items
+            },
+            onSelect: { item in
+                switch MoreAction(rawValue: item.id) {
+                case .overview: showSeriesOverview()
+                case .favorite: onToggleFavorite()
+                case .watched: onToggleWatched()
+                case .trailers: onFindTrailers()
+                case .none: break
                 }
             }
-            if supportsTrailerFetch {
-                Button(action: onFindTrailers) {
-                    Label("Find Trailers", systemImage: "film.stack")
-                }
-            }
-        }
+        )
     }
 
     // MARK: - Episode state and version selection
