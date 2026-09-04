@@ -36,20 +36,6 @@ struct MacPlayerControls: View {
 
             Spacer()
 
-            if viewModel.isBuffering {
-                HStack(spacing: 7) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                    Text("Buffering")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.82))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(.ultraThinMaterial))
-            }
-
             iconButton("xmark", help: "Close", action: onDismiss)
         }
         .padding(.horizontal, 14)

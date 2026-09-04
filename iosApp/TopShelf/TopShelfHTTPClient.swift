@@ -52,21 +52,49 @@ struct TopShelfHTTPClient {
         )
     }
 
-    func fetchHomeSections() async throws -> TopShelfSectionsResponse {
-        try await get("/api/v1/home/sections")
+    /// Negotiate the same large-image contract as the main tvOS app. Older
+    /// servers and transient failures return an empty query, preserving the
+    /// extension's existing fallback behavior.
+    func fetchImageSizeQuery() async -> [String: String] {
+        let capability: ImageSizeCapabilityResponse? = try? await get(
+            "/api/v1/images/capability"
+        )
+        return ImageSizeSelection.queryEntries(
+            capability: capability,
+            prefersLargeImages: true
+        )
     }
 
-    func fetchSeasons(seriesId: String) async throws -> TopShelfSeasonsResponse {
-        try await get("/api/v1/catalog/series/\(seriesId)/seasons")
+    func fetchHomeSections(imageSizeQuery: [String: String]) async throws -> TopShelfSectionsResponse {
+        try await get("/api/v1/home/sections", query: imageSizeQuery)
     }
 
-    func fetchItemDetail(contentId: String) async throws -> TopShelfItemDetail {
-        try await get("/api/v1/catalog/items/\(contentId)")
+    func fetchSeasons(
+        seriesId: String,
+        imageSizeQuery: [String: String]
+    ) async throws -> TopShelfSeasonsResponse {
+        try await get(
+            "/api/v1/catalog/series/\(seriesId)/seasons",
+            query: imageSizeQuery
+        )
+    }
+
+    func fetchItemDetail(
+        contentId: String,
+        imageSizeQuery: [String: String]
+    ) async throws -> TopShelfItemDetail {
+        try await get(
+            "/api/v1/catalog/items/\(contentId)",
+            query: imageSizeQuery
+        )
     }
 
     // MARK: - Private
 
-    private func get<T: Decodable>(_ path: String) async throws -> T {
+    private func get<T: Decodable>(
+        _ path: String,
+        query: [String: String] = [:]
+    ) async throws -> T {
         guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey),
               isPersonalizedContentAllowed,
               let serverUrl = defaults.string(forKey: SharedStorage.serverUrlKey),
@@ -84,6 +112,9 @@ struct TopShelfHTTPClient {
         let base = components.percentEncodedPath
         let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
         components.percentEncodedPath = trimmed + path
+        components.queryItems = query
+            .sorted { $0.key < $1.key }
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
         guard let url = components.url else { throw Error.invalidURL }
 
         var request = URLRequest(url: url, timeoutInterval: 5)

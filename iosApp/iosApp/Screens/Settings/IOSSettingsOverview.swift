@@ -25,6 +25,7 @@ struct IOSSettingsOverview: View {
 
                     SettingsAccountCard(
                         avatar: viewModel.activeProfile?.avatarEmoji,
+                        avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
                         name: displayName,
                         subtitle: subtitleLine,
                         isAdministrator: viewModel.userInfo?.isAdmin == true,
@@ -263,6 +264,20 @@ struct IOSSettingsOverview: View {
                 )
             }
             .buttonStyle(.plain)
+
+            SettingsOverviewDivider()
+
+            NavigationLink {
+                OpenSourceAcknowledgementsView()
+            } label: {
+                SettingsOverviewRow(
+                    title: "Open Source Licenses",
+                    subtitle: "Acknowledgements, licenses, and exact source revisions",
+                    systemImage: "curlybraces",
+                    tint: .indigo
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -370,7 +385,17 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesAboutSection: Bool {
-        matches("about", "version", versionString, "privacy", "policy", "information")
+        matches(
+            "about",
+            "version",
+            versionString,
+            "privacy",
+            "policy",
+            "information",
+            "open source",
+            "licenses",
+            "acknowledgements"
+        )
     }
 
     private var matchesSignOut: Bool {

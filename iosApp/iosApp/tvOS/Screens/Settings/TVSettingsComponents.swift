@@ -45,6 +45,15 @@ enum TVSettingsOptions {
         )
     }
 
+    static let bufferAhead: [TVSettingsOption] =
+        BufferAheadMode.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+
+    static let deinterlaceMode: [TVSettingsOption] =
+        DeinterlacePreference.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+
+    static let deinterlaceFieldRate: [TVSettingsOption] =
+        DeinterlaceFieldRatePreference.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+
     static let nextUpPrompt: [TVSettingsOption] = [
         .init(id: "0", label: "At end"),
         .init(id: "10", label: "10 seconds before end"),

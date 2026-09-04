@@ -135,7 +135,7 @@ final class PersonDetailViewModel {
             .compactMap(URL.init(string:))
         let newURLs = urls.filter { prefetchedPosterURLs.insert($0).inserted }
         guard !newURLs.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: newURLs)
+        PosterImageCache.prefetchCardArtwork(newURLs)
     }
     #endif
 
@@ -277,7 +277,7 @@ final class PersonDetailViewModel {
     private func resetFilmography() {
         #if os(tvOS)
         if !prefetchedPosterURLs.isEmpty {
-            PosterImageCache.prefetcher.stopPrefetching(with: Array(prefetchedPosterURLs))
+            PosterImageCache.stopPrefetchingCardArtwork(Array(prefetchedPosterURLs))
             prefetchedPosterURLs.removeAll()
         }
         #endif
@@ -291,6 +291,10 @@ final class PersonDetailViewModel {
 
 struct PersonDetailView: View {
     @State private var viewModel: PersonDetailViewModel
+    #if os(iOS)
+    @Environment(\.detailPullBackAction) private var goBack
+    @Environment(\.dismiss) private var dismiss
+    #endif
 
     init(personId: Int) {
         _viewModel = State(initialValue: PersonDetailViewModel(personId: personId))
@@ -298,6 +302,11 @@ struct PersonDetailView: View {
 
     var body: some View {
         rootContent
+            #if os(iOS)
+            .environment(\.detailPullBackAction, {
+                if let goBack { goBack() } else { dismiss() }
+            })
+            #endif
             .onAppear {
                 viewModel.resumeMetadataRefreshIfNeeded()
             }
@@ -319,7 +328,7 @@ struct PersonDetailView: View {
             Color.clear
         } else {
             EmptyStateView(icon: "person", title: "Person not found")
-                .continuumBackground()
+                .continuumPageBackground()
         }
     }
 
@@ -328,14 +337,26 @@ struct PersonDetailView: View {
         #if os(tvOS)
         TVPersonDetailContent(person: person, viewModel: viewModel)
         #else
+        #if os(iOS)
+        // On iOS this pull means Back, including actor pages opened from
+        // outside a title's detail sheet. Do not start a metadata refresh too.
+        PhonePersonDetailContent(person: person, viewModel: viewModel)
+        #else
+        refreshablePersonContent(person: person)
+        #endif
+        #endif
+    }
+
+    #if !os(tvOS)
+    private func refreshablePersonContent(person: Person) -> some View {
         PhonePersonDetailContent(person: person, viewModel: viewModel)
             .refreshable {
                 async let overlayRefresh: Void = OverlayPrefsStore.shared.refresh()
                 await viewModel.reload()
                 await overlayRefresh
             }
-        #endif
     }
+    #endif
 }
 
 #if os(tvOS)
@@ -373,8 +394,8 @@ private struct TVPersonDetailContent: View {
                             items: viewModel.items,
                             isLoading: viewModel.isLoadingItems,
                             hasMore: viewModel.hasMore,
-                            onItemTap: { contentId in
-                                router.navigate(to: .itemDetail(contentId: contentId))
+                            onItemTap: { item in
+                                router.navigate(to: .itemDetail(browseItem: item))
                             },
                             onNearEnd: { index in
                                 Task { await viewModel.loadMoreIfNeeded() }
@@ -388,7 +409,7 @@ private struct TVPersonDetailContent: View {
             }
             .padding(.bottom, 72)
         }
-        .continuumBackground()
+        .continuumPageBackground()
     }
 
     private var header: some View {
@@ -502,8 +523,8 @@ private struct PhonePersonDetailContent: View {
                             items: viewModel.items,
                             isLoading: viewModel.isLoadingItems,
                             hasMore: viewModel.hasMore,
-                            onItemTap: { contentId in
-                                router.navigate(to: .itemDetail(contentId: contentId))
+                            onItemTap: { item in
+                                router.navigate(to: .itemDetail(browseItem: item))
                             },
                             onLoadMore: {
                                 Task { await viewModel.loadMoreIfNeeded() }
@@ -515,7 +536,8 @@ private struct PhonePersonDetailContent: View {
             }
             .padding(.bottom, ContinuumTheme.largePadding)
         }
-        .continuumBackground()
+        .detailScrollDismissal()
+        .continuumPageBackground()
     }
 
     private var header: some View {

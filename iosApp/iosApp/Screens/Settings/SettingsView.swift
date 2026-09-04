@@ -84,6 +84,7 @@ struct SettingsView: View {
                 HStack(spacing: 14) {
                     ProfileAvatarView(
                         avatar: viewModel.activeProfile?.avatarEmoji,
+                        imageUrl: viewModel.activeProfile?.avatarImageUrl,
                         name: viewModel.activeProfile?.name
                             ?? viewModel.userInfo?.username
                             ?? "",
@@ -254,6 +255,18 @@ struct SettingsView: View {
             } label: {
                 Text("Version")
                     .foregroundStyle(Color.continuumOnSurface)
+            }
+
+            Link("Privacy Policy", destination: SiloLegalLinks.privacyPolicy)
+
+            NavigationLink {
+                OpenSourceAcknowledgementsView()
+            } label: {
+                SettingsRowLabel(
+                    title: "Open Source Licenses",
+                    systemImage: "curlybraces",
+                    color: .indigo
+                )
             }
         }
     }

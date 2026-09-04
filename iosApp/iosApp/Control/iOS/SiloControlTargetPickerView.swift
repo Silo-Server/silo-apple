@@ -20,7 +20,7 @@ struct SiloControlTargetPickerView: View {
                     searchingState
                 }
             }
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .continuumPageBackground()
             .navigationTitle("Remote Control")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -89,7 +89,10 @@ struct SiloControlTargetPickerView: View {
                                 .font(.subheadline)
                                 .foregroundStyle(Color.continuumPrimary)
                         } else if let serverName = target.serverName {
-                            Text(target.serverId == ServerRegistry.shared.activeServerId
+                            Text(ServerRegistry.serverIdsMatch(
+                                target.serverId,
+                                ServerRegistry.shared.activeServerId
+                            )
                                  ? serverName
                                  : "Will temporarily use your server")
                                 .font(.subheadline)
@@ -115,7 +118,9 @@ struct SiloControlTargetPickerView: View {
     private var displayedTargets: [SiloControlTarget] {
         guard request == nil else { return browser.found }
         guard let activeServerId = ServerRegistry.shared.activeServerId else { return [] }
-        return browser.found.filter { $0.serverId == activeServerId }
+        return browser.found.filter {
+            ServerRegistry.serverIdsMatch($0.serverId, activeServerId)
+        }
     }
 }
 

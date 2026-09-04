@@ -1,141 +1,75 @@
-import AVFoundation
-import QuartzCore
 import SwiftUI
 
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
-
-/// Full-screen startup animation shown while the app resolves its initial auth route.
+/// Full-screen startup treatment shown while the app resolves its initial auth
+/// route. It replays the brand splash (mark drops in, bars stack, the wordmark
+/// slides out from behind) as a native SwiftUI `Canvas` driven by the baked
+/// keyframes in `StartupSplashAnimation`. No AVPlayer is involved: AetherEngine
+/// remains the only production media engine constructed by Silo.
 struct StartupSplashView: View {
-    private static let maximumDisplayDuration: TimeInterval = 4.0
+    private static let maximumDisplayDuration: Duration = .seconds(4)
 
     let onFinished: () -> Void
 
-    @State private var player = AVPlayer()
-    @State private var playerItem: AVPlayerItem?
-    @State private var playbackEndObserver: NSObjectProtocol?
-    @State private var playbackFailureObserver: NSObjectProtocol?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var completionTask: Task<Void, Never>?
-    @State private var isVideoAvailable = true
     @State private var didFinish = false
+    @State private var startDate: Date?
 
     var body: some View {
         ZStack {
             Color.continuumBackground.ignoresSafeArea()
 
-            if isVideoAvailable {
-                startupVideo
-            } else {
-                fallbackContent
+            GeometryReader { proxy in
+                let size = surfaceSize(in: proxy.size)
+                TimelineView(.animation(paused: reduceMotion)) { context in
+                    StartupSplashCanvas(frame: frame(at: context.date))
+                }
+                .frame(width: size.width, height: size.height)
+                .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
             }
-        }
-        .accessibilityLabel("Loading Continuum")
-        .onAppear(perform: startPlayback)
-        .onDisappear(perform: stopPlayback)
-    }
-
-    @ViewBuilder
-    private var startupVideo: some View {
-        #if os(tvOS)
-        GeometryReader { proxy in
-            let videoWidth = min(proxy.size.width * 0.25, 440)
-
-            StartupSplashPlayerSurface(player: player)
-                .frame(width: videoWidth, height: videoWidth * 9.0 / 16.0)
-                .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-        }
-        .ignoresSafeArea()
-        #elseif os(iOS)
-        GeometryReader { proxy in
-            let videoWidth = min(proxy.size.width * 0.6, 320)
-
-            StartupSplashPlayerSurface(player: player)
-                .frame(width: videoWidth, height: videoWidth * 9.0 / 16.0)
-                .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-        }
-        .ignoresSafeArea()
-        #else
-        StartupSplashPlayerSurface(player: player)
             .ignoresSafeArea()
+        }
+        .accessibilityLabel("Loading Silo")
+        .onAppear {
+            startDate = Date()
+            scheduleCompletion()
+        }
+        .onDisappear {
+            completionTask?.cancel()
+            completionTask = nil
+        }
+    }
+
+    /// Same footprint as the original 16:9 splash video on each platform.
+    private func surfaceSize(in container: CGSize) -> CGSize {
+        let width: CGFloat
+        #if os(tvOS)
+        width = min(container.width * 0.25, 440)
+        #elseif os(iOS)
+        width = min(container.width * 0.6, 320)
+        #else
+        width = container.width
         #endif
+        let aspect = StartupSplashAnimation.compositionSize.height
+            / StartupSplashAnimation.compositionSize.width
+        return CGSize(width: width, height: width * aspect)
     }
 
-    private var fallbackContent: some View {
-        VStack(spacing: 20) {
-            SiloWordmarkView(width: 132)
-
-            ProgressView()
-                .tint(.continuumOnSurface)
-                .scaleEffect(1.2)
-        }
-    }
-
-    private func startPlayback() {
-        scheduleCompletion()
-
-        if playerItem == nil {
-            guard let url = Bundle.main.url(forResource: "startup_splash", withExtension: "mp4") else {
-                isVideoAvailable = false
-                return
-            }
-
-            let item = AVPlayerItem(url: url)
-            playerItem = item
-            player.replaceCurrentItem(with: item)
-            player.isMuted = true
-            installPlaybackObservers(for: item)
-        }
-
-        player.play()
-    }
-
-    private func stopPlayback() {
-        player.pause()
-        completionTask?.cancel()
-        completionTask = nil
-        removePlaybackObservers()
-    }
-
-    private func installPlaybackObservers(for item: AVPlayerItem) {
-        removePlaybackObservers()
-
-        playbackEndObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { _ in
-            finish()
-        }
-
-        playbackFailureObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemFailedToPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { _ in
-            isVideoAvailable = false
-        }
-    }
-
-    private func removePlaybackObservers() {
-        if let playbackEndObserver {
-            NotificationCenter.default.removeObserver(playbackEndObserver)
-            self.playbackEndObserver = nil
-        }
-        if let playbackFailureObserver {
-            NotificationCenter.default.removeObserver(playbackFailureObserver)
-            self.playbackFailureObserver = nil
-        }
+    private func frame(at date: Date) -> Double {
+        let last = Double(StartupSplashAnimation.frameCount - 1)
+        if reduceMotion { return last }
+        guard let startDate else { return 0 }
+        let elapsed = date.timeIntervalSince(startDate)
+        return min(max(elapsed * StartupSplashAnimation.framesPerSecond, 0), last)
     }
 
     private func scheduleCompletion() {
         guard completionTask == nil else { return }
+        let duration: Duration = reduceMotion ? .seconds(1) : Self.maximumDisplayDuration
         completionTask = Task {
-            try? await Task.sleep(nanoseconds: UInt64(Self.maximumDisplayDuration * 1_000_000_000))
+            try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
-            await MainActor.run { finish() }
+            finish()
         }
     }
 
@@ -144,91 +78,58 @@ struct StartupSplashView: View {
         didFinish = true
         completionTask?.cancel()
         completionTask = nil
-        removePlaybackObservers()
-        isVideoAvailable = false
         onFinished()
     }
 }
 
-#if os(macOS)
-private struct StartupSplashPlayerSurface: NSViewRepresentable {
-    let player: AVPlayer
+/// Paints one frame of the splash. Layers are drawn in the generated order
+/// so the mark occludes the wordmark while it slides out from behind it.
+private struct StartupSplashCanvas: View {
+    let frame: Double
 
-    func makeNSView(context: Context) -> StartupSplashPlayerLayerView {
-        let view = StartupSplashPlayerLayerView()
-        view.attach(player: player)
-        return view
+    var body: some View {
+        Canvas(rendersAsynchronously: false) { context, size in
+            let composition = StartupSplashAnimation.compositionSize
+            let scale = size.width / composition.width
+            context.scaleBy(x: scale, y: scale)
+
+            for layer in StartupSplashAnimation.layers where frame >= layer.inPoint {
+                let position = Self.interpolate(layer.position, at: frame)
+                let layerScale = Self.interpolate(layer.scale, at: frame)
+
+                var transform = CGAffineTransform.identity
+                transform = transform.translatedBy(x: position[0], y: position[1])
+                transform = transform.scaledBy(x: layerScale[0] / 100, y: layerScale[1] / 100)
+                transform = transform.translatedBy(x: -layer.anchor.x, y: -layer.anchor.y)
+
+                var path = Path()
+                for shape in layer.paths {
+                    path.move(to: CGPoint(x: shape.start.0, y: shape.start.1))
+                    for segment in shape.segments {
+                        path.addCurve(to: segment.end, control1: segment.c1, control2: segment.c2)
+                    }
+                    path.closeSubpath()
+                }
+
+                let color = Color(red: layer.color.r, green: layer.color.g, blue: layer.color.b)
+                context.fill(path.applying(transform), with: .color(color), style: FillStyle(eoFill: true))
+            }
+        }
     }
 
-    func updateNSView(_ nsView: StartupSplashPlayerLayerView, context: Context) {
-        nsView.attach(player: player)
-    }
-}
-
-private final class StartupSplashPlayerLayerView: NSView {
-    private let playerLayer = AVPlayerLayer()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer = CALayer()
-        layer?.backgroundColor = NSColor.clear.cgColor
-        playerLayer.videoGravity = .resizeAspect
-        layer?.addSublayer(playerLayer)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func attach(player: AVPlayer) {
-        if playerLayer.player === player { return }
-        playerLayer.player = player
-    }
-
-    override func layout() {
-        super.layout()
-        playerLayer.frame = bounds
-    }
-}
-#else
-private struct StartupSplashPlayerSurface: UIViewRepresentable {
-    let player: AVPlayer
-
-    func makeUIView(context: Context) -> StartupSplashPlayerLayerView {
-        let view = StartupSplashPlayerLayerView()
-        view.attach(player: player)
-        return view
-    }
-
-    func updateUIView(_ uiView: StartupSplashPlayerLayerView, context: Context) {
-        uiView.attach(player: player)
+    /// Linear interpolation between neighbouring keyframes; the source
+    /// animation bakes its easing into dense keyframes.
+    private static func interpolate(_ keyframes: [StartupSplashAnimation.K], at frame: Double) -> [Double] {
+        guard let first = keyframes.first else { return [0, 0] }
+        if frame <= first.t || keyframes.count == 1 { return first.v }
+        for index in 1..<keyframes.count {
+            let next = keyframes[index]
+            guard frame <= next.t else { continue }
+            let previous = keyframes[index - 1]
+            let span = next.t - previous.t
+            let progress = span > 0 ? (frame - previous.t) / span : 1
+            return zip(previous.v, next.v).map { $0 + ($1 - $0) * progress }
+        }
+        return keyframes[keyframes.count - 1].v
     }
 }
-
-private final class StartupSplashPlayerLayerView: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-
-    private var playerLayer: AVPlayerLayer {
-        // swiftlint:disable:next force_cast
-        layer as! AVPlayerLayer
-    }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = .clear
-        playerLayer.videoGravity = .resizeAspect
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func attach(player: AVPlayer) {
-        if playerLayer.player === player { return }
-        playerLayer.player = player
-    }
-}
-#endif

@@ -2,7 +2,7 @@ name: Silo
 options:
   bundleIdPrefix: org.siloserver.silo
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
     macOS: "26.0"
     tvOS: "26.0"
   createIntermediateGroups: true
@@ -21,9 +21,8 @@ settings:
     # DEVELOPMENT_TEAM is intentionally omitted — set via the DEVELOPMENT_TEAM env var locally
     # or injected by the CI pipeline.
     CODE_SIGN_STYLE: Automatic
-    # SPM packages (Nuke, FFmpeg) only ship arm64 simulator slices. Exclude
-    # x86_64 for all simulator SDKs so Apple Silicon Macs don't try to link
-    # the missing slice.
+    # Media/image packages ship arm64 simulator slices. Exclude x86_64 for all
+    # simulator SDKs so Apple Silicon Macs don't try to link missing slices.
     EXCLUDED_ARCHS[sdk=appletvsimulator*]: x86_64
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
 
@@ -55,20 +54,14 @@ targetTemplates:
         SILO_BUILD_CHANNEL: release
 
 packages:
-  # FFmpeg xcframeworks (LGPL). Provides the Libavcodec / Libavformat /
-  # Libavutil / Libswresample modules consumed by CoreMediaPlayerCore.
-  # Smaller and cleaner than the old player dependency: ships only the
-  # FFmpeg libraries with no libmpv GPL surface. Vendored copy of
-  # mpvkit/ffmpeg-build at b38afaffe8a38c82c3922d36e044a915bf668f27 (tip of
-  # main, includes the post-7.1.0 HLS seek fix): upstream is archived, and
-  # the Libuavs3d 1.2.1 release asset it references was re-published with a
-  # new checksum on 2026-04-23, so the remote manifest can never resolve
-  # again. See Vendor/ffmpeg-build/Package.swift for details.
-  FFmpeg:
-    path: Vendor/ffmpeg-build
+  # The only media engine in the replacement player. Keep this at an exact
+  # reviewed revision; Package.resolved also freezes its binary dependencies.
+  AetherEngine:
+    url: https://github.com/Silo-Server/AetherEngine
+    revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5
   Nuke:
     url: https://github.com/kean/Nuke
-    from: "12.8.0"
+    from: "13.2.0"
 
 targets:
   Silo:
@@ -83,6 +76,8 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
+        excludes:
+          - startup_splash.mp4
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/Silo.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -102,15 +97,15 @@ targets:
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
       configs:
         Debug:
           APS_ENVIRONMENT: development
         Release:
           APS_ENVIRONMENT: production
     dependencies:
-      - package: FFmpeg
-        product: FFmpeg
+      - package: AetherEngine
+        product: AetherEngine
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -136,6 +131,8 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
+        excludes:
+          - startup_splash.mp4
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/SiloTV.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -153,12 +150,10 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
         SDKROOT: appletvos
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
-        # Bridging header exposes the Obj-C audio graph exception catcher
-        # and the FFmpeg log filter on Apple targets.
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
     dependencies:
-      - package: FFmpeg
-        product: FFmpeg
+      - package: AetherEngine
+        product: AetherEngine
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -180,8 +175,6 @@ targets:
           - "PrivacyInfo.xcprivacy"
           - "TopShelf/**"
           - "tvOS/**"
-          - "Screens/Player/AVPlayerRoute/AVPlayerSurface.swift"
-          - "Screens/Player/CoreMedia/PlayerSurface.swift"
           - "Screens/Player/iOS/**"
           - "Screens/Player/tvOS/**"
           - "Screens/Player/PlayerView.swift"
@@ -190,10 +183,8 @@ targets:
       - path: iosApp/tvOS/Caching/PosterImageCache.swift
       - path: Resources
         buildPhase: resources
-    postBuildScripts:
-      - path: scripts/prepare-macos-ffmpeg-frameworks.sh
-        name: Prepare macOS FFmpeg Frameworks
-        basedOnDependencyAnalysis: false
+        excludes:
+          - startup_splash.mp4
     configFiles:
       Debug: Signing/SiloMac.xcconfig
       Release: Signing/SiloMac.xcconfig
@@ -205,10 +196,10 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SDKROOT: macosx
         SUPPORTED_PLATFORMS: "macosx"
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
     dependencies:
-      - package: FFmpeg
-        product: FFmpeg
+      - package: AetherEngine
+        product: AetherEngine
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -351,13 +342,6 @@ targets:
         buildPhase: none
     dependencies:
       - target: Silo
-      # PacketQueueTests allocates real AVPackets, so the test bundle needs
-      # the Libav* module maps the app target gets from this package.
-      # link: false — the symbols come from the test host (BUNDLE_LOADER);
-      # linking the static FFmpeg libs a second time fails the link.
-      - package: FFmpeg
-        product: FFmpeg
-        link: false
     settings:
       base:
         PRODUCT_NAME: SiloTests
@@ -369,7 +353,6 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
-        SWIFT_OBJC_BRIDGING_HEADER: iosApp/Screens/Player/CoreMedia/SiloPlayerBridging.h
 
 schemes:
   Silo:

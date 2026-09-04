@@ -2,6 +2,51 @@ import XCTest
 @testable import Silo
 
 final class PlayerNextUpCompletionPolicyTests: XCTestCase {
+    func testAlreadyPlayingOrLoadingCandidateOnlyExpands() {
+        XCTAssertEqual(
+            PlayerNextUpPlaybackAction.resolve(candidateId: "episode-b", currentId: "episode-b"),
+            .expand
+        )
+    }
+
+    func testEarlyNextAndRepeatedCountdownProduceOneLoad() {
+        var currentId = "episode-a"
+        var loads = 0
+        for _ in 0..<100 {
+            switch PlayerNextUpPlaybackAction.resolve(candidateId: "episode-b", currentId: currentId) {
+            case .load(let id):
+                loads += 1
+                // beginFreshLoad sets lastLoadRequest synchronously, before awaits.
+                currentId = id
+            case .expand, .unavailable, .waitForPicture:
+                break
+            }
+        }
+        XCTAssertEqual(loads, 1)
+    }
+
+    func testMissingCandidateDoesNotReloadCurrentEpisode() {
+        XCTAssertEqual(
+            PlayerNextUpPlaybackAction.resolve(candidateId: nil, currentId: "episode-a"),
+            .unavailable
+        )
+    }
+
+    func testEarlyRepeatedPlayNowWaitsForTheSuccessorsPicture() {
+        for candidate in ["episode-b", "episode-c", nil] {
+            XCTAssertEqual(
+                PlayerNextUpPlaybackAction.resolve(
+                    candidateId: candidate, currentId: "episode-b", awaitingPicture: true
+                ),
+                .waitForPicture
+            )
+        }
+        XCTAssertEqual(
+            PlayerNextUpPlaybackAction.resolve(candidateId: "episode-b", currentId: "episode-b"),
+            .expand
+        )
+    }
+
     func testEarlyManualPresentationPreservesCurrentPosition() {
         let position = PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: true,

@@ -34,20 +34,11 @@ enum HeroBackdropPalette {
     /// if the image can't be loaded or sampled — callers should fall
     /// back to the app background.
     static func tintColor(for url: URL) async -> Color? {
-        // Downsample during decode: we only need an average color, so
-        // a 64×36 thumbnail is plenty of signal and avoids pulling the
-        // full backdrop into memory just to run CIAreaAverage on it.
-        let request = ImageRequest(
-            url: url,
-            processors: [
-                ImageProcessors.Resize(
-                    size: CGSize(width: 64, height: 36),
-                    contentMode: .aspectFill,
-                    upscale: false
-                )
-            ],
-            priority: .low
-        )
+        // Downsample during decode: we only need an average color, so a
+        // 64 px thumbnail is plenty of signal. ImageIO decodes it directly
+        // from the data, so the full w1920 backdrop is never decoded just
+        // to run CIAreaAverage on it.
+        let request = PosterImageCache.paletteSampleRequest(for: url)
 
         do {
             let image = try await ImagePipeline.shared.image(for: request)

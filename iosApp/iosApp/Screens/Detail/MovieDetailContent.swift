@@ -24,6 +24,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isLoadingEpisodes: Bool
     let episodeSeriesPosterUrl: String?
     let episodeSeriesPosterThumbhash: String?
+    let episodeSeriesLogoUrl: String?
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
@@ -48,6 +49,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isFindingTrailers: Bool
     /// Called once a terminal status message has been on screen long enough.
     let onTrailerStatusShown: () -> Void
+    /// Reference-backed scroll state observed only by the small parallax and
+    /// pinned-chrome views, keeping the native ScrollView's body stable.
+    let scrollState: PhoneDetailScrollState
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -59,14 +63,28 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var showDownloadOptions = false
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                hero
-                belowFold
+        PhoneDetailPageSurface(
+            backdropURL: detail.backdropUrl,
+            backdropThumbhash: detail.backdropThumbhash,
+            enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type)
+        ) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: heroToContentSpacing) {
+                    hero
+                    belowFold
+                }
+                .padding(.bottom, 40)
             }
-            .padding(.bottom, 40)
+            .ignoresSafeArea(edges: .top)
+            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
+            .detailScrollDismissal()
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
+                return offset <= 150 ? 0 : min(offset, 480)
+            } action: { _, offset in
+                scrollState.update(offset)
+            }
         }
-        .ignoresSafeArea(edges: .top)
         .continuumResumePlaybackAlert(
             isPresented: $showResumeDialog,
             stoppedAt: resumeTimestamp
@@ -88,7 +106,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
         return PhoneDetailHero(
             title: detail.title,
             seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
-            logoUrl: detail.logoUrl,
+            logoUrl: detail.type == "episode"
+                ? (episodeSeriesLogoUrl ?? detail.logoUrl)
+                : detail.logoUrl,
             posterUrl: posterArtwork.url,
             posterThumbhash: posterArtwork.thumbhash,
             backdropUrl: detail.backdropUrl,
@@ -98,9 +118,18 @@ struct MovieDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
+            creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
+            enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
             actions: { actionStack },
-            belowOverview: belowOverview
+            belowOverview: {
+                VStack(spacing: 14) {
+                    belowOverview()
+                    if let effectiveVersion {
+                        playbackSelectors(for: effectiveVersion)
+                    }
+                }
+            }
         )
     }
 
@@ -137,11 +166,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// selectors. See `PhoneDetailActionRow` for why the circles went away.
     @ViewBuilder
     private var actionStack: some View {
-        VStack(spacing: 16) {
-            PhoneRefinedPlayButton(
+        VStack(spacing: 14) {
+            PhonePrimaryPillButton(
                 icon: "play.fill",
                 title: primaryPlayLabel,
-                action: handlePlayTap
+                action: handlePlayTap,
+                fullWidth: true
             )
 
             PhoneLabeledActionRow {
@@ -167,15 +197,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     icon: "checkmark.circle",
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
-                    label: isWatched ? "Watched" : "Mark Seen",
+                    label: "Watched",
                     accessibilityLabelOverride: isWatched
                         ? watchedLabelUnmark : watchedLabelMark,
                     action: onToggleWatched
                 )
                 if showsDownloadButton {
-                    // Captioned style, so it reads as a peer of the actions
-                    // beside it rather than the odd circle out. It still owns
-                    // its own progress ring and state-derived caption.
                     DownloadActionButton(
                         detail: detail,
                         versions: availableVersions,
@@ -199,9 +226,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 )
             }
 
-            if let effectiveVersion {
-                playbackSelectors(for: effectiveVersion)
-            }
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
@@ -332,7 +356,15 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private var episodesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(label: episodeRailEyebrow, title: "Episodes")
+            if !seasons.isEmpty {
+                PhoneSeasonChips(
+                    seasons: seasons,
+                    selected: selectedSeason,
+                    onSelect: onSelectSeason
+                )
+            }
+
+            PhoneSectionHeader(title: "\(episodeRailEyebrow) Episodes")
                 .padding(.horizontal, ContinuumTheme.safePadding)
 
             PhoneSeasonEpisodeBrowser(
@@ -343,13 +375,15 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 isLoadingEpisodes: isLoadingEpisodes,
                 onSelectSeason: onSelectSeason,
                 onSelectEpisode: onEpisodeTap,
-                currentContentId: detail.contentId
+                currentContentId: detail.contentId,
+                showsSeasonSelector: false
             )
         }
     }
 
     private var episodeRailEyebrow: String {
-        if let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
+        if let seasonNumber = selectedSeason?.seasonNumber ?? detail.seasonNumber,
+           seasonNumber > 0 {
             return "Season \(seasonNumber)"
         }
         return "This Season"

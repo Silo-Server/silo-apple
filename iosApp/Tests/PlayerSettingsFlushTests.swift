@@ -913,14 +913,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testLegacySnapshotCoversEverySyncedDeviceSetting() throws {
         let harness = try PlayerSettingsHarness()
         harness.settings.setDolbyVisionEnabled(false)
-        harness.settings.setPreferProfile7HDR10Fallback(true)
         harness.settings.setSeekCacheEnabled(false)
 
         let snapshot = harness.settings.legacySnapshot()
 
         XCTAssertEqual(Set(snapshot.keys), Set(SettingKey.playerDeviceSettings))
         XCTAssertEqual(snapshot[.playerDolbyVisionEnabled], .bool(false))
-        XCTAssertEqual(snapshot[.playerDvProfile7Hdr10Fallback], .bool(true))
         XCTAssertEqual(snapshot[.playerSeekCacheEnabled], .bool(false))
         XCTAssertNotNil(
             snapshot[.playbackSubtitleAppearance],
@@ -971,10 +969,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         harness.settings.setNextUpPromptSeconds(45)
         harness.settings.setHDREnabled(false)
         harness.settings.setDolbyVisionEnabled(false)
-        harness.settings.setPreferProfile7HDR10Fallback(true)
         harness.settings.setSeekCacheEnabled(false)
         harness.settings.setPlaybackSpeed(1.5)
-        harness.settings.setAudioSyncMs(275)
         harness.settings.setSubtitleSyncMs(-350)
         harness.settings.setVideoGravity(.fill)
         harness.settings.setPlayerOrientationMode(.rotateFreely)
@@ -1001,10 +997,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
         XCTAssertEqual(byKey[.playerHdrEnabled]?.value, .bool(false))
         XCTAssertEqual(byKey[.playerDolbyVisionEnabled]?.value, .bool(false))
-        XCTAssertEqual(byKey[.playerDvProfile7Hdr10Fallback]?.value, .bool(true))
         XCTAssertEqual(byKey[.playerSeekCacheEnabled]?.value, .bool(false))
         XCTAssertEqual(byKey[.playerPlaybackSpeed]?.value, .double(1.5))
-        XCTAssertEqual(byKey[.playerAudioSyncMs]?.value, .int(275))
         XCTAssertEqual(byKey[.playerSubtitleSyncMs]?.value, .int(-350))
         XCTAssertEqual(byKey[.playerVideoGravity]?.value, .string("fill"))
         XCTAssertEqual(byKey[.playerOrientationMode]?.value, .string("rotateFreely"))
@@ -1197,10 +1191,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
             .playbackSubtitleAppearance: try SettingJSONValue.encoding(appearance),
             .playerHdrEnabled: .bool(false),
             .playerDolbyVisionEnabled: .bool(false),
-            .playerDvProfile7Hdr10Fallback: .bool(true),
             .playerSeekCacheEnabled: .bool(false),
             .playerPlaybackSpeed: .double(1.75),
-            .playerAudioSyncMs: .int(125),
             .playerSubtitleSyncMs: .int(-250),
             .playerVideoGravity: .string("stretch"),
             .playerOrientationMode: .string("rotateFreely"),
@@ -1229,10 +1221,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
         XCTAssertFalse(harness.settings.hdrEnabled)
         XCTAssertFalse(harness.settings.dolbyVisionEnabled)
-        XCTAssertTrue(harness.settings.preferProfile7HDR10Fallback)
         XCTAssertFalse(harness.settings.seekCacheEnabled)
         XCTAssertEqual(harness.settings.playbackSpeed, 1.75)
-        XCTAssertEqual(harness.settings.audioSyncMs, 125)
         XCTAssertEqual(harness.settings.subtitleSyncMs, -250)
         XCTAssertEqual(harness.settings.videoGravity, .stretch)
         XCTAssertEqual(harness.settings.playerOrientationMode, .rotateFreely)

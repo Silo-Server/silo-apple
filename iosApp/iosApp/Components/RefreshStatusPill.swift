@@ -16,7 +16,11 @@ struct RefreshStatusPill: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        #if os(iOS)
+        .background(Color(white: 0.10), in: Capsule())
+        #else
         .background(.ultraThinMaterial, in: Capsule())
+        #endif
         .overlay {
             Capsule()
                 .stroke(Color.white.opacity(0.14), lineWidth: 0.8)

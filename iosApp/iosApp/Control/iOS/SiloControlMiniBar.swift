@@ -7,12 +7,10 @@ struct SiloControlMiniBar: View {
     @Bindable var controller: SiloControlClient
     var style: NowPlayingBarStyle = .card
     @State private var artwork = SiloControlArtworkResolver()
-    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    @Environment(\.nowPlayingAccessoryIsInline) private var isInline
 
     /// `.inline` is the minimized-tab-bar slot — collapse to a single line so the
     /// bar fits the compact pill without truncating.
-    private var isInline: Bool { placement == .inline }
-
     /// Whether the bar has anything to show: a live session (that isn't a
     /// still-unconfirmed auto-resume probe) or an in-flight reconnect. Keeping
     /// the bar up through a reconnect (with a spinner) beats having it vanish
@@ -49,7 +47,16 @@ struct SiloControlMiniBar: View {
                     Spacer(minLength: 8)
                     if controller.isReconnecting {
                         ProgressView()
-                            .frame(width: 32, height: 32)
+                            .frame(width: 24, height: 24)
+                        Button {
+                            controller.cancelReconnect()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .frame(width: 32, height: 32)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Stop reconnecting")
                     } else {
                         Button {
                             controller.togglePlayPauseOptimistic()

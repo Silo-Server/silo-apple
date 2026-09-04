@@ -19,7 +19,7 @@ enum OverlayPresets {
 
     private static let minimal = OverlayPreset(
         id: .minimal,
-        font: .system(size: 9),
+        fontSize: 9,
         textWeight: .semibold,
         textCase: .uppercase,
         tracking: 1.2,
@@ -39,7 +39,7 @@ enum OverlayPresets {
 
     private static let classic = OverlayPreset(
         id: .classic,
-        font: .system(size: 10),
+        fontSize: 10,
         textWeight: .semibold,
         textCase: .uppercase,
         tracking: 0.6,
@@ -62,7 +62,7 @@ enum OverlayPresets {
 
     private static let vibrant = OverlayPreset(
         id: .vibrant,
-        font: .system(size: 10),
+        fontSize: 10,
         textWeight: .bold,
         textCase: .uppercase,
         tracking: 0.6,
@@ -82,7 +82,7 @@ enum OverlayPresets {
 
     private static let pill = OverlayPreset(
         id: .pill,
-        font: .system(size: 10),
+        fontSize: 10,
         textWeight: .semibold,
         textCase: .uppercase,
         tracking: 0.6,
@@ -106,7 +106,7 @@ enum OverlayPresets {
 
     private static let square = OverlayPreset(
         id: .square,
-        font: .system(size: 9),
+        fontSize: 9,
         textWeight: .bold,
         textCase: .uppercase,
         tracking: 1.2,

@@ -1,13 +1,19 @@
 import SwiftUI
 
 /// The shared right-hand action cluster used at the top of tab-root screens:
-/// Search and a profile-avatar menu with Settings / Switch Profile / Sign Out.
+/// Search, the iOS TV remote control, and a profile-avatar menu with
+/// Settings / Switch Profile / Sign Out. Every root page renders the same
+/// three controls so the header reads identically across Home, Libraries,
+/// For You, and Calendar.
 ///
 /// Each tab renders its own leading content (e.g. library selector on the
-/// Libraries tab, a static title on Home) and places this view on the
+/// Libraries tab, the wordmark on Home) and places this view on the
 /// trailing side of a single `HStack` row.
 struct TabTopBarActions: View {
-    let profile: UserProfile?
+    /// Circular native Liquid Glass matching the close/remote detail
+    /// controls. On by default because every root header now floats over
+    /// the shared `PageChromeGlass` strip.
+    var usesGlass = true
     let onSearch: () -> Void
     let onOpenSettings: () -> Void
     /// Opens the media-requests hub. The menu row only renders when the
@@ -17,14 +23,32 @@ struct TabTopBarActions: View {
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
 
+    /// Shared session cache so switching pages never refetches or flashes
+    /// the avatar fallback.
+    private let profileStore = CurrentProfileStore.shared
+    #if os(iOS)
+    @Environment(SiloControlClient.self) private var siloControl
+    @State private var isShowingControlPicker = false
+    #endif
+
     var body: some View {
-        // Plain icon glyphs (no glass chip) spaced evenly, matching the
-        // clean top-right cluster used by Plex. The profile avatar is the
-        // only filled shape, so it reads as the account control.
+        // Icons spaced evenly, matching the clean top-right cluster used by
+        // Plex. Order is fixed: Search, Remote (iOS), Profile.
         HStack(spacing: ContinuumTheme.topBarIconSpacing) {
-            TopBarIconButton(systemImage: "magnifyingglass", accessibilityLabel: "Search", action: onSearch)
+            TopBarIconButton(
+                systemImage: "magnifyingglass",
+                accessibilityLabel: "Search",
+                usesGlass: usesGlass,
+                action: onSearch
+            )
+            #if os(iOS)
+            SiloControlModeButton(controller: siloControl, usesGlass: usesGlass) {
+                isShowingControlPicker = true
+            }
+            #endif
             ProfileAvatarMenu(
-                profile: profile,
+                profile: profileStore.profile,
+                usesGlass: usesGlass,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
@@ -32,6 +56,14 @@ struct TabTopBarActions: View {
                 onSignOut: onSignOut
             )
         }
+        #if os(iOS)
+        .sheet(isPresented: $isShowingControlPicker) {
+            SiloControlTargetPickerView(request: nil, controller: siloControl)
+        }
+        #endif
+        // No-op once cached; covers a page shown before the session-level
+        // load finished.
+        .task { await profileStore.refresh() }
     }
 }
 
@@ -41,6 +73,7 @@ struct TabTopBarActions: View {
 private struct TopBarIconButton: View {
     let systemImage: String
     let accessibilityLabel: String
+    let usesGlass: Bool
     let action: () -> Void
 
     var body: some View {
@@ -49,7 +82,8 @@ private struct TopBarIconButton: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.continuumOnSurface)
                 .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
-                .contentShape(Rectangle())
+                .modifier(TopBarCircularGlass(enabled: usesGlass))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
@@ -62,6 +96,7 @@ private struct TopBarIconButton: View {
 /// and manage their account without leaving the current tab.
 private struct ProfileAvatarMenu: View {
     let profile: UserProfile?
+    let usesGlass: Bool
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
@@ -112,10 +147,32 @@ private struct ProfileAvatarMenu: View {
         } label: {
             ProfileAvatarView(
                 avatar: profile?.avatarEmoji,
+                imageUrl: profile?.avatarImageUrl,
                 name: profile?.name ?? "",
-                size: 36
+                size: usesGlass ? 30 : 36
             )
+            .frame(
+                width: usesGlass ? ContinuumTheme.topBarIconHitSize : 36,
+                height: usesGlass ? ContinuumTheme.topBarIconHitSize : 36
+            )
+            .modifier(TopBarCircularGlass(enabled: usesGlass))
+            .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
+    }
+}
+
+/// Keeps all top-bar utilities on the exact same 44pt native-glass circle.
+/// A modifier avoids duplicating branches inside Button and Menu labels.
+private struct TopBarCircularGlass: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.siloGlass(in: Circle(), interactive: true)
+        } else {
+            content
+        }
     }
 }

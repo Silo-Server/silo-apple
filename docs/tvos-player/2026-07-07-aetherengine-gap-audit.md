@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Historical pre-adoption audit.** This document records the July 2026 comparison that preceded the AetherEngine-only migration. Its findings are not current implementation or validation status. See the [AetherEngine-only replacement specification](aetherengine-replacement-spec.md).
+
 # AetherEngine → silo-apple: Defect Parity Audit
 
 **Date:** 2026-07-07  ·  **silo-apple:** `359d20c`  ·  **AetherEngine:** 4.11.0 + unreleased

@@ -196,8 +196,8 @@ struct TVPlayerScrubber: View {
                 // playhead and the end of the loaded range. Rendering from
                 // x=0 would put it entirely under the played fill (invisible)
                 // and mis-represent the semantic — buffer is inherently a
-                // forward-looking indicator. Stays 0-width on the CoreMedia
-                // path where `bufferedAheadSeconds` is always 0.
+                // forward-looking indicator. Aether routes without comparable
+                // buffer telemetry leave `bufferedAheadSeconds` at zero.
                 let bufferedAhead = max(0, bufferedFraction - progressFraction)
                 if bufferedAhead > 0 {
                     Capsule(style: .continuous)

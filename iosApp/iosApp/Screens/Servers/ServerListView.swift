@@ -275,6 +275,10 @@ struct ServerListView: View {
     /// drop any in-tab navigation that belonged to the previous server.
     private func refreshAuthState() {
         router.popToRoot()
+        // A server switch can land back on `.authenticated`, which the
+        // router's same-value guard drops — so the identity boundary for an
+        // engaged PiP video is enforced here, before the reassignment.
+        PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         let auth = AuthService.shared
         if !auth.hasServer {
             router.authState = .needsServerSetup

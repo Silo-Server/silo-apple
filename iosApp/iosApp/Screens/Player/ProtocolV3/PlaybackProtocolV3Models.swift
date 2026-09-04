@@ -12,8 +12,34 @@ enum PlaybackProtocolV3 {
     static let routeDiagnosticsFeature = "playback_route_diagnostics"
     static let deviceQuirksFeature = "device_quirks_v1"
     static let seekReanchorFeature = "seek_reanchor_v1"
+    /// The `output_change` intent replan exists. Per §6 an intent operation
+    /// keeps the previous route eligible; `failure_recovery` would instead
+    /// exclude the current plan key and force a route the device never rejected.
+    static let outputChangeFeature = "output_change_v1"
     static let directStreamResumeFeature = "direct_stream_resume_v1"
+    /// API-local media URLs carry no signed credential. The client attaches
+    /// its current Authorization header to the source and every derived media
+    /// or subtitle request.
+    static let headerAuthenticatedMediaFeature = "header_authenticated_media_v1"
+    /// Opt-in, only meaningful alongside `header_authenticated_media_v1`: the
+    /// plan may hand back absolute, still credential-free media URLs on a
+    /// server-designated proxy origin, and the client attaches the same bearer
+    /// there that it sends the API. Unlike header auth this is optional — a
+    /// server that does not advertise it simply keeps every byte API-local.
+    static let authorizedMediaOriginsFeature = "authorized_media_origins_v1"
+    /// The server may validate bounded `hardware: false` decode entries for
+    /// original delivery. Older servers ignore the opt-in and keep their
+    /// hardware-only strict-tier behavior.
+    static let softwareVideoDecodeFeature = "software_video_decode_v1"
     static let planSourceDurationFeature = "plan_source_duration_v1"
+    /// Scoped to `original_http`: the Aether executor accepts the declared
+    /// source dynamic range and resolves HDR/Dolby Vision presentation against
+    /// the live output after delivery. It is not a promise that packaged
+    /// server streams can present the same range natively.
+    static let clientManagedDynamicRangeClaim = "client_managed_dynamic_range_v1"
+    /// Scoped to `original_http`: after probing the complete source, Aether
+    /// maps the plan's selected audio ordinal to its concrete stream id.
+    static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
 
     /// Delivery classes are the unit a client negotiates in
     /// `client_playback_context.deliveries`. They are deliberately coarser than
@@ -37,6 +63,22 @@ enum PlaybackProtocolV3 {
         ]
     }
 
+    /// What the plan asks the client to do with the selected subtitle.
+    enum SubtitleMode {
+        static let off = "off"
+        static let render = "render"
+        /// Server-transcoded cues the client still renders itself. Only the
+        /// artifact's format differs from `render`.
+        static let convert = "convert"
+        static let burnIn = "burn_in"
+
+        /// Modes whose artifact the client mounts and renders locally. Every
+        /// gate that arms a local subtitle selection must accept all of them:
+        /// a gate that only knows `render` turns a mounted artifact into an
+        /// explicit Off while the picker still shows the row selected.
+        static let locallyRendered: Set<String> = [render, convert]
+    }
+
     /// How much the client actually knows about its own decoders. The server
     /// gates direct/copy routes on this: `exact` and `platformAttested` are
     /// matched against `video_decode` entries, `declared` only against the flat
@@ -48,7 +90,7 @@ enum PlaybackProtocolV3 {
     }
 
     /// Why the client is asking for a new plan. `failureRecovery` is the
-    /// server's default when the field is absent; the two intent operations
+    /// server's default when the field is absent; the three intent operations
     /// carry no `failure`.
     enum ReplanOperation {
         static let failureRecovery = "failure_recovery"
@@ -56,6 +98,11 @@ enum PlaybackProtocolV3 {
         static let seekFailureRecovery = "seek_failure_recovery"
         static let trackChange = "track_change"
         static let qualityChange = "quality_change"
+        /// The active display/output capabilities changed. Nothing failed, so
+        /// §6 keeps the previous route eligible: neither attempted-key history
+        /// nor the failed-plan exclusion applies. The server rejects this
+        /// operation outright if it carries a `failure`.
+        static let outputChange = "output_change"
     }
 }
 
@@ -85,7 +132,7 @@ struct PlaybackV3AudioPassthrough: Codable, Equatable {
     let entries: [PlaybackV3AudioPassthroughEntry]
 }
 
-struct PlaybackV3VideoDecodeCapability: Codable, Equatable {
+struct PlaybackV3VideoDecodeCapability: Codable, Equatable, Sendable {
     let codec: String
     let decoderName: String?
     let profiles: [String]
@@ -98,11 +145,33 @@ struct PlaybackV3VideoDecodeCapability: Codable, Equatable {
     let hardware: Bool
 }
 
+extension AppleDecodeCapabilities {
+    /// The neutral decoder facts above adapted once into the Protocol V3 wire
+    /// model. Keeping this adapter beside the model lets shared capability code
+    /// compile in extensions that do not carry the playback protocol.
+    static func playbackV3VideoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
+        videoDecodeAttestation().map { capability in
+            PlaybackV3VideoDecodeCapability(
+                codec: capability.codec,
+                decoderName: capability.decoderName,
+                profiles: capability.profiles,
+                levels: capability.levels,
+                bitDepths: capability.bitDepths,
+                maxWidth: capability.maxWidth,
+                maxHeight: capability.maxHeight,
+                maxFrameRate: capability.maxFrameRate,
+                maxBitrateKbps: capability.maxBitrateKbps,
+                hardware: capability.hardware
+            )
+        }
+    }
+}
+
 struct PlaybackV3CodecCapabilities: Codable, Equatable {
-    /// How this client knows what it can decode. Apple attests through
-    /// VideoToolbox rather than enumerating a decoder registry, so it claims
-    /// `platform_attested`: codec, bit depth and dimension bounds are real,
-    /// profile/level are not enumerable and the server skips matching them.
+    /// How this client knows what it can decode. Online Apple TV 4K playback
+    /// uses `declared` for the pinned Aether/FFmpeg manifest and lets Aether
+    /// probe the exact stream at load time. Persistent downloads and the
+    /// conservative Apple surfaces retain bounded `platform_attested` entries.
     let videoEvidence: String
     let audioEvidence: String
     let codecsVideo: [String]
@@ -415,6 +484,8 @@ struct PlaybackV3DegradationWarning: Codable, Equatable {
 
 struct PlaybackV3AvailableQuality: Codable, Equatable {
     let label: String
+    /// Optional server-owned presentation label for compound quality rungs.
+    let displayName: String?
     /// Audio-only quality rungs have no meaningful video height.
     let height: Int?
     let bitrateKbps: Int
@@ -447,6 +518,44 @@ struct PlaybackV3Plan: Codable, Equatable {
     let subtitleFidelityPolicy: String
     /// Quality rungs the server will honour for a `quality_change` replan.
     let availableQualities: [PlaybackV3AvailableQuality]
+}
+
+extension PlaybackV3Plan {
+    /// The one inventory row this plan's subtitle decision names.
+    ///
+    /// Every consumer that needs "which row is selected" resolves it here so
+    /// the picker, the load spec, the renewal intent and the session
+    /// projection cannot disagree with each other. The order matches the
+    /// shared Android resolver (`resolvedSelectedSubtitleIndex`):
+    /// `selected_tracks.subtitle.index` is authoritative, then its stable
+    /// `id`. The trailing `subtitle.track_id` match is Apple-only and last:
+    /// it is the transitional shape this client already accepted and must
+    /// keep accepting, but it never outranks the neutral identity.
+    ///
+    /// `subtitle.mode` is deliberately not consulted. A caller that must
+    /// distinguish "off" from "selected but not locally rendered" — the
+    /// picker — applies that gate itself.
+    var selectedSubtitleInventoryItem: PlaybackV3SubtitleInventoryItem? {
+        if let index = selectedTracks.subtitle?.index,
+           let byIndex = subtitle.inventory.first(where: { $0.combinedIndex == index }) {
+            return byIndex
+        }
+        if let id = selectedTracks.subtitle?.id,
+           let byIdentity = subtitle.inventory.first(where: { $0.trackId == id }) {
+            return byIdentity
+        }
+        if let trackId = subtitle.trackId {
+            return subtitle.inventory.first { $0.trackId == trackId }
+        }
+        return nil
+    }
+
+    /// The selected combined ordinal, falling back to the wire index when the
+    /// inventory names no row for it (a transitional plan can still be
+    /// executable without publishing the row).
+    var selectedSubtitleCombinedIndex: Int? {
+        selectedSubtitleInventoryItem?.combinedIndex ?? selectedTracks.subtitle?.index
+    }
 }
 
 struct PlaybackV3Terminal: Codable, Equatable {

@@ -10,6 +10,7 @@ import SwiftUI
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
+    var posterThumbhash: String? = nil
     var year: Int? = nil
     /// Optional second caption line rendered in place of the year (same
     /// type treatment) — e.g. "Book 3" on audiobook series rails.
@@ -166,6 +167,7 @@ struct TVMediaCard: View {
             CachedAsyncImage(
                 url: posterUrl,
                 targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
+                thumbhash: posterThumbhash,
                 contentMode: .fill
             )
             .frame(width: resolvedCardWidth, height: cardHeight)
@@ -201,17 +203,23 @@ struct TVMediaCard: View {
     private var caption: some View {
         VStack(spacing: 4) {
             Text(title)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.continuumPosterTitle)
                 .foregroundColor(isFocused ? .continuumOnSurface : .continuumOnSurface.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .frame(width: resolvedCardWidth, alignment: .center)
+                .clipped()
                 .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
 
             if uiCustomization.cardPresentation.caption.showsMetadata,
                let secondLine = subtitle ?? year.map(String.init) {
                 Text(secondLine)
-                    .font(.system(size: 18, weight: .regular))
+                    .font(.continuumPosterMetadata)
                     .foregroundColor(.continuumSecondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: resolvedCardWidth, alignment: .center)
+                    .clipped()
             }
         }
         .multilineTextAlignment(.center)

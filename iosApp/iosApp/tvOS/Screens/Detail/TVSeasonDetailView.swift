@@ -47,7 +47,6 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
 
-    @Environment(\.resetFocus) private var resetFocus
     @Namespace private var detailFocusNamespace
     @FocusState private var playFocused: Bool
     /// True while focus sits anywhere inside the season chip row — drives the
@@ -56,15 +55,12 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
+    @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
 
     // Plain constants (not `static`) — the generic BelowSynopsis parameter
     // forbids static stored properties on this type.
     private let episodeSectionScrollId = "season-episode-section"
     private let heroScrollId = "season-hero"
-    /// Reevaluate the page-entry default only once, after the asynchronously
-    /// supplied Play button has joined the laid-out focus graph.
-    @State private var didResetInitialPlayFocus = false
-    @State private var initialFocusSeasonKey: String?
 
     var body: some View {
         ScrollViewReader { scrollProxy in
@@ -75,12 +71,28 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                         seriesTitle: nil,
                         logoUrl: nil,
                         backdropUrl: detail.backdropUrl,
+                        backdropThumbhash: detail.backdropThumbhash,
                         eyebrow: detail.seriesTitle,
                         sourceTokens: sourceTokens,
                         ratingChip: nil,
                         overview: detail.overview,
                         factsLine: [],
                         starringText: TVHeroMetadata.starringText(from: detail),
+                        playbackSummary: TVPlaybackSelectionSummary.make(
+                            currentVersion: effectiveNextUpVersion,
+                            selectedVersionFileId: selectedNextUpFileId,
+                            selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+                            selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                            subtitleMode: nextUpSubtitleOverrideCleared
+                                ? nil
+                                : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                            subtitleSignature: nextUpSubtitleOverrideCleared
+                                ? nil
+                                : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                            preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
+                            showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
+                                ?? false
+                        ),
                         actions: { actionColumn },
                         belowSynopsis: belowSynopsis
                     )
@@ -101,14 +113,6 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
             .ignoresSafeArea()
             .focusScope(detailFocusNamespace)
             .defaultFocus($playFocused, true, priority: .userInitiated)
-            .onChange(of: selectedSeason?.contentId, initial: true) { _, seasonKey in
-                guard let seasonKey else { return }
-                if initialFocusSeasonKey == nil {
-                    initialFocusSeasonKey = seasonKey
-                } else if initialFocusSeasonKey != seasonKey {
-                    didResetInitialPlayFocus = true
-                }
-            }
             .detailFocusScroll(
                 proxy: scrollProxy,
                 seasonRowFocused: seasonRowFocused,
@@ -116,6 +120,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 episodeSectionId: episodeSectionScrollId,
                 heroId: heroScrollId
             )
+            .tvActionPopoverHost()
         }
     }
 
@@ -123,24 +128,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            actionRow
-            if nextUpEpisode != nil {
-                TVPlaybackSelectorRow(
-                    versions: nextUpVersions,
-                    currentVersion: effectiveNextUpVersion,
-                    selectedVersionFileId: selectedNextUpFileId,
-                    selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
-                    selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    subtitleMode: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleMode,
-                    subtitleSignature: nextUpSubtitleOverrideCleared ? nil : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles ?? false,
-                    onSelectVersion: onSelectNextUpVersion,
-                    onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
-                )
-            }
-        }
+        actionRow
     }
 
     private var nextUpVersions: [FileVersion] {
@@ -148,95 +136,94 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     }
 
     private var actionRow: some View {
-        HStack(spacing: 36) {
-            if let nextUp = nextUpEpisode {
-                TVPrimaryPillButton(
-                    icon: "play.fill",
-                    title: playButtonLabel(for: nextUp),
-                    action: { onPlayEpisode(nextUp.contentId, selectedNextUpFileId, false) },
-                    focused: $playFocused
-                )
-                .onGeometryChange(for: Bool.self) { proxy in
-                    proxy.size.width > 0 && proxy.size.height > 0
-                } action: { isLaidOut in
-                    guard isLaidOut else { return }
-                    resetInitialPlayFocus()
+        TVDetailActionRow(
+            playTitle: nextUpEpisode.map {
+                $0.userData?.isInProgress == true ? "Resume" : "Play"
+            },
+            playSubtitle: nextUpEpisode.map(playButtonSubtitle(for:)),
+            onPlay: {
+                guard let nextUp = nextUpEpisode else { return }
+                onPlayEpisode(nextUp.contentId, selectedNextUpFileId, false)
+            },
+            onStartOver: nextUpEpisode?.userData?.isInProgress == true
+                ? {
+                    guard let nextUp = nextUpEpisode else { return }
+                    onPlayEpisode(nextUp.contentId, selectedNextUpFileId, true)
                 }
-                if nextUp.userData?.isInProgress == true {
-                    TVSecondaryPillButton(
-                        icon: "backward.end.fill",
-                        title: "Start Over",
-                        action: { onPlayEpisode(nextUp.contentId, selectedNextUpFileId, true) }
+                : nil,
+            inWatchlist: inWatchlist,
+            onToggleWatchlist: onToggleWatchlist,
+            focusResetKey: detail.contentId,
+            initialFocusScope: .season(key: selectedSeason?.contentId),
+            focusNamespace: detailFocusNamespace,
+            playFocused: $playFocused,
+            rowFocused: $actionRowFocused,
+            playbackSelectors: {
+                if nextUpEpisode != nil {
+                    TVPlaybackActionSelectors(
+                        versions: nextUpVersions,
+                        currentVersion: effectiveNextUpVersion,
+                        selectedVersionFileId: selectedNextUpFileId,
+                        selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
+                        selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                        subtitleMode: nextUpSubtitleOverrideCleared
+                            ? nil
+                            : nextUpPlaybackDetail?.effectiveSubtitleMode,
+                        subtitleSignature: nextUpSubtitleOverrideCleared
+                            ? nil
+                            : nextUpPlaybackDetail?.effectiveSubtitleTrackSignature,
+                        showForcedSubtitles: nextUpPlaybackDetail?.effectiveShowForcedSubtitles
+                            ?? false,
+                        onSelectVersion: onSelectNextUpVersion,
+                        onSelectAudioTrack: onSelectNextUpAudioTrack,
+                        onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
                     )
                 }
-            }
-
-            TVCircleActionButton(
-                icon: "heart",
-                iconActive: "heart.fill",
-                isActive: isFavorite,
-                accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                action: onToggleFavorite
-            )
-
-            TVCircleActionButton(
-                icon: "bookmark",
-                iconActive: "bookmark.fill",
-                isActive: inWatchlist,
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
-                action: onToggleWatchlist
-            )
-
-            TVCircleActionButton(
-                icon: "checkmark.circle",
-                iconActive: "checkmark.circle.fill",
-                isActive: isWatched,
-                accessibilityLabel: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
-                action: onToggleWatched
-            )
-
-            if hasMoreMenu {
-                moreMenu
-            }
-        }
-        // Container binding — flips true when any button in the row has
-        // focus, driving the scroll-to-top in `detailFocusScroll`.
-        .focused($actionRowFocused)
-        // Mirror of the selector row's full-width focus section: the subtitle
-        // pill below can extend past the last circle button, and an Up press
-        // from that overhang would otherwise skip this row for the synopsis.
-        // Full-width bounds put the row under every selector pill so Up lands
-        // on the nearest action button. Buttons stay left-aligned.
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .focusSection()
+            },
+            moreMenu: { moreMenu }
+        )
     }
 
-    private func resetInitialPlayFocus() {
-        guard !didResetInitialPlayFocus else { return }
-        guard let seasonKey = selectedSeason?.contentId else { return }
-        if initialFocusSeasonKey == nil {
-            initialFocusSeasonKey = seasonKey
-        }
-        guard initialFocusSeasonKey == seasonKey else { return }
-        didResetInitialPlayFocus = true
-        resetFocus(in: detailFocusNamespace)
+    private enum MoreAction: String {
+        case favorite, watched, series
     }
 
-    private var hasMoreMenu: Bool {
-        detail.seriesId != nil
-    }
-
-    @ViewBuilder
     private var moreMenu: some View {
-        TVCircleMenuButton(accessibilityLabel: "More options") {
-            if let seriesId = detail.seriesId {
-                Button {
-                    onNavigateToItem(seriesId)
-                } label: {
-                    Label("Go to Series", systemImage: "tv")
+        TVCircleMenuButton(
+            title: "More",
+            accessibilityLabel: "More options",
+            items: {
+                var items: [TVActionPopoverItem] = [
+                    TVActionPopoverItem(
+                        id: MoreAction.favorite.rawValue,
+                        title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                        systemImage: isFavorite ? "heart.fill" : "heart"
+                    ),
+                    TVActionPopoverItem(
+                        id: MoreAction.watched.rawValue,
+                        title: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                        systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                    ),
+                ]
+                if detail.seriesId != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.series.rawValue,
+                        title: "Go to Series",
+                        systemImage: "tv"
+                    ))
+                }
+                return items
+            },
+            onSelect: { item in
+                switch MoreAction(rawValue: item.id) {
+                case .favorite: onToggleFavorite()
+                case .watched: onToggleWatched()
+                case .series:
+                    if let seriesId = detail.seriesId { onNavigateToItem(seriesId) }
+                case .none: break
                 }
             }
-        }
+        )
     }
 
     private var nextUpEpisode: EpisodeListItem? {
@@ -249,11 +236,8 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
         return episodes.first
     }
 
-    private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        if episode.userData?.isInProgress == true {
-            return "Resume E\(episode.episodeNumber)"
-        }
-        return "Play E\(episode.episodeNumber)"
+    private func playButtonSubtitle(for episode: EpisodeListItem) -> String {
+        "S\(episode.seasonNumber):E\(episode.episodeNumber)"
     }
 
     private var effectiveNextUpVersion: FileVersion? {

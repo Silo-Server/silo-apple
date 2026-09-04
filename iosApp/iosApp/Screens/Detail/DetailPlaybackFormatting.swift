@@ -30,6 +30,18 @@ enum DetailPlaybackFormatting {
         return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
     }
 
+    /// Resting-state video summary for the compact tvOS selector segment.
+    /// Keep the two facts viewers need at a glance (resolution + HDR family),
+    /// while the focused segment expands to ``versionShortLabel(_:)``.
+    static func versionCompactLabel(_ version: FileVersion?) -> String {
+        guard let version else { return "Auto" }
+        let tokens = [
+            nonEmpty(version.resolution),
+            dynamicRangeLabel(version),
+        ].compactMap { $0 }
+        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
+    }
+
     static func versionDetailLabel(_ version: FileVersion) -> String {
         let tokens = [
             nonEmpty(normalizedVideoCodec(version.codecVideo)),
@@ -166,6 +178,29 @@ enum DetailPlaybackFormatting {
             return "Auto: \(summary)"
         }
         return summary
+    }
+
+    /// Compact codec/layout disclosure for a passive UI readout. Unlike the
+    /// interactive selector value, this intentionally omits language and the
+    /// "Auto" prefix (for example, "EAC3 5.1").
+    static func audioTechnicalSummary(
+        version: FileVersion?,
+        selectedAudioTrackIndex: Int?
+    ) -> String? {
+        guard let version,
+              let ordinal = resolvedAudioOrdinal(
+                  version: version,
+                  selectedAudioTrackIndex: selectedAudioTrackIndex
+              ),
+              let track = version.audioTracks?[safe: ordinal] else {
+            return normalizedAudioCodec(version?.codecAudio)
+        }
+        return [
+            normalizedAudioCodec(track.codec) ?? normalizedAudioCodec(version.codecAudio),
+            compactAudioLayout(track),
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
     }
 
     /// Language of the track that `audioValueLabel` would display, used to
@@ -316,7 +351,32 @@ enum DetailPlaybackFormatting {
         version: FileVersion?,
         context: SubtitleAutoContext
     ) -> (track: SubtitleTrack, ordinal: Int)? {
-        let tracks = version?.subtitleTracks ?? []
+        let catalog = Array((version?.subtitleTracks ?? []).enumerated())
+        guard !catalog.isEmpty else { return nil }
+        // Search in the Protocol V3 combined order (externals first) that
+        // `SubtitleTrackCandidates` and the plan inventory use, so a first-match
+        // tie resolves to the same track playback will start. The returned
+        // ordinal stays the catalog offset so "Track N" labels line up with
+        // `subtitleOptions`.
+        // `SubtitleTrackCandidates` drops embedded tracks with no stream index
+        // because the plan cannot select them; the preview must not name one.
+        let ordered = (
+            catalog.filter { $0.element.external == true }
+                + catalog.filter { $0.element.external != true }
+        ).filter { $0.element.external == true || $0.element.index != nil }
+        guard !ordered.isEmpty else { return nil }
+        guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
+            return nil
+        }
+        return (pick.track, ordered[pick.ordinal].offset)
+    }
+
+    /// `autoResolvedSubtitle(version:context:)` over an already ordered list;
+    /// `ordinal` is the position in `tracks`.
+    private static func autoResolvedSubtitle(
+        in tracks: [SubtitleTrack],
+        context: SubtitleAutoContext
+    ) -> (track: SubtitleTrack, ordinal: Int)? {
         guard !tracks.isEmpty else { return nil }
 
         let mode = SubtitleMode(rawValue: context.mode ?? "") ?? .auto

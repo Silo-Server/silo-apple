@@ -22,7 +22,7 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// Point sizes are interpreted inside the fixed 1080-line ASS playfield
+    /// Point sizes are interpreted inside the overlay's 1080-line reference
     /// and scale with the displayed video rect, so they read the same in any
     /// orientation. The ladder is rebased ~1.4x from the original values
     /// (large = old xxlarge) after the overlay switched from full-screen to
@@ -67,7 +67,7 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
 }
 
 // Future: add a "system" appearance source that maps Apple's Media
-// Accessibility caption preferences into this model before libass styling.
+// Accessibility caption preferences into this model before overlay styling.
 struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashable, Identifiable {
     let rawValue: String
 

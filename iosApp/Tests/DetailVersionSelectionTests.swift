@@ -77,28 +77,14 @@ final class DetailVersionSelectionTests: XCTestCase {
             "2160p · HEVC · DV · EAC3"
         )
         XCTAssertEqual(
+            DetailPlaybackFormatting.versionCompactLabel(version),
+            "2160p · DV"
+        )
+        XCTAssertEqual(
             DetailPlaybackFormatting.versionPrimaryText(version),
             "2160p · HEVC · DV · EAC3"
         )
         XCTAssertEqual(version.videoTracks?.first?.colorRange, "tv")
-        XCTAssertEqual(ApplePlaybackRoutePlanner.unambiguousColorRange(for: version), "tv")
-    }
-
-    func testColorRangeFallbackRequiresAnUnambiguousVideoTrack() throws {
-        let version = try XCTUnwrap(decodedVersions("""
-        [
-          {
-            "file_id": 22,
-            "file_path": "/media/multi-angle.mkv",
-            "video_tracks": [
-              { "index": 0, "color_range": "tv" },
-              { "index": 1, "color_range": "pc" }
-            ]
-          }
-        ]
-        """).first)
-
-        XCTAssertNil(ApplePlaybackRoutePlanner.unambiguousColorRange(for: version))
     }
 
     func testSourceColorRangeIsNotAppliedToTranscodedOutput() {
@@ -430,6 +416,52 @@ final class DetailVersionSelectionTests: XCTestCase {
                 selectedSubtitleTrackIndex: -1
             ) == "Off"
         )
+    }
+
+    func testAutoSubtitlePreviewMatchesPlaybackCombinedOrder() {
+        // Catalog lists the embedded English track first; Protocol V3 resolves
+        // in combined order (externals first), so playback starts the external
+        // one. The detail "Auto:" preview must name that same track.
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "index": 2, "codec": "subrip", "language": "eng" },
+              { "index": 7, "codec": "ass", "language": "eng", "external": true, "external_path": "movie.en.ass" }
+            ]
+          }
+        ]
+        """)
+        let label = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
+        )
+        XCTAssertEqual(label, "Auto: English · ASS", "preview must follow the external-first order playback uses; got \(label)")
+    }
+
+    func testAutoSubtitlePreviewSkipsEmbeddedTracksWithoutAnIndex() {
+        // An embedded track without a stream index cannot be selected by the
+        // plan and is dropped from playback candidates; the preview must not
+        // name it either.
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "codec": "subrip", "language": "eng", "title": "Broken" },
+              { "index": 3, "codec": "ass", "language": "eng" }
+            ]
+          }
+        ]
+        """)
+        let label = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
+        )
+        XCTAssertEqual(label, "Auto: English · ASS", "index-less embedded track must be skipped; got \(label)")
     }
 
     func testSubtitleLabelsIncludeTypeAndLanguage() {

@@ -318,7 +318,10 @@ final class TVControlReceiver {
             remoteControllerName = hello.deviceName
             remoteControllerDeviceId = hello.deviceId
             remoteControllerServerId = serverId
-            if serverId == RemotePlaybackIdentityManager.shared.effectiveServerId {
+            if ServerRegistry.serverIdsMatch(
+                serverId,
+                RemotePlaybackIdentityManager.shared.effectiveServerId
+            ) {
                 isAuthorized = true
                 refreshStandbyState()
                 sendState()
@@ -358,6 +361,14 @@ final class TVControlReceiver {
                 return
             }
             handleControl(command)
+        case .unsupportedControl(let name):
+            // An older v2 controller sent a command this build retired (e.g.
+            // `set_hdr_enabled`). Drop it silently rather than replying with
+            // `.error`: the phone renders an error frame as a user-visible
+            // banner and abandons a silent auto-resume, so a stale button on
+            // an old remote would look like a broken connection. Ignoring it
+            // matches what the user sees anyway — nothing happens.
+            Self.logger.info("control: ignoring unsupported command \(name, privacy: .public)")
         case .ping:
             activeSession?.enqueue(.pong)
         case .pong:
@@ -464,7 +475,10 @@ final class TVControlReceiver {
     }
 
     private func handleLaunch(_ launch: SiloControlLaunchRequest) {
-        guard launch.serverId == RemotePlaybackIdentityManager.shared.effectiveServerId else {
+        guard ServerRegistry.serverIdsMatch(
+            launch.serverId,
+            RemotePlaybackIdentityManager.shared.effectiveServerId
+        ) else {
             sendError(code: "server_mismatch", message: "This Apple TV is connected to a different Silo server.")
             return
         }
@@ -592,7 +606,10 @@ final class TVControlReceiver {
 
     private func reconcileAuthorizationAfterRestore() {
         remoteLaunchReady = false
-        isAuthorized = remoteControllerServerId == RemotePlaybackIdentityManager.shared.effectiveServerId
+        isAuthorized = ServerRegistry.serverIdsMatch(
+            remoteControllerServerId,
+            RemotePlaybackIdentityManager.shared.effectiveServerId
+        )
         if isAuthorized {
             sendState()
         } else {
@@ -673,7 +690,6 @@ final class TVControlReceiver {
             videoGravity: PlayerSettings.shared.videoGravity.rawValue,
             hdrEnabled: PlayerSettings.shared.hdrEnabled,
             supportsVideoGravity: false,
-            supportsHDRToggle: false,
             volume: 1.0,
             isMuted: false,
             hasNextEpisode: false,
@@ -722,7 +738,6 @@ final class TVControlReceiver {
             videoGravity: PlayerSettings.shared.videoGravity.rawValue,
             hdrEnabled: PlayerSettings.shared.hdrEnabled,
             supportsVideoGravity: false,
-            supportsHDRToggle: false,
             volume: 1.0,
             isMuted: false,
             hasNextEpisode: false,

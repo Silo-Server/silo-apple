@@ -22,22 +22,21 @@
 //
 //  Cue `start`/`end` are **absolute media-time seconds**; `text` may carry
 //  `\n` line breaks. They are kept as raw `Double` seconds + raw `String`
-//  text here — the seconds→milliseconds + transcode-offset conversion is the
-//  responsibility of the live-track sink (which alone knows the player's
-//  `playbackTimelineOffset`), reusing the M2 `LiveSubtitleTrack` converter.
+//  text here. The live-track sink normalizes and deduplicates them on Silo's
+//  source timeline before the Aether-clocked overlay consumes them.
 //
 
 import Foundation
 
 /// A single streamed cue, in **absolute media-time seconds**, exactly as the
-/// server emits it. Conversion to libass milliseconds (and any transcode
-/// timeline-offset correction) happens downstream in the sink.
+/// server emits it. Millisecond normalization happens downstream in the sink.
 struct PlaybackRealtimeSubtitleCue: Equatable {
     /// Absolute cue start in media-time seconds.
     let start: Double
     /// Absolute cue end in media-time seconds.
     let end: Double
-    /// Cue text; may contain `\n` line breaks (escaped to ASS downstream).
+    /// Cue text; may contain `\n` line breaks and remains normalized text in
+    /// Silo's Aether-clocked presentation overlay.
     let text: String
 }
 

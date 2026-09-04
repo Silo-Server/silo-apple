@@ -13,16 +13,31 @@ struct RecommendationsView: View {
     var isTopMenuFocused: Bool = false
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
-    @State private var viewModel = RecommendationsViewModel()
-    @State private var currentProfile: UserProfile?
+    @State private var viewModel: RecommendationsViewModel
     @State private var savedListSelection: SavedShortcut = .watchlist
+    #if !os(tvOS)
+    /// Feeds the shared glass strip behind the pinned header as rows scroll
+    /// under it, matching Home and the Library tab.
+    @State private var chromeScrollState = PageChromeScrollState()
+    #endif
     @Environment(AppRouter.self) private var router
+
+    init(
+        focusRequest: Int = 0,
+        isTopMenuFocused: Bool = false,
+        onTopMenuFocusRequest: (() -> Void)? = nil,
+        viewModel: RecommendationsViewModel? = nil
+    ) {
+        self.focusRequest = focusRequest
+        self.isTopMenuFocused = isTopMenuFocused
+        self.onTopMenuFocusRequest = onTopMenuFocusRequest
+        _viewModel = State(initialValue: viewModel ?? RecommendationsViewModel())
+    }
 
     var body: some View {
         rootLayout
             .task {
                 await viewModel.loadRecommendations()
-                await loadCurrentProfile()
             }
         #if !os(tvOS)
             .refreshable {
@@ -36,53 +51,147 @@ struct RecommendationsView: View {
     @ViewBuilder
     private var rootLayout: some View {
         #if os(tvOS)
-        ZStack(alignment: .top) {
-            TVRootHeroBackdrop(
-                tintColor: .continuumBackground,
-                artworkURL: nil,
-                artworkThumbhash: nil,
-                isVisible: false
-            )
-
-            pageContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        tvOSPageContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                SidebarToggleButton()
-
-                Text("Recommendations")
-                    .font(.continuumTitle)
-                    .foregroundColor(.continuumOnSurface)
-
-                Spacer(minLength: 8)
-
-                TabTopBarActions(
-                    profile: currentProfile,
-                    onSearch: { router.navigate(to: .search) },
-                    onOpenSettings: { router.navigate(to: .settings) },
-                    onOpenRequests: { router.navigate(to: .requestsHub) },
-                    onSwitchProfile: {
-                        router.switchProfile()
-                    },
-                    onSwitchServer: { router.navigate(to: .serverList) },
-                    onSignOut: { router.signOutAndReset() }
-                )
+        // Content scrolls under the pinned header, which sits in a top
+        // safe-area inset with the shared glass strip behind it (same
+        // structure as `LibrariesTabView`).
+        pageContent
+            .environment(chromeScrollState)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                topChrome
+                    .background {
+                        PageChromeGlass(scrollState: chromeScrollState)
+                    }
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.smallPadding)
-
-            pageContent
-        }
-        .continuumBackground()
+        .continuumPageBackground()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
         #endif
     }
+
+    #if !os(tvOS)
+    private var topChrome: some View {
+        HStack(spacing: 12) {
+            SidebarToggleButton()
+
+            Text("Recommendations")
+                .font(.continuumTitle)
+                .foregroundColor(.continuumOnSurface)
+
+            Spacer(minLength: 8)
+
+            TabTopBarActions(
+                onSearch: { router.navigate(to: .search) },
+                onOpenSettings: { router.navigate(to: .settings) },
+                onOpenRequests: { router.navigate(to: .requestsHub) },
+                onSwitchProfile: {
+                    router.switchProfile()
+                },
+                onSwitchServer: { router.navigate(to: .serverList) },
+                onSignOut: { router.signOutAndReset() }
+            )
+        }
+        .padding(.horizontal, ContinuumTheme.padding)
+        .padding(.top, ContinuumTheme.smallPadding)
+        .padding(.bottom, ContinuumTheme.smallPadding)
+    }
+    #endif
+
+    #if os(tvOS)
+    /// For You uses the exact Skyline page shell as Home. Recommendation
+    /// sections supply only the content; the shared feed owns the backdrop,
+    /// marquee, rail geometry, focus hand-off, and vertical scrolling.
+    @ViewBuilder
+    private var tvOSPageContent: some View {
+        if !viewModel.sections.isEmpty {
+            TVSkylineSectionFeed(
+                sections: viewModel.sections,
+                focusRequest: focusRequest,
+                isTopMenuFocused: isTopMenuFocused,
+                onTopMenuFocusRequest: onTopMenuFocusRequest,
+                onItemTap: { destinationContentId, item in
+                    router.navigate(
+                        to: .itemDetail(
+                            destinationContentId: destinationContentId,
+                            sectionItem: item
+                        )
+                    )
+                }
+            )
+            .task(id: initialMarqueePrewarmKey) {
+                await prewarmInitialMarqueeDetails()
+            }
+        } else if let error = viewModel.error {
+            ErrorView(
+                state: error,
+                onRetry: { Task { await viewModel.loadRecommendations() } }
+            )
+        } else if viewModel.isLoading {
+            Color.clear
+        } else {
+            EmptyStateView(
+                icon: "sparkles.tv",
+                title: "No recommendations yet",
+                subtitle: "Watch or rate a few titles to build your personalised recommendations."
+            )
+        }
+    }
+
+    /// Two rows × eight visible cards, matching the For You viewport. Only
+    /// items missing their lightweight content-rating field need detail
+    /// prewarming, and requests run three at a time to avoid a server burst.
+    private var initialMarqueePrewarmKey: String {
+        initialMarqueeItems.map(\.contentId).joined(separator: "|")
+    }
+
+    private var initialMarqueeItems: [SectionItem] {
+        viewModel.sections.prefix(2).flatMap { section in
+            Array(section.items.prefix(8))
+        }
+    }
+
+    private func prewarmInitialMarqueeDetails() async {
+        let contentIds = initialMarqueeItems.compactMap { item -> String? in
+            let rating = item.contentRating?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard rating?.isEmpty != false else { return nil }
+            let key = CacheKey.itemDetail(item.contentId)
+            let cached: ItemDetail? = ResponseCache.shared.get(key)
+            return cached == nil ? item.contentId : nil
+        }
+
+        let maxConcurrent = 3
+        for batchStart in stride(from: 0, to: contentIds.count, by: maxConcurrent) {
+            guard !Task.isCancelled else { return }
+            let batchEnd = min(batchStart + maxConcurrent, contentIds.count)
+            let batch = Array(contentIds[batchStart..<batchEnd])
+            let details = await withTaskGroup(of: (String, ItemDetail?).self) { group in
+                for contentId in batch {
+                    group.addTask {
+                        let detail = try? await ContinuumAPI.shared.itemDetail(
+                            contentId: contentId
+                        )
+                        return (contentId, detail)
+                    }
+                }
+
+                var results: [(String, ItemDetail)] = []
+                for await (contentId, detail) in group {
+                    if let detail { results.append((contentId, detail)) }
+                }
+                return results
+            }
+
+            guard !Task.isCancelled else { return }
+            for (contentId, detail) in details {
+                ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
+            }
+        }
+    }
+    #endif
 
     /// The Watchlist/Favorites shortcut row renders in every state — the
     /// user's saved lists are reachable from here even when there are no
@@ -146,7 +255,14 @@ struct RecommendationsView: View {
                 ForEach(Array(viewModel.sections.enumerated()), id: \.element.id) { index, section in
                     SectionRow(
                         section: section,
-                        onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) },
+                        onItemTap: { destinationContentId, item in
+                            router.navigate(
+                                to: .itemDetail(
+                                    destinationContentId: destinationContentId,
+                                    sectionItem: item
+                                )
+                            )
+                        },
                         prefersDefaultFocusOnFirstItem: prefersDefaultFocus(forSectionAt: index),
                         onMoveUp: nil
                     )
@@ -157,6 +273,7 @@ struct RecommendationsView: View {
             #endif
             .padding(.bottom, ContinuumTheme.largePadding)
         }
+        .reportsPageChromeScroll()
     }
 
     /// Shown when the server has no recommendation sections: rather than an
@@ -182,17 +299,6 @@ struct RecommendationsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Load the currently-selected profile so we can render its avatar in
-    /// the top bar. Non-fatal on failure — we fall back to a generic icon.
-    private func loadCurrentProfile() async {
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-    }
 
     private var sectionSpacing: CGFloat {
         #if os(tvOS)

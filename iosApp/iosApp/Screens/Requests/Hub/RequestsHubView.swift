@@ -19,7 +19,7 @@ struct RequestsHubView: View {
             .padding(.top, ContinuumTheme.smallPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .continuumBackground()
+        .continuumPageBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, 40)
         #endif
@@ -55,7 +55,7 @@ struct RequestsHubView: View {
         } else if let error = viewModel.error {
             ErrorView(state: error, onRetry: { Task { await viewModel.load() } })
         } else if viewModel.isLoading {
-            LoadingView()
+            LoadingView(usesPageBackground: true)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 80)
         } else if viewModel.myRequests.isEmpty && viewModel.carousels.isEmpty {
@@ -83,7 +83,7 @@ struct RequestsHubView: View {
     @ViewBuilder
     private var searchResults: some View {
         if viewModel.isSearching && viewModel.searchResults.isEmpty {
-            LoadingView()
+            LoadingView(usesPageBackground: true)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 80)
         } else if viewModel.hasSearched && viewModel.searchResults.isEmpty {

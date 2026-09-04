@@ -9,6 +9,9 @@ extension Notification.Name {
 /// billboard previewing whichever card holds focus.
 struct HomeView: View {
     var homeFocusRequest: Int = 0
+    /// tvOS-only: a pushed detail page has popped and Home should restore the
+    /// exact card/row that launched it instead of leaving the focus graph empty.
+    var detailReturnFocusRequest: Int = 0
     /// tvOS-only: whether the custom top menu holds focus. Deferred entry
     /// claims are dropped while the user is up in the menu so late data
     /// loads never yank focus.
@@ -16,24 +19,25 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    #if os(tvOS)
+    @State private var homeSectionPreferences = HomeSectionPreferences.shared
+    #endif
     #if !os(tvOS)
-    @State private var currentProfile: UserProfile?
-    @State private var homeScrollOffset: CGFloat = 0
+    @State private var homeSectionPreferences = HomeSectionPreferences.shared
     @State private var isRefreshing = false
     @State private var refreshStartedAt: Date?
     @State private var refreshHideTask: Task<Void, Never>?
-    private let chromeFadeDistance: CGFloat = 72
+    /// Feeds the glass strip behind the floating header as rows scroll under it.
+    @State private var chromeScrollState = PageChromeScrollState()
     #if os(iOS)
-    @State private var isShowingControlPicker = false
-    @Environment(SiloControlClient.self) private var siloControl
-    /// Breathing room between the status-bar safe area and the floating header,
-    /// so the logo + action icons sit comfortably below the Dynamic Island
-    /// rather than crowding it (matching Plex's tight-but-relaxed top spacing).
-    private let headerTopInset: CGFloat = 4
-    /// Gap between the bottom of the floating header and the first content row.
-    /// A touch larger than the inter-section spacing so the header reads as a
-    /// distinct band above the rows.
-    private let headerToContentGap: CGFloat = ContinuumTheme.largePadding + ContinuumTheme.padding
+    /// Breathing room between the status-bar safe area and the floating
+    /// header. Uses the same value as the Libraries and For You top chrome so
+    /// the shared action cluster sits at one height on every root page.
+    private let headerTopInset: CGFloat = ContinuumTheme.smallPadding
+    /// The LazyVStack already contributes its normal section spacing after the
+    /// header runway. Adding a second large header gap pushed the first
+    /// visible row far down the screen whenever an earlier Home row was hidden.
+    private let headerToContentGap: CGFloat = 0
     #endif
     #endif
     @Environment(AppRouter.self) private var router
@@ -55,16 +59,27 @@ struct HomeView: View {
                 TVSkylineSectionFeed(
                     sections: displayedSections,
                     focusRequest: homeFocusRequest,
+                    detailReturnFocusRequest: detailReturnFocusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
-                    onItemTap: { navigateToDetail($0) },
+                    onItemTap: navigateToDetail,
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
+                // Preference edits replace the row band as one stable unit:
+                // the next visible row takes the vacated slot at the fixed
+                // first-row anchor, and no marquee from a hidden row lingers.
+                .id(homeSectionPreferences.layoutRevision)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
             } else if viewModel.isLoading {
                 Color.clear
+            } else if !viewModel.regularSections.isEmpty {
+                EmptyStateView(
+                    icon: "eye.slash",
+                    title: "Home sections are hidden",
+                    subtitle: "Choose which rows appear in Settings → General → Home Sections."
+                )
             } else {
                 EmptyStateView(
                     icon: "play.rectangle.on.rectangle",
@@ -75,6 +90,7 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
+            homeSectionPreferences.refresh()
             await viewModel.loadSections()
         }
         .onAppear {
@@ -85,12 +101,9 @@ struct HomeView: View {
             guard !viewModel.sections.isEmpty else { return }
             Task { await viewModel.loadSections() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.loadSections() }
-        }
         #else
         ZStack(alignment: .top) {
-            Color.continuumBackground
+            homeFeedBackground
                 .ignoresSafeArea()
 
             Group {
@@ -100,6 +113,12 @@ struct HomeView: View {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
                 } else if viewModel.isLoading {
                     Color.clear
+                } else if !viewModel.regularSections.isEmpty {
+                    EmptyStateView(
+                        icon: "eye.slash",
+                        title: "Home sections are hidden",
+                        subtitle: "Choose which rows appear in Settings → Interface → Home Sections."
+                    )
                 } else {
                     EmptyStateView(
                         icon: "play.rectangle.on.rectangle",
@@ -109,47 +128,41 @@ struct HomeView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(edges: .top)
 
-            HStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                #if !os(iOS)
                 SidebarToggleButton()
-
+                #endif
+                // The wordmark is pinned with the utilities so it stays put
+                // over the glass strip instead of scrolling away with the feed.
+                // It occupies the same 44pt row as the icon buttons so its
+                // centre lines up with theirs.
                 SiloWordmarkView(width: 72)
-
+                    .frame(height: ContinuumTheme.topBarIconHitSize)
                 Spacer(minLength: 8)
 
-                // Trailing action cluster: cast / search / profile, evenly
-                // spaced as one group so the gaps between glyphs are uniform
-                // (matching Plex's top-right icon row).
-                HStack(spacing: ContinuumTheme.topBarIconSpacing) {
-                    #if os(iOS)
-                    SiloControlModeButton(controller: siloControl) {
-                        isShowingControlPicker = true
-                    }
-                    #endif
-
-                    TabTopBarActions(
-                        profile: currentProfile,
-                        onSearch: { router.navigate(to: .search) },
-                        onOpenSettings: { router.navigate(to: .settings) },
-                        onOpenRequests: { router.navigate(to: .requestsHub) },
-                        onSwitchProfile: {
-                            router.switchProfile()
-                        },
-                        onSwitchServer: { router.navigate(to: .serverList) },
-                        onSignOut: { router.signOutAndReset() }
-                    )
-                }
+                // Trailing action cluster shared by every root page.
+                TabTopBarActions(
+                    onSearch: { router.navigate(to: .search) },
+                    onOpenSettings: { router.navigate(to: .settings) },
+                    onOpenRequests: { router.navigate(to: .requestsHub) },
+                    onSwitchProfile: {
+                        router.switchProfile()
+                    },
+                    onSwitchServer: { router.navigate(to: .serverList) },
+                    onSignOut: { router.signOutAndReset() }
+                )
             }
             .padding(.horizontal, ContinuumTheme.padding)
             #if os(iOS)
             .padding(.top, headerTopInset)
             #endif
             .padding(.bottom, ContinuumTheme.smallPadding)
+            // Same scroll-driven glass as the Detail page chrome so the
+            // utilities stay legible over bright artwork once rows scroll
+            // underneath.
             .background {
-                homeHeaderChrome
-                    .opacity(headerChromeOpacity)
-                    .ignoresSafeArea(edges: .top)
+                PageChromeGlass(scrollState: chromeScrollState)
             }
 
             if isRefreshing {
@@ -173,19 +186,19 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         #endif
         .task {
+            homeSectionPreferences.refresh()
             await viewModel.loadSections()
-            await loadCurrentProfile()
         }
         .refreshable {
             await refreshHome()
         }
-        #if os(iOS)
-        .sheet(isPresented: $isShowingControlPicker) {
-            SiloControlTargetPickerView(request: nil, controller: siloControl)
-        }
-        #endif
         #endif
         }
+        #if os(iOS) || os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.loadSections() }
+        }
+        #endif
         .alert(
             "Couldn’t Update Item",
             isPresented: $viewModel.isShowingActionError
@@ -203,10 +216,10 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                    // No hero — reserve runway for the floating Home header so
-                    // the first row doesn't slide under the status-bar chrome.
+                    // Clear runway under the pinned header so the first row
+                    // starts below the wordmark and utilities.
                     Color.clear
-                        .frame(height: topRunwaySpacing(topSafeAreaInset: geometry.safeAreaInsets.top))
+                        .frame(height: topRunwaySpacing(topSafeAreaInset: runwaySafeAreaInset(geometry)))
                         .id(HomeFocusTarget.topSpacer)
 
                     ForEach(displayedSections) { section in
@@ -220,14 +233,10 @@ struct HomeView: View {
                 }
                 .padding(.bottom, HomeFeedMetrics.bottomRunway)
             }
+            .reportsPageChromeScroll(to: chromeScrollState)
+            #if os(macOS)
             .continuumScrollEdgeEffect()
-        }
-        // Keep the overlay chrome transparent at rest, then fade in a subtle
-        // glass surface once content has moved underneath it.
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { _, newValue in
-            homeScrollOffset = max(0, newValue)
+            #endif
         }
     }
     #endif
@@ -240,27 +249,22 @@ struct HomeView: View {
     /// Rows for the vertical list, in server Home order after filtering empty
     /// and featured sections. Recommendations stay in the For You tab.
     private var displayedSections: [ResolvedSection] {
+        #if os(tvOS) || os(iOS)
+        // Filter before the Skyline feed performs layout. A hidden section
+        // therefore leaves no placeholder: the next visible section inherits
+        // the same fixed row slot and vertical anchor.
+        return homeSectionPreferences.arrangedSections(viewModel.regularSections)
+        #else
         return viewModel.regularSections
+        #endif
     }
 
     #if !os(tvOS)
-    private var headerChromeOpacity: Double {
-        let progress = min(max(homeScrollOffset / chromeFadeDistance, 0), 1)
-        return Double(progress)
+    /// Home uses the same fixed canvas as the rest of the signed-in app.
+    private var homeFeedBackground: some View {
+        ContinuumPageBackdrop()
     }
 
-    @ViewBuilder
-    private var homeHeaderChrome: some View {
-        let borderOpacity = 0.06 + (0.04 * headerChromeOpacity)
-
-        Color.clear
-            .siloGlass(in: .rect, tint: Color.black.opacity(0.08))
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(Color.white.opacity(borderOpacity))
-                    .frame(height: 0.75)
-            }
-    }
 
     private func refreshHome() async {
         await MainActor.run {
@@ -299,23 +303,17 @@ struct HomeView: View {
         }
     }
 
-    /// Load the currently-selected profile so we can render its avatar in
-    /// the top bar. Non-fatal on failure — we fall back to a generic icon.
-    private func loadCurrentProfile() async {
-        guard let profileId = AuthService.shared.profileId else { return }
-        do {
-            let profiles = try await AuthService.shared.getProfiles()
-            currentProfile = profiles.first(where: { $0.id == profileId })
-        } catch {
-            // Leave currentProfile nil; the top bar renders a fallback.
-        }
-    }
     #endif
 
     // MARK: - Navigation
 
-    private func navigateToDetail(_ contentId: String) {
-        router.navigate(to: .itemDetail(contentId: contentId))
+    private func navigateToDetail(_ destinationContentId: String, _ item: SectionItem) {
+        router.navigate(
+            to: .itemDetail(
+                destinationContentId: destinationContentId,
+                sectionItem: item
+            )
+        )
     }
 
     private func dismissContinueWatching(_ item: SectionItem) {
@@ -333,10 +331,20 @@ struct HomeView: View {
         ContinuumTheme.largePadding
     }
 
+    /// On iOS the ScrollView already starts inside the safe area, so the
+    /// runway must not count the status-bar inset a second time.
+    private func runwaySafeAreaInset(_ geometry: GeometryProxy) -> CGFloat {
+        #if os(iOS)
+        return 0
+        #else
+        return geometry.safeAreaInsets.top
+        #endif
+    }
+
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
         // Mirror the floating header's vertical footprint (icon-frame height +
-        // bottom padding) so the first row always clears it, then add the
-        // top inset and the Plex-style gap beneath the header.
+        // bottom padding) so the first row clears it. LazyVStack supplies the
+        // remaining row gap; don't double-count it here.
         var runway = topSafeAreaInset + ContinuumTheme.topBarIconHitSize + ContinuumTheme.smallPadding
         #if os(iOS)
         runway += headerTopInset + headerToContentGap

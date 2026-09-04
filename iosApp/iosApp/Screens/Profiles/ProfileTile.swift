@@ -159,7 +159,10 @@ struct ProfileTile: View {
     @ViewBuilder
     private var avatarContent: some View {
         let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if ProfileAvatarResolver.isImage(avatar) {
+        if let serverURL = ProfileAvatarResolver.serverResolvedImageURL(profile.avatarImageUrl) {
+            AsyncImageView(url: serverURL, contentMode: .fill)
+                .frame(width: tileSize, height: tileSize)
+        } else if ProfileAvatarResolver.isImage(avatar) {
             // Image avatars (DiceBear preset or URL) clip to the full tile
             // bounds for a cinematic poster effect.
             if let url = ProfileAvatarResolver.imageURL(for: avatar) {
@@ -280,6 +283,40 @@ struct AddProfileTile: View {
 /// avatars in a tile shape rather than a circle. Kept as a small local
 /// utility rather than adjusting the shared view's API surface.
 enum ProfileAvatarResolver {
+    /// Resolve the server-supplied `avatar_url`. Absolute URLs (presigned
+    /// upload URLs, DiceBear) are used verbatim; a server-relative path is
+    /// prefixed with the active server URL. Returns nil when absent or when
+    /// no active server is known for a relative path.
+    static func serverResolvedImageURL(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        let lowercased = trimmed.lowercased()
+
+        // The Nuke pipeline registers no SVG decoder. Legacy presets use an
+        // `.svg` extension, while DiceBear uses an `/svg` format path.
+        // Decline both and let the caller's raw-ref fallback build a PNG URL.
+        // Uploaded avatars are WebP and continue through this path.
+        let pathOnly = lowercased.split(separator: "?", maxSplits: 1)[0]
+        if pathOnly.hasSuffix(".svg") || pathOnly.hasSuffix("/svg") { return nil }
+
+        if lowercased.hasPrefix("http://")
+            || lowercased.hasPrefix("https://")
+            || lowercased.hasPrefix("data:image/")
+            || lowercased.hasPrefix("file://") {
+            return trimmed
+        }
+
+        guard trimmed.hasPrefix("/") else { return nil }
+        let serverURL = ServerRegistry.shared.activeServerUrl
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !serverURL.isEmpty else { return nil }
+        return serverURL + trimmed
+    }
+
     static func isImage(_ value: String) -> Bool {
         let lowercased = value.lowercased()
         return lowercased.hasPrefix("preset:dicebear:")
@@ -331,6 +368,6 @@ enum ProfileAvatarResolver {
         guard !style.isEmpty, !seed.isEmpty else { return nil }
         let s = style.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? style
         let d = seed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? seed
-        return "https://api.dicebear.com/9.x/\(s)/png?seed=\(d)&size=512"
+        return "https://api.dicebear.com/9.x/\(s)/png?seed=\(d)&size=256"
     }
 }

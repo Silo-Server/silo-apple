@@ -34,7 +34,7 @@ struct CollectionsView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle("Collections")
         .continuumNavigationTitleDisplayMode(.large)
         .toolbar {
@@ -211,7 +211,7 @@ struct CollectionsView: View {
                 Spacer()
             }
             .padding(ContinuumTheme.padding)
-            .continuumBackground()
+            .continuumPageBackground()
             .navigationTitle("New Collection")
             .continuumNavigationTitleDisplayMode(.inline)
             .toolbar {
@@ -240,7 +240,7 @@ private struct GroupActionSheet: View {
     var body: some View {
         NavigationStack {
             content
-                .continuumBackground()
+                .continuumPageBackground()
                 .continuumNavigationTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -438,10 +438,17 @@ struct LibraryCollectionsView: View {
 
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var gridWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var hSize
 
     private var columns: [GridItem] {
-        AdaptiveColumns.posters(
+        if usesThreeColumnPhoneLayout {
+            return Array(
+                repeating: GridItem(.flexible(), spacing: 12),
+                count: 3
+            )
+        }
+        return AdaptiveColumns.posters(
             for: hSize,
             posterSize: uiCustomization.cardPresentation.posterSize
         )
@@ -459,6 +466,7 @@ struct LibraryCollectionsView: View {
                     .padding(ContinuumTheme.padding)
                     .padding(.bottom, ContinuumTheme.largePadding)
                 }
+                .reportsPageChromeScroll()
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
             } else if viewModel.isLoading {
@@ -471,7 +479,7 @@ struct LibraryCollectionsView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .task(id: libraryId) {
             await viewModel.loadCollections(libraryId: libraryId)
         }
@@ -498,7 +506,10 @@ struct LibraryCollectionsView: View {
                             kind: collection.kind
                         )
                     ) {
-                        LibraryCollectionCard(collection: collection)
+                        LibraryCollectionCard(
+                            collection: collection,
+                            cardWidthOverride: libraryCollectionCardWidthOverride
+                        )
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
@@ -506,16 +517,43 @@ struct LibraryCollectionsView: View {
                     .accessibilityLabel(libraryCollectionAccessibilityLabel(collection))
                 }
             }
+            #if os(iOS)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                guard abs(width - gridWidth) >= 0.5 else { return }
+                gridWidth = width
+            }
+            #endif
         }
+    }
+
+    private var usesThreeColumnPhoneLayout: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
+
+    private var libraryCollectionCardWidthOverride: CGFloat? {
+        guard usesThreeColumnPhoneLayout else { return nil }
+        return AdaptiveColumns.fittedPosterWidth(
+            containerWidth: gridWidth,
+            columnCount: 3,
+            spacing: 12
+        )
     }
 }
 
 private struct LibraryCollectionCard: View {
     let collection: LibraryCollection
+    let cardWidthOverride: CGFloat?
     @State private var uiCustomization = UICustomizationPreferences.shared
 
     private var cardWidth: CGFloat {
-        ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        cardWidthOverride
+            ?? (ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale)
     }
     private var cardHeight: CGFloat {
         cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
@@ -626,7 +664,7 @@ struct LibraryCollectionDetailView: View {
                 )
             }
         }
-        .continuumBackground()
+        .continuumPageBackground()
         .navigationTitle(title ?? "Collection")
         .continuumNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)") {
@@ -648,8 +686,9 @@ struct LibraryCollectionDetailView: View {
                     items: items,
                     isLoading: isLoading,
                     hasMore: hasMore,
-                    onItemTap: { contentId in
-                        router.navigate(to: .itemDetail(contentId: contentId))
+                    forcesThreeColumnsOnPhone: true,
+                    onItemTap: { item in
+                        router.navigate(to: .itemDetail(browseItem: item))
                     },
                     onLoadMore: {
                         Task { await loadMoreIfNeeded() }

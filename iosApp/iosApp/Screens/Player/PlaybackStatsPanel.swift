@@ -22,7 +22,7 @@ struct PlaybackStatsPanel: View {
     static let mediaSectionID = "stats-media"
     static let bufferSectionID = "stats-buffer"
     static let networkSectionID = "stats-network"
-    static let deviceSectionID = "stats-device"
+    static let engineSectionID = "stats-engine"
 
     var body: some View {
         Group {
@@ -76,7 +76,7 @@ struct PlaybackStatsPanel: View {
         [
             .init(id: Self.bufferSectionID, title: "Buffer", rows: stats.bufferRows),
             .init(id: Self.networkSectionID, title: "Network", rows: stats.networkRows),
-            .init(id: Self.deviceSectionID, title: "Device", rows: stats.deviceRows)
+            .init(id: Self.engineSectionID, title: "Engine", rows: stats.engineRows)
         ]
     }
 

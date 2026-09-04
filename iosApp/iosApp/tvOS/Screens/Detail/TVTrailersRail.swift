@@ -25,14 +25,21 @@ import UIKit
 struct TVTrailersRail: View {
     let entries: [TrailerRailEntry]
     let onSelect: (TrailerRailEntry) -> Void
+    /// Series uses a ring-only focus treatment so lateral movement cannot
+    /// make the parent vertical viewport chase a newly scaled card. Movie
+    /// pages retain the existing 1.05 lift through this default.
+    var focusScale: CGFloat = 1.05
+    /// Non-zero changes explicitly hand focus into the first trailer when a
+    /// Series has no cast rail above it.
+    var focusRequest = 0
 
     @FocusState private var focusedEntryId: String?
 
-    private let cardSpacing: CGFloat = 36
-    private let railVerticalPadding: CGFloat = 32
+    private let cardSpacing: CGFloat = 48
+    private let railVerticalPadding: CGFloat = 12
     /// Header-to-content gap, matching the other detail sections'
     /// `VStack(spacing: 28)` so the page rhythm stays uniform.
-    private let headerSpacing: CGFloat = 28
+    private let headerSpacing: CGFloat = TVDetailLayout.sectionHeaderSpacing
 
     var body: some View {
         if !entries.isEmpty {
@@ -49,7 +56,11 @@ struct TVTrailersRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: cardSpacing) {
                 ForEach(entries) { entry in
-                    TVTrailerCard(entry: entry, onSelect: { onSelect(entry) })
+                    TVTrailerCard(
+                        entry: entry,
+                        focusScale: focusScale,
+                        onSelect: { onSelect(entry) }
+                    )
                         .focused($focusedEntryId, equals: entry.id)
                 }
             }
@@ -60,6 +71,10 @@ struct TVTrailersRail: View {
         // episode rails, instead of the geometrically-nearest one.
         .applyTrailerRailDefaultFocus(entries.first?.id, binding: $focusedEntryId)
         .scrollClipDisabled()
+        .onChange(of: focusRequest) { _, request in
+            guard request > 0, let firstId = entries.first?.id else { return }
+            focusedEntryId = firstId
+        }
     }
 }
 
@@ -85,11 +100,12 @@ private extension View {
 
 private struct TVTrailerCard: View {
     let entry: TrailerRailEntry
+    let focusScale: CGFloat
     let onSelect: () -> Void
 
-    private let cardWidth: CGFloat = 460
-    private let thumbHeight: CGFloat = 260
-    private let thumbCornerRadius: CGFloat = 10
+    private let cardWidth: CGFloat = 470
+    private let thumbHeight: CGFloat = 264
+    private let thumbCornerRadius: CGFloat = 18
 
     var body: some View {
         Button(action: onSelect) {
@@ -100,7 +116,7 @@ private struct TVTrailerCard: View {
                 thumbCornerRadius: thumbCornerRadius
             )
         }
-        .buttonStyle(TrailerCardStyle())
+        .buttonStyle(TVCardFocusButtonStyle(scale: focusScale))
     }
 }
 
@@ -113,28 +129,18 @@ private struct TrailerCardLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .center, spacing: 14) {
             thumbnail
-            VStack(alignment: .leading, spacing: 6) {
-                Text(kindLabel.uppercased())
-                    .font(.system(size: 18, weight: .bold))
-                    .tracking(2.0)
-                    .foregroundColor(.continuumOnSurface.opacity(0.55))
-
-                if entry.title != kindLabel {
-                    Text(entry.title)
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundColor(titleColor)
-                        // Two lines for long provider names ("Official Trailer
-                        // — Subtitled"), but without reserving the second
-                        // line: most titles are one line and the reserved row
-                        // read as dead space in the episode rail.
-                        .lineLimit(2)
-                }
+            VStack(alignment: .center, spacing: 5) {
+                Text(entry.title)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundColor(titleColor)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.center)
 
                 if let secondaryLine {
                     Text(secondaryLine)
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.system(size: 17, weight: .medium))
                         .foregroundColor(.continuumSecondaryText)
                         .lineLimit(1)
                 }
@@ -178,10 +184,7 @@ private struct TrailerCardLabel: View {
         }
         .frame(width: cardWidth, height: thumbHeight)
         .clipShape(RoundedRectangle(cornerRadius: thumbCornerRadius))
-        .overlay(
-            RoundedRectangle(cornerRadius: thumbCornerRadius)
-                .stroke(Color.white.opacity(isFocused ? 0.9 : 0), lineWidth: isFocused ? 3 : 0)
-        )
+        .tvFocusRing(isFocused: isFocused, cornerRadius: thumbCornerRadius)
     }
 
     /// YouTube stills exist for every remote video; local extras have no
@@ -211,45 +214,12 @@ private struct TrailerCardLabel: View {
         ZStack {
             Circle()
                 .fill(Color.black.opacity(isFocused ? 0.72 : 0.55))
-                .frame(width: 72, height: 72)
+                .frame(width: 60, height: 60)
             Image(systemName: "play.fill")
-                .font(.system(size: 28, weight: .bold))
+                .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.white)
         }
         .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
-    }
-}
-
-/// Custom style so the system doesn't paint its default focus halo over
-/// the card. Scale + drop shadow only; the white ring on the thumbnail
-/// (driven by `isFocused` in the label) is the focus cue — matching
-/// `TVEpisodeCard`.
-private struct TrailerCardStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        TrailerCardStyleBody(configuration: configuration)
-    }
-}
-
-private struct TrailerCardStyleBody: View {
-    let configuration: ButtonStyleConfiguration
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.45 : 0.3),
-                radius: isFocused ? 18 : 8,
-                y: isFocused ? 8 : 4
-            )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused ? 1.04 : 1.0
-        return configuration.isPressed ? base * 0.97 : base
     }
 }
 
@@ -330,12 +300,23 @@ struct TVTrailerStatusPill: View {
 /// `TVFocusDebugOverlay`'s `UIApplication` accessors; every call site is a
 /// view-body / `onAppear` closure on the main thread.
 enum TVTrailerLaunch {
+    /// Keep remote trailer rails visible in the simulator so the complete
+    /// movie and series detail hierarchy can be exercised and captured.
+    /// Playback still follows the same external YouTube deep-link path and
+    /// therefore remains a real-device capability.
+    static func canDisplayRemoteCards() -> Bool {
+#if targetEnvironment(simulator)
+        true
+#else
+        isYouTubeAppInstalled()
+#endif
+    }
+
     /// Whether remote cards may be shown at all.
     ///
     /// `canOpenURL` needs `youtube` listed in the tvOS Info.plist's
     /// `LSApplicationQueriesSchemes` or it returns false regardless of what
-    /// is installed. It is also always false on the simulator, which has no
-    /// YouTube app — the rail then correctly degrades to local extras only.
+    /// is installed.
     static func isYouTubeAppInstalled() -> Bool {
         guard let probe = URL(string: "youtube://") else { return false }
         return UIApplication.shared.canOpenURL(probe)

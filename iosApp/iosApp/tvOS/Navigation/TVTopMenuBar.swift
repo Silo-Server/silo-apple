@@ -139,6 +139,11 @@ struct TVTopMenuBar: View {
     @Binding var isMenuFocused: Bool
     let isFocusSuppressed: Bool
     let focusRequest: Int
+    /// Bumped when the shell has determined the bar's `@FocusState` is stale —
+    /// the engine dropped focus without the bar observing it, so no suppression
+    /// transition will clear it. Drops the bar's focus state without asking for
+    /// focus back.
+    var focusResetRequest: Int = 0
     /// Bar element to focus on the next `focusRequest` bump, overriding the
     /// default of the selected tab. The shell sets this so Menu-ing out of a
     /// panel returns focus to the *panel's* tab/avatar (§7), not whatever
@@ -171,6 +176,11 @@ struct TVTopMenuBar: View {
     /// host opens its panel if needed and hands focus in (§5.3). Takes the
     /// element so the host routes to the right panel.
     let onEnterPanel: (TVTopMenuPanel) -> Void
+    /// D-pad down on a bar element with no panel (Home, Calendar, Search):
+    /// the host hands focus to the page's first (left-most) item instead of
+    /// letting the engine pick whichever card sits geometrically under the
+    /// centered tab.
+    let onEnterContent: () -> Void
     /// Press on the profile avatar opens the profile panel and enters it
     /// immediately; dwell only previews it.
     let onProfilePressed: () -> Void
@@ -248,6 +258,15 @@ struct TVTopMenuBar: View {
                 dwellSuppressedElement = nil
             }
         }
+        .onChange(of: focusResetRequest) { _, _ in
+            // Clear the re-pin flags first: the bar has no focus to defend
+            // here, and letting the nil write below take the re-pin branch
+            // would have the bar grab focus the shell is handing elsewhere.
+            refocusAfterClose = false
+            dwellSuppressedElement = nil
+            dwellTask?.cancel()
+            focusedItem = nil
+        }
         .onChange(of: focusRequest) { _, _ in
             let target = focusRequestTarget.map { String(describing: $0) } ?? "nil"
             Self.logger.debug("topMenu.focusRequest request=\(focusRequest, privacy: .public) suppressed=\(isFocusSuppressed, privacy: .public) target=\(target, privacy: .public)")
@@ -300,6 +319,18 @@ struct TVTopMenuBar: View {
             // one main-queue turn leaves a visible frame where tvOS repairs
             // focus back to Home. A legit leave (down into the page, Menu out)
             // has neither flag, so it falls through and focus is allowed to go.
+            // A suppressed bar must never take focus back. The shell suppresses
+            // before handing focus down, and the watchdog's reset arrives while
+            // suppression is already true with a passive preview still open —
+            // exactly the `spuriousFromOpenPreview` shape — so an ungated re-pin
+            // would undo the repair and re-strand the remote. Drop the re-pin
+            // flag with it so it can't fire on a later legitimate nil write.
+            if isFocusSuppressed {
+                isMenuFocused = false
+                refocusAfterClose = false
+                dwellTask?.cancel()
+                return
+            }
             let spuriousFromOpenPreview = openPanel != nil && !panelHasFocus
             if (spuriousFromOpenPreview || refocusAfterClose), let target = lastBarFocus {
                 refocusAfterClose = false
@@ -317,12 +348,11 @@ struct TVTopMenuBar: View {
 
     // MARK: - Clusters
 
+    /// Brand logo (mark + wordmark asset), sized to the bar row so it sits
+    /// on the same centre line as the tab capsules and trailing icons.
     private var wordmark: some View {
-        Text("SILO")
-            .font(.system(size: ContinuumTheme.Skyline.wordmarkSize, weight: .heavy))
-            .tracking(ContinuumTheme.Skyline.wordmarkTracking)
-            .foregroundStyle(.white)
-            .accessibilityLabel("Silo")
+        SiloWordmarkView(width: ContinuumTheme.Skyline.wordmarkWidth)
+            .frame(height: ContinuumTheme.Skyline.barHeight)
             .accessibilityHidden(true)
     }
 
@@ -428,15 +458,20 @@ struct TVTopMenuBar: View {
         })
         // Down opens this tab's cascade panel (if a dwell hasn't already)
         // and hands focus straight into it, so the move never escapes to the
-        // page content behind the bar. Fires only when the engine can't move
-        // focus within the bar — i.e. the bar is a single row, so down
-        // always reaches here.
-        // `canOpenPanel` is keyed on the tab *kind* (library and For You tabs
-        // can; Home/Calendar never can) — invariant, so opening a panel never
-        // restructures this focused button (which dropped focus).
-        .modifier(TVTopMenuDownHandler(canOpenPanel: rootPanel(root) != nil) {
-            onEnterPanel(.root(root))
-        })
+        // page content behind the bar. Tabs without a panel (Home, Calendar)
+        // hand focus to the page's first item instead, so down always lands
+        // on the left-most card rather than whichever card the engine finds
+        // geometrically under the centered tab. Fires only when the engine
+        // can't move focus within the bar — i.e. the bar is a single row, so
+        // down always reaches here.
+        // The handler is attached unconditionally and `canOpenPanel` is keyed
+        // on the tab *kind* — invariant, so opening a panel never restructures
+        // this focused button (which dropped focus).
+        .modifier(TVTopMenuDownHandler(
+            canOpenPanel: rootPanel(root) != nil,
+            onDown: { onEnterPanel(.root(root)) },
+            onDownToContent: onEnterContent
+        ))
         // Panel-bearing tabs publish their bounds so the shell can center the
         // anchored dropdown under them (§5.3); other tabs have no panel.
         .modifier(TVTopMenuAnchorPublisher(panel: rootPanel(root)))
@@ -492,7 +527,7 @@ struct TVTopMenuBar: View {
         }
     }
 
-    private func requestMenuFocus() {
+    private func requestMenuFocus(attempt: Int = 0) {
         guard !isFocusSuppressed else {
             Self.logger.debug("topMenu.requestMenuFocus blocked suppressed=true")
             return
@@ -514,6 +549,18 @@ struct TVTopMenuBar: View {
         }
         let item = focusedItem.map { String(describing: $0) } ?? "nil"
         Self.logger.debug("topMenu.requestMenuFocus focusedItem=\(item, privacy: .public)")
+
+        // A quick Siri Remote swipe can make the focus engine finish its row
+        // repair after this write. Re-assert only if the bar still owns the
+        // handoff and the claim was actually dropped; once focus lands—or the
+        // user moves away—the retry cancels itself and never fights navigation.
+        guard attempt < 2 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard !isFocusSuppressed,
+                  isMenuFocused,
+                  focusedItem == nil else { return }
+            requestMenuFocus(attempt: attempt + 1)
+        }
     }
 
     // MARK: - Search
@@ -535,9 +582,17 @@ struct TVTopMenuBar: View {
         .focused($focusedItem, equals: .search)
         // The inverse boundary keeps Search usable in the scrolling fallback;
         // in the centered layout the native focus graph resolves this first.
+        // Down hands focus to the page's first item, matching the tabs.
         .onMoveCommand { direction in
-            guard direction == .right, let firstRoot = roots.first else { return }
-            focusedItem = .root(firstRoot)
+            switch direction {
+            case .right:
+                guard let firstRoot = roots.first else { return }
+                focusedItem = .root(firstRoot)
+            case .down:
+                onEnterContent()
+            default:
+                break
+            }
         }
         .accessibilityLabel("Search")
     }
@@ -557,6 +612,7 @@ struct TVTopMenuBar: View {
         } label: {
             ProfileAvatarView(
                 avatar: currentProfile?.avatarEmoji,
+                imageUrl: currentProfile?.avatarImageUrl,
                 name: currentProfile?.name ?? "",
                 size: ContinuumTheme.Skyline.barIconSize,
                 backgroundColor: Color.white.opacity(0.18),
@@ -573,9 +629,11 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.continuumFlat)
         .focused($focusedItem, equals: .profile)
-        .modifier(TVTopMenuDownHandler(canOpenPanel: true) {
-            onEnterPanel(.profile)
-        })
+        .modifier(TVTopMenuDownHandler(
+            canOpenPanel: true,
+            onDown: { onEnterPanel(.profile) },
+            onDownToContent: onEnterContent
+        ))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
         .accessibilityLabel("Profile")
         .accessibilityHint("Rest or press to open the profile menu")
@@ -783,18 +841,23 @@ struct TVSkylinePanelChrome: ViewModifier {
 /// open. Toggling the attachment on a *focused* button rebuilds its subtree
 /// and drops `@FocusState`, which bounced focus back to the Home tab; keeping
 /// it invariant fixes that. The live open/enter decision is in the closure.
+///
+/// Elements without a panel route Down to `onDownToContent`, so the shell
+/// hands focus to the page's first item instead of the engine landing on
+/// whichever card is geometrically nearest the centered tab.
 private struct TVTopMenuDownHandler: ViewModifier {
     let canOpenPanel: Bool
     let onDown: () -> Void
+    let onDownToContent: () -> Void
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if canOpenPanel {
-            content.onMoveCommand { direction in
-                if direction == .down { onDown() }
+        content.onMoveCommand { direction in
+            guard direction == .down else { return }
+            if canOpenPanel {
+                onDown()
+            } else {
+                onDownToContent()
             }
-        } else {
-            content
         }
     }
 }
@@ -1088,6 +1151,9 @@ private enum TVProfileAction: Hashable {
 struct TVProfileDropdown: View {
     let profileName: String
     let avatar: String?
+    /// Server-resolved avatar image URL (`avatar_url`), preferred over the
+    /// raw `avatar` ref when present.
+    var avatarImageUrl: String? = nil
     /// Display name of the active server, shown under the profile name in
     /// the §5.8 mono header style.
     let serverHost: String?
@@ -1185,6 +1251,7 @@ struct TVProfileDropdown: View {
         HStack(spacing: 14) {
             ProfileAvatarView(
                 avatar: avatar,
+                imageUrl: avatarImageUrl,
                 name: profileName,
                 size: 44,
                 backgroundColor: Color.white.opacity(0.16),

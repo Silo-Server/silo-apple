@@ -8,7 +8,7 @@ import SwiftUI
 /// - Bottom stack: time row (elapsed / status chips / remaining), capsule
 ///   scrubber with buffered range + intro tint + chapter ticks + scrub
 ///   preview bubble, then a labeled action row (Quality menu, Audio &
-///   Subtitles menu, Chapters menu, orientation Lock, More → settings sheet)
+///   Subtitles sheet, Chapters menu, More → settings sheet)
 ///
 /// The whole thing is wrapped in a tap-to-toggle gesture; auto-hide after 3 s
 /// of inactivity. The view is stateful only for sheet presentation and the
@@ -17,7 +17,6 @@ import SwiftUI
 /// swipes) live in `MobilePlayerGestureLayer` underneath this overlay.
 struct MobilePlayerControls: View {
     let viewModel: PlayerViewModel
-    let orientationCoordinator: PlayerOrientationCoordinator
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
@@ -53,7 +52,7 @@ struct MobilePlayerControls: View {
                             .onTapGesture { viewModel.toggleControls() }
 
                         VStack(spacing: 0) {
-                            topStrip
+                            topStrip(compact: proxy.size.width < proxy.size.height)
                                 .opacity(recedingOpacity)
                             Spacer()
                             centerCluster
@@ -76,6 +75,9 @@ struct MobilePlayerControls: View {
             if viewModel.showIntroSkip {
                 introSkipPill
             }
+            if viewModel.showCreditsSkip {
+                creditsSkipPill
+            }
             if showsStats {
                 MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
                     .transition(.opacity)
@@ -84,6 +86,10 @@ struct MobilePlayerControls: View {
         .animation(.easeOut(duration: 0.18), value: showsStats)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
+            case .tracks:
+                TrackSelectionSheet(viewModel: viewModel) { activeSheet = nil }
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             case .aiSubtitles:
                 SubtitleTranslateMenu(
                     viewModel: viewModel,
@@ -138,47 +144,74 @@ struct MobilePlayerControls: View {
 
     // MARK: - Top strip
 
-    private var topStrip: some View {
-        HStack(alignment: .center, spacing: 12) {
-            controlButton(systemName: "xmark", action: onDismiss)
-                .accessibilityLabel("Close Player")
-
-            titleBlock
-
-            Spacer(minLength: 12)
-
-            if viewModel.avPlayerBackend != nil {
-                if pictureInPicture.isSupported {
-                    controlButton(
-                        systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
-                    ) {
-                        pictureInPicture.toggle()
-                    }
-                    .disabled(!pictureInPicture.isPossible)
-                    .accessibilityLabel(
-                        pictureInPicture.isActive
-                            ? "Stop Picture in Picture"
-                            : "Start Picture in Picture"
-                    )
-                }
-
-                // Only shown where the receiver could actually fetch the
-                // media. On routes whose URL is authenticated by a request
-                // header, AirPlay video would leave the TV on a 401.
-                if viewModel.supportsExternalPlayback {
-                    AirPlayRoutePicker { isPresentingRoutes in
-                        // The route sheet is a UIKit presentation the auto-hide
-                        // timer knows nothing about; pin the controls so it can't
-                        // dismantle the picker mid-selection.
-                        if isPresentingRoutes {
-                            viewModel.pinControlsVisible()
-                        } else {
-                            viewModel.resumeAutoHide()
-                        }
-                    }
-                    .frame(width: 44, height: 44)
+    private func topStrip(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                closeButton
+                if !compact { titleBlock }
+                Spacer(minLength: 0)
+                if !compact { externalPlaybackControls }
+                // The rotation pill is a sibling overlay that fades with
+                // these controls. Reserve its exact width to avoid overlap.
+                Color.clear
+                    .frame(width: MobilePlayerRotationControls.width,
+                           height: MobilePlayerRotationControls.height)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            if compact {
+                HStack(spacing: 12) {
+                    titleBlock
+                    Spacer(minLength: 12)
+                    externalPlaybackControls
                 }
             }
+        }
+    }
+
+    private var closeButton: some View {
+        Button(action: onDismiss) {
+            Image(systemName: "xmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+        }
+        .buttonStyle(MobilePlayerGlassButtonStyle())
+        .accessibilityLabel("Close Player")
+        .accessibilityIdentifier("player.close")
+    }
+
+    @ViewBuilder
+    private var externalPlaybackControls: some View {
+        if pictureInPicture.isSupported, pictureInPicture.hasSource {
+            controlButton(
+                systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
+            ) {
+                pictureInPicture.toggle()
+            }
+            // AVKit can report `possible == false` during the final active
+            // transition; the user must still be able to stop PiP.
+            .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
+            .accessibilityLabel(
+                pictureInPicture.isActive
+                    ? "Stop Picture in Picture"
+                    : "Start Picture in Picture"
+            )
+        }
+
+        if viewModel.supportsExternalPlayback {
+            AirPlayRoutePicker { isPresentingRoutes in
+                // The route sheet is a UIKit presentation the auto-hide
+                // timer knows nothing about; pin the controls so it can't
+                // dismantle the picker mid-selection.
+                if isPresentingRoutes {
+                    viewModel.pinControlsVisible()
+                } else {
+                    viewModel.resumeAutoHide()
+                }
+            }
+            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .siloPlayerGlass(in: Circle(), interactive: true)
         }
     }
 
@@ -227,10 +260,8 @@ struct MobilePlayerControls: View {
 
     // MARK: - Center
 
-    /// Fixed circle sizes keep the three buttons proportioned as a family
-    /// (content-driven glass sizing made the play disc balloon relative to
-    /// the skips). The play/pause disc is white prominent glass with a dark
-    /// glyph rather than accent-tinted.
+    /// Every circle matches the detail page's 44pt close/remote controls.
+    /// Play/pause keeps its white tint without becoming a larger disc.
     private var centerCluster: some View {
         HStack(spacing: 36) {
             Button {
@@ -239,36 +270,24 @@ struct MobilePlayerControls: View {
                 Image(systemName: "gobackward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Back 10 Seconds")
 
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                Group {
-                    if viewModel.isBuffering {
-                        ProgressView()
-                            .tint(.black.opacity(0.8))
-                    } else {
-                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 26, weight: .semibold))
-                            .foregroundStyle(.black.opacity(0.85))
-                            // play.fill reads left-heavy inside a circle;
-                            // nudge it toward the optical center.
-                            .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    }
-                }
-                .frame(width: 64, height: 64)
+                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.85))
+                    // play.fill reads left-heavy inside a circle;
+                    // nudge it toward the optical center.
+                    .offset(x: viewModel.isPlaying ? 0 : 1.5)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .tint(.white.opacity(0.9))
-            .accessibilityLabel(
-                viewModel.isBuffering ? "Buffering" : (viewModel.isPlaying ? "Pause" : "Play")
-            )
+            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
+            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
 
             Button {
                 viewModel.skipForward(10)
@@ -276,10 +295,9 @@ struct MobilePlayerControls: View {
                 Image(systemName: "goforward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
+                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Forward 10 Seconds")
         }
     }
@@ -369,8 +387,8 @@ struct MobilePlayerControls: View {
                     .fill(Color.white.opacity(0.2))
                     .frame(height: barHeight)
 
-                // Buffered range (AVPlayer routes only; CoreMedia reports 0
-                // so the layer simply never draws).
+                // Buffered range from Aether telemetry. Routes that cannot
+                // report a comparable value leave the layer empty.
                 if let buffered = bufferedFraction, buffered > progress {
                     Capsule()
                         .fill(Color.white.opacity(0.22))
@@ -417,10 +435,14 @@ struct MobilePlayerControls: View {
             )
             .overlay(alignment: .topLeading) {
                 if viewModel.isScrubbing {
+                    let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
                     scrubPreviewBubble
                         .position(
-                            x: min(max(width * progress, 80), max(width - 80, 80)),
-                            y: -36
+                            x: min(
+                                max(width * progress, previewInset),
+                                max(width - previewInset, previewInset)
+                            ),
+                            y: viewModel.scrubPreviewImage == nil ? -36 : -92
                         )
                         .transition(.opacity)
                         .allowsHitTesting(false)
@@ -454,7 +476,14 @@ struct MobilePlayerControls: View {
     /// scrubbing. Presentation-only: reads the same `scrubPreviewTime` the
     /// seek machinery already maintains.
     private var scrubPreviewBubble: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 6) {
+            if let image = viewModel.scrubPreviewImage {
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 176, height: 99)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
             Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
                 .font(.system(size: 19, weight: .bold))
                 .foregroundStyle(.white)
@@ -466,9 +495,8 @@ struct MobilePlayerControls: View {
                     .lineLimit(1)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .siloGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(7)
+        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .fixedSize()
     }
 
@@ -495,12 +523,12 @@ struct MobilePlayerControls: View {
 
     private enum ActionRowStyle {
         case full      // labeled pills, value on the Quality pill
-        case compact   // shorter labels, lock folds to a circle
-        case icons     // circles everywhere except the Quality value pill
+        case compact   // shorter labels
+        case icons     // icon controls; Quality remains a pill
     }
 
     /// Labeled pill row. `ViewThatFits` tries the full labels first, then
-    /// compact ones, then icon circles, so the row never truncates or wraps
+    /// compact ones, then icon controls, so the row never truncates or wraps
     /// — an iPhone in portrait with chapters present lands on `.icons`.
     private var actionRow: some View {
         ViewThatFits(in: .horizontal) {
@@ -512,10 +540,10 @@ struct MobilePlayerControls: View {
     }
 
     private func actionRowContent(style: ActionRowStyle) -> some View {
-        // The Audio & Subtitles pill is only inert when the menu would have
+        // The Audio & Subtitles pill is only inert when the picker would have
         // nothing at all in it. A track-less file can still offer subtitle
         // search (and the explanation when search isn't configured), so those
-        // entry points keep the menu open. This also closes a pre-existing
+        // entry points keep the sheet reachable. This also closes a pre-existing
         // reachability gap: before, a file with no audio and no subtitle
         // tracks disabled the pill outright, making subtitle search — the one
         // feature that could fix exactly that file — impossible to reach.
@@ -526,7 +554,7 @@ struct MobilePlayerControls: View {
         return HStack(spacing: 8) {
             qualityMenu(compact: style != .full)
 
-            trackSelectionMenu(style: style)
+            trackSelectionButton(style: style)
                 .disabled(noTracks)
                 .opacity(noTracks ? 0.4 : 1)
                 .accessibilityLabel("Audio & Subtitles")
@@ -535,8 +563,6 @@ struct MobilePlayerControls: View {
                 chaptersMenu(style: style)
                     .accessibilityLabel("Chapters")
             }
-
-            lockControl(compact: style != .full)
 
             controlButton(systemName: "ellipsis") {
                 activeSheet = .settings
@@ -581,21 +607,16 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         }
         .menuStyle(.button)
-        // Auto at the top, reading down (see trackSelectionMenu).
+        // Keep Auto at the top, reading down.
         .menuOrder(.fixed)
 
-        return Group {
-            // The prominent style flags a non-Auto quality cap at a glance.
-            if viewModel.activeQualityId == ApplePlaybackQuality.autoId {
-                menu.buttonStyle(.glass)
-            } else {
-                menu.buttonStyle(.glassProminent)
-            }
-        }
-        .buttonBorderShape(.capsule)
+        return menu
+        .buttonStyle(MobilePlayerGlassButtonStyle(
+            tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : .accentColor
+        ))
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(qualityValueText)
     }
@@ -610,7 +631,7 @@ struct MobilePlayerControls: View {
         return active.resolution
     }
 
-    // MARK: - Audio & Subtitles menu
+    // MARK: - Audio & Subtitles sheet
 
     /// Whether any AI subtitle action is available (translate or transcribe),
     /// per the server's capability probes **and** the current track list.
@@ -619,188 +640,23 @@ struct MobilePlayerControls: View {
         SubtitleTranslateMenu.hasActionableSource(viewModel)
     }
 
-    /// Native menu mirroring the Quality pill idiom: sectioned audio and
-    /// subtitle pickers with a leading checkmark on the selection and track
-    /// attributes as the menu-row subtitle — the same shape as AVPlayer's
-    /// built-in captions menu. The AI translate and provider-search entries
-    /// stay sheets; they're multi-step workflows, not pickers.
-    private func trackSelectionMenu(style: ActionRowStyle) -> some View {
-        Menu {
-            trackSelectionMenuContent
-        } label: {
-            menuPillLabel(
-                systemImage: "captions.bubble",
-                title: style == .icons
-                    ? nil
-                    : (style == .compact ? "Audio & Subs" : "Audio & Subtitles")
-            )
-        }
-        .menuStyle(.button)
-        // Bottom-anchored menus open upward and reverse their items by
-        // default; fixed order keeps Audio on top, reading down.
-        .menuOrder(.fixed)
-        .buttonStyle(.glass)
-        .buttonBorderShape(style == .icons ? .circle : .capsule)
-    }
-
-    @ViewBuilder
-    private var trackSelectionMenuContent: some View {
-            if !viewModel.audioTracks.isEmpty {
-                Section("Audio") {
-                    ForEach(viewModel.audioTracks) { track in
-                        trackMenuRow(
-                            title: track.primaryLabel,
-                            subtitle: track.attributesLabel,
-                            isSelected: viewModel.selectedAudioId == track.trackId
-                        ) {
-                            viewModel.selectAudio(track)
-                        }
-                    }
-                }
-            }
-            if !viewModel.subtitleTracks.isEmpty {
-                Section("Subtitles") {
-                    trackMenuRow(
-                        title: "Off",
-                        subtitle: nil,
-                        isSelected: viewModel.selectedSubtitleId == nil
-                    ) {
-                        viewModel.disableSubtitles()
-                    }
-                    ForEach(viewModel.orderedSubtitleTracks) { track in
-                        trackMenuRow(
-                            title: track.languageFirstPrimaryLabel,
-                            subtitle: subtitleMenuDetail(track),
-                            isSelected: viewModel.selectedSubtitleId == track.trackId
-                        ) {
-                            viewModel.selectSubtitle(track)
-                        }
-                    }
-                }
-                // Secondary subs only when a primary is set. The shared
-                // player contract forbids the same track occupying both
-                // subtitle slots, so offering a secondary picker before
-                // the primary slot is chosen would be misleading.
-                if viewModel.supportsSecondarySubtitles,
-                   viewModel.selectedSubtitleId != nil,
-                   !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                    secondarySubtitlesSubmenu
-                }
-            }
-            // The search term is the VISIBLE predicate, not the enabled one:
-            // the disabled row and its explanation live inside this section,
-            // so gating the section on enablement would hide the very thing
-            // that tells the user why search isn't offered.
-            if aiSubtitlesAvailable || viewModel.subtitleSearchVisible {
-                Section {
-                    if aiSubtitlesAvailable {
-                        Button {
-                            activeSheet = .aiSubtitles
-                        } label: {
-                            Label("AI Subtitles…", systemImage: "sparkles")
-                        }
-                    }
-                    if viewModel.subtitleSearchVisible {
-                        Button {
-                            activeSheet = .subtitleSearch
-                        } label: {
-                            // Closure form so the reason can ride along as a
-                            // second `Text` — UIKit renders it as the menu
-                            // item's subtitle, the same pattern `trackMenuRow`
-                            // uses for track attributes. `.disabled` greys the
-                            // item natively via
-                            // `UIMenuElement.Attributes.disabled`.
-                            Label {
-                                Text("Search Subtitles…")
-                                if let reason = viewModel.subtitleSearchUnavailableReason {
-                                    Text(reason)
-                                }
-                            } icon: {
-                                Image(systemName: "magnifyingglass")
-                            }
-                        }
-                        .disabled(!viewModel.subtitleSearchEnabled)
-                    }
-                }
-            }
-    }
-
-    /// Submenu for the secondary subtitle slot, titled with the current pick
-    /// so the parent menu shows the state without opening it.
-    private var secondarySubtitlesSubmenu: some View {
-        Menu {
-            secondarySubtitlesSubmenuContent
-        } label: {
-            Text("Secondary Subtitles")
-            if let current = viewModel.availableSecondarySubtitleTracks.first(
-                where: { $0.trackId == viewModel.selectedSecondarySubtitleId }
-            ) {
-                Text(current.languageFirstPrimaryLabel)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var secondarySubtitlesSubmenuContent: some View {
-            trackMenuRow(
-                title: "Off",
-                subtitle: nil,
-                isSelected: viewModel.selectedSecondarySubtitleId == nil
-            ) {
-                viewModel.disableSecondarySubtitles()
-            }
-            ForEach(viewModel.availableSecondarySubtitleTracks) { track in
-                trackMenuRow(
-                    title: track.languageFirstPrimaryLabel,
-                    subtitle: subtitleMenuDetail(track),
-                    isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
-                    // Primary-selected track is disabled in the secondary
-                    // submenu so users can't pick the same sub twice.
-                    isDisabled: viewModel.selectedSubtitleId == track.trackId
-                ) {
-                    viewModel.selectSecondarySubtitle(track)
-                }
-            }
-    }
-
-    /// Menu row with the Quality-menu selection idiom (leading checkmark)
-    /// plus the native title/subtitle pattern for track attributes.
-    private func trackMenuRow(
-        title: String,
-        subtitle: String?,
-        isSelected: Bool,
-        isDisabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            if isSelected {
-                Label {
-                    Text(title)
-                    if let subtitle { Text(subtitle) }
-                } icon: {
-                    Image(systemName: "checkmark")
+    /// Track inventories are unbounded, so they use a scrollable sheet rather
+    /// than a native `Menu`, whose landscape popover can clip later rows.
+    private func trackSelectionButton(style: ActionRowStyle) -> some View {
+        Group {
+            if style == .icons {
+                controlButton(systemName: "captions.bubble") {
+                    activeSheet = .tracks
                 }
             } else {
-                Text(title)
-                if let subtitle { Text(subtitle) }
+                actionPill(
+                    systemImage: "captions.bubble",
+                    title: style == .compact ? "Audio & Subs" : "Audio & Subtitles"
+                ) {
+                    activeSheet = .tracks
+                }
             }
         }
-        .disabled(isDisabled)
-    }
-
-    /// One-line menu subtitle: meaningful embedded title first, then the
-    /// attribute summary. Subtitle rows lead with the language — embedded
-    /// titles are unreliable (format names, filenames) so a meaningful title
-    /// demotes to the detail slot and the language pill is dropped.
-    private func subtitleMenuDetail(_ track: PlayerTrack) -> String? {
-        let pills = track.attributePillLabels(includeLanguage: track.normalizedLanguageCode == nil)
-        let combined = [
-            track.languageFirstDetailLabel,
-            pills.isEmpty ? nil : pills.joined(separator: " · ")
-        ]
-        .compactMap { $0 }
-        .joined(separator: " · ")
-        return combined.isEmpty ? nil : combined
     }
 
     // MARK: - Chapters menu
@@ -837,10 +693,9 @@ struct MobilePlayerControls: View {
             )
         }
         .menuStyle(.button)
-        // Chapter 1 at the top, reading down (see trackSelectionMenu).
+        // Keep Chapter 1 at the top, reading down.
         .menuOrder(.fixed)
-        .buttonStyle(.glass)
-        .buttonBorderShape(style == .icons ? .circle : .capsule)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
@@ -860,34 +715,13 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         } else {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
-    }
-
-    private func lockControl(compact: Bool) -> some View {
-        let isLocked = orientationCoordinator.isLandscapeLocked
-        return Group {
-            if compact {
-                controlButton(systemName: isLocked ? "lock.fill" : "lock.open") {
-                    orientationCoordinator.togglePlayerMode()
-                }
-            } else {
-                actionPill(systemImage: isLocked ? "lock.fill" : "lock.open", title: "Lock") {
-                    orientationCoordinator.togglePlayerMode()
-                }
-            }
-        }
-        .accessibilityLabel(isLocked ? "Landscape Locked" : "Rotate Freely")
-        .accessibilityHint(
-            isLocked
-                ? "Allows portrait rotation during playback"
-                : "Locks playback to landscape"
-        )
     }
 
     private func actionPill(
@@ -904,10 +738,9 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     // MARK: - Intro skip
@@ -928,10 +761,9 @@ struct MobilePlayerControls: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .frame(width: 38, height: 38)
+                                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
                         }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
+                        .buttonStyle(MobilePlayerGlassButtonStyle())
                         .accessibilityLabel("Cancel Auto-Skip Intro")
                     }
 
@@ -950,13 +782,12 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .frame(height: ContinuumTheme.topBarIconHitSize)
                     }
                     // White prominent glass with a dark glyph, matching the
                     // play/pause disc — accent-tinted prominent reads as an
                     // app-colored web button over video.
-                    .buttonStyle(.glassProminent)
-                    .tint(.white.opacity(0.9))
+                    .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
                     .accessibilityLabel(
                         viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
                     )
@@ -971,6 +802,30 @@ struct MobilePlayerControls: View {
         .transition(.opacity)
     }
 
+    private var creditsSkipPill: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    viewModel.skipCredits()
+                } label: {
+                    Label("Skip Credits", systemImage: "forward.end.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .padding(.horizontal, 16)
+                        .frame(height: ContinuumTheme.topBarIconHitSize)
+                }
+                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
+                .accessibilityLabel("Skip Credits")
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, viewModel.showControls ? 88 : 24)
+        }
+        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
+        .transition(.opacity)
+    }
+
     // MARK: - Helpers
 
     private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {
@@ -978,19 +833,97 @@ struct MobilePlayerControls: View {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
+                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
         }
-        // `.circle` keeps each glass control a compact circle instead of the
-        // default wider capsule so rows of controls stay dense.
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
+        .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
     // MARK: - Sheet identifier
 
     private enum PlayerSheet: Identifiable {
-        case aiSubtitles, subtitleSearch, settings
+        case tracks, aiSubtitles, subtitleSearch, settings
         var id: Self { self }
+    }
+}
+
+/// Match detail chrome without the extra padding added by native glass
+/// button styles. A 44pt square is circular; longer labels form a 44pt pill.
+struct MobilePlayerGlassButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: ContinuumTheme.topBarIconHitSize)
+            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(Capsule())
+            .siloPlayerGlass(in: Capsule(), tint: tint, interactive: true)
+    }
+}
+
+/// Close and rotation controls share the same visibility, hit testing and
+/// accessibility state, including while loading and on Next Up.
+struct MobilePlayerChromeVisibility: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
+            .animation(.easeOut(duration: 0.18), value: isVisible)
+    }
+}
+
+/// Top-right chrome follows transport visibility in every playback phase.
+/// Equal tap areas keep the lock centred through rotation.
+struct MobilePlayerRotationControls: View {
+    static let height = ContinuumTheme.topBarIconHitSize
+    static let width = height * 2 + 24
+    static let topClearance: CGFloat = height + 32
+
+    let orientationCoordinator: PlayerOrientationCoordinator
+    let isVisible: Bool
+    var onInteraction: () -> Void = {}
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                orientationCoordinator.togglePlayerOrientation()
+                onInteraction()
+            } label: {
+                icon("rectangle.landscape.rotate")
+            }
+            .accessibilityLabel("Rotate to \(orientationCoordinator.nextPlayerOrientation.title)")
+            .accessibilityHint("Rotates the screen without interrupting playback")
+            .accessibilityIdentifier("player.rotate")
+
+            Button {
+                orientationCoordinator.toggleRotationLock()
+                onInteraction()
+            } label: {
+                icon(orientationCoordinator.isRotationLocked ? "lock" : "lock.open")
+            }
+            .accessibilityLabel(orientationCoordinator.isRotationLocked ? "Unlock screen rotation" : "Lock screen rotation")
+            .accessibilityValue(orientationCoordinator.isRotationLocked ? "Locked" : "Unlocked")
+            .accessibilityHint(orientationCoordinator.isRotationLocked
+                ? "Allows video to follow phone orientation"
+                : "Stops phone movement rotating video. The rotate button still works")
+            .accessibilityIdentifier("player.rotation-lock")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .siloPlayerGlass(in: Capsule(), interactive: true)
+        .modifier(MobilePlayerChromeVisibility(isVisible: isVisible))
+    }
+
+    private func icon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 24, weight: .medium))
+            .foregroundStyle(.white)
+            .frame(width: 32, height: 32)
+            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .contentShape(Rectangle())
     }
 }
 #endif

@@ -1,8 +1,8 @@
 import Foundation
 
-/// A track exposed by the player core. `trackId` is the per-kind id used with
-/// `setAudioTrack`/`setSubtitleTrack`; `ffIndex` is the underlying FFmpeg
-/// stream index, useful for matching against server-supplied preferred indices.
+/// An app-facing projection of an Aether media track. `trackId` is the
+/// per-kind id passed back through the Aether controller; `ffIndex` is the
+/// source stream index used to match server-supplied preferences.
 ///
 /// Fields beyond id/title/lang are optional because not every codec populates
 /// every field — e.g. PGS subtitle tracks report no `audio-channels`.
@@ -19,8 +19,6 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     let title: String?
     let lang: String?
     let codec: String?
-    /// Channel layout string (e.g. "stereo", "5.1(side)").
-    let audioChannelsLayout: String?
     /// Numeric channel count when the demuxer reported it.
     let audioChannelCount: Int?
     /// Demuxed bitrate in bits per second (0 if unknown).
@@ -28,7 +26,6 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     let isDefault: Bool
     let isForced: Bool
     let isHearingImpaired: Bool
-    let isVisualImpaired: Bool
     let isExternal: Bool
     let isSelected: Bool
     let ffIndex: Int?
@@ -115,12 +112,8 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             parts.append(languageDisplayName(lang))
         }
 
-        if kind == .audio {
-            if let layout = Self.normalizedText(audioChannelsLayout) {
-                parts.append(layout)
-            } else if let count = audioChannelCount, count > 0 {
-                parts.append(formatChannelCount(count))
-            }
+        if kind == .audio, let label = channelCountLabel {
+            parts.append(label)
         }
 
         if let codec = Self.normalizedText(codec) {
@@ -154,12 +147,8 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
            !(normalizedTitle?.localizedCaseInsensitiveContains(lang) ?? false) {
             parts.append(languageDisplayName(lang))
         }
-        if kind == .audio {
-            if let layout = Self.normalizedText(audioChannelsLayout) {
-                parts.append(layout)
-            } else if let count = audioChannelCount, count > 0 {
-                parts.append(formatChannelCount(count))
-            }
+        if kind == .audio, let label = channelCountLabel {
+            parts.append(label)
         }
         if let codec = Self.normalizedText(codec) {
             parts.append(codec.uppercased())
@@ -183,7 +172,14 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
         return parts.joined(separator: " · ")
     }
 
-    private func formatChannelCount(_ count: Int) -> String {
+    /// Human-readable channel count for audio tracks (e.g. "5.1"), or nil when
+    /// the demuxer reported no usable count.
+    var channelCountLabel: String? {
+        guard let count = audioChannelCount, count > 0 else { return nil }
+        return Self.formatChannelCount(count)
+    }
+
+    private static func formatChannelCount(_ count: Int) -> String {
         switch count {
         case 1: return "mono"
         case 2: return "stereo"
@@ -204,5 +200,36 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             return nil
         }
         return trimmed
+    }
+}
+
+/// What to do with a track selection the app is holding on behalf of the user
+/// (a persisted pick, a detail-screen pick, a resumed selection) when Aether's
+/// inventory arrives.
+///
+/// Split out as a pure decision because the hazard it exists to prevent is
+/// invisible in the happy path: Aether publishes its track inventory during
+/// startup, before it has dispatched the source onto a decode backend, and an
+/// audio switch applied there makes the engine rebuild its pipeline against a
+/// route it has not chosen yet. On a software-decode source that rebuild lands
+/// on the native path, is rejected for the codec, and takes the in-flight load
+/// down with it.
+enum DeferredTrackSelectionGate {
+    enum Outcome: Equatable {
+        /// Keep holding the selection: the load is not established yet.
+        case deferUntilEstablished
+        /// Adopt it as the published selection without touching the engine —
+        /// the engine is already on this track.
+        case adoptWithoutEngineCall
+        /// Establish and different: drive the engine.
+        case applyToEngine
+    }
+
+    static func outcome(
+        isLoadEstablished: Bool,
+        engineAlreadyMatches: Bool
+    ) -> Outcome {
+        guard isLoadEstablished else { return .deferUntilEstablished }
+        return engineAlreadyMatches ? .adoptWithoutEngineCall : .applyToEngine
     }
 }

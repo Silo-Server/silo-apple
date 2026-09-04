@@ -280,7 +280,7 @@ enum AccentStrategy: String {
 /// comes from the registry (icon) and the user's `accentColor`.
 struct OverlayPreset {
     let id: PresetId
-    let font: Font
+    let fontSize: CGFloat
     let textWeight: Font.Weight
     let textCase: Text.Case?
     let tracking: CGFloat

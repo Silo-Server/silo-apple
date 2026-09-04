@@ -1115,9 +1115,9 @@ actor DiagnosticsCoordinator {
 
         do {
             // Snapshot the destination *identity* before building the bundle.
-            // The build harvests OSLog and gzips the archive, which takes long
-            // enough for the active server/account/profile to change underneath
-            // us. HTTPClient resolves the current TokenStore at request time,
+            // Bundle construction and sanitization can take long enough for the
+            // active server/account/profile to change underneath us. HTTPClient
+            // resolves the current TokenStore at request time,
             // and a same-server account switch keeps the report's
             // server_instance_id while swapping the account — so without
             // re-checking, this old report could post to the newly active
@@ -2186,7 +2186,7 @@ actor DiagnosticsCoordinator {
     }
 
     /// Keeps only evidence emitted by the failed process run. The abnormal-exit
-    /// marker is consumed on the next launch, when both the ring and OSLog can
+    /// marker is consumed on the next launch, when the process-local ring can
     /// already contain new-session lines whose timestamps are after `start`.
     nonisolated static func logLines(
         _ lines: [String],

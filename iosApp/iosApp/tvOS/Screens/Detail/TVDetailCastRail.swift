@@ -6,10 +6,13 @@ import SwiftUI
 struct TVDetailCastRail: View {
     let cast: [CastMember]
     let onTap: (String) -> Void
+    /// Non-zero changes explicitly hand focus into the first cast card from
+    /// the composite Series episode carousel.
+    var focusRequest = 0
 
     private let photoWidth: CGFloat = 200
     private let photoHeight: CGFloat = 200
-    private let cardSpacing: CGFloat = 44
+    private let cardSpacing: CGFloat = 60
     private let maxEntries = 24
     @FocusState private var focusedCastId: String?
 
@@ -25,11 +28,15 @@ struct TVDetailCastRail: View {
                     .focused($focusedCastId, equals: member.id)
                 }
             }
-            .padding(.vertical, 24)
+            .padding(.vertical, 12)
         }
         .focusSection()
         .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
         .scrollClipDisabled()
+        .onChange(of: focusRequest) { _, request in
+            guard request > 0, let defaultFocusId else { return }
+            focusedCastId = defaultFocusId
+        }
     }
 
     private var defaultFocusId: String? {
@@ -64,7 +71,17 @@ private struct TVCastCard: View {
         } label: {
             CastCardLabel(member: member, photoSize: photoSize)
         }
-        .buttonStyle(CastCardStyle(photoSize: photoSize))
+        .buttonStyle(
+            TVCardFocusButtonStyle(
+                scale: 1.05,
+                focusedShadowOpacity: 0.35,
+                focusedShadowRadius: 14,
+                focusedShadowY: 6,
+                unfocusedShadowOpacity: 0,
+                unfocusedShadowRadius: 0,
+                unfocusedShadowY: 0
+            )
+        )
     }
 }
 
@@ -77,17 +94,17 @@ private struct CastCardLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             photo
             VStack(spacing: 4) {
                 Text(member.name)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundColor(isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.88))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.center)
                 if let character = member.character, !character.isEmpty {
                     Text(character)
-                        .font(.system(size: 18, weight: .regular))
+                        .font(.system(size: 17, weight: .regular))
                         .foregroundColor(.continuumSecondaryText)
                         .lineLimit(1)
                         .multilineTextAlignment(.center)
@@ -106,6 +123,7 @@ private struct CastCardLabel: View {
                 CachedAsyncImage(
                     url: url,
                     targetSize: photoSize,
+                    thumbhash: member.photoThumbhash,
                     contentMode: .fill
                 )
             } else {
@@ -123,36 +141,4 @@ private struct CastCardLabel: View {
     }
 }
 
-/// Custom style so the system doesn't paint its default focus halo on
-/// top. Scale + shadow only — the portrait ring handles the focus cue.
-private struct CastCardStyle: ButtonStyle {
-    let photoSize: CGSize
-
-    func makeBody(configuration: Configuration) -> some View {
-        CastCardBody(configuration: configuration)
-    }
-}
-
-private struct CastCardBody: View {
-    let configuration: ButtonStyleConfiguration
-
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        configuration.label
-            .scaleEffect(scale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.35 : 0.0),
-                radius: isFocused ? 14 : 0,
-                y: isFocused ? 6 : 0
-            )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    private var scale: CGFloat {
-        let base: CGFloat = isFocused ? 1.05 : 1.0
-        return configuration.isPressed ? base * 0.97 : base
-    }
-}
 #endif

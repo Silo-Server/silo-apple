@@ -3,7 +3,7 @@
 //  Continuum (iOS + tvOS + macOS)
 //
 //  Live approximation of the configured subtitle style over a dark
-//  film-frame stand-in. The real pipeline renders through libass; this
+//  film-frame stand-in. The real pipeline renders Aether cues; this
 //  mirrors the font / color / outline / background / position choices
 //  closely enough to preview a change without starting playback.
 //
@@ -65,13 +65,13 @@ struct SubtitleAppearancePreview: View {
         let hasOutline = appearance.textOutline || appearance.backgroundStyle == .outline
             || systemEdge == .uniform
         let outlineColor = hasOutline ? Color(hex: appearance.textOutlineColor) : .clear
-        // Four hard directional shadows fake libass's uniform glyph
+        // Four hard directional shadows approximate the cue overlay's uniform glyph
         // outline; a soft radius reads as a glow instead. The shared
         // formula's 1-2 clamp is calibrated for the 1080-line playfield,
         // so feed it the unscaled size and scale the result into preview
         // space — clamping post-scale would flatten the whole ladder.
         let outlineOffset = CGFloat(
-            SubtitleStylingOverride.Parameters.outlineSize(for: Double(playfieldFontSize))
+            max(1, min(2, Double(playfieldFontSize) * 0.03))
         ) * Self.fontScale
 
         let raisedColor = systemEdge == .raised ? Color.white.opacity(0.8) : .clear
@@ -122,9 +122,7 @@ struct SubtitleAppearancePreview: View {
     /// the preview's own downscale. Shared styling formulas are calibrated
     /// against this, not against `sampleFontSize`.
     private var playfieldFontSize: CGFloat {
-        appearance.systemRelativeFontScale.map {
-            SubtitleStylingOverride.Parameters.referenceFontSize * $0
-        } ?? appearance.fontSize.pointSize
+        AetherSubtitleRenderStyle(appearance: appearance).fontSizeAt1080Lines
     }
 
     private var sampleFontSize: CGFloat {

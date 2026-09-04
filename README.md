@@ -39,7 +39,7 @@ Try the latest beta builds of the iOS and tvOS apps:
 
 ## Prerequisites
 
-- Xcode 16+
+- Xcode 26+
 - `xcodegen`
 - Ruby 3.2 with Bundler for release automation
 - A running Silo server for local auth, browsing, and playback validation
@@ -128,9 +128,19 @@ Personal Apple Developer teams cannot join the production App Group, so Top Shel
 
 Fastlane lanes are defined in `fastlane/Fastfile`. All Apple IDs, team IDs, signing repo URLs, and App Store Connect credentials must come from CI environment variables.
 
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Features,
+navigation or behavior changes, large refactors, and shared contract changes
+should start as an issue.
+
 ## License & Trademarks
 
-Silo Apple is licensed under `AGPL-3.0-or-later`. See [LICENSE](LICENSE).
+Silo Apple is licensed under `AGPL-3.0-or-later` with an additional
+permission under AGPL section 7 allowing distribution through the Apple App
+Store and TestFlight despite those platforms' signing, DRM, and
+redistribution terms. See [LICENSE](LICENSE) and
+[APPSTORE-EXCEPTION.md](APPSTORE-EXCEPTION.md).
 
 The **Silo name, logo, and wordmark are trademarks of Silo Media L.L.C.** and
 are **not** covered by the AGPL. You're free to fork and redistribute the code,
@@ -139,4 +149,6 @@ must remove or replace the brand assets. Publishing a Silo-branded app to an app
 store requires written permission. See [TRADEMARK.md](TRADEMARK.md) for what's
 permitted — including referential use like "compatible with Silo."
 
-FFmpeg, Nuke, fastlane, and other third-party dependencies retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Media playback is built on [AetherEngine](https://github.com/superuser404notfound/AetherEngine)
+by Vincent Herbst, used under LGPL-3.0 with its Apple Store / DRM exception.
+AetherEngine, FFmpeg, Nuke, fastlane, and other third-party dependencies retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

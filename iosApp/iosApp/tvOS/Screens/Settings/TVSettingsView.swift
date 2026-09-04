@@ -21,6 +21,7 @@ struct TVSettingsView: View {
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
+    @State private var showOpenSourceAcknowledgements = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @State private var activePicker: TVSettingsPickerRequest?
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
@@ -72,9 +73,18 @@ struct TVSettingsView: View {
                     .transition(.opacity)
                     .zIndex(3)
             }
+
+            if showOpenSourceAcknowledgements {
+                TVOpenSourceAcknowledgementsOverlay(
+                    dismiss: dismissOpenSourceAcknowledgements
+                )
+                .transition(.opacity)
+                .zIndex(4)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSignOutConfirm)
+        .onAppear(perform: focusGeneralOnEntry)
         .task {
             await viewModel.load()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
@@ -84,6 +94,7 @@ struct TVSettingsView: View {
                activePicker == nil,
                !showSignOutConfirm,
                !showPrivacyPolicy,
+               !showOpenSourceAcknowledgements,
                !isRestoringDetailFocus {
                 preferredFocusOwner = .rail
             }
@@ -104,6 +115,7 @@ struct TVSettingsView: View {
                activePicker == nil,
                !showSignOutConfirm,
                !showPrivacyPolicy,
+               !showOpenSourceAcknowledgements,
                !isRestoringDetailFocus {
                 preferredDetailFocus = focus
                 preferredFocusOwner = .detail
@@ -128,6 +140,29 @@ struct TVSettingsView: View {
         }
     }
 
+    /// Settings always enters through General. Assign the concrete rail focus
+    /// before tvOS performs its first geometric resolution, then re-assert it
+    /// once the two focus scopes have mounted so the profile card cannot paint
+    /// a simultaneous entry highlight.
+    private func focusGeneralOnEntry() {
+        selectedCategory = .general
+        preferredFocusOwner = .rail
+        preferredDetailFocus = .generalAppleTVUser
+        detailFocus = nil
+        railFocus = .category(.general)
+
+        Task { @MainActor in
+            await Task.yield()
+            guard activePicker == nil,
+                  !showSignOutConfirm,
+                  !showPrivacyPolicy,
+                  !showOpenSourceAcknowledgements else { return }
+            resetFocus(in: settingsFocusScope)
+            resetFocus(in: railFocusScope)
+            railFocus = .category(.general)
+        }
+    }
+
     private var settingsContent: some View {
         HStack(alignment: .top, spacing: 52) {
             rail
@@ -144,6 +179,7 @@ struct TVSettingsView: View {
                 .disabled(
                     showSignOutConfirm
                         || showPrivacyPolicy
+                        || showOpenSourceAcknowledgements
                         || activePicker != nil
                         || isRestoringDetailFocus
                 )
@@ -159,7 +195,12 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(showSignOutConfirm || showPrivacyPolicy || activePicker != nil)
+                .disabled(
+                    showSignOutConfirm
+                        || showPrivacyPolicy
+                        || showOpenSourceAcknowledgements
+                        || activePicker != nil
+                )
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -220,6 +261,7 @@ struct TVSettingsView: View {
             HStack(spacing: 18) {
                 ProfileAvatarView(
                     avatar: viewModel.profileAvatar,
+                    imageUrl: viewModel.profileAvatarImageUrl,
                     name: viewModel.displayName,
                     size: 68
                 )
@@ -326,6 +368,8 @@ struct TVSettingsView: View {
     private func returnFocusToRail() {
         guard activePicker == nil,
               !showSignOutConfirm,
+              !showPrivacyPolicy,
+              !showOpenSourceAcknowledgements,
               !isRestoringDetailFocus else {
             return
         }
@@ -368,6 +412,33 @@ struct TVSettingsView: View {
             resetFocus(in: settingsFocusScope)
             resetFocus(in: detailFocusScope)
             detailFocus = .serverPrivacyPolicy
+            try? await Task.sleep(for: .milliseconds(120))
+            isRestoringDetailFocus = false
+        }
+    }
+
+    private func presentOpenSourceAcknowledgements() {
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .serverOpenSourceLicenses
+        railFocus = nil
+        detailFocus = nil
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            showOpenSourceAcknowledgements = true
+        }
+    }
+
+    private func dismissOpenSourceAcknowledgements() {
+        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            showOpenSourceAcknowledgements = false
+        }
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .serverOpenSourceLicenses
+        isRestoringDetailFocus = true
+        Task { @MainActor in
+            await Task.yield()
+            resetFocus(in: settingsFocusScope)
+            resetFocus(in: detailFocusScope)
+            detailFocus = .serverOpenSourceLicenses
             try? await Task.sleep(for: .milliseconds(120))
             isRestoringDetailFocus = false
         }
@@ -421,8 +492,12 @@ struct TVSettingsView: View {
         }
     }
 
+    /// The tab request is the only action needed: TVMainTabView's
+    /// `requestedTab` handler routes `.home` through `selectRoot`, which pops
+    /// to root itself (unconditionally, including when Home is already the
+    /// selected root). Popping here too produced a second `popToRoot` and a
+    /// duplicate navigation breadcrumb for one exit.
     private func exitSettingsToHome() {
-        router.popToRoot()
         router.switchTab(to: .home)
     }
 
@@ -560,6 +635,21 @@ struct TVSettingsView: View {
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverPrivacyPolicy)
+
+            Button(action: presentOpenSourceAcknowledgements) {
+                HStack(spacing: 16) {
+                    Image(systemName: "curlybraces")
+                        .font(.system(size: 22, weight: .medium))
+                    Text("Open Source Licenses")
+                        .font(.system(size: 26))
+                    Spacer(minLength: 0)
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 18, weight: .semibold))
+                        .opacity(0.55)
+                }
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused($detailFocus, equals: .serverOpenSourceLicenses)
         }
     }
 
@@ -598,9 +688,13 @@ enum TVSettingsDetailFocus: Hashable {
     case top
     case generalAppleTVUser
     case generalProfileLaunch
+    case generalHomeSections
     case generalCardPreset
     case generalTopMenu
     case playbackAudioLanguage
+    case playbackBufferAhead
+    case playbackDeinterlaceMode
+    case playbackDeinterlaceFieldRate
     case playbackNextUpPrompt
     case subtitleBehavior
     case subtitleUseDeviceSettings
@@ -614,6 +708,7 @@ enum TVSettingsDetailFocus: Hashable {
     case subtitleBackgroundColor
     case subtitlePosition
     case serverPrivacyPolicy
+    case serverOpenSourceLicenses
 }
 
 // MARK: - Categories

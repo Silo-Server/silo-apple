@@ -129,9 +129,9 @@ def resolve_build_number(api_key:, app_identifier:, platform:)
   ) + 1
 end
 
-# Regenerates Silo.xcodeproj from project.yml, resolves SPM packages for the
-# given scheme (populating DerivedData), and applies the FFmpeg module-map patch.
-# Shared by the unsigned IPA lanes. Returns the absolute iosApp directory.
+# Regenerates Silo.xcodeproj from project.yml and resolves SPM packages for the
+# given scheme. Shared by the unsigned IPA lanes.
+# Returns the absolute iosApp directory.
 #
 # Note: beta_ios/beta_tvos intentionally do NOT use this helper — they interleave
 # match() and the build-number query between xcodegen and resolvePackageDependencies,
@@ -141,7 +141,6 @@ def prepare_xcode_project(scheme:)
   sh("xcodegen generate --spec '#{ios_app_dir}/project.yml'")
   sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
      "-scheme #{scheme} -resolvePackageDependencies")
-  sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
   ios_app_dir
 end
 
@@ -355,13 +354,9 @@ platform :ios do
       platform:       "ios"
     )
 
-    # Resolve SPM packages so DerivedData is populated before the FFmpeg patch.
+    # Resolve SPM packages before building.
     sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
        "-scheme Silo -resolvePackageDependencies")
-
-    # Patch the FFmpeg libavutil module map: removes the hwcontext_amf.h reference
-    # that is absent on macOS and breaks compilation on Apple Silicon build agents.
-    sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
 
     # Pull the profile names for all three targets from the match mapping.
     profile_map          = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
@@ -478,12 +473,9 @@ platform :ios do
       platform:       "appletvos"
     )
 
-    # Resolve SPM packages for DerivedData population.
+    # Resolve SPM packages before building.
     sh("xcodebuild -project '#{ios_app_dir}/Silo.xcodeproj' " \
        "-scheme SiloTV -resolvePackageDependencies")
-
-    # Patch FFmpeg module map.
-    sh("bash '#{ios_app_dir}/scripts/patch-libavutil-modulemap.sh'")
 
     # Pull both profile names from the match mapping.
     profile_map     = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]

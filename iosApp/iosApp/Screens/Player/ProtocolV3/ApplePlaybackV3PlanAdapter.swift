@@ -6,6 +6,10 @@ struct PreparedPlaybackV3: Equatable {
     let planAttemptKey: String
     let outputContextId: String?
     let serverFeatures: [String]
+    /// Whether this attempt negotiated `authorized_media_origins_v1`. Only an
+    /// attempt that did may resolve absolute proxy-origin media URLs; the flag
+    /// is fixed for the attempt and repeated unchanged across replans.
+    var negotiatedAuthorizedMediaOrigins: Bool = false
     let plan: PlaybackV3Plan
 }
 
@@ -33,12 +37,11 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
 }
 
 enum ApplePlaybackV3PlanAdapter {
+    /// Recipes Aether executes internally on an `original_http` load. Selecting
+    /// one changes nothing about how the load is issued — Aether re-derives the
+    /// route from the bitstream and the live panel — so validation here only
+    /// confirms the server picked something this build can honour.
     private static let clientTransformations = ["client_dv7_to_dv81", "client_dv7_to_hdr10"]
-    private static let runtimeCorrections = [
-        "client_dv8_hdr10plus_sanitizer_v1",
-        "client_post_resume_video_recovery_v1",
-        "client_surface_recovery_v1"
-    ]
 
     static func validate(_ plan: PlaybackV3Plan) throws {
         guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
@@ -79,8 +82,10 @@ enum ApplePlaybackV3PlanAdapter {
                 "client transformations require the original_http delivery"
             )
         }
-        if let unsupported = plan.runtimeCorrections.first(where: { !runtimeCorrections.contains($0) }) {
-            throw ApplePlaybackV3PlanError.unsupportedRuntimeCorrection(unsupported)
+        if let correction = plan.runtimeCorrections.first {
+            // Runtime correction tokens belonged to the removed Silo
+            // playback implementation. Aether performs recovery internally.
+            throw ApplePlaybackV3PlanError.unsupportedRuntimeCorrection(correction)
         }
     }
 
@@ -114,21 +119,29 @@ enum ApplePlaybackV3PlanAdapter {
         // plan does not lose its active subtitle if a transitional server
         // omitted that one inventory URL.
         if let artifact = plan.subtitle.artifact,
-           let selectedIndex = plan.selectedTracks.subtitle?.index,
+           let selectedIndex = plan.selectedSubtitleCombinedIndex,
            !subtitleUrls.contains(where: { $0.index == selectedIndex }) {
-            let selected = plan.selectedTracks.subtitle?.index.flatMap {
-                subtitleTrack(atServerCombinedIndex: $0, in: selectedVersion)
-            }
+            // §8: the inventory is authoritative. Describe the track from its
+            // own entry when the server published one — a `burn_in_only` entry
+            // has no URL but still carries the correct identity. Only fall back
+            // to the counted catalog lookup when the inventory names no entry
+            // for this ordinal at all.
+            let published = plan.selectedSubtitleInventoryItem
+            let selected = published == nil
+                ? subtitleTrack(atServerCombinedIndex: selectedIndex, in: selectedVersion)
+                : nil
             subtitleUrls.append(SubtitleUrl(
                 index: selectedIndex,
-                language: selected?.language,
+                language: published?.language ?? selected?.language,
                 codec: artifact.format,
-                label: selected?.title,
-                source: selected.map { $0.external == true ? "external" : "embedded" } ?? "protocol_v3",
-                forced: selected?.forced,
-                default: selected?.isDefault,
-                hearingImpaired: selected?.hearingImpaired,
-                fontBundleUrl: nil,
+                label: published?.label ?? selected?.title,
+                source: published?.source
+                    ?? selected.map { $0.external == true ? "external" : "embedded" }
+                    ?? "protocol_v3",
+                forced: published?.forced ?? selected?.forced,
+                default: published?.default ?? selected?.isDefault,
+                hearingImpaired: published?.hearingImpaired ?? selected?.hearingImpaired,
+                fontBundleUrl: published?.fontBundleUrl,
                 url: artifact.url
             ))
         }
@@ -164,40 +177,173 @@ enum ApplePlaybackV3PlanAdapter {
         )
     }
 
+    /// Protocol V3's subtitle inventory is picker state, not a preload list.
+    /// Project every authoritative server row into the app's menu without
+    /// registering its URL with Aether. The active plan's single artifact is
+    /// mounted separately by `AetherLoadSpec`.
+    ///
+    /// `version` is only needed to give embedded rows their FFmpeg stream
+    /// index. Without it those rows persist as the explicit-Off sentinel,
+    /// because `TrackSelectionPersistence` identifies an embedded pick by that
+    /// index; the combined ordinal alone cannot stand in for it.
+    static func subtitlePickerTracks(
+        plan: PlaybackV3Plan,
+        version: FileVersion? = nil
+    ) -> [PlayerTrack] {
+        // A selected row and a rendered row are different questions: `off`
+        // means nothing is selected no matter what the plan still names.
+        let selectedIndex = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+            ? nil
+            : plan.selectedSubtitleCombinedIndex
+        return plan.subtitle.inventory.compactMap { item in
+            guard item.combinedIndex >= 0 else { return nil }
+            let ffIndex: Int? = item.source == "embedded"
+                ? version.flatMap {
+                    ffmpegSubtitleStreamIndex(
+                        serverCombinedIndex: item.combinedIndex,
+                        in: $0,
+                        inventory: plan.subtitle.inventory
+                    )
+                }
+                : nil
+            return PlayerTrack(
+                trackId: SubtitleTrackIdSpace.makeSidecarTrackId(
+                    urlIndex: item.combinedIndex
+                ),
+                kind: .sub,
+                title: item.label,
+                lang: item.language,
+                codec: item.codec,
+                audioChannelCount: nil,
+                bitrate: nil,
+                isDefault: item.default,
+                isForced: item.forced,
+                isHearingImpaired: item.hearingImpaired,
+                isExternal: item.source != "embedded",
+                isSelected: item.combinedIndex == selectedIndex,
+                ffIndex: ffIndex,
+                srcId: item.combinedIndex
+            )
+        }
+    }
+
+    /// Keeps Aether authoritative when it publishes audio tracks, but fills
+    /// the picker from the selected catalog version when a remote V3 route
+    /// exposes only its packaged rendition. Audio changes on that route are
+    /// already server-owned replans, so each fallback row carries the catalog
+    /// ordinal in `srcId` and the plan's selected ordinal drives the checkmark.
+    static func audioPickerTracks(
+        aetherTracks: [PlayerTrack],
+        plan: PlaybackV3Plan?,
+        version: FileVersion?
+    ) -> [PlayerTrack] {
+        guard aetherTracks.isEmpty,
+              let plan,
+              let version else {
+            return aetherTracks
+        }
+        let selectedOrdinal = plan.selectedTracks.audio?.index
+        return (version.audioTracks ?? []).enumerated().map { ordinal, track in
+            PlayerTrack(
+                trackId: Int64(ordinal),
+                kind: .audio,
+                title: track.title,
+                lang: track.language,
+                codec: track.codec,
+                audioChannelCount: track.channels,
+                bitrate: track.bitrate.map(Int64.init),
+                isDefault: track.isDefault ?? false,
+                isForced: false,
+                isHearingImpaired: false,
+                isExternal: false,
+                isSelected: ordinal == selectedOrdinal,
+                ffIndex: track.index,
+                srcId: ordinal
+            )
+        }
+    }
+
     /// V3 subtitle identities are external-first combined ordinals. Apple’s
     /// embedded picker carries FFmpeg stream indices instead, and watch detail
     /// lists embedded tracks before external tracks, so the wire identity must
     /// be translated rather than copied.
+    ///
+    /// This overload derives the embedded base by counting the catalog's
+    /// external tracks, which §8 forbids: the combined space also contains a
+    /// downloaded range the catalog never exposes, and a `burn_in_only` track
+    /// still occupies its ordinal. It is correct only *before* any plan exists
+    /// — the initial start, where there is no inventory to consult yet. Use the
+    /// `inventory:` overload everywhere a plan is in hand.
     static func serverCombinedSubtitleIndex(
         ffmpegStreamIndex: Int,
         in version: FileVersion
     ) -> Int? {
-        guard ffmpegStreamIndex >= 0 else { return nil }
-        let tracks = version.subtitleTracks ?? []
-        let externalCount = tracks.filter { $0.external == true }.count
-        let embedded = tracks.filter { $0.external != true }
-        guard let embeddedOrdinal = embedded.firstIndex(where: {
-            $0.index == ffmpegStreamIndex
-        }) else {
+        guard let embeddedOrdinal = embeddedSubtitleOrdinal(
+            ffmpegStreamIndex: ffmpegStreamIndex,
+            in: version
+        ) else {
             return nil
         }
+        let externalCount = (version.subtitleTracks ?? []).filter { $0.external == true }.count
         return externalCount + embeddedOrdinal
+    }
+
+    /// Resolves an embedded FFmpeg stream index against the server's published
+    /// combined ordinals instead of deriving one.
+    ///
+    /// The inventory's `embedded` entries are in container stream order, which
+    /// is the same order the catalog lists them in, so the *n*-th embedded
+    /// catalog track is the *n*-th embedded inventory entry — and that entry
+    /// carries the authoritative `combined_index`. An empty inventory means no
+    /// plan has published one yet, so the counted derivation stands in.
+    static func serverCombinedSubtitleIndex(
+        ffmpegStreamIndex: Int,
+        in version: FileVersion,
+        inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int? {
+        guard !inventory.isEmpty else {
+            return serverCombinedSubtitleIndex(ffmpegStreamIndex: ffmpegStreamIndex, in: version)
+        }
+        guard let embeddedOrdinal = embeddedSubtitleOrdinal(
+            ffmpegStreamIndex: ffmpegStreamIndex,
+            in: version
+        ) else {
+            return nil
+        }
+        let embeddedInventory = inventory.filter { $0.source == "embedded" }
+        guard embeddedInventory.indices.contains(embeddedOrdinal) else { return nil }
+        return embeddedInventory[embeddedOrdinal].combinedIndex
     }
 
     static func serverCombinedSubtitleIndex(
         for playerTrack: PlayerTrack,
         in version: FileVersion
     ) -> Int? {
-        if playerTrack.isExternal {
+        serverCombinedSubtitleIndex(for: playerTrack, in: version, inventory: [])
+    }
+
+    static func serverCombinedSubtitleIndex(
+        for playerTrack: PlayerTrack,
+        in version: FileVersion,
+        inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int? {
+        if SubtitleTrackIdSpace.isSidecar(playerTrack.trackId) || playerTrack.isExternal {
+            // A sidecar player track is minted from a published `SubtitleUrl`,
+            // whose `index` *is* the server's combined ordinal — so this is an
+            // echo, not a derivation, and must not be re-mapped through the
+            // inventory's positions.
             return playerTrack.srcId.flatMap { $0 >= 0 ? $0 : nil }
         }
         guard let ffmpegStreamIndex = playerTrack.ffIndex else { return nil }
         return serverCombinedSubtitleIndex(
             ffmpegStreamIndex: ffmpegStreamIndex,
-            in: version
+            in: version,
+            inventory: inventory
         )
     }
 
+    /// Inverse of `serverCombinedSubtitleIndex`. Same caveat: the counted base
+    /// is only sound before a plan publishes an inventory.
     static func ffmpegSubtitleStreamIndex(
         serverCombinedIndex: Int,
         in version: FileVersion
@@ -211,132 +357,36 @@ enum ApplePlaybackV3PlanAdapter {
         return embedded[embeddedOrdinal].index
     }
 
-    static func makeExecutionPlan(
-        v3: PreparedPlaybackV3,
-        basePlan: PlaybackExecutionPlan,
-        streamRequest: StreamRequest,
-        routeRequirements: PlaybackRouteRequirements
-    ) throws -> PlaybackExecutionPlan {
-        try validate(v3.plan)
-        let plan = v3.plan
-        let delivery = deliveryStrategy(plan.delivery)
-        var engine: PlaybackEngineKind
-        var loopbackSession: LoopbackSessionSpec?
-        switch plan.delivery {
-        case "original_http":
-            // The V3 direct slot describes delivery, while the existing Apple
-            // planner chooses the concrete local executor for that source.
-            engine = basePlan.engine
-            loopbackSession = basePlan.loopbackSession
-        case "server_remux_progressive":
-            engine = .avPlayerNativeDirect
-            loopbackSession = nil
-        case "server_remux_hls", "server_transcode_hls":
-            engine = .avPlayerHLS
-            loopbackSession = nil
-        default:
-            throw ApplePlaybackV3PlanError.unsupportedDelivery(plan.delivery)
+    static func ffmpegSubtitleStreamIndex(
+        serverCombinedIndex: Int,
+        in version: FileVersion,
+        inventory: [PlaybackV3SubtitleInventoryItem]
+    ) -> Int? {
+        guard !inventory.isEmpty else {
+            return ffmpegSubtitleStreamIndex(serverCombinedIndex: serverCombinedIndex, in: version)
         }
-
-        if let transformation = plan.transformations.first(where: { $0.executor == "client" }) {
-            guard let baseLoopbackSession = basePlan.loopbackSession else {
-                throw ApplePlaybackV3PlanError.invalidClientTransformation(
-                    "\(transformation.name) requires the Apple loopback executor"
-                )
-            }
-            engine = .siloPlayerLoopback
-            loopbackSession = forcedLoopbackSession(
-                baseLoopbackSession,
-                transformation: transformation.name
-            )
+        let embeddedInventory = inventory.filter { $0.source == "embedded" }
+        guard let embeddedOrdinal = embeddedInventory.firstIndex(where: {
+            $0.combinedIndex == serverCombinedIndex
+        }) else {
+            // Not an embedded track: external and downloaded ordinals have no
+            // FFmpeg stream to select.
+            return nil
         }
-
-        let routeCapabilities = engine.routeCapabilities
-        let sourceMetadata = PlaybackSourceMetadata(
-            container: plan.source.container,
-            videoCodec: plan.source.videoCodec,
-            audioCodec: plan.source.audioCodec,
-            subtitleCodecs: basePlan.sourceMetadata.subtitleCodecs,
-            dolbyVisionProfile: plan.source.dolbyVisionProfile,
-            // Prefer the server's probed source fact. Catalog metadata remains
-            // the compatibility fallback for plans that omit color_range.
-            colorRange: plan.source.colorRange ?? basePlan.sourceMetadata.colorRange
-        )
-        let transformationTokens = plan.transformations.map {
-            "v3_transform_\($0.executor)_\($0.name)_\($0.recipeVersion)"
-        }
-        let quirkTokens = plan.appliedQuirks.map { "v3_quirk_\($0.registryRevision)_\($0.id)" }
-        let correctionTokens = plan.runtimeCorrections.map { "v3_runtime_correction_\($0)" }
-        let warnings = plan.degradationWarnings.map { "\($0.code): \($0.message)" }
-        let normalization = PlaybackNormalizationSummary(
-            containerMode: plan.delivery == "original_http" ? basePlan.normalizationSummary.containerMode : plan.delivery,
-            videoMode: plan.effectiveRecipe.videoCodec ?? "copy",
-            audioMode: plan.effectiveRecipe.audioCodec
-                ?? (plan.source.audioCodec == nil ? "none" : "copy"),
-            subtitleMode: plan.subtitle.mode
-        )
-
-        return PlaybackExecutionPlan(
-            delivery: delivery,
-            engine: engine,
-            startMode: .absolutePosition(max(0, plan.timeline.playerStartSeconds)),
-            streamRequest: streamRequest,
-            sourceStreamRequest: streamRequest,
-            loopbackSession: engine == .siloPlayerLoopback ? loopbackSession : nil,
-            capabilities: routeCapabilities.backendCapabilities,
-            routeCapabilities: routeCapabilities,
-            requirements: routeRequirements,
-            featureFlagEnabled: true,
-            parityBlockers: routeCapabilities.blockingReasons(for: routeRequirements),
-            decisionTrace: basePlan.decisionTrace + [
-                "protocol_v3", "v3_plan_\(plan.planId)", "v3_delivery_\(plan.delivery)"
-            ] + transformationTokens + quirkTokens + correctionTokens,
-            degradationWarnings: warnings + routeCapabilities.degradationNotes(for: routeRequirements),
-            reason: "v3_\(plan.decisionReason)",
-            playbackSessionId: plan.sessionId,
-            wireDelivery: plan.delivery,
-            serverFeatures: v3.serverFeatures,
-            sourceMetadata: sourceMetadata,
-            normalizationSummary: normalization
-        )
+        let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
+        guard embedded.indices.contains(embeddedOrdinal) else { return nil }
+        return embedded[embeddedOrdinal].index
     }
 
-    private static func forcedLoopbackSession(
-        _ base: LoopbackSessionSpec,
-        transformation: String
-    ) -> LoopbackSessionSpec {
-        let videoMode: LoopbackSessionSpec.VideoMode
-        let manifestMetadata: LoopbackSessionSpec.ManifestMetadata
-        switch transformation {
-        case "client_dv7_to_dv81":
-            videoMode = .convertProfile7To81
-            manifestMetadata = LoopbackSessionSpec.ManifestMetadata(
-                advertisedDolbyVisionProfile: 8,
-                compatibilityBrand: "db1p",
-                videoRange: "PQ",
-                mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
-            )
-        default:
-            videoMode = .passthroughHEVC
-            manifestMetadata = LoopbackSessionSpec.ManifestMetadata(
-                advertisedDolbyVisionProfile: nil,
-                compatibilityBrand: nil,
-                videoRange: "PQ",
-                mayClaimAtmos: base.manifestMetadata.mayClaimAtmos
-            )
-        }
-        return LoopbackSessionSpec(
-            sourceURL: base.sourceURL,
-            headers: base.headers,
-            sourceStartTimeSeconds: base.sourceStartTimeSeconds,
-            sourceBitrateBps: base.sourceBitrateBps,
-            videoMode: videoMode,
-            sourceVideoFrameRate: base.sourceVideoFrameRate,
-            selectedAudio: base.selectedAudio,
-            availableAudioTracks: base.availableAudioTracks,
-            manifestMetadata: manifestMetadata,
-            servingMode: base.servingMode
-        )
+    /// Position of an FFmpeg stream index among the version's embedded subtitle
+    /// tracks, in container stream order.
+    private static func embeddedSubtitleOrdinal(
+        ffmpegStreamIndex: Int,
+        in version: FileVersion
+    ) -> Int? {
+        guard ffmpegStreamIndex >= 0 else { return nil }
+        let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
+        return embedded.firstIndex { $0.index == ffmpegStreamIndex }
     }
 
     private static func subtitleTrack(

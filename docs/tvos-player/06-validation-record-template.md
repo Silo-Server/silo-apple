@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Historical pre-AetherEngine archive.** This document describes the removed custom-player architecture or its pre-migration validation model. It is retained for history only and must not be used as current implementation guidance. See the [AetherEngine-only replacement specification](aetherengine-replacement-spec.md).
+
 # Apple Validation Record Template
 
 Use this template for any Apple-player route validation that could become a

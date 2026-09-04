@@ -302,7 +302,7 @@ extension DownloadedSubtitle {
     /// subtitle's stored `format`, matching the server's `subtitleURLExt`
     /// (playback.go) and Android's `subtitleUrlExtension`
     /// (SubtitleTrackMerge.kt):
-    ///   - `ass` / `ssa` → `.ass` (raw ASS for client-side libass rendering)
+    ///   - `ass` / `ssa` → `.ass` (raw authored subtitle input for Aether)
     ///   - `pgs` / `hdmv_pgs_subtitle` → `.sup` (raw PGS bitmap)
     ///   - everything else (srt/subrip/webvtt/…) → `.vtt`
     var streamURLExtension: String {

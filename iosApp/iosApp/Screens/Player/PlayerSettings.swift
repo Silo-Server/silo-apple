@@ -37,6 +37,95 @@ enum VideoGravity: String, CaseIterable {
     }
 }
 
+/// How much of the source Aether may buffer ahead of the playhead.
+///
+/// Maps to `LoadOptions.forwardBufferSegments`, whose unit is one ~4 s HLS
+/// segment. The engine clamps to 4...2700; beyond roughly 150 segments the real
+/// bound is the session's disk retention budget rather than the count, and 4K
+/// HEVC runs about 10 MB per segment — which is why the rungs below stop at a
+/// five-minute window before jumping to "as much as safely fits".
+///
+/// Device-local, and deliberately not a contract key: how much temporary
+/// storage a buffer may take is a fact about *this* device's free space, not a
+/// preference that should follow the profile onto a phone.
+enum BufferAheadMode: String, CaseIterable {
+    /// Preserves the historical mapping, which is derived from the synced Seek
+    /// Cache toggle rather than chosen here.
+    case automatic = "automatic"
+    /// The engine's own default window, ~40 s.
+    case standard = "standard"
+    /// ~5 minutes, for links that drop out for longer than a few seconds.
+    case extended = "extended"
+    /// Buffer until the session retention budget is full.
+    case unlimited = "unlimited"
+
+    /// The segment count to send, or nil for ``automatic`` — which has no count
+    /// of its own and defers to the Seek Cache preference at load time.
+    var forwardBufferSegments: Int? {
+        switch self {
+        case .automatic: return nil
+        case .standard:  return 10
+        case .extended:  return 75
+        case .unlimited: return Int.max
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .standard:  return "Standard (40 seconds)"
+        case .extended:  return "Extended (5 minutes)"
+        case .unlimited: return "Unlimited"
+        }
+    }
+}
+
+/// Which deinterlacer Aether uses on the software-decode path.
+///
+/// Maps to `LoadOptions.deinterlaceMode`. Interlaced MPEG-2, VC-1 and H.264
+/// route through software decode because AVPlayer will not deinterlace them, so
+/// this is the only place the choice can be made.
+///
+/// Device-local, and deliberately not a contract key: whether the Metal /
+/// VideoToolbox graph is the better deinterlacer is a fact about *this*
+/// device's GPU, not a preference that should follow the profile onto another
+/// one.
+enum DeinterlacePreference: String, CaseIterable {
+    /// The engine's own default: try the hardware graph, fall back to CPU bwdif
+    /// when the linked FFmpeg build or the runtime has no Metal device.
+    case automatic = "auto"
+    /// Force the CPU bwdif/yadif path.
+    case software = "software"
+
+    var label: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .software:  return "Software"
+        }
+    }
+}
+
+/// The output cadence of the hardware deinterlacer.
+///
+/// Maps to `LoadOptions.deinterlaceFieldRate`. Only the hardware path honours
+/// it; the software fallback always emits frame rate, because doubling a CPU
+/// bwdif is the wrong trade. Device-local for the same reason as
+/// ``DeinterlacePreference``.
+enum DeinterlaceFieldRatePreference: String, CaseIterable {
+    /// The engine's own default: one output frame per field (25i to 50p,
+    /// 29.97i to 59.94p).
+    case fullMotion = "field"
+    /// One output frame per field pair (25i to 25p).
+    case film = "frame"
+
+    var label: String {
+        switch self {
+        case .fullMotion: return "Full Motion"
+        case .film:       return "Film"
+        }
+    }
+}
+
 /// The device-scoped settings this client syncs, as generated contract keys.
 ///
 /// The raw strings used to live here as a private enum, which is how
@@ -59,10 +148,8 @@ let playerDeviceSettingKeys: [SettingKey] = [
     .playbackSubtitleAppearance,
     .playerHdrEnabled,
     .playerDolbyVisionEnabled,
-    .playerDvProfile7Hdr10Fallback,
     .playerSeekCacheEnabled,
     .playerPlaybackSpeed,
-    .playerAudioSyncMs,
     .playerSubtitleSyncMs,
     .playerVideoGravity,
     .playerOrientationMode,
@@ -91,10 +178,8 @@ private extension SettingKey {
     static var subtitleAppearance: SettingKey { .playbackSubtitleAppearance }
     static var hdrEnabled: SettingKey { .playerHdrEnabled }
     static var dolbyVisionEnabled: SettingKey { .playerDolbyVisionEnabled }
-    static var dvProfile7HDR10Fallback: SettingKey { .playerDvProfile7Hdr10Fallback }
     static var seekCacheEnabled: SettingKey { .playerSeekCacheEnabled }
     static var playbackSpeed: SettingKey { .playerPlaybackSpeed }
-    static var audioSyncMs: SettingKey { .playerAudioSyncMs }
     static var subtitleSyncMs: SettingKey { .playerSubtitleSyncMs }
     static var videoGravity: SettingKey { .playerVideoGravity }
     static var orientationMode: SettingKey { .playerOrientationMode }
@@ -203,25 +288,82 @@ final class PlayerSettings {
         didSet { defaults.set(dolbyVisionEnabled, forKey: Self.cacheKey(Keys.dolbyVisionEnabled)) }
     }
 
-    var preferProfile7HDR10Fallback: Bool {
-        didSet { defaults.set(preferProfile7HDR10Fallback, forKey: Self.cacheKey(Keys.dvProfile7HDR10Fallback)) }
-    }
-
-    /// Plan-time snapshot of the Dolby Vision decision inputs, consumed by
-    /// the route planner and pushed into PlayerCore before each load.
-    var dolbyVisionPolicySnapshot: DolbyVisionPolicy.Snapshot {
-        DolbyVisionPolicy.Snapshot(
-            dolbyVisionEnabled: dolbyVisionEnabled,
-            preferProfile7HDR10Fallback: preferProfile7HDR10Fallback
-        )
-    }
-
-    /// Spill streamed bytes to temporary disk storage during playback so
-    /// large forward/backward seeks are served locally. Governs the source
-    /// cache only; the loopback segment store's spill is load-bearing for the
-    /// DV route and stays on regardless.
+    /// Retained as the cross-client buffering preference. Aether owns the
+    /// cache implementation; the adapter maps this preference without
+    /// constructing a Silo source cache.
     var seekCacheEnabled: Bool {
         didSet { defaults.set(seekCacheEnabled, forKey: Self.cacheKey(Keys.seekCacheEnabled)) }
+    }
+
+    /// Device-local: when true, codecs Aether cannot stream-copy (TrueHD,
+    /// DTS-HD MA, and friends) are bridged as FLAC up to 7.1 and decoded to
+    /// multichannel LPCM instead of a lossy E-AC-3 rendition capped at 5.1.
+    ///
+    /// Never synced to the server, and deliberately not a contract key: it
+    /// describes what *this* device's audio sink accepts over eARC, which is a
+    /// fact about the room rather than a preference that should follow the
+    /// profile onto a phone. Default on, which is the bridge the previous
+    /// engine always used.
+    var losslessAudioEnabled: Bool {
+        didSet {
+            defaults.set(losslessAudioEnabled, forKey: Self.cacheKey(Keys.losslessAudioEnabled))
+        }
+    }
+
+    /// Device-local: when true, video playback keeps running as the app leaves
+    /// the foreground — Picture in Picture and background audio on iOS, the
+    /// PiP keepalive on tvOS. When false the engine tears the session down as
+    /// soon as the app is backgrounded, so audio stops with the app.
+    ///
+    /// Never synced to the server, and deliberately not a contract key: whether
+    /// leaving the app should keep a video's audio going is a habit of *this*
+    /// device, not a preference that should follow the profile onto a TV.
+    /// Default on, which is Aether's own default. Audiobooks are unaffected —
+    /// their controller never reads this and always keeps playing.
+    var backgroundPlaybackEnabled: Bool {
+        didSet {
+            defaults.set(
+                backgroundPlaybackEnabled,
+                forKey: Self.cacheKey(Keys.backgroundPlaybackEnabled)
+            )
+        }
+    }
+
+    /// Device-local: how far ahead of the playhead Aether may buffer.
+    ///
+    /// Never synced to the server, and deliberately not a contract key — see
+    /// ``BufferAheadMode``. Default ``BufferAheadMode/automatic``, which keeps
+    /// the historical behaviour of deriving the window from ``seekCacheEnabled``.
+    var bufferAhead: BufferAheadMode {
+        didSet {
+            defaults.set(bufferAhead.rawValue, forKey: Self.cacheKey(Keys.bufferAhead))
+        }
+    }
+
+    /// Device-local: which deinterlacer runs on interlaced sources.
+    ///
+    /// Never synced to the server, and deliberately not a contract key — see
+    /// ``DeinterlacePreference``. Default ``DeinterlacePreference/automatic``,
+    /// which is Aether's own default, so nothing changes until a user picks.
+    var deinterlaceMode: DeinterlacePreference {
+        didSet {
+            defaults.set(deinterlaceMode.rawValue, forKey: Self.cacheKey(Keys.deinterlaceMode))
+        }
+    }
+
+    /// Device-local: the hardware deinterlacer's output cadence.
+    ///
+    /// Never synced to the server, and deliberately not a contract key — see
+    /// ``DeinterlaceFieldRatePreference``. Default
+    /// ``DeinterlaceFieldRatePreference/fullMotion``, which is Aether's own
+    /// default.
+    var deinterlaceFieldRate: DeinterlaceFieldRatePreference {
+        didSet {
+            defaults.set(
+                deinterlaceFieldRate.rawValue,
+                forKey: Self.cacheKey(Keys.deinterlaceFieldRate)
+            )
+        }
     }
 
     var subtitleAppearance: SubtitleAppearance {
@@ -307,10 +449,6 @@ final class PlayerSettings {
         didSet { defaults.set(subtitlePosition, forKey: Keys.subtitlePosition) }
     }
 
-    var audioSyncMs: Int {
-        didSet { defaults.set(audioSyncMs, forKey: Self.cacheKey(Keys.audioSyncMs)) }
-    }
-
     var subtitleSyncMs: Int {
         didSet { defaults.set(subtitleSyncMs, forKey: Self.cacheKey(Keys.subtitleSyncMs)) }
     }
@@ -361,8 +499,12 @@ final class PlayerSettings {
             Keys.autoSkipCredits: false,
             Keys.hdrEnabled: true,
             Keys.dolbyVisionEnabled: true,
-            Keys.dvProfile7HDR10Fallback: false,
             Keys.seekCacheEnabled: true,
+            Keys.losslessAudioEnabled: true,
+            Keys.backgroundPlaybackEnabled: true,
+            Keys.bufferAhead: BufferAheadMode.automatic.rawValue,
+            Keys.deinterlaceMode: DeinterlacePreference.automatic.rawValue,
+            Keys.deinterlaceFieldRate: DeinterlaceFieldRatePreference.fullMotion.rawValue,
             Keys.subtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.inheritedSubtitleAppearance: SubtitleAppearance.default.jsonString,
             Keys.subtitleUsesDeviceAppearanceOverride: false,
@@ -374,7 +516,6 @@ final class PlayerSettings {
             Keys.subtitleBackgroundColor: "#000000",
             Keys.subtitleBackgroundOpacityPercent: 0,
             Keys.subtitlePosition: 100,
-            Keys.audioSyncMs: 0,
             Keys.subtitleSyncMs: 0,
             Keys.playbackSpeed: 1.0,
             Keys.videoGravity: VideoGravity.fit.rawValue,
@@ -390,16 +531,24 @@ final class PlayerSettings {
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
-        preferProfile7HDR10Fallback = Self.cachedBool(
-            defaults,
-            key: Keys.dvProfile7HDR10Fallback,
-            defaultValue: false
-        )
         seekCacheEnabled = Self.cachedBool(
             defaults,
             key: Keys.seekCacheEnabled,
             defaultValue: true
         )
+        losslessAudioEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.losslessAudioEnabled,
+            defaultValue: true
+        )
+        backgroundPlaybackEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.backgroundPlaybackEnabled,
+            defaultValue: true
+        )
+        bufferAhead = Self.cachedBufferAhead(defaults)
+        deinterlaceMode = Self.cachedDeinterlaceMode(defaults)
+        deinterlaceFieldRate = Self.cachedDeinterlaceFieldRate(defaults)
         subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
         inheritedSubtitleAppearance = SubtitleAppearance.decode(
             from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
@@ -421,7 +570,6 @@ final class PlayerSettings {
         subtitleBackgroundColor = defaults.string(forKey: Keys.subtitleBackgroundColor) ?? "#000000"
         subtitleBackgroundOpacityPercent = defaults.integer(forKey: Keys.subtitleBackgroundOpacityPercent)
         subtitlePosition = defaults.integer(forKey: Keys.subtitlePosition)
-        audioSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))
         subtitleSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))
         playbackSpeed = Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
         videoGravity = VideoGravity(rawValue: defaults.string(forKey: Self.cacheKey(Keys.videoGravity)) ?? VideoGravity.fit.rawValue) ?? .fit
@@ -590,14 +738,39 @@ final class PlayerSettings {
         flusher.enqueue(.dolbyVisionEnabled, value: .bool(enabled))
     }
 
-    func setPreferProfile7HDR10Fallback(_ enabled: Bool) {
-        preferProfile7HDR10Fallback = enabled
-        flusher.enqueue(.dvProfile7HDR10Fallback, value: .bool(enabled))
-    }
-
     func setSeekCacheEnabled(_ enabled: Bool) {
         seekCacheEnabled = enabled
         flusher.enqueue(.seekCacheEnabled, value: .bool(enabled))
+    }
+
+    /// Choose the bridge Aether uses for non-stream-copyable audio codecs.
+    /// Purely local — there is no contract key to enqueue.
+    func setLosslessAudioEnabled(_ enabled: Bool) {
+        losslessAudioEnabled = enabled
+    }
+
+    /// Choose whether video playback survives leaving the app. Purely local —
+    /// there is no contract key to enqueue.
+    func setBackgroundPlaybackEnabled(_ enabled: Bool) {
+        backgroundPlaybackEnabled = enabled
+    }
+
+    /// Choose how far ahead Aether buffers. Purely local — there is no contract
+    /// key to enqueue.
+    func setBufferAhead(_ mode: BufferAheadMode) {
+        bufferAhead = mode
+    }
+
+    /// Choose the deinterlacer for interlaced sources. Purely local — there is
+    /// no contract key to enqueue.
+    func setDeinterlaceMode(_ mode: DeinterlacePreference) {
+        deinterlaceMode = mode
+    }
+
+    /// Choose the hardware deinterlacer's output cadence. Purely local — there
+    /// is no contract key to enqueue.
+    func setDeinterlaceFieldRate(_ rate: DeinterlaceFieldRatePreference) {
+        deinterlaceFieldRate = rate
     }
 
     func setPlaybackSpeed(_ rate: Double) {
@@ -614,11 +787,6 @@ final class PlayerSettings {
     func setPlayerOrientationMode(_ mode: PlayerOrientationMode) {
         playerOrientationMode = mode
         flusher.enqueue(.orientationMode, value: .string(mode.rawValue))
-    }
-
-    func setAudioSyncMs(_ milliseconds: Int) {
-        audioSyncMs = max(-5000, min(milliseconds, 5000))
-        flusher.enqueue(.audioSyncMs, value: .int(audioSyncMs))
     }
 
     func setSubtitleSyncMs(_ milliseconds: Int) {
@@ -667,6 +835,13 @@ final class PlayerSettings {
     @MainActor
     func resetAllDeviceSettings() async {
         let resetScopeID = Self.currentScopeIdentifier
+        // The device-local preferences have no canonical row to delete, so the
+        // DELETE loop below cannot reach them and the refresh that follows
+        // re-adopts whatever this device still has cached. Restore them here
+        // instead — before the first suspension, so each `didSet` writes its
+        // default into the partition this reset was started in rather than
+        // whichever profile is active by the time the network settles.
+        resetDeviceLocalPreferences()
         // Reset is an explicit instruction to discard the pre-contract local
         // values. Retire migration before the follow-up refresh or that refresh
         // can snapshot and import the values whose canonical rows were just
@@ -689,6 +864,21 @@ final class PlayerSettings {
                 applyCachedSettingsForCurrentScope()
             }
         }
+    }
+
+    /// Restore the preferences this device owns outright to their defaults.
+    ///
+    /// These are the ones deliberately kept off the contract — lossless
+    /// multichannel audio, background playback, the buffer-ahead window and the
+    /// two deinterlacing choices. "Reset Playback Overrides" is a promise about
+    /// the whole screen, not only the rows that happen to sync, so they are
+    /// restored to the same values a fresh install would show.
+    private func resetDeviceLocalPreferences() {
+        losslessAudioEnabled = true
+        backgroundPlaybackEnabled = true
+        bufferAhead = .automatic
+        deinterlaceMode = .automatic
+        deinterlaceFieldRate = .fullMotion
     }
 
     /// Send everything queued and wait for it.
@@ -750,16 +940,10 @@ final class PlayerSettings {
         )
         hdrEnabled = effectiveBool(.hdrEnabled, in: effectiveByKey, default: true)
         dolbyVisionEnabled = effectiveBool(.dolbyVisionEnabled, in: effectiveByKey, default: true)
-        preferProfile7HDR10Fallback = effectiveBool(
-            .dvProfile7HDR10Fallback,
-            in: effectiveByKey,
-            default: false
-        )
         seekCacheEnabled = effectiveBool(.seekCacheEnabled, in: effectiveByKey, default: true)
         playbackSpeed = Self.clampPlaybackSpeed(
             effectiveByKey[.playbackSpeed]?.value.doubleValue ?? 1.0
         )
-        audioSyncMs = effectiveByKey[.audioSyncMs]?.value.intValue ?? 0
         subtitleSyncMs = effectiveByKey[.subtitleSyncMs]?.value.intValue ?? 0
         videoGravity = VideoGravity(
             rawValue: effectiveByKey[.videoGravity]?.value.stringValue ?? VideoGravity.fit.rawValue
@@ -880,9 +1064,6 @@ final class PlayerSettings {
             .dolbyVisionEnabled: .bool(
                 Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
             ),
-            .dvProfile7HDR10Fallback: .bool(
-                Self.cachedBool(defaults, key: Keys.dvProfile7HDR10Fallback, defaultValue: false)
-            ),
             .seekCacheEnabled: .bool(
                 Self.cachedBool(defaults, key: Keys.seekCacheEnabled, defaultValue: true)
             ),
@@ -891,7 +1072,6 @@ final class PlayerSettings {
                     Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
                 )
             ),
-            .audioSyncMs: .int(defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))),
             .subtitleSyncMs: .int(defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))),
             .videoGravity: .string(
                 defaults.string(forKey: Self.cacheKey(Keys.videoGravity)) ?? VideoGravity.fit.rawValue
@@ -924,20 +1104,27 @@ final class PlayerSettings {
         )
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
-        preferProfile7HDR10Fallback = Self.cachedBool(
-            defaults,
-            key: Keys.dvProfile7HDR10Fallback,
-            defaultValue: false
-        )
         seekCacheEnabled = Self.cachedBool(
             defaults,
             key: Keys.seekCacheEnabled,
             defaultValue: true
         )
+        losslessAudioEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.losslessAudioEnabled,
+            defaultValue: true
+        )
+        backgroundPlaybackEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.backgroundPlaybackEnabled,
+            defaultValue: true
+        )
+        bufferAhead = Self.cachedBufferAhead(defaults)
+        deinterlaceMode = Self.cachedDeinterlaceMode(defaults)
+        deinterlaceFieldRate = Self.cachedDeinterlaceFieldRate(defaults)
         playbackSpeed = Self.clampPlaybackSpeed(
             Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
         )
-        audioSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.audioSyncMs))
         subtitleSyncMs = defaults.integer(forKey: Self.cacheKey(Keys.subtitleSyncMs))
         videoGravity = VideoGravity(
             rawValue: defaults.string(forKey: Self.cacheKey(Keys.videoGravity)) ?? VideoGravity.fit.rawValue
@@ -1070,10 +1257,8 @@ final class PlayerSettings {
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
         defaults.set(true, forKey: key(Keys.hdrEnabled))
         defaults.set(true, forKey: key(Keys.dolbyVisionEnabled))
-        defaults.set(false, forKey: key(Keys.dvProfile7HDR10Fallback))
         defaults.set(true, forKey: key(Keys.seekCacheEnabled))
         defaults.set(1.0, forKey: key(Keys.playbackSpeed))
-        defaults.set(0, forKey: key(Keys.audioSyncMs))
         defaults.set(0, forKey: key(Keys.subtitleSyncMs))
         defaults.set(VideoGravity.fit.rawValue, forKey: key(Keys.videoGravity))
         defaults.set(
@@ -1154,6 +1339,29 @@ final class PlayerSettings {
         return stored > 0 ? stored : nil
     }
 
+    private static func cachedBufferAhead(_ defaults: UserDefaults) -> BufferAheadMode {
+        BufferAheadMode(
+            rawValue: defaults.string(forKey: cacheKey(Keys.bufferAhead))
+                ?? BufferAheadMode.automatic.rawValue
+        ) ?? .automatic
+    }
+
+    private static func cachedDeinterlaceMode(_ defaults: UserDefaults) -> DeinterlacePreference {
+        DeinterlacePreference(
+            rawValue: defaults.string(forKey: cacheKey(Keys.deinterlaceMode))
+                ?? DeinterlacePreference.automatic.rawValue
+        ) ?? .automatic
+    }
+
+    private static func cachedDeinterlaceFieldRate(
+        _ defaults: UserDefaults
+    ) -> DeinterlaceFieldRatePreference {
+        DeinterlaceFieldRatePreference(
+            rawValue: defaults.string(forKey: cacheKey(Keys.deinterlaceFieldRate))
+                ?? DeinterlaceFieldRatePreference.fullMotion.rawValue
+        ) ?? .fullMotion
+    }
+
     private static func cachedDouble(_ defaults: UserDefaults, key: String, defaultValue: Double) -> Double {
         let scopedKey = cacheKey(key)
         guard defaults.object(forKey: scopedKey) != nil else {
@@ -1199,8 +1407,12 @@ final class PlayerSettings {
         static let autoSkipCredits = "skipCredits"
         static let hdrEnabled = "player.hdrEnabled"
         static let dolbyVisionEnabled = "player.dolbyVisionEnabled"
-        static let dvProfile7HDR10Fallback = "player.dvProfile7HDR10Fallback"
         static let seekCacheEnabled = "player.seekCacheEnabled"
+        static let losslessAudioEnabled = "player.losslessAudioEnabled"
+        static let backgroundPlaybackEnabled = "player.backgroundPlaybackEnabled"
+        static let bufferAhead = "player.bufferAhead"
+        static let deinterlaceMode = "player.deinterlaceMode"
+        static let deinterlaceFieldRate = "player.deinterlaceFieldRate"
         static let subtitleAppearance = "player.subtitleAppearance"
         static let inheritedSubtitleAppearance = "player.inheritedSubtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
@@ -1212,7 +1424,6 @@ final class PlayerSettings {
         static let subtitleBackgroundColor = "player.subtitleBackgroundColor"
         static let subtitleBackgroundOpacityPercent = "player.subtitleBackgroundOpacityPercent"
         static let subtitlePosition = "player.subtitlePosition"
-        static let audioSyncMs = "player.audioSyncMs"
         static let subtitleSyncMs = "player.subtitleSyncMs"
         static let playbackSpeed = "player.playbackSpeed"
         static let videoGravity = "player.videoGravity"

@@ -86,7 +86,7 @@ final class RemotePlaybackIdentityManager {
 
     func matches(_ offer: SiloControlHandoffOffer, controllerDeviceId: String) -> Bool {
         guard let activeIdentity else { return false }
-        return activeIdentity.serverId == offer.serverId
+        return ServerRegistry.serverIdsMatch(activeIdentity.serverId, offer.serverId)
             && activeIdentity.profileId == offer.profileId
             && activeIdentity.controllerDeviceId == controllerDeviceId
     }
@@ -270,7 +270,10 @@ final class RemotePlaybackIdentityManager {
         }
         activationGenerationPending = generationID
         let previousIdentity = activeIdentity
-        let usesDifferentServer = scope.serverId != ServerRegistry.shared.activeServerId
+        let usesDifferentServer = !ServerRegistry.serverIdsMatch(
+            scope.serverId,
+            ServerRegistry.shared.activeServerId
+        )
         await HTTPClient.shared.cancelInFlightRequests()
         guard activationGenerationPending == generationID,
               !Task.isCancelled else {

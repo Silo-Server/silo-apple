@@ -142,7 +142,6 @@ struct PlayerSettingsSheet: View {
         NavigationStack {
             List {
                 videoSection
-                audioSection
                 subtitlesSection
                 sessionSection
                 advancedSection
@@ -180,22 +179,8 @@ struct PlayerSettingsSheet: View {
                     }
                 }
             }
-
-            if viewModel.backendCapabilities.supportsHDRToggle {
-                Toggle("HDR Passthrough", isOn: Binding(
-                    get: { viewModel.settings.hdrEnabled },
-                    set: { newValue in
-                        viewModel.setHDREnabled(newValue)
-                    }
-                ))
-                .tint(.continuumAccent)
-            }
         } header: {
             Text("Video")
-        } footer: {
-            if viewModel.backendCapabilities.supportsHDRToggle {
-                Text("Disable HDR if colors look washed out or your display tone-maps incorrectly.")
-            }
         }
     }
 
@@ -245,27 +230,6 @@ struct PlayerSettingsSheet: View {
         }
         .navigationTitle("Quality")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    @ViewBuilder
-    private var audioSection: some View {
-        if viewModel.backendCapabilities.supportsAudioDelay {
-            Section("Audio") {
-                RangeSpinner(
-                    title: "Audio Delay",
-                    value: Binding(
-                        get: { viewModel.settings.audioSyncMs },
-                        set: { viewModel.settings.audioSyncMs = $0 }
-                    ),
-                    range: -5000...5000,
-                    step: 50,
-                    display: { formatMs($0) },
-                    onCommit: {
-                        viewModel.setAudioSyncMilliseconds(viewModel.settings.audioSyncMs)
-                    }
-                )
-            }
-        }
     }
 
     @ViewBuilder
@@ -546,7 +510,6 @@ struct PlayerSettingsSheet: View {
             routeSection
             qualitySection
             playbackSection
-            hdrSection
             syncSection
             sleepSection
             subtitleStylingSection
@@ -659,63 +622,23 @@ struct PlayerSettingsSheet: View {
         }
     }
 
-    private var hdrSection: some View {
-        Group {
-            if viewModel.backendCapabilities.supportsHDRToggle {
-                Section {
-                    Toggle("HDR passthrough", isOn: Binding(
-                        get: { viewModel.settings.hdrEnabled },
-                        set: { newValue in
-                            viewModel.setHDREnabled(newValue)
-                        }
-                    ))
-                    .tint(.continuumAccent)
-                    Text("Disable if colors look washed out or your display tone-maps incorrectly.")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.6))
-                } header: {
-                    Text("Display")
-                }
-            }
-        }
-    }
-
     private var syncSection: some View {
         Group {
-            if viewModel.backendCapabilities.supportsAudioDelay
-                || viewModel.backendCapabilities.supportsSubtitleDelay {
+            if viewModel.backendCapabilities.supportsSubtitleDelay {
                 Section("Sync") {
-                    if viewModel.backendCapabilities.supportsAudioDelay {
-                        RangeSpinner(
-                            title: "Audio delay",
-                            value: Binding(
-                                get: { viewModel.settings.audioSyncMs },
-                                set: { viewModel.settings.audioSyncMs = $0 }
-                            ),
-                            range: -5000...5000,
-                            step: 50,
-                            display: { formatMs($0) },
-                            onCommit: {
-                                viewModel.setAudioSyncMilliseconds(viewModel.settings.audioSyncMs)
-                            }
-                        )
-                    }
-
-                    if viewModel.backendCapabilities.supportsSubtitleDelay {
-                        RangeSpinner(
-                            title: "Subtitle delay",
-                            value: Binding(
-                                get: { viewModel.settings.subtitleSyncMs },
-                                set: { viewModel.settings.subtitleSyncMs = $0 }
-                            ),
-                            range: -10000...10000,
-                            step: 100,
-                            display: { formatMs($0) },
-                            onCommit: {
-                                viewModel.setSubtitleSyncMilliseconds(viewModel.settings.subtitleSyncMs)
-                            }
-                        )
-                    }
+                    RangeSpinner(
+                        title: "Subtitle delay",
+                        value: Binding(
+                            get: { viewModel.settings.subtitleSyncMs },
+                            set: { viewModel.settings.subtitleSyncMs = $0 }
+                        ),
+                        range: -10000...10000,
+                        step: 100,
+                        display: { formatMs($0) },
+                        onCommit: {
+                            viewModel.setSubtitleSyncMilliseconds(viewModel.settings.subtitleSyncMs)
+                        }
+                    )
                 }
             }
         }

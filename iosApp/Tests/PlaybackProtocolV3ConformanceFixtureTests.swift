@@ -21,8 +21,8 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
             bundleClass: Self.self
         )
         XCTAssertEqual(matrix.schemaVersion, 1)
-        XCTAssertEqual(matrix.plannerScenarios.count, 17)
-        XCTAssertEqual(matrix.replanScenarios.count, 9)
+        XCTAssertEqual(matrix.plannerScenarios.count, 20)
+        XCTAssertEqual(matrix.replanScenarios.count, 10)
         XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
         let categories = Set(
@@ -41,6 +41,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
                 "available_qualities",
                 "track_change_replan",
                 "quality_change_replan",
+                "output_change_replan",
                 "idempotent_replan",
                 "concurrent_replan",
                 "mid_seek_replan",
@@ -73,6 +74,20 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(hdr10.expected.delivery, "original_http")
         XCTAssertEqual(hdr10.expected.claims?.video.hdr10, true)
 
+        let clientManaged = try plannerScenario(named: "client_managed_hdr_selected_audio", in: matrix)
+        XCTAssertEqual(clientManaged.source.dynamicRange, "hdr10")
+        XCTAssertEqual(clientManaged.request.audioTrackIndex, 1)
+        XCTAssertEqual(
+            Set(clientManaged.request.clientPlaybackContext.deliveries["original_http"]?.validatedClaims ?? []),
+            Set([
+                PlaybackProtocolV3.clientManagedDynamicRangeClaim,
+                PlaybackProtocolV3.clientSelectedAudioTrackClaim
+            ])
+        )
+        XCTAssertEqual(clientManaged.expected.delivery, "original_http")
+        XCTAssertEqual(clientManaged.expected.decisionReason, "client_managed_dynamic_range")
+        XCTAssertEqual(clientManaged.expected.selectedTracks?.audio?.index, 1)
+
         let dolbyVision = try plannerScenario(named: "dolby_vision_8_exact_direct", in: matrix)
         XCTAssertEqual(dolbyVision.source.dolbyVisionProfile, 8)
         XCTAssertEqual(dolbyVision.expected.delivery, "original_http")
@@ -82,6 +97,37 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(fallback.source.dolbyVisionProfile, 7)
         XCTAssertEqual(fallback.expected.delivery, "server_remux_progressive")
         XCTAssertEqual(fallback.expected.transformations?.map(\.executor), ["server"])
+
+        let hdrToneMap = try plannerScenario(named: "hdr10_to_sdr_tone_map", in: matrix)
+        XCTAssertEqual(hdrToneMap.source.dynamicRange, "hdr10")
+        XCTAssertEqual(hdrToneMap.expected.delivery, "server_transcode_hls")
+        XCTAssertEqual(
+            hdrToneMap.expected.transformations?.last,
+            PlaybackV3Transformation(
+                name: "hdr_to_sdr_tonemap",
+                executor: "server",
+                recipeVersion: "1",
+                validatedClaims: ["hdr_metadata_removed", "sdr_bt709_output"]
+            )
+        )
+        XCTAssertEqual(
+            hdrToneMap.expected.availableQualities?.first {
+                $0.label == "1080p-medium"
+            }?.displayName,
+            "1080p Medium"
+        )
+
+        let dolbyVisionToneMap = try plannerScenario(
+            named: "dolby_vision_7_id6_to_sdr_tone_map",
+            in: matrix
+        )
+        XCTAssertEqual(dolbyVisionToneMap.source.dolbyVisionProfile, 7)
+        XCTAssertEqual(dolbyVisionToneMap.source.dvBlCompatId, 6)
+        XCTAssertEqual(dolbyVisionToneMap.expected.delivery, "server_transcode_hls")
+        XCTAssertEqual(
+            dolbyVisionToneMap.expected.transformations?.last?.name,
+            "hdr_to_sdr_tonemap"
+        )
 
         let audioConversion = try plannerScenario(named: "truehd_audio_conversion", in: matrix)
         XCTAssertEqual(audioConversion.source.audioCodec, "truehd")
@@ -116,7 +162,28 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
 
         XCTAssertTrue(
             matrix.replanScenarios.allSatisfy { $0.request.failure == nil },
-            "track, quality, and seek-reanchor intent vectors must omit failure"
+            "track, quality, output and seek-reanchor intent vectors must omit failure"
+        )
+
+        // An output-route change is an intent replan, not a failure recovery:
+        // the golden vector names the operation the client must send and omits
+        // the failure block the server would reject.
+        let outputChange = try replanScenario(named: "output_change", in: matrix)
+        XCTAssertEqual(
+            outputChange.request.operation,
+            PlaybackProtocolV3.ReplanOperation.outputChange
+        )
+        XCTAssertNil(outputChange.request.failure)
+        XCTAssertEqual(outputChange.expected.preserveUnmodifiedTracks, true)
+        XCTAssertEqual(
+            PlaybackSessionBridge.replanOperation(
+                forClassification: "output_route_changed",
+                serverFeatures: [
+                    PlaybackProtocolV3.planFeature,
+                    PlaybackProtocolV3.outputChangeFeature
+                ]
+            ),
+            outputChange.request.operation
         )
 
         let recovery = try protocolScenario(named: "failure_recovery_preserves_intent", in: matrix)
@@ -173,6 +240,13 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         try XCTUnwrap(matrix.plannerScenarios.first { $0.name == name })
     }
 
+    private func replanScenario(
+        named name: String,
+        in matrix: PlaybackV3ConformanceMatrix
+    ) throws -> PlaybackV3ConformanceReplanScenario {
+        try XCTUnwrap(matrix.replanScenarios.first { $0.name == name })
+    }
+
     private func protocolScenario(
         named name: String,
         in matrix: PlaybackV3ConformanceMatrix
@@ -208,6 +282,7 @@ private struct PlaybackV3ConformanceStartRequest: Decodable {
     let qualityPreference: String
     let progressPersistence: String?
     let startPosition: Double?
+    let audioTrackIndex: Int?
     let subtitleTrackId: String?
     let subtitleTrackIndex: Int?
     let clientCapabilities: PlaybackV3ConformanceCapabilities
@@ -236,6 +311,7 @@ private struct PlaybackV3ConformanceDevice: Decodable {
 private struct PlaybackV3ConformanceDelivery: Decodable {
     let enabled: Bool
     let supportedOnDevice: Bool
+    let validatedClaims: [String]?
     let transformations: [PlaybackV3Transformation]?
 }
 

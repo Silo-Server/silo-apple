@@ -139,6 +139,13 @@ struct MacPlayerOptionsPanel: View {
 
                 routeStatus
                     .padding(.top, 8)
+
+                // Same rows tvOS and iOS report, in the single-column
+                // sectioned dressing — the panel is narrow, so the tvOS
+                // two-column split would crush the value column.
+                PlaybackStatsPanel(stats: viewModel.playbackStats)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
             }
         }
     }

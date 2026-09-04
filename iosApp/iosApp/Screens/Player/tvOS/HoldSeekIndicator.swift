@@ -1,4 +1,5 @@
 #if os(tvOS)
+import CoreGraphics
 import SwiftUI
 
 /// Floating chip shown during a seek session. The transport overlay is
@@ -12,9 +13,22 @@ struct HoldSeekIndicator: View {
     let rate: Int
     let previewTime: Double
     let duration: Double
+    let previewImage: CGImage?
 
     var body: some View {
         VStack(spacing: 16) {
+            if let previewImage {
+                Image(decorative: previewImage, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 480, height: 270)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.55), radius: 18, y: 7)
+            }
             chip
             if duration > 0 {
                 miniProgress

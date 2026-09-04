@@ -123,7 +123,7 @@ struct AudiobookDetailContent: View {
             }
             .ignoresSafeArea(edges: .top)
         }
-        .continuumBackground()
+        .continuumPageBackground()
     }
 
     private var phoneSections: some View {
@@ -535,7 +535,7 @@ struct AudiobookDetailContent: View {
 
     private func relatedRail(items: [AudiobookRelatedItem]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: railSpacing) {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: railSpacing) {
                 ForEach(items) { item in
                     Button {
                         onNavigateToItem(item.contentId)
@@ -569,6 +569,7 @@ struct AudiobookDetailContent: View {
                 }
             }
             .padding(.vertical, 4)
+            .phoneMediaRailBounds()
         }
     }
 

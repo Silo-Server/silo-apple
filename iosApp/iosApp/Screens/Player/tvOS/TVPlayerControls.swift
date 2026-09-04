@@ -1,4 +1,5 @@
 #if os(tvOS)
+import CoreGraphics
 import SwiftUI
 
 enum TVPlayerTimeDisplayMode: Equatable {
@@ -18,6 +19,10 @@ enum TVPlayerTimeDisplayMode: Equatable {
 /// either hides the HUD, dismisses the overlay, or exits the player
 /// depending on what's on screen.
 struct TVPlayerControls: View {
+    private static let transportHorizontalInset: CGFloat = 80
+    private static let scrubPreviewCardWidth: CGFloat = 340
+    private static let scrubPreviewBottomInset: CGFloat = 300
+
     let viewModel: PlayerViewModel
     let showsTimelinePreview: Bool
     let timeDisplayMode: TVPlayerTimeDisplayMode
@@ -71,6 +76,7 @@ struct TVPlayerControls: View {
     @FocusState private var focusedTransportButton: TVPlayerTransportCluster.FocusTarget?
     @FocusState private var focusedHUDTab: TVPlayerInfoHUD.Tab?
     @FocusState private var focusedIntroAction: IntroAction?
+    @FocusState private var isCreditsSkipFocused: Bool
 
     private var isHUDPresented: Bool { viewModel.isHUDPresented }
 
@@ -90,6 +96,10 @@ struct TVPlayerControls: View {
             }
             if viewModel.showIntroSkip {
                 introSkipLayer
+                    .transition(.opacity)
+            }
+            if viewModel.showCreditsSkip {
+                creditsSkipLayer
                     .transition(.opacity)
             }
             if isHUDPresented {
@@ -159,6 +169,18 @@ struct TVPlayerControls: View {
                 }
             }
         }
+        .onChange(of: viewModel.showCreditsSkip) { _, visible in
+            if visible {
+                if !isHUDPresented {
+                    isCreditsSkipFocused = true
+                }
+            } else {
+                isCreditsSkipFocused = false
+                if viewModel.showControls && !isHUDPresented {
+                    isScrubberFocused = true
+                }
+            }
+        }
         .onChange(of: viewModel.requestedTVHUDEntryPoint) { _, entryPoint in
             guard let entryPoint else { return }
             applyHUDEntryPoint(entryPoint)
@@ -209,6 +231,8 @@ struct TVPlayerControls: View {
         } else if viewModel.showControls {
             if viewModel.showIntroSkip && focusedIntroAction == nil {
                 focusedIntroAction = .skip
+            } else if viewModel.showCreditsSkip && !isCreditsSkipFocused {
+                isCreditsSkipFocused = true
             } else if focusedTransportButton == nil && !isScrubberFocused {
                 isScrubberFocused = true
             }
@@ -229,7 +253,7 @@ struct TVPlayerControls: View {
                 passiveTimelineBar
                 timeRow
             }
-            .padding(.horizontal, 80)
+            .padding(.horizontal, Self.transportHorizontalInset)
             .padding(.bottom, 48)
         }
         .allowsHitTesting(false)
@@ -276,11 +300,27 @@ struct TVPlayerControls: View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
             statusColumn
-                .padding(.top, 64)
+                .padding(.top, viewModel.isBuffering ? 120 : 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
+                GeometryReader { proxy in
+                    scrubPreviewCard(image)
+                        .frame(width: Self.scrubPreviewCardWidth)
+                        .padding(.leading, scrubPreviewLeadingInset(in: proxy.size.width))
+                        .padding(.bottom, Self.scrubPreviewBottomInset)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .bottomLeading
+                        )
+                }
+                .transition(.opacity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
             transportStack
-                .padding(.horizontal, 80)
+                .padding(.horizontal, Self.transportHorizontalInset)
                 .padding(.bottom, 48)
         }
         .onAppear {
@@ -292,6 +332,9 @@ struct TVPlayerControls: View {
             if viewModel.showIntroSkip {
                 isScrubberFocused = false
                 focusedIntroAction = .skip
+            } else if viewModel.showCreditsSkip {
+                isScrubberFocused = false
+                isCreditsSkipFocused = true
             } else {
                 isScrubberFocused = true
             }
@@ -313,26 +356,46 @@ struct TVPlayerControls: View {
         }
     }
 
-    /// Buffering + sleep-timer chips float in the top-right when active.
-    /// Everything else that used to live in the hero strip (title, series,
-    /// badges, year, runtime, chapter) is now in the HUD's Info tab.
+    private func scrubPreviewCard(_ image: CGImage) -> some View {
+        VStack(spacing: 8) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 320, height: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .monospacedDigit()
+        }
+        .padding(10)
+        .siloPlayerGlass(
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous),
+            tint: Color.black.opacity(0.28)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 7)
+    }
+
+    /// Aligns the preview with the scrubber puck while keeping the complete
+    /// card inside the same horizontal bounds as the transport timeline.
+    private func scrubPreviewLeadingInset(in containerWidth: CGFloat) -> CGFloat {
+        let trackWidth = max(containerWidth - (Self.transportHorizontalInset * 2), 0)
+        let playheadCenter = Self.transportHorizontalInset
+            + (trackWidth * CGFloat(progressFraction))
+        let minimumLeading = Self.transportHorizontalInset
+        let maximumLeading = containerWidth
+            - Self.transportHorizontalInset
+            - Self.scrubPreviewCardWidth
+        return min(
+            max(playheadCenter - (Self.scrubPreviewCardWidth / 2), minimumLeading),
+            maximumLeading
+        )
+    }
+
+    /// The sleep-timer chip floats in the top-right when active. Buffering is
+    /// owned by the player shell so it remains visible outside this overlay.
     private var statusColumn: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            if viewModel.isBuffering {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .tint(.white)
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.9)
-                    Text("Buffering")
-                        .font(.continuumSmall.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .siloPlayerGlass(in: Capsule())
-            }
-
             if viewModel.sleepTimer.isActive {
                 Label(formatCountdown(viewModel.sleepTimer.remainingSeconds),
                       systemImage: "moon.zzz.fill")
@@ -354,6 +417,25 @@ struct TVPlayerControls: View {
             // Group Skip + Cancel as their own focus region so the engine can
             // move between them and the transport row below by direction.
             .focusSection()
+    }
+
+    private var creditsSkipLayer: some View {
+        Button {
+            viewModel.skipCredits()
+        } label: {
+            Label("Skip Credits", systemImage: "forward.end.fill")
+                .font(.system(size: 26, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 220)
+        }
+        .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
+        .focused($isCreditsSkipFocused)
+        .accessibilityLabel("Skip Credits")
+        .padding(.horizontal, 80)
+        .padding(.bottom, viewModel.showControls && !isHUDPresented ? 156 : 96)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .focusSection()
     }
 
     private var introSkipButton: some View {

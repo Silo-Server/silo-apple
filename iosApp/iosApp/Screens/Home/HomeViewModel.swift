@@ -1,5 +1,156 @@
 import Foundation
 
+/// Device-local, per-server/profile Home row visibility and order. The server
+/// remains authoritative for which rows exist and what they contain; this
+/// projection only arranges the rows it returns. Unknown/new server rows append
+/// in server order and remain visible until the user chooses otherwise.
+@Observable
+@MainActor
+final class HomeSectionPreferences {
+    static let shared = HomeSectionPreferences()
+
+    private(set) var orderedSectionIds: [String] = []
+    private(set) var hiddenSectionIds = Set<String>()
+    /// Changes only for explicit preference/layout transitions—not ordinary
+    /// Home data refreshes—so Home can reset its row band and marquee once.
+    private(set) var layoutRevision = 0
+
+    @ObservationIgnored private let defaults: SharedDefaults
+    @ObservationIgnored private let storageKey: @MainActor () -> String?
+    @ObservationIgnored private var loadedStorageKey: String?
+
+    private struct StoredLayout: Codable {
+        var orderedSectionIds: [String]
+        var hiddenSectionIds: Set<String>
+    }
+
+    init(
+        defaults: SharedDefaults = .shared,
+        storageKey: @escaping @MainActor () -> String? = HomeSectionPreferences.activeStorageKey
+    ) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        refresh()
+    }
+
+    func refresh() {
+        let key = storageKey()
+        guard key != loadedStorageKey else { return }
+        loadedStorageKey = key
+
+        guard let key,
+              let data = defaults.data(forKey: key),
+              let stored = try? JSONDecoder().decode(StoredLayout.self, from: data) else {
+            orderedSectionIds = []
+            hiddenSectionIds = []
+            layoutRevision &+= 1
+            return
+        }
+
+        orderedSectionIds = Self.unique(stored.orderedSectionIds)
+        hiddenSectionIds = stored.hiddenSectionIds
+        layoutRevision &+= 1
+    }
+
+    func isVisible(_ sectionId: String) -> Bool {
+        !hiddenSectionIds.contains(sectionId)
+    }
+
+    func setVisible(_ visible: Bool, sectionId: String) {
+        let wasVisible = isVisible(sectionId)
+        guard wasVisible != visible else { return }
+        if visible {
+            hiddenSectionIds.remove(sectionId)
+        } else {
+            hiddenSectionIds.insert(sectionId)
+        }
+        layoutRevision &+= 1
+        persist()
+    }
+
+    /// Replace the order of currently-known rows while retaining remembered
+    /// identities that are temporarily absent (for example an empty Continue
+    /// Watching row). If they return later, they recover their saved position.
+    func setOrder(_ sectionIds: [String]) {
+        let currentOrder = Self.unique(sectionIds)
+        let currentSet = Set(currentOrder)
+        let updatedOrder = currentOrder + orderedSectionIds.filter {
+            !currentSet.contains($0)
+        }
+        guard updatedOrder != orderedSectionIds else { return }
+        orderedSectionIds = updatedOrder
+        layoutRevision &+= 1
+        persist()
+    }
+
+    /// Hidden rows are removed before the Skyline feed receives this array.
+    /// Consequently the next visible row occupies the same fixed row slot;
+    /// no placeholder or vertical gap can enter the Home layout.
+    func arrangedSections(
+        _ sections: [ResolvedSection],
+        includingHidden: Bool = false
+    ) -> [ResolvedSection] {
+        let nonEmpty = sections.filter { !$0.items.isEmpty }
+        let rank = Dictionary(
+            uniqueKeysWithValues: orderedSectionIds.enumerated().map { ($0.element, $0.offset) }
+        )
+
+        let arranged = nonEmpty.enumerated().sorted { lhs, rhs in
+            let lhsRank = rank[lhs.element.id]
+            let rhsRank = rank[rhs.element.id]
+            switch (lhsRank, rhsRank) {
+            case let (.some(left), .some(right)):
+                return left < right
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+
+        guard !includingHidden else { return arranged }
+        return arranged.filter { !hiddenSectionIds.contains($0.id) }
+    }
+
+    private func persist() {
+        guard let key = storageKey() else { return }
+        loadedStorageKey = key
+        let stored = StoredLayout(
+            orderedSectionIds: orderedSectionIds,
+            hiddenSectionIds: hiddenSectionIds
+        )
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    private static func unique(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }
+    }
+
+    private static func activeStorageKey() -> String? {
+        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
+            return nil
+        }
+        let serverId = ServerRegistry.shared.activeServerId ?? "default"
+        return "\(platformStoragePrefix).\(serverId).\(profileId)"
+    }
+
+    private static var platformStoragePrefix: String {
+        #if os(tvOS)
+        "tvos.homeSections.v1"
+        #elseif os(iOS)
+        "ios.homeSections.v1"
+        #elseif os(macOS)
+        "mac.homeSections.v1"
+        #else
+        "apple.homeSections.v1"
+        #endif
+    }
+}
+
 @Observable
 @MainActor
 class HomeViewModel {
@@ -7,6 +158,7 @@ class HomeViewModel {
         _ contentId: String,
         _ progressUpdatedAt: String
     ) async throws -> Void
+    typealias DismissNextUp = (_ contentId: String, _ seriesId: String) async throws -> Void
     typealias SetWatched = (_ contentId: String, _ played: Bool) async throws -> Void
     typealias FetchHomeSections = () async throws -> SectionsResponse
 
@@ -23,6 +175,7 @@ class HomeViewModel {
     private var pendingContinueWatchingDismissals = Set<String>()
     private var pendingWatchedUpdates = Set<String>()
     private let dismissContinueWatching: DismissContinueWatching
+    private let dismissNextUp: DismissNextUp
     private let updateWatchedState: SetWatched
     private let fetchHomeSections: FetchHomeSections
 
@@ -49,6 +202,12 @@ class HomeViewModel {
                 progressUpdatedAt: progressUpdatedAt
             )
         },
+        dismissNextUp: @escaping DismissNextUp = { contentId, seriesId in
+            try await ContinuumAPI.shared.dismissNextUpItem(
+                contentId: contentId,
+                seriesId: seriesId
+            )
+        },
         setWatched: @escaping SetWatched = { contentId, played in
             try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)
         },
@@ -57,6 +216,7 @@ class HomeViewModel {
         }
     ) {
         self.dismissContinueWatching = dismissContinueWatching
+        self.dismissNextUp = dismissNextUp
         self.updateWatchedState = setWatched
         self.fetchHomeSections = fetchHomeSections
 
@@ -94,35 +254,66 @@ class HomeViewModel {
         isRefreshing = false
     }
 
+    /// The Continue Watching row mixes two kinds of cards, and the server keys
+    /// their dismissals differently. In-progress items are dismissed against
+    /// their exact `progress_updated_at`, so resuming playback re-surfaces
+    /// them. Next Up episodes have no progress row; they are dismissed on the
+    /// `next_up` surface keyed by series. Sending a fabricated timestamp for
+    /// a Next Up card is accepted by the server but never matches anything,
+    /// so the card returns on the next fresh fetch.
     func dismissContinueWatchingItem(_ item: SectionItem) async {
+        let removal: (
+            request: () async throws -> Void,
+            mutate: (_ sections: [ResolvedSection]) -> [ResolvedSection]
+        )
+        if let progressUpdatedAt = item.progressUpdatedAt {
+            removal = (
+                request: { [dismissContinueWatching] in
+                    try await dismissContinueWatching(item.contentId, progressUpdatedAt)
+                },
+                mutate: { sections in
+                    HomeSectionsMutation.removingContinueWatchingItem(
+                        contentId: item.contentId,
+                        from: sections
+                    )
+                }
+            )
+        } else if let seriesId = item.seriesId, !seriesId.isEmpty {
+            removal = (
+                request: { [dismissNextUp] in
+                    try await dismissNextUp(item.contentId, seriesId)
+                },
+                mutate: { sections in
+                    HomeSectionsMutation.removingNextUpItem(
+                        contentId: item.contentId,
+                        from: sections
+                    )
+                }
+            )
+        } else {
+            // Neither surface can represent this card. Leave it in place rather
+            // than hide it locally and have it reappear after relaunch.
+            return
+        }
+
         guard pendingContinueWatchingDismissals.insert(item.contentId).inserted else {
             return
         }
         defer { pendingContinueWatchingDismissals.remove(item.contentId) }
 
         actionError = nil
-        let progressUpdatedAt = item.progressUpdatedAt
-            ?? ISO8601DateFormatter().string(from: Date())
 
         do {
-            try await dismissContinueWatching(item.contentId, progressUpdatedAt)
+            try await removal.request()
 
             // A Home request that started before the dismissal can contain the
             // removed item. Invalidate that generation before committing the
             // authoritative local/cache update so a late response cannot put it
             // back on screen.
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-            sections = HomeSectionsMutation.removingContinueWatchingItem(
-                contentId: item.contentId,
-                from: sections
-            )
+            sections = removal.mutate(sections)
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
-                response = SectionsResponse(
-                    sections: HomeSectionsMutation.removingContinueWatchingItem(
-                        contentId: item.contentId,
-                        from: response.sections
-                    )
-                )
+                response = SectionsResponse(sections: removal.mutate(response.sections))
             }
         } catch {
             actionError = ErrorState(error)

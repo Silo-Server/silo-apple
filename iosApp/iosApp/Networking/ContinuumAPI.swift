@@ -42,6 +42,38 @@ actor ContinuumAPI {
         await tokenStore.getProfileId()
     }
 
+    // MARK: - Image size selection
+
+    /// Extra query entries asking the server to bake a larger image
+    /// variant into every image URL in the response.
+    ///
+    /// One place decides this for every image-bearing endpoint, so call
+    /// sites just merge it in. Empty off tvOS, and empty until (or
+    /// unless) the capability probe in ``ImageSizeCapability`` lands —
+    /// which makes iOS and macOS requests byte-identical to before.
+    private var imageSizeQuery: [String: String] {
+        get async {
+            // Gate only the artwork request, never launch/profile navigation.
+            // Concurrent startup prefetches join one probe, and older or
+            // unreachable servers fall back to an empty query.
+            await ImageSizeCapability.shared.refresh()
+            return ImageSizeCapability.shared.requestQuery
+        }
+    }
+
+    /// Merge ``imageSizeQuery`` into a caller-built query. Caller-supplied
+    /// values win, so an explicit size is never overwritten.
+    private func withImageSize(_ query: [String: String]) async -> [String: String] {
+        query.merging(await imageSizeQuery) { caller, _ in caller }
+    }
+
+    /// `GET /api/v1/images/capability`. Throws `HTTPError.http(404, _)`
+    /// on servers that predate image-size selection; the caller treats
+    /// that as "feature off".
+    func imageSizeCapability() async throws -> ImageSizeCapabilityResponse {
+        try await http.get("/api/v1/images/capability")
+    }
+
     // MARK: - Path-based dispatcher (legacy)
 
     func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
@@ -422,7 +454,7 @@ actor ContinuumAPI {
     // --- Home / sections ---
 
     func homeSections() async throws -> SectionsResponse {
-        try await http.get("/api/v1/home/sections")
+        try await http.get("/api/v1/home/sections", query: await imageSizeQuery)
     }
 
     func dismissContinueWatchingItem(contentId: String, progressUpdatedAt: String) async throws {
@@ -436,8 +468,17 @@ actor ContinuumAPI {
         try await http.delete("/api/v1/home/dismissals/continue_watching/\(contentId)")
     }
 
+    /// Next Up episodes carry no progress row, so the server keys their
+    /// dismissal on the parent series instead of `progress_updated_at`.
+    func dismissNextUpItem(contentId: String, seriesId: String) async throws {
+        try await http.putVoid(
+            "/api/v1/home/dismissals/next_up/\(contentId)",
+            body: NextUpDismissalBody(seriesId: seriesId)
+        )
+    }
+
     func librarySections(libraryId: Int) async throws -> SectionsResponse {
-        try await http.get("/api/v1/library/\(libraryId)/sections")
+        try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
     }
 
     /// Fetch the IDs of items the recommendation engine considers
@@ -494,8 +535,11 @@ actor ContinuumAPI {
 
     // --- Catalog ---
 
+    /// Every catalog-shaped list (browse, search, person credits,
+    /// collection items, section paging) funnels through here, so the
+    /// image-size entry only has to be merged in once.
     func catalog(query: [String: String]) async throws -> CatalogResponse {
-        try await http.get("/api/v1/catalog", query: query)
+        try await http.get("/api/v1/catalog", query: await withImageSize(query))
     }
 
     func historyCatalog(
@@ -515,7 +559,7 @@ actor ContinuumAPI {
     }
 
     func itemDetail(contentId: String) async throws -> ItemDetail {
-        try await http.get("/api/v1/catalog/items/\(contentId)")
+        try await http.get("/api/v1/catalog/items/\(contentId)", query: await imageSizeQuery)
     }
 
     func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFilters {
@@ -527,15 +571,21 @@ actor ContinuumAPI {
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
-        try await http.get("/api/v1/catalog/series/\(seriesId)/seasons")
+        try await http.get(
+            "/api/v1/catalog/series/\(seriesId)/seasons",
+            query: await imageSizeQuery
+        )
     }
 
     func episodes(seriesId: String, seasonNumber: Int) async throws -> EpisodesResponse {
-        try await http.get("/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes")
+        try await http.get(
+            "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes",
+            query: await imageSizeQuery
+        )
     }
 
     func watchDetail(contentId: String) async throws -> WatchDetail {
-        try await http.get("/api/v1/watch/\(contentId)")
+        try await http.get("/api/v1/watch/\(contentId)", query: await imageSizeQuery)
     }
 
     func person(id: Int) async throws -> Person {
@@ -725,25 +775,31 @@ actor ContinuumAPI {
 
     // --- Personal data ---
 
+    // These three build their own query rather than routing through
+    // `catalog(query:)`, so each merges the image-size entry itself.
+    // They back real poster grids on TV, and `historyCatalog` — the
+    // entry point the history screen actually uses — is already covered
+    // by `catalog(query:)`.
+
     func favorites(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/favorites", query: [
+        try await http.get("/api/v1/favorites", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
-        ])
+        ]))
     }
 
     func watchlist(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/watchlist", query: [
+        try await http.get("/api/v1/watchlist", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
-        ])
+        ]))
     }
 
     func history(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/history", query: [
+        try await http.get("/api/v1/history", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
-        ])
+        ]))
     }
 
     /// Server returns 204 when the item is a favorite and 404 otherwise.
@@ -1039,4 +1095,8 @@ enum APIError: LocalizedError {
 
 private struct HomeDismissalBody: Encodable {
     let progressUpdatedAt: String
+}
+
+private struct NextUpDismissalBody: Encodable {
+    let seriesId: String
 }

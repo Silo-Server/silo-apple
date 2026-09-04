@@ -1,13 +1,242 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Adaptive iOS detail hero. Compact containers retain the phone's
-/// backdrop-first, centered editorial composition. At regular iPad detail
-/// widths, poster art and a left-aligned editorial column share a single
-/// backdrop-backed stage so actions and context stay above the fold.
-///
-/// The breakpoint is based on this view's actual container rather than the
-/// device size class, so split view and resizable windows fall back cleanly.
+/// Shared reference state for the pinned chrome. Artwork parallax is driven by
+/// a render-time `visualEffect`, so the native scroll view never has to publish
+/// its high-frequency movement through SwiftUI state just to move the image.
+@Observable
+@MainActor
+final class PhoneDetailScrollState {
+    private(set) var offset: CGFloat = 0
+
+    func update(_ rawOffset: CGFloat) {
+        // Nothing in the chrome changes below 150 points or above 480. Folding
+        // those plateaus onto their endpoints avoids invalidating even the
+        // small chrome views while their rendered output is completely static.
+        let clamped = min(max(0, rawOffset), 480)
+        let normalized = clamped <= 150 ? 0 : clamped
+        guard abs(normalized - offset) >= 0.5 else { return }
+        offset = normalized
+    }
+
+    func reset() {
+        offset = 0
+    }
+}
+
+/// The named native scroll coordinate space used by render-time parallax.
+/// A name resolves to the nearest ancestor, so separately presented detail
+/// cards cannot interfere with one another.
+enum PhoneDetailScrollCoordinateSpace {
+    static let name = "phone-detail-scroll"
+}
+
+/// Artwork-matched surface shared by mobile video-detail pages. Compact iPhone
+/// movie/series cards keep a saturated, heavily softened copy of the hero fixed
+/// behind the ScrollView. It supplies the colour field that remains visible as
+/// the sharp artwork drifts away more slowly than the foreground content.
+struct PhoneDetailPageSurface<Content: View>: View {
+    let backdropURL: String?
+    let backdropThumbhash: String?
+    let enablesArtworkGlass: Bool
+    @ViewBuilder let content: () -> Content
+
+    @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            if usesArtworkGlass, let backdropURL, !backdropURL.isEmpty {
+                GeometryReader { geometry in
+                    AsyncImageView(
+                        url: backdropURL,
+                        thumbhash: backdropThumbhash,
+                        contentMode: .fill
+                    )
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .scaleEffect(1.18)
+                    .saturation(1.28)
+                    .brightness(-0.10)
+                    .blur(radius: 46, opaque: true)
+                    .clipped()
+                }
+                .allowsHitTesting(false)
+
+                Color.black.opacity(0.28)
+                sampledTint.opacity(0.10)
+                PhoneDetailGrainOverlay()
+            } else {
+                sampledTint.opacity(0.42)
+            }
+
+            content()
+        }
+        .ignoresSafeArea()
+        .task(id: backdropURL) {
+            guard let rawURL = backdropURL,
+                  let url = URL(string: rawURL) else {
+                sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+                return
+            }
+
+            if let cached = HeroBackdropPalette.cachedTint(for: url) {
+                sampledTint = cached
+            }
+            if let tint = await HeroBackdropPalette.tintColor(for: url),
+               !Task.isCancelled {
+                sampledTint = tint
+            }
+        }
+    }
+
+    private var usesArtworkGlass: Bool {
+        guard enablesArtworkGlass, !reduceTransparency else { return false }
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone
+            && horizontalSizeClass != .regular
+        #else
+        return false
+        #endif
+    }
+}
+
+/// A fixed one-device-pixel monochrome dither. At 1.4% opacity it is not meant
+/// to read as a texture; it only breaks up 8-bit colour steps in large, slowly
+/// changing gradients. The tiny tile is generated once and never animates.
+private struct PhoneDetailGrainOverlay: View {
+    var body: some View {
+        if let texture = PhoneDetailGrainTexture.image {
+            Image(decorative: texture, scale: 3)
+                .resizable(resizingMode: .tile)
+                .interpolation(.none)
+                .blendMode(.overlay)
+                .opacity(0.012)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private enum PhoneDetailGrainTexture {
+    static let image: CGImage? = {
+        let width = 96
+        let height = 96
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        var pixels = [UInt8](repeating: 0, count: width * height)
+
+        for index in pixels.indices {
+            seed ^= seed << 13
+            seed ^= seed >> 7
+            seed ^= seed << 17
+            pixels[index] = UInt8(truncatingIfNeeded: seed >> 24)
+        }
+
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else {
+            return nil
+        }
+
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }()
+}
+
+/// Artwork moves at roughly half foreground speed. Its translation and
+/// scroll-linked dimming are render-time effects derived directly from the
+/// native scroll geometry, avoiding an observable-state update and image-view
+/// rebuild on every frame.
+private struct PhoneDetailParallaxArtwork: View {
+    let url: String?
+    let thumbhash: String?
+    let height: CGFloat
+    let isEnabled: Bool
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let parallaxEnabled = usesParallax
+        ZStack {
+            artwork
+                .frame(height: height)
+                .frame(maxWidth: .infinity)
+                .clipped()
+                .visualEffect { content, proxy in
+                    let minY = proxy.frame(in: .named(PhoneDetailScrollCoordinateSpace.name)).minY
+                    let offset = min(max(0, -minY), 540)
+                    return content.offset(
+                        y: parallaxEnabled ? offset * 0.52 : 0
+                    )
+                }
+
+            Color.black
+                .visualEffect { content, proxy in
+                    let minY = proxy.frame(in: .named(PhoneDetailScrollCoordinateSpace.name)).minY
+                    let offset = min(max(0, -minY), 540)
+                    return content.opacity(
+                        parallaxEnabled
+                            ? 0.30 * min(max(offset / 360, 0), 1)
+                            : 0
+                    )
+                }
+                .allowsHitTesting(false)
+        }
+        .frame(height: height)
+        .clipped()
+        .mask(artworkMask)
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let url, !url.isEmpty {
+            AsyncImageView(url: url, thumbhash: thumbhash, contentMode: .fill)
+        } else {
+            Color.continuumSurface
+        }
+    }
+
+    private var usesParallax: Bool {
+        guard isEnabled, !reduceMotion else { return false }
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone
+            && horizontalSizeClass != .regular
+        #else
+        return false
+        #endif
+    }
+
+    private var artworkMask: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: 0.72),
+                .init(color: .black.opacity(0.76), location: 0.84),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+}
+
+/// Artwork-led mobile detail header used inside the bottom-presented detail
+/// card. Compact widths use the approved portrait composition: sharp artwork,
+/// title art at its lower edge, then metadata and actions. Wide iPad panes use
+/// the same ingredients in a touch-first editorial split rather than stretching
+/// the phone stack or reusing television geometry.
 struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let title: String
     let seriesTitle: String?
@@ -21,33 +250,27 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let ratingChip: String?
     let overview: String?
     let factsLine: [PhoneHeroFactToken]
-    /// Overlay data for the backdrop. `nil` skips overlay rendering
-    /// (e.g. when the detail payload didn't carry an OverlaySummary).
+    var creditText: String? = nil
+    /// Retained at the call boundary for source compatibility. Detail artwork
+    /// intentionally renders no card-overlay badges in this redesigned surface.
     var overlayData: OverlayData? = nil
+    var enablesArtworkParallax = false
     @ViewBuilder let actions: () -> Actions
-    /// Affordance rendered directly under the overview (e.g. the on-view
-    /// description-translation control). Pass `{ EmptyView() }` when there's
-    /// nothing to show.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
-    @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
-    private let expandedLayoutBreakpoint: CGFloat = 640
-
-    private var backdropHeight: CGFloat {
-        horizontalSizeClass == .regular ? 420 : 360
-    }
+    private let expandedLayoutBreakpoint: CGFloat = 700
 
     var body: some View {
         Group {
             if usesExpandedLayout {
-                expandedHero
+                expandedHeader
             } else {
-                compactHero
+                compactHeader
             }
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
@@ -59,10 +282,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var usesExpandedLayout: Bool {
-        // The expanded branch can keep reporting its landscape width for one
-        // more layout pass after an iPhone rotates back to portrait. Let the
-        // updated size classes break that feedback loop immediately so the
-        // poster and two-column composition cannot survive in portrait.
         if horizontalSizeClass == .compact, verticalSizeClass == .regular {
             return false
         }
@@ -72,229 +291,198 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         return horizontalSizeClass == .regular
     }
 
-    private var compactHero: some View {
+    // MARK: - Compact iPhone layout
+
+    private var compactHeader: some View {
         VStack(spacing: 0) {
-            backdropBlock
-            editorialColumn(
-                alignment: .center,
-                textAlignment: .center,
-                factsAlignment: .center,
-                logoHeight: compactLogoHeight
-            )
-            .padding(.horizontal, ContinuumTheme.safePadding)
-            .padding(.top, 4)
-            .padding(.bottom, 8)
-        }
-    }
+            compactArtwork
 
-    // MARK: - Expanded iPad hero
+            VStack(spacing: 16) {
+                metadataBlock(alignment: .center, textAlignment: .center)
 
-    private var expandedHero: some View {
-        HStack(alignment: .top, spacing: expandedColumnSpacing) {
-            poster
-                .padding(.top, 8)
+                actions()
+                    .padding(.top, 2)
 
-            editorialColumn(
-                alignment: .leading,
-                textAlignment: .leading,
-                factsAlignment: .leading,
-                logoHeight: 144
-            )
-            .frame(maxWidth: 620, alignment: .leading)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, expandedHorizontalPadding)
-        .padding(.top, 92)
-        // The page adds its own hero-to-section spacing. A smaller trailing
-        // inset keeps the first detail section within reach on iPad without
-        // changing the more generous compact-phone composition.
-        .padding(.bottom, 24)
-        .frame(maxWidth: .infinity, minHeight: 560, alignment: .topLeading)
-        .background {
-            expandedBackdrop
-        }
-    }
-
-    @ViewBuilder
-    private var poster: some View {
-        if let posterUrl, !posterUrl.isEmpty {
-            AsyncImageView(
-                url: posterUrl,
-                thumbhash: posterThumbhash,
-                targetSize: CGSize(width: posterWidth, height: posterHeight),
-                contentMode: .fill
-            )
-            .frame(width: posterWidth, height: posterHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
-            .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
-            .accessibilityHidden(true)
-        }
-    }
-
-    private var expandedBackdrop: some View {
-        ZStack {
-            Group {
-                if let url = backdropUrl, !url.isEmpty {
-                    AsyncImageView(
-                        url: url,
-                        thumbhash: backdropThumbhash,
-                        contentMode: .fill
-                    )
-                } else {
-                    Color.continuumSurface
-                }
+                overviewBlock
+                creditBlock(alignment: .leading)
+                belowOverview()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
+            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+        }
+    }
 
-            Color.black.opacity(0.18)
-
-            LinearGradient(
-                stops: [
-                    .init(color: Color.continuumBackground.opacity(0.78), location: 0),
-                    .init(color: Color.continuumBackground.opacity(0.38), location: 0.48),
-                    .init(color: Color.continuumBackground.opacity(0.62), location: 1),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
+    private var compactArtwork: some View {
+        ZStack(alignment: .bottom) {
+            PhoneDetailParallaxArtwork(
+                url: resolvedArtworkURL,
+                thumbhash: resolvedArtworkThumbhash,
+                height: compactArtworkHeight,
+                isEnabled: enablesArtworkParallax
             )
 
             LinearGradient(
+                colors: [Color.black.opacity(0.34), .clear],
+                startPoint: .top,
+                endPoint: .center
+            )
+            .allowsHitTesting(false)
+
+            titleBlock(textAlignment: .center, logoHeight: compactLogoHeight)
+                .padding(.horizontal, 28)
+                .padding(.bottom, 6)
+        }
+        .frame(height: compactArtworkHeight)
+        .clipped()
+        .accessibilityElement(children: .contain)
+    }
+
+    private var compactArtworkHeight: CGFloat {
+        let width = availableWidth > 0 ? availableWidth : 390
+        return min(max(width * 1.18, 430), 540)
+    }
+
+    private var compactLogoHeight: CGFloat {
+        min(max(compactArtworkHeight * 0.24, 104), 138)
+    }
+
+    // MARK: - Expanded iPad layout
+
+    private var expandedHeader: some View {
+        ZStack(alignment: .topLeading) {
+            expandedArtwork
+
+            VStack(alignment: .leading, spacing: 15) {
+                if let eyebrow, !eyebrow.isEmpty {
+                    Text(eyebrow.uppercased())
+                        .font(.system(size: 11, weight: .bold))
+                        .tracking(1.2)
+                        .foregroundStyle(Color.continuumOnSurface.opacity(0.7))
+                }
+
+                titleBlock(textAlignment: .leading, logoHeight: 122)
+                    .frame(maxWidth: 430, alignment: .leading)
+
+                metadataBlock(alignment: .leading, textAlignment: .leading)
+                overviewBlock
+                creditBlock(alignment: .leading)
+                belowOverview()
+
+                actions()
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: expandedEditorialWidth, alignment: .leading)
+            .padding(.leading, expandedHorizontalPadding)
+            .padding(.top, 88)
+            .padding(.bottom, 38)
+        }
+        .frame(maxWidth: .infinity, minHeight: 550, alignment: .topLeading)
+        .clipped()
+    }
+
+    private var expandedArtwork: some View {
+        GeometryReader { geometry in
+            artwork
+                .frame(
+                    width: geometry.size.width * 0.66,
+                    height: min(550, geometry.size.width * 0.66 * 9 / 16)
+                )
+                .clipped()
+                .mask(expandedArtworkMask)
+                .frame(
+                    width: geometry.size.width,
+                    height: 550,
+                    alignment: .topTrailing
+                )
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var expandedArtworkMask: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: 0.52),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .trailing,
+            endPoint: .leading
+        )
+        .mask {
+            LinearGradient(
                 stops: [
-                    .init(color: Color.continuumBackground.opacity(0.18), location: 0),
-                    .init(color: Color.continuumBackground.opacity(0.28), location: 0.52),
-                    .init(color: Color.continuumBackground, location: 1),
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.74),
+                    .init(color: .clear, location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
-
-            if let overlayData, overlayStore.enabled {
-                CardOverlays(
-                    data: overlayData,
-                    prefs: overlayStore.prefs,
-                    variant: .hero
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         }
-        .backgroundExtensionEffect()
-        .allowsHitTesting(false)
+    }
+
+    private var expandedEditorialWidth: CGFloat {
+        min(max(availableWidth * 0.47, 410), 560)
     }
 
     private var expandedHorizontalPadding: CGFloat {
-        availableWidth >= 840 ? 48 : 32
+        availableWidth >= 1_000 ? 56 : 40
     }
 
-    private var expandedColumnSpacing: CGFloat {
-        availableWidth >= 840 ? 36 : 28
-    }
+    // MARK: - Artwork and title
 
-    private var posterWidth: CGFloat {
-        min(max(availableWidth * 0.25, 164), 224)
-    }
-
-    private var posterHeight: CGFloat {
-        posterWidth / ContinuumTheme.posterAspectRatio
-    }
-
-    // MARK: - Backdrop
-
-    private var backdropBlock: some View {
-        ZStack(alignment: .bottom) {
-            backdrop
-            if let overlayData, overlayStore.enabled {
-                CardOverlays(
-                    data: overlayData,
-                    prefs: overlayStore.prefs,
-                    variant: .hero
-                )
-                .frame(height: backdropHeight)
-                .frame(maxWidth: .infinity)
-            }
-            bottomFade
+    @ViewBuilder
+    private var artwork: some View {
+        if let url = resolvedArtworkURL {
+            AsyncImageView(
+                url: url,
+                thumbhash: resolvedArtworkThumbhash,
+                contentMode: .fill
+            )
+        } else {
+            Color.continuumSurface
         }
-        .frame(height: backdropHeight)
-        .frame(maxWidth: .infinity)
-        // Intentionally no hard rectangle clip here. The backdrop's background
-        // extension (applied below) mirrors/blurs the artwork past its frame into
-        // the top safe area and the horizontal screen edges (the callers apply
-        // ignoresSafeArea on the top edge). Clipping to the fixed-height rectangle
-        // would defeat that edge-to-edge bleed.
     }
 
-    private var backdrop: some View {
-        Group {
-            if let url = backdropUrl, !url.isEmpty {
-                AsyncImageView(url: url, thumbhash: backdropThumbhash, contentMode: .fill)
-            } else {
-                Color.continuumSurface
-            }
+    private var resolvedArtworkURL: String? {
+        nonEmpty(backdropUrl) ?? nonEmpty(posterUrl)
+    }
+
+    private var resolvedArtworkThumbhash: String? {
+        nonEmpty(backdropUrl) != nil ? backdropThumbhash : posterThumbhash
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let value,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
         }
-        .frame(height: backdropHeight)
-        .frame(maxWidth: .infinity)
-        // Mirror + blur the source artwork to fill behind the status bar /
-        // Dynamic Island and out to the screen edges — the Apple TV / Music
-        // detail-page continuation, instead of a hard banner edge. All Apple
-        // targets are at the 26 minimum, so this is unconditional.
-        .backgroundExtensionEffect()
-    }
-
-    /// Soft single-direction fade — only enough to let text below sit
-    /// on the background without a visible seam. The artwork stays
-    /// readable across most of the hero.
-    private var bottomFade: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0.0),
-                .init(color: .clear, location: 0.55),
-                .init(color: Color.continuumBackground.opacity(0.6), location: 0.85),
-                .init(color: Color.continuumBackground, location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    // MARK: - Editorial column
-
-    private func editorialColumn(
-        alignment: HorizontalAlignment,
-        textAlignment: TextAlignment,
-        factsAlignment: HorizontalAlignment,
-        logoHeight: CGFloat
-    ) -> some View {
-        VStack(alignment: alignment, spacing: 14) {
-            if let eyebrow, !eyebrow.isEmpty {
-                PhoneHeroEyebrow(text: eyebrow)
-            }
-            titleBlock(textAlignment: textAlignment, logoHeight: logoHeight)
-            sourceRow(textAlignment: textAlignment)
-            actions()
-                .padding(.top, 6)
-            overviewBlock
-            belowOverview()
-            factsRow(alignment: factsAlignment)
-        }
-        .frame(maxWidth: .infinity)
+        return value
     }
 
     @ViewBuilder
     private func titleBlock(textAlignment: TextAlignment, logoHeight: CGFloat) -> some View {
         if let episodeSeriesTitle {
-            PhoneEpisodeHierarchyTitle(
-                seriesTitle: episodeSeriesTitle,
-                episodeTitle: title,
-                textAlignment: textAlignment
-            )
+            if let logoUrl, !logoUrl.isEmpty {
+                PhoneEpisodeLogoTitle(
+                    logoUrl: logoUrl,
+                    seriesTitle: episodeSeriesTitle,
+                    episodeTitle: title,
+                    textAlignment: textAlignment,
+                    logoHeight: logoHeight
+                )
+            } else {
+                PhoneEpisodeHierarchyTitle(
+                    seriesTitle: episodeSeriesTitle,
+                    episodeTitle: title,
+                    textAlignment: textAlignment
+                )
+            }
         } else if let logoUrl, !logoUrl.isEmpty {
             AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
-                .frame(
-                    width: textAlignment == .leading ? expandedLogoWidth : nil,
-                    height: logoHeight
-                )
-                .frame(maxWidth: .infinity, alignment: frameAlignment(for: textAlignment))
+                .frame(maxWidth: textAlignment == .leading ? 430 : .infinity)
+                .frame(height: logoHeight, alignment: textAlignment == .leading ? .leading : .center)
                 .accessibilityLabel(title)
         } else {
             PhoneHeroTitle(title: title, textAlignment: textAlignment)
@@ -303,92 +491,102 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var episodeSeriesTitle: String? {
         guard let trimmed = seriesTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty
-        else { return nil }
+              !trimmed.isEmpty else { return nil }
         return trimmed
     }
 
-    /// Hero logo height. Deliberately smaller than Apple TV's treatment:
-    /// title art already arrives with generous internal padding, so at 160 a
-    /// wordmark like "SCARY MOVIE" claimed a third of the editorial column
-    /// and pushed Play toward the fold. This keeps the logo dominant without
-    /// crowding out the actions it exists to introduce.
-    private var compactLogoHeight: CGFloat {
-        horizontalSizeClass == .regular ? 168 : 132
-    }
+    // MARK: - Metadata
 
     @ViewBuilder
-    private func sourceRow(textAlignment: TextAlignment) -> some View {
-        if !sourceTokens.isEmpty || ratingChip != nil {
-            HStack(spacing: 8) {
-                ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
-                    if index > 0 {
-                        Text("·")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.continuumOnSurface.opacity(0.4))
-                    }
-                    Text(token)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.continuumOnSurface.opacity(0.85))
-                        .lineLimit(1)
+    private func metadataBlock(
+        alignment: Alignment,
+        textAlignment: TextAlignment
+    ) -> some View {
+        if !metadataTokens.isEmpty || ratingChip != nil {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    metadataText(textAlignment: textAlignment)
+                    ratingView
                 }
-                if let ratingChip, !ratingChip.isEmpty {
-                    Text(ratingChip)
-                        .font(.system(size: 11, weight: .heavy))
-                        .tracking(0.8)
-                        .foregroundColor(.continuumOnSurface)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 3)
-                                .stroke(Color.continuumOnSurface.opacity(0.55), lineWidth: 1)
-                        )
-                        .padding(.leading, 2)
+                .frame(maxWidth: .infinity, alignment: alignment)
+
+                VStack(alignment: textAlignment == .leading ? .leading : .center, spacing: 8) {
+                    metadataText(textAlignment: textAlignment)
+                    ratingView
                 }
+                .frame(maxWidth: .infinity, alignment: alignment)
             }
-            .multilineTextAlignment(textAlignment)
-            .frame(maxWidth: .infinity, alignment: frameAlignment(for: textAlignment))
         }
     }
 
-    private var expandedLogoWidth: CGFloat {
-        let editorialWidth = availableWidth
-            - (expandedHorizontalPadding * 2)
-            - posterWidth
-            - expandedColumnSpacing
-        return min(max(editorialWidth, 220), 360)
+    private func metadataText(textAlignment: TextAlignment) -> some View {
+        Text(metadataTokens.joined(separator: "  ·  "))
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(Color.continuumOnSurface.opacity(0.84))
+            .multilineTextAlignment(textAlignment)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func frameAlignment(for textAlignment: TextAlignment) -> Alignment {
-        textAlignment == .leading ? .leading : .center
+    @ViewBuilder
+    private var ratingView: some View {
+        if let ratingChip, !ratingChip.isEmpty {
+            Text(ratingChip)
+                .font(.system(size: 11, weight: .heavy))
+                .tracking(0.7)
+                .foregroundStyle(Color.continuumOnSurface)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.continuumOnSurface.opacity(0.55), lineWidth: 1)
+                )
+        }
     }
 
-    // MARK: - Overview with inline MORE pill
+    private var metadataTokens: [String] {
+        var values = factsLine.compactMap { token -> String? in
+            guard case .text(let value) = token else { return nil }
+            return value
+        }
+        values.append(contentsOf: sourceTokens.filter { !values.contains($0) })
+        return values
+    }
+
+    // MARK: - Editorial copy
 
     @ViewBuilder
     private var overviewBlock: some View {
         if let overview, !overview.isEmpty {
-            VStack(spacing: 0) {
-                Text(overview)
-                    .font(.system(size: 15, weight: .regular))
-                    .foregroundColor(.continuumOnSurface.opacity(0.78))
-                    .lineSpacing(3)
-                    .lineLimit(showFullOverview ? nil : 3)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .bottomTrailing) {
-                        if !showFullOverview, isOverviewClipped {
-                            morePill
-                        }
+            Text(overview)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(Color.continuumOnSurface.opacity(0.80))
+                .lineSpacing(3)
+                .lineLimit(showFullOverview ? nil : 3)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .bottomTrailing) {
+                    if !showFullOverview, isOverviewClipped {
+                        morePill
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
-                            showFullOverview.toggle()
-                        }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                        showFullOverview.toggle()
                     }
-            }
-            .padding(.top, 8)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func creditBlock(alignment: Alignment) -> some View {
+        if let creditText, !creditText.isEmpty {
+            Text(creditText)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.continuumOnSurface.opacity(0.58))
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: alignment)
         }
     }
 
@@ -399,14 +597,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             }
         } label: {
             Text("MORE")
-                .font(.system(size: 11, weight: .heavy))
+                .font(.system(size: 10, weight: .heavy))
                 .tracking(0.6)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundStyle(Color.continuumOnSurface)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(
-                    Capsule().fill(Color.continuumSurfaceElevated)
-                )
+                .background(Capsule().fill(Color.black.opacity(0.54)))
         }
         .buttonStyle(.plain)
     }
@@ -414,19 +610,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var isOverviewClipped: Bool {
         (overview?.count ?? 0) > 140
     }
-
-    // MARK: - Facts row
-
-    @ViewBuilder
-    private func factsRow(alignment: HorizontalAlignment) -> some View {
-        if !factsLine.isEmpty {
-            FlowingFactsRow(tokens: factsLine, alignment: alignment)
-                .padding(.top, 4)
-        }
-    }
 }
 
-// MARK: - Title
+// MARK: - Titles
 
 private struct PhoneHeroTitle: View {
     let title: String
@@ -436,8 +622,8 @@ private struct PhoneHeroTitle: View {
         let parts = PhoneHeroMetadata.splitTitle(title)
         VStack(spacing: 4) {
             Text(parts.primary)
-                .font(.system(size: 30, weight: .heavy))
-                .foregroundColor(.continuumOnSurface)
+                .font(.system(size: 32, weight: .heavy))
+                .foregroundStyle(Color.continuumOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
@@ -445,16 +631,12 @@ private struct PhoneHeroTitle: View {
                 Text(subtitle.uppercased())
                     .font(.system(size: 13, weight: .heavy))
                     .tracking(1.2)
-                    .foregroundColor(.continuumOnSurface.opacity(0.8))
+                    .foregroundStyle(Color.continuumOnSurface.opacity(0.80))
                     .lineLimit(2)
                     .multilineTextAlignment(textAlignment)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(
-            maxWidth: .infinity,
-            alignment: textAlignment == .leading ? .leading : .center
-        )
+        .frame(maxWidth: .infinity, alignment: textAlignment == .leading ? .leading : .center)
     }
 }
 
@@ -464,166 +646,53 @@ private struct PhoneEpisodeHierarchyTitle: View {
     let textAlignment: TextAlignment
 
     var body: some View {
-        let parts = PhoneHeroMetadata.splitTitle(episodeTitle)
         VStack(spacing: 6) {
             Text(seriesTitle)
-                .font(.system(size: 34, weight: .heavy))
-                .foregroundColor(.continuumOnSurface)
+                .font(.system(size: 32, weight: .heavy))
+                .foregroundStyle(Color.continuumOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(parts.primary)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(.continuumOnSurface.opacity(0.9))
+            Text(episodeTitle)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color.continuumOnSurface.opacity(0.90))
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
-                .fixedSize(horizontal: false, vertical: true)
-            if let subtitle = parts.subtitle {
-                Text(subtitle.uppercased())
-                    .font(.system(size: 13, weight: .heavy))
-                    .tracking(1.0)
-                    .foregroundColor(.continuumOnSurface.opacity(0.76))
-                    .lineLimit(2)
-                    .multilineTextAlignment(textAlignment)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        }
+        .frame(maxWidth: .infinity, alignment: textAlignment == .leading ? .leading : .center)
+    }
+}
+
+/// Episode hierarchy using the parent show's supplied clear logo, with the
+/// episode title beneath it. This is the touch-sized counterpart of tvOS's
+/// episode hero and falls back to `PhoneEpisodeHierarchyTitle` only when the
+/// backend has no logo artwork.
+private struct PhoneEpisodeLogoTitle: View {
+    let logoUrl: String
+    let seriesTitle: String
+    let episodeTitle: String
+    let textAlignment: TextAlignment
+    let logoHeight: CGFloat
+
+    var body: some View {
+        VStack(spacing: 6) {
+            AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
+                .frame(maxWidth: textAlignment == .leading ? 430 : .infinity)
+                .frame(
+                    height: logoHeight,
+                    alignment: textAlignment == .leading ? .leading : .center
+                )
+                .accessibilityLabel(seriesTitle)
+
+            Text(episodeTitle)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color.continuumOnSurface.opacity(0.90))
+                .lineLimit(2)
+                .multilineTextAlignment(textAlignment)
         }
         .frame(
             maxWidth: .infinity,
             alignment: textAlignment == .leading ? .leading : .center
         )
-    }
-}
-
-// MARK: - Eyebrow
-
-private struct PhoneHeroEyebrow: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .semibold))
-            .tracking(0.6)
-            .foregroundColor(.continuumOnSurface)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(
-                Capsule()
-                    .fill(Color.continuumSurfaceElevated)
-            )
-    }
-}
-
-// MARK: - Facts row (wraps when needed)
-
-/// Centered facts row that line-wraps when the tokens exceed the
-/// container width. SwiftUI's plain HStack truncates instead of
-/// wrapping, so we lean on `Layout` to flow the chips like Apple's
-/// quality-badge row beneath the overview.
-private struct FlowingFactsRow: View {
-    let tokens: [PhoneHeroFactToken]
-    let alignment: HorizontalAlignment
-
-    var body: some View {
-        PhoneFactsFlowLayout(spacing: 8, lineSpacing: 6, alignment: alignment) {
-            ForEach(Array(tokens.enumerated()), id: \.offset) { index, token in
-                if index > 0,
-                   case .text = token,
-                   case .text = tokens[index - 1] {
-                    Text("·")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface.opacity(0.4))
-                }
-                factsItem(token)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func factsItem(_ token: PhoneHeroFactToken) -> some View {
-        switch token {
-        case .text(let value):
-            Text(value)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.continuumOnSurface.opacity(0.78))
-        case .rating(let value):
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.continuumSuccess.opacity(0.9))
-                Text(value)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.continuumOnSurface.opacity(0.78))
-            }
-        case .chip(let value):
-            Text(value)
-                .font(.system(size: 10, weight: .heavy))
-                .tracking(0.8)
-                .foregroundColor(.continuumOnSurface)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(Color.continuumOnSurface.opacity(0.45), lineWidth: 1)
-                )
-        }
-    }
-}
-
-/// Minimal flow layout that wraps subviews onto new lines when the
-/// proposed width can't fit them. Uses each subview's intrinsic
-/// width — no shrinking — so every chip stays at its natural size.
-private struct PhoneFactsFlowLayout: Layout {
-    var spacing: CGFloat
-    var lineSpacing: CGFloat
-    var alignment: HorizontalAlignment
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        let lines = layoutLines(maxWidth: maxWidth, subviews: subviews)
-        let height = lines.reduce(0) { acc, line in acc + line.height + lineSpacing } - lineSpacing
-        let width = lines.map(\.width).max() ?? 0
-        return CGSize(width: min(width, maxWidth), height: max(0, height))
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let maxWidth = bounds.width
-        let lines = layoutLines(maxWidth: maxWidth, subviews: subviews)
-        var y = bounds.minY
-        for line in lines {
-            let extra = max(0, maxWidth - line.width)
-            var x = bounds.minX + (alignment == .center ? extra / 2 : 0)
-            for entry in line.entries {
-                entry.subview.place(
-                    at: CGPoint(x: x, y: y),
-                    anchor: .topLeading,
-                    proposal: ProposedViewSize(width: entry.size.width, height: entry.size.height)
-                )
-                x += entry.size.width + spacing
-            }
-            y += line.height + lineSpacing
-        }
-    }
-
-    private struct Entry { let subview: LayoutSubview; let size: CGSize }
-    private struct Line { var entries: [Entry] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
-
-    private func layoutLines(maxWidth: CGFloat, subviews: Subviews) -> [Line] {
-        var lines: [Line] = [Line()]
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            let candidateWidth = lines[lines.count - 1].width
-                + (lines[lines.count - 1].entries.isEmpty ? 0 : spacing)
-                + size.width
-            if candidateWidth > maxWidth, !lines[lines.count - 1].entries.isEmpty {
-                lines.append(Line())
-            }
-            let isFirst = lines[lines.count - 1].entries.isEmpty
-            lines[lines.count - 1].entries.append(Entry(subview: subview, size: size))
-            lines[lines.count - 1].width += (isFirst ? 0 : spacing) + size.width
-            lines[lines.count - 1].height = max(lines[lines.count - 1].height, size.height)
-        }
-        return lines
     }
 }
 #endif

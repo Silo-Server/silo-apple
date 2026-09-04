@@ -11,7 +11,10 @@ struct PhoneSeasonEpisodePager: View {
     let isLoadingEpisodes: Bool
     let onSelectSeason: (Season) -> Void
     let onSelectEpisode: (String) -> Void
+    var onPlayEpisode: ((String) -> Void)? = nil
     var currentContentId: String? = nil
+    var selectsCenteredEpisode = false
+    var showsSeasonSelector = true
     let availableWidth: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -20,11 +23,13 @@ struct PhoneSeasonEpisodePager: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSeasonChips(
-                seasons: seasons,
-                selected: selectedSeason,
-                onSelect: onSelectSeason
-            )
+            if showsSeasonSelector {
+                PhoneSeasonChips(
+                    seasons: seasons,
+                    selected: selectedSeason,
+                    onSelect: onSelectSeason
+                )
+            }
 
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 0) {
@@ -34,7 +39,9 @@ struct PhoneSeasonEpisodePager: View {
                             isLoading: isLoading(season),
                             usesExpandedList: true,
                             onSelect: onSelectEpisode,
-                            currentContentId: currentContentId
+                            onPlay: onPlayEpisode,
+                            currentContentId: currentContentId,
+                            selectsCenteredEpisode: selectsCenteredEpisode
                         )
                         // A horizontal ScrollView otherwise proposes only a
                         // single-row height to this page when it is nested in

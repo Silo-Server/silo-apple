@@ -51,7 +51,7 @@ struct SearchView: View {
             .continuumFormWidth(tvSearchContentWidth)
 #endif
         }
-        .continuumBackground()
+        .continuumPageBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, tvSearchSafeHorizontalPadding)
         #endif
@@ -159,7 +159,7 @@ struct SearchView: View {
                     items: viewModel.results,
                     isLoading: viewModel.isSearching,
                     hasMore: viewModel.hasMore,
-                    onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) },
+                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
                     onNearEnd: { _ in
                         Task { await viewModel.loadMore() }
                     },
@@ -172,7 +172,7 @@ struct SearchView: View {
                     items: viewModel.results,
                     isLoading: viewModel.isSearching,
                     hasMore: viewModel.hasMore,
-                    onItemTap: { router.navigate(to: .itemDetail(contentId: $0)) },
+                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
                     onLoadMore: {
                         Task { await viewModel.loadMore() }
                     }

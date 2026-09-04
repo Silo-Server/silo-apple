@@ -203,12 +203,15 @@ final class AuthService: @unchecked Sendable {
             rememberSelection: rememberSelection,
             expectedAccount: expectedAccount
         )
-        // Re-probe AI capabilities for the newly-selected profile. Fire and
-        // forget — gating defaults to "unavailable" until the probes land,
-        // so nothing blocks on this.
+        // Re-probe capabilities for the newly-selected profile. Fire and
+        // forget so profile navigation is never held behind an optional
+        // feature probe. Artwork-bearing API methods await the coalesced image
+        // probe at their own request boundary before dispatching.
         Task { @MainActor in
             await AICapabilities.shared.refresh()
+            await ImageSizeCapability.shared.refresh()
             await RequestsFeatureStore.shared.refresh()
+            await CurrentProfileStore.shared.refresh(force: true)
             // Unlike the two above, this one gates *enablement* of an entry
             // point that stays visible either way, and it defaults to
             // available — so a slow or failing probe never hides anything.
@@ -524,7 +527,9 @@ final class AuthService: @unchecked Sendable {
         // Server-wide AI capability + per-user ASR quota are reset on every
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
+        ImageSizeCapability.shared.reset()
         RequestsFeatureStore.shared.reset()
+        CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
         #if os(tvOS)
@@ -692,7 +697,9 @@ final class AuthService: @unchecked Sendable {
         OverlayPrefsStore.shared.clear()
         ProfilePrefsStore.shared.clear()
         AICapabilities.shared.reset()
+        ImageSizeCapability.shared.reset()
         RequestsFeatureStore.shared.reset()
+        CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
         #if os(tvOS)

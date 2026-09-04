@@ -6,6 +6,18 @@ xcuserdata/
 DerivedData/
 iosApp/.deriveddata/
 
+# XcodeGen regenerates the project, but the exact Aether transitive graph is a
+# release input and must remain reviewable.
+!iosApp/Silo.xcodeproj/
+iosApp/Silo.xcodeproj/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/
+iosApp/Silo.xcodeproj/project.xcworkspace/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/
+iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
 # SwiftPM / CocoaPods
 .build/
 iosApp/.spm-packages/
@@ -32,14 +44,9 @@ fastlane/Preview.html
 fastlane/screenshots/
 fastlane/test_output/
 
-# Local tooling state
-# `.agents/skills` is a symlink to `.claude/skills` so non-Claude agents find the
-# same files; everything else under .agents/ is per-developer scratch.
-/.agents/*
-!/.agents/skills
-# Ignore everything in .claude/ except the committed, shared skills.
-/.claude/*
-!/.claude/skills/
+# Local agent/tooling state
+/.agents/
+/.claude/
 .codex/
 .cursor/
 .sweetpad/
@@ -59,4 +66,7 @@ Thumbs.db
 docs/*
 !docs/tvos-focus.md
 !docs/mac-builder.md
+!docs/tvos-player/
+docs/tvos-player/*
+!docs/tvos-player/aetherengine-replacement-spec.md
 !docs/release/*
