@@ -59,9 +59,10 @@ struct Profile: Codable {
     }
 }
 
-/// PUT body for `/api/v1/profiles/{id}`. All fields are optional so the
-/// caller can patch one or many at a time. Wire format mirrors the
-/// server's `updateProfileRequest`.
+/// Profile fields a screen wants to change. All fields are optional so the
+/// caller can patch one or many at a time. `ContinuumAPI.updateProfile`
+/// converts this to the `PATCH /api/v2/profiles/{id}` body (`APIv2ProfilePatch`);
+/// nil here means "leave unchanged" — nothing in this shape can clear a field.
 struct UpdateProfileBody: Encodable {
     /// Streaming quality ceiling preset ("auto", "1080p", "4k"). Encodes as
     /// `quality_preference`. Written by the onboarding tour's quality step.
@@ -75,6 +76,24 @@ struct UpdateProfileBody: Encodable {
     var autoSkipIntro: Bool?
     var autoSkipCredits: Bool?
     var autoSkipRecap: Bool?
+
+    /// The v2 PATCH body. Only set members are sent; string enums pass through
+    /// unchanged so an unsupported value is rejected by the server's
+    /// validation rather than silently rewritten here.
+    var asAPIv2Patch: APIv2ProfilePatch {
+        var patch = APIv2ProfilePatch()
+        patch.qualityPreference = qualityPreference.map(APIv2QualityPreference.init(wireValue:))
+        if let subtitleLanguage { patch.subtitleLanguage = .set(subtitleLanguage) }
+        patch.subtitleMode = subtitleMode.map(APIv2SubtitleMode.init(wireValue:))
+        patch.showForcedSubtitles = showForcedSubtitles
+        if let preferredMetadataLanguage {
+            patch.preferredMetadataLanguage = .set(preferredMetadataLanguage)
+        }
+        patch.autoSkipIntro = autoSkipIntro
+        patch.autoSkipCredits = autoSkipCredits
+        patch.autoSkipRecap = autoSkipRecap
+        return patch
+    }
 }
 
 struct ProfilesResponse: Codable {
