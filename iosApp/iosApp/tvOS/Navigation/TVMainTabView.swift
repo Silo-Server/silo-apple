@@ -885,7 +885,15 @@ struct TVMainTabView: View {
         guard router.path.isEmpty else { return }
         closePanelForContentHandoff()
         suppressTopMenuFocusForContentHandoff()
-        contentFocusRequest += 1
+        // The current content stays mounted here (same `.id`), so this has
+        // the reselect shape from `selectRoot`: a synchronous bump lands the
+        // row's focus claim in the same transaction as the bar's disable +
+        // focus teardown, and the engine's repair from the resigning tab
+        // wins, stranding focus in the menu. Defer one turn so the claim
+        // applies after the bar has fully resigned.
+        DispatchQueue.main.async {
+            contentFocusRequest += 1
+        }
     }
 
     /// D-pad down past the last cascade row leaves the menu for the page
