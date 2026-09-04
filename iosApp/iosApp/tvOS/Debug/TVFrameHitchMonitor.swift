@@ -26,6 +26,7 @@ final class TVFrameHitchMonitor {
     private static let summaryInterval: CFTimeInterval = 10
 
     private let logger = Logger(subsystem: "com.continuum.app", category: "perf.hitch")
+    private let startTime = CACurrentMediaTime()
     private var displayLink: CADisplayLink?
     private var lastTimestamp: CFTimeInterval = 0
     private var summaryStart: CFTimeInterval = 0
@@ -92,8 +93,11 @@ final class TVFrameHitchMonitor {
     }
 
     private func emit(_ message: String) {
-        logger.notice("\(message, privacy: .public)")
-        FileHandle.standardError.write(Data("[perf.hitch] \(message)\n".utf8))
+        // Seconds since the monitor started, so hitches can be lined up with
+        // launch-phase work in the same console capture.
+        let stamped = String(format: "t+%.1fs %@", CACurrentMediaTime() - startTime, message)
+        logger.notice("\(stamped, privacy: .public)")
+        FileHandle.standardError.write(Data("[perf.hitch] \(stamped)\n".utf8))
     }
 }
 #endif
