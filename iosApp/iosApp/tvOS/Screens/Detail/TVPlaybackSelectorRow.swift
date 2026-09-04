@@ -36,25 +36,33 @@ struct TVPlaybackActionSelectors: View {
             icon: "square.stack",
             title: "Versions",
             accessibilityLabel: "Version, \(versionValue)",
-            stabilizesFocusMotion: true
-        ) {
-            Button { onSelectVersion(nil) } label: {
-                menuItem(
-                    title: "Auto",
-                    detail: "Best match for this device",
-                    isSelected: selectedVersionFileId == nil
-                )
-            }
-            ForEach(versions) { version in
-                Button { onSelectVersion(version.fileId) } label: {
-                    menuItem(
+            stabilizesFocusMotion: true,
+            menuTitle: "Version",
+            items: {
+                [
+                    TVActionPopoverItem(
+                        id: "auto",
+                        title: "Auto",
+                        detail: "Best match for this device",
+                        isSelected: selectedVersionFileId == nil
+                    )
+                ] + versions.map { version in
+                    TVActionPopoverItem(
+                        id: "file-\(version.fileId)",
                         title: DetailPlaybackFormatting.versionShortLabel(version),
                         detail: versionDetail(version),
                         isSelected: selectedVersionFileId == version.fileId
                     )
                 }
+            },
+            onSelect: { item in
+                if item.id == "auto" {
+                    onSelectVersion(nil)
+                } else if let fileId = Int(item.id.dropFirst("file-".count)) {
+                    onSelectVersion(fileId)
+                }
             }
-        }
+        )
         .disabled(currentVersion == nil || versions.isEmpty)
     }
 
@@ -63,25 +71,33 @@ struct TVPlaybackActionSelectors: View {
             icon: "speaker.wave.2",
             title: "Audio Tracks",
             accessibilityLabel: "Audio, \(audioValue)",
-            stabilizesFocusMotion: true
-        ) {
-            Button { onSelectAudioTrack(nil) } label: {
-                menuItem(
-                    title: "Auto",
-                    detail: "Use your Playback audio preference",
-                    isSelected: selectedAudioTrackIndex == nil
-                )
-            }
-            ForEach(audioOptions) { option in
-                Button { onSelectAudioTrack(option.ordinal) } label: {
-                    menuItem(
+            stabilizesFocusMotion: true,
+            menuTitle: "Audio",
+            items: {
+                [
+                    TVActionPopoverItem(
+                        id: "auto",
+                        title: "Auto",
+                        detail: "Use your Playback audio preference",
+                        isSelected: selectedAudioTrackIndex == nil
+                    )
+                ] + audioOptions.map { option in
+                    TVActionPopoverItem(
+                        id: "track-\(option.ordinal)",
                         title: option.title,
                         detail: option.detail,
                         isSelected: option.isSelected
                     )
                 }
+            },
+            onSelect: { item in
+                if item.id == "auto" {
+                    onSelectAudioTrack(nil)
+                } else if let ordinal = Int(item.id.dropFirst("track-".count)) {
+                    onSelectAudioTrack(ordinal)
+                }
             }
-        }
+        )
         .disabled(currentVersion == nil || audioOptions.isEmpty)
     }
 
@@ -90,43 +106,47 @@ struct TVPlaybackActionSelectors: View {
             icon: "captions.bubble",
             title: "Subtitles",
             accessibilityLabel: "Subtitles, \(subtitleValue)",
-            stabilizesFocusMotion: true
-        ) {
-            Button { onSelectSubtitleTrack(nil) } label: {
-                menuItem(
-                    title: "Auto",
-                    detail: "Use your subtitle preferences",
-                    isSelected: selectedSubtitleTrackIndex == nil
-                )
-            }
-            Button { onSelectSubtitleTrack(-1) } label: {
-                menuItem(
-                    title: "Off",
-                    detail: "Start without subtitles",
-                    isSelected: selectedSubtitleTrackIndex == -1
-                )
-            }
-            ForEach(subtitleOptions) { option in
-                if option.isSelectable, let selectionIndex = option.selectionIndex {
-                    Button { onSelectSubtitleTrack(selectionIndex) } label: {
-                        menuItem(
-                            title: option.title,
-                            detail: option.detail,
-                            isSelected: option.isSelected
-                        )
+            stabilizesFocusMotion: true,
+            menuTitle: "Subtitles",
+            items: {
+                [
+                    TVActionPopoverItem(
+                        id: "auto",
+                        title: "Auto",
+                        detail: "Use your subtitle preferences",
+                        isSelected: selectedSubtitleTrackIndex == nil
+                    ),
+                    TVActionPopoverItem(
+                        id: "off",
+                        title: "Off",
+                        detail: "Start without subtitles",
+                        isSelected: selectedSubtitleTrackIndex == -1
+                    ),
+                ] + subtitleOptions.map { option in
+                    TVActionPopoverItem(
+                        id: "sub-\(option.stableId)",
+                        title: option.title,
+                        detail: option.detail,
+                        isSelected: option.isSelected,
+                        isEnabled: option.isSelectable && option.selectionIndex != nil
+                    )
+                }
+            },
+            onSelect: { item in
+                switch item.id {
+                case "auto":
+                    onSelectSubtitleTrack(nil)
+                case "off":
+                    onSelectSubtitleTrack(-1)
+                default:
+                    let stableId = String(item.id.dropFirst("sub-".count))
+                    if let option = subtitleOptions.first(where: { $0.stableId == stableId }),
+                       let selectionIndex = option.selectionIndex {
+                        onSelectSubtitleTrack(selectionIndex)
                     }
-                } else {
-                    Button { } label: {
-                        menuItem(
-                            title: option.title,
-                            detail: option.detail,
-                            isSelected: false
-                        )
-                    }
-                    .disabled(true)
                 }
             }
-        }
+        )
         .disabled(currentVersion == nil)
     }
 
@@ -181,16 +201,6 @@ struct TVPlaybackActionSelectors: View {
 
     private func versionDetail(_ version: FileVersion) -> String {
         DetailPlaybackFormatting.versionDetailLabel(version)
-    }
-
-    @ViewBuilder
-    private func menuItem(title: String, detail: String, isSelected: Bool) -> some View {
-        let label = detail.isEmpty ? title : "\(title) — \(detail)"
-        if isSelected {
-            Label(label, systemImage: "checkmark")
-        } else {
-            Text(label)
-        }
     }
 }
 

@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import UIKit
 
 // MARK: - Primary pill
 
@@ -151,58 +152,122 @@ private struct TVSecondaryPillLabel: View {
 
 // MARK: - Circle menu button
 
-/// Circle-shaped overflow/"more" button that opens a `Menu`. Same visual
-/// footprint as `TVCircleActionButton` — used in the hero action row to
-/// keep secondary navigation actions (Go to Series, Go to Season, etc.)
-/// one tap away without crowding the primary row.
-struct TVCircleMenuButton<MenuContent: View>: View {
+/// Circle-shaped button that opens an app-owned `TVActionPopoverMenu`
+/// anchored below it. Same visual footprint as `TVCircleActionButton`.
+///
+/// This deliberately does not use the system `Menu`: on tvOS that is a
+/// context-menu interaction with ~1 s present and ~1.2 s dismiss springs,
+/// and it swallows d-pad input until the dismiss completes. The popover
+/// closes synchronously and hands focus straight back to this button.
+struct TVCircleMenuButton: View {
     let icon: String
     /// Short label revealed while focused ("Versions", "More"). Nil keeps the
     /// button a fixed icon-only circle.
     let title: String?
     let accessibilityLabel: String
     let stabilizesFocusMotion: Bool
-    @ViewBuilder let menu: () -> MenuContent
+    /// Header shown inside the popover. Defaults to `title`.
+    let menuTitle: String?
+    let items: () -> [TVActionPopoverItem]
+    let onSelect: (TVActionPopoverItem) -> Void
 
+    @Environment(\.isEnabled) private var isEnabled
     @FocusState private var isFocused: Bool
+    @State private var isPresented = false
+    @State private var presentationId = UUID()
+    @State private var isPressed = false
+    @State private var focusReturn: Task<Void, Never>?
 
     init(
         icon: String = "ellipsis",
         title: String? = nil,
         accessibilityLabel: String,
         stabilizesFocusMotion: Bool = false,
-        @ViewBuilder menu: @escaping () -> MenuContent
+        menuTitle: String? = nil,
+        items: @escaping () -> [TVActionPopoverItem],
+        onSelect: @escaping (TVActionPopoverItem) -> Void
     ) {
         self.icon = icon
         self.title = title
         self.accessibilityLabel = accessibilityLabel
         self.stabilizesFocusMotion = stabilizesFocusMotion
-        self.menu = menu
+        self.menuTitle = menuTitle
+        self.items = items
+        self.onSelect = onSelect
     }
 
     var body: some View {
         TVCirclePillSurface(
             icon: icon,
             title: title,
-            isFocused: isFocused,
-            isPressed: false,
+            isFocused: isFocused || isPresented,
+            isPressed: isPressed,
             stabilizesFocusMotion: stabilizesFocusMotion
         )
         .accessibilityHidden(true)
         .overlay {
-            // The Menu is only the focus/press host. Its UIKit-backed button
-            // applies label size changes without animating them, so it must
-            // not own the pill's geometry; the surface above does. It stays
-            // the accessibility element so VoiceOver activation opens it.
-            Menu {
-                menu()
-            } label: {
+            // The Button is only the focus/press host so the surface owns
+            // the pill's geometry. It stays the accessibility element so
+            // VoiceOver activation opens the popover.
+            Button(action: open) {
                 Color.clear
             }
-            .menuStyle(.button)
-            .buttonStyle(TVCircleFocusHostButtonStyle(isPressed: nil))
+            .buttonStyle(TVCircleFocusHostButtonStyle(isPressed: $isPressed))
             .focused($isFocused)
             .accessibilityLabel(accessibilityLabel)
+        }
+        // The popover itself is drawn by the page-level `tvActionPopoverHost()`
+        // so it escapes the hero clip and paints above the rest of the page.
+        // Only the request travels up; focus returns here via `isFocused`.
+        .anchorPreference(key: TVActionPopoverPreferenceKey.self, value: .bounds) { anchor in
+            guard isPresented else { return [] }
+            return [
+                TVActionPopoverRequest(
+                    id: presentationId,
+                    anchor: anchor,
+                    title: menuTitle ?? title ?? accessibilityLabel,
+                    items: items(),
+                    onSelect: { item in
+                        close()
+                        onSelect(item)
+                    },
+                    onClose: close
+                )
+            ]
+        }
+        .onDisappear {
+            focusReturn?.cancel()
+            isPresented = false
+        }
+    }
+
+    private func open() {
+        guard isEnabled, !isPresented else { return }
+        presentationId = UUID()
+        isPresented = true
+    }
+
+    private func close() {
+        guard isPresented else { return }
+        isPresented = false
+        returnFocus()
+    }
+
+    /// The page is disabled while the popover is open and re-enables one
+    /// render after the request clears, so a synchronous focus write here
+    /// is dropped. Re-assert across a few turns until it sticks.
+    private func returnFocus() {
+        focusReturn?.cancel()
+        focusReturn = Task { @MainActor in
+            for attempt in 0..<8 {
+                if attempt == 0 {
+                    await Task.yield()
+                } else {
+                    try? await Task.sleep(nanoseconds: 32_000_000)
+                }
+                if Task.isCancelled || isFocused || isPresented { return }
+                isFocused = true
+            }
         }
     }
 }

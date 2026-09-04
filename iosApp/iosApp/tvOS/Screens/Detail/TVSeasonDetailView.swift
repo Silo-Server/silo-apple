@@ -120,6 +120,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 episodeSectionId: episodeSectionScrollId,
                 heroId: heroScrollId
             )
+            .tvActionPopoverHost()
         }
     }
 
@@ -183,29 +184,46 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
         )
     }
 
-    @ViewBuilder
+    private enum MoreAction: String {
+        case favorite, watched, series
+    }
+
     private var moreMenu: some View {
-        TVCircleMenuButton(title: "More", accessibilityLabel: "More options") {
-            Button(action: onToggleFavorite) {
-                Label(
-                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                    systemImage: isFavorite ? "heart.fill" : "heart"
-                )
-            }
-            Button(action: onToggleWatched) {
-                Label(
-                    isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
-                    systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
-                )
-            }
-            if let seriesId = detail.seriesId {
-                Button {
-                    onNavigateToItem(seriesId)
-                } label: {
-                    Label("Go to Series", systemImage: "tv")
+        TVCircleMenuButton(
+            title: "More",
+            accessibilityLabel: "More options",
+            items: {
+                var items: [TVActionPopoverItem] = [
+                    TVActionPopoverItem(
+                        id: MoreAction.favorite.rawValue,
+                        title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                        systemImage: isFavorite ? "heart.fill" : "heart"
+                    ),
+                    TVActionPopoverItem(
+                        id: MoreAction.watched.rawValue,
+                        title: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                        systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                    ),
+                ]
+                if detail.seriesId != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.series.rawValue,
+                        title: "Go to Series",
+                        systemImage: "tv"
+                    ))
+                }
+                return items
+            },
+            onSelect: { item in
+                switch MoreAction(rawValue: item.id) {
+                case .favorite: onToggleFavorite()
+                case .watched: onToggleWatched()
+                case .series:
+                    if let seriesId = detail.seriesId { onNavigateToItem(seriesId) }
+                case .none: break
                 }
             }
-        }
+        )
     }
 
     private var nextUpEpisode: EpisodeListItem? {
