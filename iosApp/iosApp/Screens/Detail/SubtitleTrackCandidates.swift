@@ -11,14 +11,15 @@ import Foundation
 /// disagreement forced a `subtitle_track_changed` replan, and a full engine
 /// reload, on every episode start.
 enum SubtitleTrackCandidates {
+    /// `ordinal` is the position in the returned combined order, not the
+    /// catalog offset the track came from.
     static func indexedPlayerTracks(
         from tracks: [SubtitleTrack]
     ) -> [(ordinal: Int, track: PlayerTrack)] {
         var externalOrdinal = 0
-        let indexed = Array(tracks.enumerated())
-        let combinedOrder = indexed.filter { $0.element.external == true }
-            + indexed.filter { $0.element.external != true }
-        return combinedOrder.compactMap { ordinal, track in
+        let combinedOrder = tracks.filter { $0.external == true }
+            + tracks.filter { $0.external != true }
+        return combinedOrder.enumerated().compactMap { ordinal, track in
             let isExternal = track.external == true
             let trackId: Int64
             let sourceIndex: Int?

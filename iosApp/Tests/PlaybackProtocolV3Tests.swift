@@ -871,9 +871,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
 
         // The same preference over the plan inventory must land on the same ordinal.
-        let candidates = SubtitleTrackCandidates.playerTracks(from: version.subtitleTracks ?? [])
+        let indexed = SubtitleTrackCandidates.indexedPlayerTracks(from: version.subtitleTracks ?? [])
+        XCTAssertEqual(indexed.map(\.ordinal), [0, 1, 2, 3], "ordinals follow the combined order, not catalog offsets")
+        let candidates = indexed.map(\.track)
         XCTAssertEqual(candidates.map(\.isExternal), [true, true, false, false])
         XCTAssertEqual(candidates.map(\.srcId), [0, 1, nil, nil])
+        XCTAssertEqual(candidates.map(\.ffIndex), [nil, nil, 3, 4])
     }
 
     func testInitialAutoSubtitleIntentIsFrozenIntoProtocolV3Plan() {
