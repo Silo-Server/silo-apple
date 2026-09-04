@@ -254,11 +254,16 @@ struct ContentView: View {
                 await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
                 #endif
                 #if !os(tvOS)
-                await DownloadManager.shared.onAppActive()
-                guard !Task.isCancelled,
-                      router.authState == .authenticated else { return }
-                isDownloadCapabilityHydrated = true
-                drainPendingDeepLinkIfReady()
+                // Drain a queued Downloads link as soon as the capability is
+                // known. The reconciliation and sync that follow inside
+                // onAppActive() can take several network round-trips on a slow
+                // server and must not hold a notification tap hostage.
+                await DownloadManager.shared.onAppActive {
+                    guard !Task.isCancelled,
+                          router.authState == .authenticated else { return }
+                    isDownloadCapabilityHydrated = true
+                    drainPendingDeepLinkIfReady()
+                }
                 #endif
             }
         }
