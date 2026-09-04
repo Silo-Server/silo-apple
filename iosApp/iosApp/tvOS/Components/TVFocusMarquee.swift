@@ -69,6 +69,10 @@ struct TVMarqueeContent: Equatable {
     /// The previewed item's content id — keys the low-priority detail
     /// enrichment (§9 backfill). `nil` for collections.
     let contentId: String?
+    /// Stable identity of the source row (`ResolvedSection.id`). Row
+    /// changes are detected on this, never on the display title, which
+    /// adjacent sections may share. `nil` for previews without a section.
+    let rowId: String?
     /// The source row's title (`Continue Watching`). Not rendered — the
     /// row's own header names the source — but kept for the VoiceOver
     /// description and presentation identity.
@@ -122,6 +126,7 @@ struct TVMarqueeContent: Equatable {
 extension TVMarqueeContent {
     init(
         item: SectionItem,
+        rowId: String? = nil,
         rowTitle: String,
         isContinueWatching: Bool = false
     ) {
@@ -165,6 +170,7 @@ extension TVMarqueeContent {
         self.init(
             id: "\(rowTitle)#\(item.contentId)",
             contentId: item.contentId,
+            rowId: rowId,
             eyebrow: rowTitle,
             // Episodes headline with their series (`SEVERANCE`); the
             // episode itself moves to the meta line per §5.4.
@@ -206,6 +212,7 @@ extension TVMarqueeContent {
         self.init(
             id: "\(rowTitle)#collection:\(collection.id)",
             contentId: nil,
+            rowId: nil,
             eyebrow: rowTitle,
             title: collection.name,
             logoUrl: nil,
@@ -707,26 +714,35 @@ final class TVFocusMarqueeModel {
         // visible swap, so the rest gate would only delay the warm-up. The
         // band's scroll phase lingers non-idle after the move, so a Left/
         // Right roll inside the new row must still see the rest gate: only
-        // a change of row (the eyebrow carries the row title) counts.
-        let isRowChange = isBackdropDeferred && candidate.eyebrow != content?.eyebrow
+        // a change of row identity counts, never the display title, which
+        // adjacent sections may share.
+        let isRowChange = isBackdropDeferred
+            && candidate.rowId != nil
+            && candidate.rowId != content?.rowId
         cancelBackdropWork()
         content = candidate
-        // Without the rest gate, episode backdrops (resolved from detail)
-        // have nothing to warm until enrichment starts, so start it now.
-        loadEnrichment(for: candidate, deferNetwork: !isRowChange)
         pendingNeighborBackdropURLs = neighborBackdropURLs
         if isRowChange {
-            // Each move starts a fresh row animation, so the cap restarts.
-            armBackdropHoldCap()
-            rest(on: candidate)
+            restForRowChange(on: candidate)
             return
         }
+        loadEnrichment(for: candidate, deferNetwork: true)
         backdropTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(ContinuumTheme.Skyline.marqueeRestDebounceMilliseconds))
             guard !Task.isCancelled, let self,
                   self.isActive, self.content == candidate else { return }
             self.rest(on: candidate)
         }
+    }
+
+    /// The row band's scroll is the gate for `candidate`: restart the hold
+    /// cap for this move, start enrichment without the network debounce
+    /// (episode backdrops resolve from detail, so until it starts there is
+    /// nothing to warm), and rest immediately.
+    private func restForRowChange(on candidate: TVMarqueeContent) {
+        armBackdropHoldCap()
+        loadEnrichment(for: candidate, deferNetwork: false)
+        rest(on: candidate)
     }
 
     /// Focus has settled on `candidate`: allow its backdrop through and
@@ -800,9 +816,10 @@ final class TVFocusMarqueeModel {
         if deferred {
             armBackdropHoldCap()
             // The scroll started after the focus report: the row band is
-            // now the gate, so stop waiting out the rest debounce and begin
-            // warming the new backdrop while the band animates.
-            if backdropTask != nil, let content { rest(on: content) }
+            // now the gate, so stop waiting out the rest debounce and the
+            // enrichment debounce, and begin warming the new backdrop
+            // while the band animates.
+            if backdropTask != nil, let content { restForRowChange(on: content) }
         } else {
             backdropHoldCapTask?.cancel()
             backdropHoldCapTask = nil
