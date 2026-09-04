@@ -9,6 +9,8 @@ struct SiloApp: App {
     init() {
         #if os(tvOS)
         ExitSentinel.shared.appDidLaunch()
+        // No-op unless launched with `-perfHitchLog`.
+        TVFrameHitchMonitor.installIfRequested()
         #endif
 
         // Install the shared Nuke-backed image cache before any SwiftUI view

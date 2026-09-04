@@ -7,8 +7,9 @@ import Nuke
 ///
 /// - Reads from the shared `PosterImageCache` pipeline (persistent memory +
 ///   disk cache)
-/// - Downsamples to the target render size during decode so a 1080×1620
-///   poster isn't held in memory at full resolution just to draw at 260×390
+/// - Decodes straight to the target render size through ImageIO's thumbnail
+///   path, so a 780×1170 poster is never held in memory at full resolution
+///   (or decoded and then resized on the CPU) just to draw at 176×264
 /// - Cross-fades in with the same duration as the rest of the app
 /// - Shows a solid surface placeholder that blends with the grid background
 struct CachedAsyncImage: View {
@@ -56,12 +57,12 @@ struct CachedAsyncImage: View {
                         .onAppear(perform: notifyImageLoaded)
                 } else if state.error == nil, let warmedImage {
                     // The startup/grid prefetchers warm the memory cache under
-                    // the bare-URL key, while the request above is keyed by
-                    // URL + resize processor — a miss for Nuke's synchronous
-                    // first check. Painting the warmed full-size decode here
-                    // makes a prefetched card render finished on its first
-                    // frame; the downsampled result then swaps in with
-                    // identical pixels, so the handoff is invisible.
+                    // the shared card-size thumbnail key, while the request
+                    // above is keyed by the exact render size — a miss for
+                    // Nuke's synchronous first check. Painting the warmed
+                    // decode here makes a prefetched card render finished on
+                    // its first frame; it is at least as sharp as the card's
+                    // own decode, so the swap-in is invisible.
                     Image(platformImage: warmedImage)
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
@@ -89,11 +90,11 @@ struct CachedAsyncImage: View {
         }
     }
 
-    /// Synchronous memory-cache lookup for the unprocessed URL the
+    /// Synchronous memory-cache lookup for the card-size decode the
     /// prefetchers warm. Cheap dictionary access — safe to call from `body`.
     private func prefetchedImage() -> PlatformImage? {
         guard let url = URL(string: url) else { return nil }
-        return ImagePipeline.shared.cache[ImageRequest(url: url)]?.image
+        return PosterImageCache.warmedCardImage(for: url)
     }
 
     private func notifyImageLoaded() {
@@ -110,12 +111,7 @@ struct CachedAsyncImage: View {
             width: size.width * displayScale,
             height: size.height * displayScale
         )
-        return ImageRequest(
-            url: url,
-            processors: [
-                ImageProcessors.Resize(size: pixelSize, contentMode: .aspectFill, upscale: false)
-            ]
-        )
+        return PosterImageCache.displayRequest(url: url, pixelSize: pixelSize)
     }
 
     private func placeholder(in size: CGSize) -> some View {

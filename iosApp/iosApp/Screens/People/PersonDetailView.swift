@@ -135,7 +135,7 @@ final class PersonDetailViewModel {
             .compactMap(URL.init(string:))
         let newURLs = urls.filter { prefetchedPosterURLs.insert($0).inserted }
         guard !newURLs.isEmpty else { return }
-        PosterImageCache.prefetcher.startPrefetching(with: newURLs)
+        PosterImageCache.prefetchCardArtwork(newURLs)
     }
     #endif
 
@@ -277,7 +277,7 @@ final class PersonDetailViewModel {
     private func resetFilmography() {
         #if os(tvOS)
         if !prefetchedPosterURLs.isEmpty {
-            PosterImageCache.prefetcher.stopPrefetching(with: Array(prefetchedPosterURLs))
+            PosterImageCache.stopPrefetchingCardArtwork(Array(prefetchedPosterURLs))
             prefetchedPosterURLs.removeAll()
         }
         #endif
