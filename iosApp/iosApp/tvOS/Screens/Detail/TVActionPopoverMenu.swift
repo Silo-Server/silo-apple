@@ -86,8 +86,34 @@ struct TVActionPopoverMenu: View {
             // engine not having moved yet.
             if didClaimFocus { onClose() }
         }
-        .accessibilityElement(children: .contain)
+        // VoiceOver: the composite is one adjustable button. Its value is
+        // the highlighted row (what Select will commit), swipe up/down moves
+        // the highlight, and activate commits it. Rows stay hidden so the
+        // cursor cannot land on a label that does not react to Select.
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .accessibilityValue(highlightedAccessibilityValue)
+        .accessibilityAddTraits([.isButton, .updatesFrequently])
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: moveHighlight(by: 1)
+            case .decrement: moveHighlight(by: -1)
+            @unknown default: break
+            }
+        }
+        .accessibilityAction(.default, commitHighlighted)
+        .accessibilityAction(.escape, onClose)
+    }
+
+    private var highlightedAccessibilityValue: String {
+        guard let item = items.first(where: { $0.id == highlightedId }) else { return "" }
+        var parts = [item.title]
+        if let detail = item.detail, !detail.isEmpty { parts.append(detail) }
+        if item.isSelected { parts.append("selected") }
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            parts.append("\(index + 1) of \(items.count)")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private var header: some View {
@@ -134,16 +160,11 @@ struct TVActionPopoverMenu: View {
     private static let rowHeightEstimate: CGFloat = 72
 
     private func handleMove(_ direction: MoveCommandDirection) {
-        let enabled = items.filter(\.isEnabled)
-        guard !enabled.isEmpty else { return }
-        let index = enabled.firstIndex { $0.id == highlightedId } ?? 0
         switch direction {
         case .up:
-            guard index > 0 else { return }
-            highlightedId = enabled[index - 1].id
+            moveHighlight(by: -1)
         case .down:
-            guard index < enabled.count - 1 else { return }
-            highlightedId = enabled[index + 1].id
+            moveHighlight(by: 1)
         case .left, .right:
             // Lateral moves leave the menu: close and let the next press
             // land on the row's neighbour. Consuming them here would
@@ -152,6 +173,15 @@ struct TVActionPopoverMenu: View {
         @unknown default:
             break
         }
+    }
+
+    private func moveHighlight(by delta: Int) {
+        let enabled = items.filter(\.isEnabled)
+        guard !enabled.isEmpty else { return }
+        let index = enabled.firstIndex { $0.id == highlightedId } ?? 0
+        let next = index + delta
+        guard enabled.indices.contains(next) else { return }
+        highlightedId = enabled[next].id
     }
 
     /// A `@FocusState` write in `onAppear` lands only if the engine already
@@ -218,17 +248,11 @@ private struct TVActionPopoverRow: View {
                 .fill(isHighlighted ? Color.white : Color.clear)
         )
         .animation(reduceMotion ? nil : ContinuumTheme.springAnimation, value: isHighlighted)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(item.isSelected ? .isSelected : [])
+        .accessibilityHidden(true)
     }
 
     private var foreground: Color {
         isHighlighted ? .continuumBackground : .white.opacity(0.9)
-    }
-
-    private var accessibilityText: String {
-        guard let detail = item.detail, !detail.isEmpty else { return item.title }
-        return "\(item.title), \(detail)"
     }
 }
 
@@ -277,9 +301,45 @@ private struct TVActionPopoverHostModifier: ViewModifier {
     /// disabled. While disabled, nothing under the page can take focus, so
     /// the popover is the engine's only candidate: that is the focus lock.
     @State private var isOpen = false
+    /// Measured height of the open panel. Zero until the first layout; the
+    /// panel is then placed below the anchor, which is right for every
+    /// short list and re-evaluates once the real height is known.
+    @State private var panelHeight: CGFloat = 0
 
     private static let anchorGap: CGFloat = 14
     private static let screenInset: CGFloat = 48
+
+    private struct Placement {
+        let x: CGFloat
+        let y: CGFloat
+        let opensUpward: Bool
+    }
+
+    /// Below the anchor when it fits, otherwise above it; if neither side
+    /// has room, pinned to the bottom inset so the last row is on screen.
+    /// Horizontal position tracks the anchor's leading edge and is clamped
+    /// to the screen inset.
+    private static func placement(
+        anchor: CGRect,
+        panelHeight: CGFloat,
+        in size: CGSize
+    ) -> Placement {
+        let x = min(
+            anchor.minX,
+            max(screenInset, size.width - screenInset - TVActionPopoverMenu.width)
+        )
+        let below = anchor.maxY + anchorGap
+        let fitsBelow = below + panelHeight <= size.height - screenInset
+        if fitsBelow || panelHeight == 0 {
+            return Placement(x: x, y: below, opensUpward: false)
+        }
+        let above = anchor.minY - anchorGap - panelHeight
+        if above >= screenInset {
+            return Placement(x: x, y: above, opensUpward: true)
+        }
+        let pinned = max(screenInset, size.height - screenInset - panelHeight)
+        return Placement(x: x, y: pinned, opensUpward: false)
+    }
 
     func body(content: Content) -> some View {
         content
@@ -287,11 +347,17 @@ private struct TVActionPopoverHostModifier: ViewModifier {
             .onPreferenceChange(TVActionPopoverPreferenceKey.self) { requests in
                 let open = !requests.isEmpty
                 if open != isOpen { isOpen = open }
+                if !open { panelHeight = 0 }
             }
             .overlayPreferenceValue(TVActionPopoverPreferenceKey.self) { requests in
                 GeometryReader { geo in
                     if let request = requests.last {
                         let anchor = geo[request.anchor]
+                        let placement = Self.placement(
+                            anchor: anchor,
+                            panelHeight: panelHeight,
+                            in: geo.size
+                        )
                         // Layout padding, never `.offset`: tvOS resolves
                         // focus from layout frames, and an offset panel
                         // would keep its focus frame at the origin.
@@ -304,21 +370,22 @@ private struct TVActionPopoverHostModifier: ViewModifier {
                             )
                             .id(request.id)
                             .fixedSize()
-                            .padding(
-                                .leading,
-                                min(
-                                    anchor.minX,
-                                    max(
-                                        Self.screenInset,
-                                        geo.size.width - Self.screenInset - TVActionPopoverMenu.width
-                                    )
-                                )
-                            )
-                            .padding(.top, anchor.maxY + Self.anchorGap)
+                            .onGeometryChange(for: CGFloat.self) { proxy in
+                                proxy.size.height
+                            } action: { height in
+                                panelHeight = height
+                            }
+                            .padding(.leading, placement.x)
+                            .padding(.top, placement.y)
                             .transition(
                                 reduceMotion
                                     ? .opacity
-                                    : .opacity.combined(with: .scale(scale: 0.96, anchor: .top))
+                                    : .opacity.combined(
+                                        with: .scale(
+                                            scale: 0.96,
+                                            anchor: placement.opensUpward ? .bottom : .top
+                                        )
+                                    )
                             )
                         }
                         .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
