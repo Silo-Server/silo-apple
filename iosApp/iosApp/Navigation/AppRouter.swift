@@ -266,7 +266,8 @@ class AppRouter {
             navigate(to: .player(
                 contentId: contentId,
                 startFromBeginning: startFromBeginning,
-                resumePosition: resumePosition
+                resumePosition: resumePosition,
+                prefersLastUsedVersion: prefersLastUsedVersion
             ))
         }
         #else

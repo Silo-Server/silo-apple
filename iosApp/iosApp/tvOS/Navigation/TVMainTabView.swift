@@ -1384,11 +1384,12 @@ struct TVMainTabView: View {
             ItemDetailView(contentId: contentId, tvSeed: tvSeed)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
-        case .player(let contentId, let startFromBeginning, let resumePosition):
+        case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion):
             PlayerView(
                 contentId: contentId,
                 startFromBeginning: startFromBeginning,
-                resumePositionOverride: resumePosition
+                resumePositionOverride: resumePosition,
+                prefersLastUsedVersion: prefersLastUsedVersion
             )
         case .playerWithFile(let contentId, let fileId, let audioTrackIndex, let subtitleTrackIndex, let startFromBeginning, let resumePosition):
             PlayerView(

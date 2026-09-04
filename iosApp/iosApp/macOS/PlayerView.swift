@@ -9,6 +9,9 @@ struct PlayerView: View {
     let preferredSubtitleTrackIndex: Int?
     let startFromBeginning: Bool
     let resumePositionOverride: Double?
+    /// Continue Watching resume intent: select the server's last-used file
+    /// before the profile-wide quality preference.
+    let prefersLastUsedVersion: Bool
     /// Set when the caller wants offline playback of a completed download.
     /// Routes the prepare through `OfflinePlaybackBuilder` (stored manifest
     /// + local media file, no server session) so playback works with no
@@ -27,6 +30,7 @@ struct PlayerView: View {
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
         resumePositionOverride: Double? = nil,
+        prefersLastUsedVersion: Bool = false,
         offlineDownloadId: String? = nil
     ) {
         self.contentId = contentId
@@ -35,6 +39,7 @@ struct PlayerView: View {
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
         self.startFromBeginning = startFromBeginning
         self.resumePositionOverride = resumePositionOverride
+        self.prefersLastUsedVersion = prefersLastUsedVersion
         self.offlineDownloadId = offlineDownloadId
     }
 
@@ -106,6 +111,7 @@ struct PlayerView: View {
                 preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
                 resumePositionOverride: resumePositionOverride,
+                prefersLastUsedVersion: prefersLastUsedVersion,
                 offlineDownloadId: offlineDownloadId
             )
         }
