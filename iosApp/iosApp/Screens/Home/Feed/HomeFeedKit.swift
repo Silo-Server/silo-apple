@@ -19,11 +19,12 @@ enum HomeFeedMetrics {
     static let posterWidth: CGFloat = 132
     /// Poster Wall trades size for count.
     static let densePosterWidth: CGFloat = 104
-    /// 16:9 still used by resume rows. Tuned so a still row shows the same
-    /// "two cards plus a peek" as a poster row — at 210 the stills were
-    /// noticeably less dense than the 132pt posters directly below them, which
-    /// made the page rhythm feel inconsistent as you scrolled.
-    static let stillWidth: CGFloat = 184
+    /// 16:9 still used by resume rows. Continue Watching is the row people
+    /// act on most, so it reads as "one card plus a peek" rather than matching
+    /// the poster rows' density — at 184 the stills felt like thumbnails and
+    /// the progress rail was hard to read. Android's backdrop card is 280dp.
+    /// Scaled by the Poster Size setting at the call site.
+    static let stillWidth: CGFloat = 240
     /// Runway under the last row so captions clear the floating tab bar.
     static let bottomRunway: CGFloat = 96
 
