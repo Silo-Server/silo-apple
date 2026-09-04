@@ -65,6 +65,13 @@ final class SiloControlClient {
     private var session: SiloControlSession?
     private var readTask: Task<Void, Never>?
     private var connectionId: UUID?
+    /// Set once the hello frame for `connectionId` is on the wire. A drop
+    /// before that is a failed connect (reported by `connect`'s catch), not a
+    /// lost session, so the read loop and heartbeat must not start a
+    /// reconnect for it — closing a timed-out pre-hello connection would
+    /// otherwise race `fail` and flip a user-visible error into silent
+    /// reconnecting.
+    private var isHandshakeComplete = false
 
     private(set) var isReconnecting = false
     /// True while a silent foreground auto-resume probe is connected but
@@ -168,6 +175,7 @@ final class SiloControlClient {
         let connectionId = UUID()
         self.session = session
         self.connectionId = connectionId
+        isHandshakeComplete = false
         let stream = await session.open()
         startReadLoop(stream: stream, connectionId: connectionId)
         startHeartbeat(connectionId: connectionId)
@@ -188,6 +196,7 @@ final class SiloControlClient {
             await session.close()
             return false
         }
+        if self.connectionId == connectionId { isHandshakeComplete = true }
         isConnecting = false
         let connected = self.connectionId == connectionId && self.session != nil
         if connected, targetsActiveServer {
@@ -589,13 +598,13 @@ final class SiloControlClient {
                     await MainActor.run { self?.handle(message, connectionId: connectionId) }
                 }
                 await MainActor.run {
-                    guard self?.connectionId == connectionId else { return }
-                    self?.beginReconnect(reason: "Lost connection to the TV.")
+                    guard let self, self.isLiveConnection(connectionId) else { return }
+                    self.beginReconnect(reason: "Lost connection to the TV.")
                 }
             } catch {
                 await MainActor.run {
-                    guard self?.connectionId == connectionId else { return }
-                    self?.beginReconnect(reason: error.localizedDescription)
+                    guard let self, self.isLiveConnection(connectionId) else { return }
+                    self.beginReconnect(reason: error.localizedDescription)
                 }
             }
         }
@@ -667,7 +676,7 @@ final class SiloControlClient {
         heartbeatTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.heartbeatInterval)
-                guard let self, self.connectionId == connectionId else { return }
+                guard let self, self.isLiveConnection(connectionId) else { return }
                 self.missedHeartbeats += 1
                 if self.missedHeartbeats > Self.maxMissedHeartbeats {
                     self.beginReconnect(reason: "Lost connection to the TV.")
@@ -678,12 +687,21 @@ final class SiloControlClient {
         }
     }
 
+    /// True while `id` is the current connection and its hello has been sent,
+    /// i.e. a drop now is a lost session rather than a failed connect.
+    private func isLiveConnection(_ id: UUID) -> Bool {
+        connectionId == id && isHandshakeComplete
+    }
+
     private func beginReconnect(reason: String) {
         guard let target = lastTarget else { clearSession(); return }
         // A reconnect attempt's own read loop / heartbeat reports the failed
         // connection through here too. Restarting would cancel the running
         // loop and hand it a fresh attempt budget — an endless
         // "Reconnecting…" while the TV is off. Let the loop see the failure.
+        // `reconnectTask` is cleared when the loop finishes, so a stale
+        // handle can't block a later drop (e.g. one deferred from the
+        // background and resumed by `appDidBecomeActive`).
         if isReconnecting, reconnectTask != nil || pendingReconnectReason != nil {
             Self.logger.debug("control: reconnect already in progress; ignoring \(reason, privacy: .public)")
             return
@@ -717,11 +735,13 @@ final class SiloControlClient {
                 if Task.isCancelled { return }
                 if await self.connect(to: target, origin: .reconnect), self.session != nil {
                     self.isReconnecting = false
+                    self.reconnectTask = nil
                     return
                 }
                 if Task.isCancelled { return }
             }
             self.isReconnecting = false
+            self.reconnectTask = nil
             Self.logger.info("control: reconnect gave up after \(Self.maxReconnectAttempts, privacy: .public) attempts")
             // Give up — but if the remote cover is open, keep it up showing
             // why (with "Choose a Different TV" as the recovery path) instead
