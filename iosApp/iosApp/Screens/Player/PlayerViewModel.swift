@@ -7277,11 +7277,13 @@ class PlayerViewModel {
     /// uncommitted. Call only after the load's server transition committed.
     /// The track is re-resolved against the current inventory by id so a
     /// pick from a superseded inventory cannot select a row that no longer
-    /// exists.
+    /// exists. A manual subtitle choice made while the pick was held wins;
+    /// the automatic pick is dropped rather than replayed over it.
     private func reapplyDeferredAutoSubtitlePolicyIfNeeded() {
         guard let pick = deferredAutoSubtitlePick else { return }
         deferredAutoSubtitlePick = nil
         guard !isDisposed,
+              !hasExplicitSubtitleChoice,
               activePreparedProtocolV3 != nil,
               committedProtocolV3LoadEpoch != nil else { return }
         switch pick {
