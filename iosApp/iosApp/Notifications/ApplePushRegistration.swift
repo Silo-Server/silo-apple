@@ -51,14 +51,16 @@ struct ApplePushDisplayTokenStore {
     /// Returns `true` when the token was written, or when there was nothing
     /// to write and any stale token was removed.
     @discardableResult
-    func store(_ token: String?, expiresAt: String?) -> Bool {
+    func store(_ token: String?, expiresAt: String?, serverId: String) -> Bool {
         let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else {
             defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+            defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
             return keychain.delete(SharedStorage.applePushDisplayTokenAccount)
         }
         let written = keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
         defaults.set(written ? expiresAt : nil, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+        defaults.set(written ? serverId : nil, forKey: SharedStorage.applePushDisplayTokenServerIdKey)
         return written
     }
 
@@ -262,7 +264,11 @@ final class ApplePushRegistrationCoordinator {
             // Always store, even when nil: a server downgrade or a profile
             // switch to an older server must not leave a token issued for a
             // different profile in the extension's slot.
-            let storedDisplayToken = displayTokenStore.store(response.displayToken, expiresAt: response.displayTokenExpiresAt)
+            let storedDisplayToken = displayTokenStore.store(
+                response.displayToken,
+                expiresAt: response.displayTokenExpiresAt,
+                serverId: identityBefore?.account.serverId ?? ""
+            )
             // Older servers return none; back off for this context for a while.
             displayTokenUnavailable = response.displayToken == nil ? (fingerprint, Date()) : nil
             Self.logger.info("Registered APNs token with Silo server_device_id=\(response.serverDeviceId, privacy: .private) enabled=\(response.enabled, privacy: .public) displayToken=\(response.displayToken != nil, privacy: .public) stored=\(storedDisplayToken, privacy: .public)")

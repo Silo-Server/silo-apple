@@ -237,7 +237,7 @@ actor TokenStore {
         if serverId == activeServerId { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverId
-        clearApplePushDisplayToken()
+        clearApplePushDisplayTokenIfIssued(forServerOtherThan: serverId)
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
@@ -254,7 +254,7 @@ actor TokenStore {
         if serverId == activeServerId { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverId
-        clearApplePushDisplayToken()
+        clearApplePushDisplayTokenIfIssued(forServerOtherThan: serverId)
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
@@ -1125,6 +1125,21 @@ actor TokenStore {
     private func clearApplePushDisplayToken() {
         profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount)
         defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
+    }
+
+    /// Server retargeting happens both on a real switch and when the actor
+    /// hydrates the persisted server on a cold launch (`activeServerId` starts
+    /// empty). Only the former invalidates the display token, so compare
+    /// against the server the token was issued for rather than the actor's
+    /// previous state. A token with no recorded server predates this key and
+    /// is cleared to be safe.
+    private func clearApplePushDisplayTokenIfIssued(forServerOtherThan serverId: String) {
+        guard profileKeychain.get(SharedStorage.applePushDisplayTokenAccount) != nil else { return }
+        let issuedFor = defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey) ?? ""
+        if issuedFor.isEmpty || issuedFor != serverId {
+            clearApplePushDisplayToken()
+        }
     }
 
     private func clearMirroredTokensForExtension() {

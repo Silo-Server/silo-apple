@@ -39,6 +39,11 @@ enum SharedStorage {
     /// used by the app to renew it before the extension starts sending an
     /// expired credential. Not read by the extension.
     static let applePushDisplayTokenExpiresAtKey = "applePush.displayTokenExpiresAt"
+    /// App Group defaults key: registry id of the server the stored display
+    /// token was minted for. `TokenStore` clears the token only when the
+    /// active server actually changes, not when the actor rehydrates the
+    /// same persisted server on a cold launch.
+    static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
 
     static func accessTokenAccount(for serverID: String) -> String {
         "com.continuum.\(serverID).accessToken"
