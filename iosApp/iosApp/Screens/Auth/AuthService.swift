@@ -13,6 +13,8 @@ final class AuthService: @unchecked Sendable {
     private let serverIdentityResolver: ServerIdentityResolver
     private let serverRegistry: ServerRegistry
     private let launchPreferences: ProfileLaunchPreferences
+    private let contractProbe: APIv2Probe
+    private let v2: APIv2Client
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -22,11 +24,29 @@ final class AuthService: @unchecked Sendable {
     init(
         serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
         serverRegistry: ServerRegistry = .shared,
-        launchPreferences: ProfileLaunchPreferences = .shared
+        launchPreferences: ProfileLaunchPreferences = .shared,
+        contractProbe: APIv2Probe = APIv2Probe(),
+        v2: APIv2Client = APIv2Client()
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
         self.launchPreferences = launchPreferences
+        self.contractProbe = contractProbe
+        self.v2 = v2
+    }
+
+    /// Runs the v2 contract probe once for a server and records the verdict.
+    /// Throws only for a v1-only server; any other failure is left to the
+    /// request that follows, which reports its own connection error.
+    private func probeContract(serverURL: String, resetFirst: Bool) async throws {
+        let result = await contractProbe.probe(serverURL: serverURL)
+        await MainActor.run {
+            if resetFirst { ConnectionMonitor.shared.resetContractStatus() }
+            ConnectionMonitor.shared.noteContractProbe(result)
+        }
+        if case .updateServer = result {
+            throw APIv2Error.serverUpdateRequired
+        }
     }
 
     // MARK: - Stored State Accessors
@@ -78,11 +98,14 @@ final class AuthService: @unchecked Sendable {
         let fetchedName = await serverIdentityResolver.fetchServerName(serverURL: normalized)
         try Task.checkCancellation()
 
+        // The contract probe runs once per connection. A v1-only server is
+        // reported as update-required here, before anything is committed.
+        try await probeContract(serverURL: normalized, resetFirst: true)
+        try Task.checkCancellation()
+
         // Commit only after the candidate proves it can serve setup status.
-        let status: SetupStatus = try await HTTPClient.shared.getUnauthenticated(
-            serverURL: normalized,
-            path: "/api/v1/auth/setup"
-        )
+        let v2Status = try await v2.setupStatus(serverURL: normalized)
+        let status = SetupStatus(needsSetup: v2Status.needsSetup)
         try Task.checkCancellation()
 
         // Success: upsert the registry entry and make it active.
@@ -111,6 +134,10 @@ final class AuthService: @unchecked Sendable {
     func refreshActiveServerName() async {
         guard let server = serverRegistry.activeServer else { return }
         let serverId = server.id
+        // Refreshing the cached identity is the other moment the contract
+        // verdict is (re)established; the result only updates state here.
+        try? await probeContract(serverURL: server.url, resetFirst: false)
+        guard serverRegistry.activeServerId == serverId else { return }
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
               serverRegistry.activeServerId == serverId else {
             return

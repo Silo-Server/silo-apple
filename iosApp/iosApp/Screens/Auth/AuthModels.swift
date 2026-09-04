@@ -1,6 +1,6 @@
 import Foundation
 
-/// Server setup status from /api/v1/auth/setup.
+/// Server setup status (from `GET /api/v2/system/setup` via `APIv2Client`).
 struct SetupStatus: Codable {
     let needsSetup: Bool
 }
