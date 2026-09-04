@@ -7250,7 +7250,9 @@ class PlayerViewModel {
                 inventory: activePreparedProtocolV3.plan.subtitle.inventory
             )
         }
-        let planIndex = activePreparedProtocolV3.plan.selectedTracks.subtitle?.index
+        // The plan may name the selected subtitle by stable identity alone;
+        // resolve it through the inventory so an identical pick never replans.
+        let planIndex = activePreparedProtocolV3.plan.selectedSubtitleCombinedIndex
         guard combinedIndex != planIndex else {
             return false
         }
