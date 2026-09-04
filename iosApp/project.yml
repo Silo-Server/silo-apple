@@ -57,7 +57,7 @@ packages:
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
     url: https://github.com/Silo-Server/AetherEngine
-    revision: dfe11a08489fc6486b233773655a652f15f6ff4a
+    revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5
   Nuke:
     url: https://github.com/kean/Nuke
     from: "13.2.0"

@@ -6,11 +6,11 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: dfe11a08489fc6486b233773655a652f15f6ff4a (upstream release
-  6.67.2 plus one Silo-published patch that lets the host request the
+  Revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5 (upstream release
+  6.67.2 plus two Silo-published patches that let the host request the
   in-place native item handover on an episode change)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/dfe11a08489fc6486b233773655a652f15f6ff4a
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/745de1ccdc4b226adccdf18f03a28071f0e972d5
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/6.67.2
   Rebuild: the Package.swift and source tree at that revision
 
