@@ -886,7 +886,7 @@ struct TVItemDetailView: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.index) ?? []
+        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 

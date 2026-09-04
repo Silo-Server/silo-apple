@@ -354,7 +354,7 @@ enum ApplePlaybackV3PlanAdapter {
         let embedded = tracks.filter { $0.external != true }
         let embeddedOrdinal = serverCombinedIndex - externalCount
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }
-        return embedded[embeddedOrdinal].index
+        return embedded[embeddedOrdinal].selectionIndex
     }
 
     static func ffmpegSubtitleStreamIndex(
@@ -375,7 +375,7 @@ enum ApplePlaybackV3PlanAdapter {
         }
         let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }
-        return embedded[embeddedOrdinal].index
+        return embedded[embeddedOrdinal].selectionIndex
     }
 
     /// Position of an FFmpeg stream index among the version's embedded subtitle
@@ -386,7 +386,7 @@ enum ApplePlaybackV3PlanAdapter {
     ) -> Int? {
         guard ffmpegStreamIndex >= 0 else { return nil }
         let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
-        return embedded.firstIndex { $0.index == ffmpegStreamIndex }
+        return embedded.firstIndex { $0.selectionIndex == ffmpegStreamIndex }
     }
 
     private static func subtitleTrack(

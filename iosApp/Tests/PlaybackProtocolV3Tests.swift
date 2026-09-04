@@ -879,6 +879,32 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(candidates.map(\.ffIndex), [nil, nil, 3, 4])
     }
 
+    func testInitialAutoSubtitleIntentKeepsEmbeddedStreamZero() {
+        // `index,omitempty` drops a zero stream index on the wire; an embedded
+        // row with no index is stream 0 and must stay a candidate.
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: nil, codec: "subrip", external: false, path: nil)
+            ]
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version,
+                explicitFFmpegIndex: nil,
+                explicitCombinedIndex: nil,
+                preferredLanguage: "en",
+                mode: .always,
+                showForced: false,
+                trackSignature: nil,
+                currentAudioLanguage: "ja"
+            ),
+            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: 0, combinedIndex: 0)
+        )
+    }
+
     func testInitialAutoSubtitleIntentIsFrozenIntoProtocolV3Plan() {
         let version = makeVersion(
             container: "mkv",

@@ -88,8 +88,9 @@ enum TrackSelectionPersistence {
     }
 
     /// Subtitle pick against server file metadata. `ffIndex` matches
-    /// `version.subtitleTracks[].index`; a negative value is the detail
-    /// page's explicit "Off".
+    /// `version.subtitleTracks[].selectionIndex` (an embedded track with no
+    /// wire index is stream 0); a negative value is the detail page's
+    /// explicit "Off".
     static func subtitleRequest(
         version: FileVersion,
         ffIndex: Int,
@@ -98,7 +99,7 @@ enum TrackSelectionPersistence {
         if ffIndex < 0 {
             return subtitleOffRequest(showForced: showForced)
         }
-        guard let track = version.subtitleTracks?.first(where: { $0.index == ffIndex }) else {
+        guard let track = version.subtitleTracks?.first(where: { $0.selectionIndex == ffIndex }) else {
             return nil
         }
         let isExternal = track.external ?? false
