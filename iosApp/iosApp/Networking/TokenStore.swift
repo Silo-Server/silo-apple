@@ -1123,7 +1123,10 @@ actor TokenStore {
     /// The display token is bound to one session, server, and profile, so it
     /// dies with any of them; the next registration mints a fresh one.
     private func clearApplePushDisplayToken() {
-        profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount)
+        // Metadata is removed only once the Keychain item is gone, so a
+        // failed delete leaves the token paired with its real expiry and
+        // issuing server rather than looking freshly issued.
+        guard profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount) else { return }
         defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
         defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
     }

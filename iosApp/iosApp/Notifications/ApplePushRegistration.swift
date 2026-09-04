@@ -37,30 +37,44 @@ struct ApplePushDisplayTokenStore {
     var now: () -> Date = Date.init
 
     /// `true` when a token is stored and is not within `renewalLeadTime` of
-    /// its expiry. A token without a parseable expiry counts as current.
+    /// its expiry. A token with no recorded expiry, or one that fails to
+    /// parse, is treated as needing renewal: the metadata is written only
+    /// alongside a successful Keychain write, so its absence means the
+    /// token's state is unknown and a fresh registration is the safe move.
     func hasCurrentToken() -> Bool {
         let stored = keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
         guard !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         guard let raw = defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey),
               let expiresAt = Self.parseExpiry(raw) else {
-            return true
+            return false
         }
         return expiresAt.timeIntervalSince(now()) > Self.renewalLeadTime
     }
 
     /// Returns `true` when the token was written, or when there was nothing
     /// to write and any stale token was removed.
+    ///
+    /// Metadata only follows a Keychain mutation that succeeded. If the write
+    /// or delete fails, the previous token and its expiry stay paired, so
+    /// `hasCurrentToken()` keeps reporting the old token's real state and
+    /// registration retries on the next foreground instead of treating a
+    /// stale credential as current.
     @discardableResult
     func store(_ token: String?, expiresAt: String?, serverId: String) -> Bool {
         let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else {
-            defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
-            defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
-            return keychain.delete(SharedStorage.applePushDisplayTokenAccount)
+            let removed = keychain.delete(SharedStorage.applePushDisplayTokenAccount)
+            if removed {
+                defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+                defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenServerIdKey)
+            }
+            return removed
         }
         let written = keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
-        defaults.set(written ? expiresAt : nil, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
-        defaults.set(written ? serverId : nil, forKey: SharedStorage.applePushDisplayTokenServerIdKey)
+        if written {
+            defaults.set(expiresAt, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+            defaults.set(serverId, forKey: SharedStorage.applePushDisplayTokenServerIdKey)
+        }
         return written
     }
 
