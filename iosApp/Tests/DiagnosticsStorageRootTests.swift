@@ -1,6 +1,8 @@
 import XCTest
 @testable import Silo
 
+// SiloTests currently runs on iOS. The tvOS branch documents its expected
+// storage policy but only becomes executable coverage in a tvOS test bundle.
 final class DiagnosticsStorageRootTests: XCTestCase {
     func testBaseDirectoryMatchesPlatformStorageDirectory() {
         let fileManager = FileManager.default

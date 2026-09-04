@@ -604,14 +604,6 @@ final class PlayerSettings {
         subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
     }
 
-    var subtitleBackgroundColorHex: String {
-        let alphaByte = max(0, min(255, (subtitleBackgroundOpacityPercent * 255) / 100))
-        let rgb = subtitleBackgroundColor.hasPrefix("#")
-            ? String(subtitleBackgroundColor.dropFirst())
-            : subtitleBackgroundColor
-        return "#" + String(format: "%02X", alphaByte) + rgb
-    }
-
     /// Pull every synced setting from the server and adopt it.
     ///
     /// One batched call: the server resolves all seventeen keys in a single
@@ -1297,18 +1289,6 @@ final class PlayerSettings {
         if let legacyKey, defaults.object(forKey: legacyKey) != nil {
             let legacyValue = defaults.bool(forKey: legacyKey)
             defaults.set(legacyValue, forKey: scopedKey)
-            return legacyValue
-        }
-        return defaultValue
-    }
-
-    private func legacyBool(key: String, legacyKey: String? = nil, defaultValue: Bool) -> Bool {
-        if defaults.object(forKey: key) != nil {
-            return defaults.bool(forKey: key)
-        }
-        if let legacyKey, defaults.object(forKey: legacyKey) != nil {
-            let legacyValue = defaults.bool(forKey: legacyKey)
-            defaults.set(legacyValue, forKey: key)
             return legacyValue
         }
         return defaultValue

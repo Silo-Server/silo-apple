@@ -2545,28 +2545,6 @@ struct MainTabView: View {
         }
     }
     #endif
-
-    private var settingsPlaceholder: some View {
-        List {
-            Section {
-                Button("Switch Profile") {
-                    router.switchProfile()
-                }
-                .foregroundColor(.siloOnSurface)
-            }
-
-            Section {
-                Button("Sign Out") {
-                    router.signOutAndReset()
-                }
-                .foregroundColor(.siloError)
-            }
-        }
-        .siloScrollContentBackgroundHidden()
-        .background(Color.siloBackground)
-        .navigationTitle("Settings")
-        .siloToolbarColorSchemeDark()
-    }
 }
 
 #if os(iOS)

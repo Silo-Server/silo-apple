@@ -98,12 +98,6 @@ struct SubtitleTranslateMenu: View {
         Self.translatableSubtitleTracks(viewModel)
     }
 
-    /// True when translating an existing text track is possible at all — when
-    /// so, most language picks take the cheap translation path (no ASR quota).
-    private var translationAvailable: Bool {
-        capabilities.subtitleEnabled && !translatableSubtitleTracks.isEmpty
-    }
-
     /// The audio track whose language is treated as the "spoken" language:
     /// the selected one, else the default, else the first.
     private var spokenAudioTrack: PlayerTrack? {

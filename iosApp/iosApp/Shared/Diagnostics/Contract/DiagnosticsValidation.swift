@@ -90,10 +90,4 @@ enum DiagnosticsJSONValue: Codable, Equatable {
         }
     }
 }
-
-extension String {
-    var diagnosticsIsNonEmpty: Bool {
-        !isEmpty
-    }
-}
 #endif

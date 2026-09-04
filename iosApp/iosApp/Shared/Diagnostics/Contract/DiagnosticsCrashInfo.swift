@@ -60,19 +60,19 @@ struct DiagnosticsCrashInfo: Codable, Equatable {
     }
 
     func validate() throws {
-        guard summary.diagnosticsIsNonEmpty else {
+        guard !summary.isEmpty else {
             throw DiagnosticsValidationError.invalidField("crash.summary")
         }
         if let stackExcerpt, stackExcerpt.utf8.count > 8192 {
             throw DiagnosticsValidationError.invalidField("crash.stack_excerpt")
         }
-        guard occurredAt.diagnosticsIsNonEmpty else {
+        guard !occurredAt.isEmpty else {
             throw DiagnosticsValidationError.invalidField("crash.occurred_at")
         }
-        if let occurredAtStart, !occurredAtStart.diagnosticsIsNonEmpty {
+        if let occurredAtStart, occurredAtStart.isEmpty {
             throw DiagnosticsValidationError.invalidField("crash.occurred_at_start")
         }
-        if let occurredAtEnd, !occurredAtEnd.diagnosticsIsNonEmpty {
+        if let occurredAtEnd, occurredAtEnd.isEmpty {
             throw DiagnosticsValidationError.invalidField("crash.occurred_at_end")
         }
     }

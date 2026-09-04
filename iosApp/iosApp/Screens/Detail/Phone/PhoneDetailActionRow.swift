@@ -1,39 +1,6 @@
 #if !os(tvOS)
 import SwiftUI
 
-// MARK: - Primary play
-
-/// Primary play control for the refined detail page.
-///
-/// Still full-width — on a phone detail page Play *is* the page's job, and
-/// both Apple TV and Netflix commit to a wide primary. What made the shipping
-/// version read as a web CTA was everything around it: 52pt of pure white with
-/// a row of naked, unlabelled circles floating underneath and a ragged grid of
-/// form fields below that. Trimmed to 50pt with a slightly quieter label, it
-/// anchors the stack instead of shouting over it.
-struct PhoneRefinedPlayButton: View {
-    let icon: String
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .bold))
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.black)
-            .frame(maxWidth: .infinity)
-            .frame(height: 50)
-            .background(Capsule().fill(.white))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: - Labelled secondary action
 
 /// One named secondary action — a filled circle with no outline, over a

@@ -34,8 +34,6 @@ struct TVPlayerScrubber: View {
 
     private static let scrubBackwardStep: Double = 10
     private static let scrubForwardStep: Double = 30
-    private static let timelineHoldBackwardStep: Double = 2
-    private static let timelineHoldForwardStep: Double = 2
     private static let timelineAutoSeekTickNanos: UInt64 = 100_000_000
     private static let timelineAutoSeekBaseStep: Double = 2
     private static let timelineAutoSeekRates = [-32, -16, -8, -4, -2, -1, 1, 2, 4, 8, 16, 32]
@@ -467,11 +465,6 @@ struct TVPlayerScrubber: View {
             hasTimelineSelectionMoved = true
         }
         viewModel.updateScrub(fraction: target / viewModel.duration)
-    }
-
-    private func stepTimelineHold(direction: Int) {
-        let step = direction < 0 ? -Self.timelineHoldBackwardStep : Self.timelineHoldForwardStep
-        stepTimeline(by: step)
     }
 
     private func formatTime(_ seconds: Double) -> String {

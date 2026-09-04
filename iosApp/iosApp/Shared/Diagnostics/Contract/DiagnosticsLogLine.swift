@@ -49,16 +49,16 @@ struct DiagnosticsLogLine: Codable, Equatable {
     }
 
     func validate() throws {
-        guard ts.diagnosticsIsNonEmpty else {
+        guard !ts.isEmpty else {
             throw DiagnosticsValidationError.invalidField("log.ts")
         }
-        guard run.diagnosticsIsNonEmpty else {
+        guard !run.isEmpty else {
             throw DiagnosticsValidationError.invalidField("log.run")
         }
-        guard tag.diagnosticsIsNonEmpty else {
+        guard !tag.isEmpty else {
             throw DiagnosticsValidationError.invalidField("log.tag")
         }
-        guard msg.diagnosticsIsNonEmpty else {
+        guard !msg.isEmpty else {
             throw DiagnosticsValidationError.invalidField("log.msg")
         }
     }

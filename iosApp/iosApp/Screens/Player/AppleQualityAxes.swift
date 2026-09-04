@@ -80,18 +80,10 @@ struct AppleQualityAxes: Equatable {
     /// below 8 Mbps; that is a fact about this client's table, not the user's
     /// authored resolution.
     ///
-    /// The cap is not discarded. It is applied where it is actually
-    /// expressible: ``ApplePlaybackQuality/targetBitrateKbps(for:selectedVersion:capKbps:)``
-    /// and ``ApplePlaybackQuality/shouldForceTranscode(preferredQualityId:selectedVersion:capKbps:)``
-    /// clamp the legacy `/transcode/start` encode target to it, so a stored
-    /// 6 Mbps cap transcodes 1080p at 6 Mbps rather than at the rung's 8.
-    ///
-    /// `original` remains the uncapped source-resolution intent; when paired
-    /// with a numeric bandwidth cap, the legacy planner still re-encodes to
-    /// honour that independent axis. The contract's 2160p member is preserved
-    /// as an opaque resolution-only id even though Apple's local transcode
-    /// ladder has no fabricated 4K bitrate rung. A member added by a newer
-    /// server still falls back to `auto` until this client knows it.
+    /// V3 sends the stored bandwidth cap independently of the local rung.
+    /// `original` preserves source-resolution intent. The contract's 2160p
+    /// member remains a resolution-only id without a fabricated 4K bitrate
+    /// rung. Unknown resolution members fall back to `auto`.
     static func join(resolution: String?, bitrateKbps: Int?) -> String {
         let resolution = (resolution?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).flatMap {
             $0.isEmpty ? nil : $0

@@ -712,9 +712,7 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
-        let watchDetail: WatchDetail = try await SiloAPI.shared.get(
-            "/api/v1/watch/\(contentId)"
-        )
+        let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId)
         logger.info("Got \(watchDetail.versions.count) versions, type=\(watchDetail.type, privacy: .public)")
 
         guard !watchDetail.versions.isEmpty else {
@@ -1869,9 +1867,9 @@ actor PlaybackSessionBridge {
 
         let report = ProgressReport(position: position, isPaused: isPaused)
         do {
-            try await SiloAPI.shared.postVoid(
-                "/api/v1/playback/\(sid)/progress",
-                body: report
+            try await SiloAPI.shared.reportPlaybackProgress(
+                sessionId: sid,
+                report: report
             )
             consecutiveProgressFailures = 0
             emittedOrphanedSessionWarning = false
@@ -1997,9 +1995,9 @@ actor PlaybackSessionBridge {
         if position.isFinite, position >= 0 {
             let report = ProgressReport(position: position, isPaused: isPaused)
             do {
-                try await SiloAPI.shared.postVoid(
-                    "/api/v1/playback/\(sid)/progress",
-                    body: report
+                try await SiloAPI.shared.reportPlaybackProgress(
+                    sessionId: sid,
+                    report: report
                 )
             } catch {
                 logger.warning(
@@ -2009,7 +2007,7 @@ actor PlaybackSessionBridge {
         }
 
         do {
-            try await SiloAPI.shared.delete("/api/v1/playback/\(sid)")
+            try await SiloAPI.shared.stopPlayback(sessionId: sid)
         } catch {
             // Best-effort delete; the server times out idle sessions on its
             // own, but a missed delete extends the grace period. Log so

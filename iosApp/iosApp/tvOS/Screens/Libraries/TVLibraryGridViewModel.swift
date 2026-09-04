@@ -232,8 +232,8 @@ final class TVLibraryGridViewModel {
         )
 
         do {
-            let response: CatalogResponse = try await SiloAPI.shared.get(
-                "/api/v1/catalog", query: query
+            let response: CatalogResponse = try await SiloAPI.shared.catalog(
+                query: query
             )
 
             // Discard if another reload superseded us while we awaited.

@@ -48,13 +48,6 @@ extension SiloAPI {
         try await http.get("/api/v1/downloads/\(downloadId)/manifest")
     }
 
-    func fetchBatchManifests(batchId: String) async throws -> [OfflineManifest] {
-        let response: BatchManifestResponse = try await http.get(
-            "/api/v1/downloads/batches/\(batchId)/manifests"
-        )
-        return response.manifests
-    }
-
     /// Fetch the raw bytes of an authenticated proxy asset (artwork or
     /// subtitle). `path` is an API-relative path taken from the manifest
     /// (`artwork_urls.*` / `subtitles[].fetch_url`).
@@ -85,13 +78,6 @@ extension SiloAPI {
             "/api/v1/downloads/subscriptions/sync"
         )
         return response.registered
-    }
-
-    func listSubscriptions() async throws -> [ServerSubscription] {
-        let response: SubscriptionsListResponse = try await http.get(
-            "/api/v1/downloads/subscriptions"
-        )
-        return response.subscriptions
     }
 
     func updateSubscription(
@@ -151,10 +137,6 @@ struct CreateDownloadResponse: Decodable, Sendable {
         let single = try ServerDownloadRow(from: decoder)
         self.downloads = [single]
     }
-}
-
-struct BatchManifestResponse: Decodable, Sendable {
-    let manifests: [OfflineManifest]
 }
 
 /// Per-item result envelope from `POST /api/v1/sync/progress` (§5.1).

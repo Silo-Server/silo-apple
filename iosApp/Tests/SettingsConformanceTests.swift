@@ -1,41 +1,14 @@
 import XCTest
 @testable import Silo
 
-/// The Swift runner for the cross-platform settings conformance fixture — the
-/// contract's named drift gate.
+/// Independent Swift reference check required by the shared settings contract.
+/// This checks agreement with the server's resolution rules, not an algorithm
+/// shipped in the Apple app. The app reads effective settings from the server.
 ///
-/// The same hand-authored cases in `contracts/settings/v1/conformance.json` run
-/// against the Go resolver (`internal/settingsresolve/conformance_test.go`), the
-/// TypeScript one (`web/src/lib/settingsConformance.test.ts`), the Kotlin one in
-/// silo-android, and this one. Four independently written resolvers agreeing on
-/// every case is the whole point, so this runner takes the fixture at face
-/// value: it decodes strictly, resolves through `resolveSettingValues` against
-/// the real vendored manifest, and compares every declared expectation.
-///
-/// Both JSON files are vendored byte-identically from the server repo; see the
-/// SOURCE file beside them. Nothing here touches the network.
-///
-/// Four things fail this suite, and each of them is drift:
-///
-/// 1. A resolution disagreement — this client would show a user a different
-///    effective setting than the server resolves.
-/// 2. A manifest revision mismatch between the fixture, the vendored manifest,
-///    and the generated `SettingKey`. A revision bump changes definitions, so
-///    the expectations have to be re-derived rather than assumed to still hold.
-/// 3. A key the bindings and the vendored manifest disagree about, which catches
-///    the two JSON files being vendored from different server commits — skew the
-///    revision check cannot see, since a revision only moves on a manifest PR
-///    and both copies would still read the same number.
-/// 4. A fixture field this runner does not know. Schema drift in the fixture is
-///    itself drift: a field one platform reads and another silently skips means
-///    the platforms are no longer running the same cases, which is precisely the
-///    failure the fixture exists to prevent. Strictness here is not pedantry —
-///    it is the only thing keeping a silent skip from looking like a pass.
-///
-/// Swift has no `DisallowUnknownFields`, so strictness is two passes over the
-/// same bytes: a typed decode for the values, and a walk of the raw tree that
-/// rejects an unknown field at every level and answers the one question typed
-/// decoding cannot — whether `stored_value` was absent or authored as JSON null.
+/// The suite also checks generated bindings against the vendored manifest.
+/// Fixtures remain byte-identical to the server copy (see Fixtures/SettingsContract/SOURCE).
+/// Strict fixture decoding prevents this runner from silently skipping fields
+/// that another platform's runner interprets, including explicit JSON null.
 final class SettingsConformanceTests: XCTestCase {
 
     // MARK: - Fixture model

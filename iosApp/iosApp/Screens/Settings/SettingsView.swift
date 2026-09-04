@@ -200,7 +200,7 @@ struct SettingsView: View {
                     title: "Subtitles",
                     systemImage: "captions.bubble.fill",
                     color: .pink,
-                    value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
+                    value: subtitleLanguageName(viewModel.prefs.subtitleLanguage)
                 )
             }
 

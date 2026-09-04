@@ -93,8 +93,7 @@ struct VerifyPinResponse: Codable {
 
 /// Wire-format body for POST /api/v1/profiles.
 ///
-/// Mirrors Kotlin `CreateProfileRequest`. The UI-facing ``CreateProfileBody``
-/// carries a subset; `SiloAPI.createProfile` expands it to this.
+/// Mirrors Kotlin `CreateProfileRequest`; `SiloAPI.createProfile` builds this wire body.
 struct CreateProfileRequestBody: Codable {
     let name: String
     let avatar: String?

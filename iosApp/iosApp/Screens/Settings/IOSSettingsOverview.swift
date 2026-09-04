@@ -164,7 +164,7 @@ struct IOSSettingsOverview: View {
                             subtitle: "Language, behavior, and appearance",
                             systemImage: "captions.bubble.fill",
                             tint: .pink,
-                            value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
+                            value: subtitleLanguageName(viewModel.prefs.subtitleLanguage)
                         )
                     }
                     .buttonStyle(.plain)

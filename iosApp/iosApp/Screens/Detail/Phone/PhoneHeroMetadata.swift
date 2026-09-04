@@ -168,16 +168,6 @@ enum PhoneHeroMetadata {
         }
     }
 
-    private static func typeLabel(detail: ItemDetail) -> String {
-        switch detail.type.lowercased() {
-        case "movie": return "Movie"
-        case "series": return "TV Show"
-        case "episode": return "Episode"
-        case "season": return "Season"
-        default: return detail.type.capitalized
-        }
-    }
-
     private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [PhoneHeroFactToken] {
         guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
         var tokens: [PhoneHeroFactToken] = []

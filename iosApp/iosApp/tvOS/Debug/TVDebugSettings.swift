@@ -13,21 +13,13 @@ final class TVDebugSettings {
     /// (see `TVFocusDebugOverlay`).
     private(set) var showFocusTargets: Bool
 
-    @ObservationIgnored private let defaults: SharedDefaults
-
     private static let showFocusTargetsKey = "skyline.debug.showFocusTargets"
 
     init(defaults: SharedDefaults = .shared) {
-        self.defaults = defaults
         // Launch-arg override (same convention as -debugPlay) so the
         // overlay can be exercised on screens that precede sign-in.
         self.showFocusTargets = defaults.bool(forKey: Self.showFocusTargetsKey)
             || CommandLine.arguments.contains("-debugFocusTargets")
-    }
-
-    func setShowFocusTargets(_ value: Bool) {
-        showFocusTargets = value
-        defaults.set(value, forKey: Self.showFocusTargetsKey)
     }
 }
 #endif

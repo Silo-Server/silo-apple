@@ -66,24 +66,6 @@ enum CatalogFacet: String, CaseIterable, Codable, Hashable {
         }
     }
 
-    /// Whether this facet's options come from the technical block of
-    /// `/catalog/filters` (requires `include_technical=true`).
-    var isTechnical: Bool {
-        switch self {
-        case .resolution, .audioLanguage, .subtitleLanguage: return true
-        default: return false
-        }
-    }
-
-    /// Whether the facet is a fixed/derived vocabulary rather than a
-    /// server-provided value list (decade, dynamic range, watch status).
-    var hasFixedVocabulary: Bool {
-        switch self {
-        case .itemType, .decade, .dynamicRange, .watchStatus: return true
-        default: return false
-        }
-    }
-
     /// Facets offered for a library media type, in display order. Sections
     /// whose option list resolves empty are hidden by the UI.
     static func available(for mediaType: BrowseMediaType) -> [CatalogFacet] {

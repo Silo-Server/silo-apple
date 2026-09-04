@@ -111,8 +111,8 @@
         "${input:iosTestDestination}",
         "-derivedDataPath",
         ".deriveddata",
-        "CODE_SIGN_IDENTITY=",
-        "CODE_SIGNING_ALLOWED=NO"
+        "CODE_SIGN_IDENTITY=-",
+        "CODE_SIGNING_ALLOWED=YES"
       ],
       "options": {
         "cwd": "${workspaceFolder}/iosApp"

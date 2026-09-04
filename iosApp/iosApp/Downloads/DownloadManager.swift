@@ -153,7 +153,6 @@ final class DownloadManager {
     }
 
     var activeRecords: [DownloadRecord] { records.filter { $0.localStatus.isActive } }
-    var completedRecords: [DownloadRecord] { records.filter { !$0.localStatus.isActive } }
     var subscriptions: [DownloadSubscription] { file.subscriptions }
 
     var totalBytesUsed: Int64 { storageBytesUsed }
@@ -314,13 +313,6 @@ final class DownloadManager {
         )
     }
 
-    /// Total bytes downloaded for one series across all seasons.
-    func bytesForSeries(_ seriesId: String) -> Int64 {
-        onDeviceRecords
-            .filter { $0.seriesId == seriesId }
-            .reduce(0) { $0 + $1.fileSize }
-    }
-
     /// The unified, sorted list the Manager renders: one entry per series
     /// group and one per standalone movie.
     func downloadListItems(sortedBy option: DownloadSortOption) -> [DownloadListItem] {
@@ -332,7 +324,7 @@ final class DownloadManager {
     /// Delete several downloads in one pass: one store write, one storage
     /// recompute, and the server DELETEs fanned out in a single task.
     func deleteDownloads(ids: [String]) {
-        var removed = false
+        var removedIds: [String] = []
         for id in ids {
             guard let record = file.records[id] else { continue }
             if let taskId = record.taskIdentifier {
@@ -343,17 +335,21 @@ final class DownloadManager {
             retryTasks[id] = nil
             file.records.removeValue(forKey: id)
             clearTransferRate(recordId: id)
-            if !scopeServerId.isEmpty {
+            removedIds.append(id)
+        }
+        guard !removedIds.isEmpty else { return }
+        // Enqueue the updated snapshot before removing assets, as for single
+        // deletion. Persistence remains asynchronous through the save chain.
+        persist()
+        if !scopeServerId.isEmpty {
+            for id in removedIds {
                 DownloadFilePaths.removeDownloadDirectory(
                     serverId: scopeServerId,
                     profileId: scopeProfileId,
                     downloadId: id
                 )
             }
-            removed = true
         }
-        guard removed else { return }
-        persist()
         let serverIds = ids
         Task {
             for id in serverIds { try? await SiloAPI.shared.deleteDownloadRow(id: id) }
@@ -463,12 +459,6 @@ final class DownloadManager {
         guard downloadsEnabled else { return }
         await reconcileWithServer(triggerPipeline: true)
         await runMonitoringAndProgressSync()
-    }
-
-    /// Profile/server switched — load the new scope and refresh.
-    func onScopeChanged() async {
-        deactivate()
-        await onAppActive()
     }
 
     /// Sign-out: stop active transfers and drop in-memory state. On-disk
@@ -671,26 +661,7 @@ final class DownloadManager {
     }
 
     func deleteDownload(id: String) {
-        guard let record = file.records[id] else { return }
-        if let taskId = record.taskIdentifier {
-            intentionalCancels.insert(taskId)
-            sessionDelegate.cancel(taskId: taskId)
-        }
-        retryTasks[id]?.cancel()
-        retryTasks[id] = nil
-        file.records.removeValue(forKey: id)
-        clearTransferRate(recordId: id)
-        persist()
-        if !scopeServerId.isEmpty {
-            DownloadFilePaths.removeDownloadDirectory(
-                serverId: scopeServerId,
-                profileId: scopeProfileId,
-                downloadId: id
-            )
-        }
-        Task { try? await SiloAPI.shared.deleteDownloadRow(id: id) }
-        processQueue()
-        refreshStorageUsage()
+        deleteDownloads(ids: [id])
     }
 
     func deleteDownload(forContentId contentId: String) {

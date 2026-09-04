@@ -50,58 +50,6 @@ where Value.Stride: SignedInteger {
     }
 }
 
-/// Same as `RangeSpinner` but for `Double` values — Stepper's Strideable
-/// bound insists on SignedInteger so we special-case doubles.
-private struct DoubleRangeSpinner: View {
-    let title: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let display: (Double) -> String
-    let onCommit: () -> Void
-
-    var body: some View {
-        #if os(tvOS)
-        let options = Array(stride(from: range.lowerBound, through: range.upperBound, by: step))
-        Picker(title, selection: Binding(
-            get: { nearest(to: value, in: options) },
-            set: { newValue in
-                value = newValue
-                onCommit()
-            }
-        )) {
-            ForEach(options, id: \.self) { option in
-                Text(display(option)).tag(option)
-            }
-        }
-        #else
-        Stepper(
-            value: Binding(
-                get: { value },
-                set: { newValue in
-                    value = newValue
-                    onCommit()
-                }
-            ),
-            in: range,
-            step: step
-        ) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(display(value))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-        }
-        #endif
-    }
-
-    private func nearest(to target: Double, in options: [Double]) -> Double {
-        options.min(by: { abs($0 - target) < abs($1 - target) }) ?? target
-    }
-}
-
 /// Player configuration sheet. Apply-on-change — the VM's
 /// `applySettingsToPlayer()` is already called on file-loaded; live mutation
 /// re-applies one property at a time through the binding helpers below.
@@ -167,16 +115,14 @@ struct PlayerSettingsSheet: View {
                 LabeledContent("Quality", value: activeQualityLabel)
             }
 
-            if viewModel.backendCapabilities.supportsVideoGravity {
-                Picker("Aspect", selection: Binding(
-                    get: { viewModel.settings.videoGravity },
-                    set: { newValue in
-                        viewModel.setVideoGravity(newValue)
-                    }
-                )) {
-                    ForEach(VideoGravity.allCases, id: \.self) { gravity in
-                        Text(gravity.label).tag(gravity)
-                    }
+            Picker("Aspect", selection: Binding(
+                get: { viewModel.settings.videoGravity },
+                set: { newValue in
+                    viewModel.setVideoGravity(newValue)
+                }
+            )) {
+                ForEach(VideoGravity.allCases, id: \.self) { gravity in
+                    Text(gravity.label).tag(gravity)
                 }
             }
         } header: {
@@ -601,16 +547,14 @@ struct PlayerSettingsSheet: View {
                 }
             }
 
-            if viewModel.backendCapabilities.supportsVideoGravity {
-                Picker("Aspect", selection: Binding(
-                    get: { viewModel.settings.videoGravity },
-                    set: { newValue in
-                        viewModel.setVideoGravity(newValue)
-                    }
-                )) {
-                    ForEach(VideoGravity.allCases, id: \.self) { gravity in
-                        Text(gravity.label).tag(gravity)
-                    }
+            Picker("Aspect", selection: Binding(
+                get: { viewModel.settings.videoGravity },
+                set: { newValue in
+                    viewModel.setVideoGravity(newValue)
+                }
+            )) {
+                ForEach(VideoGravity.allCases, id: \.self) { gravity in
+                    Text(gravity.label).tag(gravity)
                 }
             }
 

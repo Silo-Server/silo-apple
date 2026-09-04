@@ -691,13 +691,6 @@ actor DiagnosticsCoordinator {
         return profileEligibilityStore.isChild(profileID: activeProfileID, binding: binding)
     }
 
-    func pendingReportsForCurrentBinding() async -> [PendingReport] {
-        guard let context = await captureContext(requirePersistentCapture: false) else {
-            return []
-        }
-        return await pendingReports(for: context.binding)
-    }
-
     func pendingReports(for binding: DiagnosticsBinding) async -> [PendingReport] {
         let deleting: Set<UUID>
         if binding.destinationChoice == .hosted {

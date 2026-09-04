@@ -809,24 +809,22 @@ private struct VideoPane: View {
                         }
                         .focused($focusedField, equals: .speed)
 
-                        if viewModel.backendCapabilities.supportsVideoGravity {
-                            HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
-                                presentPicker(
-                                    for: .aspect,
-                                    HUDPickerPresentation(
-                                        title: "Aspect",
-                                        options: Self.aspectOptions,
-                                        selection: viewModel.settings.videoGravity.rawValue,
-                                        onSelect: { value in
-                                            if let gravity = VideoGravity(rawValue: value) {
-                                                viewModel.setVideoGravity(gravity)
-                                            }
+                        HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
+                            presentPicker(
+                                for: .aspect,
+                                HUDPickerPresentation(
+                                    title: "Aspect",
+                                    options: Self.aspectOptions,
+                                    selection: viewModel.settings.videoGravity.rawValue,
+                                    onSelect: { value in
+                                        if let gravity = VideoGravity(rawValue: value) {
+                                            viewModel.setVideoGravity(gravity)
                                         }
-                                    )
+                                    }
                                 )
-                            }
-                            .focused($focusedField, equals: .aspect)
+                            )
                         }
+                        .focused($focusedField, equals: .aspect)
                     }
                 }
                 .focusSection()
@@ -938,19 +936,6 @@ private struct HUDDropdownOption: Identifiable, Hashable {
 }
 
 private enum HUDPickerOptions {
-    static let onOff: [HUDDropdownOption] = [
-        .init(id: "on", label: "On"),
-        .init(id: "off", label: "Off")
-    ]
-
-    static func boolSelection(_ value: Bool) -> String {
-        value ? "on" : "off"
-    }
-
-    static func boolValue(for id: String) -> Bool {
-        id.caseInsensitiveCompare("on") == .orderedSame
-    }
-
     static func boolLabel(_ value: Bool) -> String {
         value ? "On" : "Off"
     }

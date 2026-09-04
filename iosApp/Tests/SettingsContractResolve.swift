@@ -1,34 +1,8 @@
-//
-//  SettingsContractResolve.swift
-//  SiloTests
-//
-//  Client-side settings resolution, mirroring the server's
-//  `internal/settingsresolve` semantics: the definition's declared resolution
-//  order decides which stored value wins, an identity absent from the context
-//  drops the scopes that need it, and a policy constraint narrows the answer
-//  without destroying what the user authored.
-//
-//  The Apple clients do not resolve settings in production — they write through
-//  `/settings/values` and read effective values back from
-//  `/settings/values/effective`, so the server stays the single authority. This
-//  resolver exists for one reason: the cross-platform conformance fixture in
-//  contracts/settings/v1/conformance.json names a Swift implementation as one
-//  of the four that must agree, and four independently written resolvers
-//  agreeing is what makes the fixture a drift gate rather than a tautology. It
-//  therefore lives in the test target, and every behavioural choice in it is
-//  pinned by `SettingsConformanceTests` — do not change one without the fixture
-//  agreeing.
-//
-//  The Go implementation is internal/settingsresolve/resolve.go, the TypeScript
-//  one web/src/lib/settingsResolve.ts, and the Kotlin one
-//  shared/src/commonTest/kotlin/.../SettingsResolve.kt in silo-android. The four
-//  are meant to be readable side by side.
-//
-//  Everything here is driven by the vendored manifest in
-//  Fixtures/SettingsContract/manifest.json rather than by a hand-copied table of
-//  keys and defaults. A table would pass the fixture while having drifted from
-//  the contract, which is the one failure this file cannot be allowed to have.
-//
+// Independent reference resolver required by the shared settings conformance
+// contract. It runs only in tests: the app reads effective values from the
+// server and never resolves settings locally. Preserve this gate while the
+// canonical contracts/settings/v1/conformance.json requires Swift participation.
+// Inputs come from the vendored manifest, not a copied table of defaults.
 
 import Foundation
 @testable import Silo

@@ -55,31 +55,6 @@ enum OverlayPosition: String, CaseIterable, Codable, Hashable {
     }
 }
 
-enum OverlayCategory: String, CaseIterable, Codable, Hashable {
-    case tech
-    case ratings
-    case metadata
-    case ribbons
-
-    var displayName: String {
-        switch self {
-        case .tech:     return "Media Info"
-        case .ratings:  return "Ratings"
-        case .metadata: return "Metadata"
-        case .ribbons:  return "Ribbons"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .tech:     return "Quality and codec details from the file itself."
-        case .ratings:  return "External scores and age ratings."
-        case .metadata: return "Year, runtime, studio, network, language."
-        case .ribbons:  return "Status badges and award ribbons (data sources pending)."
-        }
-    }
-}
-
 enum PresetId: String, CaseIterable, Codable, Hashable {
     case minimal
     case classic
@@ -121,8 +96,8 @@ struct OverlayItemConfig: Codable, Hashable {
 }
 
 /// Versioned root document stored under the user setting key
-/// `card_overlays`. Serialized as JSON string and PUT'd to
-/// `/api/v1/settings/card_overlays`. Shared across web, iOS, and tvOS.
+/// `ui.card_overlays`. Shared across web, iOS, and tvOS; `OverlaySchema`
+/// handles the JSON document and migration from older preferences.
 struct CardOverlayPrefs: Codable, Hashable {
     static let currentVersion = 2
 
@@ -173,51 +148,33 @@ struct OverlayData: Hashable {
 /// item even if the user enabled the overlay.
 struct OverlayDef {
     let id: OverlayId
-    let category: OverlayCategory
-    let label: String
-    let description: String
     let defaultPosition: OverlayPosition
     let defaultEnabled: Bool
     /// Static icon (e.g. "monitor" for resolution). When `getIcon` is set,
     /// the dynamic icon overrides this.
     let iconId: OverlayIconId?
     let defaultAccent: String?
-    /// Whether the settings UI should expose the "show icon" toggle.
+    /// Whether this badge can render an icon when preferences request one.
     let iconCapable: Bool
-    /// When true, render the icon without the text label.
-    let iconOnly: Bool
-    /// Shown beneath the row in the settings UI when the data source
-    /// isn't wired up yet (e.g. IMDb Top 250).
-    let availabilityNote: String?
     let getValue: (OverlayData) -> String?
     let getIcon: ((OverlayData) -> OverlayIconId?)?
 
     init(
         id: OverlayId,
-        category: OverlayCategory,
-        label: String,
-        description: String,
         defaultPosition: OverlayPosition,
         defaultEnabled: Bool,
         iconId: OverlayIconId? = nil,
         defaultAccent: String? = nil,
         iconCapable: Bool,
-        iconOnly: Bool = false,
-        availabilityNote: String? = nil,
         getValue: @escaping (OverlayData) -> String?,
         getIcon: ((OverlayData) -> OverlayIconId?)? = nil
     ) {
         self.id = id
-        self.category = category
-        self.label = label
-        self.description = description
         self.defaultPosition = defaultPosition
         self.defaultEnabled = defaultEnabled
         self.iconId = iconId
         self.defaultAccent = defaultAccent
         self.iconCapable = iconCapable
-        self.iconOnly = iconOnly
-        self.availabilityNote = availabilityNote
         self.getValue = getValue
         self.getIcon = getIcon
     }
@@ -266,20 +223,10 @@ enum OverlayIconId: String, Hashable {
     }
 }
 
-/// How the preset paints the accent color. Mirrors web's
-/// `AccentStrategy` so the visual outcome matches per-platform.
-enum AccentStrategy: String {
-    case background
-    case border
-    case text
-    case dot
-}
-
 /// Visual recipe for a badge. The renderer applies `font`, `padding`,
 /// `cornerStyle`, etc. uniformly to every badge; per-badge variation
 /// comes from the registry (icon) and the user's `accentColor`.
 struct OverlayPreset {
-    let id: PresetId
     let fontSize: CGFloat
     let textWeight: Font.Weight
     let textCase: Text.Case?
@@ -291,7 +238,6 @@ struct OverlayPreset {
     let preferIcon: Bool
     /// Spacing between stacked badges in the same corner.
     let gap: CGFloat
-    let accentStrategy: AccentStrategy
     /// Compute the background color given the user's accent override (or
     /// the registry default). Returns `.clear` for transparent presets.
     let backgroundColor: (Color?) -> Color
@@ -308,24 +254,4 @@ struct OverlayPreset {
         case capsule
         case rounded(CGFloat)
     }
-}
-
-/// Curated accent palette shown in the settings UI. Mirrors the web
-/// `ACCENT_PALETTE` so a color picked on one platform looks the same on
-/// the other.
-enum OverlayAccentPalette {
-    static let entries: [(label: String, hex: String)] = [
-        ("Gold",    "#f5c518"),
-        ("Tomato",  "#fa320a"),
-        ("Orange",  "#f97316"),
-        ("Amber",   "#f59e0b"),
-        ("Emerald", "#10b981"),
-        ("Cyan",    "#06b6d4"),
-        ("Blue",    "#3b82f6"),
-        ("Indigo",  "#6366f1"),
-        ("Violet",  "#8b5cf6"),
-        ("Pink",    "#ec4899"),
-        ("Slate",   "#64748b"),
-        ("White",   "#ffffff"),
-    ]
 }

@@ -76,8 +76,6 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
-        excludes:
-          - startup_splash.mp4
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/Silo.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -131,8 +129,6 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
-        excludes:
-          - startup_splash.mp4
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/SiloTV.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -183,8 +179,6 @@ targets:
       - path: iosApp/tvOS/Caching/PosterImageCache.swift
       - path: Resources
         buildPhase: resources
-        excludes:
-          - startup_splash.mp4
     configFiles:
       Debug: Signing/SiloMac.xcconfig
       Release: Signing/SiloMac.xcconfig

@@ -136,21 +136,9 @@ final class TrailerRailModelTests: XCTestCase {
         XCTAssertEqual(ExtraKindLabels.label(for: "other"), "Extra")
     }
 
-    func testGroupLabelsMatchTheWebVocabulary() {
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "trailer"), "Trailers")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "teaser"), "Teasers")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "featurette"), "Featurettes")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "clip"), "Clips")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "behind_the_scenes"), "Behind the Scenes")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "bloopers"), "Bloopers")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "deleted_scene"), "Deleted Scenes")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "other"), "Other")
-    }
-
     func testUnknownKindFallsBack() {
         // A kind the server grows later must never surface as a raw id.
         XCTAssertEqual(ExtraKindLabels.label(for: "opening_credits"), "Extra")
-        XCTAssertEqual(ExtraKindLabels.groupLabel(for: "opening_credits"), "Other")
         XCTAssertEqual(ExtraKindLabels.label(for: ""), "Extra")
     }
 

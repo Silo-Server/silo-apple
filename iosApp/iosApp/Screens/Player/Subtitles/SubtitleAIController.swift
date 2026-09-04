@@ -376,27 +376,7 @@ final class SubtitleAIController {
             fail(with: "Playback isn't ready yet.")
             return
         }
-        generation &+= 1
-        let gen = generation
-        // Replace any prior in-flight job.
-        pollDrainTask?.cancel()
-        pollDrainTask = nil
-        // Tear down any prior live job before starting a new one, and clear the
-        // shared handoff latch so the new job's terminal action can run.
-        liveCoordinator?.teardown()
-        livePresentationActive = false
-        handoffJobId = nil
-        ownedHandoffSubtitleId = nil
-        // Discard any frames left buffered from a previous submit window before
-        // opening this one (so a superseded job's racing cues can't replay into
-        // the new job).
-        clearEarlyFrameBuffer()
-
-        phase = .submitting
-        errorMessage = nil
-        activeJob = nil
-        liveCoordinator?.beginPreparing()
-        refreshLivePresentationState()
+        let gen = beginSubmission()
 
         // M4: pass `session_id` so the server streams cues live over the
         // playback control websocket — UNLESS realtime is not live-ready, in
@@ -435,6 +415,31 @@ final class SubtitleAIController {
         }
     }
 
+    private func beginSubmission() -> Int {
+        generation &+= 1
+        let gen = generation
+        // Replace any prior in-flight job.
+        pollDrainTask?.cancel()
+        pollDrainTask = nil
+        // Tear down any prior live job before starting a new one, and clear the
+        // shared handoff latch so the new job's terminal action can run.
+        liveCoordinator?.teardown()
+        livePresentationActive = false
+        handoffJobId = nil
+        ownedHandoffSubtitleId = nil
+        // Discard any frames left buffered from a previous submit window before
+        // opening this one (so a superseded job's racing cues can't replay into
+        // the new job).
+        clearEarlyFrameBuffer()
+
+        phase = .submitting
+        errorMessage = nil
+        activeJob = nil
+        liveCoordinator?.beginPreparing()
+        refreshLivePresentationState()
+        return gen
+    }
+
     private func onJobAccepted(_ job: SubtitleJob) {
         activeJob = job
         if job.status.isTerminal {
@@ -471,7 +476,7 @@ final class SubtitleAIController {
 
     // MARK: - Test seams
     //
-    // These mirror the two ways a job's `activeJob` is set + completed in
+    // These invoke the transitions that submit, accept, and complete a job in
     // production (the 202 accept and a poller-terminal snapshot) WITHOUT the
     // network, so `SubtitleAIControllerTests` can exercise the poller-vs-
     // websocket completion race headless. They are not called in production
@@ -484,19 +489,7 @@ final class SubtitleAIController {
     /// before `seedAcceptedJobForTesting` are buffered and then replayed.
     /// Test-only.
     func beginSubmitWindowForTesting() {
-        pollDrainTask?.cancel()
-        pollDrainTask = nil
-        liveCoordinator?.teardown()
-        livePresentationActive = false
-        generation &+= 1
-        handoffJobId = nil
-        ownedHandoffSubtitleId = nil
-        clearEarlyFrameBuffer()
-        phase = .submitting
-        errorMessage = nil
-        activeJob = nil
-        liveCoordinator?.beginPreparing()
-        refreshLivePresentationState()
+        _ = beginSubmission()
     }
 
     /// Seed `activeJob` as if the 202 accept landed (non-terminal), without

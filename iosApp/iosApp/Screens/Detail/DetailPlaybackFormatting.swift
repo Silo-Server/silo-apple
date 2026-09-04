@@ -180,29 +180,6 @@ enum DetailPlaybackFormatting {
         return summary
     }
 
-    /// Compact codec/layout disclosure for a passive UI readout. Unlike the
-    /// interactive selector value, this intentionally omits language and the
-    /// "Auto" prefix (for example, "EAC3 5.1").
-    static func audioTechnicalSummary(
-        version: FileVersion?,
-        selectedAudioTrackIndex: Int?
-    ) -> String? {
-        guard let version,
-              let ordinal = resolvedAudioOrdinal(
-                  version: version,
-                  selectedAudioTrackIndex: selectedAudioTrackIndex
-              ),
-              let track = version.audioTracks?[safe: ordinal] else {
-            return normalizedAudioCodec(version?.codecAudio)
-        }
-        return [
-            normalizedAudioCodec(track.codec) ?? normalizedAudioCodec(version.codecAudio),
-            compactAudioLayout(track),
-        ]
-        .compactMap { $0 }
-        .joined(separator: " ")
-    }
-
     /// Language of the track that `audioValueLabel` would display, used to
     /// feed the subtitle auto-resolver (Auto mode hides subs when the audio
     /// is already in the preferred subtitle language).

@@ -1567,15 +1567,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(intent.sidecarSubtitleTrackId)
     }
 
-    func testStaleStreamGenerationCannotConsumePendingTrackIntent() {
-        XCTAssertTrue(
-            PlayerViewModel.isCurrentStreamCallback(7, currentGeneration: 7)
-        )
-        XCTAssertFalse(
-            PlayerViewModel.isCurrentStreamCallback(6, currentGeneration: 7)
-        )
-    }
-
     func testAudiobookFeaturesDoNotClaimSeekReanchor() {
         XCTAssertFalse(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
@@ -2039,18 +2030,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             title: codec.uppercased(),
             embeddedTitle: nil,
             isDefault: isDefault
-        )
-    }
-
-    private func makeSubtitleUrl(index: Int, source: String) -> SubtitleUrl {
-        SubtitleUrl(
-            index: index,
-            language: "en",
-            codec: "srt",
-            label: "English",
-            source: source,
-            forced: false,
-            url: "/stream/subtitles/\(index)"
         )
     }
 

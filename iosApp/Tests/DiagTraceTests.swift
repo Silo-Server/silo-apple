@@ -4,10 +4,7 @@ import XCTest
 /// The shared two-tier verbosity predicate every instrumented subsystem
 /// (playback, focus, network, lifecycle) routes through.
 ///
-/// `DiagnosticsReviewFixesTests.testCMPLogCaptureRequiresDiagnosticsGateAndVerboseOptIn`
-/// still covers the player's `shouldCaptureCMPLog` spelling; these cases pin the
-/// generalized helper it now delegates to, including the deliberate difference
-/// between the two destinations' gating.
+/// These cases cover the distinct capture and breadcrumb gates.
 final class DiagTraceTests: XCTestCase {
     func testRingCaptureRequiresBothTheCaptureGateAndTheVerboseOptIn() {
         // Verbatim the historical cmpLog truth table:
@@ -33,30 +30,6 @@ final class DiagTraceTests: XCTestCase {
         XCTAssertTrue(DiagTrace.isTierEnabled(.essential, debugLoggingEnabled: true))
         XCTAssertFalse(DiagTrace.isTierEnabled(.verbose, debugLoggingEnabled: false))
         XCTAssertTrue(DiagTrace.isTierEnabled(.verbose, debugLoggingEnabled: true))
-    }
-
-    func testPlayerHelperDelegatesToTheSharedPredicate() {
-        // PlayerLog kept its own spelling; it must stay a pure alias so the
-        // player and every new subsystem make the same decision.
-        for verbose in [false, true] {
-            for debugLoggingEnabled in [false, true] {
-                for captureEnabled in [false, true] {
-                    XCTAssertEqual(
-                        shouldCaptureCMPLog(
-                            verbose: verbose,
-                            debugLoggingEnabled: debugLoggingEnabled,
-                            captureEnabled: captureEnabled
-                        ),
-                        DiagTrace.shouldCapture(
-                            verbose ? .verbose : .essential,
-                            debugLoggingEnabled: debugLoggingEnabled,
-                            captureEnabled: captureEnabled
-                        ),
-                        "verbose=\(verbose) debug=\(debugLoggingEnabled) capture=\(captureEnabled)"
-                    )
-                }
-            }
-        }
     }
 
     func testSuppressedVerboseLineDoesNotEvaluateItsMessage() {

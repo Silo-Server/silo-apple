@@ -17,7 +17,7 @@ import SwiftUI
 /// geometric proximity can select a lower row. The outer scope still chooses
 /// the active pane for page entry and modal restoration (see docs/tvos-focus.md).
 struct TVSettingsView: View {
-    @State private var viewModel = TVSettingsViewModel()
+    @State private var viewModel = SettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
@@ -86,7 +86,7 @@ struct TVSettingsView: View {
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .onAppear(perform: focusGeneralOnEntry)
         .task {
-            await viewModel.load()
+            await viewModel.loadSettings()
             await diagnosticsModel.load(profile: viewModel.activeProfile)
         }
         .onChange(of: railFocus) { _, focus in
@@ -121,17 +121,17 @@ struct TVSettingsView: View {
                 preferredFocusOwner = .detail
             }
         }
-        .onChange(of: viewModel.editorSubtitleLanguage) { _, _ in
-            Task { await viewModel.saveProfilePrefs() }
+        .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
+            Task { await viewModel.prefs.saveSubtitlePrefs() }
         }
-        .onChange(of: viewModel.editorSubtitleMode) { _, _ in
-            Task { await viewModel.saveProfilePrefs() }
+        .onChange(of: viewModel.prefs.subtitleMode) { _, _ in
+            Task { await viewModel.prefs.saveSubtitlePrefs() }
         }
-        .onChange(of: viewModel.editorShowForcedSubtitles) { _, _ in
-            Task { await viewModel.saveProfilePrefs() }
+        .onChange(of: viewModel.prefs.showForcedSubtitles) { _, _ in
+            Task { await viewModel.prefs.saveSubtitlePrefs() }
         }
-        .onChange(of: viewModel.editorPreferredMetadataLanguage) { _, _ in
-            Task { await viewModel.saveMetadataLanguage() }
+        .onChange(of: viewModel.prefs.preferredMetadataLanguage) { _, _ in
+            Task { await viewModel.prefs.saveMetadataLanguage() }
         }
         .onChange(of: diagnosticsModel.shouldShowSettings) { _, isVisible in
             if !isVisible, selectedCategory == .diagnostics {
@@ -359,7 +359,7 @@ struct TVSettingsView: View {
             return .generalAppleTVUser
         }
         if category == .subtitles,
-           viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
+           viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
             return .subtitleUseDeviceSettings
         }
         return .top
