@@ -176,6 +176,11 @@ struct TVTopMenuBar: View {
     /// host opens its panel if needed and hands focus in (§5.3). Takes the
     /// element so the host routes to the right panel.
     let onEnterPanel: (TVTopMenuPanel) -> Void
+    /// D-pad down on a bar element with no panel (Home, Calendar, Search):
+    /// the host hands focus to the page's first (left-most) item instead of
+    /// letting the engine pick whichever card sits geometrically under the
+    /// centered tab.
+    let onEnterContent: () -> Void
     /// Press on the profile avatar opens the profile panel and enters it
     /// immediately; dwell only previews it.
     let onProfilePressed: () -> Void
@@ -453,15 +458,20 @@ struct TVTopMenuBar: View {
         })
         // Down opens this tab's cascade panel (if a dwell hasn't already)
         // and hands focus straight into it, so the move never escapes to the
-        // page content behind the bar. Fires only when the engine can't move
-        // focus within the bar — i.e. the bar is a single row, so down
-        // always reaches here.
-        // `canOpenPanel` is keyed on the tab *kind* (library and For You tabs
-        // can; Home/Calendar never can) — invariant, so opening a panel never
-        // restructures this focused button (which dropped focus).
-        .modifier(TVTopMenuDownHandler(canOpenPanel: rootPanel(root) != nil) {
-            onEnterPanel(.root(root))
-        })
+        // page content behind the bar. Tabs without a panel (Home, Calendar)
+        // hand focus to the page's first item instead, so down always lands
+        // on the left-most card rather than whichever card the engine finds
+        // geometrically under the centered tab. Fires only when the engine
+        // can't move focus within the bar — i.e. the bar is a single row, so
+        // down always reaches here.
+        // The handler is attached unconditionally and `canOpenPanel` is keyed
+        // on the tab *kind* — invariant, so opening a panel never restructures
+        // this focused button (which dropped focus).
+        .modifier(TVTopMenuDownHandler(
+            canOpenPanel: rootPanel(root) != nil,
+            onDown: { onEnterPanel(.root(root)) },
+            onDownToContent: onEnterContent
+        ))
         // Panel-bearing tabs publish their bounds so the shell can center the
         // anchored dropdown under them (§5.3); other tabs have no panel.
         .modifier(TVTopMenuAnchorPublisher(panel: rootPanel(root)))
@@ -572,9 +582,17 @@ struct TVTopMenuBar: View {
         .focused($focusedItem, equals: .search)
         // The inverse boundary keeps Search usable in the scrolling fallback;
         // in the centered layout the native focus graph resolves this first.
+        // Down hands focus to the page's first item, matching the tabs.
         .onMoveCommand { direction in
-            guard direction == .right, let firstRoot = roots.first else { return }
-            focusedItem = .root(firstRoot)
+            switch direction {
+            case .right:
+                guard let firstRoot = roots.first else { return }
+                focusedItem = .root(firstRoot)
+            case .down:
+                onEnterContent()
+            default:
+                break
+            }
         }
         .accessibilityLabel("Search")
     }
@@ -611,9 +629,11 @@ struct TVTopMenuBar: View {
         }
         .buttonStyle(.continuumFlat)
         .focused($focusedItem, equals: .profile)
-        .modifier(TVTopMenuDownHandler(canOpenPanel: true) {
-            onEnterPanel(.profile)
-        })
+        .modifier(TVTopMenuDownHandler(
+            canOpenPanel: true,
+            onDown: { onEnterPanel(.profile) },
+            onDownToContent: onEnterContent
+        ))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
         .accessibilityLabel("Profile")
         .accessibilityHint("Rest or press to open the profile menu")
@@ -821,18 +841,23 @@ struct TVSkylinePanelChrome: ViewModifier {
 /// open. Toggling the attachment on a *focused* button rebuilds its subtree
 /// and drops `@FocusState`, which bounced focus back to the Home tab; keeping
 /// it invariant fixes that. The live open/enter decision is in the closure.
+///
+/// Elements without a panel route Down to `onDownToContent`, so the shell
+/// hands focus to the page's first item instead of the engine landing on
+/// whichever card is geometrically nearest the centered tab.
 private struct TVTopMenuDownHandler: ViewModifier {
     let canOpenPanel: Bool
     let onDown: () -> Void
+    let onDownToContent: () -> Void
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if canOpenPanel {
-            content.onMoveCommand { direction in
-                if direction == .down { onDown() }
+        content.onMoveCommand { direction in
+            guard direction == .down else { return }
+            if canOpenPanel {
+                onDown()
+            } else {
+                onDownToContent()
             }
-        } else {
-            content
         }
     }
 }
