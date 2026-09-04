@@ -271,7 +271,7 @@ enum DetailPlaybackFormatting {
         if let signature,
            let tracks = version?.subtitleTracks,
            let match = bestSignatureMatch(signature, in: tracks) {
-            return match.index
+            return match.selectionIndex
         }
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return -1
@@ -483,7 +483,9 @@ enum DetailPlaybackFormatting {
             )
         }
         return ordered.map { ordinal, track in
-            let index = track.index
+            // `selectionIndex` reads an embedded nil index as stream 0, so
+            // only external sidecars without a stream index are unselectable.
+            let index = track.selectionIndex
             let isSelectable = index != nil
             return SubtitleOption(
                 selectionIndex: index,
@@ -532,7 +534,7 @@ enum DetailPlaybackFormatting {
         if selectedSubtitleTrackIndex == -1 { return "Off" }
         guard let selectedSubtitleTrackIndex,
               let match = (version?.subtitleTracks ?? []).enumerated().first(where: { _, track in
-                  track.index == selectedSubtitleTrackIndex
+                  track.selectionIndex == selectedSubtitleTrackIndex
               }) else {
             // An explicit positive selection that doesn't resolve in this
             // version's track list (e.g. the displayed version was re-scoped):

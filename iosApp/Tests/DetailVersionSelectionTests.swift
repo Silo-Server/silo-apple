@@ -464,6 +464,47 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(label, "Auto: English · SRT", "embedded stream 0 must remain a preview candidate; got \(label)")
     }
 
+    func testSubtitleOptionsKeepEmbeddedStreamZeroSelectable() {
+        // The wire omits a zero stream index. The selector, sanitization and
+        // persistence paths must all read an embedded nil index as stream 0
+        // so the user can pick it manually, not just via auto-resolution.
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "codec": "subrip", "language": "eng" },
+              { "codec": "srt", "language": "fra", "file_name": "/subs/fr.srt", "external": true }
+            ]
+          }
+        ]
+        """)
+        XCTAssertEqual(versions[0].subtitleTracks?[0].selectionIndex, 0)
+        XCTAssertNil(versions[0].subtitleTracks?[1].selectionIndex)
+
+        let options = DetailPlaybackFormatting.subtitleOptions(
+            version: versions[0],
+            selectedSubtitleTrackIndex: 0,
+            preferredLanguage: nil
+        )
+        guard let embedded = options.first(where: { $0.title == "English" }) else {
+            return XCTFail("missing embedded option")
+        }
+        XCTAssertEqual(embedded.selectionIndex, 0)
+        XCTAssertTrue(embedded.isSelectable)
+        XCTAssertTrue(embedded.isSelected)
+        XCTAssertFalse(embedded.detail.contains("Available in player"))
+
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(version: versions[0], selectedSubtitleTrackIndex: 0),
+            "English · SRT"
+        )
+        XCTAssertEqual(
+            TrackSelectionPersistence.subtitleRequest(version: versions[0], ffIndex: 0, showForced: nil)?.subtitleTrackIndex,
+            0
+        )
+    }
+
     func testSignatureSubtitlePreviewConsidersExternalTracks() {
         // A persisted signature that ties between an embedded and an external
         // track resolves to the external one in playback (combined order).
