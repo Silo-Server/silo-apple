@@ -17,7 +17,9 @@ Try the latest beta builds of the iOS and tvOS apps:
 <p>
   <img src="project-images/silo-apple-native/04-home.png" width="260" alt="iOS home screen" />
   <img src="project-images/silo-apple-native/09-movie-detail.png" width="260" alt="iOS movie detail" />
+  <img src="project-images/silo-apple-native/12-series-detail.png" width="260" alt="iOS series detail" />
   <img src="project-images/silo-apple-native/05-libraries.png" width="260" alt="iOS movies library" />
+  <img src="project-images/silo-apple-native/13-tv-library.png" width="260" alt="iOS TV shows library" />
 </p>
 
 ### tvOS
