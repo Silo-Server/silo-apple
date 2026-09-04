@@ -40,11 +40,23 @@ final class TVFrameHitchMonitor {
         shared.start()
     }
 
+    /// True once the launch argument has started the monitor.
+    private(set) var isRunning = false
+
+    /// Timeline marker on the same clock as the hitch lines, so a capture
+    /// can show which app work surrounds a dropped frame. Free when the
+    /// monitor is off: the label closure is never evaluated.
+    static func mark(_ label: @autoclosure () -> String) {
+        guard shared.isRunning else { return }
+        shared.emit("mark \(label())")
+    }
+
     private func start() {
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
+        isRunning = true
         emit("monitor started")
     }
 
@@ -95,7 +107,7 @@ final class TVFrameHitchMonitor {
     private func emit(_ message: String) {
         // Seconds since the monitor started, so hitches can be lined up with
         // launch-phase work in the same console capture.
-        let stamped = String(format: "t+%.1fs %@", CACurrentMediaTime() - startTime, message)
+        let stamped = String(format: "t+%.3fs %@", CACurrentMediaTime() - startTime, message)
         logger.notice("\(stamped, privacy: .public)")
         FileHandle.standardError.write(Data("[perf.hitch] \(stamped)\n".utf8))
     }

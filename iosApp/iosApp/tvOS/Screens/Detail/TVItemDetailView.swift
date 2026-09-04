@@ -60,7 +60,8 @@ struct TVItemDetailView: View {
     }
 
     var body: some View {
-        Group {
+        let _ = TVFrameHitchMonitor.mark("detail.body")
+        return Group {
             // Skip the spinner on cache hits — `detail != nil` means we
             // already have something to paint and the `.task` below is
             // refreshing it in the background.

@@ -22,13 +22,13 @@ import UIKit
 enum PosterImageCache {
     /// Longest edge, in pixels, of the decode the prefetchers park in the
     /// memory cache for poster, still, cover, and portrait artwork. Sized to
-    /// cover every Skyline landing card at the display's native scale
-    /// (Apple TV 4K renders at 2x: a 176 pt dense poster is 528 px tall), so
-    /// the warmed decode paints at least as sharp as the card's own request.
-    /// About 1.1 MB for a 2:3 poster at 2x, so a whole warmed feed still fits
-    /// the constrained tvOS budget instead of evicting itself. Library grid
-    /// cards are larger and keep their own decode.
-    static let cardWarmMaxPixelSize: Float = Float(320 * displayScale)
+    /// cover every Skyline landing card and the detail episode still at the
+    /// display's native scale (Apple TV 4K renders at 2x: a 176 pt dense
+    /// poster is 528 px tall, a 360 pt still is 720 px wide), so the warmed
+    /// decode paints at least as sharp as the card's own request. About
+    /// 1.3 MB per still at 2x, so a warmed feed still fits the constrained
+    /// tvOS budget. Library grid cards are larger and keep their own decode.
+    static let cardWarmMaxPixelSize: Float = Float(384 * displayScale)
 
     /// Native display scale used to turn point sizes into decode pixel sizes
     /// off the main thread. `UITraitCollection.current` reports 0 outside a

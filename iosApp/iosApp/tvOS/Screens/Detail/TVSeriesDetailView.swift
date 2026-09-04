@@ -270,7 +270,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     private let similarSectionScrollId = "series-similar-section"
 
     var body: some View {
-        TVDetailPageSurface(backdropURL: detail.backdropUrl) {
+        let _ = TVFrameHitchMonitor.mark("series.body")
+        return TVDetailPageSurface(backdropURL: detail.backdropUrl) {
             ScrollViewReader { scrollProxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -330,6 +331,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             }
         }
         .onChange(of: seasonPageReadinessKey) { _, _ in
+            TVFrameHitchMonitor.mark("season.readiness")
             if seasonTransitionInFlight {
                 startSeasonScrollIfReady()
             } else {
@@ -361,7 +363,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - Fixed series hero
 
     private var heroView: some View {
-        TVDetailHero(
+        let _ = TVFrameHitchMonitor.mark("series.hero")
+        return TVDetailHero(
             // Show and Season browsing share one title identity. Episode
             // focus changes the bounded synopsis/metadata only, never the
             // logo or title block that determines the page geometry.
@@ -525,7 +528,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - Show / Season modes and episode carousel
 
     private var episodeExperience: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let _ = TVFrameHitchMonitor.mark("series.episodes")
+        return VStack(alignment: .leading, spacing: 14) {
             modeRow
             smoothlyChangingEpisodeBody
             if let trailerFetchStatus {
@@ -577,6 +581,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 }
             }
             .onChange(of: focusedModeId) { _, focusedId in
+                TVFrameHitchMonitor.mark("mode.focus \(focusedId ?? "nil")")
                 updateModeFocusAppearance(for: focusedId)
                 guard let focusedId else {
                     modeActivationTask?.cancel()
@@ -640,6 +645,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func activateSeason(_ season: Season) {
+        TVFrameHitchMonitor.mark("season.activate \(season.seasonNumber)")
         modeActivationTask?.cancel()
         modeActivationTask = nil
         isShowingSeriesOverview = false
@@ -655,6 +661,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func beginSeasonTransition(to season: Season) {
+        TVFrameHitchMonitor.mark("season.begin -> \(season.seasonNumber) from \(visibleSeasonId ?? "nil")")
         let currentPage = currentSeasonPageSnapshot
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -674,6 +681,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func retargetSeasonTransition(to season: Season) {
+        TVFrameHitchMonitor.mark("season.retarget -> \(season.seasonNumber) task=\(seasonTransitionTask != nil)")
         // Stop the current native animation at its presentation offset before
         // giving it a new destination. Without this freeze, several opposing
         // setContentOffset animations can finish out of order under rapid taps.
@@ -688,6 +696,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func startSeasonScrollIfReady() {
+        TVFrameHitchMonitor.mark("season.ifReady inFlight=\(seasonTransitionInFlight) task=\(seasonTransitionTask != nil) target=\(seasonTransitionTargetId ?? "nil") selected=\(selectedSeason?.id ?? "nil") loading=\(isLoadingEpisodes) eps=\(episodes.first?.seasonNumber ?? -1)x\(episodes.count) width=\(Int(seasonPageViewportWidth))")
         guard seasonTransitionInFlight,
               seasonTransitionTask == nil,
               let targetId = seasonTransitionTargetId,
@@ -726,6 +735,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func startMountedSeasonScrollIfAvailable(to targetId: String) {
+        TVFrameHitchMonitor.mark("season.mountedIfAvailable target=\(targetId) available=\(seasons.first(where: { $0.id == targetId }).flatMap(availableSeasonPage(for:)) != nil)")
         guard let targetSeason = seasons.first(where: { $0.id == targetId }),
               let mountedPage = availableSeasonPage(for: targetSeason),
               let destinationOffset = seasonPageOffset(
@@ -764,6 +774,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             guard !Task.isCancelled,
                   generation == seasonTransitionGeneration else { return }
 
+            TVFrameHitchMonitor.mark("season.scroll.start")
             withAnimation(
                 reduceMotion
                     ? nil
@@ -784,6 +795,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func finishSeasonTransition() {
+        TVFrameHitchMonitor.mark("season.finish target=\(seasonTransitionTargetId ?? "nil")")
         guard let completedSeasonId = seasonTransitionTargetId else {
             seasonTransitionInFlight = false
             seasonTransitionTask = nil
@@ -851,6 +863,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     private func synchronizeCurrentSeasonPage() {
         guard !seasonTransitionInFlight else { return }
         let page = currentSeasonPageSnapshot
+        TVFrameHitchMonitor.mark("season.sync page=\(page.seasonId) loading=\(page.isLoading) eps=\(page.episodes.count)")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -1061,6 +1074,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 onMoveDown: focusPlaybackSelector,
                 focusRequest: episodeRailFocusRequest
             )
+            .equatable()
             .padding(.trailing, -TVDetailLayout.horizontalInset)
         }
     }
@@ -1239,7 +1253,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     // MARK: - Supporting rails
 
     private var similarSection: some View {
-        TVSimilarRail(
+        let _ = TVFrameHitchMonitor.mark("series.similar")
+        return TVSimilarRail(
             contentId: detail.contentId,
             title: "Recommended Series",
             onSelect: onNavigateToItem,
@@ -1250,7 +1265,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private var trailersSection: some View {
-        TVTrailersRail(
+        let _ = TVFrameHitchMonitor.mark("series.trailers")
+        return TVTrailersRail(
             entries: trailerEntries,
             onSelect: onSelectTrailer,
             focusScale: 1.0,
@@ -1259,7 +1275,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func castSection(cast: [CastMember]) -> some View {
-        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+        let _ = TVFrameHitchMonitor.mark("series.cast")
+        return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: "Cast & Crew")
             TVDetailCastRail(
                 cast: cast,
@@ -1280,7 +1297,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private var detailsSection: some View {
-        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+        let _ = TVFrameHitchMonitor.mark("series.details")
+        return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: "Details")
             TVDetailFactsSection(detail: detail)
         }

@@ -60,6 +60,7 @@ struct TVEpisodeRail: View {
 
     @ViewBuilder
     var body: some View {
+        let _ = TVFrameHitchMonitor.mark("rail.body \(episodes.first?.seasonNumber ?? -1)")
         if anchorsFocusedCard {
             anchoredRail
         } else {
@@ -861,6 +862,30 @@ private struct EpisodeCardLabel: View {
 /// Reserves the approved 480-point episode-card geometry while an uncached
 /// season loads. Keeping artwork and caption blocks in the tree prevents the
 /// lower detail sections from jumping when real episodes arrive.
+/// The Series page rebuilds its whole tree on every focus move, season
+/// change, and metadata refresh. Comparing the rail's data inputs lets
+/// SwiftUI skip re-running every card when only the closures differ, which
+/// they always do because the parent recreates them each pass.
+extension TVEpisodeRail: Equatable {
+    static func == (lhs: TVEpisodeRail, rhs: TVEpisodeRail) -> Bool {
+        lhs.episodes == rhs.episodes
+            && lhs.currentContentId == rhs.currentContentId
+            && lhs.currentContentIsFavorite == rhs.currentContentIsFavorite
+            && lhs.favoriteStates == rhs.favoriteStates
+            && lhs.prefersCurrentContentFocus == rhs.prefersCurrentContentFocus
+            && lhs.baseCardWidth == rhs.baseCardWidth
+            && lhs.cardHeightRatio == rhs.cardHeightRatio
+            && lhs.cardSpacing == rhs.cardSpacing
+            && lhs.anchorsFocusedCard == rhs.anchorsFocusedCard
+            && lhs.focusRequest == rhs.focusRequest
+            && (lhs.onPlay == nil) == (rhs.onPlay == nil)
+            && (lhs.onSetWatched == nil) == (rhs.onSetWatched == nil)
+            && (lhs.onSetFavorite == nil) == (rhs.onSetFavorite == nil)
+            && (lhs.onMoveUp == nil) == (rhs.onMoveUp == nil)
+            && (lhs.onMoveDown == nil) == (rhs.onMoveDown == nil)
+    }
+}
+
 struct TVEpisodeRailPlaceholder: View {
     var cardWidth: CGFloat = 480
     var cardHeightRatio: CGFloat = 9 / 16
