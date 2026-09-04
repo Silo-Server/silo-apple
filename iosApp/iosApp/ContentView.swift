@@ -2331,12 +2331,13 @@ struct MainTabView: View {
                 // regression (see forums thread 807208).
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
-        case .player(let contentId, let startFromBeginning, let resumePosition):
+        case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion):
             #if os(macOS)
             PlayerView(
                 contentId: contentId,
                 startFromBeginning: startFromBeginning,
-                resumePositionOverride: resumePosition
+                resumePositionOverride: resumePosition,
+                prefersLastUsedVersion: prefersLastUsedVersion
             )
             #else
             // Player is presented as a full-screen cover (see MainTabView)

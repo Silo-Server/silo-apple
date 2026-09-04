@@ -134,6 +134,10 @@ private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
     var continueWatchingItem: SectionItem? = nil
+    /// Secondary action surfaced to VoiceOver. The card collapses its
+    /// children into one element, so a nested play button would otherwise
+    /// vanish from the accessibility tree.
+    var accessibilityPlayAction: (name: String, perform: () -> Void)? = nil
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
@@ -156,6 +160,19 @@ private struct HomeCardTap<Label: View>: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .modifier(OptionalAccessibilityAction(action: accessibilityPlayAction))
+    }
+}
+
+private struct OptionalAccessibilityAction: ViewModifier {
+    let action: (name: String, perform: () -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action {
+            content.accessibilityAction(named: Text(action.name), action.perform)
+        } else {
+            content
+        }
     }
 }
 
@@ -468,7 +485,10 @@ struct HomeStillCard: View {
         HomeCardTap(
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
-            continueWatchingItem: opensResumeContext ? item : nil
+            continueWatchingItem: opensResumeContext ? item : nil,
+            accessibilityPlayAction: isDirectlyPlayable
+                ? (name: playActionName, perform: playItem)
+                : nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
@@ -567,14 +587,18 @@ struct HomeStillCard: View {
             .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
             .contentShape(Circle())
 
-        if SiloMediaType.isDirectlyPlayable(item.type) {
+        if isDirectlyPlayable {
             Button(action: playItem) { badge }
                 .buttonStyle(.plain)
-                .accessibilityLabel((item.positionSeconds ?? 0) > 0 ? "Resume" : "Play")
+                .accessibilityLabel(playActionName)
         } else {
             badge.allowsHitTesting(false)
         }
     }
+
+    private var isDirectlyPlayable: Bool { SiloMediaType.isDirectlyPlayable(item.type) }
+
+    private var playActionName: String { (item.positionSeconds ?? 0) > 0 ? "Resume" : "Play" }
 
     private func playItem() {
         router.presentPlayer(
