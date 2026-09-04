@@ -1127,6 +1127,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertFalse(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 1" }))
     }
 
+    func testMovieTimelineUsesExternalTrackStateWithoutRequiringAnAlias() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let raw = controller.engine.addExternalSubtitleTrack(
+            ExternalSubtitleTrack(url: URL(fileURLWithPath: "/tmp/unaliased-subtitle.srt")))
+        XCTAssertFalse(controller.containsSubtitle(appTrackID: Int64(raw.id)))
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: Int64(raw.id), slot: .primary))
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: Int64(raw.id), slot: .secondary))
+        controller.engine.selectSubtitleTrack(index: raw.id)
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: nil, slot: .primary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: nil, slot: .secondary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: 3, slot: .primary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(
+            appTrackID: SubtitleTrackIdSpace.makeAILiveTrackId(0), slot: .primary))
+        let alias = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 4)
+        controller.addExternalSubtitleTrack(
+            ExternalSubtitleTrack(url: URL(fileURLWithPath: "/tmp/aliased-subtitle.srt")), appTrackID: alias)
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: alias, slot: .primary))
+    }
+
     func testControllerConstructsOnlyAetherEngine() throws {
         let controller = try AetherPlaybackController()
         XCTAssertEqual(controller.engine.state, .idle)

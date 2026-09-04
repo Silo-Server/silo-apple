@@ -3701,9 +3701,8 @@ class PlayerViewModel {
         return selectionIndex
     }
 
-    func subtitleUsesMovieTimeline(_ trackID: Int64?) -> Bool {
-        guard let trackID else { return false }
-        return aetherPlaybackController.containsSubtitle(appTrackID: trackID)
+    func subtitleUsesMovieTimeline(_ trackID: Int64?, slot: SubtitleSlot = .primary) -> Bool {
+        aetherPlaybackController.subtitleUsesMovieTimeline(appTrackID: trackID, slot: slot)
     }
 
     static func selectedEmbeddedSubtitleIndexForResume(plan: PlaybackV3Plan?, selectedTrackID: Int64?) -> Int? {

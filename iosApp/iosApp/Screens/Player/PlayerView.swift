@@ -584,7 +584,7 @@ struct PlayerView: View {
                     engine: viewModel.aetherEngine,
                     sourceTime: viewModel.currentTime,
                     primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
-                    secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId),
+                    secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
                     livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
                         ? viewModel.livePrimarySubtitleCues
                         : [],

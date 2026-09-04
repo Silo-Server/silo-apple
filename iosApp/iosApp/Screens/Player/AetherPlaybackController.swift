@@ -384,6 +384,17 @@ final class AetherPlaybackController {
         appSubtitleIDByAetherID[id] ?? Int64(id)
     }
 
+    func subtitleUsesMovieTimeline(appTrackID: Int64?, slot: SubtitleSlot) -> Bool {
+        let engineID: Int?
+        if let appTrackID {
+            engineID = aetherSubtitleID(forAppID: appTrackID)
+        } else {
+            // Only the primary slot has an engine-published active identity.
+            engineID = slot == .primary ? engine.activeSubtitleTrackIndex : nil
+        }
+        return engine.subtitleTracks.contains { $0.id == engineID && $0.isExternal }
+    }
+
     func containsSubtitle(appTrackID: Int64) -> Bool {
         aetherSubtitleIDByAppID[appTrackID] != nil
     }

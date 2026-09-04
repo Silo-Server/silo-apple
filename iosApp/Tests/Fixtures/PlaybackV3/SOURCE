@@ -1,5 +1,5 @@
 Source: silo-server internal/playback/testdata/protocol_v3
-Server commit: 2f9df5327f2728a266ad826ded36dac7d030d62b
+Server commit: 5afc5bdd616e4f9c304889c8cadc4c6d31fbc7b7
 Server pull request: https://github.com/Silo-Server/silo-server/pull/938
 Vendored: 2026-09-04
 
