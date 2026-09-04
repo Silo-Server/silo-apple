@@ -74,6 +74,22 @@ struct ApplePushDisplayAuthState: Equatable {
         if !display.isEmpty { return display }
         return accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// The same state with the display token dropped, so the mirrored
+    /// access token becomes the bearer. `nil` when there is no distinct
+    /// access token to fall back to.
+    var accessTokenFallback: ApplePushDisplayAuthState? {
+        let access = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !displayToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !access.isEmpty else {
+            return nil
+        }
+        return ApplePushDisplayAuthState(
+            serverURL: serverURL,
+            profileID: profileID,
+            accessToken: access,
+            profileToken: profileToken
+        )
+    }
 }
 
 enum ApplePushDisplayWire {
@@ -133,7 +149,22 @@ final class ApplePushDisplayClient {
         self.session = session
     }
 
+    /// Fetches display metadata with the preferred credential. When the
+    /// display token is rejected (expired past the app's renewal window, or
+    /// revoked) and a mirrored access token exists, retries once with it:
+    /// background work may have refreshed the access token while the app
+    /// never foregrounded to renew the display token. Both fetches share
+    /// the extension's short time budget.
     func fetchDisplay(deliveryID: String, state: ApplePushDisplayAuthState) async throws -> ApplePushDisplayResponse {
+        do {
+            return try await fetchDisplayOnce(deliveryID: deliveryID, state: state)
+        } catch ApplePushDisplayClientError.badStatus(let status) where status == 401 || status == 403 {
+            guard let fallback = state.accessTokenFallback, !Task.isCancelled else { throw ApplePushDisplayClientError.badStatus(status) }
+            return try await fetchDisplayOnce(deliveryID: deliveryID, state: fallback)
+        }
+    }
+
+    private func fetchDisplayOnce(deliveryID: String, state: ApplePushDisplayAuthState) async throws -> ApplePushDisplayResponse {
         guard let url = ApplePushDisplayWire.displayURL(serverURL: state.serverURL, deliveryID: deliveryID) else {
             throw ApplePushDisplayClientError.invalidURL
         }

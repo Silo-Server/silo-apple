@@ -168,6 +168,14 @@ final class ApplePushRegistrationTests: XCTestCase {
             profileToken: ""
         )
         XCTAssertFalse(neither.isUsable)
+
+        // A rejected display token falls back to the access token once;
+        // without a distinct access token there is nothing to retry with.
+        let fallback = try? XCTUnwrap(withDisplay.accessTokenFallback)
+        XCTAssertEqual(fallback?.bearerToken, "expired-access")
+        XCTAssertEqual(fallback?.displayToken, "")
+        XCTAssertNil(legacy.accessTokenFallback)
+        XCTAssertNil(displayOnly.accessTokenFallback)
     }
 
     func testRegistrationResponseDecodesOptionalDisplayToken() throws {
