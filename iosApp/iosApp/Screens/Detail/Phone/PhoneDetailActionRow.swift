@@ -67,7 +67,7 @@ struct PhoneLabeledAction: View {
             VStack(spacing: 6) {
                 Image(systemName: resolvedIcon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(width: 42, height: 42)
                     .background(
                         Circle().fill(Color.white.opacity(isActive ? 0.18 : 0.10))
@@ -76,7 +76,7 @@ struct PhoneLabeledAction: View {
 
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(isActive ? 0.92 : 0.6))
+                    .foregroundStyle(Color.siloOnSurface.opacity(isActive ? 0.92 : 0.6))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -103,12 +103,12 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
             VStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(width: 42, height: 42)
                     .background(Circle().fill(Color.white.opacity(0.10)))
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.6))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 58)

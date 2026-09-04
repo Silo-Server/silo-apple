@@ -104,7 +104,7 @@ final class CalendarViewModel {
         error = nil
 
         do {
-            let response = try await ContinuumAPI.shared.calendarEvents(
+            let response = try await SiloAPI.shared.calendarEvents(
                 start: week.startString,
                 end: week.endString,
                 filter: filter.rawValue,

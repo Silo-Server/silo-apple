@@ -13,7 +13,7 @@ struct ProgressBar: View {
                     .frame(height: 3)
 
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.continuumOnSurface)
+                    .fill(Color.siloOnSurface)
                     .frame(width: geo.size.width * min(max(value, 0), 1), height: 3)
             }
         }

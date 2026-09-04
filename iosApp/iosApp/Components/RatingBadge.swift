@@ -10,21 +10,21 @@ struct RatingBadge: View {
         HStack(spacing: 4) {
             Image(systemName: "star.fill")
                 .font(.system(size: 10))
-                .foregroundColor(.continuumWarning)
+                .foregroundColor(.siloWarning)
 
             Text(String(format: "%.1f", value))
-                .font(.continuumCaption)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloCaption)
+                .foregroundColor(.siloOnSurface)
                 .fontWeight(.semibold)
 
             Text(source)
-                .font(.continuumSmall)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloSmall)
+                .foregroundColor(.siloSecondaryText)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(
-            Capsule().fill(Color.continuumSurfaceElevated)
+            Capsule().fill(Color.siloSurfaceElevated)
         )
     }
 }

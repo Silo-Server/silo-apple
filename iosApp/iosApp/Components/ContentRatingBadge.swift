@@ -8,9 +8,9 @@ struct ContentRatingBadge: View {
     var body: some View {
         if !rating.isEmpty {
             Text(rating)
-                .font(.continuumSmall)
+                .font(.siloSmall)
                 .fontWeight(.medium)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(

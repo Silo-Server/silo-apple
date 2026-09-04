@@ -78,7 +78,7 @@ class CollectionsViewModel {
         }
         error = nil
         do {
-            let response: CollectionsResponse = try await ContinuumAPI.shared.get("/api/v1/collections")
+            let response: CollectionsResponse = try await SiloAPI.shared.get("/api/v1/collections")
             ResponseCache.shared.set(response, for: CacheKey.collections)
             collections = response.collections ?? []
             groups = sortGroups(response.groups ?? [])
@@ -134,7 +134,7 @@ class CollectionsViewModel {
         guard !name.isEmpty else { return }
 
         do {
-            let _: UserCollection = try await ContinuumAPI.shared.post(
+            let _: UserCollection = try await SiloAPI.shared.post(
                 "/api/v1/collections",
                 body: CreateCollectionRequest(name: name, collectionType: "manual")
             )
@@ -152,7 +152,7 @@ class CollectionsViewModel {
 
     func deleteCollection(id: String) async {
         do {
-            try await ContinuumAPI.shared.delete("/api/v1/collections/\(id)")
+            try await SiloAPI.shared.delete("/api/v1/collections/\(id)")
             collections.removeAll { $0.id == id }
             rebuildSections()
             writeBackCache()
@@ -170,7 +170,7 @@ class CollectionsViewModel {
             return
         }
         do {
-            let created = try await ContinuumAPI.shared.createCollectionGroup(name: trimmed)
+            let created = try await SiloAPI.shared.createCollectionGroup(name: trimmed)
             groups = sortGroups(groups + [created])
             rebuildSections()
             writeBackCache()
@@ -187,7 +187,7 @@ class CollectionsViewModel {
             return
         }
         do {
-            let updated = try await ContinuumAPI.shared.renameCollectionGroup(id: id, name: trimmed)
+            let updated = try await SiloAPI.shared.renameCollectionGroup(id: id, name: trimmed)
             if let i = groups.firstIndex(where: { $0.id == id }) {
                 groups[i] = updated
             }
@@ -201,7 +201,7 @@ class CollectionsViewModel {
 
     func deleteGroup(id: String) async {
         do {
-            try await ContinuumAPI.shared.deleteCollectionGroup(id: id)
+            try await SiloAPI.shared.deleteCollectionGroup(id: id)
             groups.removeAll { $0.id == id }
             // Collections in the deleted group fall back to Ungrouped.
             collections = collections.map { c in
@@ -230,7 +230,7 @@ class CollectionsViewModel {
 
     func moveCollection(id: String, toGroupId targetGroupId: String?) async {
         do {
-            let updated = try await ContinuumAPI.shared.moveCollectionToGroup(id: id, groupId: targetGroupId)
+            let updated = try await SiloAPI.shared.moveCollectionToGroup(id: id, groupId: targetGroupId)
             if let i = collections.firstIndex(where: { $0.id == id }) {
                 collections[i] = updated
             }

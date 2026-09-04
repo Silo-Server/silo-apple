@@ -17,12 +17,12 @@ struct PhoneSectionHeader: View {
                     Text(label.uppercased())
                         .font(.system(size: 11, weight: .bold))
                         .tracking(1.6)
-                        .foregroundColor(.continuumOnSurface.opacity(0.55))
+                        .foregroundColor(.siloOnSurface.opacity(0.55))
                 }
 
                 Text(title)
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
             }
 
             Spacer(minLength: 8)
@@ -30,7 +30,7 @@ struct PhoneSectionHeader: View {
             if let trailingText, !trailingText.isEmpty {
                 Text(trailingText)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
     }

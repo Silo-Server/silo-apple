@@ -185,10 +185,10 @@ class ItemDetailViewModel {
             // These independent flags can load alongside the catalog detail
             // and related season/episode structure. They are intentionally
             // not on the critical path to the first painted hero.
-            async let favoriteResult: Bool? = try? await ContinuumAPI.shared.isFavorite(
+            async let favoriteResult: Bool? = try? await SiloAPI.shared.isFavorite(
                 contentId: contentId
             )
-            async let watchlistResult: Bool? = try? await ContinuumAPI.shared.isInWatchlist(
+            async let watchlistResult: Bool? = try? await SiloAPI.shared.isInWatchlist(
                 contentId: contentId
             )
             let userStateGeneration = userStateMutationGeneration
@@ -197,7 +197,7 @@ class ItemDetailViewModel {
             if coalescesMetadataRequests {
                 item = try await MetadataRequestPool.shared.itemDetail(contentId: contentId)
             } else {
-                item = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                item = try await SiloAPI.shared.itemDetail(contentId: contentId)
             }
             let enriched = await adoptDetail(
                 item,
@@ -457,7 +457,7 @@ class ItemDetailViewModel {
                         contentId: seriesId
                     )
                 } else {
-                    seriesDetail = try await ContinuumAPI.shared.itemDetail(
+                    seriesDetail = try await SiloAPI.shared.itemDetail(
                         contentId: seriesId
                     )
                 }
@@ -616,7 +616,7 @@ class ItemDetailViewModel {
             if coalescesMetadataRequest {
                 watchDetail = try await MetadataRequestPool.shared.watchDetail(contentId: contentId)
             } else {
-                watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+                watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId)
             }
             ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId))
             return applyingPlaybackMetadata(watchDetail, to: item)
@@ -726,12 +726,12 @@ class ItemDetailViewModel {
             request: { [weak self] in
                 let contentId = try self?.pinnedTrailerFetchContentId()
                 guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
-                return try await ContinuumAPI.shared.requestTrailersRefresh(contentId: contentId)
+                return try await SiloAPI.shared.requestTrailersRefresh(contentId: contentId)
             },
             fetchDetail: { [weak self] in
                 let contentId = try self?.pinnedTrailerFetchContentId()
                 guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
-                return try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                return try await SiloAPI.shared.itemDetail(contentId: contentId)
             }
         )
         trailerFetchStorage = coordinator
@@ -886,7 +886,7 @@ class ItemDetailViewModel {
             if coalescesMetadataRequest {
                 response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId)
             } else {
-                response = try await ContinuumAPI.shared.seasons(seriesId: seriesId)
+                response = try await SiloAPI.shared.seasons(seriesId: seriesId)
             }
             ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
             seasons = response.seasons.sortedForDisplay()
@@ -967,7 +967,7 @@ class ItemDetailViewModel {
                 ) { group in
                     for season in batch {
                         group.addTask {
-                            let response = try? await ContinuumAPI.shared.episodes(
+                            let response = try? await SiloAPI.shared.episodes(
                                 seriesId: seriesId,
                                 seasonNumber: season.seasonNumber
                             )
@@ -1120,7 +1120,7 @@ class ItemDetailViewModel {
                     seasonNumber: seasonNumber
                 )
             } else {
-                response = try await ContinuumAPI.shared.episodes(
+                response = try await SiloAPI.shared.episodes(
                     seriesId: seriesId,
                     seasonNumber: seasonNumber
                 )
@@ -1212,7 +1212,7 @@ class ItemDetailViewModel {
             let batchStates = await withTaskGroup(of: (String, Bool?).self) { group in
                 for episode in batch {
                     group.addTask {
-                        let isFavorite = try? await ContinuumAPI.shared.isFavorite(
+                        let isFavorite = try? await SiloAPI.shared.isFavorite(
                             contentId: episode.contentId
                         )
                         return (episode.contentId, isFavorite)
@@ -1254,9 +1254,9 @@ class ItemDetailViewModel {
         writeBackUserState(contentId: contentId)
         do {
             if isFavorite {
-                try await ContinuumAPI.shared.putVoid("/api/v1/favorites/\(contentId)")
+                try await SiloAPI.shared.putVoid("/api/v1/favorites/\(contentId)")
             } else {
-                try await ContinuumAPI.shared.delete("/api/v1/favorites/\(contentId)")
+                try await SiloAPI.shared.delete("/api/v1/favorites/\(contentId)")
             }
             invalidateRelatedCaches(contentId: contentId)
         } catch {
@@ -1272,9 +1272,9 @@ class ItemDetailViewModel {
         writeBackUserState(contentId: contentId)
         do {
             if inWatchlist {
-                try await ContinuumAPI.shared.putVoid("/api/v1/watchlist/\(contentId)")
+                try await SiloAPI.shared.putVoid("/api/v1/watchlist/\(contentId)")
             } else {
-                try await ContinuumAPI.shared.delete("/api/v1/watchlist/\(contentId)")
+                try await SiloAPI.shared.delete("/api/v1/watchlist/\(contentId)")
             }
             invalidateRelatedCaches(contentId: contentId)
         } catch {
@@ -1291,9 +1291,9 @@ class ItemDetailViewModel {
         isWatched.toggle()
         do {
             if isWatched {
-                try await ContinuumAPI.shared.postVoid("/api/v1/watched/\(contentId)")
+                try await SiloAPI.shared.postVoid("/api/v1/watched/\(contentId)")
             } else {
-                try await ContinuumAPI.shared.delete("/api/v1/watched/\(contentId)")
+                try await SiloAPI.shared.delete("/api/v1/watched/\(contentId)")
             }
             invalidateRelatedCaches(contentId: contentId)
         } catch {
@@ -1311,7 +1311,7 @@ class ItemDetailViewModel {
 
         let played = !(selectedSeason.userData?.played ?? false)
         do {
-            try await ContinuumAPI.shared.setWatched(
+            try await SiloAPI.shared.setWatched(
                 contentId: selectedSeason.contentId,
                 played: played
             )
@@ -1343,7 +1343,7 @@ class ItemDetailViewModel {
 
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
         do {
-            try await ContinuumAPI.shared.setWatched(contentId: contentId, played: played)
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
             if contentId == detail?.contentId {
                 isWatched = played
             }
@@ -1368,7 +1368,7 @@ class ItemDetailViewModel {
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> Bool {
         do {
-            try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             if contentId == detail?.contentId {
                 userStateMutationGeneration += 1
                 self.isFavorite = isFavorite

@@ -11,17 +11,17 @@ import SwiftUI
 /// invisible focus host behind `TVCircleActionButton`) — never with
 /// `.buttonStyle(.plain)` on tvOS,
 /// which still triggers the system highlight on `Button` bounds.
-struct ContinuumFlatButtonStyle: ButtonStyle {
+struct SiloFlatButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 }
 
-extension ButtonStyle where Self == ContinuumFlatButtonStyle {
+extension ButtonStyle where Self == SiloFlatButtonStyle {
     /// App-wide flat style that does not add any platform focus chrome.
-    static var continuumFlat: ContinuumFlatButtonStyle { .init() }
+    static var siloFlat: SiloFlatButtonStyle { .init() }
 }
 
 // MARK: - Ghost chip button style (shared)
@@ -42,7 +42,7 @@ private struct GhostChipBody: View {
 
     var body: some View {
         configuration.label
-            .foregroundStyle(isFocused ? Color.continuumBackground : Color.white.opacity(0.75))
+            .foregroundStyle(isFocused ? Color.siloBackground : Color.white.opacity(0.75))
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
             .background(
@@ -61,6 +61,6 @@ private struct GhostChipBody: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 }

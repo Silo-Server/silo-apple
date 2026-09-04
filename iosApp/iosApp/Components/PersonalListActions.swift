@@ -54,7 +54,7 @@ enum PersonalListSync {
     /// fallback; a fresher cached value for it wins (see `writeBack`).
     static func setFavorite(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
-            try await ContinuumAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
             writeBack(contentId: contentId, isFavorite: isFavorite, fallbackInWatchlist: inWatchlist)
             return true
         } catch {
@@ -64,7 +64,7 @@ enum PersonalListSync {
 
     static func setWatchlist(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
-            try await ContinuumAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
+            try await SiloAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
             writeBack(contentId: contentId, inWatchlist: inWatchlist, fallbackIsFavorite: isFavorite)
             return true
         } catch {

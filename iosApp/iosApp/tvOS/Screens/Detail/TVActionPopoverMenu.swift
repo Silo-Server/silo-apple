@@ -38,7 +38,7 @@ struct TVActionPopoverMenu: View {
     static let width: CGFloat = 560
     private static let maxRows = 7
     private static let shape = RoundedRectangle(
-        cornerRadius: ContinuumTheme.Skyline.dropdownCornerRadius,
+        cornerRadius: SiloTheme.Skyline.dropdownCornerRadius,
         style: .continuous
     )
 
@@ -47,7 +47,7 @@ struct TVActionPopoverMenu: View {
             header
             rows
         }
-        .padding(ContinuumTheme.Skyline.dropdownPadding)
+        .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: Self.width, alignment: .leading)
         // Native tvOS context-menu look: Liquid Glass with a dark tint so
         // the page shows through, plus a faint lip so the edge reads on
@@ -118,8 +118,8 @@ struct TVActionPopoverMenu: View {
 
     private var header: some View {
         Text(title.uppercased())
-            .font(.system(size: ContinuumTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-            .tracking(ContinuumTheme.Skyline.dropdownHeaderSize * 0.26)
+            .font(.system(size: SiloTheme.Skyline.dropdownHeaderSize, design: .monospaced))
+            .tracking(SiloTheme.Skyline.dropdownHeaderSize * 0.26)
             .foregroundStyle(Color.white.opacity(0.38))
             .lineLimit(1)
             .padding(.horizontal, 16)
@@ -226,7 +226,7 @@ private struct TVActionPopoverRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.system(size: ContinuumTheme.Skyline.dropdownRowTextSize, weight: .semibold))
+                    .font(.system(size: SiloTheme.Skyline.dropdownRowTextSize, weight: .semibold))
                     .lineLimit(1)
                 if let detail = item.detail, !detail.isEmpty {
                     Text(detail)
@@ -240,19 +240,19 @@ private struct TVActionPopoverRow: View {
         }
         .foregroundStyle(foreground)
         .opacity(item.isEnabled ? 1 : 0.4)
-        .padding(.horizontal, ContinuumTheme.Skyline.cascadeRowPaddingHorizontal)
+        .padding(.horizontal, SiloTheme.Skyline.cascadeRowPaddingHorizontal)
         .padding(.vertical, 13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: ContinuumTheme.Skyline.cascadeRowCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: SiloTheme.Skyline.cascadeRowCornerRadius, style: .continuous)
                 .fill(isHighlighted ? Color.white : Color.clear)
         )
-        .animation(reduceMotion ? nil : ContinuumTheme.springAnimation, value: isHighlighted)
+        .animation(reduceMotion ? nil : SiloTheme.springAnimation, value: isHighlighted)
         .accessibilityHidden(true)
     }
 
     private var foreground: Color {
-        isHighlighted ? .continuumBackground : .white.opacity(0.9)
+        isHighlighted ? .siloBackground : .white.opacity(0.9)
     }
 }
 
@@ -393,7 +393,7 @@ private struct TVActionPopoverHostModifier: ViewModifier {
                 }
                 .ignoresSafeArea()
                 .animation(
-                    reduceMotion ? nil : .easeOut(duration: ContinuumTheme.Skyline.cascadeOpenDuration),
+                    reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeOpenDuration),
                     value: requests.last?.id
                 )
             }

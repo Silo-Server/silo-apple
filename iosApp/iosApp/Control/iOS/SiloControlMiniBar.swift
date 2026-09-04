@@ -40,7 +40,7 @@ struct SiloControlMiniBar: View {
                                  ? "to \(targetName)"
                                  : "Playing on \(targetName)")
                                 .font(.caption)
-                                .foregroundStyle(Color.continuumSecondaryText)
+                                .foregroundStyle(Color.siloSecondaryText)
                                 .lineLimit(1)
                         }
                     }
@@ -72,7 +72,7 @@ struct SiloControlMiniBar: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, isInline ? 4 : 8)
                 .modifier(NowPlayingBarChrome(style: style))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -92,9 +92,9 @@ struct SiloControlMiniBar: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         } else {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.continuumSurfaceElevated)
+                .fill(Color.siloSurfaceElevated)
                 .frame(width: 34, height: 50)
-                .overlay { Image(systemName: "tv").foregroundStyle(Color.continuumSecondaryText) }
+                .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
         }
     }
 }

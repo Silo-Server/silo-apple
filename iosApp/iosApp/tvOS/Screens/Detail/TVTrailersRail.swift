@@ -141,17 +141,17 @@ private struct TrailerCardLabel: View {
                 if let secondaryLine {
                     Text(secondaryLine)
                         .font(.system(size: 17, weight: .medium))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }
             }
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         }
         .frame(width: cardWidth, alignment: .leading)
     }
 
     private var titleColor: Color {
-        isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
+        isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
     }
 
     /// `TrailerRailEntry.title` already falls back to this label when the
@@ -175,7 +175,7 @@ private struct TrailerCardLabel: View {
 
     private var thumbnail: some View {
         ZStack {
-            Color.continuumSurfaceElevated
+            Color.siloSurfaceElevated
                 .frame(width: cardWidth, height: thumbHeight)
 
             artwork
@@ -205,7 +205,7 @@ private struct TrailerCardLabel: View {
         case .local:
             Image(systemName: "film")
                 .font(.system(size: 48))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
                 .frame(width: cardWidth, height: thumbHeight)
         }
     }
@@ -253,16 +253,16 @@ struct TVTrailerStatusPill: View {
         HStack(spacing: 14) {
             if isFetching {
                 ProgressView()
-                    .tint(.continuumOnSurface)
+                    .tint(.siloOnSurface)
             } else {
                 Image(systemName: "info.circle")
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
             }
 
             Text(message)
                 .font(.system(size: 24, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .lineLimit(1)
         }
         .padding(.horizontal, 26)

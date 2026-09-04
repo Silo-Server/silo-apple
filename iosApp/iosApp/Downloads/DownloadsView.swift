@@ -38,7 +38,7 @@ struct DownloadsView: View {
                 content
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle(isSelecting ? "\(selection.count) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
@@ -64,7 +64,7 @@ struct DownloadsView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .continuumToolbarColorSchemeDark()
+        .siloToolbarColorSchemeDark()
     }
 
     // MARK: - Content
@@ -80,26 +80,26 @@ struct DownloadsView: View {
         VStack(spacing: 12) {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 44))
-                .foregroundColor(.continuumOnSurface.opacity(0.3))
+                .foregroundColor(.siloOnSurface.opacity(0.3))
             Text("No Downloads")
-                .font(.continuumSubheadline)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloSubheadline)
+                .foregroundColor(.siloOnSurface)
             Text("Downloaded movies and episodes appear here for offline viewing.")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, ContinuumTheme.largePadding)
+                .padding(.horizontal, SiloTheme.largePadding)
             Button {
                 router.switchTab(to: .libraries)
             } label: {
                 Text("Browse Libraries")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 10)
                     .background(
-                        Capsule().fill(Color.continuumChromeSelectedFill)
-                            .overlay(Capsule().stroke(Color.continuumChromeSelectedBorder, lineWidth: 1))
+                        Capsule().fill(Color.siloChromeSelectedFill)
+                            .overlay(Capsule().stroke(Color.siloChromeSelectedBorder, lineWidth: 1))
                     )
             }
             .buttonStyle(.plain)
@@ -236,16 +236,16 @@ struct DownloadsView: View {
         HStack(spacing: 12) {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 17))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 3) {
                 Text(subscription.seriesTitle ?? subscription.seriesId)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
                 Text(SubscriptionMode(rawValue: subscription.mode)?.displayName ?? subscription.mode)
                     .font(.system(size: 12))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
             Spacer(minLength: 8)
         }
@@ -253,10 +253,10 @@ struct DownloadsView: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.continuumSurfaceVariant)
+                .fill(Color.siloSurfaceVariant)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.continuumOutline, lineWidth: 1)
+                        .stroke(Color.siloOutline, lineWidth: 1)
                 )
         )
         .padding(.horizontal, 16)
@@ -274,11 +274,11 @@ struct DownloadsView: View {
             Text(text.uppercased())
                 .font(.system(size: 12.5, weight: .semibold))
                 .tracking(0.3)
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
             Spacer()
             Text("\(count)")
                 .font(.system(size: 12.5))
-                .foregroundColor(.continuumOnSurface.opacity(0.38))
+                .foregroundColor(.siloOnSurface.opacity(0.38))
         }
         .padding(.horizontal, 22)
         .padding(.top, 14)
@@ -323,7 +323,7 @@ struct DownloadsView: View {
                 .font(.system(size: 15))
                 .frame(maxWidth: .infinity)
                 .frame(height: 50)
-                .background(Color.continuumOnSurface)
+                .background(Color.siloOnSurface)
                 .foregroundColor(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }

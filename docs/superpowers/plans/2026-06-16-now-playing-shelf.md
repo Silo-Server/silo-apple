@@ -61,7 +61,7 @@ struct NowPlayingBarChrome: ViewModifier {
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.continuumOutline, lineWidth: 1)
+                        .strokeBorder(Color.siloOutline, lineWidth: 1)
                 )
         case .accessory:
             content
@@ -87,8 +87,8 @@ Then replace the chrome chain. Change:
                 .padding(.vertical, 8)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.continuumOutline, lineWidth: 1))
-                .foregroundStyle(Color.continuumOnSurface)
+                    .stroke(Color.siloOutline, lineWidth: 1))
+                .foregroundStyle(Color.siloOnSurface)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -101,7 +101,7 @@ to:
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .modifier(NowPlayingBarChrome(style: style))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -127,7 +127,7 @@ Then replace the chrome chain. Change:
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay {
                 RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color.continuumOutline, lineWidth: 1)
+                    .strokeBorder(Color.siloOutline, lineWidth: 1)
             }
             .overlay(alignment: .bottomLeading) {
 ```
@@ -289,7 +289,7 @@ git commit -m "cast(iOS): NowPlayingShelf + tab-bar accessory attachment"
 In `MainTabView.body`, delete the `.safeAreaInset` block that currently carries the two bars. Change:
 
 ```swift
-        .tint(.continuumOnSurface)
+        .tint(.siloOnSurface)
         #if !os(macOS)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             #if os(iOS)
@@ -305,7 +305,7 @@ In `MainTabView.body`, delete the `.safeAreaInset` block that currently carries 
 to:
 
 ```swift
-        .tint(.continuumOnSurface)
+        .tint(.siloOnSurface)
         #if !os(macOS)
         .fullScreenCover(isPresented: Binding(
 ```

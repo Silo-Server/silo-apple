@@ -363,7 +363,7 @@ actor DiagnosticsCoordinator {
 
     private let api: DiagnosticsAPI
     private let hostedAPI: HostedDiagnosticsAPI
-    private let continuumAPI: ContinuumAPI
+    private let siloAPI: SiloAPI
     private let consentStore: DiagnosticsConsentStore
     private let destinationStore: DiagnosticsDestinationStore
     private let pendingStore: PendingReportStore
@@ -396,7 +396,7 @@ actor DiagnosticsCoordinator {
     init(
         api: DiagnosticsAPI = .shared,
         hostedAPI: HostedDiagnosticsAPI = .shared,
-        continuumAPI: ContinuumAPI = .shared,
+        siloAPI: SiloAPI = .shared,
         consentStore: DiagnosticsConsentStore = .shared,
         destinationStore: DiagnosticsDestinationStore = .shared,
         pendingStore: PendingReportStore = .shared,
@@ -406,7 +406,7 @@ actor DiagnosticsCoordinator {
     ) {
         self.api = api
         self.hostedAPI = hostedAPI
-        self.continuumAPI = continuumAPI
+        self.siloAPI = siloAPI
         self.consentStore = consentStore
         self.destinationStore = destinationStore
         self.pendingStore = pendingStore
@@ -445,7 +445,7 @@ actor DiagnosticsCoordinator {
         }
 
         let status = try await api.getDiagnosticsStatus()
-        let user = try await continuumAPI.currentUser()
+        let user = try await siloAPI.currentUser()
         // Re-check the *stable* identity after the awaits: the active server
         // registry id plus the freshly fetched account user id. Comparing
         // these rather than raw access-token fingerprints means a transparent
@@ -510,7 +510,7 @@ actor DiagnosticsCoordinator {
         }
 
         async let capabilitiesRequest = hostedAPI.capabilities()
-        async let currentUserRequest = continuumAPI.currentUser()
+        async let currentUserRequest = siloAPI.currentUser()
         let (capabilities, user) = try await (capabilitiesRequest, currentUserRequest)
         guard statusRefreshEpoch.isCurrent(requestGeneration, destination: .hosted),
               requestServerRegistryID == ServerRegistry.activeServerIDSnapshot,
@@ -1632,7 +1632,7 @@ actor DiagnosticsCoordinator {
         }
         let serverRegistryID = requestCredentialIdentity.serverId
 
-        if let user = try? await continuumAPI.currentUser(),
+        if let user = try? await siloAPI.currentUser(),
            Self.hostedCredentialIdentityMatches(
                expected: requestCredentialIdentity,
                current: await TokenStore.shared.refreshAccountIdentity(),

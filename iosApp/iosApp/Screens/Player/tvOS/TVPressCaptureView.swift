@@ -556,16 +556,16 @@ final class DirectionalPressGestureUIView: UIView, UIGestureRecognizerDelegate {
 
     private func gestureName(for direction: TVPressCaptureView.ArrowDirection) -> String {
         switch direction {
-        case .left: return "continuum.leftPress"
-        case .right: return "continuum.rightPress"
-        case .up, .down: return "continuum.otherPress"
+        case .left: return "silo.leftPress"
+        case .right: return "silo.rightPress"
+        case .up, .down: return "silo.otherPress"
         }
     }
 
     private func direction(for recognizer: UIGestureRecognizer) -> TVPressCaptureView.ArrowDirection? {
         switch recognizer.name {
-        case "continuum.leftPress": return .left
-        case "continuum.rightPress": return .right
+        case "silo.leftPress": return .left
+        case "silo.rightPress": return .right
         default: return nil
         }
     }

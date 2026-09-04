@@ -43,7 +43,7 @@ struct TVServerSetupView: View {
             .padding(.bottom, 64)
         }
         .ignoresSafeArea()
-        .animation(ContinuumTheme.springAnimation, value: isPairing)
+        .animation(SiloTheme.springAnimation, value: isPairing)
         .task { startAdvertising() }
         .onChange(of: coordinator.state) { _, state in
             // Only accept a new phone once the panel is back to the idle
@@ -105,10 +105,10 @@ struct TVServerSetupView: View {
             VStack(spacing: 14) {
                 AuroraEyebrow(text: "Connect", centered: true)
                 Text("Connect this Apple TV")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                 Text("Use your iPhone, or enter the server address with the remote.")
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
             }
         }
@@ -135,10 +135,10 @@ struct TVServerSetupView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
             Spacer(minLength: 20)
             Text("Looking for an iPhone…")
-                .font(.continuumHeadline)
+                .font(.siloHeadline)
                 .foregroundStyle(Color.auroraInk)
             Text("Open Silo on an iPhone connected to the same Wi-Fi. Accept the setup card and Silo will securely bring over the server and account.")
-                .font(.continuumBody)
+                .font(.siloBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
@@ -184,7 +184,7 @@ struct TVServerSetupView: View {
     private var manualCard: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Enter the server address")
-                .font(.continuumHeadline)
+                .font(.siloHeadline)
                 .foregroundStyle(Color.auroraInk)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -200,11 +200,11 @@ struct TVServerSetupView: View {
             }
 
             Label("Secure HTTPS is tried automatically.", systemImage: "lock.shield")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .foregroundStyle(Color.auroraInkSecondary)
 
             Button {
-                withAnimation(ContinuumTheme.springAnimation) {
+                withAnimation(SiloTheme.springAnimation) {
                     viewModel.showsAdvancedOptions.toggle()
                 }
             } label: {
@@ -243,7 +243,7 @@ struct TVServerSetupView: View {
                     Image(systemName: "exclamationmark.circle.fill")
                         .foregroundStyle(Color.requestRose)
                     Text(error)
-                        .font(.continuumCaption)
+                        .font(.siloCaption)
                         .foregroundStyle(Color.requestRose)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -265,7 +265,7 @@ struct TVServerSetupView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .auroraGlass(cornerRadius: 28, emphasized: true)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
-        .animation(ContinuumTheme.springAnimation, value: viewModel.showsAdvancedOptions)
+        .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
     }
 
     private var protocolSegments: some View {
@@ -280,7 +280,7 @@ struct TVServerSetupView: View {
                         isFocused: focusedField == .scheme(scheme)
                     )
                 }
-                .buttonStyle(.continuumFlat)
+                .buttonStyle(.siloFlat)
                 .focused($focusedField, equals: .scheme(scheme))
             }
         }

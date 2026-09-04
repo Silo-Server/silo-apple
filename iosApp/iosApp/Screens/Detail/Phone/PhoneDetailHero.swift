@@ -204,7 +204,7 @@ private struct PhoneDetailParallaxArtwork: View {
         if let url, !url.isEmpty {
             AsyncImageView(url: url, thumbhash: thumbhash, contentMode: .fill)
         } else {
-            Color.continuumSurface
+            Color.siloSurface
         }
     }
 
@@ -307,7 +307,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 creditBlock(alignment: .leading)
                 belowOverview()
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.top, 8)
             .padding(.bottom, 12)
         }
@@ -358,7 +358,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     Text(eyebrow.uppercased())
                         .font(.system(size: 11, weight: .bold))
                         .tracking(1.2)
-                        .foregroundStyle(Color.continuumOnSurface.opacity(0.7))
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                 }
 
                 titleBlock(textAlignment: .leading, logoHeight: 122)
@@ -441,7 +441,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 contentMode: .fill
             )
         } else {
-            Color.continuumSurface
+            Color.siloSurface
         }
     }
 
@@ -522,7 +522,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private func metadataText(textAlignment: TextAlignment) -> some View {
         Text(metadataTokens.joined(separator: "  ·  "))
             .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(Color.continuumOnSurface.opacity(0.84))
+            .foregroundStyle(Color.siloOnSurface.opacity(0.84))
             .multilineTextAlignment(textAlignment)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -534,12 +534,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             Text(ratingChip)
                 .font(.system(size: 11, weight: .heavy))
                 .tracking(0.7)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.continuumOnSurface.opacity(0.55), lineWidth: 1)
+                        .stroke(Color.siloOnSurface.opacity(0.55), lineWidth: 1)
                 )
         }
     }
@@ -560,7 +560,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         if let overview, !overview.isEmpty {
             Text(overview)
                 .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(Color.continuumOnSurface.opacity(0.80))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.80))
                 .lineSpacing(3)
                 .lineLimit(showFullOverview ? nil : 3)
                 .multilineTextAlignment(.leading)
@@ -572,7 +572,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                         showFullOverview.toggle()
                     }
                 }
@@ -584,7 +584,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         if let creditText, !creditText.isEmpty {
             Text(creditText)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.continuumOnSurface.opacity(0.58))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.58))
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: alignment)
         }
@@ -592,14 +592,14 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var morePill: some View {
         Button {
-            withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+            withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                 showFullOverview = true
             }
         } label: {
             Text("MORE")
                 .font(.system(size: 10, weight: .heavy))
                 .tracking(0.6)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(Capsule().fill(Color.black.opacity(0.54)))
@@ -623,7 +623,7 @@ private struct PhoneHeroTitle: View {
         VStack(spacing: 4) {
             Text(parts.primary)
                 .font(.system(size: 32, weight: .heavy))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
@@ -631,7 +631,7 @@ private struct PhoneHeroTitle: View {
                 Text(subtitle.uppercased())
                     .font(.system(size: 13, weight: .heavy))
                     .tracking(1.2)
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.80))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.80))
                     .lineLimit(2)
                     .multilineTextAlignment(textAlignment)
             }
@@ -649,12 +649,12 @@ private struct PhoneEpisodeHierarchyTitle: View {
         VStack(spacing: 6) {
             Text(seriesTitle)
                 .font(.system(size: 32, weight: .heavy))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
             Text(episodeTitle)
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface.opacity(0.90))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.90))
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
         }
@@ -685,7 +685,7 @@ private struct PhoneEpisodeLogoTitle: View {
 
             Text(episodeTitle)
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface.opacity(0.90))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.90))
                 .lineLimit(2)
                 .multilineTextAlignment(textAlignment)
         }

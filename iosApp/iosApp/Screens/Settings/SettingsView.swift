@@ -59,10 +59,10 @@ struct SettingsView: View {
             aboutSection
             signOutSection
         }
-        .continuumGroupedListStyle()
+        .siloGroupedListStyle()
         .navigationTitle("Settings")
-        .continuumNavigationTitleDisplayMode(.large)
-        .continuumToolbarColorSchemeDark()
+        .siloNavigationTitleDisplayMode(.large)
+        .siloToolbarColorSchemeDark()
         .task {
             await viewModel.loadSettings()
         }
@@ -94,12 +94,12 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(displayName)
                             .font(.title3.weight(.semibold))
-                            .foregroundStyle(Color.continuumOnSurface)
+                            .foregroundStyle(Color.siloOnSurface)
                             .lineLimit(1)
 
                         Text(subtitleLine)
                             .font(.footnote)
-                            .foregroundStyle(Color.continuumSecondaryText)
+                            .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
                     }
 
@@ -115,7 +115,7 @@ struct SettingsView: View {
         } footer: {
             if viewModel.userInfo?.isAdmin == true {
                 Text("Signed in as an administrator.")
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
         }
     }
@@ -251,10 +251,10 @@ struct SettingsView: View {
         Section("About") {
             LabeledContent {
                 Text(versionString)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             } label: {
                 Text("Version")
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
             }
 
             Link("Privacy Policy", destination: SiloLegalLinks.privacyPolicy)
@@ -318,13 +318,13 @@ struct SettingsRowLabel: View {
                 }
 
             Text(title)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
 
             Spacer(minLength: 8)
 
             if let value {
                 Text(value)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
             }
         }
@@ -338,7 +338,7 @@ struct SettingsRowChevron: View {
     var body: some View {
         Image(systemName: "chevron.right")
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(Color.continuumSecondaryText.opacity(0.6))
+            .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
             .accessibilityHidden(true)
     }
 }

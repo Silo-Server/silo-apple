@@ -219,7 +219,7 @@ struct TVPlayerScrubber: View {
             .frame(height: Self.trackStackHeight, alignment: .center)
         }
         .frame(height: Self.trackStackHeight)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         // Deliberately no animation on `progressFraction` — it animated every
         // tick of the playhead AND every transition between scrub preview and
         // live position, which turned any state drift (keyframe snapping,
@@ -292,7 +292,7 @@ struct TVPlayerScrubber: View {
         .padding(.vertical, 7)
         .background(Capsule(style: .continuous).fill(.white))
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: timelineAutoSeekRate)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: timelineAutoSeekRate)
     }
 
     // MARK: - Input

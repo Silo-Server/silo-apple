@@ -16,7 +16,7 @@ attacking the two current UX pain points:
 
 Every screen is a 1920×1080 HTML/CSS mockup (`shots/` holds rendered PNGs).
 Visual DNA (OLED black, monochrome, white-fill focus grammar, 12pt radii) is kept
-from the current `ContinuumTheme`; each direction varies the chrome, not the brand.
+from the current `SiloTheme`; each direction varies the chrome, not the brand.
 
 ## A — Skyline (`a1`–`a3`): content-type-first top bar
 

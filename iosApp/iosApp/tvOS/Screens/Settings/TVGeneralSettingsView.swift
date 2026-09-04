@@ -357,7 +357,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
                         HStack {
                             Spacer()
                             ProgressView()
-                                .tint(.continuumOnSurface)
+                                .tint(.siloOnSurface)
                             Spacer()
                         }
                         .frame(height: 160)
@@ -387,7 +387,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
                 .padding(.vertical, 36)
             }
             .navigationTitle("Home Sections")
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .background(Color.siloBackground.ignoresSafeArea())
             .task {
                 await loadSections()
             }
@@ -417,13 +417,13 @@ private struct TVHomeSectionsCustomizationSheet: View {
 
                 Text(isEditing ? "Move rows into your preferred order." : "Choose which rows appear on Home.")
                     .font(.system(size: 18))
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
 
             Spacer(minLength: 24)
 
             Button(isEditing ? "Done Editing" : "Edit") {
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                     isEditing.toggle()
                 }
             }
@@ -439,11 +439,11 @@ private struct TVHomeSectionsCustomizationSheet: View {
         .padding(.vertical, 16)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumChromeRestingFill)
+                .fill(Color.siloChromeRestingFill)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
         }
         .focusSection()
     }
@@ -460,7 +460,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
 
                 Text("\(section.items.count) item\(section.items.count == 1 ? "" : "s")")
                     .font(.system(size: 18))
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
             .opacity(isVisible ? 1 : 0.42)
 
@@ -491,7 +491,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
             }
 
             Button {
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                     preferences.setVisible(!isVisible, sectionId: section.id)
                 }
             } label: {
@@ -506,11 +506,11 @@ private struct TVHomeSectionsCustomizationSheet: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumChromeRestingFill)
+                .fill(Color.siloChromeRestingFill)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
         }
     }
 
@@ -528,7 +528,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
         } else {
             retarget = nil
         }
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             preferences.setOrder(ids)
             if let retarget {
                 focusedControl = retarget
@@ -589,7 +589,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
         Text(title)
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
             .tracking(2)
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
     }
 }
 
@@ -621,27 +621,27 @@ private struct TVHomeSectionsControlButtonBody: View {
             .frame(minWidth: 64, minHeight: 64)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isFocused ? Color.continuumOnSurface : Color.continuumSurfaceElevated.opacity(0.9))
+                    .fill(isFocused ? Color.siloOnSurface : Color.siloSurfaceElevated.opacity(0.9))
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(
-                        isFocused ? Color.clear : Color.continuumChromeRestingBorder,
+                        isFocused ? Color.clear : Color.siloChromeRestingBorder,
                         lineWidth: 1
                     )
             }
             .scaleEffect(configuration.isPressed ? 0.97 : (isFocused ? 1.04 : 1))
             .shadow(
-                color: isFocused ? Color.continuumAccent.opacity(0.16) : .clear,
+                color: isFocused ? Color.siloAccent.opacity(0.16) : .clear,
                 radius: 16
             )
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     private var foreground: Color {
-        guard isEnabled else { return Color.continuumSecondaryText.opacity(0.5) }
-        return isFocused ? .continuumBackground : .continuumOnSurface
+        guard isEnabled else { return Color.siloSecondaryText.opacity(0.5) }
+        return isFocused ? .siloBackground : .siloOnSurface
     }
 }
 
@@ -745,7 +745,7 @@ private struct TVMenuCustomizationSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .background(Color.siloBackground.ignoresSafeArea())
         }
     }
 
@@ -869,11 +869,11 @@ private struct TVMenuCustomizationSheet: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumChromeRestingFill)
+                .fill(Color.siloChromeRestingFill)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
         }
     }
 
@@ -927,7 +927,7 @@ private struct TVMenuCustomizationSheet: View {
         Text(title)
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
             .tracking(2)
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
     }
 }
 #endif

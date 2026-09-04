@@ -1,6 +1,6 @@
 //
 //  SubtitleDisplayOrder.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  Canonical language grouping + format-priority ordering for subtitle
 //  track lists, shared by every surface that lists subtitles:

@@ -336,12 +336,12 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                 Spacer()
                 Text("Current season")
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
             if isLoadingEpisodes {
                 HStack {
                     Spacer()
-                    ProgressView().tint(.continuumOnSurface).padding()
+                    ProgressView().tint(.siloOnSurface).padding()
                     Spacer()
                 }
             } else {

@@ -14,7 +14,7 @@
 
 ## Decisions locked in during planning (read before starting)
 
-1. **Pairing networking is isolated from `HTTPClient`.** `HTTPClient`/`ContinuumAPI`/`TokenStore` operate against a single *active* server and have no per-server request API. Rather than rework that, all device-auth calls during pairing go through a new `PairingDeviceAPI` (plain `URLSession`, explicit base URL, optional bearer). This keeps pairing from disturbing the running app's active server.
+1. **Pairing networking is isolated from `HTTPClient`.** `HTTPClient`/`SiloAPI`/`TokenStore` operate against a single *active* server and have no per-server request API. Rather than rework that, all device-auth calls during pairing go through a new `PairingDeviceAPI` (plain `URLSession`, explicit base URL, optional bearer). This keeps pairing from disturbing the running app's active server.
 2. **The phone displays the server-authoritative match code.** After receiving a `userCode` over the channel, the phone calls `GET /auth/device?code=<userCode>` (`PairingDeviceAPI.lookup`) and shows the match code **the server** returns for that code — never the match code from the channel. This is what makes the visual compare resistant to a channel MITM (design spec §6).
 3. **Persist-on-success.** The TV holds a pushed server URL as a *pending candidate* and writes it to `ServerRegistry` / `TokenStore` only after the poll returns tokens. Any cancel/fail/timeout/drop discards it (design spec §5/§6/§7).
 4. **Tests.** The repo has no working XCTest target (the lone `iosApp/Tests/*.swift` file is an orphaned `@main` + `precondition()` script). Per CLAUDE.md ("focused tests only for critical or high-risk behavior") we unit-test only the **pure, dependency-free** logic — `PairingProtocol` and `PairingFrame` — with standalone `swiftc`-compiled `precondition()` programs that mirror the existing pattern. The stateful coordinators are structured against injected protocols and verified by the **manual LAN end-to-end test** (Task 14).
@@ -818,7 +818,7 @@ final class ReceiverPairingCoordinator {
     /// True while `pollTask` is active. The protocol is one-server-at-a-time;
     /// an overlapping PushServer is ignored.
     private var isPolling = false
-    private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.receiver")
+    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.receiver")
 
     /// - Parameter onAuthenticated: called on the main actor after at least
     ///   one server is signed in, to advance the router to profile selection.
@@ -979,7 +979,7 @@ import OSLog
 final class TVPairingAdvertiser {
     private var listener: NWListener?
     private var busy = false
-    private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.advertiser")
+    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.advertiser")
 
     /// - Parameter onConnection: called on the main actor with an opened
     ///   session + its inbound stream for the coordinator to drive.
@@ -1166,7 +1166,7 @@ final class CompanionPairingCoordinator {
     private var confirmed = false
     private var signedIn: [String] = []
     private var failed: [String] = []
-    private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.companion")
+    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.companion")
 
     init(api: PairingDeviceAPI = PairingDeviceAPI(), session: PairingSession, stream: AsyncThrowingStream<PairingMessage, Error>) {
         self.api = api
@@ -1631,7 +1631,7 @@ git commit --allow-empty -m "Verify companion pairing end-to-end on LAN"
 
 ## Self-Review (completed during planning)
 
-**Spec coverage:** §4 components → PairingProtocol (T2), PairingSession+frame (T4/T6), ContinuumAPI approve/lookup → PairingDeviceAPI (T7), Receiver coordinator+advertiser+UI (T8/T9), Companion coordinator+browser+banner+view (T10–T13). §5 flow + confirm-once → T10. §6 persist-on-success → T8; server-authoritative match code → T10; opportunistic TLS → T6. §7 edge cases → coordinators + T14. §8 Info.plist/permissions → T1. §9 testing → T3/T5 (pure logic) + T14 (manual). All spec sections map to a task.
+**Spec coverage:** §4 components → PairingProtocol (T2), PairingSession+frame (T4/T6), SiloAPI approve/lookup → PairingDeviceAPI (T7), Receiver coordinator+advertiser+UI (T8/T9), Companion coordinator+browser+banner+view (T10–T13). §5 flow + confirm-once → T10. §6 persist-on-success → T8; server-authoritative match code → T10; opportunistic TLS → T6. §7 edge cases → coordinators + T14. §8 Info.plist/permissions → T1. §9 testing → T3/T5 (pure logic) + T14 (manual). All spec sections map to a task.
 
 **Type consistency:** `PairingMessage` cases and field names are identical across T2 (definition), T8/T10 (producers/consumers). `PairingSession.open()` returns `AsyncThrowingStream<PairingMessage, Error>` and is consumed with that exact type in T8–T13. `PairingDeviceAPI` method names (`start/poll/lookup/approve`) match their call sites in T8/T10. `ServerEntry`, `ServerRegistry.{normalize,serverId,addOrUpdate,switchTo,sortedEntries}`, `TokenStore.{getAccessToken(for:),saveTokens,switchActiveServer,setServerUrl}`, `AppRouter.showProfileSelection()`, and `AppleDeviceIdentity.current.{id,name,platform}` all match the verbatim signatures extracted from the codebase.
 

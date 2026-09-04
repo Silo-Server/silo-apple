@@ -3,7 +3,7 @@
 //  SiloTests
 //
 //  State-machine tests for `TrailerFetchCoordinator` driven entirely by
-//  scripted closures (the `AIJobPollerTests` approach): no `ContinuumAPI`,
+//  scripted closures (the `AIJobPollerTests` approach): no `SiloAPI`,
 //  no network, no timers longer than a few milliseconds. Covers each of the
 //  server's three outcomes, the "found" detection, exhaustion via the
 //  settle counter, and `stop()` mid-poll.

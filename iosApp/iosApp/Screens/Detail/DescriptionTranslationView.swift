@@ -103,7 +103,7 @@ struct DescriptionTranslationView: View {
             Text("Translate")
         }
         .font(.subheadline.weight(.semibold))
-        .foregroundStyle(Color.continuumPrimary)
+        .foregroundStyle(Color.siloPrimary)
     }
 
     private func startTranslation(targetLanguage: String) {

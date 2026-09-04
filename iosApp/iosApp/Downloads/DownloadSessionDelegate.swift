@@ -25,7 +25,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     static let sessionIdentifier = "com.continuum.play.downloads"
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Downloads"
     )
 

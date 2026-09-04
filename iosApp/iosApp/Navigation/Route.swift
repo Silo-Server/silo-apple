@@ -1,6 +1,6 @@
 import Foundation
 
-/// All navigable destinations in the Continuum app.
+/// All navigable destinations in the Silo app.
 enum Route: Hashable {
     // Auth flow
     case serverSetup

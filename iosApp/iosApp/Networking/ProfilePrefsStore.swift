@@ -1,6 +1,6 @@
 //
 //  ProfilePrefsStore.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  In-memory cache of the signed-in profile's preferred subtitle
 //  language, hydrated lazily on first read. The detail-page subtitle

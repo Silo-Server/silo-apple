@@ -96,7 +96,7 @@ class BrowseViewModel {
                     limit: pageSize,
                     includeType: false
                 )
-                response = try await ContinuumAPI.shared.catalog(query: query)
+                response = try await SiloAPI.shared.catalog(query: query)
             }
             // Discard if another reset superseded us while we awaited.
             guard myGeneration == generation else { return }
@@ -174,7 +174,7 @@ class BrowseViewModel {
             includeTotal: true,
             includeType: false
         )
-        let response: CatalogResponse? = try? await ContinuumAPI.shared.catalog(query: query)
+        let response: CatalogResponse? = try? await SiloAPI.shared.catalog(query: query)
         return response?.total
     }
 

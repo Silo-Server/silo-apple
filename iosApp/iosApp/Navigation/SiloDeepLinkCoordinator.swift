@@ -10,8 +10,8 @@ import Foundation
 /// Authentication and route validation remain owned by `ContentView`.
 @MainActor
 @Observable
-final class ContinuumDeepLinkCoordinator {
-    static let shared = ContinuumDeepLinkCoordinator()
+final class SiloDeepLinkCoordinator {
+    static let shared = SiloDeepLinkCoordinator()
 
     private(set) var pendingURL: URL?
 

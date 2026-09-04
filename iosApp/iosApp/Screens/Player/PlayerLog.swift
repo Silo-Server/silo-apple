@@ -1,6 +1,6 @@
 //
 //  PlayerLog.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Single emission point for `[CMP-…]` player-pipeline trace lines.
 //

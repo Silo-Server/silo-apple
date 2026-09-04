@@ -618,7 +618,7 @@ final class TVFocusMarqueeModel {
     private(set) var enrichment: TVMarqueeEnrichment?
     /// Dominant-color wash behind the backdrop, sampled per displayed
     /// backdrop (same palette pipeline the hero carousel used).
-    private(set) var tintColor: Color = .continuumBackground
+    private(set) var tintColor: Color = .siloBackground
 
     /// Backdrop art for the root hero. Episodes need their detail-level series
     /// backdrop, and any item missing a section backdrop gets one chance to
@@ -728,7 +728,7 @@ final class TVFocusMarqueeModel {
         }
         loadEnrichment(for: candidate, deferNetwork: true)
         backdropTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(ContinuumTheme.Skyline.marqueeRestDebounceMilliseconds))
+            try? await Task.sleep(for: .milliseconds(SiloTheme.Skyline.marqueeRestDebounceMilliseconds))
             guard !Task.isCancelled, let self,
                   self.isActive, self.content == candidate else { return }
             self.rest(on: candidate)
@@ -836,7 +836,7 @@ final class TVFocusMarqueeModel {
         backdropHoldCapElapsed = false
         backdropHoldCapTask = Task { [weak self] in
             try? await Task.sleep(
-                for: .milliseconds(ContinuumTheme.Skyline.marqueeBackdropHoldCapMilliseconds)
+                for: .milliseconds(SiloTheme.Skyline.marqueeBackdropHoldCapMilliseconds)
             )
             guard !Task.isCancelled, let self, self.isBackdropDeferred else { return }
             self.backdropHoldCapElapsed = true
@@ -865,7 +865,7 @@ final class TVFocusMarqueeModel {
             sampleTintIfNeeded(for: artwork.url)
         } else if enrichmentState.permitsFallback {
             displayedArtwork = nil
-            tintColor = .continuumBackground
+            tintColor = .siloBackground
             tintTask?.cancel()
             lastSampledTintURL = nil
         }
@@ -892,7 +892,7 @@ final class TVFocusMarqueeModel {
 
     private static func waitForEnrichmentRest(_ deferred: Bool) async -> Bool {
         if deferred {
-            try? await Task.sleep(for: .milliseconds(ContinuumTheme.Skyline.marqueeRestDebounceMilliseconds))
+            try? await Task.sleep(for: .milliseconds(SiloTheme.Skyline.marqueeRestDebounceMilliseconds))
         }
         return !Task.isCancelled
     }
@@ -1139,22 +1139,22 @@ struct TVFocusMarquee: View {
 
         var bottomInset: CGFloat {
             switch self {
-            case .home: ContinuumTheme.Skyline.marqueeBottomInsetHome
-            case .library: ContinuumTheme.Skyline.marqueeBottomInsetLibrary
+            case .home: SiloTheme.Skyline.marqueeBottomInsetHome
+            case .library: SiloTheme.Skyline.marqueeBottomInsetLibrary
             }
         }
 
         var titleSize: CGFloat {
             switch self {
-            case .home: ContinuumTheme.Skyline.marqueeTitleSizeHome
-            case .library: ContinuumTheme.Skyline.marqueeTitleSizeLibrary
+            case .home: SiloTheme.Skyline.marqueeTitleSizeHome
+            case .library: SiloTheme.Skyline.marqueeTitleSizeLibrary
             }
         }
 
         var metaSize: CGFloat {
             switch self {
-            case .home: ContinuumTheme.Skyline.marqueeMetaSizeHome
-            case .library: ContinuumTheme.Skyline.marqueeMetaSizeLibrary
+            case .home: SiloTheme.Skyline.marqueeMetaSizeHome
+            case .library: SiloTheme.Skyline.marqueeMetaSizeLibrary
             }
         }
 
@@ -1162,8 +1162,8 @@ struct TVFocusMarquee: View {
         /// scale, so a logo never pushes the block past the row slot.
         var logoMaxHeight: CGFloat {
             switch self {
-            case .home: ContinuumTheme.Skyline.marqueeLogoMaxHeightHome
-            case .library: ContinuumTheme.Skyline.marqueeLogoMaxHeightLibrary
+            case .home: SiloTheme.Skyline.marqueeLogoMaxHeightHome
+            case .library: SiloTheme.Skyline.marqueeLogoMaxHeightLibrary
             }
         }
     }
@@ -1192,7 +1192,7 @@ struct TVFocusMarquee: View {
             maxHeight: .infinity,
             alignment: .bottomLeading
         )
-        .padding(.leading, ContinuumTheme.Skyline.safeAreaX)
+        .padding(.leading, SiloTheme.Skyline.safeAreaX)
         .padding(.bottom, scale.bottomInset)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .allowsHitTesting(false)
@@ -1205,7 +1205,7 @@ struct TVFocusMarquee: View {
         .accessibilityAddTraits(.updatesFrequently)
         .task(id: content?.id) {
             guard let content, UIAccessibility.isVoiceOverRunning else { return }
-            try? await Task.sleep(for: .milliseconds(ContinuumTheme.Skyline.marqueeRestDebounceMilliseconds))
+            try? await Task.sleep(for: .milliseconds(SiloTheme.Skyline.marqueeRestDebounceMilliseconds))
             guard !Task.isCancelled else { return }
             announce(content)
         }
@@ -1296,18 +1296,18 @@ private struct TVMarqueeBlock: View {
 
             if let synopsis = content.synopsis, !synopsis.isEmpty {
                 Text(synopsis)
-                    .font(.system(size: ContinuumTheme.Skyline.marqueeSynopsisSize, weight: .regular))
+                    .font(.system(size: SiloTheme.Skyline.marqueeSynopsisSize, weight: .regular))
                     .lineSpacing(6)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(synopsisLineLimit)
-                    .frame(maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
+                    .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
             }
 
             detailLine
 
             badgeLine
         }
-        .frame(maxWidth: ContinuumTheme.Skyline.marqueeContentWidth, alignment: .leading)
+        .frame(maxWidth: SiloTheme.Skyline.marqueeContentWidth, alignment: .leading)
         .onAppear { loadLogoIfCached() }
         .onDisappear {
             logoTask?.cancel()
@@ -1341,14 +1341,14 @@ private struct TVMarqueeBlock: View {
                 .font(.system(size: scale.metaSize, weight: .medium))
                 .lineLimit(1)
                 .opacity(0)
-                .frame(maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
+                .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
                 .overlay(alignment: .leading) {
                     if let line = enrichment?.detailLine, !line.isEmpty {
                         Text(line)
                             .font(.system(size: scale.metaSize, weight: .medium))
-                            .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
                             .lineLimit(1)
-                            .frame(maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
+                            .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
                             .transition(.identity)
                     }
                 }
@@ -1362,7 +1362,7 @@ private struct TVMarqueeBlock: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(
-                    maxWidth: ContinuumTheme.Skyline.marqueeLogoMaxWidth,
+                    maxWidth: SiloTheme.Skyline.marqueeLogoMaxWidth,
                     maxHeight: scale.logoMaxHeight,
                     alignment: .leading
                 )
@@ -1394,7 +1394,7 @@ private struct TVMarqueeBlock: View {
                 if !displayedMetaParts.isEmpty {
                     Text(displayedMetaParts.joined(separator: " · "))
                         .font(.system(size: scale.metaSize, weight: .medium))
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                         .lineLimit(1)
                 }
             }
@@ -1402,7 +1402,7 @@ private struct TVMarqueeBlock: View {
             // natural width leaves only the stack spacing before the text.
             .frame(height: 27, alignment: .leading)
             .frame(
-                maxWidth: ContinuumTheme.Skyline.marqueeSynopsisMaxWidth,
+                maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth,
                 alignment: .leading
             )
         }
@@ -1449,14 +1449,14 @@ private struct TVMarqueeBlock: View {
 
     private func badgeChip(_ label: String) -> some View {
         Text(label)
-            .font(.system(size: ContinuumTheme.Skyline.marqueeBadgeSize, weight: .semibold))
-            .tracking(ContinuumTheme.Skyline.marqueeBadgeSize * 0.08)
+            .font(.system(size: SiloTheme.Skyline.marqueeBadgeSize, weight: .semibold))
+            .tracking(SiloTheme.Skyline.marqueeBadgeSize * 0.08)
             .foregroundStyle(Color.white.opacity(0.92))
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.continuumChromeRestingFill)
+                    .fill(Color.siloChromeRestingFill)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 6)

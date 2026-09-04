@@ -1,6 +1,6 @@
 //
 //  SystemCaptionSelectionPreferences.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  Read-only bridge for the non-visual half of Apple's Subtitles &
 //  Captioning preferences. Silo never writes these values: the active

@@ -12,8 +12,8 @@ struct ProfileAvatarView: View {
     var imageUrl: String? = nil
     let name: String
     var size: CGFloat
-    var backgroundColor: Color = .continuumSurfaceVariant
-    var textColor: Color = .continuumOnSurface
+    var backgroundColor: Color = .siloSurfaceVariant
+    var textColor: Color = .siloOnSurface
     @State private var loadedImageURL: String?
 
     var body: some View {
@@ -56,7 +56,7 @@ struct ProfileAvatarView: View {
         } else {
             Image(systemName: "person.fill")
                 .font(.system(size: size * 0.36))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
         }
     }
 

@@ -4,7 +4,7 @@ import Foundation
 ///
 /// This is intentionally not a response cache. A completed flight is removed,
 /// failures are retryable, and mutation/polling code can keep using
-/// `ContinuumAPI` directly when it requires a new server read.
+/// `SiloAPI` directly when it requires a new server read.
 actor MetadataSingleFlight<Key: Hashable & Sendable, Value> {
     private struct Flight {
         let task: Task<Value, Error>
@@ -76,7 +76,7 @@ actor MetadataSingleFlight<Key: Hashable & Sendable, Value> {
 /// profile/server transition cannot join a request dispatched for the prior
 /// identity. Callers whose freshness depends on an external revision can add
 /// that revision to `itemDetail`; mutation pollers should bypass this type and
-/// call `ContinuumAPI` directly.
+/// call `SiloAPI` directly.
 final class MetadataRequestPool: @unchecked Sendable {
     static let shared = MetadataRequestPool()
 
@@ -124,14 +124,14 @@ final class MetadataRequestPool: @unchecked Sendable {
             freshnessDiscriminator: freshnessDiscriminator
         )
         return try await itemDetailFlights.value(for: key) {
-            try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            try await SiloAPI.shared.itemDetail(contentId: contentId)
         }
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
         let key = SeasonsKey(scope: await requestScope(), seriesID: seriesId)
         return try await seasonsFlights.value(for: key) {
-            try await ContinuumAPI.shared.seasons(seriesId: seriesId)
+            try await SiloAPI.shared.seasons(seriesId: seriesId)
         }
     }
 
@@ -142,7 +142,7 @@ final class MetadataRequestPool: @unchecked Sendable {
             seasonNumber: seasonNumber
         )
         return try await episodesFlights.value(for: key) {
-            try await ContinuumAPI.shared.episodes(
+            try await SiloAPI.shared.episodes(
                 seriesId: seriesId,
                 seasonNumber: seasonNumber
             )
@@ -152,7 +152,7 @@ final class MetadataRequestPool: @unchecked Sendable {
     func watchDetail(contentId: String) async throws -> WatchDetail {
         let key = WatchDetailKey(scope: await requestScope(), contentID: contentId)
         return try await watchDetailFlights.value(for: key) {
-            try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+            try await SiloAPI.shared.watchDetail(contentId: contentId)
         }
     }
 

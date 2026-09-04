@@ -232,7 +232,7 @@ final class TVLibraryGridViewModel {
         )
 
         do {
-            let response: CatalogResponse = try await ContinuumAPI.shared.get(
+            let response: CatalogResponse = try await SiloAPI.shared.get(
                 "/api/v1/catalog", query: query
             )
 

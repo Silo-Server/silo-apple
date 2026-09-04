@@ -58,7 +58,7 @@ struct TVLibraryTypeTabView: View {
                 .padding(.top, TVTopMenuLayout.contentTopInset)
             }
         }
-        .continuumBackground()
+        .siloBackground()
     }
 
     @ViewBuilder
@@ -86,7 +86,7 @@ struct TVLibraryTypeTabView: View {
                 initialFilter: .none,
                 showsHeader: false,
                 showsAlphabetRail: true,
-                topContentInset: ContinuumTheme.Skyline.libraryContentTopInset,
+                topContentInset: SiloTheme.Skyline.libraryContentTopInset,
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: onTopMenuFocusRequest
@@ -103,7 +103,7 @@ struct TVLibraryTypeTabView: View {
     private var pillContentTransition: AnyTransition {
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: ContinuumTheme.Skyline.pillDriftY)),
+            insertion: .opacity.combined(with: .offset(y: SiloTheme.Skyline.pillDriftY)),
             removal: .opacity
         )
     }

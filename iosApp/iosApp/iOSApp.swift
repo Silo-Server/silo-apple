@@ -40,7 +40,7 @@ struct SiloApp: App {
         WindowGroup {
             ContentView()
                 .onOpenURL { url in
-                    ContinuumDeepLinkCoordinator.shared.receive(url)
+                    SiloDeepLinkCoordinator.shared.receive(url)
                 }
         }
     }

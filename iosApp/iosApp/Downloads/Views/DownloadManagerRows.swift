@@ -46,11 +46,11 @@ struct DownloadActiveRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(displayTitle)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
                 Text(statusLine)
                     .font(.system(size: 12.5))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
             }
 
@@ -61,10 +61,10 @@ struct DownloadActiveRow: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.continuumSurfaceElevated)
+                .fill(Color.siloSurfaceElevated)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.continuumOutline, lineWidth: 1)
+                        .stroke(Color.siloOutline, lineWidth: 1)
                 )
         )
     }
@@ -148,24 +148,24 @@ struct DownloadActiveRow: View {
             let paused = record.localStatus == .paused
             Button(action: onPauseResume) {
                 ZStack {
-                    Circle().stroke(Color.continuumOnSurface.opacity(0.15), lineWidth: 3)
+                    Circle().stroke(Color.siloOnSurface.opacity(0.15), lineWidth: 3)
                     Circle()
                         .trim(from: 0, to: max(0.02, record.progressFraction))
                         .stroke(
-                            Color.continuumOnSurface.opacity(paused ? 0.55 : 1),
+                            Color.siloOnSurface.opacity(paused ? 0.55 : 1),
                             style: StrokeStyle(lineWidth: 3, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
                     Image(systemName: paused ? "play.fill" : "pause.fill")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
                 .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(paused ? "Resume download" : "Pause download")
         default:
-            ProgressView().controlSize(.small).tint(.continuumOnSurface)
+            ProgressView().controlSize(.small).tint(.siloOnSurface)
         }
     }
 }
@@ -214,7 +214,7 @@ struct DownloadSwipeRevealContainer<Content: View>: View {
             .frame(maxHeight: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.continuumError)
+                    .fill(Color.siloError)
             )
         }
         .buttonStyle(.plain)
@@ -267,24 +267,24 @@ struct DownloadAttentionRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.title ?? record.contentId)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
                 Text("Download failed")
                     .font(.system(size: 12.5))
-                    .foregroundColor(.continuumError)
+                    .foregroundColor(.siloError)
             }
             Spacer(minLength: 8)
             Button(action: onRetry) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
             Button(action: onDelete) {
                 Image(systemName: "trash")
                     .font(.system(size: 15))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                     .frame(width: 32, height: 32)
             }
             .buttonStyle(.plain)
@@ -293,10 +293,10 @@ struct DownloadAttentionRow: View {
         .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.continuumSurfaceVariant)
+                .fill(Color.siloSurfaceVariant)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.continuumOutline, lineWidth: 1)
+                        .stroke(Color.siloOutline, lineWidth: 1)
                 )
         )
         .padding(.horizontal, 16)
@@ -325,21 +325,21 @@ struct DownloadMovieRow: View {
                     HStack(spacing: 7) {
                         Text(record.title ?? record.contentId)
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.continuumOnSurface)
+                            .foregroundColor(.siloOnSurface)
                             .lineLimit(1)
                         DownloadKindChip(text: "Movie")
                     }
                     if !meta.isEmpty {
                         Text(meta)
                             .font(.system(size: 12))
-                            .foregroundColor(.continuumSecondaryText)
+                            .foregroundColor(.siloSecondaryText)
                             .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 8)
                 Text(DownloadFormatting.bytes(record.fileSize))
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
@@ -377,7 +377,7 @@ struct DownloadSeriesRow: View {
             header
             if expanded && !selecting {
                 ForEach(group.seasons) { season in
-                    Divider().overlay(Color.continuumDivider)
+                    Divider().overlay(Color.siloDivider)
                     seasonHeader(season)
                     ForEach(season.records) { record in
                         DownloadEpisodeRow(record: record, watched: isWatched(record)) {
@@ -394,10 +394,10 @@ struct DownloadSeriesRow: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(expanded ? Color.continuumSurfaceElevated : Color.continuumSurfaceVariant)
+                .fill(expanded ? Color.siloSurfaceElevated : Color.siloSurfaceVariant)
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.continuumOutline, lineWidth: 1)
+                        .stroke(Color.siloOutline, lineWidth: 1)
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -412,26 +412,26 @@ struct DownloadSeriesRow: View {
                 HStack(spacing: 7) {
                     Text(group.title)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
                     if group.isMonitored { monitorBadge }
                 }
                 Text(subtitleLine)
                     .font(.system(size: 12.5))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
             Text(DownloadFormatting.bytes(group.totalBytes))
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
             if !selecting {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
                 } label: {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .frame(width: 26, height: 36)
                         .contentShape(Rectangle())
                 }
@@ -457,12 +457,12 @@ struct DownloadSeriesRow: View {
     private var posterStack: some View {
         ZStack(alignment: .leading) {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.continuumSurfaceVariant)
+                .fill(Color.siloSurfaceVariant)
                 .frame(width: 46, height: 62)
                 .offset(x: 9)
                 .opacity(0.45)
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.continuumSurface)
+                .fill(Color.siloSurface)
                 .frame(width: 46, height: 64)
                 .offset(x: 4)
                 .opacity(0.7)
@@ -490,15 +490,15 @@ struct DownloadSeriesRow: View {
             Text("Monitoring")
                 .font(.system(size: 9.5, weight: .semibold))
         }
-        .foregroundColor(.continuumOnSurface)
+        .foregroundColor(.siloOnSurface)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.continuumChromeRestingFill)
+                .fill(Color.siloChromeRestingFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.continuumChromeRestingBorder, lineWidth: 1)
+                        .stroke(Color.siloChromeRestingBorder, lineWidth: 1)
                 )
         )
     }
@@ -522,11 +522,11 @@ struct DownloadSeriesRow: View {
         HStack {
             Text(season.isSpecials ? "Specials" : "Season \(season.seasonNumber)")
                 .font(.system(size: 12.5, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
             Spacer()
             Text("\(season.episodeCount) ep\(season.episodeCount == 1 ? "" : "s") · \(DownloadFormatting.bytes(season.totalBytes))")
                 .font(.system(size: 11.5))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
         }
         .padding(.horizontal, 14)
         .padding(.top, 9)
@@ -557,12 +557,12 @@ struct DownloadEpisodeRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.system(size: 13.5, weight: .medium))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
                         .opacity(watched ? 0.55 : 1)
                     Text(meta)
                         .font(.system(size: 11.5))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }
 
@@ -570,7 +570,7 @@ struct DownloadEpisodeRow: View {
 
                 Image(systemName: watched ? "checkmark" : "play.circle")
                     .font(.system(size: watched ? 13 : 18, weight: watched ? .semibold : .regular))
-                    .foregroundColor(watched ? .continuumOnSurface.opacity(0.5) : .continuumOnSurface)
+                    .foregroundColor(watched ? .siloOnSurface.opacity(0.5) : .siloOnSurface)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)

@@ -63,7 +63,7 @@ In `HomeView.swift`, inside the `#if !os(tvOS)` state block, delete the three he
 
 ```swift
 // DELETE these three lines:
-    @State private var heroTintColor: Color = .continuumBackground
+    @State private var heroTintColor: Color = .siloBackground
     @State private var heroBackdropURL: String?
     @State private var heroBackdropThumbhash: String?
 ```
@@ -87,7 +87,7 @@ In `HomeView.swift`, in the non-tvOS `body` (the `#else` branch), the `ZStack(al
 
 ```swift
         ZStack(alignment: .top) {
-            Color.continuumBackground
+            Color.siloBackground
                 .ignoresSafeArea()
 
             Group {
@@ -147,7 +147,7 @@ In `HomeView.swift`, replace the body of `scrollContent`'s `LazyVStack` so there
                         .id(HomeFocusTarget.row(section.id))
                     }
                 }
-                .padding(.bottom, ContinuumTheme.largePadding)
+                .padding(.bottom, SiloTheme.largePadding)
 ```
 
 Update the `HomeFocusTarget` enum to drop the featured case and rename the spacer:
@@ -163,8 +163,8 @@ Rename the helper `noFeaturedTopSpacing(topSafeAreaInset:)` to `topRunwaySpacing
 
 ```swift
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
-        let headerContentHeight: CGFloat = 40 + (ContinuumTheme.smallPadding * 2)
-        return topSafeAreaInset + headerContentHeight + ContinuumTheme.largePadding + ContinuumTheme.smallPadding
+        let headerContentHeight: CGFloat = 40 + (SiloTheme.smallPadding * 2)
+        return topSafeAreaInset + headerContentHeight + SiloTheme.largePadding + SiloTheme.smallPadding
     }
 ```
 
@@ -221,7 +221,7 @@ In `BrowseView.swift`, in `LibraryRecommendedView`'s `content`, delete the entir
 ```swift
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: ContinuumTheme.largePadding) {
+            LazyVStack(spacing: SiloTheme.largePadding) {
                 ForEach(viewModel.regularSections) { section in
                     SectionRow(
                         section: section,
@@ -229,7 +229,7 @@ In `BrowseView.swift`, in `LibraryRecommendedView`'s `content`, delete the entir
                     )
                 }
             }
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
         // Report the distance scrolled from the resting top position. We add
         // the top content inset so the value starts at 0 at rest regardless
@@ -250,7 +250,7 @@ In `BrowseView.swift`, `extendsBackdropToTop` is now used only by `refreshStatus
 
 ```swift
     private var refreshStatusTopPadding: CGFloat {
-        ContinuumTheme.padding
+        SiloTheme.padding
     }
 ```
 

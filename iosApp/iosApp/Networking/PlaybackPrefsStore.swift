@@ -1,6 +1,6 @@
 //
 //  PlaybackPrefsStore.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  In-memory cache of the user's per-library playback preferences,
 //  hydrated lazily on first access and refreshed when the Settings UI
@@ -43,7 +43,7 @@ final class PlaybackPrefsStore: ObservableObject {
         lastError = nil
         defer { isLoading = false }
         do {
-            let prefs = try await ContinuumAPI.shared.libraryPlaybackPrefs()
+            let prefs = try await SiloAPI.shared.libraryPlaybackPrefs()
             var byId: [Int: LibraryPlaybackPref] = [:]
             for p in prefs { byId[p.libraryId] = p }
             libraryPrefs = byId
@@ -70,7 +70,7 @@ final class PlaybackPrefsStore: ObservableObject {
         subtitleMode: String?,
         showForcedSubtitles: Bool?
     ) async throws {
-        try await ContinuumAPI.shared.setLibraryPlaybackPref(
+        try await SiloAPI.shared.setLibraryPlaybackPref(
             libraryId: libraryId,
             audioLanguage: audioLanguage,
             subtitleLanguage: subtitleLanguage,
@@ -81,7 +81,7 @@ final class PlaybackPrefsStore: ObservableObject {
     }
 
     func deletePref(libraryId: Int) async throws {
-        try await ContinuumAPI.shared.deleteLibraryPlaybackPref(libraryId: libraryId)
+        try await SiloAPI.shared.deleteLibraryPlaybackPref(libraryId: libraryId)
         await refresh()
     }
 

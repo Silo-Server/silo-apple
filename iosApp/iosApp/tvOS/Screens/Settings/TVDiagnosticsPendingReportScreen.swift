@@ -31,7 +31,7 @@ struct TVDiagnosticsPendingReportScreen: View {
                         Text("Expires \(summary.expiresAt, format: .relative(presentation: .named))")
                     }
                     .font(.system(size: 23))
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
                 } else {
                     ProgressView("Building report summary…")
                 }

@@ -5,7 +5,7 @@ struct SettingsOverviewToggleRow: View {
     let title: String
     let subtitle: String
     let systemImage: String
-    var tint: Color = .continuumAccent
+    var tint: Color = .siloAccent
     @Binding var isOn: Bool
 
     var body: some View {
@@ -25,15 +25,15 @@ struct SettingsOverviewToggleRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.headline)
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
 
                     Text(subtitle)
                         .font(.footnote)
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                 }
             }
         }
-        .tint(.continuumAccent)
+        .tint(.siloAccent)
         .padding(.horizontal, 15)
         .padding(.vertical, 13)
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)

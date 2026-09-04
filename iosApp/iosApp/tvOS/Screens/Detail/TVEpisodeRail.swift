@@ -111,7 +111,7 @@ struct TVEpisodeRail: View {
                 // Run on next tick so the LazyHStack has instantiated the
                 // target cell before we try to anchor on it.
                 DispatchQueue.main.async {
-                    withAnimation(.easeOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeOut(duration: SiloTheme.normalDuration)) {
                         proxy.scrollTo(id, anchor: anchorsFocusedCard ? .leading : .center)
                     }
                 }
@@ -485,7 +485,7 @@ private struct TVAnchoredEpisodeButtonStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.96 : 1)
             .focusEffectDisabled()
             .animation(
-                .easeOut(duration: ContinuumTheme.fastDuration),
+                .easeOut(duration: SiloTheme.fastDuration),
                 value: configuration.isPressed
             )
     }
@@ -761,21 +761,21 @@ private struct EpisodeCardLabel: View {
                                runtime > 0 {
                                 Text(formatRuntime(runtime))
                                     .font(.system(size: 18, weight: .medium))
-                                    .foregroundStyle(Color.continuumSecondaryText)
+                                    .foregroundStyle(Color.siloSecondaryText)
                                     .lineLimit(1)
                             }
                         }
                     }
                 }
-                .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             }
         }
         .frame(width: cardWidth, alignment: .leading)
     }
 
     private var titleColor: Color {
-        if isCurrent { return .continuumOnSurface }
-        return isFocused ? .continuumOnSurface : Color.continuumOnSurface.opacity(0.92)
+        if isCurrent { return .siloOnSurface }
+        return isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
     }
 
     /// "S01E02 · Pilot" — the same code Home puts on episode cards, so the
@@ -803,7 +803,7 @@ private struct EpisodeCardLabel: View {
 
     private var still: some View {
         ZStack(alignment: .bottom) {
-            Color.continuumSurfaceElevated
+            Color.siloSurfaceElevated
                 .frame(width: cardWidth, height: stillHeight)
 
             if let url = episode.stillUrl, !url.isEmpty {
@@ -817,7 +817,7 @@ private struct EpisodeCardLabel: View {
             } else {
                 Image(systemName: "film")
                     .font(.system(size: 48))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                     .frame(width: cardWidth, height: stillHeight)
             }
 
@@ -925,7 +925,7 @@ struct TVEpisodeRailPlaceholder: View {
                 ForEach(0..<4, id: \.self) { _ in
                     VStack(alignment: .leading, spacing: 18) {
                         RoundedRectangle(cornerRadius: 18)
-                            .fill(Color.continuumSurfaceElevated)
+                            .fill(Color.siloSurfaceElevated)
                             .frame(width: cardWidth, height: stillHeight)
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.white.opacity(0.22))

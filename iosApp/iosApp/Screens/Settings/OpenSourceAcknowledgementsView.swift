@@ -51,17 +51,17 @@ struct OpenSourceAcknowledgementsView: View {
         ScrollView {
             Text(OpenSourceAcknowledgements.text)
                 .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
                 #if !os(tvOS)
                 .textSelection(.enabled)
                 #endif
         }
-        .background(Color.continuumBackground)
+        .background(Color.siloBackground)
         .navigationTitle("Open Source Licenses")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
     }
 }
 
@@ -82,11 +82,11 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
                         Text("OPEN SOURCE")
                             .font(.system(size: 15, weight: .semibold, design: .monospaced))
                             .tracking(2)
-                            .foregroundStyle(Color.continuumAccent)
+                            .foregroundStyle(Color.siloAccent)
 
                         Text("Licenses & Acknowledgements")
                             .font(.system(size: 38, weight: .semibold))
-                            .foregroundStyle(Color.continuumOnSurface)
+                            .foregroundStyle(Color.siloOnSurface)
                     }
 
                     Spacer(minLength: 40)
@@ -101,7 +101,7 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
                 ScrollView(.vertical) {
                     Text(OpenSourceAcknowledgements.text)
                         .font(.system(size: 20, design: .monospaced))
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -114,11 +114,11 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
             .frame(maxWidth: 1500, maxHeight: 900, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: 32, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 32, style: .continuous)
-                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                    .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
             }
             .focusSection()
             .defaultFocus($focusedElement, .document, priority: .userInitiated)

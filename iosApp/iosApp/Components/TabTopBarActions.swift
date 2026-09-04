@@ -34,7 +34,7 @@ struct TabTopBarActions: View {
     var body: some View {
         // Icons spaced evenly, matching the clean top-right cluster used by
         // Plex. Order is fixed: Search, Remote (iOS), Profile.
-        HStack(spacing: ContinuumTheme.topBarIconSpacing) {
+        HStack(spacing: SiloTheme.topBarIconSpacing) {
             TopBarIconButton(
                 systemImage: "magnifyingglass",
                 accessibilityLabel: "Search",
@@ -80,8 +80,8 @@ private struct TopBarIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
-                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                .foregroundColor(.siloOnSurface)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
                 .modifier(TopBarCircularGlass(enabled: usesGlass))
                 .contentShape(Circle())
         }
@@ -152,8 +152,8 @@ private struct ProfileAvatarMenu: View {
                 size: usesGlass ? 30 : 36
             )
             .frame(
-                width: usesGlass ? ContinuumTheme.topBarIconHitSize : 36,
-                height: usesGlass ? ContinuumTheme.topBarIconHitSize : 36
+                width: usesGlass ? SiloTheme.topBarIconHitSize : 36,
+                height: usesGlass ? SiloTheme.topBarIconHitSize : 36
             )
             .modifier(TopBarCircularGlass(enabled: usesGlass))
             .contentShape(Circle())

@@ -9,7 +9,7 @@ final class ApplePushDeepLinkCoordinator {
 
     func postDeepLink(from userInfo: [AnyHashable: Any]) {
         guard let url = Self.deepLinkURL(from: userInfo) else { return }
-        ContinuumDeepLinkCoordinator.shared.receive(url)
+        SiloDeepLinkCoordinator.shared.receive(url)
     }
 
     nonisolated static func deepLinkURL(from userInfo: [AnyHashable: Any]) -> URL? {

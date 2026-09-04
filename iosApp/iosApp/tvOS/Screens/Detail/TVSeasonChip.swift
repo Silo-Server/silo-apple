@@ -48,8 +48,8 @@ private struct TVSeasonChipBody: View {
             .background(background)
             .scaleEffect(scale)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var scale: CGFloat {
@@ -107,7 +107,7 @@ struct TVSeasonChipRow: View {
             .applyChipRowDefaultFocus(selectedSeasonId, binding: $focusedSeasonId)
             .onChange(of: selectedSeasonId) { _, newId in
                 guard let newId else { return }
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                     proxy.scrollTo(newId, anchor: .center)
                 }
             }

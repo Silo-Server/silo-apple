@@ -116,14 +116,14 @@ struct AudiobookDetailContent: View {
                 VStack(alignment: .leading, spacing: 0) {
                     phoneHero(topInset: topInset)
                     phoneSections
-                        .padding(.horizontal, ContinuumTheme.safePadding)
+                        .padding(.horizontal, SiloTheme.safePadding)
                         .padding(.top, sectionSpacing)
                         .padding(.bottom, bottomPadding)
                 }
             }
             .ignoresSafeArea(edges: .top)
         }
-        .continuumPageBackground()
+        .siloPageBackground()
     }
 
     private var phoneSections: some View {
@@ -159,7 +159,7 @@ struct AudiobookDetailContent: View {
                 .padding(.top, 22)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
         .background(alignment: .top) {
             phoneBackdrop
         }
@@ -180,13 +180,13 @@ struct AudiobookDetailContent: View {
                 .blur(radius: 48, opaque: true)
                 .opacity(0.55)
             } else {
-                Color.continuumSurface.frame(height: phoneBackdropHeight)
+                Color.siloSurface.frame(height: phoneBackdropHeight)
             }
             LinearGradient(
                 stops: [
-                    .init(color: Color.continuumBackground.opacity(0.30), location: 0.0),
-                    .init(color: Color.continuumBackground.opacity(0.72), location: 0.55),
-                    .init(color: Color.continuumBackground, location: 0.95),
+                    .init(color: Color.siloBackground.opacity(0.30), location: 0.0),
+                    .init(color: Color.siloBackground.opacity(0.72), location: 0.55),
+                    .init(color: Color.siloBackground, location: 0.95),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -209,7 +209,7 @@ struct AudiobookDetailContent: View {
                 )
             } else {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
                     .overlay {
                         Image(systemName: "headphones")
                             .font(.system(size: phoneCoverSize * 0.2, weight: .semibold))
@@ -231,16 +231,16 @@ struct AudiobookDetailContent: View {
             Text("AUDIOBOOK")
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(1.6)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
-                .background(Capsule().fill(Color.continuumSurfaceElevated))
+                .background(Capsule().fill(Color.siloSurfaceElevated))
 
             Text(displayTitle)
                 .font(.system(size: 28, weight: .bold))
                 .tracking(-0.4)
                 .multilineTextAlignment(.center)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 14)
 
@@ -256,7 +256,7 @@ struct AudiobookDetailContent: View {
             if let authorSummary {
                 Text(authorSummary)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .multilineTextAlignment(.center)
                     .padding(.top, 12)
             }
@@ -287,7 +287,7 @@ struct AudiobookDetailContent: View {
                 HStack {
                     Text("\(percentComplete)% complete")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                     Spacer()
                     Text("\(PlayerTimeFormatter.formatRuntime(timeLeftSeconds)) left")
                         .font(.system(size: 12))
@@ -391,7 +391,7 @@ struct AudiobookDetailContent: View {
 
                 if displayChapters.count > chapterCollapseLimit {
                     Button {
-                        withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                             showAllChapters.toggle()
                         }
                     } label: {
@@ -425,7 +425,7 @@ struct AudiobookDetailContent: View {
             HStack(spacing: 13) {
                 Image(systemName: "play.fill")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .frame(width: 26, height: 26)
                     .background(
                         Circle()
@@ -434,7 +434,7 @@ struct AudiobookDetailContent: View {
                     )
                 Text(chapter.title)
                     .font(.system(size: 15))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
                 Spacer()
                 Text(PlayerTimeFormatter.formatHMS(chapter.startSeconds))
@@ -447,7 +447,7 @@ struct AudiobookDetailContent: View {
             .overlay(alignment: .top) {
                 if showsDivider {
                     Rectangle()
-                        .fill(Color.continuumDivider)
+                        .fill(Color.siloDivider)
                         .frame(height: 0.5)
                 }
             }
@@ -476,7 +476,7 @@ struct AudiobookDetailContent: View {
             HStack(spacing: 13) {
                 Image(systemName: "waveform")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .frame(width: 26, height: 26)
                     .background(
                         Circle()
@@ -485,7 +485,7 @@ struct AudiobookDetailContent: View {
                     )
                 Text(partTitle(part, fallbackIndex: index))
                     .font(.system(size: 15))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
                 Spacer()
                 Text(PlayerTimeFormatter.formatRuntime(partDuration(part)))
@@ -498,7 +498,7 @@ struct AudiobookDetailContent: View {
             .overlay(alignment: .top) {
                 if showsDivider {
                     Rectangle()
-                        .fill(Color.continuumDivider)
+                        .fill(Color.siloDivider)
                         .frame(height: 0.5)
                 }
             }
@@ -511,7 +511,7 @@ struct AudiobookDetailContent: View {
         if !formatTokens.isEmpty {
             Text(formatTokens.joined(separator: "  ·  "))
                 .font(.system(size: 12))
-                .foregroundColor(.continuumOnSurface.opacity(0.4))
+                .foregroundColor(.siloOnSurface.opacity(0.4))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -527,7 +527,7 @@ struct AudiobookDetailContent: View {
             Text(title)
                 .font(sectionTitleFont)
                 .fontWeight(.semibold)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -546,7 +546,7 @@ struct AudiobookDetailContent: View {
                                 Text(item.title)
                                     .font(.subheadline)
                                     .fontWeight(.semibold)
-                                    .foregroundStyle(Color.continuumOnSurface)
+                                    .foregroundStyle(Color.siloOnSurface)
                                     .lineLimit(2, reservesSpace: true)
                                 if uiCustomization.cardPresentation.caption.showsMetadata {
                                     if let seriesIndex = item.seriesIndex {
@@ -582,10 +582,10 @@ struct AudiobookDetailContent: View {
                 contentMode: .fill
             )
             .frame(width: relatedPosterWidth, height: relatedPosterHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                .fill(Color.continuumSurfaceElevated)
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                .fill(Color.siloSurfaceElevated)
                 .frame(width: relatedPosterWidth, height: relatedPosterHeight)
                 .overlay {
                     Image(systemName: "book.closed")

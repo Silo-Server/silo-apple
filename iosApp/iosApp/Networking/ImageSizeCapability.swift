@@ -13,7 +13,7 @@ import Foundation
 /// degrade silently.
 ///
 /// Unlike `AICapabilities` this is **not** `@MainActor @Observable`: no
-/// view observes it, and its one consumer is the `ContinuumAPI` actor,
+/// view observes it, and its one consumer is the `SiloAPI` actor,
 /// which needs a synchronous read while building a request. State is
 /// guarded by a lock instead — same shape as `ServerRegistry`'s
 /// `ActiveServerIDSnapshot`.
@@ -71,7 +71,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     private var inFlightProbe: Probe?
 
     init(
-        api: ContinuumAPI = .shared,
+        api: SiloAPI = .shared,
         platformPrefersLargeImages: Bool = ImageSizeCapability.platformPrefersLargeImages
     ) {
         self.prefersLargeImages = platformPrefersLargeImages

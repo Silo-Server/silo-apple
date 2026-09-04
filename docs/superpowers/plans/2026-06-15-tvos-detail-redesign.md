@@ -6,7 +6,7 @@
 
 **Architecture:** A view-layer change on the existing `TVDetailHero` + per-type detail views. Today's round controls (`Capsule` pills, `Circle` icon buttons, capsule season chips) are reshaped to one 8 pt rounded-rectangle family. A new `TVPlaybackSelectorRow` consolidates the version picker and the audio/subtitle menus (which already exist in the `⋯` menu) into a webapp-parity row, and adds an Edition selector derived from `FileVersion.edition`. The `ReadableFocusSection` focus workaround is removed; the synopsis becomes an expand-in-place control. The audiobook page gets a cover-forward cinematic hero.
 
-**Tech Stack:** Swift 5 / SwiftUI, tvOS. XcodeGen (`project.yml` → `Silo.xcodeproj`). Design tokens in `ContinuumTheme.swift`.
+**Tech Stack:** Swift 5 / SwiftUI, tvOS. XcodeGen (`project.yml` → `Silo.xcodeproj`). Design tokens in `SiloTheme.swift`.
 
 ---
 
@@ -14,7 +14,7 @@
 
 **Read before starting any task.**
 
-- **Design language:** Skyline — OLED black, monochrome chrome, white-at-opacity. Squared-control radius = `ContinuumTheme.smallCornerRadius` (8 pt). Spec: `docs/superpowers/specs/2026-06-15-tvos-detail-redesign-design.md`. Mockups: `docs/tvos-detail-mockups/`.
+- **Design language:** Skyline — OLED black, monochrome chrome, white-at-opacity. Squared-control radius = `SiloTheme.smallCornerRadius` (8 pt). Spec: `docs/superpowers/specs/2026-06-15-tvos-detail-redesign-design.md`. Mockups: `docs/tvos-detail-mockups/`.
 - **TDD reconciliation (important):** `CLAUDE.md` says *do not add tests for UI changes* — only focused tests for critical/high-risk shared logic. So **only Task 3 (edition grouping) is test-first.** Every other task is **build-and-verify**: make the change, build `SiloTV`, then visually confirm in the tvOS Simulator (`admin` / `water1234` per the SiloTV debugging notes).
 - **Build gate (run after every task, must succeed):**
   ```bash
@@ -86,17 +86,17 @@ to:
 
 ```swift
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).stroke(
                     innerBorderColor,
                     lineWidth: innerBorderWidth
                 )
             )
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(background)
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(background)
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius + 2, style: .continuous)
+                    RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius + 2, style: .continuous)
                         .stroke(focusOutlineColor, lineWidth: focusOutlineWidth)
                         .padding(-focusOutlineInset)
                 }
@@ -130,19 +130,19 @@ to:
 
 ```swift
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(
                     isFocused ? .white : Color.white.opacity(0.10)
                 )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).stroke(
                     isFocused ? Color.black.opacity(0.12) : Color.white.opacity(0.34),
                     lineWidth: isFocused ? 1.6 : 1.4
                 )
             )
             .overlay {
                 if isFocused {
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius + 2, style: .continuous)
+                    RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius + 2, style: .continuous)
                         .stroke(Color.white.opacity(0.96), lineWidth: 3)
                         .padding(-5)
                 }
@@ -161,9 +161,9 @@ to:
 to:
 
 ```swift
-        .background(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.black.opacity(0.42)))
+        .background(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(Color.black.opacity(0.42)))
         .overlay(
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.16), lineWidth: 1.2)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.16), lineWidth: 1.2)
         )
 ```
 
@@ -190,11 +190,11 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
     @ViewBuilder
     private var background: some View {
         if isSelected {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(Color.white)
         } else if isFocused {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).fill(Color.white.opacity(0.18))
         } else {
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous).stroke(Color.white.opacity(0.25), lineWidth: 1.5)
         }
     }
 ```
@@ -704,7 +704,7 @@ struct TVExpandableSynopsis: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(TVSynopsisButtonStyle())
-        .animation(.easeOut(duration: ContinuumTheme.normalDuration), value: expanded)
+        .animation(.easeOut(duration: SiloTheme.normalDuration), value: expanded)
     }
 }
 
@@ -721,13 +721,13 @@ private struct TVSynopsisButtonStyle: ButtonStyle {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
                 .background(
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
-                        .fill(Color.continuumSurfaceElevated.opacity(isFocused ? 0.55 : 0))
+                    RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
+                        .fill(Color.siloSurfaceElevated.opacity(isFocused ? 0.55 : 0))
                 )
                 .padding(.horizontal, -20)
                 .padding(.vertical, -14)
                 .focusEffectDisabled()
-                .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         }
     }
 }
@@ -876,7 +876,7 @@ to:
                     .frame(maxWidth: 900, alignment: .leading)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.bottom, 64)
             .padding(.top, 120)
         }
@@ -902,13 +902,13 @@ to:
                     .blur(radius: 60)
                     .opacity(0.5)
             } else {
-                Color.continuumSurface.frame(height: 760)
+                Color.siloSurface.frame(height: 760)
             }
             LinearGradient(
                 stops: [
-                    .init(color: Color.continuumBackground.opacity(0.55), location: 0.0),
-                    .init(color: Color.continuumBackground.opacity(0.30), location: 0.5),
-                    .init(color: Color.continuumBackground, location: 1.0),
+                    .init(color: Color.siloBackground.opacity(0.55), location: 0.0),
+                    .init(color: Color.siloBackground.opacity(0.30), location: 0.5),
+                    .init(color: Color.siloBackground, location: 1.0),
                 ],
                 startPoint: .top, endPoint: .bottom
             )
@@ -963,7 +963,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ```swift
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                     .fill(isFocused ? Color.white : Color.white.opacity(0.06))
             )
 ```
@@ -1038,10 +1038,10 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 and change the modifier to:
 ```swift
-        .animation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.normalDuration), value: expanded)
+        .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.normalDuration), value: expanded)
 ```
 
-- [ ] **Step 2: Confirm the squared button/chip focus already respects Reduce Motion** or is acceptable (the existing styles animate `isFocused` via `ContinuumTheme.springAnimation`; leave as-is unless it visibly janks — these predate this redesign).
+- [ ] **Step 2: Confirm the squared button/chip focus already respects Reduce Motion** or is acceptable (the existing styles animate `isFocused` via `SiloTheme.springAnimation`; leave as-is unless it visibly janks — these predate this redesign).
 
 - [ ] **Step 3: Full build gate.** Expected: `** BUILD SUCCEEDED **`.
 

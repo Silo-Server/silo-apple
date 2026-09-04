@@ -4,7 +4,7 @@ import SwiftUI
 struct SettingsOverviewDivider: View {
     var body: some View {
         Divider()
-            .overlay(Color.continuumDivider)
+            .overlay(Color.siloDivider)
             .padding(.leading, 66)
     }
 }

@@ -56,7 +56,7 @@ is still dramatically faster than thumb-typing a URL and password on a remote.
 | Role | Platform | Behavior | Reuses |
 |------|----------|----------|--------|
 | **Receiver** | tvOS | Advertises on the LAN; waiting to be set up | `TVServerSetupView`, `ServerSetupViewModel` (URL normalize), `QRLoginViewModel`, `AppRouter` (auth state), `AppleDeviceIdentity`, `ServerRegistry`, `TokenStore` |
-| **Companion** | iOS | Browses; in-hand; already signed in | `ServerRegistry`, `TokenStore`, `ContinuumAPI`, `HTTPClient` |
+| **Companion** | iOS | Browses; in-hand; already signed in | `ServerRegistry`, `TokenStore`, `SiloAPI`, `HTTPClient` |
 | **Server** | Go | Mints tokens; unchanged in v1 | `/auth/device/{start,poll,approve}`, `GET /auth/device`, `GET /auth/sessions` |
 
 ### Server endpoints (already implemented — verified in silo-server)
@@ -67,7 +67,7 @@ is still dramatically faster than thumb-typing a URL and password on a remote.
 - State table `device_login_requests`: `pending → approved → consumed`, `pending → denied`, 10-minute TTL.
 
 ### New client method
-`ContinuumAPI.approveDevice(code:)` and `ContinuumAPI.lookupDevice(code:)` — the
+`SiloAPI.approveDevice(code:)` and `SiloAPI.lookupDevice(code:)` — the
 endpoints exist but approval was previously web-only (`web/src/pages/ActivateDevice.tsx`),
 so the iOS client needs these thin wrappers over `HTTPClient`.
 
@@ -87,7 +87,7 @@ Each unit has one purpose, a defined interface, and is testable in isolation.
   discovered TVs (name, deviceId, state, endpoint). Owns Local Network permission
   state and foreground/background lifecycle.
 - **`CompanionPairingCoordinator`** — phone-side state machine. Connects to the
-  chosen TV, runs the per-server loop, calls `ContinuumAPI` / `ServerRegistry` /
+  chosen TV, runs the per-server loop, calls `SiloAPI` / `ServerRegistry` /
   `TokenStore`. Publishes observable state for the UI.
 - **UI:**
   - `SetUpTVBanner` — auto-appears when a TV in `setup` state is discovered while
@@ -269,7 +269,7 @@ exposure below for v1.
   - `PairingSession` framing over an in-memory loopback pair (partial reads,
     multiple messages in one buffer, oversized frame rejection).
   - `CompanionPairingCoordinator` and `ReceiverPairingCoordinator` state machines
-    against a **fake transport** + **fake `ContinuumAPI`**: happy path, multi-server,
+    against a **fake transport** + **fake `SiloAPI`**: happy path, multi-server,
     partial failure, match-code mismatch/decline, token expiry, cancel, code expiry.
     Assert **persist-on-success**: no `ServerRegistry` / `TokenStore` mutation until
     `signedIn`, and the pending candidate is rolled back on every

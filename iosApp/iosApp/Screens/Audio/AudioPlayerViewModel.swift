@@ -34,7 +34,7 @@ final class AudioPlayerViewModel {
     /// `loadGeneration`, which fences seeks and per-file session loads.
     private var startGeneration = 0
     private let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Playback"
     )
 
@@ -106,7 +106,7 @@ final class AudioPlayerViewModel {
                 await closePlayback()
             }
             guard generation == startGeneration else { return }
-            let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             guard generation == startGeneration else {
                 // A newer start() superseded this request while the
                 // item-detail load was in flight; abandon it so the older,
@@ -234,7 +234,7 @@ final class AudioPlayerViewModel {
         palette = .fallback
         if let closedContext {
             do {
-                try await ContinuumAPI.shared.syncProgress(
+                try await SiloAPI.shared.syncProgress(
                     mediaItemId: closedContext.contentId,
                     position: position,
                     duration: total,
@@ -462,12 +462,12 @@ final class AudioPlayerViewModel {
         )
         let response: PlaybackV3DecisionResponse
         do {
-            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+            response = try await SiloAPI.shared.startPlaybackV3(request: request)
         } catch let error as HTTPError {
             guard case .network = error else { throw error }
             // Preserve the logical attempt identity across an ambiguous
             // transport retry so the server replays instead of double-starting.
-            response = try await ContinuumAPI.shared.startPlaybackV3(request: request)
+            response = try await SiloAPI.shared.startPlaybackV3(request: request)
         }
 
         switch response.validatedForApple() {
@@ -486,7 +486,7 @@ final class AudioPlayerViewModel {
             )
         case .incompatible(let allocatedSessionId):
             if let allocatedSessionId {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
@@ -497,7 +497,7 @@ final class AudioPlayerViewModel {
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
                     message: "This server did not honor authenticated media transport for the playback plan.",
@@ -509,13 +509,13 @@ final class AudioPlayerViewModel {
                 try ApplePlaybackV3PlanAdapter.validate(plan)
                 timeline = try PlaybackTimelineMapper(validating: plan.timeline)
             } catch {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
                 throw error
             }
             guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
-                try? await ContinuumAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
                     message: "The server selected an unavailable audiobook part.",
@@ -569,7 +569,7 @@ final class AudioPlayerViewModel {
         reason: String
     ) async {
         do {
-            try await ContinuumAPI.shared.stopPlayback(sessionId: session.sessionId)
+            try await SiloAPI.shared.stopPlayback(sessionId: session.sessionId)
         } catch {
             logger.warning(
                 "stopPlayback failed for \(session.sessionId, privacy: .public) (\(reason, privacy: .public)): \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -681,7 +681,7 @@ final class AudioPlayerViewModel {
            let activeTrackIndex,
            let track = context.tracks.first(where: { $0.index == activeTrackIndex }) {
             do {
-                try await ContinuumAPI.shared.reportPlaybackProgress(
+                try await SiloAPI.shared.reportPlaybackProgress(
                     sessionId: session.sessionId,
                     report: ProgressReport(
                         position: AudioPlaybackTimeline.localTime(for: currentTime, in: track),
@@ -695,7 +695,7 @@ final class AudioPlayerViewModel {
             }
         }
         do {
-            try await ContinuumAPI.shared.syncProgress(
+            try await SiloAPI.shared.syncProgress(
                 mediaItemId: context.contentId,
                 position: currentTime,
                 duration: duration,
@@ -741,8 +741,8 @@ final class AudioPlayerViewModel {
         session: PlaybackSessionResponse,
         additionalHeaders: [String: String]
     ) async -> StreamRequest? {
-        let serverURL = await ContinuumAPI.shared.currentServerUrl()
-        let accessToken = await ContinuumAPI.shared.currentAccessToken()
+        let serverURL = await SiloAPI.shared.currentServerUrl()
+        let accessToken = await SiloAPI.shared.currentAccessToken()
         return StreamRequest.resolve(
             rawURL: session.streamUrl,
             serverURL: serverURL,
@@ -757,7 +757,7 @@ final class AudioPlayerViewModel {
         if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
             return URL(string: raw)
         }
-        let serverUrl = await ContinuumAPI.shared.currentServerUrl()
+        let serverUrl = await SiloAPI.shared.currentServerUrl()
         guard !serverUrl.isEmpty else { return nil }
         let base = serverUrl.hasSuffix("/") ? String(serverUrl.dropLast()) : serverUrl
         let path = raw.hasPrefix("/") ? raw : "/\(raw)"

@@ -17,22 +17,22 @@ struct DownloadButton: View {
                 switch state {
                 case .notDownloaded:
                     Image(systemName: "arrow.down.circle")
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
 
                 case .downloading(let progress):
                     ZStack {
                         Circle()
-                            .stroke(Color.continuumSecondaryText.opacity(0.3), lineWidth: 2)
+                            .stroke(Color.siloSecondaryText.opacity(0.3), lineWidth: 2)
                         Circle()
                             .trim(from: 0, to: progress)
-                            .stroke(Color.continuumPrimary, lineWidth: 2)
+                            .stroke(Color.siloPrimary, lineWidth: 2)
                             .rotationEffect(.degrees(-90))
                     }
                     .frame(width: 22, height: 22)
 
                 case .downloaded:
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.continuumSuccess)
+                        .foregroundColor(.siloSuccess)
                 }
             }
             .font(.system(size: 22))
