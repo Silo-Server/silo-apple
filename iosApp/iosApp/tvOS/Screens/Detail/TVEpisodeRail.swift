@@ -141,6 +141,13 @@ struct TVEpisodeRail: View {
                     focusedCardId = anchoredEpisode?.contentId
                 }
                 .onChange(of: focusedCardId) { _, contentId in
+                    if let edgeContentId = AnchoredEdgeFocusGuide.edgeEpisode(
+                        for: contentId,
+                        in: episodes
+                    ) {
+                        focusedCardId = edgeContentId
+                        return
+                    }
                     if let contentId,
                        let index = episodes.firstIndex(where: { $0.contentId == contentId }) {
                         anchorFocusedSelection(at: index, viewportWidth: geometry.size.width)
@@ -167,6 +174,19 @@ struct TVEpisodeRail: View {
                     anchoredEpisodeButton(episode, index: index)
                         .zIndex(focusedCardId == episode.contentId ? 1 : 0)
                 }
+            }
+            // Hard horizontal edges live in the native focus graph: a focus
+            // guide hugs each end of the card strip so Left from the first
+            // card and Right from the last resolve to the guide, which hands
+            // focus straight back to that edge card. `onMoveCommand` cannot
+            // do this because the engine resolves the move before it fires.
+            .overlay(alignment: .leading) {
+                anchoredEdgeFocusGuide(AnchoredEdgeFocusGuide.leading)
+                    .alignmentGuide(.leading) { $0[.trailing] }
+            }
+            .overlay(alignment: .trailing) {
+                anchoredEdgeFocusGuide(AnchoredEdgeFocusGuide.trailing)
+                    .alignmentGuide(.trailing) { $0[.leading] }
             }
             // Preserve the existing crop, hover clearance and trailing boundary.
             .padding(
@@ -216,7 +236,8 @@ struct TVEpisodeRail: View {
         .focused($focusedCardId, equals: episode.contentId)
         .onMoveCommand { direction in
             // Only the vertical boundaries hand off to another focus region.
-            // Left and Right belong entirely to the native episode buttons.
+            // Left and Right belong entirely to the native episode buttons;
+            // the rail's edge focus guides fence the first and last card.
             switch direction {
             case .up: onMoveUp?()
             case .down: onMoveDown?()
@@ -239,6 +260,18 @@ struct TVEpisodeRail: View {
         } else {
             button
         }
+    }
+
+    /// A one-point focusable strip just outside the card strip. It never
+    /// renders and never keeps focus; it only exists so the focus engine has
+    /// an in-rail destination at each hard edge.
+    private func anchoredEdgeFocusGuide(_ id: String) -> some View {
+        Color.clear
+            .frame(width: 1, height: anchoredRailHeight)
+            .focusable(true)
+            .focused($focusedCardId, equals: id)
+            .focusEffectDisabled()
+            .accessibilityHidden(true)
     }
 
     private var anchoredCardWidth: CGFloat {
@@ -428,6 +461,24 @@ struct TVEpisodeRail: View {
 
 /// The native button owns focus and sound, while the artwork supplies the
 /// existing Home-style hover without adding a second system lift effect.
+/// Focus identities for the anchored rail's edge guides. They share the
+/// episode `@FocusState` so the rail can bounce them back to a real card.
+private enum AnchoredEdgeFocusGuide {
+    static let leading = "silo.episodeRail.edge.leading"
+    static let trailing = "silo.episodeRail.edge.trailing"
+
+    static func edgeEpisode(
+        for focusedId: String?,
+        in episodes: [EpisodeListItem]
+    ) -> String? {
+        switch focusedId {
+        case leading: return episodes.first?.contentId
+        case trailing: return episodes.last?.contentId
+        default: return nil
+        }
+    }
+}
+
 private struct TVAnchoredEpisodeButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
