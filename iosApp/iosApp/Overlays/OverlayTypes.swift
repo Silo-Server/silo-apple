@@ -44,15 +44,6 @@ enum OverlayPosition: String, CaseIterable, Codable, Hashable {
     case topRight = "top-right"
     case bottomLeft = "bottom-left"
     case bottomRight = "bottom-right"
-
-    var displayName: String {
-        switch self {
-        case .topLeft:     return "Top Left"
-        case .topRight:    return "Top Right"
-        case .bottomLeft:  return "Bottom Left"
-        case .bottomRight: return "Bottom Right"
-        }
-    }
 }
 
 enum PresetId: String, CaseIterable, Codable, Hashable {
@@ -61,26 +52,6 @@ enum PresetId: String, CaseIterable, Codable, Hashable {
     case vibrant
     case pill
     case square
-
-    var label: String {
-        switch self {
-        case .minimal:  return "Minimal"
-        case .classic:  return "Classic"
-        case .vibrant:  return "Vibrant"
-        case .pill:     return "Pill"
-        case .square:   return "Square"
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .minimal:  return "Near-invisible. Tiny text, no background."
-        case .classic:  return "Semi-transparent dark pill with a thin border. The default."
-        case .vibrant:  return "Opaque, accent-colored badges. High contrast."
-        case .pill:     return "Larger pill with more padding. Works well with icons."
-        case .square:   return "Blocky, high-density. Plex-inspired."
-        }
-    }
 }
 
 /// Per-overlay user configuration. `accentColor` and `showIcon` are

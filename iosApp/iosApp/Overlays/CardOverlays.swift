@@ -124,16 +124,6 @@ struct OverlayBadgeRenderState: Equatable {
         preset: OverlayPreset
     ) -> OverlayBadgeRenderState? {
         guard let label = def.getValue(data) else { return nil }
-        return build(def: def, label: label, data: data, prefs: prefs, preset: preset)
-    }
-
-    private static func build(
-        def: OverlayDef,
-        label: String,
-        data: OverlayData,
-        prefs: CardOverlayPrefs,
-        preset: OverlayPreset
-    ) -> OverlayBadgeRenderState {
         let cfg = prefs.items[def.id]
         let dynamicIcon = def.getIcon?(data)
         let iconId = dynamicIcon ?? def.iconId
