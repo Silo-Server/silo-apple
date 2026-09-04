@@ -135,6 +135,11 @@ enum ApplePushRegistrationWire {
     }
 }
 
+struct ApplePushRegistrationIdentity: Equatable {
+    let account: RefreshAccountIdentity
+    let profileID: String
+}
+
 @MainActor
 final class ApplePushRegistrationCoordinator {
     static let shared = ApplePushRegistrationCoordinator()
@@ -237,11 +242,21 @@ final class ApplePushRegistrationCoordinator {
         inFlightFingerprint = fingerprint
         defer { inFlightFingerprint = nil }
 
+        // Snapshot the identity the registration is for. The response may
+        // land after a sign-out, server switch, or profile change has already
+        // cleared the display-token slot for the new context; writing the
+        // old context's token into it would resurrect a revoked credential.
+        let identityBefore = await Self.currentIdentity()
+
         do {
             let response: ApplePushRegistrationResponse = try await HTTPClient.shared.post(
                 ApplePushRegistrationWire.endpoint,
                 body: request
             )
+            guard await Self.currentIdentity() == identityBefore else {
+                Self.logger.info("Discarding Apple push registration response: identity changed while in flight")
+                return
+            }
             lastSuccessfulFingerprint = fingerprint
             endpointUnsupportedForContext = nil
             // Always store, even when nil: a server downgrade or a profile
@@ -257,6 +272,17 @@ final class ApplePushRegistrationCoordinator {
         } catch {
             Self.logger.error("Apple push device registration failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// The account (server + credential generation) and profile a
+    /// registration belongs to. Any change, including a sign-out and
+    /// sign-in to the same server, produces a different value.
+    private static func currentIdentity() async -> ApplePushRegistrationIdentity? {
+        guard let account = await TokenStore.shared.refreshAccountIdentity() else { return nil }
+        return ApplePushRegistrationIdentity(
+            account: account,
+            profileID: await TokenStore.shared.getProfileId() ?? ""
+        )
     }
 
     private func makeRegistrationRequest(deviceToken: Data) -> ApplePushRegistrationRequest {

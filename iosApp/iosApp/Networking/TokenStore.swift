@@ -237,6 +237,7 @@ actor TokenStore {
         if serverId == activeServerId { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverId
+        clearApplePushDisplayToken()
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
@@ -253,6 +254,7 @@ actor TokenStore {
         if serverId == activeServerId { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverId
+        clearApplePushDisplayToken()
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
@@ -969,6 +971,13 @@ actor TokenStore {
         }
         guard persisted else { return false }
         cachedProfileToken = profileToken
+        // The display token was minted for the previous profile. Drop it
+        // before the new profile id is visible so the extension cannot pair
+        // the new context with the old credential; the next registration
+        // mints a replacement.
+        if defaults.string(forKey: profileIdDefaultsKey) != profileID {
+            clearApplePushDisplayToken()
+        }
         defaults.set(profileID, forKey: profileIdDefaultsKey)
         mirrorActiveTokensForExtension()
         return true
@@ -997,6 +1006,7 @@ actor TokenStore {
         }
         defaults.removeObject(forKey: profileIdDefaultsKey)
         cachedProfileToken = nil
+        clearApplePushDisplayToken()
         mirrorActiveTokensForExtension()
         return true
     }
@@ -1110,13 +1120,17 @@ actor TokenStore {
         }
     }
 
+    /// The display token is bound to one session, server, and profile, so it
+    /// dies with any of them; the next registration mints a fresh one.
+    private func clearApplePushDisplayToken() {
+        profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount)
+        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+    }
+
     private func clearMirroredTokensForExtension() {
         accountKeychain.delete(SharedStorage.mirroredAccessTokenAccount)
         profileKeychain.delete(SharedStorage.mirroredProfileTokenAccount)
-        // The display token is bound to this session and profile, so it dies
-        // with them; the next registration mints a fresh one.
-        profileKeychain.delete(SharedStorage.applePushDisplayTokenAccount)
-        defaults.removeObject(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+        clearApplePushDisplayToken()
         lastMirroredAccessToken = nil
         lastMirroredProfileToken = nil
     }
