@@ -778,6 +778,9 @@ class PlayerViewModel {
     /// don't keep re-evaluating (and overriding the user) on every
     /// subsequent track-list update.
     private var prefsResolvedForCurrentItem: Bool = false
+    /// A caption-policy replan that arrived before the current V3 load
+    /// committed. Drained once the load's server transition commits.
+    private var hasDeferredAutoSubtitlePolicy = false
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
     private var currentSelectedVersion: FileVersion?
@@ -1618,6 +1621,8 @@ class PlayerViewModel {
                     } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                         self.pendingProtocolV3SeekReanchorPosition = nil
                         self.commitSeek(to: queuedTarget, source: "queuedAuthReloadReanchor")
+                    } else {
+                        self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                     }
                 }
             }
@@ -1966,6 +1971,10 @@ class PlayerViewModel {
                     if !self.isDisposed, self.activePreparedProtocolV3 != nil {
                         self.commitSeek(to: queuedTarget, source: "queuedReanchor")
                     }
+                } else if currentStreamLoadGeneration == self.streamLoadGeneration {
+                    // Runs only once this task handle is cleared, so a policy
+                    // replan it issues is accepted rather than rejected as busy.
+                    self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
             }
             do {
@@ -3683,6 +3692,7 @@ class PlayerViewModel {
             || preferredProtocolV3SubtitleIndex != nil
         prefsForCurrentItem = nil
         prefsResolvedForCurrentItem = false
+        hasDeferredAutoSubtitlePolicy = false
     }
 
     private func resolvedAudioTrackIndexForResume() -> Int? {
@@ -4058,6 +4068,8 @@ class PlayerViewModel {
                     // session after a failed load.
                     await self.realtimeClient.bind(sessionId: session.sessionId)
                     await self.sessionBridge.reportProtocolV3PlanExecutionStarted(prepared)
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
             } catch is CancellationError {
                 // Tear the abandoned Aether load down before retiring its
@@ -7237,6 +7249,15 @@ class PlayerViewModel {
         guard combinedIndex != activePreparedProtocolV3.plan.selectedTracks.subtitle?.index else {
             return false
         }
+        // Inventory arrives as soon as the engine starts loading, before the
+        // start's server transition has committed. A replan staged then rolls
+        // that transition back and retires the session the engine is opening.
+        // Hold the policy until the load commits; the owning load task drains
+        // it through `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
+        guard committedProtocolV3LoadEpoch != nil else {
+            hasDeferredAutoSubtitlePolicy = true
+            return true
+        }
 
         selectedSubtitleId = track?.trackId
         lastLoadRequest?.preferredProtocolV3SubtitleIndex = combinedIndex
@@ -7246,6 +7267,17 @@ class PlayerViewModel {
             message: "Automatic caption policy selected a different subtitle track."
         )
         return true
+    }
+
+    /// Re-runs a caption policy pick that arrived while a V3 load was still
+    /// uncommitted. Call only after the load's server transition committed.
+    private func reapplyDeferredAutoSubtitlePolicyIfNeeded() {
+        guard hasDeferredAutoSubtitlePolicy else { return }
+        hasDeferredAutoSubtitlePolicy = false
+        guard !isDisposed,
+              activePreparedProtocolV3 != nil,
+              committedProtocolV3LoadEpoch != nil else { return }
+        applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
     }
 
     private func startProgressReporting() {

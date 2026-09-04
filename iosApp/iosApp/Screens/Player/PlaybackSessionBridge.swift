@@ -529,7 +529,11 @@ actor PlaybackSessionBridge {
     ) {
         // A newer load superseding an uncommitted candidate restores the last
         // committed bridge state and retires the abandoned allocation first.
-        rollbackAnyPendingProtocolV3Transition()
+        // A replan issued against that uncommitted candidate reuses its
+        // session id, so the "abandoned" allocation is the one about to be
+        // staged again; retiring it would DELETE the session the engine is
+        // about to read from and strand playback in 404 backoff.
+        rollbackAnyPendingProtocolV3Transition(retainingSessionId: candidateSessionId)
         pendingProtocolV3Transition = PendingProtocolV3Transition(
             priorSessionId: sessionId,
             priorSession: currentSession,
@@ -632,15 +636,35 @@ actor PlaybackSessionBridge {
         rollbackAnyPendingProtocolV3Transition()
     }
 
-    private func rollbackAnyPendingProtocolV3Transition() {
+    /// `retainingSessionId` names a session the caller is about to stage again;
+    /// it is left alive on the server instead of being retired as abandoned.
+    private func rollbackAnyPendingProtocolV3Transition(
+        retainingSessionId: String? = nil
+    ) {
         guard let pending = pendingProtocolV3Transition else { return }
         pendingProtocolV3Transition = nil
         sessionId = pending.priorSessionId
         currentSession = pending.priorSession
         activeProtocolV3 = pending.priorProtocolV3
-        if pending.candidateSessionId != pending.priorSessionId {
+        if Self.shouldRetireRolledBackCandidate(
+            candidateSessionId: pending.candidateSessionId,
+            priorSessionId: pending.priorSessionId,
+            retainingSessionId: retainingSessionId
+        ) {
             stopStaleSession(pending.candidateSessionId)
         }
+    }
+
+    /// A rolled-back candidate is retired only when nothing else still owns
+    /// it: not the committed prior session it replaced, and not a transition
+    /// that is about to stage the same session id again (a replan against an
+    /// uncommitted start reuses the start's session).
+    static func shouldRetireRolledBackCandidate(
+        candidateSessionId: String,
+        priorSessionId: String?,
+        retainingSessionId: String?
+    ) -> Bool {
+        candidateSessionId != priorSessionId && candidateSessionId != retainingSessionId
     }
 
     private func adoptSession(_ session: PlaybackSessionResponse) {
