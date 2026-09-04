@@ -39,6 +39,22 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ))
     }
 
+    func testNativeResumeIdentityDoesNotOverrideLaterLocalSelection() {
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11))
+        XCTAssertEqual(PlayerViewModel.selectedEmbeddedSubtitleIndexForResume(plan: plan,
+            selectedTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)), 11)
+        XCTAssertNil(PlayerViewModel.selectedEmbeddedSubtitleIndexForResume(plan: plan,
+            selectedTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)))
+        XCTAssertNil(PlayerViewModel.selectedEmbeddedSubtitleIndexForResume(plan: plan, selectedTrackID: nil))
+        let off = makePlan(container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "off",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11))
+        XCTAssertNil(PlayerViewModel.selectedEmbeddedSubtitleIndexForResume(plan: off,
+            selectedTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)))
+    }
+
     func testNativeEmbeddedDecisionRejectsRepackagedSourceAndInvalidIdentity() {
         for (delivery, index) in [("server_remux_progressive", 11), ("original_http", -1)] {
             let plan = makePlan(

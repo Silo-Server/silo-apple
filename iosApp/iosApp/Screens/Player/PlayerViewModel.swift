@@ -3605,6 +3605,7 @@ class PlayerViewModel {
         preferredSidecarSubtitleTrackId: Int64?,
         preferredProtocolV3SubtitleIndex: Int? = nil
     ) {
+        isLoadingSubtitles = false
         isLoading = true
         error = nil
         noticeDismissTask?.cancel()
@@ -3705,9 +3706,22 @@ class PlayerViewModel {
         return aetherPlaybackController.containsSubtitle(appTrackID: trackID)
     }
 
+    static func selectedEmbeddedSubtitleIndexForResume(plan: PlaybackV3Plan?, selectedTrackID: Int64?) -> Int? {
+        guard let plan,
+              plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.render,
+              let embedded = plan.subtitle.embedded,
+              let selected = plan.selectedSubtitleInventoryItem,
+              selectedTrackID == SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: selected.combinedIndex) else {
+            return nil
+        }
+        return embedded.streamIndex
+    }
+
     private func resolvedSubtitleTrackIndexForResume() -> Int? {
-        if let embedded = activePreparedProtocolV3?.plan.subtitle.embedded {
-            return embedded.streamIndex
+        if let index = Self.selectedEmbeddedSubtitleIndexForResume(
+            plan: activePreparedProtocolV3?.plan, selectedTrackID: selectedSubtitleId
+        ) {
+            return index
         }
         // The id space decides, not the row's metadata: a V3 picker row is
         // published in the sidecar space and carries its FFmpeg index only so
@@ -3745,7 +3759,9 @@ class PlayerViewModel {
     }
 
     private func resolvedSidecarSubtitleTrackIdForResume() -> Int64? {
-        if activePreparedProtocolV3?.plan.subtitle.embedded != nil { return nil }
+        if Self.selectedEmbeddedSubtitleIndexForResume(
+            plan: activePreparedProtocolV3?.plan, selectedTrackID: selectedSubtitleId
+        ) != nil { return nil }
         if let selectedSubtitleId, SubtitleTrackIdSpace.isSidecar(selectedSubtitleId) {
             return selectedSubtitleId
         }
