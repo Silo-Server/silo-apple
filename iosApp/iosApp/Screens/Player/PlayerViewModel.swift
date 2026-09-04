@@ -248,6 +248,7 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
+    var isLoadingSubtitles = false
     /// Fill progress (0–100) toward the buffering-resume threshold; nil
     /// when not buffering or when the active backend doesn't report it.
     var bufferingProgress: Double?
@@ -837,6 +838,7 @@ class PlayerViewModel {
                 // A sidecar is the server-selected artifact even when it was
                 // extracted from an embedded stream. Arming both identities
                 // would publish and select the same subtitle twice.
+                if let embedded = plan.subtitle.embedded { return embedded.streamIndex }
                 guard item.source == "embedded", item.delivery != "sidecar" else { return nil }
                 return ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
                     serverCombinedIndex: item.combinedIndex,
@@ -845,7 +847,7 @@ class PlayerViewModel {
                 )
             }
             let sidecarTrackId: Int64? = selectedSubtitle.flatMap { item in
-                guard item.delivery == "sidecar" else { return nil }
+                guard plan.subtitle.embedded == nil, item.delivery == "sidecar" else { return nil }
                 return SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
             }
             var request = copyForRecovery(
@@ -1168,6 +1170,8 @@ class PlayerViewModel {
         case .buffering(let buffering):
             isBuffering = buffering
             refreshPlaybackStats(force: true)
+        case .subtitleLoading(let loading):
+            isLoadingSubtitles = loading
         case .firstFrame:
             handleAetherStartupMilestone(epoch: scopedEvent.epoch)
         case .inventoryChanged:
@@ -1257,6 +1261,7 @@ class PlayerViewModel {
             selectedAudioId = aetherPlaybackController.engine.activeAudioTrackIndex
                 .map(Int64.init)
             isBuffering = false
+            isLoadingSubtitles = false
             bufferingProgress = nil
             isQualitySwitching = false
             if freshLoadOwnsFailureHandling || !isAetherLoadEstablished {
@@ -1557,6 +1562,7 @@ class PlayerViewModel {
         progressTask = nil
         isLoading = true
         isBuffering = false
+        isLoadingSubtitles = false
         bufferingProgress = nil
         streamLoadGeneration &+= 1
         let recoveryGeneration = streamLoadGeneration
@@ -1894,6 +1900,7 @@ class PlayerViewModel {
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
+        isLoadingSubtitles = false
         bufferingProgress = nil
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
@@ -1993,7 +2000,8 @@ class PlayerViewModel {
                 switch Self.protocolV3SidecarRestoreIntent(
                     snapshot: selectedSubtitleSnapshot,
                     selectedSubtitleIndex: prepared.protocolV3?.plan.selectedTracks.subtitle?.index,
-                    subtitleMode: prepared.protocolV3?.plan.subtitle.mode
+                    subtitleMode: prepared.protocolV3?.plan.subtitle.mode,
+                    isEmbedded: prepared.protocolV3?.plan.subtitle.embedded != nil
                 ) {
                 case .renderLocally(let trackId):
                     self.pendingSidecarSubtitleTrackId = trackId
@@ -2160,6 +2168,13 @@ class PlayerViewModel {
     private func protocolV3LoadFailureRecovery(
         _ error: Error
     ) -> (shouldAdvanceRoute: Bool, classification: String, message: String) {
+        if let error = error as? ApplePlaybackV3PlanError,
+           case .invalidEmbeddedSubtitle = error {
+            return (true, "subtitle_embedded_failed", error.localizedDescription)
+        }
+        if let failure = error as? AetherPlaybackController.EmbeddedSubtitleSelectionError {
+            return (true, "subtitle_embedded_failed", failure.localizedDescription)
+        }
         if let loadFailure = error as? AetherPlaybackController.LoadFailure {
             let failure = loadFailure.failure
             // Aether defines rate limiting as a retry-later condition at the
@@ -2848,6 +2863,7 @@ class PlayerViewModel {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         isLoading = true
         isBuffering = false
+        isLoadingSubtitles = false
         bufferingProgress = nil
         scrubPreviewProvider.endSession()
         let loadEpoch = aetherPlaybackController.beginLoad(
@@ -2896,6 +2912,9 @@ class PlayerViewModel {
         }
         // Startup ran to completion on this epoch, so the decode route is now
         // settled and deferred track picks may drive the engine.
+        if let embedded = prepared.protocolV3?.plan.subtitle.embedded {
+            try aetherPlaybackController.validateEmbeddedSubtitleSelection(embedded.streamIndex)
+        }
         establishedAetherLoadEpoch = loadEpoch
         scrubPreviewProvider.activate(spec)
         adoptAetherInventory()
@@ -3459,6 +3478,7 @@ class PlayerViewModel {
         }
         isLoading = false
         isBuffering = false
+        isLoadingSubtitles = false
         bufferingProgress = nil
         isPlaying = false
         showControls = true
@@ -3680,7 +3700,15 @@ class PlayerViewModel {
         return selectionIndex
     }
 
+    func subtitleUsesMovieTimeline(_ trackID: Int64?) -> Bool {
+        guard let trackID else { return false }
+        return aetherPlaybackController.containsSubtitle(appTrackID: trackID)
+    }
+
     private func resolvedSubtitleTrackIndexForResume() -> Int? {
+        if let embedded = activePreparedProtocolV3?.plan.subtitle.embedded {
+            return embedded.streamIndex
+        }
         // The id space decides, not the row's metadata: a V3 picker row is
         // published in the sidecar space and carries its FFmpeg index only so
         // an embedded pick can be persisted. Restoring it as an embedded index
@@ -3717,6 +3745,7 @@ class PlayerViewModel {
     }
 
     private func resolvedSidecarSubtitleTrackIdForResume() -> Int64? {
+        if activePreparedProtocolV3?.plan.subtitle.embedded != nil { return nil }
         if let selectedSubtitleId, SubtitleTrackIdSpace.isSidecar(selectedSubtitleId) {
             return selectedSubtitleId
         }
@@ -5614,8 +5643,10 @@ class PlayerViewModel {
     static func protocolV3SidecarRestoreIntent(
         snapshot: Int64?,
         selectedSubtitleIndex: Int?,
-        subtitleMode: String?
+        subtitleMode: String?,
+        isEmbedded: Bool = false
     ) -> ProtocolV3SidecarRestoreIntent? {
+        guard !isEmbedded else { return nil }
         guard let snapshot,
               SubtitleTrackIdSpace.isSidecar(snapshot),
               SubtitleTrackIdSpace.sidecarIndex(from: snapshot) == selectedSubtitleIndex else {
@@ -5659,9 +5690,9 @@ class PlayerViewModel {
         return ProtocolV3PendingTrackIntent(
             audioIndex: request.preferredAudioTrackIndex,
             embeddedSubtitleIndex: rendersSubtitleLocally
-                ? request.preferredSubtitleTrackIndex
+                ? (plan.subtitle.embedded?.streamIndex ?? request.preferredSubtitleTrackIndex)
                 : -1,
-            sidecarSubtitleTrackId: rendersSubtitleLocally
+            sidecarSubtitleTrackId: rendersSubtitleLocally && plan.subtitle.embedded == nil
                 ? request.preferredSidecarSubtitleTrackId
                 : nil
         )
@@ -5718,7 +5749,8 @@ class PlayerViewModel {
                 isHearingImpaired: descriptor.isHearingImpaired ?? false,
                 isDefault: descriptor.isDefault ?? false,
                 httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
-                formatHint: descriptor.codec
+                formatHint: descriptor.codec,
+                nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
             ),
             appTrackID: trackId
         )
@@ -6523,7 +6555,8 @@ class PlayerViewModel {
                     isHearingImpaired: known.hearingImpaired ?? false,
                     isDefault: known.default ?? false,
                     httpHeaders: aetherSubtitleRequestHeaders(for: url),
-                    formatHint: known.codec
+                    formatHint: known.codec,
+                    nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
                 ),
                 appTrackID: local.trackId
             )
@@ -6612,7 +6645,8 @@ class PlayerViewModel {
                     isHearingImpaired: descriptor.isHearingImpaired ?? false,
                     isDefault: descriptor.isDefault ?? false,
                     httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
-                    formatHint: descriptor.codec
+                    formatHint: descriptor.codec,
+                    nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
                 ),
                 appTrackID: appTrackID
             )
@@ -6799,7 +6833,8 @@ class PlayerViewModel {
                 isHearingImpaired: track.isHearingImpaired,
                 isDefault: track.isDefault,
                 httpHeaders: aetherSubtitleRequestHeaders(for: url),
-                formatHint: track.codec
+                formatHint: track.codec,
+                nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
             ),
             appTrackID: track.trackId
         )

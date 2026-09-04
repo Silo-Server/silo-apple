@@ -11,6 +11,75 @@ actor PlaybackTestActorBox<Value: Sendable> {
 
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
+    func testNativeEmbeddedDecisionUsesExactStreamWithoutMountingFallbackURL() throws {
+        let plan = makePlan(
+            container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11)
+        )
+        XCTAssertNoThrow(try ApplePlaybackV3PlanAdapter.validate(plan))
+        let spec = try AetherLoadSpec(
+            validating: plan, sessionID: "session-v3", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/movie.mkv")
+        )
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
+        let tracks = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan)
+        XCTAssertEqual(tracks.first?.ffIndex, 11)
+        XCTAssertEqual(tracks.first?.srcId, 7)
+        let request = PlayerViewModel.LoadRequest(contentId: "movie", preferredFileId: nil, preferredAudioTrackIndex: nil,
+                                                  preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+                                                  startFromBeginning: false)
+        let intent = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: request)
+        XCTAssertEqual(intent.embeddedSubtitleIndex, 11)
+        XCTAssertNil(intent.sidecarSubtitleTrackId)
+        XCTAssertNil(PlayerViewModel.protocolV3SidecarRestoreIntent(
+            snapshot: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7),
+            selectedSubtitleIndex: 7, subtitleMode: "render", isEmbedded: true
+        ))
+    }
+
+    func testNativeEmbeddedDecisionRejectsRepackagedSourceAndInvalidIdentity() {
+        for (delivery, index) in [("server_remux_progressive", 11), ("original_http", -1)] {
+            let plan = makePlan(
+                delivery: delivery, container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
+                subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+                embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: index)
+            )
+            XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(plan))
+        }
+    }
+
+    func testNativeEmbeddedDecisionRejectsContradictoryTrackIdentities() {
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 7,
+            decisionSubtitleTrackId: "file:42:subtitle:8", subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded"),
+                                makeInventoryItem(combinedIndex: 8, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11))
+        XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(plan)) { error in
+            guard case ApplePlaybackV3PlanError.invalidEmbeddedSubtitle = error else {
+                return XCTFail("Expected invalidEmbeddedSubtitle, got \(error)")
+            }
+        }
+    }
+
+    func testNativeCapabilityUsesCanonicalContainerAndCodecNames() {
+        let native = ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(containers: ["mkv", "matroska"])
+        XCTAssertEqual(native.count, 1)
+        XCTAssertEqual(native.first?.container, "mkv")
+        XCTAssertEqual(native.first?.trackIdentity, "ffmpeg_stream_index")
+        XCTAssertEqual(native.first?.assStyling, false)
+        XCTAssertFalse(native.first?.codecs.contains("xsub") ?? true)
+        XCTAssertEqual(ApplePlaybackV3Capabilities.normalizedSubtitleCodec("srt"), "subrip")
+    }
+
+    func testSubtitleClocksKeepAbsoluteSidecarsAlignedAfterReanchor() {
+        XCTAssertEqual(AetherSubtitleOverlay.renderClock(movieTime: 605, engineTime: 5,
+                                                        usesMovieTimeline: true, delaySeconds: 0.5), 604.5)
+        XCTAssertEqual(AetherSubtitleOverlay.renderClock(movieTime: 605, engineTime: 5,
+                                                        usesMovieTimeline: false, delaySeconds: 0.5), 4.5)
+    }
+
     func testServerGoldenDecisionDecodesAndPublishesCompleteSubtitleInventory() throws {
         let response = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3DecisionResponse.self,
@@ -54,7 +123,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(authoredASS.hearingImpaired, false)
         XCTAssertEqual(
             authoredASS.fontBundleUrl,
-            "/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42"
+            "/stream/11111111-1111-4111-8111-111111111111/subtitles/1/fonts?file_id=42&embedded_stream_index=0"
         )
     }
 
@@ -1861,6 +1930,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         decisionSubtitleTrackId: String? = nil,
         subtitleMode: String = "off",
         subtitleInventory: [PlaybackV3SubtitleInventoryItem] = [],
+        embeddedSubtitle: PlaybackV3EmbeddedSubtitle? = nil,
         transformations: [PlaybackV3Transformation] = [],
         appliedQuirks: [PlaybackV3AppliedQuirk] = [],
         runtimeCorrections: [String] = [],
@@ -1944,6 +2014,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 trackId: decisionSubtitleTrackId
                     ?? selectedSubtitleIndex.map { "file:42:subtitle:\($0)" },
                 artifact: nil,
+                embedded: embeddedSubtitle,
                 inventory: subtitleInventory
             ),
             transformations: transformations,

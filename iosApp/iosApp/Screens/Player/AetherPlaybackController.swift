@@ -12,6 +12,17 @@ import MediaPlayer
 /// engine observation enter the app through this one generation-fenced owner.
 @MainActor
 final class AetherPlaybackController {
+    struct EmbeddedSubtitleSelectionError: LocalizedError {
+        let streamIndex: Int
+        var errorDescription: String? { "The selected embedded subtitle is unavailable in the opened media." }
+    }
+
+    func validateEmbeddedSubtitleSelection(_ streamIndex: Int) throws {
+        guard engine.subtitleTracks.contains(where: { !$0.isExternal && $0.id == streamIndex }) else {
+            throw EmbeddedSubtitleSelectionError(streamIndex: streamIndex)
+        }
+    }
+
     struct LoadFailure: LocalizedError {
         let failure: PlaybackErrorInfo
         let underlying: Error
@@ -29,6 +40,7 @@ final class AetherPlaybackController {
         case playerTime(Double)
         case duration(Double)
         case buffering(Bool)
+        case subtitleLoading(Bool)
         case firstFrame
         case inventoryChanged
         case telemetryChanged
@@ -511,6 +523,11 @@ final class AetherPlaybackController {
 
         engine.$isBuffering
             .sink { [weak self] buffering in self?.publish(.buffering(buffering)) }
+            .store(in: &subscriptions)
+
+        engine.$isLoadingSubtitles
+            .removeDuplicates()
+            .sink { [weak self] loading in self?.publish(.subtitleLoading(loading)) }
             .store(in: &subscriptions)
 
         engine.$hasFirstFrameReadyForDisplay

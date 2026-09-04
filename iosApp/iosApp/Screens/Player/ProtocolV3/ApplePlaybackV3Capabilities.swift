@@ -46,7 +46,8 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.outputChangeFeature,
         PlaybackProtocolV3.directStreamResumeFeature,
         PlaybackProtocolV3.headerAuthenticatedMediaFeature,
-        PlaybackProtocolV3.softwareVideoDecodeFeature
+        PlaybackProtocolV3.softwareVideoDecodeFeature,
+        PlaybackProtocolV3.embeddedSubtitlesFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
@@ -56,6 +57,7 @@ enum ApplePlaybackV3Capabilities {
     static let audiobookFeatures = features.filter {
         $0 != PlaybackProtocolV3.seekReanchorFeature
             && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
+            && $0 != PlaybackProtocolV3.embeddedSubtitlesFeature
     }
 
     /// `authorized_media_origins_v1` is negotiated per attempt rather than
@@ -106,6 +108,36 @@ enum ApplePlaybackV3Capabilities {
             ]
         )
     ]
+
+    static func normalizedSubtitleCodec(_ codec: String) -> String {
+        switch codec.lowercased() {
+        case "srt": return "subrip"
+        case "vtt": return "webvtt"
+        case "tx3g": return "mov_text"
+        case "pgs", "pgssub": return "hdmv_pgs_subtitle"
+        case "dvdsub", "vobsub": return "dvd_subtitle"
+        case "dvbsub": return "dvb_subtitle"
+        default: return codec.lowercased()
+        }
+    }
+
+    // The pinned Aether demuxer exposes FFmpeg stream ids and drains text and
+    // bitmap packets from the original source. XSUB has no shipped decoder.
+    static func nativeEmbeddedSubtitleCapabilities(containers: [String]) -> [PlaybackV3NativeEmbeddedSubtitleCapability] {
+        var seen = Set<String>()
+        return containers.map { $0.lowercased() == "matroska" ? "mkv" : $0.lowercased() }
+            .filter { ["mkv", "mp4", "mov", "m4v", "webm"].contains($0) && seen.insert($0).inserted }.map {
+            PlaybackV3NativeEmbeddedSubtitleCapability(
+                container: $0,
+                codecs: $0 == "mkv"
+                    ? ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]
+                    : ($0 == "webm" ? ["webvtt"] : ["mov_text"]),
+                trackIdentity: "ffmpeg_stream_index",
+                assStyling: false,
+                fontAttachments: false
+            )
+        }
+    }
 
     static func snapshot(
         videoCapabilityMode requestedMode: AppleDecodeCapabilities.StreamingVideoCapabilityMode? = nil
@@ -167,6 +199,7 @@ enum ApplePlaybackV3Capabilities {
             AppleDecodeCapabilities.isSimulator ? [] : deviceClientTransformations
 
         let aetherSubtitles = PlaybackV3DeliverySubtitleCapabilities(
+            nativeEmbedded: nativeEmbeddedSubtitleCapabilities(containers: containers),
             embeddedText: true,
             sidecarText: true,
             // The Silo overlay preserves normalized text and placement, not

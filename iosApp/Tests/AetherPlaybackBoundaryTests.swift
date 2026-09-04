@@ -1093,6 +1093,40 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         )
     }
 
+    func testMissingEmbeddedStreamIsRejectedBeforePlanCommit() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        XCTAssertThrowsError(try controller.validateEmbeddedSubtitleSelection(11)) { error in
+            XCTAssertTrue(error is AetherPlaybackController.EmbeddedSubtitleSelectionError)
+        }
+    }
+
+    /// Opt-in local fixture: two embedded SRT tracks, with the second stream
+    /// at FFmpeg index 3 and text "Native track 2". No sidecar is registered.
+    func testOriginalHTTPSelectsExactEmbeddedSubtitleWithoutSidecar() async throws {
+        guard let rawURL = ProcessInfo.processInfo.environment["SILO_AETHER_EMBEDDED_FIXTURE_URL"],
+              let url = URL(string: rawURL) else {
+            throw XCTSkip("Set SILO_AETHER_EMBEDDED_FIXTURE_URL to the local two-track MKV fixture")
+        }
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let spec = try AetherLoadSpec(directURL: url, headers: [:], startPosition: 0, audioOnly: false)
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        let epoch = controller.beginLoad(spec)
+        try await controller.finishLoad(epoch)
+        try controller.validateEmbeddedSubtitleSelection(3)
+        controller.selectSubtitleTrack(id: 3)
+        controller.play()
+        let deadline = Date().addingTimeInterval(15)
+        while !controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }),
+              Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, 3)
+        XCTAssertTrue(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }))
+        XCTAssertFalse(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 1" }))
+    }
+
     func testControllerConstructsOnlyAetherEngine() throws {
         let controller = try AetherPlaybackController()
         XCTAssertEqual(controller.engine.state, .idle)

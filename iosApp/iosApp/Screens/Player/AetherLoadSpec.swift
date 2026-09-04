@@ -295,9 +295,7 @@ struct AetherLoadSpec {
         resumeSourcePosition: Double? = nil,
         panelIsInHDRMode: Bool? = nil
     ) throws {
-        guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
-            throw ValidationError.unsupportedDelivery(plan.delivery)
-        }
+        try ApplePlaybackV3PlanAdapter.validate(plan)
         let resolvedPlanSourceURL: URL?
         if let resolveURL {
             resolvedPlanSourceURL = resolveURL(plan.stream.url)
@@ -331,9 +329,10 @@ struct AetherLoadSpec {
         // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
-        if let artifact = plan.subtitle.artifact,
+        if plan.subtitle.embedded == nil,
+           let artifact = plan.subtitle.artifact,
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
-            guard abs(artifact.timingOriginSeconds - plan.timeline.timelineOffsetSeconds) < 0.001 else {
+            guard artifact.timingOriginSeconds.isFinite, abs(artifact.timingOriginSeconds) < 0.001 else {
                 throw ValidationError.unsupportedSubtitleTimingOrigin(
                     origin: artifact.timingOriginSeconds,
                     timelineOffset: plan.timeline.timelineOffsetSeconds
@@ -369,7 +368,8 @@ struct AetherLoadSpec {
                     resourceURL: artifactURL,
                     trustedOriginURLs: [sourceURL, apiOriginURL].compactMap { $0 }
                 ),
-                formatHint: artifact.format
+                formatHint: artifact.format,
+                nativeTimelineOffsetSeconds: plan.timeline.timelineOffsetSeconds
             ))
             // A declared artifact the inventory does not name has no stable
             // Silo id; leaving the slot empty keeps the arrays parallel and
