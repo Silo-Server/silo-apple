@@ -276,6 +276,15 @@ enum PosterImageCache {
     /// is a straight memory-cache hit with no second decode.
     static func prefetchHeroBackdrops(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
+        prefetcher.startPrefetching(with: urls.map { heroBackdropRequest(for: $0) })
+    }
+
+    /// The exact request `TVRootHeroBackdrop` issues for a hero backdrop, so
+    /// a warm decode and the display share one memory-cache key.
+    static func heroBackdropRequest(
+        for url: URL,
+        priority: ImageRequest.Priority = .normal
+    ) -> ImageRequest {
         let pointSize = TVBackdropArtworkLayout.artworkSize(
             forViewportWidth: TVBackdropArtworkLayout.viewportWidth
         )
@@ -283,7 +292,21 @@ enum PosterImageCache {
             width: pointSize.width * displayScale,
             height: pointSize.height * displayScale
         )
-        prefetcher.startPrefetching(with: urls.map { displayRequest(url: $0, pixelSize: pixelSize) })
+        return displayRequest(url: url, pixelSize: pixelSize, priority: priority)
+    }
+
+    /// Fetch and decode one hero backdrop at display size and sample its
+    /// tint, concurrently. Used by the marquee while a row-change scroll
+    /// holds the visible swap: the user is waiting on exactly this image, so
+    /// it runs at high priority and cancels with the caller's task.
+    static func warmHeroBackdrop(_ url: URL) async {
+        async let image: Void = {
+            _ = try? await ImagePipeline.shared.image(
+                for: heroBackdropRequest(for: url, priority: .high)
+            )
+        }()
+        async let tint: Void = { _ = await HeroBackdropPalette.tintColor(for: url) }()
+        _ = await (image, tint)
     }
     #endif
 }
