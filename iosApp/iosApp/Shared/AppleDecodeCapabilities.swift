@@ -86,8 +86,8 @@ enum AppleDecodeCapabilities {
     /// detailed entry below because ordinary H.264 is also hardware-backed.
     static let softwareVideoCodecs = ["av1", "vp9", "mpeg2video", "vc1"]
 
-    /// The complete online video manifest of AetherEngine 6.34.0 at
-    /// 0ae80496 with FFmpegBuild 2.4.3. Aether routes H.264, HEVC, and
+    /// The complete online video manifest of AetherEngine 6.67.2 with
+    /// FFmpegBuild 3.0.0 (same FFmpeg n8.1.2 decoder set as 2.4.3). Aether routes H.264, HEVC, and
     /// hardware-decodable AV1 natively when the exact probed stream permits;
     /// every other decoder present in the build goes through libavcodec.
     static let aetherOriginalHTTPVideoCodecs = [

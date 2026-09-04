@@ -149,4 +149,6 @@ must remove or replace the brand assets. Publishing a Silo-branded app to an app
 store requires written permission. See [TRADEMARK.md](TRADEMARK.md) for what's
 permitted — including referential use like "compatible with Silo."
 
-FFmpeg, Nuke, fastlane, and other third-party dependencies retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Media playback is built on [AetherEngine](https://github.com/superuser404notfound/AetherEngine)
+by Vincent Herbst, used under LGPL-3.0 with its Apple Store / DRM exception.
+AetherEngine, FFmpeg, Nuke, fastlane, and other third-party dependencies retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
