@@ -305,7 +305,9 @@ enum DetailPlaybackFormatting {
         in tracks: [SubtitleTrack]
     ) -> SubtitleTrack? {
         var best: (SubtitleTrack, Int)?
-        for track in tracks where track.index != nil {
+        // Every row is a candidate, external ones included, exactly as the
+        // player's `SubtitleAutoResolver.bestSignatureMatch` scores them.
+        for track in tracks {
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
@@ -358,13 +360,11 @@ enum DetailPlaybackFormatting {
         // tie resolves to the same track playback will start. The returned
         // ordinal stays the catalog offset so "Track N" labels line up with
         // `subtitleOptions`.
-        // `SubtitleTrackCandidates` drops embedded tracks with no stream index
-        // because the plan cannot select them; the preview must not name one.
-        let ordered = (
-            catalog.filter { $0.element.external == true }
-                + catalog.filter { $0.element.external != true }
-        ).filter { $0.element.external == true || $0.element.index != nil }
-        guard !ordered.isEmpty else { return nil }
+        // Same candidate set and order as `SubtitleTrackCandidates`: externals
+        // first, then embedded. An embedded row with no index is FFmpeg stream
+        // 0 (the wire omits a zero index), so it stays selectable.
+        let ordered = catalog.filter { $0.element.external == true }
+            + catalog.filter { $0.element.external != true }
         guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
             return nil
         }

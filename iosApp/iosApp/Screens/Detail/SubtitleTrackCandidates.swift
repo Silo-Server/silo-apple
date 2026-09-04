@@ -28,7 +28,10 @@ enum SubtitleTrackCandidates {
                 trackId = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: externalOrdinal)
                 externalOrdinal += 1
             } else {
-                guard let index = track.index else { return nil }
+                // The server emits `index,omitempty` on an Int, so an embedded
+                // track at FFmpeg stream 0 arrives with no index. Embedded is
+                // the only case where nil can mean 0; keep it selectable.
+                let index = track.index ?? 0
                 sourceIndex = nil
                 trackId = Int64(index)
             }
@@ -48,7 +51,7 @@ enum SubtitleTrackCandidates {
                     isHearingImpaired: track.hearingImpaired ?? false,
                     isExternal: isExternal,
                     isSelected: false,
-                    ffIndex: isExternal ? nil : track.index,
+                    ffIndex: isExternal ? nil : (track.index ?? 0),
                     srcId: sourceIndex
                 )
             )
