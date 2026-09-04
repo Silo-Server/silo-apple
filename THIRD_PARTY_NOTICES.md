@@ -15,7 +15,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 6.34.0 | `0ae80496ab6f3fda135f43ef195ff10961c0e625` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 6.34.0 + Silo handover patches | `653be639441d3f7d06332a2f995950497ad62e0f` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 2.4.3 | `b2185fa842b829cd53d182a5e9a53182c1d9c84c` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.0.0 | `89be93431c2a5f2e54fb77e93059071b8d2ddb3a` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
@@ -31,11 +31,17 @@ included here.
 Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
-Store / DRM exception. Silo uses the source unmodified at the exact revision
-above. The bundled acknowledgements include AetherEngine's complete license
-and exception plus the GNU GPL version 3 text incorporated by LGPLv3.
+Store / DRM exception. Silo builds a published fork revision: upstream release
+`6.34.0` plus five commits that retain native `AVPlayerItem`s across episode
+handover and add the `prepareForItemReplacement()` entry point Silo calls.
+Those modifications are published under the LGPL on the fork branch below,
+which satisfies the license's source obligation for modified code. The bundled
+acknowledgements include AetherEngine's complete license and exception plus
+the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/superuser404notfound/AetherEngine/tree/0ae80496ab6f3fda135f43ef195ff10961c0e625>
+- Exact source: <https://github.com/blurbery/AetherEngine/tree/653be639441d3f7d06332a2f995950497ad62e0f>
+  (fork branch `fix/native-handover-state`)
+- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/6.34.0>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
   `GPL-3.0.txt`
@@ -43,8 +49,9 @@ and exception plus the GNU GPL version 3 text incorporated by LGPLv3.
 The exception permits Apple App Store and TestFlight distribution despite
 store signing, DRM, and relinking restrictions. It does not waive source-code
 obligations: the exact-revision link above must stay current for each release,
-and any downstream modifications must be published under the LGPL. Silo ships
-the source unmodified, so the pointer is the whole obligation.
+and any downstream modifications must be published under the LGPL. The fork
+branch above is that publication; keep it public for as long as builds that
+link this revision are distributed.
 
 ## FFmpegBuild and its component libraries
 
