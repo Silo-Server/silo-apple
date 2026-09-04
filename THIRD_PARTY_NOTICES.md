@@ -88,11 +88,13 @@ tags ever move. Forking the pinned FFmpegBuild revision is cheap,
 commit-immutable insurance if stronger provenance is ever wanted, but the
 exact-revision links satisfy the source pointer as they stand.
 
-The checked iOS debug app embeds exactly the nine frameworks in the table,
-and its FFmpeg configure strings contain `--enable-shared` without
-`--enable-gpl`, `--enable-version3`, or nonfree enablement. Repeat this
-inventory against each release archive; debug evidence is not a release
-substitute.
+A tvOS Simulator debug build against FFmpegBuild 3.0.0, inspected on
+2026-09-04, embeds exactly the nine `Aether`-prefixed frameworks in the table
+under `SiloTV.app/Frameworks/`, its `AetherLibavcodec` configure string
+contains `--enable-shared` without `--enable-gpl`, `--enable-version3`, or
+nonfree enablement, and the app binary exports no `avcodec_`/`avformat_`
+symbols of its own. Repeat this inventory against each release archive;
+debug evidence is not a release substitute.
 
 - Exact packaging source and rebuild script:
   <https://github.com/superuser404notfound/FFmpegBuild/tree/421e13be7061de67d91b85ac34a6b22a002b164f>
