@@ -16,9 +16,26 @@ Use this for ordinary rows, grids, button groups, sheets, and menus where each
 actionable item can be a real focus target.
 
 - Render stable `Button`, `NavigationLink`, or `.focusable(true)` items.
-- Group related movement with `.focusSection()` and `.focusScope(...)`.
+  Every actionable element must be reachable by directional movement alone;
+  tvOS has no Tab-key or pointer fallback.
+- Use `.focusSection()` on a container so directional movement can enter it
+  and land on its nearest focusable child, for example a sidebar column that
+  does not line up with the grid beside it.
+- Use `.focusScope(namespace)` together with `prefersDefaultFocus(in:)` and
+  `resetFocus(in:)` to define where default focus lands inside that scope.
+  `focusScope` does not affect directional movement; `focusSection` does.
 - Use `@FocusState`, `prefersDefaultFocus`, `defaultFocus`, or `resetFocus` to
   seed or restore focus, not to fight the focus engine on every move.
+  `defaultFocus` is evaluated when the view first appears and on automatic
+  focus-state updates, not on user-driven moves, unless you pass
+  `priority: .userInitiated`.
+- Do not move focus programmatically in response to app state unless the
+  focused item disappeared. Apple's Human Interface Guidelines say to avoid
+  changing focus without the user's interaction; the one exception is moving
+  focus to a neighbour when the focused item is removed.
+- Rely on the system focus effect. Use `.focusEffectDisabled()` only when the
+  control draws its own focus appearance, and keep that appearance visually
+  consistent with the platform (scale, lift, highlight).
 - Keep the focused subtree mounted and structurally stable while moving focus.
 - Attach `onMoveCommand` only at intentional boundaries, such as "Up from the
   first card returns to the top menu." Do not intercept normal in-zone movement.
@@ -38,13 +55,18 @@ Use this when the visual control is one logical selector even though it renders
 multiple highlighted rows or columns. A cascading selector is the main example.
 
 - Make one container the real focus target with `.focusable(true)` and a single
-  `@FocusState`.
+  `@FocusState`. On tvOS the default `interactions` set already includes
+  `.activate`, so `.focusable(true)` and
+  `.focusable(true, interactions: .activate)` behave the same; use the
+  explicit form only if the view is shared with macOS or iOS.
 - Render rows as passive labels; do not make them `Button`s and do not attach
   per-row `.focused(...)` bindings.
 - Store the highlighted row/column in ordinary `@State`.
 - Handle all D-pad movement for the composite with one `onMoveCommand`.
 - Commit the highlighted selection on Select, usually with `onTapGesture` on
-  the focused container.
+  the focused container. Use `onExitCommand` for Menu/Back and
+  `onPlayPauseCommand` for Play/Pause. Do not use `onKeyPress` for the Siri
+  Remote; Apple documents it as hardware-keyboard input only.
 - Add useful accessibility labels and button/selected traits to the composite
   or its rendered labels so VoiceOver still describes the action.
 
@@ -130,7 +152,24 @@ Unexpected signs:
 
 ## References
 
-- Apple tvOS focus engine and remote guidance:
-  https://developer.apple.com/library/archive/documentation/General/Conceptual/AppleTV_PG/WorkingwiththeAppleTVRemote.html
+- Human Interface Guidelines, Focus and selection (system focus effects, do
+  not move focus without user interaction, every tvOS element must be
+  reachable):
+  https://developer.apple.com/design/human-interface-guidelines/focus-and-selection
+- UIKit, About focus interactions for Apple TV (focus engine rules; only the
+  engine moves focus directionally):
+  https://developer.apple.com/documentation/uikit/about-focus-interactions-for-apple-tv
+- SwiftUI Focus overview (focusable, FocusState, focusScope, focusSection,
+  default focus, resetFocus, focus effects):
+  https://developer.apple.com/documentation/swiftui/focus
 - SwiftUI `focusSection()`:
-  https://developer.apple.com/documentation/swiftui/view/focussection%28%29
+  https://developer.apple.com/documentation/swiftui/view/focussection()
+- SwiftUI `focusable(_:interactions:)`:
+  https://developer.apple.com/documentation/swiftui/view/focusable(_:interactions:)
+- SwiftUI `defaultFocus(_:_:priority:)`:
+  https://developer.apple.com/documentation/swiftui/view/defaultfocus(_:_:priority:)
+- SwiftUI `onMoveCommand(perform:)`, `onExitCommand(perform:)`,
+  `onPlayPauseCommand(perform:)`:
+  https://developer.apple.com/documentation/swiftui/view/onmovecommand(perform:)
+- Focus Cookbook sample (WWDC23, "The SwiftUI cookbook for focus"):
+  https://developer.apple.com/documentation/swiftui/focus-cookbook-sample
