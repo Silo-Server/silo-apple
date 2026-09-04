@@ -351,7 +351,32 @@ enum DetailPlaybackFormatting {
         version: FileVersion?,
         context: SubtitleAutoContext
     ) -> (track: SubtitleTrack, ordinal: Int)? {
-        let tracks = version?.subtitleTracks ?? []
+        let catalog = Array((version?.subtitleTracks ?? []).enumerated())
+        guard !catalog.isEmpty else { return nil }
+        // Search in the Protocol V3 combined order (externals first) that
+        // `SubtitleTrackCandidates` and the plan inventory use, so a first-match
+        // tie resolves to the same track playback will start. The returned
+        // ordinal stays the catalog offset so "Track N" labels line up with
+        // `subtitleOptions`.
+        // `SubtitleTrackCandidates` drops embedded tracks with no stream index
+        // because the plan cannot select them; the preview must not name one.
+        let ordered = (
+            catalog.filter { $0.element.external == true }
+                + catalog.filter { $0.element.external != true }
+        ).filter { $0.element.external == true || $0.element.index != nil }
+        guard !ordered.isEmpty else { return nil }
+        guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
+            return nil
+        }
+        return (pick.track, ordered[pick.ordinal].offset)
+    }
+
+    /// `autoResolvedSubtitle(version:context:)` over an already ordered list;
+    /// `ordinal` is the position in `tracks`.
+    private static func autoResolvedSubtitle(
+        in tracks: [SubtitleTrack],
+        context: SubtitleAutoContext
+    ) -> (track: SubtitleTrack, ordinal: Int)? {
         guard !tracks.isEmpty else { return nil }
 
         let mode = SubtitleMode(rawValue: context.mode ?? "") ?? .auto
