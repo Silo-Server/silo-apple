@@ -358,8 +358,13 @@ enum DetailPlaybackFormatting {
         // tie resolves to the same track playback will start. The returned
         // ordinal stays the catalog offset so "Track N" labels line up with
         // `subtitleOptions`.
-        let ordered = catalog.filter { $0.element.external == true }
-            + catalog.filter { $0.element.external != true }
+        // `SubtitleTrackCandidates` drops embedded tracks with no stream index
+        // because the plan cannot select them; the preview must not name one.
+        let ordered = (
+            catalog.filter { $0.element.external == true }
+                + catalog.filter { $0.element.external != true }
+        ).filter { $0.element.external == true || $0.element.index != nil }
+        guard !ordered.isEmpty else { return nil }
         guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
             return nil
         }

@@ -7252,7 +7252,11 @@ class PlayerViewModel {
         }
         // The plan may name the selected subtitle by stable identity alone;
         // resolve it through the inventory so an identical pick never replans.
-        let planIndex = activePreparedProtocolV3.plan.selectedSubtitleCombinedIndex
+        // An `off` plan can keep a stale identity, and `off` means nothing is
+        // selected regardless (mirrors `subtitlePickerTracks`).
+        let planIndex = activePreparedProtocolV3.plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+            ? nil
+            : activePreparedProtocolV3.plan.selectedSubtitleCombinedIndex
         guard combinedIndex != planIndex else {
             return false
         }

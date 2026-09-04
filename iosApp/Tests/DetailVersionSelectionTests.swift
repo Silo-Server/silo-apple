@@ -441,6 +441,29 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(label, "Auto: English · ASS", "preview must follow the external-first order playback uses; got \(label)")
     }
 
+    func testAutoSubtitlePreviewSkipsEmbeddedTracksWithoutAnIndex() {
+        // An embedded track without a stream index cannot be selected by the
+        // plan and is dropped from playback candidates; the preview must not
+        // name it either.
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "codec": "subrip", "language": "eng", "title": "Broken" },
+              { "index": 3, "codec": "ass", "language": "eng" }
+            ]
+          }
+        ]
+        """)
+        let label = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
+        )
+        XCTAssertEqual(label, "Auto: English · ASS", "index-less embedded track must be skipped; got \(label)")
+    }
+
     func testSubtitleLabelsIncludeTypeAndLanguage() {
         let versions = decodedVersions("""
         [
