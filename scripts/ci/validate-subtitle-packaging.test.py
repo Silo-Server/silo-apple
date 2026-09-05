@@ -16,7 +16,11 @@ class SubtitlePackagingTests(unittest.TestCase):
     def test_all_rejected_wrappers_fail_in_exported_ipa(self):
         with tempfile.TemporaryDirectory() as scratch:
             ipa = Path(scratch) / "SiloTV.ipa"
-            for name in ["Libass", "Libfreetype", "Libfribidi", "Libharfbuzz", "Libunibreak"]:
+            rejected_wrappers = [
+                "Libass", "Libfreetype", "Libfribidi", "Libharfbuzz", "Libunibreak",
+                "fontconfig", "freetype", "fribidi", "harfbuzz", "libpng",
+            ]
+            for name in rejected_wrappers:
                 with self.subTest(framework=name):
                     with zipfile.ZipFile(ipa, "w") as archive:
                         archive.writestr(f"Payload/SiloTV.app/Frameworks/{name}.framework/Info.plist", "")

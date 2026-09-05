@@ -46,6 +46,14 @@ actor ASSSubtitleRenderer {
         let track: UnsafeMutablePointer<ASS_Track>
 
         init(header: String, fonts: [FontAttachment]) throws {
+            // Validate before allocating native resources so rejected input owns nothing.
+            for font in fonts {
+                guard !font.data.isEmpty, font.data.count <= Int32.max else { throw RenderError.invalidData }
+            }
+            var bytes = Array(header.utf8CString)
+            guard bytes.count <= Int32.max else { throw RenderError.invalidData }
+            let length = Int32(bytes.count - 1)
+
             guard let library = ass_library_init() else { throw RenderError.initializationFailed }
             guard let renderer = ass_renderer_init(library) else {
                 ass_library_done(library)
@@ -62,16 +70,12 @@ actor ASSSubtitleRenderer {
             // Subtitle text and attachment names must not enter diagnostic logs.
             ass_set_message_cb(library, { _, _, _, _ in }, nil)
             for font in fonts {
-                guard !font.data.isEmpty, font.data.count <= Int32.max else { throw RenderError.invalidData }
                 font.data.withUnsafeBytes { bytes in
                     ass_add_font(library, font.filename,
                                  bytes.baseAddress!.assumingMemoryBound(to: CChar.self), Int32(bytes.count))
                 }
             }
             ass_set_fonts(renderer, nil, "Helvetica", Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
-            var bytes = Array(header.utf8CString)
-            guard bytes.count <= Int32.max else { throw RenderError.invalidData }
-            let length = Int32(bytes.count - 1)
             bytes.withUnsafeMutableBufferPointer { ass_process_codec_private(track, $0.baseAddress, length) }
             ass_set_check_readorder(track, 0)
         }
