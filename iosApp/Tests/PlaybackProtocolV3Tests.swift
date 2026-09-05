@@ -98,6 +98,96 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(intent.embeddedSubtitleIndex)
     }
 
+    func testRenewalKeepsServerSubtitlesOffAfterLocalDisable() {
+        let original = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: 11, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false, preferredProtocolV3SubtitleIndex: 7
+        )
+        // Off and AI-live both disable the server subtitle and carry no sidecar.
+        let recovery = original.copyForRecovery(
+            preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1, preferredSidecarSubtitleTrackId: nil,
+            offlineDownloadId: nil, serverSubtitlesDisabled: true
+        )
+        XCTAssertNil(recovery.preferredProtocolV3SubtitleIndex)
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac"),
+            explicitFFmpegIndex: recovery.preferredSubtitleTrackIndex,
+            explicitCombinedIndex: recovery.preferredProtocolV3SubtitleIndex,
+            preferredLanguage: "en", mode: nil, showForced: false,
+            trackSignature: nil, currentAudioLanguage: nil
+        )
+        XCTAssertNil(intent.combinedIndex)
+        XCTAssertNil(intent.ffmpegStreamIndex)
+    }
+
+    func testResumeDistinguishesOffFromPendingStartupSelection() {
+        let sidecar = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)
+        XCTAssertTrue(PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: SubtitleTrackIdSpace.makeAILiveTrackId(0), hasExplicitChoice: true,
+            pendingEmbeddedIndex: 11, pendingSidecarID: sidecar))
+        XCTAssertFalse(PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: nil, hasExplicitChoice: true,
+            pendingEmbeddedIndex: 11, pendingSidecarID: nil))
+        XCTAssertFalse(PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: nil, hasExplicitChoice: true,
+            pendingEmbeddedIndex: -1, pendingSidecarID: sidecar))
+        XCTAssertTrue(PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: nil, hasExplicitChoice: true,
+            pendingEmbeddedIndex: -1, pendingSidecarID: nil))
+        XCTAssertTrue(PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: nil, hasExplicitChoice: true,
+            pendingEmbeddedIndex: nil, pendingSidecarID: nil))
+        XCTAssertFalse(PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: nil, hasExplicitChoice: false,
+            pendingEmbeddedIndex: nil, pendingSidecarID: nil))
+    }
+
+    func testRenewalPreservesBurnInBeforeItsPickerSelectionPublishes() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        let plan = makePlan(selectedSubtitleIndex: 7, subtitleMode: "burn_in",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded", delivery: "burn_in_only")])
+        let original = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false, preferredProtocolV3SubtitleIndex: 7
+        ).adoptingProtocolV3Intent(plan: plan, selectedVersion: version, activeQualityId: "original")
+        let pending = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: original)
+        XCTAssertEqual(pending.embeddedSubtitleIndex, -1)
+        XCTAssertNil(pending.sidecarSubtitleTrackId)
+        XCTAssertEqual(pending.serverRenderedSubtitleTrackId, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7))
+        let disabled = PlayerViewModel.serverSubtitlesDisabledForResume(
+            selectedTrackID: nil, hasExplicitChoice: true,
+            pendingEmbeddedIndex: pending.embeddedSubtitleIndex,
+            pendingSidecarID: pending.sidecarSubtitleTrackId,
+            pendingServerRenderedID: pending.serverRenderedSubtitleTrackId
+        )
+        XCTAssertFalse(disabled)
+        let recovery = original.copyForRecovery(
+            preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1, preferredSidecarSubtitleTrackId: nil,
+            offlineDownloadId: nil, serverSubtitlesDisabled: disabled
+        )
+        XCTAssertEqual(recovery.preferredProtocolV3SubtitleIndex, 7)
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: recovery.preferredSubtitleTrackIndex,
+            explicitCombinedIndex: recovery.preferredProtocolV3SubtitleIndex,
+            preferredLanguage: nil, mode: nil, showForced: false,
+            trackSignature: nil, currentAudioLanguage: nil
+        )
+        XCTAssertEqual(intent.combinedIndex, 7)
+        XCTAssertNil(intent.ffmpegStreamIndex)
+    }
+
+    func testTeardownClearsSubtitleLoadingWithoutAnEngineEvent() async {
+        let model = PlayerViewModel()
+        model.isLoadingSubtitles = true
+        model.cleanup()
+        XCTAssertFalse(model.isLoadingSubtitles)
+        await model.waitForCleanupCompletion()
+    }
+
     func testRenewalReplacesPlanSidecarWithItsNativeEmbeddedIdentity() {
         let plan = makePlan(container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
             subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],

@@ -228,6 +228,7 @@ class PlayerViewModel {
     @discardableResult
     private func disposeAetherPlayback(forReplacement: Bool = false) -> Task<Void, Never>? {
         let previewShutdown = scrubPreviewProvider.endSession()
+        isLoadingSubtitles = false
         activeAetherLoadEpoch = nil
         establishedAetherLoadEpoch = nil
         committedProtocolV3LoadEpoch = nil
@@ -801,7 +802,8 @@ class PlayerViewModel {
             preferredAudioTrackIndex: Int?,
             preferredSubtitleTrackIndex: Int?,
             preferredSidecarSubtitleTrackId: Int64?,
-            offlineDownloadId: String?
+            offlineDownloadId: String?,
+            serverSubtitlesDisabled: Bool = false
         ) -> LoadRequest {
             var request = LoadRequest(
                 contentId: contentId,
@@ -816,8 +818,12 @@ class PlayerViewModel {
             // A completed download can be selected after the last server plan.
             // Ask the replacement session for that combined ordinal; retaining
             // the old plan's ordinal would reselect its embedded subtitle.
-            if let preferredSidecarSubtitleTrackId,
-               SubtitleTrackIdSpace.isSidecar(preferredSidecarSubtitleTrackId) {
+            // Local decoder Off also accompanies burn-in. Only an explicit
+            // server disable may erase the server's selected ordinal.
+            if serverSubtitlesDisabled {
+                request.preferredProtocolV3SubtitleIndex = nil
+            } else if let preferredSidecarSubtitleTrackId,
+                      SubtitleTrackIdSpace.isSidecar(preferredSidecarSubtitleTrackId) {
                 request.preferredProtocolV3SubtitleIndex = SubtitleTrackIdSpace.sidecarIndex(
                     from: preferredSidecarSubtitleTrackId
                 )
@@ -2020,7 +2026,7 @@ class PlayerViewModel {
                     self.pendingSidecarSubtitleTrackId = nil
                     self.pendingServerRenderedSubtitleTrackId = trackId
                 case nil:
-                    self.pendingServerRenderedSubtitleTrackId = nil
+                    break
                 }
                 self.pendingExternalSubtitles = prepared.session.subtitleUrls ?? []
                 self.knownExternalSubtitles = self.pendingExternalSubtitles
@@ -3726,7 +3732,28 @@ class PlayerViewModel {
         return embedded.streamIndex
     }
 
+    static func serverSubtitlesDisabledForResume(
+        selectedTrackID: Int64?, hasExplicitChoice: Bool,
+        pendingEmbeddedIndex: Int?, pendingSidecarID: Int64?,
+        pendingServerRenderedID: Int64? = nil
+    ) -> Bool {
+        if selectedTrackID.map(SubtitleTrackIdSpace.isAILive) == true { return true }
+        // Before inventory arrives, nil can mean an unresolved requested track.
+        return hasExplicitChoice && selectedTrackID == nil
+            && pendingSidecarID == nil && pendingServerRenderedID == nil
+            && (pendingEmbeddedIndex ?? -1) < 0
+    }
+
+    private var hasDisabledServerSubtitlesForResume: Bool {
+        Self.serverSubtitlesDisabledForResume(
+            selectedTrackID: selectedSubtitleId, hasExplicitChoice: hasExplicitSubtitleChoice,
+            pendingEmbeddedIndex: pendingSubtitleFfIndex, pendingSidecarID: pendingSidecarSubtitleTrackId,
+            pendingServerRenderedID: pendingServerRenderedSubtitleTrackId
+        )
+    }
+
     private func resolvedSubtitleTrackIndexForResume() -> Int? {
+        if hasDisabledServerSubtitlesForResume { return -1 }
         if let index = Self.selectedEmbeddedSubtitleIndexForResume(
             plan: activePreparedProtocolV3?.plan, selectedTrackID: selectedSubtitleId
         ) {
@@ -3768,6 +3795,7 @@ class PlayerViewModel {
     }
 
     private func resolvedSidecarSubtitleTrackIdForResume() -> Int64? {
+        if hasDisabledServerSubtitlesForResume { return nil }
         if Self.selectedEmbeddedSubtitleIndexForResume(
             plan: activePreparedProtocolV3?.plan, selectedTrackID: selectedSubtitleId
         ) != nil { return nil }
@@ -3816,6 +3844,7 @@ class PlayerViewModel {
         pendingAudioFfIndex = intent.audioIndex
         pendingSubtitleFfIndex = intent.embeddedSubtitleIndex
         pendingSidecarSubtitleTrackId = intent.sidecarSubtitleTrackId
+        pendingServerRenderedSubtitleTrackId = intent.serverRenderedSubtitleTrackId
     }
 
     private func beginFreshLoad(
@@ -4354,7 +4383,8 @@ class PlayerViewModel {
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil
+            offlineDownloadId: nil,
+            serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
         )
 
         Self.logger.warning(
@@ -4519,7 +4549,8 @@ class PlayerViewModel {
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil
+            offlineDownloadId: nil,
+            serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
         )
         request.preferredQualityOverride = resolvedQualityId
         beginFreshLoad(
@@ -5290,9 +5321,13 @@ class PlayerViewModel {
         let priorSubtitleId = selectedSubtitleId
         let priorSecondarySubtitleId = selectedSecondarySubtitleId
         let priorPendingSubtitleFfIndex = pendingSubtitleFfIndex
+        let priorPendingSidecarSubtitleTrackId = pendingSidecarSubtitleTrackId
+        let priorPendingServerRenderedSubtitleTrackId = pendingServerRenderedSubtitleTrackId
         let priorHasExplicitSubtitleChoice = hasExplicitSubtitleChoice
         hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
+        pendingSidecarSubtitleTrackId = nil
+        pendingServerRenderedSubtitleTrackId = nil
         if selectedSecondarySubtitleId == track.trackId {
             selectedSecondarySubtitleId = nil
             applySecondarySubtitleTrackSelection(nil)
@@ -5323,6 +5358,8 @@ class PlayerViewModel {
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
+                pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
+                pendingServerRenderedSubtitleTrackId = priorPendingServerRenderedSubtitleTrackId
                 hasExplicitSubtitleChoice = priorHasExplicitSubtitleChoice
                 if selectedSecondarySubtitleId != priorSecondarySubtitleId {
                     selectedSecondarySubtitleId = priorSecondarySubtitleId
@@ -5355,9 +5392,13 @@ class PlayerViewModel {
         let priorSubtitleId = selectedSubtitleId
         let priorSecondarySubtitleId = selectedSecondarySubtitleId
         let priorPendingSubtitleFfIndex = pendingSubtitleFfIndex
+        let priorPendingSidecarSubtitleTrackId = pendingSidecarSubtitleTrackId
+        let priorPendingServerRenderedSubtitleTrackId = pendingServerRenderedSubtitleTrackId
         let priorHasExplicitSubtitleChoice = hasExplicitSubtitleChoice
         hasExplicitSubtitleChoice = true
-        pendingSubtitleFfIndex = nil
+        pendingSubtitleFfIndex = -1
+        pendingSidecarSubtitleTrackId = nil
+        pendingServerRenderedSubtitleTrackId = nil
         if selectedSecondarySubtitleId != nil {
             selectedSecondarySubtitleId = nil
             applySecondarySubtitleTrackSelection(nil)
@@ -5376,6 +5417,8 @@ class PlayerViewModel {
             ) else {
                 selectedSubtitleId = priorSubtitleId
                 pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
+                pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
+                pendingServerRenderedSubtitleTrackId = priorPendingServerRenderedSubtitleTrackId
                 hasExplicitSubtitleChoice = priorHasExplicitSubtitleChoice
                 if selectedSecondarySubtitleId != priorSecondarySubtitleId {
                     selectedSecondarySubtitleId = priorSecondarySubtitleId
@@ -5704,6 +5747,7 @@ class PlayerViewModel {
         let audioIndex: Int?
         let embeddedSubtitleIndex: Int?
         let sidecarSubtitleTrackId: Int64?
+        let serverRenderedSubtitleTrackId: Int64?
     }
 
     static func protocolV3PendingTrackIntent(
@@ -5719,6 +5763,9 @@ class PlayerViewModel {
                 : -1,
             sidecarSubtitleTrackId: rendersSubtitleLocally && plan.subtitle.embedded == nil
                 ? request.preferredSidecarSubtitleTrackId
+                : nil,
+            serverRenderedSubtitleTrackId: plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.burnIn
+                ? plan.selectedSubtitleCombinedIndex.map { SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0) }
                 : nil
         )
     }
