@@ -133,8 +133,8 @@ enum ApplePlaybackV3Capabilities {
                     ? ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]
                     : ($0 == "webm" ? ["webvtt"] : ["mov_text"]),
                 trackIdentity: "ffmpeg_stream_index",
-                assStyling: false,
-                fontAttachments: false
+                assStyling: true,
+                fontAttachments: true
             )
         }
     }
@@ -202,12 +202,12 @@ enum ApplePlaybackV3Capabilities {
             nativeEmbedded: nativeEmbeddedSubtitleCapabilities(containers: containers),
             embeddedText: true,
             sidecarText: true,
-            // The Silo overlay preserves normalized text and placement, not
-            // the complete authored ASS style contract.
-            assStyling: false,
+            // The libass overlay consumes raw ASS events, script styles, and
+            // embedded or authenticated sidecar font attachments.
+            assStyling: true,
             embeddedBitmap: true,
             sidecarBitmap: false,
-            fontAttachments: false
+            fontAttachments: true
         )
         let originalHTTPClaims = commonClaims
             + ["client_subtitle_overlay"]
@@ -220,10 +220,10 @@ enum ApplePlaybackV3Capabilities {
         let packagedSubtitles = PlaybackV3DeliverySubtitleCapabilities(
             embeddedText: true,
             sidecarText: true,
-            assStyling: false,
+            assStyling: true,
             embeddedBitmap: false,
             sidecarBitmap: false,
-            fontAttachments: false
+            fontAttachments: true
         )
         let deliveries = [
             PlaybackProtocolV3.DeliveryClass.originalHTTP: PlaybackV3DeliveryCapability(

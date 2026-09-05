@@ -81,3 +81,14 @@ The links above identify the exact source and rebuild inputs for this build,
 including each component's rebuild script and patches at the pinned revision.
 They are this build's corresponding-source pointer; keep them matched to the
 revisions each release actually resolves.
+
+AssKit and local ASS rendering
+  Revision: 0ac384f4478f86abbee826a42a79c3d0c117e96a
+  Source and rebuild: https://github.com/bitxeno/AssKit/tree/0ac384f4478f86abbee826a42a79c3d0c117e96a
+  Wrapper: MIT
+  libass 0.17.4: ISC
+  FreeType 2.14.3: FreeType License; this product uses the FreeType project
+  FriBidi 1.0.16: LGPL-2.1-or-later
+  HarfBuzz 14.2.0: MIT
+  libunibreak 6.1: zlib
+  Complete notices: AssKit-MIT.txt and AssKit-Lib*.txt

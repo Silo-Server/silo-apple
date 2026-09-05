@@ -1,5 +1,5 @@
 {
-  "originHash" : "efcbb8a8efc97001346ee5252ee308ec44f23fbdfba44fb63c2541dc6b1c51c8",
+  "originHash" : "e170b4eb4c432f2e9c7f5a765b31156feaa1c39c5839d9a17281f6b13d8e0bfc",
   "pins" : [
     {
       "identity" : "aetherengine",
@@ -7,6 +7,14 @@
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
         "revision" : "f68ad1309001d879ad69f95dd03b9c57410550b1"
+      }
+    },
+    {
+      "identity" : "asskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/bitxeno/AssKit",
+      "state" : {
+        "revision" : "0ac384f4478f86abbee826a42a79c3d0c117e96a"
       }
     },
     {
