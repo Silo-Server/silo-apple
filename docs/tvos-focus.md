@@ -97,6 +97,22 @@ bar.focusedItem -> Calendar
 When this happens, stop adding press interceptors. Decide which focus model the
 control should use, then remove the other one.
 
+## Settings Pane Navigation
+
+Settings uses two native focus sections. Right from a category enters its
+first available detail control. Left from any detail row returns to that
+same category, including after scrolling or dismissing a picker. Up/Down
+continues through the controls in the current pane.
+
+Give both pane entry targets `defaultFocus` with `.userInitiated` priority.
+Do not downgrade the rail's selected-category target while the detail pane
+owns focus: doing so lets Left choose a different category by geometry.
+The outer focus scope still chooses the active pane for entry and modal
+restoration. Remember the rail's current control separately from the selected
+category so cancelling Sign Out restores Sign Out, while Left from the details
+still restores the category. Back returns to the category, then exits Settings
+to Home.
+
 ## Top Menu Ownership
 
 The top menu has three conceptual states:
