@@ -8,12 +8,12 @@ struct ServerUpdateRequiredPill: View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.up.circle")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
 
             Text("Server update required")
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .fontWeight(.semibold)
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
