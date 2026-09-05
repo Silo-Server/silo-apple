@@ -31,3 +31,5 @@ jobs:
           bash scripts/ci/resolve-platform.test.sh
       - name: Test release source archive
         run: python3 scripts/ci/package-release-source.test.py
+      - name: Test subtitle packaging validation
+        run: python3 scripts/ci/validate-subtitle-packaging.test.py

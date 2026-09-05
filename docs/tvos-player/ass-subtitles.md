@@ -1,7 +1,7 @@
 # Local ASS subtitles
 
 The Apple video player renders primary ASS/SSA tracks with libass through
-AssKit. Aether retains raw ASS events for the primary channel and exposes
+SwiftLibass 1.4.0 and SwiftAssRenderer 1.3.1. Aether retains raw ASS events for the primary channel and exposes
 script headers and embedded fonts. The overlay renders these over the video
 without encoding new video frames. The server receives ASS styling and font
 capabilities for the original and packaged video routes; audio-only playback
@@ -15,7 +15,12 @@ system directly. A failed font request produces a visible subtitle error;
 switching off and back on retries it. A stale request cannot change the next
 selection's loading or error state.
 
-`ASSSubtitleRenderer` confines libass to an actor. It appends new events,
+`ASSSubtitleRenderer` confines libass to an actor and uses SwiftAssRenderer's
+`BlendImagePipeline` to composite frames. It owns the library, renderer, and
+track allocations directly and frees them in order. The package's 1.3.1
+convenience renderer copies parsed tracks without freeing them, so Silo uses
+its lower-level image API instead of repeatedly loading whole scripts.
+It appends new events,
 deduplicates by content and timestamps rather than Matroska ReadOrder, and
 rebuilds when Aether removes cues or the header/fonts change. Font stores and
 old events are released with their renderer. Rendering has one awaited frame
@@ -66,3 +71,18 @@ headers. `PlaybackProtocolV3Tests` verifies capability declarations and the
 existing selection/timeline contracts. Playback diagnostics emit one
 `Local ASS frame ready` breadcrumb per selection, including cue/font counts
 and embedded-versus-sidecar source, without subtitle text or media URLs.
+
+## Distribution
+
+SwiftLibass supplies static `.a` libraries and headers inside XCFrameworks.
+The app links their code without embedding subtitle `.framework` wrappers.
+This avoids the stub-executable/MinimumOSVersion mismatch observed with AssKit.
+Keep the exact package versions in `project.yml` and `Package.resolved` aligned
+with `scripts/ci/swift-libass-sources.json` and the bundled acknowledgements.
+The release-source job includes the native sources and a local rebuild entry
+point that preserves modifications to those sources.
+
+The TestFlight lanes validate the exported IPA before uploading, and sideload
+lanes validate the archived app before creating the IPA. The packaging gate
+rejects the old subtitle framework wrappers while allowing Aether's dynamic
+media frameworks and the new Swift packages' resource bundles.

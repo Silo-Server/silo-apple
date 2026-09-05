@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Archive a release's tracked app and pinned AssKit rebuild sources."""
+"""Archive a release's tracked app and pinned SwiftLibass rebuild sources."""
 
 import argparse
 import hashlib
@@ -48,10 +48,10 @@ def download_source(repository, revision, destination):
 def package_sources(repo, output_directory):
     revision = git(repo, "rev-parse", "HEAD").decode().strip()
     pins = json.loads(git(repo, "show", f"HEAD:{RESOLVED}"))["pins"]
-    source_pins = json.loads((ROOT / "scripts/ci/asskit-sources.json").read_text())
-    asskit = next(pin for pin in pins if pin["identity"] == "asskit")
-    if asskit["state"]["revision"] != source_pins["asskit_revision"]:
-        raise ValueError("Update asskit-sources.json for the resolved AssKit revision before release")
+    source_pins = json.loads((ROOT / "scripts/ci/swift-libass-sources.json").read_text())
+    libass = next(pin for pin in pins if pin["identity"] == "swift-libass")
+    if libass["state"]["revision"] != source_pins["swift_libass_revision"]:
+        raise ValueError("Update swift-libass-sources.json for the resolved SwiftLibass revision before release")
 
     output_directory.mkdir(parents=True, exist_ok=True)
     output = output_directory / f"Silo-source-{revision}.tar.gz"
@@ -64,7 +64,7 @@ def package_sources(repo, output_directory):
             source.extractall(tree / "app", filter="data")
         packages = tree / "packages"
         packages.mkdir()
-        manifest = {"app_revision": revision, "packages": {}, "asskit_libraries": {}}
+        manifest = {"app_revision": revision, "packages": {}, "subtitle_libraries": {}}
         for pin in pins:
             name = pin["identity"]
             if not re.fullmatch(r"[\w.-]+", name):
@@ -73,22 +73,31 @@ def package_sources(repo, output_directory):
             manifest["packages"][name] = download_source(
                 pin["location"], pin["state"]["revision"], packages / name)
 
-        asskit_path = packages / "asskit"
-        builder = (asskit_path / "build.sh").read_text()
-        source_directory = asskit_path / "build/src"
-        source_directory.mkdir(parents=True)
+        libass_path = packages / "swift-libass"
+        builder = (libass_path / "build-libraries.sh").read_text()
+        if builder.splitlines().count("checkout") != 1:
+            raise ValueError("SwiftLibass build-libraries.sh checkout entry changed")
+        build_path = libass_path / ".source/ffmpeg-kit"
+        build_path.parent.mkdir(parents=True)
+        manifest["subtitle_builder"] = download_source(
+            source_pins["builder"]["repository"], source_pins["builder"]["revision"], build_path)
+        source_map = (build_path / "scripts/source.sh").read_text()
+        source_directory = build_path / "src"
+        source_directory.mkdir(exist_ok=True)
         for library in source_pins["libraries"]:
-            expected = f'{library["version_variable"]}="{library["tag"]}"'
-            if expected not in builder.splitlines():
-                raise ValueError(f"AssKit build.sh no longer matches source pin: {library['name']}")
+            block = re.search(r"^  " + re.escape(library["name"]) + r"\)\n(.*?)^    ;;",
+                              source_map, re.MULTILINE | re.DOTALL)
+            if (block is None or f'SOURCE_ID="{library["tag"]}"' not in block[1]
+                    or f'SOURCE_REPO_URL="{library["repository"]}"' not in block[1]):
+                raise ValueError(f"Subtitle builder no longer matches source pin: {library['name']}")
             print(f"Archiving {library['name']} at {library['revision']}", flush=True)
-            manifest["asskit_libraries"][library["name"]] = download_source(
+            manifest["subtitle_libraries"][library["name"]] = download_source(
                 library["repository"], library["revision"], source_directory / library["name"])
 
-        # Upstream fetch_sources checks out its tags on every run. This copy uses
-        # the included trees, preserving the recipient's library modifications.
-        (asskit_path / "build-local.sh").write_text(
-            "\n".join(line for line in builder.splitlines() if line != "fetch_sources") + "\n")
+        # The upstream entry point deletes .source before cloning its builder.
+        # Preserve the pinned builder and editable native trees included here.
+        (libass_path / "build-local.sh").write_text(
+            "\n".join(line for line in builder.splitlines() if line != "checkout") + "\n")
         (tree / "revisions.json").write_text(json.dumps(manifest, indent=2) + "\n")
         shutil.copyfile(ROOT / "scripts/ci/REBUILD-SOURCE.md", tree / "REBUILD.md")
         with tarfile.open(output, "w:gz") as archive:
