@@ -10,6 +10,8 @@ enum APIv2Error: LocalizedError, Sendable {
     case incompleteCollection
     case invalidCatalogQuery
     case invalidCatalogContinuation
+    case invalidPersonalListQuery
+    case invalidPersonalListContinuation
     case incompleteCatalogRead
     case unsupportedCatalogReadValue
     /// The server answered with an `application/problem+json` document.
@@ -22,6 +24,10 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .invalidPersonalListQuery:
+            return "The personal list request is not valid."
+        case .invalidPersonalListContinuation:
+            return "The personal list could not be continued. Reload to start again."
         case .unsupportedCatalogReadValue:
             return "This item uses a value this client cannot support. Please update the client."
         case .incompleteCatalogRead:
@@ -375,6 +381,55 @@ struct APIv2Client: Sendable {
         guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
               current.profileId == profile else { throw HTTPError.requestIdentityChanged }
         return try HTTPClient.makeJSONDecoder().decode(Value.self, from: response.data)
+    }
+
+    // MARK: Standalone personal list reads
+
+    func personalList(kind: APIv2PersonalListKind, limit: Int = 50,
+                      imageSize: String? = nil) async throws -> APIv2PersonalListResult {
+        try await gate()
+        guard (1...200).contains(limit) else { throw APIv2Error.invalidPersonalListQuery }
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        return try await personalListPage(kind: kind, limit: limit, imageSize: imageSize, cursor: nil,
+                                          seen: [], identity: identity, account: auth.account)
+    }
+
+    func nextPersonalListPage(_ continuation: APIv2PersonalListContinuation) async throws -> APIv2PersonalListResult {
+        try await personalListPage(kind: continuation.kind, limit: continuation.limit, imageSize: continuation.imageSize,
+            cursor: continuation.cursor, seen: continuation.seen, identity: continuation.identity, account: continuation.account)
+    }
+
+    private func personalListPage(kind: APIv2PersonalListKind, limit: Int, imageSize: String?, cursor: String?,
+                                  seen: Set<String>, identity: HTTPRequestIdentity,
+                                  account: RefreshAccountIdentity) async throws -> APIv2PersonalListResult {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), auth.account == account,
+              auth.profileId == identity.profileId else { throw HTTPError.requestIdentityChanged }
+        var query = ["limit": String(limit)]
+        if let imageSize { query["image_size"] = imageSize }
+        if let cursor { query["cursor"] = cursor }
+        let response = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/\(kind.rawValue)", query: query, requestIdentity: identity)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == account,
+              current.profileId == identity.profileId else { throw HTTPError.requestIdentityChanged }
+        let page = try HTTPClient.makeJSONDecoder().decode(APIv2PersonalListPage.self, from: response.data)
+        var continuation: APIv2PersonalListContinuation?
+        if page.page.hasMore {
+            guard let next = page.page.nextCursor, !next.isEmpty, !seen.contains(next) else {
+                throw APIv2Error.invalidPersonalListContinuation
+            }
+            continuation = APIv2PersonalListContinuation(kind: kind, limit: limit, imageSize: imageSize,
+                cursor: next, seen: seen.union([next]), identity: identity, account: account)
+        } else if page.page.nextCursor?.isEmpty == false {
+            throw APIv2Error.invalidPersonalListContinuation
+        }
+        // Empty/duplicate-only visible pages still advance through raw list entries.
+        return APIv2PersonalListResult(value: page, continuation: continuation)
     }
 
     // MARK: Internals

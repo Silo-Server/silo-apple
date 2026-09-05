@@ -468,7 +468,7 @@ final class CatalogV2Tests: XCTestCase {
     }
 }
 
-private final class CatalogProtocol: URLProtocol {
+final class CatalogProtocol: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var response = (200, "{}")
     nonisolated(unsafe) private static var routes: [String: (Int, String)] = [:]
