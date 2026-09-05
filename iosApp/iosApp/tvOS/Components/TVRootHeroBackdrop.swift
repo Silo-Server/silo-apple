@@ -64,7 +64,7 @@ struct TVBackdropArtworkFadeMask: View {
 /// into a color sampled from the art itself, which is carried (dimmed)
 /// across the rest of the page so the metadata and rows below sit on the
 /// same tint. Calendar and Recommendations keep passing static (nil)
-/// artwork with `tintColor: .continuumBackground`, so they render as the
+/// artwork with `tintColor: .siloBackground`, so they render as the
 /// flat app background.
 struct TVRootHeroBackdrop: View {
     let tintColor: Color
@@ -88,7 +88,7 @@ struct TVRootHeroBackdrop: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.continuumBackground
+            Color.siloBackground
 
             tintBackground
 
@@ -110,7 +110,7 @@ struct TVRootHeroBackdrop: View {
     /// Sampled-color wash: richest in the top-right behind the art, carried
     /// dimmed down to the bottom-left so the page keeps the art's color
     /// without washing out the metadata or row captions. When the caller
-    /// passes `.continuumBackground` (Calendar/Recommendations) every stop
+    /// passes `.siloBackground` (Calendar/Recommendations) every stop
     /// collapses to the app background, so the wash renders flat.
     private var tintBackground: some View {
         LinearGradient(

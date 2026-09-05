@@ -2716,7 +2716,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         return DiagnosticsCoordinator(
             api: DiagnosticsAPI(http: http),
             hostedAPI: try makeHostedUploadAPI(),
-            continuumAPI: ContinuumAPI(http: http, tokenStore: tokenStore),
+            siloAPI: SiloAPI(http: http, tokenStore: tokenStore),
             consentStore: DiagnosticsConsentStore(defaults: defaults),
             destinationStore: destinationStore,
             pendingStore: pendingStore

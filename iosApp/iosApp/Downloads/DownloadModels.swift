@@ -562,10 +562,6 @@ struct CreateSubscriptionResponse: Codable, Sendable {
     let registered: Int
 }
 
-struct SubscriptionsListResponse: Codable, Sendable {
-    let subscriptions: [ServerSubscription]
-}
-
 struct SubscriptionSyncResponse: Codable, Sendable {
     let registered: Int
 }
@@ -616,7 +612,6 @@ enum LocalDownloadStatus: String, Codable, Sendable {
     /// stays playable.
     case revoked
 
-    var isTerminalSuccess: Bool { self == .completed }
     /// `paused` counts as active so it stays in the in-progress UI, but the
     /// pipeline only ever starts `.queued` records — pausing both surfaces
     /// the row and blocks any automatic restart.

@@ -30,7 +30,7 @@ struct PhoneEpisodePage: View {
                 Text("No episodes available")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.vertical, 12)
             } else if usesExpandedList {
                 PhoneEpisodeList(
@@ -90,7 +90,7 @@ private struct PhoneEpisodeRailSkeleton: View {
                     episodeCard(index: index)
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.vertical, 4)
         }
         .scrollDisabled(true)
@@ -157,7 +157,7 @@ private struct PhoneEpisodeListSkeleton: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
         .padding(.vertical, 4)
         .allowsHitTesting(false)
         .accessibilityHidden(true)

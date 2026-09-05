@@ -15,7 +15,7 @@ struct TVControlStandbyView: View {
             VStack(spacing: 34) {
                 Image(systemName: "appletvremote.gen4")
                     .font(.system(size: 86, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(width: 150, height: 150)
                     .background {
                         Circle()
@@ -29,12 +29,12 @@ struct TVControlStandbyView: View {
                 VStack(spacing: 12) {
                     Text("Ready for \(state.controllerLabel)")
                         .font(.system(size: 52, weight: .semibold))
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
                         .multilineTextAlignment(.center)
 
                     Text(state.serverName ?? "Remote control active")
                         .font(.title3)
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                         .multilineTextAlignment(.center)
                 }
 

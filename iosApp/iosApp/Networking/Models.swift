@@ -994,6 +994,15 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
     let externalPath: String?
     var id: String { "\(index ?? -1)|\(externalPath ?? "")" }
 
+    /// The FFmpeg stream index the detail selector and player use to select
+    /// this track. The server emits `index,omitempty`, so an embedded track at
+    /// stream 0 arrives with no `index`; embedded is the only case where nil
+    /// means 0. External sidecars have no stream index and stay nil.
+    var selectionIndex: Int? {
+        if let index { return index }
+        return external == true ? nil : 0
+    }
+
     enum CodingKeys: String, CodingKey {
         case index
         case codec
@@ -1162,19 +1171,6 @@ struct SubtitleUrl: Codable, Identifiable, Hashable {
     }
 }
 
-// MARK: - Transcode Start Response
-
-struct TranscodeStartResponse: Codable {
-    let sessionId: String
-    let status: String
-    let switchedFileId: Int?
-    let manifestUrl: String
-    let durationSeconds: Double?
-    let playerStartSeconds: Double
-    let timelineOffsetSeconds: Double
-    let canSeekAnywhere: Bool
-}
-
 // MARK: - Watch Detail
 
 struct WatchDetail: Codable {
@@ -1248,15 +1244,6 @@ struct CollectionGroup: Codable, Identifiable, Hashable {
     let slug: String?
     let defaultSortMode: String?
     let sortOrder: Int?
-}
-
-struct CollectionItemsResponse: Codable {
-    let items: [BrowseItem]
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        items = try c.decodeIfPresent([BrowseItem].self, forKey: .items) ?? []
-    }
 }
 
 // MARK: - Search (uses CatalogResponse)
@@ -1391,7 +1378,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     }
 }
 
-/// Runtime-synthesized response from `ContinuumAPI.libraryCollections`.
+/// Runtime-synthesized response from `SiloAPI.libraryCollections`.
 /// Not decoded from wire JSON directly — `LibraryCollectionsWireResponse`
 /// handles that and is mapped into this shape at the API boundary.
 struct LibraryCollectionsResponse {
@@ -1471,45 +1458,6 @@ struct SyncProgressItem: Codable {
     }
 }
 
-// MARK: - Playback Start Request (sent to server)
-
-/// Body for POST /api/v1/playback/start.
-///
-/// Server shape is **flat** — there is no `client_capabilities` wrapper
-/// (see `Continuum/internal/api/handlers/playback.go::startPlaybackRequest`).
-/// Apple normally requests the selected original file (`playMethod == direct`)
-/// and performs route selection locally. `preserveDirectAudioSelection` tells
-/// the server not to remux solely to map a selected embedded audio track.
-struct StartPlaybackRequest: Codable {
-    let fileId: Int
-    let profileId: String?
-    let playMethod: String?
-    let startPosition: Double?
-    let audioTrackIndex: Int?
-    let preserveDirectAudioSelection: Bool
-    let codecsVideo: [String]
-    let codecsAudio: [String]
-    let containers: [String]
-    let maxResolution: String?
-    let hdr: Bool
-    /// Audiobooks only: the session's file-local position must not overwrite
-    /// the book-level resume point, which the client reports separately via
-    /// `/api/v1/sync/progress` on the whole-book timeline.
-    var disableProgressPersistence: Bool?
-}
-
-struct TranscodeStartRequest: Codable {
-    let sessionId: String
-    let seekSeconds: Double
-    let targetResolution: String?
-    let targetCodecVideo: String?
-    let targetCodecAudio: String?
-    let targetBitrateKbps: Int
-    let segmentDuration: Int
-    let subtitleTrackIndex: Int
-    let subtitleBurnIn: Bool
-}
-
 // MARK: - Collection Create
 
 struct CreateCollectionRequest: Codable {
@@ -1577,15 +1525,6 @@ struct UpdateUserCollectionGroupBody: Encodable {
             try c.encodeNil(forKey: .groupId)
         }
     }
-}
-
-struct ReorderCollectionsRequest: Codable {
-    let orderedIds: [String]
-    let groupId: String?
-}
-
-struct ReorderCollectionGroupsRequest: Codable {
-    let orderedIds: [String]
 }
 
 // MARK: - Settings (generic key/value)

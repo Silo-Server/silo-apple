@@ -20,7 +20,7 @@ struct SiloControlTargetPickerView: View {
                     searchingState
                 }
             }
-            .continuumPageBackground()
+            .siloPageBackground()
             .navigationTitle("Remote Control")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -46,7 +46,7 @@ struct SiloControlTargetPickerView: View {
             ProgressView()
             Text("Searching for Silo TVs…")
                 .font(.headline)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -74,20 +74,20 @@ struct SiloControlTargetPickerView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "tv")
                         .font(.title3)
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
                         .frame(width: 38, height: 38)
-                        .background(Circle().fill(Color.continuumChromeRestingFill))
+                        .background(Circle().fill(Color.siloChromeRestingFill))
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
                         if request != nil, target.protocolVersion < 2 {
                             Text("Update Silo on this TV to use your profile")
                                 .font(.subheadline)
-                                .foregroundStyle(Color.continuumSecondaryText)
+                                .foregroundStyle(Color.siloSecondaryText)
                         } else if target.isPlaying {
                             Text("Playing now")
                                 .font(.subheadline)
-                                .foregroundStyle(Color.continuumPrimary)
+                                .foregroundStyle(Color.siloPrimary)
                         } else if let serverName = target.serverName {
                             Text(ServerRegistry.serverIdsMatch(
                                 target.serverId,
@@ -96,7 +96,7 @@ struct SiloControlTargetPickerView: View {
                                  ? serverName
                                  : "Will temporarily use your server")
                                 .font(.subheadline)
-                                .foregroundStyle(Color.continuumSecondaryText)
+                                .foregroundStyle(Color.siloSecondaryText)
                         }
                     }
 
@@ -110,7 +110,7 @@ struct SiloControlTargetPickerView: View {
             }
             .buttonStyle(.plain)
             .disabled(request != nil && target.protocolVersion < 2)
-            .listRowBackground(Color.continuumSurface)
+            .listRowBackground(Color.siloSurface)
         }
         .scrollContentBackground(.hidden)
     }

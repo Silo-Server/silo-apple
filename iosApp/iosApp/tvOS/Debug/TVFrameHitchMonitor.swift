@@ -25,7 +25,7 @@ final class TVFrameHitchMonitor {
     private static let launchArgument = "-perfHitchLog"
     private static let summaryInterval: CFTimeInterval = 10
 
-    private let logger = Logger(subsystem: "com.continuum.app", category: "perf.hitch")
+    private let logger = Logger(subsystem: "org.siloserver.silo", category: "perf.hitch")
     private let startTime = CACurrentMediaTime()
     private var displayLink: CADisplayLink?
     private var lastTimestamp: CFTimeInterval = 0

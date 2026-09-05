@@ -93,8 +93,8 @@ private struct PhoneDetailTopChrome: View {
                 .foregroundStyle(.white)
         }
         .frame(
-            width: ContinuumTheme.topBarIconHitSize,
-            height: ContinuumTheme.topBarIconHitSize
+            width: SiloTheme.topBarIconHitSize,
+            height: SiloTheme.topBarIconHitSize
         )
         .contentShape(Circle())
     }
@@ -134,7 +134,7 @@ private struct PhoneDetailStaticGlassStrip: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: ContinuumTheme.topBarIconHitSize + 18)
+        .frame(height: SiloTheme.topBarIconHitSize + 18)
     }
 }
 
@@ -155,7 +155,7 @@ private struct PhoneDetailScrollTitle: View {
                 .padding(.horizontal, 96)
                 .frame(
                     maxWidth: .infinity,
-                    minHeight: ContinuumTheme.topBarIconHitSize,
+                    minHeight: SiloTheme.topBarIconHitSize,
                     alignment: .center
                 )
                 .padding(.top, 9)
@@ -185,8 +185,8 @@ private struct PhoneDetailStaticControlGlass: View, Equatable {
     var body: some View {
         Color.clear
             .frame(
-                width: ContinuumTheme.topBarIconHitSize,
-                height: ContinuumTheme.topBarIconHitSize
+                width: SiloTheme.topBarIconHitSize,
+                height: SiloTheme.topBarIconHitSize
             )
             .siloGlass(in: Circle(), interactive: true)
     }
@@ -280,14 +280,14 @@ private struct ItemDetailPhoneContent: View {
                 Color.clear
             }
         }
-        .continuumBackground()
+        .siloBackground()
         #if os(iOS)
         // Detail chrome and selector checks stay monochrome over per-title
         // artwork; the app accent blue looked unrelated to this visual system.
         .tint(.white)
         #endif
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumNavigationBarBackgroundHidden()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloNavigationBarBackgroundHidden()
         .task(id: contentId) {
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
@@ -1009,7 +1009,7 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.index) ?? []
+        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1023,7 +1023,7 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.index) ?? []
+        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1166,7 +1166,7 @@ private struct ItemDetailPhoneContent: View {
         }
 
         do {
-            let watchDetail = try await ContinuumAPI.shared.watchDetail(contentId: requestedContentId)
+            let watchDetail = try await SiloAPI.shared.watchDetail(contentId: requestedContentId)
             guard !Task.isCancelled,
                   playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
             nextUpWatchDetail = watchDetail

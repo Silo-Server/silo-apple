@@ -44,8 +44,8 @@ struct SidebarToggleButton: View {
             Button(action: toggle) {
                 Image(systemName: "sidebar.leading")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Color.continuumOnSurface)
-                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -53,8 +53,8 @@ struct SidebarToggleButton: View {
         } else if reservesSpace {
             Color.clear
                 .frame(
-                    width: ContinuumTheme.topBarIconHitSize,
-                    height: ContinuumTheme.topBarIconHitSize
+                    width: SiloTheme.topBarIconHitSize,
+                    height: SiloTheme.topBarIconHitSize
                 )
                 .accessibilityHidden(true)
         }

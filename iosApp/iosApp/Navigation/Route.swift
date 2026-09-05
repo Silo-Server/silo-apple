@@ -1,6 +1,6 @@
 import Foundation
 
-/// All navigable destinations in the Continuum app.
+/// All navigable destinations in the Silo app.
 enum Route: Hashable {
     // Auth flow
     case serverSetup
@@ -24,7 +24,16 @@ enum Route: Hashable {
         tvSeed: TVItemDetailRouteSeed? = nil
     )
     case personDetail(personId: Int)
-    case player(contentId: String, startFromBeginning: Bool, resumePosition: Double?)
+    /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
+    /// the server's last-used file before the profile-wide quality
+    /// preference. Audio and subtitle memory ride on the server's
+    /// `effective_*` fields and need no extra flag.
+    case player(
+        contentId: String,
+        startFromBeginning: Bool,
+        resumePosition: Double?,
+        prefersLastUsedVersion: Bool = false
+    )
     case playerWithFile(
         contentId: String,
         fileId: Int,

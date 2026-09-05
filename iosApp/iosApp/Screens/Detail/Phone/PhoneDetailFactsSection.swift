@@ -1,5 +1,6 @@
-#if !os(tvOS)
 import SwiftUI
+
+#if !os(tvOS)
 
 /// "Details" key/value list rendered below the hero. Mirrors
 /// `TVDetailFactsSection` — same data sources (crew, studios, networks,
@@ -8,10 +9,8 @@ import SwiftUI
 struct PhoneDetailFactsSection: View {
     let detail: ItemDetail
 
-    private let maxCreditNames = 3
-
     var body: some View {
-        let facts = assembleFacts()
+        let facts = DetailFacts(detail: detail).assembleFacts()
         if !facts.isEmpty {
             VStack(spacing: 0) {
                 ForEach(Array(facts.enumerated()), id: \.element.label) { index, fact in
@@ -24,11 +23,11 @@ struct PhoneDetailFactsSection: View {
                         Text(fact.label.uppercased())
                             .font(.system(size: 11, weight: .bold))
                             .tracking(1.2)
-                            .foregroundColor(.continuumOnSurface.opacity(0.5))
+                            .foregroundColor(.siloOnSurface.opacity(0.5))
                             .frame(width: 100, alignment: .leading)
                         Text(fact.value)
                             .font(.system(size: 14, weight: .regular))
-                            .foregroundColor(.continuumOnSurface)
+                            .foregroundColor(.siloOnSurface)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.vertical, 12)
@@ -37,13 +36,19 @@ struct PhoneDetailFactsSection: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+}
+#endif
 
-    private struct Fact {
+struct DetailFacts {
+    let detail: ItemDetail
+    private let maxCreditNames = 3
+
+    struct Fact {
         let label: String
         let value: String
     }
 
-    private func assembleFacts() -> [Fact] {
+    func assembleFacts() -> [Fact] {
         var facts: [Fact] = []
 
         if let directors = creditNames(forJobs: ["Director"]), !directors.isEmpty {
@@ -96,4 +101,3 @@ struct PhoneDetailFactsSection: View {
         return trimmed.count > maxCreditNames ? "\(joined), …" : joined
     }
 }
-#endif

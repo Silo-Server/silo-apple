@@ -38,7 +38,7 @@ never finds out.
 
 ### 2.1 Apple clients today (pull-only)
 
-- Networking is REST via `HTTPClient` (actor) → `ContinuumAPI` (actor). No shared HTTP cache.
+- Networking is REST via `HTTPClient` (actor) → `SiloAPI` (actor). No shared HTTP cache.
 - `Screens/Home/HomeView.swift` refresh triggers:
   - `.task` — first load (`HomeViewModel.loadSections()` + recommendations). (~L79–83)
   - `.onAppear` — refetch on return to page, skipped on first appear. (~L84–91)
@@ -61,7 +61,7 @@ will mirror. Key properties to reuse as a pattern:
   failures (~L27, surfaces a non-fatal "realtime unavailable" flag).
 - `http→ws` / `https→wss` scheme conversion (~L252–259).
 - **Generation-based binding** to cancel stale connection loops on rebind/unbind.
-- `ContinuumAPI.shared.currentServerUrl()` and `.currentAccessToken()` provide base URL + token.
+- `SiloAPI.shared.currentServerUrl()` and `.currentAccessToken()` provide base URL + token.
 
 ### 2.3 Server events hub (already live — verify in `silo-server`)
 
@@ -186,7 +186,7 @@ actor EventsRealtimeClient {
 
 #### Connection loop (mirrors `PlaybackRealtimeClient.runConnectionLoop`)
 
-1. Build request: base URL from `ContinuumAPI.shared.currentServerUrl()`, path
+1. Build request: base URL from `SiloAPI.shared.currentServerUrl()`, path
    `/api/v1/events/ws`, `http→ws` / `https→wss`, `Authorization: Bearer <currentAccessToken()>`.
    No `?token=` and no `?ticket=` (we don't subscribe to `notifications`).
 2. `webSocketTask(with:)`, `resume()`.
@@ -406,7 +406,7 @@ Focused tests only (per repo guidelines — no broad UI tests):
   bind `scenePhase`, register Home, reconnect on profile switch / stop on sign-out.
 - `iosApp/project.yml` — only if new folders need explicit inclusion; regenerate with
   `xcodegen generate`.
-- (Reference only, no change) `ContinuumAPI` — already exposes `currentServerUrl()`,
+- (Reference only, no change) `SiloAPI` — already exposes `currentServerUrl()`,
   `currentAccessToken()`, `homeSections()`.
 
 **Server (`silo-server`): none.** (Possible *future* opt-in: add `position_seconds` to

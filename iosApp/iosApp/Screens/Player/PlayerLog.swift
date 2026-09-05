@@ -1,6 +1,6 @@
 //
 //  PlayerLog.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Single emission point for `[CMP-…]` player-pipeline trace lines.
 //
@@ -38,20 +38,3 @@ func cmpLog(_ message: @autoclosure () -> String, verbose: Bool = false) {
     )
     #endif
 }
-
-#if os(iOS) || os(tvOS)
-/// Retained as the player-facing spelling of the shared tiering predicate; the
-/// logic lives in `DiagTrace` so playback, focus, network, and lifecycle
-/// instrumentation all make the same decision.
-func shouldCaptureCMPLog(
-    verbose: Bool,
-    debugLoggingEnabled: Bool,
-    captureEnabled: Bool
-) -> Bool {
-    DiagTrace.shouldCapture(
-        verbose ? .verbose : .essential,
-        debugLoggingEnabled: debugLoggingEnabled,
-        captureEnabled: captureEnabled
-    )
-}
-#endif

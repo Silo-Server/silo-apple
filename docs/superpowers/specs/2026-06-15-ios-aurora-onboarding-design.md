@@ -179,7 +179,7 @@ that reveals the protocol segments + port (focus-managed for the remote).
 
 ## 9. What stays untouched / out of scope
 
-- `AuthService`, `ServerRegistry`, `TokenStore`, `ContinuumAPI`, `HTTPClient`.
+- `AuthService`, `ServerRegistry`, `TokenStore`, `SiloAPI`, `HTTPClient`.
 - `AppRouter` auth-state machine and view models (`ServerSetupViewModel`,
   `LoginViewModel`, `SignupViewModel`, `ProfileSelectionViewModel`,
   `QRLoginViewModel`).

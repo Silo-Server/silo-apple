@@ -65,7 +65,7 @@ struct TVLoginView: View {
             SiloWordmarkView(width: 132)
             if let host = hostLabel {
                 Label(host, systemImage: "server.rack")
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
             }
             Spacer(minLength: 0)
@@ -96,13 +96,13 @@ struct TVLoginView: View {
         VStack(alignment: .leading, spacing: 0) {
             AuroraEyebrow(text: "Account")
             Text("Scan. Confirm.\nStart watching.")
-                .font(.continuumHeroTitle)
+                .font(.siloHeroTitle)
                 .foregroundStyle(Color.auroraInk)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 24)
             Text("Open your phone’s Camera and point it at the code. You won’t need to type a password on your TV.")
-                .font(.continuumBody)
+                .font(.siloBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .lineSpacing(4)
                 .frame(maxWidth: 720, alignment: .leading)
@@ -129,7 +129,7 @@ struct TVLoginView: View {
                     .progressViewStyle(CircularProgressViewStyle(tint: Color.auroraAccent))
                     .scaleEffect(0.95)
                 Text(statusText)
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .monospacedDigit()
             }
@@ -141,7 +141,7 @@ struct TVLoginView: View {
     private var qrPanel: some View {
         VStack(spacing: 28) {
             Label("Scan with Camera", systemImage: "camera")
-                .font(.continuumSubheadline)
+                .font(.siloSubheadline)
                 .foregroundStyle(Color.auroraInk)
 
             qrCodeArea
@@ -225,10 +225,10 @@ struct TVLoginView: View {
                     .font(.system(size: 40, weight: .semibold))
                     .foregroundStyle(Color.requestRose)
                 Text("Pairing code unavailable")
-                    .font(.continuumSubheadline)
+                    .font(.siloSubheadline)
                     .foregroundStyle(Color.auroraInk)
                 Text(message)
-                    .font(.continuumCaption)
+                    .font(.siloCaption)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -292,11 +292,11 @@ struct TVLoginView: View {
             VStack(alignment: .leading, spacing: 24) {
                 AuroraEyebrow(text: "Account")
                 Text("Sign in with a password")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                 if let host = hostLabel {
                     Text("Use the account credentials for \(host).")
-                        .font(.continuumBody)
+                        .font(.siloBody)
                         .foregroundStyle(Color.auroraInkSecondary)
                 }
 
@@ -347,7 +347,7 @@ struct TVLoginView: View {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundStyle(Color.requestRose)
                         Text(error)
-                            .font(.continuumCaption)
+                            .font(.siloCaption)
                             .foregroundStyle(Color.requestRose)
                     }
                     .transition(.opacity)
@@ -458,29 +458,6 @@ struct TVLoginView: View {
     }
 }
 
-// MARK: - Field chrome
-//
-// Explicit focus-aware chrome for tvOS text fields. We can't rely on
-// `@Environment(\.isFocused)` inside a `TextFieldStyle._body` because it
-// doesn't reliably fire for SwiftUI TextFields on tvOS — the focus platter
-// paints but the style's color flip never runs, so the typed value ends up
-// white-on-white. Taking focus as an explicit parameter from the owning
-// view's `@FocusState` sidesteps the issue. Shared with `TVServerSetupView`.
-
-struct TVAuthFieldChrome: ViewModifier {
-    let isFocused: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .font(.continuumBody)
-            .foregroundStyle(isFocused ? Color.continuumBackground : Color.continuumOnSurface)
-            .tint(isFocused ? Color.continuumBackground : Color.continuumOnSurface)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .continuumInputChrome(isFocused: isFocused)
-    }
-}
-
 // MARK: - Local button styles
 
 /// Square icon-only focus affordance for the password show/hide toggle.
@@ -496,15 +473,15 @@ private struct TVAuthIconButtonBody: View {
 
     var body: some View {
         configuration.label
-            .foregroundStyle(isFocused ? Color.continuumBackground : Color.white.opacity(0.7))
+            .foregroundStyle(isFocused ? Color.siloBackground : Color.white.opacity(0.7))
             .frame(width: 56, height: 56)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                    .fill(isFocused ? Color.continuumOnSurface : Color.continuumSurfaceVariant)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                    .fill(isFocused ? Color.siloOnSurface : Color.siloSurfaceVariant)
                     .overlay(
-                        RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
+                        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
                             .stroke(
-                                isFocused ? Color.clear : Color.continuumOutline,
+                                isFocused ? Color.clear : Color.siloOutline,
                                 lineWidth: 1
                             )
                     )
@@ -512,7 +489,7 @@ private struct TVAuthIconButtonBody: View {
             .scaleEffect(isFocused ? 1.04 : 1.0)
             .opacity(configuration.isPressed ? 0.75 : 1.0)
             .focusEffectDisabled()
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
 

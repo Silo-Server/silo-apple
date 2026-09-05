@@ -573,7 +573,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     modeFocusAppearanceTask = nil
                     presentedFocusedModeId = newId
                 }
-                withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+                withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                     proxy.scrollTo(newId, anchor: .center)
                 }
             }
@@ -1028,17 +1028,17 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     private func seasonEpisodeBody(_ snapshot: SeasonPageSnapshot) -> some View {
         if snapshot.isLoading {
             TVEpisodeRailPlaceholder(
-                cardWidth: ContinuumTheme.thumbnailCardWidth
+                cardWidth: SiloTheme.thumbnailCardWidth
                     * uiCustomization.cardPresentation.posterSize.scale,
-                cardHeightRatio: ContinuumTheme.thumbnailCardHeight
-                    / ContinuumTheme.thumbnailCardWidth,
+                cardHeightRatio: SiloTheme.thumbnailCardHeight
+                    / SiloTheme.thumbnailCardWidth,
                 cardSpacing: 40,
                 hidesEpisodeTitle: true
             )
         } else if snapshot.episodes.isEmpty {
             Text("No episodes available")
                 .font(.system(size: 22, weight: .regular))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
         } else {
             TVEpisodeRail(
@@ -1053,9 +1053,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     episodeFavoriteStates[$0] ?? false
                 } ?? false,
                 favoriteStates: episodeFavoriteStates,
-                baseCardWidth: ContinuumTheme.thumbnailCardWidth,
-                cardHeightRatio: ContinuumTheme.thumbnailCardHeight
-                    / ContinuumTheme.thumbnailCardWidth,
+                baseCardWidth: SiloTheme.thumbnailCardWidth,
+                cardHeightRatio: SiloTheme.thumbnailCardHeight
+                    / SiloTheme.thumbnailCardWidth,
                 cardSpacing: 40,
                 anchorsFocusedCard: true,
                 onMoveUp: focusSelectedMode,
@@ -1067,10 +1067,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private var episodeRailReservedHeight: CGFloat {
-        let width = ContinuumTheme.thumbnailCardWidth
+        let width = SiloTheme.thumbnailCardWidth
             * uiCustomization.cardPresentation.posterSize.scale
         let stillHeight = width
-            * (ContinuumTheme.thumbnailCardHeight / ContinuumTheme.thumbnailCardWidth)
+            * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth)
         return stillHeight
             + (uiCustomization.cardPresentation.caption.showsTitle ? 46 : 0)
             + 24
@@ -1444,10 +1444,10 @@ private struct TVSeriesModeTabBody: View {
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .focusEffectDisabled()
             .animation(
-                .easeOut(duration: ContinuumTheme.fastDuration),
+                .easeOut(duration: SiloTheme.fastDuration),
                 value: rendersFocusedAppearance
             )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
     }
 }
 #endif

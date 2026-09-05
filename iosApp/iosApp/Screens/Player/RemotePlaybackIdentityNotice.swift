@@ -29,33 +29,33 @@ struct RemotePlaybackIdentityNotice: View {
 
     var body: some View {
         Label {
-            VStack(alignment: .leading, spacing: ContinuumTheme.smallPadding) {
+            VStack(alignment: .leading, spacing: SiloTheme.smallPadding) {
                 Text("Playing as \(profileLabel)")
-                    .font(.continuumSubheadline)
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .font(.siloSubheadline)
+                    .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
 
                 Text(sourceLabel)
-                    .font(.continuumBody)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .font(.siloBody)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
             }
         } icon: {
             Image(systemName: "iphone")
                 .font(.title3)
-                .foregroundStyle(Color.continuumPrimary)
+                .foregroundStyle(Color.siloPrimary)
                 .accessibilityHidden(true)
         }
-        .padding(.horizontal, ContinuumTheme.padding)
-        .padding(.vertical, ContinuumTheme.spacing)
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.vertical, SiloTheme.spacing)
         .frame(maxWidth: 720)
         .siloPlayerGlass(
-            in: RoundedRectangle(cornerRadius: ContinuumTheme.cardCornerRadius),
-            tint: Color.continuumPrimary.opacity(0.24)
+            in: RoundedRectangle(cornerRadius: SiloTheme.cardCornerRadius),
+            tint: Color.siloPrimary.opacity(0.24)
         )
         .shadow(color: .black.opacity(0.28), radius: 24, y: 12)
-        .padding(.horizontal, ContinuumTheme.safePadding)
-        .padding(.top, ContinuumTheme.safePadding)
+        .padding(.horizontal, SiloTheme.safePadding)
+        .padding(.top, SiloTheme.safePadding)
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Playing as \(profileLabel). \(sourceLabel).")

@@ -274,8 +274,8 @@ private struct HUDTabPillBody: View {
             .contentShape(Capsule())
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
     }
 
     private var foreground: Color {
@@ -356,7 +356,7 @@ private struct HUDScrollablePane<Content: View>: View {
                     .padding(-10)
             )
             .scaleEffect(isFocused ? 1.01 : 1)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             .accessibilityLabel(accessibilityLabel)
             .onMoveCommand { direction in
                 handleMove(direction, proxy: proxy)
@@ -397,7 +397,7 @@ private struct HUDScrollablePane<Content: View>: View {
         guard nextIndex != scrollTargetIndex else { return }
         scrollTargetIndex = nextIndex
 
-        withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             proxy.scrollTo(scrollTargetIDs[nextIndex], anchor: .top)
         }
     }
@@ -461,8 +461,8 @@ private struct HUDRowButtonBody: View {
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 
     private var background: Color {
@@ -809,24 +809,22 @@ private struct VideoPane: View {
                         }
                         .focused($focusedField, equals: .speed)
 
-                        if viewModel.backendCapabilities.supportsVideoGravity {
-                            HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
-                                presentPicker(
-                                    for: .aspect,
-                                    HUDPickerPresentation(
-                                        title: "Aspect",
-                                        options: Self.aspectOptions,
-                                        selection: viewModel.settings.videoGravity.rawValue,
-                                        onSelect: { value in
-                                            if let gravity = VideoGravity(rawValue: value) {
-                                                viewModel.setVideoGravity(gravity)
-                                            }
+                        HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
+                            presentPicker(
+                                for: .aspect,
+                                HUDPickerPresentation(
+                                    title: "Aspect",
+                                    options: Self.aspectOptions,
+                                    selection: viewModel.settings.videoGravity.rawValue,
+                                    onSelect: { value in
+                                        if let gravity = VideoGravity(rawValue: value) {
+                                            viewModel.setVideoGravity(gravity)
                                         }
-                                    )
+                                    }
                                 )
-                            }
-                            .focused($focusedField, equals: .aspect)
+                            )
                         }
+                        .focused($focusedField, equals: .aspect)
                     }
                 }
                 .focusSection()
@@ -880,7 +878,7 @@ private struct VideoPane: View {
                 )
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
     }
 
     private var qualityValue: String {
@@ -938,19 +936,6 @@ private struct HUDDropdownOption: Identifiable, Hashable {
 }
 
 private enum HUDPickerOptions {
-    static let onOff: [HUDDropdownOption] = [
-        .init(id: "on", label: "On"),
-        .init(id: "off", label: "Off")
-    ]
-
-    static func boolSelection(_ value: Bool) -> String {
-        value ? "on" : "off"
-    }
-
-    static func boolValue(for id: String) -> Bool {
-        id.caseInsensitiveCompare("on") == .orderedSame
-    }
-
     static func boolLabel(_ value: Bool) -> String {
         value ? "On" : "Off"
     }
@@ -1390,7 +1375,7 @@ private struct SubtitleAppearanceDialog: View {
                 )
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
         // Defensive: the picker's own exit handler consumes Menu while it has
         // focus, but if focus ever escapes it we still want Menu to close the
         // picker, not tear down the whole dialog.
@@ -1480,7 +1465,7 @@ private struct HUDCircleButtonBody: View {
             .contentShape(Circle())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 }
 
@@ -1641,10 +1626,10 @@ private struct SubtitlesPane: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAppearanceDialog)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: activePicker?.id)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showAITranslateMenu)
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: showSubtitleSearchMenu)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showAppearanceDialog)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showAITranslateMenu)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSubtitleSearchMenu)
     }
 
     private func closeAITranslateMenu() {

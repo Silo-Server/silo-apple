@@ -5,7 +5,7 @@ import SwiftUI
 
 /// Layout constants shared by the Design Lab variants.
 ///
-/// These deliberately diverge from `ContinuumTheme` in a few places — the
+/// These deliberately diverge from `SiloTheme` in a few places — the
 /// divergences *are* the proposal, and each one is called out below so the
 /// reasoning survives the experiment.
 enum HomeFeedMetrics {
@@ -17,8 +17,6 @@ enum HomeFeedMetrics {
     /// Wider than today's 120pt. At 120 the cards read as thumbnails against
     /// 24pt row gaps; the screen ends up feeling sparse rather than spacious.
     static let posterWidth: CGFloat = 132
-    /// Poster Wall trades size for count.
-    static let densePosterWidth: CGFloat = 104
     /// 16:9 still used by resume rows. Continue Watching is the row people
     /// act on most, so it reads as "one card plus a peek" rather than matching
     /// the poster rows' density — at 184 the stills felt like thumbnails and
@@ -31,7 +29,7 @@ enum HomeFeedMetrics {
     static let posterRadius: CGFloat = 10
     static let stillRadius: CGFloat = 12
 
-    /// Screen gutter. Matches `ContinuumTheme.safePadding` so variants stay
+    /// Screen gutter. Matches `SiloTheme.safePadding` so variants stay
     /// aligned with the rest of the app's chrome.
     static let gutter: CGFloat = 16
     static let cardSpacing: CGFloat = 10
@@ -80,17 +78,6 @@ enum HomeFeedMeta {
         return min(max(position / duration, 0), 1)
     }
 
-    /// "1968  ·  Horror  ·  1h 36m" — the meta line under a hero title.
-    static func heroLine(for item: SectionItem, maxGenres: Int = 2) -> String {
-        var parts: [String] = []
-        if let year = item.year { parts.append(String(year)) }
-        if let genres = item.genres, !genres.isEmpty {
-            parts.append(contentsOf: genres.prefix(maxGenres))
-        }
-        if let runtime = runtime(minutes: item.runtime) { parts.append(runtime) }
-        return parts.joined(separator: "  ·  ")
-    }
-
     /// Secondary caption line under a card title: "S01E02 · Pilot" for
     /// episodes, otherwise the year. One line, so every card in a row keeps
     /// the same height.
@@ -134,6 +121,10 @@ private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
     var continueWatchingItem: SectionItem? = nil
+    /// Secondary action surfaced to VoiceOver. The card collapses its
+    /// children into one element, so a nested play button would otherwise
+    /// vanish from the accessibility tree.
+    var accessibilityPlayAction: (name: String, perform: () -> Void)? = nil
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
@@ -156,6 +147,19 @@ private struct HomeCardTap<Label: View>: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
+        .modifier(OptionalAccessibilityAction(action: accessibilityPlayAction))
+    }
+}
+
+private struct OptionalAccessibilityAction: ViewModifier {
+    let action: (name: String, perform: () -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action {
+            content.accessibilityAction(named: Text(action.name), action.perform)
+        } else {
+            content
+        }
     }
 }
 
@@ -275,9 +279,9 @@ private struct HomeWatchedCheck: View {
     var body: some View {
         Image(systemName: "checkmark")
             .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(Color.continuumBackground)
+            .foregroundStyle(Color.siloBackground)
             .frame(width: 18, height: 18)
-            .background(Circle().fill(Color.continuumOnSurface))
+            .background(Circle().fill(Color.siloOnSurface))
     }
 }
 
@@ -396,7 +400,7 @@ struct HomePosterCard: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(HomeFeedMeta.cardTitle(for: item))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 // One line, always. Reserving two lines (as the shipping card
                 // does) makes every row 17pt taller than it needs to be; letting
                 // it wrap makes row baselines ragged. Truncation is the honest
@@ -407,7 +411,7 @@ struct HomePosterCard: View {
             if showsMetadata, let secondLine = HomeFeedMeta.cardSecondLine(for: item) {
                 Text(secondLine)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.5))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.5))
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -447,6 +451,7 @@ struct HomeStillCard: View {
     /// Optimistic watched state, shared with the menu — see `HomePosterCard`.
     @State private var playedOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    @Environment(AppRouter.self) private var router
 
     private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
 
@@ -467,7 +472,10 @@ struct HomeStillCard: View {
         HomeCardTap(
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
-            continueWatchingItem: opensResumeContext ? item : nil
+            continueWatchingItem: opensResumeContext ? item : nil,
+            accessibilityPlayAction: isDirectlyPlayable
+                ? (name: playActionName, perform: playItem)
+                : nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
@@ -533,13 +541,7 @@ struct HomeStillCard: View {
                 .stroke(.white.opacity(0.08), lineWidth: 0.5)
         )
         .overlay(alignment: .center) {
-            Image(systemName: "play.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(.black.opacity(0.32)))
-                .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
-                .allowsHitTesting(false)
+            playBadge
         }
         // A watched item can sit in Continue Watching again on a rewatch —
         // the check says "you've finished this before" alongside the rail's
@@ -558,11 +560,48 @@ struct HomeStillCard: View {
         }
     }
 
+    /// Quick-start affordance. Tapping the badge plays (or resumes) the item
+    /// directly instead of opening its detail page; the rest of the still
+    /// keeps the detail tap. Sized as a real touch target rather than a
+    /// decorative glyph so a thumb lands on it reliably.
+    @ViewBuilder
+    private var playBadge: some View {
+        let badge = Image(systemName: "play.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 36, height: 36)
+            .background(Circle().fill(.black.opacity(0.32)))
+            .overlay(Circle().stroke(.white.opacity(0.38), lineWidth: 0.75))
+            .contentShape(Circle())
+
+        if isDirectlyPlayable {
+            Button(action: playItem) { badge }
+                .buttonStyle(.plain)
+                .accessibilityLabel(playActionName)
+        } else {
+            badge.allowsHitTesting(false)
+        }
+    }
+
+    private var isDirectlyPlayable: Bool { SiloMediaType.isDirectlyPlayable(item.type) }
+
+    private var playActionName: String { (item.positionSeconds ?? 0) > 0 ? "Resume" : "Play" }
+
+    private func playItem() {
+        router.presentPlayer(
+            contentId: item.contentId,
+            resumePosition: item.positionSeconds,
+            prefersLastUsedVersion: opensResumeContext,
+            posterURL: item.posterUrl,
+            backdropURL: item.backdropUrl
+        )
+    }
+
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(HomeFeedMeta.cardTitle(for: item))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
             if showsMetadata {
@@ -571,7 +610,7 @@ struct HomeStillCard: View {
                 // movies keeps one caption height.
                 Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.7))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                     .monospacedDigit()
                     .lineLimit(1, reservesSpace: true)
                     .truncationMode(.tail)
@@ -584,7 +623,7 @@ struct HomeStillCard: View {
                 // a remaining-time caption, including as lazy cards enter/leave.
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.55))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                     .lineLimit(1)
                     .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)
                     .accessibilityHidden(HomeFeedMeta.resumeCaption(for: item) == nil)
@@ -639,13 +678,13 @@ struct HomeSectionHeader: View {
             if let icon {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.85))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.85))
             }
 
             Text(title)
                 .font(.system(size: 17, weight: .semibold))
                 .tracking(-0.3)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
             Spacer(minLength: 8)
@@ -654,7 +693,7 @@ struct HomeSectionHeader: View {
                 Button(action: onSeeAll) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.continuumOnSurface.opacity(0.35))
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.35))
                 }
                 .buttonStyle(.plain)
             }
@@ -668,7 +707,7 @@ struct HomeSectionHeader: View {
                 Text(title.uppercased())
                     .font(.system(size: 11, weight: .heavy))
                     .tracking(1.4)
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.72))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.72))
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
@@ -677,7 +716,7 @@ struct HomeSectionHeader: View {
                     Button(action: onSeeAll) {
                         Image(systemName: "arrow.right")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.continuumOnSurface.opacity(0.35))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.35))
                     }
                     .buttonStyle(.plain)
                 }

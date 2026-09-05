@@ -33,7 +33,7 @@ struct HomeView: View {
     /// Breathing room between the status-bar safe area and the floating
     /// header. Uses the same value as the Libraries and For You top chrome so
     /// the shared action cluster sits at one height on every root page.
-    private let headerTopInset: CGFloat = ContinuumTheme.smallPadding
+    private let headerTopInset: CGFloat = SiloTheme.smallPadding
     /// The LazyVStack already contributes its normal section spacing after the
     /// header runway. Adding a second large header gap pushed the first
     /// visible row far down the screen whenever an earlier Home row was hidden.
@@ -138,7 +138,7 @@ struct HomeView: View {
                 // It occupies the same 44pt row as the icon buttons so its
                 // centre lines up with theirs.
                 SiloWordmarkView(width: 72)
-                    .frame(height: ContinuumTheme.topBarIconHitSize)
+                    .frame(height: SiloTheme.topBarIconHitSize)
                 Spacer(minLength: 8)
 
                 // Trailing action cluster shared by every root page.
@@ -153,11 +153,11 @@ struct HomeView: View {
                     onSignOut: { router.signOutAndReset() }
                 )
             }
-            .padding(.horizontal, ContinuumTheme.padding)
+            .padding(.horizontal, SiloTheme.padding)
             #if os(iOS)
             .padding(.top, headerTopInset)
             #endif
-            .padding(.bottom, ContinuumTheme.smallPadding)
+            .padding(.bottom, SiloTheme.smallPadding)
             // Same scroll-driven glass as the Detail page chrome so the
             // utilities stay legible over bright artwork once rows scroll
             // underneath.
@@ -243,7 +243,7 @@ struct HomeView: View {
             }
             .reportsPageChromeScroll(to: chromeScrollState)
             #if os(macOS)
-            .continuumScrollEdgeEffect()
+            .siloScrollEdgeEffect()
             #endif
         }
     }
@@ -270,7 +270,7 @@ struct HomeView: View {
     #if !os(tvOS)
     /// Home uses the same fixed canvas as the rest of the signed-in app.
     private var homeFeedBackground: some View {
-        ContinuumPageBackdrop()
+        SiloPageBackdrop()
     }
 
 
@@ -336,7 +336,7 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private var sectionSpacing: CGFloat {
-        ContinuumTheme.largePadding
+        SiloTheme.largePadding
     }
 
     /// On iOS the ScrollView already starts inside the safe area, so the
@@ -353,11 +353,11 @@ struct HomeView: View {
         // Mirror the floating header's vertical footprint (icon-frame height +
         // bottom padding) so the first row clears it. LazyVStack supplies the
         // remaining row gap; don't double-count it here.
-        var runway = topSafeAreaInset + ContinuumTheme.topBarIconHitSize + ContinuumTheme.smallPadding
+        var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
         runway += headerTopInset + headerToContentGap
         #else
-        runway += ContinuumTheme.largePadding + ContinuumTheme.smallPadding
+        runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif
         return runway
     }

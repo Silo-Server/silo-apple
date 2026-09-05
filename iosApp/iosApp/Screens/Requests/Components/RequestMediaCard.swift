@@ -51,7 +51,7 @@ struct RequestMediaCard: View {
     }
 
     private var height: CGFloat {
-        width * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+        width * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
     }
 
     var body: some View {
@@ -107,16 +107,16 @@ struct RequestMediaCard: View {
             }
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 
     private var posterPlaceholder: some View {
         ZStack {
-            Rectangle().fill(Color.continuumSurfaceElevated)
+            Rectangle().fill(Color.siloSurfaceElevated)
             Text(title)
-                .font(.continuumCaption)
+                .font(.siloCaption)
                 .fontWeight(.semibold)
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.center)
                 .padding(12)
         }
@@ -126,8 +126,8 @@ struct RequestMediaCard: View {
     private var caption: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.continuumSubheadline)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloSubheadline)
+                .foregroundColor(.siloOnSurface)
                 #if os(tvOS)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -137,8 +137,8 @@ struct RequestMediaCard: View {
 
             if uiCustomization.cardPresentation.caption.showsMetadata, let year, year > 0 {
                 Text(String(year))
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
             }
         }
         .frame(width: width, alignment: .leading)

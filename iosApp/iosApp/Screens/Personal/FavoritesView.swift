@@ -253,7 +253,7 @@ struct FavoritesView: View {
                     }
                 }
             }
-            .padding(ContinuumTheme.padding)
+            .padding(SiloTheme.padding)
         }
         .reportsPageChromeScroll()
     }
@@ -298,7 +298,7 @@ struct FavoritesView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Favorites" : nil))
         .task {
             await loadFavorites()
@@ -343,7 +343,7 @@ struct FavoritesView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-            .padding(ContinuumTheme.padding)
+            .padding(SiloTheme.padding)
         }
         .reportsPageChromeScroll()
         #endif
@@ -360,7 +360,7 @@ struct FavoritesView: View {
                 if usesTVTopMenu {
                     Text("Favorites")
                         .font(.system(size: 64, weight: .bold))
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
                 }
 
                 sectionSelector
@@ -381,9 +381,9 @@ struct FavoritesView: View {
                     .focusSection()
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.top, usesTVTopMenu ? TVTopMenuLayout.contentTopInset : 20)
-            .padding(.bottom, ContinuumTheme.safePadding)
+            .padding(.bottom, SiloTheme.safePadding)
         }
     }
 
@@ -391,7 +391,7 @@ struct FavoritesView: View {
         HStack(spacing: 14) {
             ForEach(FavoriteMediaSection.allCases) { section in
                 Button {
-                    withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                         selectedSection = section
                     }
                 } label: {
@@ -418,15 +418,15 @@ struct FavoritesView: View {
         VStack(spacing: 16) {
             Image(systemName: selectedSection == .movies ? "film" : "tv")
                 .font(.system(size: 54, weight: .light))
-                .foregroundStyle(Color.continuumOnSurface.opacity(0.34))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.34))
 
             Text("No favorite \(selectedSection.rawValue.lowercased())")
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
 
             Text("Add favorites from any detail page and they will appear here.")
                 .font(.system(size: 22))
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
         .frame(maxWidth: .infinity, minHeight: 430)
     }
@@ -447,7 +447,7 @@ struct FavoritesView: View {
             cardWidthOverride: tvCardWidthOverride,
             onUserStateChanged: { state in
                 guard !state.isFavorite else { return }
-                withAnimation(.easeInOut(duration: ContinuumTheme.normalDuration)) {
+                withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                     items.removeAll { $0.contentId == item.contentId }
                 }
             }
@@ -457,7 +457,7 @@ struct FavoritesView: View {
     /// `MediaCard` applies the global size preference after this override;
     /// divide it out so the final eight-across grid stays at 176 points.
     private var tvCardWidthOverride: CGFloat {
-        ContinuumTheme.Skyline.densePosterCardWidth
+        SiloTheme.Skyline.densePosterCardWidth
             / uiCustomization.cardPresentation.posterSize.scale
     }
 
@@ -497,8 +497,8 @@ struct FavoritesView: View {
         }
         error = nil
         do {
-            let response: CatalogResponse = try await ContinuumAPI.shared.get(
-                "/api/v1/favorites"
+            let response: CatalogResponse = try await SiloAPI.shared.favorites(
+                offset: 0, limit: 100
             )
             ResponseCache.shared.set(response, for: CacheKey.favorites)
             items = response.items
@@ -550,14 +550,14 @@ private struct FavoriteSectionPillBody: View {
         configuration.label
             .padding(.horizontal, 28)
             .padding(.vertical, 12)
-            .foregroundStyle(isFocused ? Color.continuumBackground : Color.continuumOnSurface)
+            .foregroundStyle(isFocused ? Color.siloBackground : Color.siloOnSurface)
             .background(
                 Capsule().fill(
                     isFocused
-                        ? Color.continuumOnSurface
+                        ? Color.siloOnSurface
                         : (isSelected
-                            ? Color.continuumChromeSelectedFill
-                            : Color.continuumChromeRestingFill)
+                            ? Color.siloChromeSelectedFill
+                            : Color.siloChromeRestingFill)
                 )
             )
             .overlay(
@@ -565,15 +565,15 @@ private struct FavoriteSectionPillBody: View {
                     isFocused
                         ? Color.clear
                         : (isSelected
-                            ? Color.continuumChromeSelectedBorder
-                            : Color.continuumChromeRestingBorder),
+                            ? Color.siloChromeSelectedBorder
+                            : Color.siloChromeRestingBorder),
                     lineWidth: 1
                 )
             )
             .scaleEffect(isFocused ? 1.04 : 1)
             .opacity(configuration.isPressed ? 0.82 : 1)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 }
 #endif

@@ -78,7 +78,7 @@ struct TVAudiobookChaptersView: View {
                         header
                         list
                     }
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.top, 80)
                     .padding(.bottom, 80)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,17 +120,17 @@ struct TVAudiobookChaptersView: View {
                     contentMode: .fill
                 )
             } else {
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
+                    .fill(Color.siloSurfaceElevated)
                     .overlay {
                         Image(systemName: "book.closed").foregroundStyle(.secondary)
                     }
             }
         }
         .frame(width: 146, height: 146)
-        .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1)
         )
     }
@@ -311,17 +311,17 @@ private struct TVAudiobookRowBody: View {
     var body: some View {
         configuration.label
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                     .fill(fill)
             )
             .overlay {
                 if isCurrent && !isFocused {
-                    RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+                    RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                         .stroke(Color.white.opacity(0.22), lineWidth: 1)
                 }
             }
             .overlay(alignment: .bottomLeading) { progressUnderline }
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous))
             .shadow(
                 color: isFocused ? .black.opacity(0.4) : .clear,
                 radius: isFocused ? 18 : 0,

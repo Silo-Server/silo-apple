@@ -51,11 +51,3 @@ struct UserProfile: Codable, Identifiable, Hashable {
         self.preferredMetadataLanguage = preferredMetadataLanguage
     }
 }
-
-/// Request body for creating a new profile.
-struct CreateProfileBody: Codable {
-    let name: String
-    let avatarEmoji: String?
-    let pin: String?
-    let isChild: Bool
-}

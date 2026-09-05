@@ -14,8 +14,8 @@ struct SiloWordmarkView: View {
 
             if let subtitle {
                 Text(subtitle)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
                     .tracking(2)
             }
         }

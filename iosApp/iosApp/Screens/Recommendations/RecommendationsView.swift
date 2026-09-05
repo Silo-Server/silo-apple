@@ -65,7 +65,7 @@ struct RecommendationsView: View {
                         PageChromeGlass(scrollState: chromeScrollState)
                     }
             }
-        .continuumPageBackground()
+        .siloPageBackground()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
@@ -78,8 +78,8 @@ struct RecommendationsView: View {
             SidebarToggleButton()
 
             Text("Recommendations")
-                .font(.continuumTitle)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloTitle)
+                .foregroundColor(.siloOnSurface)
 
             Spacer(minLength: 8)
 
@@ -94,9 +94,9 @@ struct RecommendationsView: View {
                 onSignOut: { router.signOutAndReset() }
             )
         }
-        .padding(.horizontal, ContinuumTheme.padding)
-        .padding(.top, ContinuumTheme.smallPadding)
-        .padding(.bottom, ContinuumTheme.smallPadding)
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.top, SiloTheme.smallPadding)
+        .padding(.bottom, SiloTheme.smallPadding)
     }
     #endif
 
@@ -171,7 +171,7 @@ struct RecommendationsView: View {
             let details = await withTaskGroup(of: (String, ItemDetail?).self) { group in
                 for contentId in batch {
                     group.addTask {
-                        let detail = try? await ContinuumAPI.shared.itemDetail(
+                        let detail = try? await SiloAPI.shared.itemDetail(
                             contentId: contentId
                         )
                         return (contentId, detail)
@@ -271,7 +271,7 @@ struct RecommendationsView: View {
             #if os(tvOS)
             .padding(.top, TVTopMenuLayout.contentTopInset)
             #endif
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
         .reportsPageChromeScroll()
     }
@@ -281,13 +281,13 @@ struct RecommendationsView: View {
     /// above acts as the selector between the two.
     @ViewBuilder
     private var savedListsFallback: some View {
-        VStack(spacing: ContinuumTheme.smallPadding) {
+        VStack(spacing: SiloTheme.smallPadding) {
             Text("No recommendations yet — showing your saved titles.")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, contentHorizontalPadding)
-                .padding(.top, ContinuumTheme.smallPadding)
+                .padding(.top, SiloTheme.smallPadding)
 
             switch savedListSelection {
             case .watchlist:
@@ -304,7 +304,7 @@ struct RecommendationsView: View {
         #if os(tvOS)
         return 30
         #else
-        return ContinuumTheme.largePadding
+        return SiloTheme.largePadding
         #endif
     }
 
@@ -312,7 +312,7 @@ struct RecommendationsView: View {
         #if os(tvOS)
         return 96
         #else
-        return ContinuumTheme.padding
+        return SiloTheme.padding
         #endif
     }
 
@@ -474,14 +474,14 @@ private struct SavedShortcutButtonBody: View {
 
     var body: some View {
         configuration.label
-            .foregroundColor(isProminent ? .continuumBackground : .continuumOnSurface)
+            .foregroundColor(isProminent ? .siloBackground : .siloOnSurface)
             .padding(.horizontal, horizontalPadding)
             .frame(height: height)
             .background(
                 Capsule()
                     .fill(
                         isProminent
-                            ? Color.continuumOnSurface.opacity(0.96)
+                            ? Color.siloOnSurface.opacity(0.96)
                             : (isSelected ? Color.white.opacity(0.14) : Color.clear)
                     )
             )
@@ -503,7 +503,7 @@ private struct SavedShortcutButtonBody: View {
             }
             .scaleEffect(isFocused ? 1.045 : 1.0)
             .shadow(
-                color: isFocused ? Color.continuumOnSurface.opacity(0.36) : .clear,
+                color: isFocused ? Color.siloOnSurface.opacity(0.36) : .clear,
                 radius: isFocused ? 18 : 0,
                 y: isFocused ? 6 : 0
             )
@@ -511,9 +511,9 @@ private struct SavedShortcutButtonBody: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
-            .animation(ContinuumTheme.springAnimation, value: isSelected)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
+            .animation(SiloTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isSelected)
     }
 
     private var height: CGFloat {

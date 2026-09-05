@@ -1,15 +1,15 @@
-name: Player regression
+name: Apple regression
 
 on:
   pull_request:
     paths:
-      - 'iosApp/iosApp/Screens/Player/**'
-      - 'iosApp/Tests/**'
-      - 'iosApp/project.yml'
-      - 'iosApp/**/Package.resolved'
+      - 'iosApp/**'
       - '.github/workflows/player-regression.yml'
   push:
-    branches: [fix/next-up-persistent-surface]
+    branches: [main]
+    paths:
+      - 'iosApp/**'
+      - '.github/workflows/player-regression.yml'
   workflow_dispatch:
     inputs:
       baseline_ref:
@@ -132,7 +132,7 @@ jobs:
             -resultBundlePath /tmp/player-validation.xcresult \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-validation.log
       - name: Record synthetic preview expansion and successor playback
-        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.record_preview)
+        if: matrix.action == 'test' && !inputs.baseline_ref && steps.build.outcome == 'success' && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.record_preview
         timeout-minutes: 10
         shell: bash
         run: |

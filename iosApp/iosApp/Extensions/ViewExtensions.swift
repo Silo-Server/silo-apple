@@ -5,7 +5,7 @@ import SwiftUI
 /// The shared signed-in page canvas. On iOS it is a fixed, fully opaque
 /// charcoal wash with static tonal depth; it never samples page artwork.
 /// Other platforms retain their existing pure-black canvas.
-struct ContinuumPageBackdrop: View {
+struct SiloPageBackdrop: View {
     var body: some View {
         #if os(iOS)
         ZStack {
@@ -36,7 +36,7 @@ struct ContinuumPageBackdrop: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         #else
-        Color.continuumBackground
+        Color.siloBackground
             .ignoresSafeArea()
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -44,36 +44,24 @@ struct ContinuumPageBackdrop: View {
     }
 }
 
-enum ContinuumNavigationTitleDisplayMode {
+enum SiloNavigationTitleDisplayMode {
     case automatic
     case inline
     case large
 }
 
 extension View {
-    /// Apply the original pure-black Continuum canvas.
-    func continuumBackground() -> some View {
-        self.background(Color.continuumBackground.ignoresSafeArea())
+    /// Apply the original pure-black Silo canvas.
+    func siloBackground() -> some View {
+        self.background(Color.siloBackground.ignoresSafeArea())
     }
 
     /// Apply the fixed charcoal page canvas without changing semantic black
     /// ink used by controls, artwork masks, Settings, or media surfaces.
-    func continuumPageBackground() -> some View {
+    func siloPageBackground() -> some View {
         self.background {
-            ContinuumPageBackdrop()
+            SiloPageBackdrop()
         }
-    }
-
-    /// Card-style surface with rounded corners — zero elevation (Plezy style).
-    func continuumCard() -> some View {
-        self
-            .background(Color.continuumSurface)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius))
-    }
-
-    /// Standard content padding on all sides.
-    func continuumPadding() -> some View {
-        self.padding(ContinuumTheme.padding)
     }
 
     /// Hide the view conditionally.
@@ -87,7 +75,7 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumNavigationTitleDisplayMode(_ mode: ContinuumNavigationTitleDisplayMode) -> some View {
+    func siloNavigationTitleDisplayMode(_ mode: SiloNavigationTitleDisplayMode) -> some View {
         #if os(tvOS) || os(macOS)
         self
         #else
@@ -103,7 +91,7 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumScrollContentBackgroundHidden() -> some View {
+    func siloScrollContentBackgroundHidden() -> some View {
         #if os(tvOS)
         self
         #else
@@ -115,7 +103,7 @@ extension View {
     /// floating bar. iOS 18 keeps its legacy edge treatment; tvOS remains a
     /// no-op because it has no floating bars in the 10-foot UI.
     @ViewBuilder
-    func continuumScrollEdgeEffect() -> some View {
+    func siloScrollEdgeEffect() -> some View {
         #if os(tvOS)
         self
         #elseif os(iOS)
@@ -126,22 +114,6 @@ extension View {
         }
         #else
         self.scrollEdgeEffectStyle(.soft, for: .top)
-        #endif
-    }
-
-    /// Extends hero artwork through surrounding chrome on Apple 26+. Earlier
-    /// iOS versions retain the legacy clipped artwork without the new system
-    /// mirroring effect.
-    @ViewBuilder
-    func siloBackgroundExtensionEffect() -> some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            self.backgroundExtensionEffect()
-        } else {
-            self.clipped()
-        }
-        #else
-        self.backgroundExtensionEffect()
         #endif
     }
 
@@ -161,7 +133,7 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumStatusBarHidden() -> some View {
+    func siloStatusBarHidden() -> some View {
         #if os(tvOS) || os(macOS)
         self
         #else
@@ -170,7 +142,7 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumToolbarColorSchemeDark() -> some View {
+    func siloToolbarColorSchemeDark() -> some View {
         #if os(tvOS) || os(macOS)
         self
         #else
@@ -179,18 +151,18 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumNavigationBarSurfaceBackground() -> some View {
+    func siloNavigationBarSurfaceBackground() -> some View {
         #if os(tvOS) || os(macOS)
         self
         #else
         self
-            .toolbarBackground(Color.continuumSurface, for: .navigationBar)
+            .toolbarBackground(Color.siloSurface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
         #endif
     }
 
     @ViewBuilder
-    func continuumNavigationBarBackgroundHidden() -> some View {
+    func siloNavigationBarBackgroundHidden() -> some View {
         #if os(tvOS) || os(macOS)
         self
         #else
@@ -199,7 +171,7 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumSearchable(text: Binding<String>, prompt: String) -> some View {
+    func siloSearchable(text: Binding<String>, prompt: String) -> some View {
         #if os(tvOS)
         self.searchable(text: text, prompt: prompt)
         #elseif os(macOS)
@@ -219,7 +191,7 @@ extension View {
     }
 
     @ViewBuilder
-    func continuumGroupedListStyle() -> some View {
+    func siloGroupedListStyle() -> some View {
         #if os(tvOS)
         self.listStyle(.plain)
         #elseif os(macOS)
@@ -229,44 +201,44 @@ extension View {
         #endif
     }
 
-    func continuumInputChrome(isFocused: Bool) -> some View {
+    func siloInputChrome(isFocused: Bool) -> some View {
         self
-            .background(ContinuumInputBackground(isFocused: isFocused))
+            .background(SiloInputBackground(isFocused: isFocused))
             .scaleEffect(isFocused ? 1.02 : 1.0)
             .shadow(
-                color: isFocused ? Color.continuumOnSurface.opacity(0.22) : .clear,
+                color: isFocused ? Color.siloOnSurface.opacity(0.22) : .clear,
                 radius: isFocused ? 18 : 0,
                 y: 0
             )
             // On tvOS the system paints a bright white platter under the
             // TextField when it gains focus, which completely hides our dark
-            // fill + placeholder. Suppressing it lets ContinuumInputBackground
+            // fill + placeholder. Suppressing it lets SiloInputBackground
             // carry focus via the fill/stroke change instead.
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
 
-private struct ContinuumInputBackground: View {
+private struct SiloInputBackground: View {
     let isFocused: Bool
 
     var body: some View {
         // At-rest stroke bumped to 22% so the field boundary reads clearly
-        // against pure black auth canvases. `continuumOutline` (12%) is
+        // against pure black auth canvases. `siloOutline` (12%) is
         // tuned for dividers and was too faint here.
-        let strokeColor: Color = isFocused ? .continuumOnSurface : Color.white.opacity(0.22)
+        let strokeColor: Color = isFocused ? .siloOnSurface : Color.white.opacity(0.22)
         let strokeWidth: CGFloat = isFocused ? 3 : 1.5
         // Slightly elevated fill gives the field a visible silhouette on
         // pure-black backgrounds without washing it into the focus
         // platter when tvOS lights the field up.
-        let fillColor: Color = .continuumSurfaceElevated
+        let fillColor: Color = .siloSurfaceElevated
 
-        RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
+        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
             .fill(fillColor)
             .overlay(
-                RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
                     .stroke(strokeColor, lineWidth: strokeWidth)
             )
     }
@@ -277,7 +249,7 @@ extension View {
     ///
     /// `confirmationDialog` can anchor away from the user's thumb on phones,
     /// while a standard alert keeps the decision in the middle of the screen.
-    func continuumResumePlaybackAlert(
+    func siloResumePlaybackAlert(
         isPresented: Binding<Bool>,
         stoppedAt timestamp: String,
         onResume: @escaping () -> Void,
@@ -293,7 +265,7 @@ extension View {
     }
 }
 
-// MARK: - Continuum Button Styles
+// MARK: - Silo Button Styles
 
 // These styles serve tvOS focus appearance and the pre-Liquid-Glass iOS 18
 // fallback. iOS/macOS 26+ continue to use native glass through the routing
@@ -303,7 +275,7 @@ extension View {
 /// a dimmed white so focus can brighten it to solid white; on tvOS focus
 /// also adds a scale + glow so the button is distinguishable even when
 /// surrounded by other white-ish surfaces (e.g. focused text fields).
-struct ContinuumPrimaryButtonStyle: ButtonStyle {
+struct SiloPrimaryButtonStyle: ButtonStyle {
     var isLoading: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
@@ -321,21 +293,21 @@ private struct PrimaryButtonBody: View {
         HStack(spacing: 8) {
             if isLoading {
                 ProgressView()
-                    .tint(Color.continuumBackground)
+                    .tint(Color.siloBackground)
                     .scaleEffect(0.8)
             }
             configuration.label
         }
-        .font(.continuumSubheadline)
-        .foregroundColor(Color.continuumBackground)
+        .font(.siloSubheadline)
+        .foregroundColor(Color.siloBackground)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
         .padding(.horizontal, 18)
         .background(
             Capsule().fill(
-                isLoading ? Color.continuumOnSurface.opacity(0.6)
-                : isFocused ? Color.continuumOnSurface
-                : Color.continuumOnSurface.opacity(0.72)
+                isLoading ? Color.siloOnSurface.opacity(0.6)
+                : isFocused ? Color.siloOnSurface
+                : Color.siloOnSurface.opacity(0.72)
             )
         )
         .overlay(
@@ -356,7 +328,7 @@ private struct PrimaryButtonBody: View {
         }
         .scaleEffect(isFocused && !reduceMotion ? 1.055 : 1.0)
         .shadow(
-            color: isFocused ? Color.continuumOnSurface.opacity(0.48) : .clear,
+            color: isFocused ? Color.siloOnSurface.opacity(0.48) : .clear,
             radius: isFocused ? 24 : 0,
             y: isFocused ? 8 : 0
         )
@@ -364,13 +336,13 @@ private struct PrimaryButtonBody: View {
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
-        .animation(.easeInOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-        .animation(ContinuumTheme.springAnimation, value: isFocused)
+        .animation(.easeInOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
+        .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
 
 /// Secondary action button — outlined pill.
-struct ContinuumSecondaryButtonStyle: ButtonStyle {
+struct SiloSecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         SecondaryButtonBody(configuration: configuration)
     }
@@ -383,14 +355,14 @@ private struct SecondaryButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.continuumSubheadline)
-            .foregroundColor(isFocused ? .continuumBackground : .continuumOnSurface)
+            .font(.siloSubheadline)
+            .foregroundColor(isFocused ? .siloBackground : .siloOnSurface)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
             .padding(.horizontal, 18)
             .background(
                 Capsule()
-                    .fill(isFocused ? Color.continuumOnSurface.opacity(0.96) : Color.clear)
+                    .fill(isFocused ? Color.siloOnSurface.opacity(0.96) : Color.clear)
             )
             .overlay(
                 Capsule().stroke(
@@ -400,7 +372,7 @@ private struct SecondaryButtonBody: View {
             )
             .scaleEffect(isFocused && !reduceMotion ? 1.045 : 1.0)
             .shadow(
-                color: isFocused ? Color.continuumOnSurface.opacity(0.36) : .clear,
+                color: isFocused ? Color.siloOnSurface.opacity(0.36) : .clear,
                 radius: isFocused ? 18 : 0,
                 y: isFocused ? 6 : 0
             )
@@ -408,15 +380,15 @@ private struct SecondaryButtonBody: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
+            .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
 
 /// Text-only button style for tertiary actions. Focused state fills a
 /// soft pill behind the label so the user can distinguish the tertiary action
 /// from the primary button above.
-struct ContinuumTextButtonStyle: ButtonStyle {
+struct SiloTextButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         TextButtonBody(configuration: configuration)
     }
@@ -428,13 +400,13 @@ private struct TextButtonBody: View {
 
     var body: some View {
         configuration.label
-            .font(.continuumBody)
-            .foregroundColor(isFocused ? .continuumBackground : .continuumOnSurface)
+            .font(.siloBody)
+            .foregroundColor(isFocused ? .siloBackground : .siloOnSurface)
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
             .background(
                 Capsule().fill(
-                    isFocused ? Color.continuumOnSurface : Color.clear
+                    isFocused ? Color.siloOnSurface : Color.clear
                 )
             )
             .overlay {
@@ -445,7 +417,7 @@ private struct TextButtonBody: View {
             }
             .scaleEffect(isFocused ? 1.045 : 1.0)
             .shadow(
-                color: isFocused ? Color.continuumOnSurface.opacity(0.28) : .clear,
+                color: isFocused ? Color.siloOnSurface.opacity(0.28) : .clear,
                 radius: isFocused ? 14 : 0,
                 y: isFocused ? 4 : 0
             )
@@ -453,60 +425,60 @@ private struct TextButtonBody: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: configuration.isPressed)
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
+            .animation(SiloTheme.springAnimation, value: isFocused)
     }
 }
 
-// MARK: - Silo button style routing (glass on iOS/macOS, Continuum on tvOS)
+// MARK: - Silo button style routing (glass on iOS/macOS, Silo on tvOS)
 
 extension View {
     /// Primary action button: native Liquid Glass on iOS/macOS 26+, the
-    /// established Continuum style on iOS 18, and focus-reactive Continuum
+    /// established Silo style on iOS 18, and focus-reactive Silo
     /// chrome on tvOS.
     @ViewBuilder
     func siloPrimaryButton(isLoading: Bool = false) -> some View {
         #if os(tvOS)
-        self.buttonStyle(ContinuumPrimaryButtonStyle(isLoading: isLoading))
+        self.buttonStyle(SiloPrimaryButtonStyle(isLoading: isLoading))
         #elseif os(iOS)
         if #available(iOS 26.0, *) {
             modernSiloPrimaryButton(isLoading: isLoading)
         } else {
-            self.buttonStyle(ContinuumPrimaryButtonStyle(isLoading: isLoading))
+            self.buttonStyle(SiloPrimaryButtonStyle(isLoading: isLoading))
         }
         #else
         modernSiloPrimaryButton(isLoading: isLoading)
         #endif
     }
 
-    /// Secondary action button: native glass on iOS/macOS, `ContinuumSecondaryButtonStyle`
+    /// Secondary action button: native glass on iOS/macOS, `SiloSecondaryButtonStyle`
     /// on tvOS.
     @ViewBuilder
     func siloSecondaryButton() -> some View {
         #if os(tvOS)
-        self.buttonStyle(ContinuumSecondaryButtonStyle())
+        self.buttonStyle(SiloSecondaryButtonStyle())
         #elseif os(iOS)
         if #available(iOS 26.0, *) {
             self.buttonStyle(.glass)
         } else {
-            self.buttonStyle(ContinuumSecondaryButtonStyle())
+            self.buttonStyle(SiloSecondaryButtonStyle())
         }
         #else
         self.buttonStyle(.glass)
         #endif
     }
 
-    /// Tertiary / text action button: native glass on iOS/macOS, `ContinuumTextButtonStyle`
+    /// Tertiary / text action button: native glass on iOS/macOS, `SiloTextButtonStyle`
     /// on tvOS.
     @ViewBuilder
     func siloTextButton() -> some View {
         #if os(tvOS)
-        self.buttonStyle(ContinuumTextButtonStyle())
+        self.buttonStyle(SiloTextButtonStyle())
         #elseif os(iOS)
         if #available(iOS 26.0, *) {
             self.buttonStyle(.glass)
         } else {
-            self.buttonStyle(ContinuumTextButtonStyle())
+            self.buttonStyle(SiloTextButtonStyle())
         }
         #else
         self.buttonStyle(.glass)
@@ -529,27 +501,13 @@ extension View {
         #endif
     }
 
-    /// Prominent counterpart to `siloGlassButtonStyle()`.
-    @ViewBuilder
-    func siloGlassProminentButtonStyle() -> some View {
-        #if os(iOS)
-        if #available(iOS 26.0, *) {
-            self.buttonStyle(.glassProminent)
-        } else {
-            self.buttonStyle(.borderedProminent)
-        }
-        #else
-        self.buttonStyle(.glassProminent)
-        #endif
-    }
-
     @available(iOS 26.0, macOS 26.0, *)
     private func modernSiloPrimaryButton(isLoading: Bool) -> some View {
         // `.glassProminent` can't take the in-flight state, so surface it the
         // only way a modifier can: disable the button and overlay a spinner.
         self
             .buttonStyle(.glassProminent)
-            .tint(.continuumAccent)
+            .tint(.siloAccent)
             .disabled(isLoading)
             .overlay {
                 if isLoading {
@@ -560,22 +518,22 @@ extension View {
     }
 }
 
-// MARK: - Continuum Text Field Style
+// MARK: - Silo Text Field Style
 
 /// Dark-themed text field with rounded surface background.
-struct ContinuumTextFieldStyle: TextFieldStyle {
+struct SiloTextFieldStyle: TextFieldStyle {
     func _body(configuration: TextField<Self._Label>) -> some View {
-        ContinuumTextFieldBody(configuration: configuration)
+        SiloTextFieldBody(configuration: configuration)
     }
 }
 
-private struct ContinuumTextFieldBody<Label: View>: View {
+private struct SiloTextFieldBody<Label: View>: View {
     let configuration: TextField<Label>
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         configuration
-            .font(.continuumBody)
+            .font(.siloBody)
             // tvOS renders an unavoidable bright-white focus platter under
             // any focused TextField (`.focusEffectDisabled()` doesn't
             // suppress it for text fields the way it does for Buttons).
@@ -585,15 +543,15 @@ private struct ContinuumTextFieldBody<Label: View>: View {
             .foregroundColor(textColor)
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .continuumInputChrome(isFocused: isFocused)
-            .tint(isFocused ? .continuumBackground : .continuumOnSurface)
+            .siloInputChrome(isFocused: isFocused)
+            .tint(isFocused ? .siloBackground : .siloOnSurface)
     }
 
     private var textColor: Color {
         #if os(tvOS)
-        isFocused ? .continuumBackground : .continuumOnSurface
+        isFocused ? .siloBackground : .siloOnSurface
         #else
-        .continuumOnSurface
+        .siloOnSurface
         #endif
     }
 }

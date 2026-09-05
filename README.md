@@ -17,7 +17,9 @@ Try the latest beta builds of the iOS and tvOS apps:
 <p>
   <img src="project-images/silo-apple-native/04-home.png" width="260" alt="iOS home screen" />
   <img src="project-images/silo-apple-native/09-movie-detail.png" width="260" alt="iOS movie detail" />
+  <img src="project-images/silo-apple-native/12-series-detail.png" width="260" alt="iOS series detail" />
   <img src="project-images/silo-apple-native/05-libraries.png" width="260" alt="iOS movies library" />
+  <img src="project-images/silo-apple-native/13-tv-library.png" width="260" alt="iOS TV shows library" />
 </p>
 
 ### tvOS
@@ -80,7 +82,7 @@ xcodebuild build \
 ## VS Code
 
 The checked-in `.vscode` configuration provides recommended extensions,
-unsigned build and test tasks, and SweetPad integration for building, running,
+unsigned build tasks, ad-hoc-signed simulator test tasks, and SweetPad integration for building, running,
 debugging, simulator management, and Swift code intelligence without using the
 Xcode UI.
 
@@ -149,4 +151,6 @@ must remove or replace the brand assets. Publishing a Silo-branded app to an app
 store requires written permission. See [TRADEMARK.md](TRADEMARK.md) for what's
 permitted — including referential use like "compatible with Silo."
 
-FFmpeg, Nuke, fastlane, and other third-party dependencies retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Media playback is built on [AetherEngine](https://github.com/superuser404notfound/AetherEngine)
+by Vincent Herbst, used under LGPL-3.0 with its Apple Store / DRM exception.
+AetherEngine, FFmpeg, Nuke, fastlane, and other third-party dependencies retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

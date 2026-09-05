@@ -5,28 +5,11 @@ import Foundation
 final class ApplePushDeepLinkCoordinator {
     static let shared = ApplePushDeepLinkCoordinator()
 
-    private var pendingDeepLink: URL?
-
     private init() {}
 
     func postDeepLink(from userInfo: [AnyHashable: Any]) {
         guard let url = Self.deepLinkURL(from: userInfo) else { return }
-        pendingDeepLink = url
-        NotificationCenter.default.post(
-            name: .continuumDeepLink,
-            object: nil,
-            userInfo: ["url": url]
-        )
-    }
-
-    func consumePendingDeepLink() -> URL? {
-        defer { pendingDeepLink = nil }
-        return pendingDeepLink
-    }
-
-    func clearPendingDeepLink(matching url: URL) {
-        guard pendingDeepLink?.absoluteString == url.absoluteString else { return }
-        pendingDeepLink = nil
+        SiloDeepLinkCoordinator.shared.receive(url)
     }
 
     nonisolated static func deepLinkURL(from userInfo: [AnyHashable: Any]) -> URL? {

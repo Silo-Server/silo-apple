@@ -54,7 +54,7 @@ struct AuroraInputField<F: Hashable>: View {
         .frame(height: height)
         .background(
             RoundedRectangle(cornerRadius: AuroraControl.corner)
-                .fill(isFocused ? AuroraControl.activeFill : Color.continuumSurfaceElevated.opacity(0.82))
+                .fill(isFocused ? AuroraControl.activeFill : Color.siloSurfaceElevated.opacity(0.82))
         )
         .overlay(
             RoundedRectangle(cornerRadius: AuroraControl.corner)
@@ -63,7 +63,7 @@ struct AuroraInputField<F: Hashable>: View {
         )
         .shadow(color: isFocused ? Color.auroraAccent.opacity(0.28) : .clear,
                 radius: isFocused ? 16 : 0, y: 0)
-        .animation(ContinuumTheme.springAnimation, value: isFocused)
+        .animation(SiloTheme.springAnimation, value: isFocused)
     }
 
     private var displayString: String {

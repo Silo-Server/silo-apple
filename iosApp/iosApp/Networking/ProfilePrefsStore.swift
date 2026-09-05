@@ -1,6 +1,6 @@
 //
 //  ProfilePrefsStore.swift
-//  Continuum (iOS + tvOS + macOS)
+//  Silo (iOS + tvOS + macOS)
 //
 //  In-memory cache of the signed-in profile's preferred subtitle
 //  language, hydrated lazily on first read. The detail-page subtitle
@@ -15,7 +15,7 @@
 //  cheap source for the preference. The profile default is a close-enough
 //  approximation for ordering.
 //
-//  Mirrors the `PlaybackPrefsStore` / `OverlayPrefsStore` pattern: a
+//  Mirrors the `OverlayPrefsStore` pattern: a
 //  `@MainActor` observable singleton, idempotent hydration, and a
 //  `clear()` hook for sign-out / profile switch.
 //

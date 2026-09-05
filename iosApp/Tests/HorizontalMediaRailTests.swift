@@ -135,7 +135,7 @@ final class HorizontalMediaRailTests: XCTestCase {
         }
     }
 
-    func testRealHomeRowsKeepTheirBoundsAndPositionAfterDetailReturn() async throws {
+    func testHomeRowsKeepTheirBoundsAndPositionWhenRouterDetailStateChanges() async throws {
         let items = try items()
         let posters = try (0..<6).map { index in
             try JSONDecoder().decode(SectionItem.self, from: Data(

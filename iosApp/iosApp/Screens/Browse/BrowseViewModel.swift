@@ -96,7 +96,7 @@ class BrowseViewModel {
                     limit: pageSize,
                     includeType: false
                 )
-                response = try await ContinuumAPI.shared.catalog(query: query)
+                response = try await SiloAPI.shared.catalog(query: query)
             }
             // Discard if another reset superseded us while we awaited.
             guard myGeneration == generation else { return }
@@ -160,22 +160,6 @@ class BrowseViewModel {
     func loadFacetsIfNeeded() async {
         if facets != nil { return }
         facets = try? await FacetLoader.shared.facets(libraryId: libraryId)
-    }
-
-    /// Probe the result count for a candidate state — drives the live count on
-    /// the sheet's apply button. A tiny page with `include_total`.
-    func resultCount(for candidate: CatalogFilterState) async -> Int? {
-        let query = CatalogQueryBuilder.build(
-            candidate,
-            libraryId: libraryId,
-            mediaType: mediaType,
-            offset: 0,
-            limit: 1,
-            includeTotal: true,
-            includeType: false
-        )
-        let response: CatalogResponse? = try? await ContinuumAPI.shared.catalog(query: query)
-        return response?.total
     }
 
     var hasActiveFilters: Bool { filterState.hasActiveFilters }

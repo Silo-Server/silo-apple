@@ -90,8 +90,8 @@ struct TVSimilarRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: cardSpacing) {
                 ForEach(0..<4, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: ContinuumTheme.cornerRadius)
-                        .fill(Color.continuumSurfaceElevated)
+                    RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                        .fill(Color.siloSurfaceElevated)
                         .frame(
                             width: cardWidth,
                             height: cardWidth * 1.5
@@ -144,7 +144,7 @@ struct TVSimilarRail: View {
         }
 
         do {
-            let scored = try await ContinuumAPI.shared.recommendationsSimilar(
+            let scored = try await SiloAPI.shared.recommendationsSimilar(
                 contentId: contentId,
                 limit: 12
             )

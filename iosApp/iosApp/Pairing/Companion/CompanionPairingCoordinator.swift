@@ -66,7 +66,7 @@ final class CompanionPairingCoordinator {
     /// user-initiated cancel), so a trailing stream close can't repaint the
     /// terminal state and late messages are ignored.
     private var concluded = false
-    private static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.companion")
+    private static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.companion")
 
     init(
         channel: any PairingChannel,

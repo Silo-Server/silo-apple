@@ -68,7 +68,7 @@ struct TVSkylineSectionFeed: View {
 
             // Floats over the band above the row; never focusable or hit-testable.
             TVSkylineMarquee(model: marqueeModel, scale: marqueeScale)
-            .offset(y: ContinuumTheme.Skyline.landingContentVerticalOffset)
+            .offset(y: SiloTheme.Skyline.landingContentVerticalOffset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -98,19 +98,19 @@ struct TVSkylineSectionFeed: View {
     @ViewBuilder
     private var scrollingRows: some View {
         GeometryReader { proxy in
-            let bandHeight = proxy.size.height * ContinuumTheme.Skyline.rowBandHeightFraction
+            let bandHeight = proxy.size.height * SiloTheme.Skyline.rowBandHeightFraction
             // Position the focusable viewport with layout, not a render
             // offset. Its bottom must match the screen's bottom: otherwise
             // tvOS can resolve directional clicks against offscreen space
             // while a swipe still pans far enough to reveal the next target.
             let bandTop = min(
                 proxy.size.height,
-                max(0, proxy.size.height - bandHeight + ContinuumTheme.Skyline.landingContentVerticalOffset)
+                max(0, proxy.size.height - bandHeight + SiloTheme.Skyline.landingContentVerticalOffset)
             )
             let visibleBandHeight = max(0, proxy.size.height - bandTop)
             let trailingPreviewPadding = max(
                 0,
-                visibleBandHeight - ContinuumTheme.Skyline.rowBandBottomInset
+                visibleBandHeight - SiloTheme.Skyline.rowBandBottomInset
             )
 
             ScrollViewReader { scrollProxy in
@@ -120,7 +120,7 @@ struct TVSkylineSectionFeed: View {
                     // traverse offscreen card, image, and button subgraphs.
                     // The native scroll container loads directional targets;
                     // its viewport uses the corrected layout frames above.
-                    LazyVStack(alignment: .leading, spacing: ContinuumTheme.Skyline.rowBandPreviewSpacing) {
+                    LazyVStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                             featuredRow(section, isFirstRow: index == 0)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -144,7 +144,7 @@ struct TVSkylineSectionFeed: View {
                 // animation can't lose the claim to mid-flight focus repairs.
                 .onChange(of: entryScrollToken) { _, _ in
                     if let firstId = sections.first?.id {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: ContinuumTheme.slowDuration)) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.slowDuration)) {
                             scrollProxy.scrollTo(firstId, anchor: .top)
                         }
                     }
@@ -187,8 +187,8 @@ struct TVSkylineSectionFeed: View {
                 focusRestorationOwnerSectionId = section.id
                 previewFocusedItem(item, in: section)
             },
-            cardWidth: ContinuumTheme.Skyline.densePosterCardWidth,
-            cardVerticalPadding: ContinuumTheme.Skyline.rowBandCardVerticalPadding,
+            cardWidth: SiloTheme.Skyline.densePosterCardWidth,
+            cardVerticalPadding: SiloTheme.Skyline.rowBandCardVerticalPadding,
             onMoveDown: nil,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
@@ -260,7 +260,7 @@ struct TVSkylineSectionFeed: View {
         in section: ResolvedSection
     ) -> [String] {
         guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return [] }
-        let radius = ContinuumTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
+        let radius = SiloTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
         let window = section.items.indices.clamped(to: (index - radius)..<(index + radius + 1))
         return window.compactMap { neighborIndex -> String? in
             guard neighborIndex != index else { return nil }
@@ -314,7 +314,7 @@ private struct TVSkylineBackdrop: View {
             artworkURL: model.backdropURL,
             artworkThumbhash: model.backdropThumbhash,
             isVisible: model.backdropURL != nil,
-            crossfadeDuration: ContinuumTheme.Skyline.marqueeCrossfadeDuration
+            crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration
         )
     }
 }

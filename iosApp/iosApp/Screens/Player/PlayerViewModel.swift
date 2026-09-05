@@ -108,15 +108,6 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
         return title
     }
 
-    var secondaryTitle: String? {
-        guard let seasonNumber, let episodeNumber else { return nil }
-        let episodeLabel = "S\(seasonNumber):E\(episodeNumber)"
-        if seriesTitle?.isEmpty == false, !title.isEmpty {
-            return "\(episodeLabel) · \(title)"
-        }
-        return episodeLabel
-    }
-
     var progressFraction: Double {
         guard let positionSeconds,
               let durationSeconds,
@@ -124,15 +115,6 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
             return 0
         }
         return min(max(positionSeconds / durationSeconds, 0), 1)
-    }
-
-    var minutesRemaining: Int? {
-        guard let positionSeconds,
-              let durationSeconds,
-              durationSeconds > positionSeconds else {
-            return nil
-        }
-        return max(1, Int(((durationSeconds - positionSeconds) / 60).rounded()))
     }
 
     init(
@@ -154,11 +136,7 @@ struct PlayerOnDeckItem: Identifiable, Hashable {
 }
 
 struct PlayerBackendCapabilities: Equatable {
-    let supportsBufferedAhead: Bool
-    let supportsExternalPrimarySubtitles: Bool
     let supportsSecondarySubtitles: Bool
-    let supportsChapters: Bool
-    let supportsVideoGravity: Bool
     let supportsSubtitleDelay: Bool
     let supportsSubtitleStyling: Bool
 
@@ -167,11 +145,7 @@ struct PlayerBackendCapabilities: Equatable {
         hasTextSubtitleTrack: Bool
     ) -> PlayerBackendCapabilities {
         PlayerBackendCapabilities(
-            supportsBufferedAhead: true,
-            supportsExternalPrimarySubtitles: true,
             supportsSecondarySubtitles: hasTextSubtitleTrack,
-            supportsChapters: true,
-            supportsVideoGravity: true,
             supportsSubtitleDelay: subtitleOverlayControls,
             supportsSubtitleStyling: subtitleOverlayControls
         )
@@ -201,7 +175,7 @@ enum PlayerIdentityBoundary {
 @Observable
 class PlayerViewModel {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Player"
     )
 
@@ -911,7 +885,6 @@ class PlayerViewModel {
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let introAutoSkipCountdownDefaultSeconds = 5
-    static var nextUpCountdownTotal: Int { nextUpCountdownDefaultSeconds }
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
@@ -1482,7 +1455,7 @@ class PlayerViewModel {
     }
 
     /// Rebuilds the committed plan with the account bearer currently held by
-    /// `ContinuumAPI`. Protocol V3 media URLs are stable across access-token
+    /// `SiloAPI`. Protocol V3 media URLs are stable across access-token
     /// refreshes, but Aether/AVPlayer freezes request headers at asset load.
     /// A normal authenticated progress request first gives the shared HTTP
     /// client a chance to refresh an expired token; the reload proceeds only
@@ -2282,7 +2255,7 @@ class PlayerViewModel {
             }
 
             do {
-                let response = try await ContinuumAPI.shared.homeSections()
+                let response = try await SiloAPI.shared.homeSections()
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
                 self.isLoadingNextUpOnDeck = false
@@ -2357,7 +2330,7 @@ class PlayerViewModel {
         if let seriesId = nonEmpty(item.seriesId),
            let seasonNumber = item.seasonNumber {
             do {
-                let response = try await ContinuumAPI.shared.episodes(
+                let response = try await SiloAPI.shared.episodes(
                     seriesId: seriesId,
                     seasonNumber: seasonNumber
                 )
@@ -2377,7 +2350,7 @@ class PlayerViewModel {
         }
 
         do {
-            let detail = try await ContinuumAPI.shared.itemDetail(contentId: item.contentId)
+            let detail = try await SiloAPI.shared.itemDetail(contentId: item.contentId)
             if let backdropUrl = nonEmpty(detail.backdropUrl) {
                 return (backdropUrl, detail.backdropThumbhash)
             }
@@ -2403,8 +2376,8 @@ class PlayerViewModel {
         seasonNumber: Int,
         episodeNumber: Int
     ) async throws -> PlayerNextUpEpisode? {
-        async let seasonsTask = ContinuumAPI.shared.seasons(seriesId: seriesId)
-        async let currentEpisodesTask = ContinuumAPI.shared.episodes(
+        async let seasonsTask = SiloAPI.shared.seasons(seriesId: seriesId)
+        async let currentEpisodesTask = SiloAPI.shared.episodes(
             seriesId: seriesId,
             seasonNumber: seasonNumber
         )
@@ -2418,7 +2391,7 @@ class PlayerViewModel {
             !(season.isSpecials ?? false) && season.seasonNumber > seasonNumber
         }
         if let nextSeason {
-            let nextSeasonEpisodes = try await ContinuumAPI.shared.episodes(
+            let nextSeasonEpisodes = try await SiloAPI.shared.episodes(
                 seriesId: seriesId,
                 seasonNumber: nextSeason.seasonNumber
             )
@@ -3311,7 +3284,6 @@ class PlayerViewModel {
 
     func setVideoGravity(_ gravity: VideoGravity) {
         settings.setVideoGravity(gravity)
-        guard backendCapabilities.supportsVideoGravity else { return }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
     }
 
@@ -3341,7 +3313,7 @@ class PlayerViewModel {
         Task { [weak self] in
             let detail: ItemDetail
             do {
-                detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+                detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             } catch {
                 Self.logger.warning(
                     "NowPlaying artwork itemDetail fetch failed for \(contentId, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -3776,12 +3748,6 @@ class PlayerViewModel {
             prefsForCurrentItem = nil
             prefsResolvedForCurrentItem = true
         }
-    }
-
-    private func rearmAdoptedProtocolV3TrackIntent() {
-        guard let plan = activePreparedProtocolV3?.plan,
-              let request = lastLoadRequest else { return }
-        armAdoptedProtocolV3TrackIntent(plan: plan, request: request)
     }
 
     private func armAdoptedProtocolV3TrackIntent(
@@ -4978,7 +4944,7 @@ class PlayerViewModel {
                 }
             }
             do {
-                let detail = try await ContinuumAPI.shared.watchDetail(contentId: contentId)
+                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId)
                 guard !Task.isCancelled,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,
@@ -5484,7 +5450,7 @@ class PlayerViewModel {
 
     /// **Visibility** predicate for the "Search Subtitles…" entry row: an
     /// active playback session (the synthesized stream URL is session-scoped),
-    /// a known media file, and a backend that can host downloaded sidecars.
+    /// and a known media file.
     /// False for offline/local playback, where the row is meaningless and is
     /// hidden outright.
     ///
@@ -5495,7 +5461,6 @@ class PlayerViewModel {
     var subtitleSearchVisible: Bool {
         activePlaybackSessionId != nil
             && currentSelectedVersion?.fileId != nil
-            && backendCapabilities.supportsExternalPrimarySubtitles
     }
 
     /// **Enablement** predicate: visible *and* the server actually has
@@ -5533,7 +5498,7 @@ class PlayerViewModel {
         guard let fileId = currentSelectedVersion?.fileId else {
             throw HTTPError.invalidURL("subtitle search requires an active media file")
         }
-        return try await ContinuumAI.shared.searchSubtitles(
+        return try await SiloAI.shared.searchSubtitles(
             SubtitleSearchBody(mediaFileId: fileId, languages: languages)
         )
     }
@@ -5555,10 +5520,10 @@ class PlayerViewModel {
     func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> Bool {
         guard let fileId = currentSelectedVersion?.fileId else { return false }
         do {
-            let subtitle = try await ContinuumAI.shared.downloadSubtitle(
+            let subtitle = try await SiloAI.shared.downloadSubtitle(
                 SubtitleDownloadBody(from: result, mediaFileId: fileId)
             )
-            let downloaded = try await ContinuumAI.shared.downloadedSubtitles(mediaFileId: fileId)
+            let downloaded = try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId)
             // Revalidate after the awaits: if playback moved to a different
             // file while the download was in flight, `makeSubtitleHandoffContext`
             // would now describe the NEW session, and registering the OLD
@@ -5616,12 +5581,6 @@ class PlayerViewModel {
     /// burn-in-only tracks and would address the wrong track.
     @MainActor
     private func makeSubtitleHandoffContext() -> SubtitleAIController.HandoffContext? {
-        guard backendCapabilities.supportsExternalPrimarySubtitles else {
-            Self.logger.info(
-                "[AI-SUB] backend \(self.activeRouteLabel, privacy: .public) can't host downloaded subtitles; handoff unavailable"
-            )
-            return nil
-        }
         guard let sessionId = activePlaybackSessionId, !sessionId.isEmpty else {
             Self.logger.warning("[AI-SUB] no active session id for subtitle handoff")
             return nil
@@ -5670,13 +5629,6 @@ class PlayerViewModel {
         default:
             return nil
         }
-    }
-
-    static func isCurrentStreamCallback(
-        _ callbackGeneration: UInt64,
-        currentGeneration: UInt64
-    ) -> Bool {
-        callbackGeneration == currentGeneration
     }
 
     static func isUnexpectedBackwardPlaybackTime(
@@ -5732,13 +5684,6 @@ class PlayerViewModel {
         _ descriptor: SidecarSubtitleDescriptor,
         autoSelect: Bool = true
     ) {
-        guard backendCapabilities.supportsExternalPrimarySubtitles else {
-            Self.logger.info(
-                "[AI-SUB] backend \(self.activeRouteLabel, privacy: .public) can't host downloaded subtitles; skipping handoff"
-            )
-            return
-        }
-
         // Remember it (as a `SubtitleUrl`, the cache's shape) so a later
         // route/quality switch re-registers it. De-dupe on combined index.
         if !knownExternalSubtitles.contains(where: { $0.index == descriptor.index }) {
@@ -6501,8 +6446,8 @@ class PlayerViewModel {
         requiresHeaderAuthenticatedMedia: Bool = false,
         allowsAuthorizedMediaOrigins: Bool = false
     ) async -> StreamRequest? {
-        let serverUrl = await ContinuumAPI.shared.currentServerUrl()
-        let token = await ContinuumAPI.shared.currentAccessToken()
+        let serverUrl = await SiloAPI.shared.currentServerUrl()
+        let token = await SiloAPI.shared.currentAccessToken()
         return StreamRequest.resolve(
             rawURL: session.streamUrl,
             serverURL: serverUrl,
@@ -6560,7 +6505,6 @@ class PlayerViewModel {
     /// path, so without this a quality/route replan leaves the row selected
     /// in the menu with no Aether resource behind it.
     private func reregisterLocallyCreatedSidecarsWithAether() {
-        guard backendCapabilities.supportsExternalPrimarySubtitles else { return }
         var reregistered = false
         for local in locallyRegisteredSidecarSubtitleTracks {
             guard !aetherPlaybackController.containsSubtitle(appTrackID: local.trackId),
@@ -6625,7 +6569,7 @@ class PlayerViewModel {
         }
 
         Self.logger.info(
-            "[CMP-SUB] resolving external subtitles count=\(pending.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) supportsExternal=\(self.backendCapabilities.supportsExternalPrimarySubtitles, privacy: .public) fromKnownCache=\(restoredFromKnownCache, privacy: .public)"
+            "[CMP-SUB] resolving external subtitles count=\(pending.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) supportsExternal=true fromKnownCache=\(restoredFromKnownCache, privacy: .public)"
         )
 
         var descriptors: [SidecarSubtitleDescriptor] = []
@@ -6653,33 +6597,27 @@ class PlayerViewModel {
         if !pending.isEmpty, descriptors.isEmpty {
             Self.logger.warning("[CMP-SUB] no external subtitle descriptors survived URL resolution")
         }
-        if backendCapabilities.supportsExternalPrimarySubtitles {
-            Self.logger.info(
-                "[CMP-SUB] registering sidecar subtitles descriptors=\(descriptors.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public)"
-            )
-            for descriptor in descriptors {
-                let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
-                guard !aetherPlaybackController.containsSubtitle(appTrackID: appTrackID) else { continue }
-                aetherPlaybackController.addExternalSubtitleTrack(
-                    ExternalSubtitleTrack(
-                        url: descriptor.url,
-                        name: descriptor.label,
-                        language: descriptor.language,
-                        isForced: descriptor.forced ?? false,
-                        isHearingImpaired: descriptor.isHearingImpaired ?? false,
-                        isDefault: descriptor.isDefault ?? false,
-                        httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
-                        formatHint: descriptor.codec
-                    ),
-                    appTrackID: appTrackID
-                )
-            }
-            adoptAetherInventory()
-        } else {
-            Self.logger.info(
-                "[CMP-ROUTE] skipping sidecar subtitle registration on backend=\(self.activeRouteLabel, privacy: .public)"
+        Self.logger.info(
+            "[CMP-SUB] registering sidecar subtitles descriptors=\(descriptors.count, privacy: .public) route=\(self.activeRouteLabel, privacy: .public)"
+        )
+        for descriptor in descriptors {
+            let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
+            guard !aetherPlaybackController.containsSubtitle(appTrackID: appTrackID) else { continue }
+            aetherPlaybackController.addExternalSubtitleTrack(
+                ExternalSubtitleTrack(
+                    url: descriptor.url,
+                    name: descriptor.label,
+                    language: descriptor.language,
+                    isForced: descriptor.forced ?? false,
+                    isHearingImpaired: descriptor.isHearingImpaired ?? false,
+                    isDefault: descriptor.isDefault ?? false,
+                    httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
+                    formatHint: descriptor.codec
+                ),
+                appTrackID: appTrackID
             )
         }
+        adoptAetherInventory()
     }
 
     /// Aether interprets nil subtitle headers as "inherit every media header."
@@ -7573,7 +7511,7 @@ extension PlayerViewModel {
             playbackSpeed: settings.playbackSpeed,
             videoGravity: settings.videoGravity.rawValue,
             hdrEnabled: settings.hdrEnabled,
-            supportsVideoGravity: backendCapabilities.supportsVideoGravity,
+            supportsVideoGravity: true,
             subtitleSyncMs: settings.subtitleSyncMs,
             subtitlePosition: settings.effectiveSubtitleAppearance.position.rawValue,
             supportsSubtitleDelay: backendCapabilities.supportsSubtitleDelay,
@@ -7628,7 +7566,7 @@ private final class LiveSubtitlePlaybackAdapter: LivePlaybackControls {
 @MainActor
 private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "LiveSubtitle"
     )
 

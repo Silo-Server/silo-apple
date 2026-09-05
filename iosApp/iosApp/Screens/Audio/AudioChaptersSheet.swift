@@ -22,7 +22,7 @@ struct AudioChaptersSheet: View {
                 .listStyle(.plain)
                 #if !os(tvOS)
                 .scrollContentBackground(.hidden)
-                .background(Color.continuumSurface)
+                .background(Color.siloSurface)
                 #endif
                 .onAppear {
                     if let current = player.currentChapter {
@@ -71,7 +71,7 @@ struct AudioChaptersSheet: View {
 
                 Text(chapter.title ?? "Chapter \(chapter.index + 1)")
                     .font(.body.weight(isCurrent ? .semibold : .regular))
-                    .foregroundStyle(isCurrent ? player.palette.accent : Color.continuumOnSurface)
+                    .foregroundStyle(isCurrent ? player.palette.accent : Color.siloOnSurface)
                     .lineLimit(1)
 
                 Spacer()

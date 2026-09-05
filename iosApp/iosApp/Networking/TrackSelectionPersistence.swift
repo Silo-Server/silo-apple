@@ -1,6 +1,6 @@
 //
 //  TrackSelectionPersistence.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Persists the user's explicit audio / subtitle track choices to the
 //  server's per-series preference endpoints so they survive exiting
@@ -28,7 +28,7 @@ import os
 enum TrackSelectionPersistence {
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TrackPrefs"
     )
 
@@ -88,8 +88,9 @@ enum TrackSelectionPersistence {
     }
 
     /// Subtitle pick against server file metadata. `ffIndex` matches
-    /// `version.subtitleTracks[].index`; a negative value is the detail
-    /// page's explicit "Off".
+    /// `version.subtitleTracks[].selectionIndex` (an embedded track with no
+    /// wire index is stream 0); a negative value is the detail page's
+    /// explicit "Off".
     static func subtitleRequest(
         version: FileVersion,
         ffIndex: Int,
@@ -98,7 +99,7 @@ enum TrackSelectionPersistence {
         if ffIndex < 0 {
             return subtitleOffRequest(showForced: showForced)
         }
-        guard let track = version.subtitleTracks?.first(where: { $0.index == ffIndex }) else {
+        guard let track = version.subtitleTracks?.first(where: { $0.selectionIndex == ffIndex }) else {
             return nil
         }
         let isExternal = track.external ?? false
@@ -157,7 +158,7 @@ enum TrackSelectionPersistence {
     static func saveAudio(prefKey: String, request: AudioPrefRequest) {
         Task {
             do {
-                try await ContinuumAPI.shared.setAudioPref(seriesId: prefKey, body: request)
+                try await SiloAPI.shared.setAudioPref(seriesId: prefKey, body: request)
             } catch {
                 logger.warning(
                     "audio pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -169,7 +170,7 @@ enum TrackSelectionPersistence {
     static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest) {
         Task {
             do {
-                try await ContinuumAPI.shared.setSubtitlePref(seriesId: prefKey, body: request)
+                try await SiloAPI.shared.setSubtitlePref(seriesId: prefKey, body: request)
             } catch {
                 logger.warning(
                     "subtitle pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -184,7 +185,7 @@ enum TrackSelectionPersistence {
     static func clearAudio(prefKey: String) {
         Task {
             do {
-                try await ContinuumAPI.shared.deleteAudioPref(seriesId: prefKey)
+                try await SiloAPI.shared.deleteAudioPref(seriesId: prefKey)
             } catch HTTPError.http(let code, _) where code == 404 {
                 // Nothing to clear.
             } catch {
@@ -198,7 +199,7 @@ enum TrackSelectionPersistence {
     static func clearSubtitle(prefKey: String) {
         Task {
             do {
-                try await ContinuumAPI.shared.deleteSubtitlePref(seriesId: prefKey)
+                try await SiloAPI.shared.deleteSubtitlePref(seriesId: prefKey)
             } catch HTTPError.http(let code, _) where code == 404 {
                 // Nothing to clear.
             } catch {

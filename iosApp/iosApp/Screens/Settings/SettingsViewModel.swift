@@ -1,6 +1,6 @@
 import Foundation
 
-/// State container for the iOS settings screen.
+/// State container for the Apple settings screens.
 ///
 /// Two scopes meet here. Playback choices that belong to *this device* (quality,
 /// skip behaviour, sync offsets) go through ``PlayerSettings`` at
@@ -8,9 +8,9 @@ import Foundation
 /// metadata language are the *profile's* choices and go through
 /// ``ProfileSettingsWriter`` at `profile` — the same keys, scope and wire
 /// values the web and Android clients use, so an edit made on any of them reads
-/// back the same on the others. The tvOS screen is the twin of this one.
+/// back the same on the others.
 @Observable
-class SettingsViewModel {
+final class SettingsViewModel {
     var userInfo: UserInfo?
     var activeProfile: UserProfile?
     var isLoading = false
@@ -24,7 +24,11 @@ class SettingsViewModel {
     /// Friendly label for the active server, shown in the Settings
     /// `Server` row. User override → server-advertised name → URL.
     var serverDisplayName: String {
+        #if os(tvOS)
+        ServerRegistry.shared.activeServer?.displayName ?? ""
+        #else
         ServerRegistry.shared.activeServer?.displayName ?? "Not configured"
+        #endif
     }
 
     // Playback preferences (server-backed for this device/profile).
@@ -45,8 +49,10 @@ class SettingsViewModel {
     var seekCacheEnabled: Bool = PlayerSettings.shared.seekCacheEnabled
     /// Local — it describes this device's audio sink, not the profile.
     var losslessAudioEnabled: Bool = PlayerSettings.shared.losslessAudioEnabled
+    #if !os(tvOS)
     /// Local — it is a habit of this device, not of the profile.
     var backgroundPlaybackEnabled: Bool = PlayerSettings.shared.backgroundPlaybackEnabled
+    #endif
     /// Local — it spends this device's temporary storage, not the profile's.
     var bufferAhead: BufferAheadMode = PlayerSettings.shared.bufferAhead
     /// Local — it describes this device's GPU, not the profile.
@@ -57,7 +63,6 @@ class SettingsViewModel {
 
     // Subtitle styling (local — applies to renderer overrides, not the
     // language/behavior selection that lives server-side).
-    var subtitleSize: String = "medium"
     var subtitleAppearance: SubtitleAppearance = PlayerSettings.shared.subtitleAppearance
     var subtitleUsesDeviceAppearanceOverride: Bool = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
     var subtitleMatchesSystemAppearance: Bool = PlayerSettings.shared.subtitleMatchesSystemAppearance
@@ -68,45 +73,8 @@ class SettingsViewModel {
         PlayerSettings.shared.effectiveSubtitleAppearance
     }
 
-    /// Profile-scoped preferences, written at `scope=profile` through the
-    /// canonical settings API. Shared with the tvOS screen so the two cannot
-    /// drift; the properties below forward to it so this type's existing API
-    /// is unchanged for its views.
+    /// Profile-scoped preferences written through the canonical settings API.
     let prefs = ProfilePrefsEditor()
-
-    typealias PrefSaveState = ProfilePrefsEditor.PrefSaveState
-
-    var editorSubtitleLanguage: String {
-        get { prefs.subtitleLanguage }
-        set { prefs.subtitleLanguage = newValue }
-    }
-
-    var editorSubtitleMode: String {
-        get { prefs.subtitleMode }
-        set { prefs.subtitleMode = newValue }
-    }
-
-    /// Tri-state bound as "on" / "off".
-    var editorShowForcedSubtitles: String {
-        get { prefs.showForcedSubtitles }
-        set { prefs.showForcedSubtitles = newValue }
-    }
-
-    /// Preferred metadata language. `PlaybackPrefSentinel.none` is the
-    /// contract's null ("inherit the library default") on the wire.
-    /// Gated on `AICapabilities.shared.metadataEnabled` at the row.
-    var editorPreferredMetadataLanguage: String {
-        get { prefs.preferredMetadataLanguage }
-        set { prefs.preferredMetadataLanguage = newValue }
-    }
-
-    /// Surfaces the most recent server save state. The subtitle screen
-    /// shows a transient message when this is non-nil.
-    var prefSaveState: PrefSaveState? { prefs.saveState }
-
-    /// True when the connected server has no canonical settings API, so the
-    /// server-backed controls cannot work and the screens say why.
-    var settingsServerUpgradeRequired: Bool { prefs.serverUpgradeRequired }
 
     var audioLanguageOptions: [PlaybackLanguageOption] {
         PlaybackLanguageOption.options(
@@ -119,7 +87,7 @@ class SettingsViewModel {
     var subtitleLanguageOptions: [PlaybackLanguageOption] {
         PlaybackLanguageOption.options(
             for: .playbackSubtitleLanguage,
-            currentValue: editorSubtitleLanguage,
+            currentValue: prefs.subtitleLanguage,
             runtimeValues: prefs.subtitleLanguageSuggestions
         )
     }
@@ -127,10 +95,38 @@ class SettingsViewModel {
     var metadataLanguageOptions: [PlaybackLanguageOption] {
         PlaybackLanguageOption.options(
             for: .catalogMetadataLanguage,
-            currentValue: editorPreferredMetadataLanguage,
+            currentValue: prefs.preferredMetadataLanguage,
             runtimeValues: prefs.metadataLanguageSuggestions
         )
     }
+
+    #if os(tvOS)
+    var isAdmin: Bool { userInfo?.isAdmin == true }
+
+    var displayName: String {
+        if let profileName = activeProfile?.name, !profileName.isEmpty {
+            return profileName
+        }
+        return userInfo?.username ?? "Silo"
+    }
+
+    var accountSubtitle: String {
+        if isAdmin { return "Administrator" }
+        if let username = userInfo?.username, !username.isEmpty {
+            return username
+        }
+        return "Signed in"
+    }
+
+    var profileAvatar: String? {
+        activeProfile?.avatarEmoji
+    }
+
+    /// Server-resolved avatar image URL, preferred over ``profileAvatar``.
+    var profileAvatarImageUrl: String? {
+        activeProfile?.avatarImageUrl
+    }
+    #endif
 
     /// Main-actor isolated: it publishes into observable state the settings
     /// views are already rendering, and seeds the profile editor, which is
@@ -148,16 +144,17 @@ class SettingsViewModel {
         dolbyVisionEnabled = PlayerSettings.shared.dolbyVisionEnabled
         seekCacheEnabled = PlayerSettings.shared.seekCacheEnabled
         losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
+        #if !os(tvOS)
         backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
+        #endif
         bufferAhead = PlayerSettings.shared.bufferAhead
         deinterlaceMode = PlayerSettings.shared.deinterlaceMode
         deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
-        subtitleSize = UserDefaults.standard.string(forKey: "subtitleSize") ?? "medium"
         subtitleAppearance = PlayerSettings.shared.subtitleAppearance
         subtitleUsesDeviceAppearanceOverride = PlayerSettings.shared.subtitleUsesDeviceAppearanceOverride
         subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
 
-        async let user: UserInfo? = try? ContinuumAPI.shared.get("/api/v1/user/me")
+        async let user: UserInfo? = try? SiloAPI.shared.currentUser()
         async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []
 
         let (loadedUser, loadedProfiles) = await (user, profiles)
@@ -176,10 +173,6 @@ class SettingsViewModel {
         prefs.bindProfile(id: activeProfileId)
         prefs.seed(from: activeProfile)
         await prefs.load()
-    }
-
-    func saveSubtitleSizePreference() {
-        UserDefaults.standard.set(subtitleSize, forKey: "subtitleSize")
     }
 
     /// Apply a shared quality preset, which stores the contract's two axes.
@@ -243,11 +236,13 @@ class SettingsViewModel {
         losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
     }
 
+    #if !os(tvOS)
     @MainActor
     func setBackgroundPlaybackEnabled(_ enabled: Bool) async {
         PlayerSettings.shared.setBackgroundPlaybackEnabled(enabled)
         backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
     }
+    #endif
 
     @MainActor
     func setBufferAhead(_ mode: BufferAheadMode) async {
@@ -281,7 +276,9 @@ class SettingsViewModel {
         // The device-local rows are restored by the same reset, so the screen
         // has to re-adopt them too or it keeps showing the old choice.
         losslessAudioEnabled = PlayerSettings.shared.losslessAudioEnabled
+        #if !os(tvOS)
         backgroundPlaybackEnabled = PlayerSettings.shared.backgroundPlaybackEnabled
+        #endif
         bufferAhead = PlayerSettings.shared.bufferAhead
         deinterlaceMode = PlayerSettings.shared.deinterlaceMode
         deinterlaceFieldRate = PlayerSettings.shared.deinterlaceFieldRate
@@ -308,19 +305,5 @@ class SettingsViewModel {
     func setSubtitleMatchesSystemAppearance(_ enabled: Bool) async {
         PlayerSettings.shared.setSubtitleMatchesSystemAppearance(enabled)
         subtitleMatchesSystemAppearance = PlayerSettings.shared.subtitleMatchesSystemAppearance
-    }
-
-    /// Persist the subtitle trio at `profile` scope.
-    /// Triggered from the subtitle screen's `onChange` handlers.
-    @MainActor
-    func saveProfilePrefs() async {
-        await prefs.saveSubtitlePrefs()
-    }
-
-    /// Persist the preferred metadata language at `profile` scope.
-    /// Triggered from the settings screen's `onChange` handler.
-    @MainActor
-    func saveMetadataLanguage() async {
-        await prefs.saveMetadataLanguage()
     }
 }

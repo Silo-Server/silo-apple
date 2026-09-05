@@ -21,7 +21,7 @@ struct PhoneSeasonChips: View {
                             .id(season.id)
                     }
                 }
-                .padding(.horizontal, ContinuumTheme.safePadding)
+                .padding(.horizontal, SiloTheme.safePadding)
                 .padding(.vertical, 4)
             }
             .onAppear {
@@ -40,7 +40,7 @@ struct PhoneSeasonChips: View {
     ) {
         guard let id else { return }
         if animated {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 proxy.scrollTo(id, anchor: .center)
             }
         } else {

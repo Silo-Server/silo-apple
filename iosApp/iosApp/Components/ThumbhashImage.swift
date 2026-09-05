@@ -20,7 +20,7 @@ struct ThumbhashImage: View {
                     .interpolation(.high)
                     .scaledToFill()
             } else {
-                Color.continuumSurfaceVariant
+                Color.siloSurfaceVariant
             }
         }
         .task(id: normalizedThumbhash) {
@@ -136,7 +136,7 @@ enum ThumbHashDecoder {
               ) else {
             return nil
         }
-        return PlatformImage.continuumImage(cgImage: cgImage)
+        return PlatformImage.siloImage(cgImage: cgImage)
     }
 
     static func decodeRGBA(_ encodedThumbhash: String) -> RGBAImage? {

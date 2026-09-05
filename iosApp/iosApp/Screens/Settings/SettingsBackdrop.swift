@@ -6,11 +6,11 @@ import SwiftUI
 struct SettingsBackdrop: View {
     var body: some View {
         ZStack {
-            Color.continuumBackground
+            Color.siloBackground
 
             RadialGradient(
                 colors: [
-                    Color.continuumAccent.opacity(0.14),
+                    Color.siloAccent.opacity(0.14),
                     Color(hex: "#162235").opacity(0.07),
                     .clear,
                 ],
@@ -21,7 +21,7 @@ struct SettingsBackdrop: View {
 
             RadialGradient(
                 colors: [
-                    Color.continuumBrandOrange.opacity(0.045),
+                    Color.siloBrandOrange.opacity(0.045),
                     .clear,
                 ],
                 center: UnitPoint(x: 0.08, y: 0.72),

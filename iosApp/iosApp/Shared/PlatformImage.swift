@@ -22,7 +22,7 @@ extension Image {
 }
 
 extension PlatformImage {
-    static func continuumImage(cgImage: CGImage) -> PlatformImage {
+    static func siloImage(cgImage: CGImage) -> PlatformImage {
         #if canImport(UIKit)
         return PlatformImage(cgImage: cgImage)
         #elseif canImport(AppKit)
@@ -30,7 +30,7 @@ extension PlatformImage {
         #endif
     }
 
-    static func continuumImage(data: Data) -> PlatformImage? {
+    static func siloImage(data: Data) -> PlatformImage? {
         PlatformImage(data: data)
     }
 }

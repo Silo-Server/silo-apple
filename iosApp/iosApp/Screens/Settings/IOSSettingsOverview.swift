@@ -72,9 +72,9 @@ struct IOSSettingsOverview: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .navigationTitle("")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumNavigationBarBackgroundHidden()
-        .continuumToolbarColorSchemeDark()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloNavigationBarBackgroundHidden()
+        .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
     }
 
@@ -83,11 +83,11 @@ struct IOSSettingsOverview: View {
             Text("Settings")
                 .font(.largeTitle)
                 .bold()
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
 
             Text("Make Silo work the way you like.")
                 .font(.subheadline)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
         .accessibilityElement(children: .combine)
     }
@@ -164,7 +164,7 @@ struct IOSSettingsOverview: View {
                             subtitle: "Language, behavior, and appearance",
                             systemImage: "captions.bubble.fill",
                             tint: .pink,
-                            value: subtitleLanguageName(viewModel.editorSubtitleLanguage)
+                            value: subtitleLanguageName(viewModel.prefs.subtitleLanguage)
                         )
                     }
                     .buttonStyle(.plain)

@@ -26,7 +26,7 @@ struct TVExpandableSynopsis: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(TVSynopsisButtonStyle())
-        .animation(reduceMotion ? nil : .easeOut(duration: ContinuumTheme.normalDuration), value: expanded)
+        .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.normalDuration), value: expanded)
     }
 }
 
@@ -47,13 +47,13 @@ private struct TVSynopsisButtonStyleBody: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
             .background(
-                RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated.opacity(isFocused ? 0.55 : 0))
+                RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
+                    .fill(Color.siloSurfaceElevated.opacity(isFocused ? 0.55 : 0))
             )
             .padding(.horizontal, -20)
             .padding(.vertical, -14)
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 }
 #endif

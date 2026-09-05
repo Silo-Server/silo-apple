@@ -1,6 +1,6 @@
 //
 //  OverlayPrefsStore.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Cached card-overlay configuration for the signed-in profile.
 //  Resolves a single rendered `CardOverlayPrefs` from one of two
@@ -28,7 +28,7 @@
 //  and refreshed after every save so card views always see the shape
 //  they just persisted.
 //
-//  Mirrors the `PlaybackPrefsStore` pattern: a `@MainActor`
+//  A `@MainActor`
 //  observable singleton, idempotent hydration, and a `clear()` hook
 //  for sign-out so the next user doesn't briefly see the previous
 //  user's badge layout.
@@ -134,7 +134,7 @@ final class OverlayPrefsStore: ObservableObject {
             }
         }
 
-        let api = ContinuumAPI.shared
+        let api = SiloAPI.shared
         var resolvedEnabled = true
         var resolvedAdminDefaults: String?
         var resolvedError: String?
@@ -283,14 +283,14 @@ final class OverlayPrefsStore: ObservableObject {
     private func persist(_ snapshot: CardOverlayPrefs) async throws {
         let json = OverlaySchema.serialize(snapshot)
         if usesLegacyAPI {
-            try await ContinuumAPI.shared.setSetting(key: Self.legacySettingKey, value: json)
+            try await SiloAPI.shared.setSetting(key: Self.legacySettingKey, value: json)
             return
         }
         guard let value = Self.jsonValue(from: json) else {
             throw SettingsAPIError.invalidValue(message: "Overlay prefs did not serialize to JSON.")
         }
         do {
-            try await ContinuumAPI.shared.putValue(
+            try await SiloAPI.shared.putValue(
                 key: .uiCardOverlays,
                 scope: .profile,
                 value: value,
@@ -298,7 +298,7 @@ final class OverlayPrefsStore: ObservableObject {
             )
         } catch SettingsAPIError.serverUpgradeRequired {
             usesLegacyAPI = true
-            try await ContinuumAPI.shared.setSetting(key: Self.legacySettingKey, value: json)
+            try await SiloAPI.shared.setSetting(key: Self.legacySettingKey, value: json)
         }
     }
 
@@ -325,9 +325,9 @@ final class OverlayPrefsStore: ObservableObject {
 
         do {
             if usesLegacyAPI {
-                try await ContinuumAPI.shared.deleteSetting(key: Self.legacySettingKey)
+                try await SiloAPI.shared.deleteSetting(key: Self.legacySettingKey)
             } else {
-                try await ContinuumAPI.shared.deleteValue(key: .uiCardOverlays, scope: .profile)
+                try await SiloAPI.shared.deleteValue(key: .uiCardOverlays, scope: .profile)
             }
             hasUserOverride = false
         } catch SettingsAPIError.noValueAtScope {

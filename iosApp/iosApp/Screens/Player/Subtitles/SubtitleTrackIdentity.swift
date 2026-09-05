@@ -1,6 +1,6 @@
 //
 //  SubtitleTrackIdentity.swift
-//  Continuum (iOS + tvOS)
+//  Silo (iOS + tvOS)
 //
 //  Product identity shared by Aether-backed subtitle selection and Silo's
 //  realtime AI cue overlay.

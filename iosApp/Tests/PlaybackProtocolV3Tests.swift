@@ -879,6 +879,32 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(candidates.map(\.ffIndex), [nil, nil, 3, 4])
     }
 
+    func testInitialAutoSubtitleIntentKeepsEmbeddedStreamZero() {
+        // `index,omitempty` drops a zero stream index on the wire; an embedded
+        // row with no index is stream 0 and must stay a candidate.
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "h264",
+            audioCodec: "aac",
+            subtitleTracks: [
+                makeSubtitle(index: nil, codec: "subrip", external: false, path: nil)
+            ]
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version,
+                explicitFFmpegIndex: nil,
+                explicitCombinedIndex: nil,
+                preferredLanguage: "en",
+                mode: .always,
+                showForced: false,
+                trackSignature: nil,
+                currentAudioLanguage: "ja"
+            ),
+            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: 0, combinedIndex: 0)
+        )
+    }
+
     func testInitialAutoSubtitleIntentIsFrozenIntoProtocolV3Plan() {
         let version = makeVersion(
             container: "mkv",
@@ -1541,15 +1567,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(intent.sidecarSubtitleTrackId)
     }
 
-    func testStaleStreamGenerationCannotConsumePendingTrackIntent() {
-        XCTAssertTrue(
-            PlayerViewModel.isCurrentStreamCallback(7, currentGeneration: 7)
-        )
-        XCTAssertFalse(
-            PlayerViewModel.isCurrentStreamCallback(6, currentGeneration: 7)
-        )
-    }
-
     func testAudiobookFeaturesDoNotClaimSeekReanchor() {
         XCTAssertFalse(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
@@ -2013,18 +2030,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             title: codec.uppercased(),
             embeddedTitle: nil,
             isDefault: isDefault
-        )
-    }
-
-    private func makeSubtitleUrl(index: Int, source: String) -> SubtitleUrl {
-        SubtitleUrl(
-            index: index,
-            language: "en",
-            codec: "srt",
-            label: "English",
-            source: source,
-            forced: false,
-            url: "/stream/subtitles/\(index)"
         )
     }
 

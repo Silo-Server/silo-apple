@@ -32,7 +32,7 @@ import AppKit
 
 /// The subset of the canonical settings API the player's settings need.
 ///
-/// A protocol rather than a direct ``ContinuumAPI`` reference so the queueing,
+/// A protocol rather than a direct ``SiloAPI`` reference so the queueing,
 /// debounce and retry behaviour can be exercised without a network. The scope
 /// is baked in at `profile_device`, the only scope this client writes.
 protocol PlayerSettingsTransport: AnyObject, Sendable {
@@ -46,11 +46,11 @@ protocol PlayerSettingsTransport: AnyObject, Sendable {
     func deleteValue(key: SettingKey, profileId: String?) async throws
 }
 
-/// The production transport: the canonical endpoints on ``ContinuumAPI``.
-final class ContinuumPlayerSettingsTransport: PlayerSettingsTransport {
-    private let api: ContinuumAPI
+/// The production transport: the canonical endpoints on ``SiloAPI``.
+final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
+    private let api: SiloAPI
 
-    init(api: ContinuumAPI = .shared) {
+    init(api: SiloAPI = .shared) {
         self.api = api
     }
 
@@ -174,7 +174,7 @@ extension PlayerSettingsWriteJournal {
 /// whose scope no longer matches is not loaded.
 final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendable {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlayerSettingsFlusher"
     )
 
@@ -324,7 +324,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     }
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "PlayerSettingsFlusher"
     )
 
@@ -386,7 +386,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         // lifecycle notification cannot fire an unexpected flush mid-assertion
         // and nothing is written to the shared preferences domain.
         self.init(
-            transport: ContinuumPlayerSettingsTransport(),
+            transport: SiloPlayerSettingsTransport(),
             journal: UserDefaultsSettingsWriteJournal(),
             flushesOnBackground: true
         )
@@ -513,16 +513,6 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         retryTask = nil
         retryGeneration &+= 1
         retryAttempts = 0
-    }
-
-    /// Keys with an op still queued: one inside the debounce window, or one
-    /// held back after a failure. In-flight keys are intentionally excluded;
-    /// use ``hasPendingWrites`` when deciding whether the process must stay
-    /// alive for all outstanding work.
-    var pendingKeys: [SettingKey] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Self.orderedKeys(in: pending)
     }
 
     var hasPendingWrites: Bool {

@@ -26,6 +26,8 @@
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
+			<key>CFBundleURLName</key>
+			<string>org.siloserver.silo.continuum</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>continuum</string>
@@ -34,9 +36,9 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>ContinuumKeychainAccessGroup</key>
+	<key>SiloKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)org.siloserver.silo.shared</string>
-	<key>ContinuumUsesUserIndependentKeychain</key>
+	<key>SiloUsesUserIndependentKeychain</key>
 	<string>$(SILO_USER_INDEPENDENT_KEYCHAIN)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

@@ -12,8 +12,9 @@ settings:
   configs:
     Debug:
       # Required for `@testable import Silo` in SiloTests; Xcode's Debug
-      # template sets this but XcodeGen does not.
+      # template sets these defaults but XcodeGen does not.
       ENABLE_TESTABILITY: "YES"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG"
   base:
     SWIFT_VERSION: "5"
     ENABLE_USER_SCRIPT_SANDBOXING: false
@@ -56,8 +57,8 @@ packages:
   # The only media engine in the replacement player. Keep this at an exact
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
-    url: https://github.com/blurbery/AetherEngine
-    revision: 653be639441d3f7d06332a2f995950497ad62e0f
+    url: https://github.com/Silo-Server/AetherEngine
+    revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5
   Nuke:
     url: https://github.com/kean/Nuke
     from: "13.2.0"
@@ -75,8 +76,6 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
-        excludes:
-          - startup_splash.mp4
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/Silo.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -130,8 +129,6 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
-        excludes:
-          - startup_splash.mp4
     # PRODUCT_BUNDLE_IDENTIFIER and CODE_SIGN_ENTITLEMENTS live in
     # Signing/SiloTV.xcconfig so local contributors can override
     # them via Signing/Local.xcconfig without dirtying this file.
@@ -182,8 +179,6 @@ targets:
       - path: iosApp/tvOS/Caching/PosterImageCache.swift
       - path: Resources
         buildPhase: resources
-        excludes:
-          - startup_splash.mp4
     configFiles:
       Debug: Signing/SiloMac.xcconfig
       Release: Signing/SiloMac.xcconfig

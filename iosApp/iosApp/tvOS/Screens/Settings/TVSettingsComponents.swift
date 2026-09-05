@@ -170,37 +170,37 @@ private struct TVSettingsRailRowBody: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(
                         isSelected && !isFocused
-                            ? Color.continuumChromeSelectedBorder
+                            ? Color.siloChromeSelectedBorder
                             : Color.clear,
                         lineWidth: 1
                     )
             )
             .overlay(alignment: .leading) {
                 Capsule()
-                    .fill(Color.continuumAccent)
+                    .fill(Color.siloAccent)
                     .frame(width: 4)
                     .padding(.vertical, 12)
                     .opacity(isSelected && !isFocused ? 1 : 0)
             }
             .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
             .shadow(
-                color: isFocused ? Color.continuumAccent.opacity(0.14) : .clear,
+                color: isFocused ? Color.siloAccent.opacity(0.14) : .clear,
                 radius: 18
             )
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     private var foreground: Color {
         if isDestructive {
-            return isFocused ? .white : .continuumError
+            return isFocused ? .white : .siloError
         }
-        return isFocused ? .continuumBackground : .continuumOnSurface
+        return isFocused ? .siloBackground : .siloOnSurface
     }
 
     private var fill: Color {
-        if isDestructive && isFocused { return .continuumError }
-        if isFocused { return .continuumOnSurface }
-        if isSelected { return .continuumSurfaceElevated.opacity(0.92) }
+        if isDestructive && isFocused { return .siloError }
+        if isFocused { return .siloOnSurface }
+        if isSelected { return .siloSurfaceElevated.opacity(0.92) }
         return .clear
     }
 }
@@ -247,30 +247,30 @@ private struct TVSettingsPaneRowBody: View {
             )
             .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? 1.012 : 1))
             .shadow(
-                color: isFocused ? Color.continuumAccent.opacity(0.16) : .clear,
+                color: isFocused ? Color.siloAccent.opacity(0.16) : .clear,
                 radius: 18
             )
             .focusEffectDisabled()
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     private var foreground: Color {
         if isDestructive {
-            return isFocused ? Color(hex: "#D22F3F") : .continuumError
+            return isFocused ? Color(hex: "#D22F3F") : .siloError
         }
-        return isFocused ? .continuumBackground : .continuumOnSurface
+        return isFocused ? .siloBackground : .siloOnSurface
     }
 
     private var backgroundFill: Color {
-        if isFocused { return .continuumOnSurface }
-        if isSelected { return .continuumChromeSelectedFill }
-        return .continuumSurfaceElevated.opacity(0.84)
+        if isFocused { return .siloOnSurface }
+        if isSelected { return .siloChromeSelectedFill }
+        return .siloSurfaceElevated.opacity(0.84)
     }
 
     private var borderColor: Color {
         if isFocused { return .clear }
-        if isSelected { return .continuumChromeSelectedBorder }
-        return .continuumChromeRestingBorder
+        if isSelected { return .siloChromeSelectedBorder }
+        return .siloChromeRestingBorder
     }
 }
 
@@ -382,14 +382,14 @@ struct TVSettingsInfoRow: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 17)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .foregroundColor(.continuumOnSurface)
+        .foregroundColor(.siloOnSurface)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.continuumSurfaceElevated.opacity(0.84))
+                .fill(Color.siloSurfaceElevated.opacity(0.84))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
     }
@@ -408,7 +408,7 @@ struct TVSettingsSectionHeader: View {
         Text(title)
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
             .tracking(2)
-            .foregroundStyle(Color.continuumAccent.opacity(0.86))
+            .foregroundStyle(Color.siloAccent.opacity(0.86))
             .padding(.horizontal, 24)
             .padding(.top, 26)
             .padding(.bottom, 6)
@@ -424,7 +424,7 @@ struct TVSettingsFooter: View {
     var body: some View {
         Text(text)
             .font(.system(size: 19))
-            .foregroundColor(.continuumSecondaryText)
+            .foregroundColor(.siloSecondaryText)
             .padding(.horizontal, 24)
             .padding(.top, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -444,7 +444,7 @@ struct TVSettingsWarningFooter: View {
             Text(text)
         }
         .font(.body)
-        .foregroundColor(.continuumError)
+        .foregroundColor(.siloError)
         .padding(.horizontal, 24)
         .padding(.top, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -478,11 +478,11 @@ struct TVSettingsConfirmationOverlay: View {
                 VStack(spacing: 12) {
                     Text(title)
                         .font(.system(size: 38, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
 
                     Text(message)
                         .font(.system(size: 22))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                         .multilineTextAlignment(.center)
                 }
 
@@ -526,11 +526,11 @@ struct TVSettingsConfirmationOverlay: View {
             .padding(.vertical, 42)
             .background(
                 RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                    .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
             )
             .focusSection()
             .defaultFocus($focusedAction, .cancel, priority: .userInitiated)
@@ -576,21 +576,21 @@ struct TVPrivacyPolicyOverlay: View {
                 VStack(alignment: .leading, spacing: 22) {
                     Image(systemName: "hand.raised.fill")
                         .font(.system(size: 38, weight: .semibold))
-                        .foregroundStyle(Color.continuumAccent)
+                        .foregroundStyle(Color.siloAccent)
                         .accessibilityHidden(true)
 
                     Text("Privacy Policy")
                         .font(.system(size: 42, weight: .bold))
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
 
                     Text("Scan this code with your phone or tablet to read Silo's privacy policy.")
                         .font(.system(size: 23))
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                         .fixedSize(horizontal: false, vertical: true)
 
                     Text(SiloLegalLinks.privacyPolicy.absoluteString)
                         .font(.system(size: 20, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.continuumAccent)
+                        .foregroundStyle(Color.siloAccent)
                         .accessibilityLabel("Privacy policy URL")
                         .accessibilityValue(SiloLegalLinks.privacyPolicy.absoluteString)
 
@@ -608,11 +608,11 @@ struct TVPrivacyPolicyOverlay: View {
             .padding(.vertical, 52)
             .background(
                 RoundedRectangle(cornerRadius: 32, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 32, style: .continuous)
-                    .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                    .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
             }
             .focusSection()
             .defaultFocus($isDoneFocused, true, priority: .userInitiated)
@@ -647,12 +647,12 @@ struct TVSettingsPickerSheet: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Color.continuumBackground.opacity(0.88)
+                Color.siloBackground.opacity(0.88)
                     .ignoresSafeArea()
 
                 RadialGradient(
                     colors: [
-                        Color.continuumAccent.opacity(0.08),
+                        Color.siloAccent.opacity(0.08),
                         Color.clear,
                     ],
                     center: .center,
@@ -691,25 +691,25 @@ struct TVSettingsPickerSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(title)
                         .font(.system(size: 42, weight: .bold))
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
                         .accessibilityAddTraits(.isHeader)
 
                     Text("Choose an option")
                         .font(.system(size: 19))
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .foregroundStyle(Color.siloSecondaryText)
                 }
 
                 Spacer(minLength: 12)
 
                 Label("Menu to close", systemImage: "arrow.uturn.backward")
                     .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 10)
                     .background(Color.white.opacity(0.055), in: Capsule())
                     .overlay {
                         Capsule()
-                            .strokeBorder(Color.continuumChromeRestingBorder, lineWidth: 1)
+                            .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
                 }
             }
 
@@ -724,7 +724,7 @@ struct TVSettingsPickerSheet: View {
             }
 
             Rectangle()
-                .fill(Color.continuumChromeRestingBorder)
+                .fill(Color.siloChromeRestingBorder)
                 .frame(height: 1)
 
             ScrollViewReader { proxy in
@@ -778,13 +778,13 @@ struct TVSettingsPickerSheet: View {
         }
         .padding(30)
         .frame(width: width, height: height, alignment: .top)
-        .background(cardShape.fill(Color.continuumSurfaceElevated.opacity(0.98)))
+        .background(cardShape.fill(Color.siloSurfaceElevated.opacity(0.98)))
         // Clip child layers first, then add the border and outer card shadow.
         // This preserves the floating dialog while containing scroll content.
         .clipShape(cardShape)
         .overlay {
             cardShape.strokeBorder(
-                Color.continuumChromeSelectedBorder.opacity(0.9),
+                Color.siloChromeSelectedBorder.opacity(0.9),
                 lineWidth: 1
             )
         }
@@ -852,7 +852,7 @@ struct TVSettingsPickerSheet: View {
         let targetID = focusedOptionID ?? options.first { $0.id == selection }?.id ?? options.first?.id
         guard let targetID else { return }
         if animated, !reduceMotion {
-            withAnimation(.easeOut(duration: ContinuumTheme.fastDuration)) {
+            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 proxy.scrollTo(targetID, anchor: .center)
             }
         } else {

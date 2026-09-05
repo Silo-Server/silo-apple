@@ -174,7 +174,7 @@ struct MobilePlayerControls: View {
             Image(systemName: "xmark")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
         }
         .buttonStyle(MobilePlayerGlassButtonStyle())
         .accessibilityLabel("Close Player")
@@ -210,7 +210,7 @@ struct MobilePlayerControls: View {
                     viewModel.resumeAutoHide()
                 }
             }
-            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             .siloPlayerGlass(in: Circle(), interactive: true)
         }
     }
@@ -270,7 +270,7 @@ struct MobilePlayerControls: View {
                 Image(systemName: "gobackward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Back 10 Seconds")
@@ -284,7 +284,7 @@ struct MobilePlayerControls: View {
                     // play.fill reads left-heavy inside a circle;
                     // nudge it toward the optical center.
                     .offset(x: viewModel.isPlaying ? 0 : 1.5)
-                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
@@ -295,7 +295,7 @@ struct MobilePlayerControls: View {
                 Image(systemName: "goforward.10")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                    .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Forward 10 Seconds")
@@ -607,7 +607,7 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .frame(height: SiloTheme.topBarIconHitSize)
         }
         .menuStyle(.button)
         // Keep Auto at the top, reading down.
@@ -715,12 +715,12 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .frame(height: SiloTheme.topBarIconHitSize)
         } else {
             Image(systemName: systemImage)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
         }
     }
 
@@ -738,7 +738,7 @@ struct MobilePlayerControls: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .frame(height: SiloTheme.topBarIconHitSize)
         }
         .buttonStyle(MobilePlayerGlassButtonStyle())
     }
@@ -761,7 +761,7 @@ struct MobilePlayerControls: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
                         }
                         .buttonStyle(MobilePlayerGlassButtonStyle())
                         .accessibilityLabel("Cancel Auto-Skip Intro")
@@ -782,7 +782,7 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .frame(height: ContinuumTheme.topBarIconHitSize)
+                        .frame(height: SiloTheme.topBarIconHitSize)
                     }
                     // White prominent glass with a dark glyph, matching the
                     // play/pause disc — accent-tinted prominent reads as an
@@ -814,7 +814,7 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.black.opacity(0.85))
                         .padding(.horizontal, 16)
-                        .frame(height: ContinuumTheme.topBarIconHitSize)
+                        .frame(height: SiloTheme.topBarIconHitSize)
                 }
                 .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
                 .accessibilityLabel("Skip Credits")
@@ -833,7 +833,7 @@ struct MobilePlayerControls: View {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
         }
         .buttonStyle(MobilePlayerGlassButtonStyle())
     }
@@ -853,8 +853,8 @@ struct MobilePlayerGlassButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(minWidth: ContinuumTheme.topBarIconHitSize)
-            .frame(height: ContinuumTheme.topBarIconHitSize)
+            .frame(minWidth: SiloTheme.topBarIconHitSize)
+            .frame(height: SiloTheme.topBarIconHitSize)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .contentShape(Capsule())
             .siloPlayerGlass(in: Capsule(), tint: tint, interactive: true)
@@ -878,7 +878,7 @@ struct MobilePlayerChromeVisibility: ViewModifier {
 /// Top-right chrome follows transport visibility in every playback phase.
 /// Equal tap areas keep the lock centred through rotation.
 struct MobilePlayerRotationControls: View {
-    static let height = ContinuumTheme.topBarIconHitSize
+    static let height = SiloTheme.topBarIconHitSize
     static let width = height * 2 + 24
     static let topClearance: CGFloat = height + 32
 
@@ -922,7 +922,7 @@ struct MobilePlayerRotationControls: View {
             .font(.system(size: 24, weight: .medium))
             .foregroundStyle(.white)
             .frame(width: 32, height: 32)
-            .frame(width: ContinuumTheme.topBarIconHitSize, height: ContinuumTheme.topBarIconHitSize)
+            .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             .contentShape(Rectangle())
     }
 }

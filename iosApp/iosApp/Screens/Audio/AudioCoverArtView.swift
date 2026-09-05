@@ -9,7 +9,7 @@ struct AudioCoverArtView: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(Color.continuumSurfaceElevated)
+                .fill(Color.siloSurfaceElevated)
             if let urlString, !urlString.isEmpty {
                 AsyncImageView(url: urlString, contentMode: .fill)
             } else {

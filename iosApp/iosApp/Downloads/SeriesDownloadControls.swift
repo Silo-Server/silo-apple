@@ -55,14 +55,14 @@ struct SeriesDownloadMenuButton: View {
         VStack(spacing: 6) {
             Image(systemName: isMonitored ? "arrow.down.circle.fill" : "arrow.down.to.line")
                 .font(.system(size: 19, weight: .regular))
-                .foregroundColor(Color.continuumOnSurface)
+                .foregroundColor(Color.siloOnSurface)
                 .frame(width: 42, height: 42)
                 .background(
                     Circle().fill(Color.white.opacity(isMonitored ? 0.18 : 0.10))
                 )
             Text(isMonitored ? "Monitored" : "Download")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(Color.continuumOnSurface.opacity(isMonitored ? 0.92 : 0.6))
+                .foregroundColor(Color.siloOnSurface.opacity(isMonitored ? 0.92 : 0.6))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
@@ -217,8 +217,8 @@ private struct SeriesDownloadOptionsSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .continuumScrollContentBackgroundHidden()
-            .continuumPageBackground()
+            .siloScrollContentBackgroundHidden()
+            .siloPageBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -280,20 +280,20 @@ private struct SeriesDownloadOptionsSheet: View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(.continuumOnSurface)
+                .foregroundColor(.siloOnSurface)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.continuumOnSurface)
+                    .foregroundColor(.siloOnSurface)
                 Text(detail)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.continuumSecondaryText)
+                .foregroundColor(.siloSecondaryText)
         }
         .padding(.vertical, 4)
     }
@@ -325,10 +325,10 @@ private struct SeriesSeasonDownloadPicker: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(season.downloadDisplayName)
                                 .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(.continuumOnSurface)
+                                .foregroundColor(.siloOnSurface)
                             Text("\(season.episodeCount) episode\(season.episodeCount == 1 ? "" : "s")")
-                                .font(.continuumCaption)
-                                .foregroundColor(.continuumSecondaryText)
+                                .font(.siloCaption)
+                                .foregroundColor(.siloSecondaryText)
                         }
                         .padding(.vertical, 4)
                     }
@@ -341,8 +341,8 @@ private struct SeriesSeasonDownloadPicker: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .continuumScrollContentBackgroundHidden()
-        .continuumPageBackground()
+        .siloScrollContentBackgroundHidden()
+        .siloPageBackground()
     }
 }
 
@@ -400,8 +400,8 @@ private struct SeriesEpisodeDownloadPicker: View {
                 VStack(spacing: 12) {
                     ProgressView()
                     Text("Loading episodes…")
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if episodes.isEmpty {
@@ -429,10 +429,10 @@ private struct SeriesEpisodeDownloadPicker: View {
                         }
                     }
                 }
-                .continuumScrollContentBackgroundHidden()
+                .siloScrollContentBackgroundHidden()
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle(season.downloadDisplayName)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -472,7 +472,7 @@ private struct SeriesEpisodeDownloadPicker: View {
             .font(.system(size: 15))
             .frame(maxWidth: .infinity)
             .frame(height: 50)
-            .background(selectedEpisodes.isEmpty ? Color.continuumDisabled : Color.continuumOnSurface)
+            .background(selectedEpisodes.isEmpty ? Color.siloDisabled : Color.siloOnSurface)
             .foregroundColor(.black)
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
@@ -502,11 +502,11 @@ private struct SeriesEpisodeDownloadPicker: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(episode.title ?? "Episode \(episode.episodeNumber)")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
                     Text(episodeDetailText(episode))
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                         .lineLimit(1)
                 }
 
@@ -596,12 +596,12 @@ private struct SeriesEpisodeDownloadPicker: View {
 
     private func statusTint(for episode: EpisodeListItem) -> Color {
         guard let status = manager.record(forContentId: episode.contentId)?.localStatus else {
-            return .continuumSecondaryText
+            return .siloSecondaryText
         }
         switch status {
         case .completed, .revoked: return .green
         case .failed: return .orange
-        default: return .continuumOnSurface.opacity(0.78)
+        default: return .siloOnSurface.opacity(0.78)
         }
     }
 
@@ -631,7 +631,7 @@ private struct SeriesEpisodeDownloadPicker: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let response = try await ContinuumAPI.shared.episodes(
+            let response = try await SiloAPI.shared.episodes(
                 seriesId: seriesId,
                 seasonNumber: season.seasonNumber
             )
@@ -724,13 +724,13 @@ struct SeriesMonitorSheet: View {
                                     else { selectedSeasons.remove(season.seasonNumber) }
                                 }
                             ))
-                            .tint(.continuumAccent)
+                            .tint(.siloAccent)
                         }
                     }
                 }
                 Section("Storage") {
                     Toggle("Delete watched episodes", isOn: $deleteWatched)
-                        .tint(.continuumAccent)
+                        .tint(.siloAccent)
                     Picker("Limit", selection: $maxStorageGB) {
                         ForEach(storageLimitOptionsGB, id: \.self) { gb in
                             Text(gb == 0 ? "Unlimited" : "\(gb) GB").tag(gb)

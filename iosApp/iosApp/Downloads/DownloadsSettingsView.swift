@@ -25,7 +25,7 @@ struct DownloadsSettingsView: View {
 
             Section {
                 Toggle("Download over Wi-Fi only", isOn: $settings.wifiOnly)
-                    .tint(.continuumAccent)
+                    .tint(.siloAccent)
                 if formats.count > 1 {
                     Picker("Quality", selection: $settings.preferredFormat) {
                         ForEach(formats, id: \.self) { format in
@@ -43,11 +43,11 @@ struct DownloadsSettingsView: View {
                     Text("Original prefers source quality and may prepare a compatibility file if this device needs one. Bitrate presets are prepared on the server before download starts.")
                 }
             }
-            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
 
             Section("Series Monitoring Defaults") {
                 Toggle("Delete watched episodes", isOn: $settings.defaultDeleteWatched)
-                    .tint(.continuumAccent)
+                    .tint(.siloAccent)
                 Stepper(
                     settings.defaultMaxStorageGB == 0
                         ? "Storage limit: Unlimited"
@@ -57,24 +57,24 @@ struct DownloadsSettingsView: View {
                     step: 5
                 )
             }
-            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
 
             Section {
                 Toggle("Keep watched downloads", isOn: $settings.keepWatchedDownloads)
-                    .tint(.continuumAccent)
+                    .tint(.siloAccent)
             } header: {
                 Text("Cleanup")
             } footer: {
                 Text("When off, the Downloads tab suggests freeing up space by removing items you've finished watching.")
             }
-            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
 
             Section("Storage") {
                 HStack {
                     Text("Used")
                     Spacer()
                     Text(DownloadFormatting.bytes(manager.totalBytesUsed))
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                 }
                 if !manager.records.isEmpty {
                     Button(role: .destructive) {
@@ -84,7 +84,7 @@ struct DownloadsSettingsView: View {
                     }
                 }
             }
-            .listRowBackground(Color.continuumSurfaceElevated.opacity(0.92))
+            .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
         }
         .navigationTitle("")
         .task {
@@ -97,7 +97,7 @@ struct DownloadsSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .settingsListChrome()
-        .continuumToolbarColorSchemeDark()
+        .siloToolbarColorSchemeDark()
         .confirmationDialog(
             "Remove all downloaded files?",
             isPresented: $showDeleteAllConfirm,

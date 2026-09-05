@@ -34,9 +34,9 @@ struct CollectionsView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle("Collections")
-        .continuumNavigationTitleDisplayMode(.large)
+        .siloNavigationTitleDisplayMode(.large)
         .toolbar {
             #if os(macOS)
             ToolbarItem {
@@ -44,7 +44,7 @@ struct CollectionsView: View {
                     viewModel.pendingGroupAction = .create
                 } label: {
                     Image(systemName: "folder.badge.plus")
-                        .foregroundColor(.continuumPrimary)
+                        .foregroundColor(.siloPrimary)
                 }
             }
             ToolbarItem {
@@ -52,7 +52,7 @@ struct CollectionsView: View {
                     viewModel.showCreateSheet = true
                 } label: {
                     Image(systemName: "plus")
-                        .foregroundColor(.continuumPrimary)
+                        .foregroundColor(.siloPrimary)
                 }
             }
             #else
@@ -61,7 +61,7 @@ struct CollectionsView: View {
                     viewModel.pendingGroupAction = .create
                 } label: {
                     Image(systemName: "folder.badge.plus")
-                        .foregroundColor(.continuumPrimary)
+                        .foregroundColor(.siloPrimary)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -69,7 +69,7 @@ struct CollectionsView: View {
                     viewModel.showCreateSheet = true
                 } label: {
                     Image(systemName: "plus")
-                        .foregroundColor(.continuumPrimary)
+                        .foregroundColor(.siloPrimary)
                 }
             }
             #endif
@@ -96,13 +96,13 @@ struct CollectionsView: View {
                 Section {
                     if section.collections.isEmpty {
                         Text("Drop collections here to add them to this group.")
-                            .font(.continuumSmall)
-                            .foregroundColor(.continuumSecondaryText)
-                            .listRowBackground(Color.continuumSurface)
+                            .font(.siloSmall)
+                            .foregroundColor(.siloSecondaryText)
+                            .listRowBackground(Color.siloSurface)
                     } else {
                         ForEach(section.collections) { collection in
                             collectionRow(collection)
-                                .listRowBackground(Color.continuumSurface)
+                                .listRowBackground(Color.siloSurface)
                                 #if !os(tvOS)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
@@ -115,7 +115,7 @@ struct CollectionsView: View {
                                     } label: {
                                         Label("Move", systemImage: "folder")
                                     }
-                                    .tint(.continuumPrimary)
+                                    .tint(.siloPrimary)
                                 }
                                 #endif
                         }
@@ -130,15 +130,15 @@ struct CollectionsView: View {
         #else
         .listStyle(.insetGrouped)
         #endif
-        .continuumScrollContentBackgroundHidden()
+        .siloScrollContentBackgroundHidden()
     }
 
     @ViewBuilder
     private func sectionHeader(_ section: UserCollectionSection) -> some View {
         HStack {
             Text(section.name)
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
             Spacer()
             if let groupId = section.groupId,
                let group = viewModel.groups.first(where: { $0.id == groupId }) {
@@ -155,7 +155,7 @@ struct CollectionsView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
-                        .foregroundColor(.continuumSecondaryText)
+                        .foregroundColor(.siloSecondaryText)
                 }
             }
         }
@@ -168,19 +168,19 @@ struct CollectionsView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(collection.name)
-                        .font(.continuumBody)
-                        .foregroundColor(.continuumOnSurface)
+                        .font(.siloBody)
+                        .foregroundColor(.siloOnSurface)
 
                     Text(rowSubtitle(for: collection))
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
 
                 Spacer()
 
                 Image(systemName: "chevron.right")
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
             }
             .padding(.vertical, 4)
         }
@@ -198,9 +198,9 @@ struct CollectionsView: View {
 
     private var createSheet: some View {
         NavigationStack {
-            VStack(spacing: ContinuumTheme.largePadding) {
+            VStack(spacing: SiloTheme.largePadding) {
                 TextField("Collection name", text: $viewModel.newCollectionName)
-                    .textFieldStyle(ContinuumTextFieldStyle())
+                    .textFieldStyle(SiloTextFieldStyle())
 
                 Button("Create Collection") {
                     Task { await viewModel.createCollection() }
@@ -210,19 +210,19 @@ struct CollectionsView: View {
 
                 Spacer()
             }
-            .padding(ContinuumTheme.padding)
-            .continuumPageBackground()
+            .padding(SiloTheme.padding)
+            .siloPageBackground()
             .navigationTitle("New Collection")
-            .continuumNavigationTitleDisplayMode(.inline)
+            .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         viewModel.showCreateSheet = false
                     }
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
                 }
             }
-            .continuumNavigationBarSurfaceBackground()
+            .siloNavigationBarSurfaceBackground()
         }
         .presentationDetents([.medium])
     }
@@ -240,20 +240,20 @@ private struct GroupActionSheet: View {
     var body: some View {
         NavigationStack {
             content
-                .continuumPageBackground()
-                .continuumNavigationTitleDisplayMode(.inline)
+                .siloPageBackground()
+                .siloNavigationTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
-                            .foregroundColor(.continuumSecondaryText)
+                            .foregroundColor(.siloSecondaryText)
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button(confirmLabel) { Task { await confirm() } }
-                            .foregroundColor(.continuumPrimary)
+                            .foregroundColor(.siloPrimary)
                             .disabled(!canConfirm)
                     }
                 }
-                .continuumNavigationBarSurfaceBackground()
+                .siloNavigationBarSurfaceBackground()
         }
         .presentationDetents([.medium])
         .onAppear {
@@ -273,18 +273,18 @@ private struct GroupActionSheet: View {
         case .rename(let group):
             nameForm(title: "Rename “\(group.name)”", prompt: "Group name")
         case .delete(let group):
-            VStack(spacing: ContinuumTheme.padding) {
+            VStack(spacing: SiloTheme.padding) {
                 Text("Delete “\(group.name)”?")
-                    .font(.continuumTitle)
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .font(.siloTitle)
+                    .foregroundStyle(Color.siloOnSurface)
                 Text("Collections in this group will move to Ungrouped. This cannot be undone.")
-                    .font(.continuumBody)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .font(.siloBody)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .multilineTextAlignment(.center)
                 errorBanner
                 Spacer()
             }
-            .padding(ContinuumTheme.padding)
+            .padding(SiloTheme.padding)
             .navigationTitle("Delete group")
         case .move(let collection):
             VStack(spacing: 0) {
@@ -295,14 +295,14 @@ private struct GroupActionSheet: View {
                         } label: {
                             moveOptionRow(label: "Ungrouped", selected: pendingMoveTarget == nil)
                         }
-                        .listRowBackground(Color.continuumSurface)
+                        .listRowBackground(Color.siloSurface)
                         ForEach(viewModel.groups) { group in
                             Button {
                                 pendingMoveTarget = group.id
                             } label: {
                                 moveOptionRow(label: group.name, selected: pendingMoveTarget == group.id)
                             }
-                            .listRowBackground(Color.continuumSurface)
+                            .listRowBackground(Color.siloSurface)
                         }
                     }
                 }
@@ -311,23 +311,23 @@ private struct GroupActionSheet: View {
                 #else
                 .listStyle(.insetGrouped)
                 #endif
-                .continuumScrollContentBackgroundHidden()
+                .siloScrollContentBackgroundHidden()
                 errorBanner
-                    .padding(.horizontal, ContinuumTheme.padding)
-                    .padding(.bottom, ContinuumTheme.padding)
+                    .padding(.horizontal, SiloTheme.padding)
+                    .padding(.bottom, SiloTheme.padding)
             }
             .navigationTitle("Move collection")
         }
     }
 
     private func nameForm(title: String, prompt: String) -> some View {
-        VStack(spacing: ContinuumTheme.largePadding) {
+        VStack(spacing: SiloTheme.largePadding) {
             TextField(prompt, text: $name)
-                .textFieldStyle(ContinuumTextFieldStyle())
+                .textFieldStyle(SiloTextFieldStyle())
             errorBanner
             Spacer()
         }
-        .padding(ContinuumTheme.padding)
+        .padding(SiloTheme.padding)
         .navigationTitle(title)
     }
 
@@ -335,8 +335,8 @@ private struct GroupActionSheet: View {
     private var errorBanner: some View {
         if let message = viewModel.groupError {
             Text(message)
-                .font(.continuumCaption)
-                .foregroundColor(.continuumError)
+                .font(.siloCaption)
+                .foregroundColor(.siloError)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -344,12 +344,12 @@ private struct GroupActionSheet: View {
     private func moveOptionRow(label: String, selected: Bool) -> some View {
         HStack {
             Text(label)
-                .font(.continuumBody)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloBody)
+                .foregroundColor(.siloOnSurface)
             Spacer()
             if selected {
                 Image(systemName: "checkmark")
-                    .foregroundColor(.continuumPrimary)
+                    .foregroundColor(.siloPrimary)
             }
         }
     }
@@ -418,7 +418,7 @@ private class LibraryCollectionsViewModel {
         error = nil
 
         do {
-            let response = try await ContinuumAPI.shared.libraryCollections(libraryId: libraryId)
+            let response = try await SiloAPI.shared.libraryCollections(libraryId: libraryId)
             let resolved = response.resolvedSections
             ResponseCache.shared.set(resolved, for: key)
             sections = resolved
@@ -458,13 +458,13 @@ struct LibraryCollectionsView: View {
         Group {
             if !viewModel.isEmpty {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+                    VStack(alignment: .leading, spacing: SiloTheme.padding) {
                         ForEach(viewModel.sections) { section in
                             sectionView(section)
                         }
                     }
-                    .padding(ContinuumTheme.padding)
-                    .padding(.bottom, ContinuumTheme.largePadding)
+                    .padding(SiloTheme.padding)
+                    .padding(.bottom, SiloTheme.largePadding)
                 }
                 .reportsPageChromeScroll()
             } else if let error = viewModel.error {
@@ -479,7 +479,7 @@ struct LibraryCollectionsView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .task(id: libraryId) {
             await viewModel.loadCollections(libraryId: libraryId)
         }
@@ -493,8 +493,8 @@ struct LibraryCollectionsView: View {
         VStack(alignment: .leading, spacing: 12) {
             if !section.name.isEmpty {
                 Text(section.name)
-                    .font(.continuumTitle)
-                    .foregroundColor(.continuumOnSurface)
+                    .font(.siloTitle)
+                    .foregroundColor(.siloOnSurface)
             }
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(section.collections) { collection in
@@ -553,10 +553,10 @@ private struct LibraryCollectionCard: View {
 
     private var cardWidth: CGFloat {
         cardWidthOverride
-            ?? (ContinuumTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale)
+            ?? (SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale)
     }
     private var cardHeight: CGFloat {
-        cardWidth * (ContinuumTheme.posterCardHeight / ContinuumTheme.posterCardWidth)
+        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
     }
 
     var body: some View {
@@ -565,7 +565,7 @@ private struct LibraryCollectionCard: View {
                 poster
 
                 Text(countLabel)
-                    .font(.continuumSmall)
+                    .font(.siloSmall)
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
@@ -574,19 +574,19 @@ private struct LibraryCollectionCard: View {
                     .padding(8)
             }
             .frame(width: cardWidth, height: cardHeight)
-            .clipShape(RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius))
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
 
             if uiCustomization.cardPresentation.caption.showsTitle {
                 Text(collection.name)
-                    .font(.continuumCaption)
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .font(.siloCaption)
+                    .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2, reservesSpace: true)
             }
 
             if uiCustomization.cardPresentation.caption.showsMetadata {
                 Text(typeLabel)
-                    .font(.continuumSmall)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .font(.siloSmall)
+                    .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
             }
         }
@@ -606,10 +606,10 @@ private struct LibraryCollectionCard: View {
             .clipped()
         } else {
             ZStack {
-                Color.continuumSurfaceVariant
+                Color.siloSurfaceVariant
                 Image(systemName: "square.stack.3d.up.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundColor(.continuumSecondaryText)
+                    .foregroundColor(.siloSecondaryText)
             }
             .frame(width: cardWidth, height: cardHeight)
         }
@@ -664,9 +664,9 @@ struct LibraryCollectionDetailView: View {
                 )
             }
         }
-        .continuumPageBackground()
+        .siloPageBackground()
         .navigationTitle(title ?? "Collection")
-        .continuumNavigationTitleDisplayMode(.large)
+        .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)") {
             await loadItems(reset: true)
         }
@@ -677,10 +677,10 @@ struct LibraryCollectionDetailView: View {
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: ContinuumTheme.padding) {
+            VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 Text(countLabel)
-                    .font(.continuumCaption)
-                    .foregroundColor(.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
 
                 CatalogGrid(
                     items: items,
@@ -695,9 +695,9 @@ struct LibraryCollectionDetailView: View {
                     }
                 )
             }
-            .padding(.horizontal, ContinuumTheme.padding)
-            .padding(.top, ContinuumTheme.smallPadding)
-            .padding(.bottom, ContinuumTheme.largePadding)
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.largePadding)
         }
     }
 
@@ -744,14 +744,14 @@ struct LibraryCollectionDetailView: View {
         do {
             let response: CatalogResponse
             if kind == .userCollections {
-                response = try await ContinuumAPI.shared.userCollectionItems(
+                response = try await SiloAPI.shared.userCollectionItems(
                     collectionId: collectionId,
                     offset: nextOffset,
                     limit: pageSize,
                     snapshot: snapshot
                 )
             } else {
-                response = try await ContinuumAPI.shared.libraryCollectionItems(
+                response = try await SiloAPI.shared.libraryCollectionItems(
                     libraryId: libraryId,
                     collectionId: collectionId,
                     offset: nextOffset,

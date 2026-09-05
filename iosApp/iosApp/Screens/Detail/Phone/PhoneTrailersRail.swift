@@ -24,7 +24,7 @@ struct PhoneTrailersRail: View {
         if !entries.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 PhoneSectionHeader(title: "Trailers & More")
-                    .padding(.horizontal, ContinuumTheme.safePadding)
+                    .padding(.horizontal, SiloTheme.safePadding)
                 rail
             }
         }
@@ -43,7 +43,7 @@ struct PhoneTrailersRail: View {
                     )
                 }
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
         }
@@ -110,18 +110,18 @@ private struct PhoneTrailerCard: View {
                     Text(kindLabel)
                         .font(.system(size: 10, weight: .bold))
                         .tracking(1.0)
-                        .foregroundColor(.continuumOnSurface.opacity(0.55))
+                        .foregroundColor(.siloOnSurface.opacity(0.55))
 
                     Text(entry.title)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface.opacity(0.92))
+                        .foregroundColor(.siloOnSurface.opacity(0.92))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
 
                     if let durationLabel {
                         Text(durationLabel)
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.continuumSecondaryText)
+                            .foregroundColor(.siloSecondaryText)
                             .lineLimit(1)
                     }
                 }
@@ -161,7 +161,7 @@ private struct PhoneTrailerCard: View {
             // records the file — so they get the surface tile plus the
             // shared play glyph.
             Rectangle()
-                .fill(Color.continuumSurfaceElevated)
+                .fill(Color.siloSurfaceElevated)
                 .frame(width: cardWidth, height: thumbnailHeight)
         }
     }

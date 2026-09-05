@@ -9,7 +9,7 @@ final class OnboardingInvitationTests: XCTestCase {
 
     func testOnboardingSurfaceUsesAQueryItemInsteadOfEmbeddingQueryInPath() async throws {
         let (http, tokenStore) = await makeHTTPClient(activeURL: "https://active.example/silo")
-        let api = ContinuumAPI(http: http, tokenStore: tokenStore)
+        let api = SiloAPI(http: http, tokenStore: tokenStore)
 
         let flow = try await api.onboardingFlow(surface: "phone")
         XCTAssertEqual(flow.tourId, "tour-test")

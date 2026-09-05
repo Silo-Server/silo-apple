@@ -22,8 +22,8 @@ struct PlaybackSettingsView: View {
         }
         .settingsListChrome()
         .navigationTitle("")
-        .continuumNavigationTitleDisplayMode(.inline)
-        .continuumToolbarColorSchemeDark()
+        .siloNavigationTitleDisplayMode(.inline)
+        .siloToolbarColorSchemeDark()
     }
 
     // MARK: - Streaming
@@ -49,7 +49,7 @@ struct PlaybackSettingsView: View {
                     Text(preset.label).tag(preset.id)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -71,7 +71,7 @@ struct PlaybackSettingsView: View {
                     Text(option.label).tag(option.code)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -85,8 +85,8 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setDolbyVisionEnabled(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
 
             Toggle("Seek Cache", isOn: Binding(
                 get: { viewModel.seekCacheEnabled },
@@ -95,8 +95,8 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setSeekCacheEnabled(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
 
             Picker("Buffer Ahead", selection: Binding(
                 get: { viewModel.bufferAhead },
@@ -109,7 +109,7 @@ struct PlaybackSettingsView: View {
                     Text(mode.label).tag(mode)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -123,8 +123,8 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setLosslessAudioEnabled(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
 
             Picker("Deinterlacing", selection: Binding(
                 get: { viewModel.deinterlaceMode },
@@ -137,7 +137,7 @@ struct PlaybackSettingsView: View {
                     Text(mode.label).tag(mode)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -155,7 +155,7 @@ struct PlaybackSettingsView: View {
                     Text(rate.label).tag(rate)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -173,17 +173,17 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setBackgroundPlaybackEnabled(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
             #endif
         } header: {
             Text("Streaming")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text(streamingFooterText)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
     }
 
     private var streamingFooterText: String {
@@ -215,8 +215,8 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setAutoPlayNext(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
 
             Picker("Show Next Up", selection: Binding(
                 get: { viewModel.nextUpPromptSeconds },
@@ -229,7 +229,7 @@ struct PlaybackSettingsView: View {
                     Text(label).tag(seconds)
                 }
             }
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             #if os(macOS)
             .pickerStyle(.menu)
             #else
@@ -243,8 +243,8 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setSkipIntros(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
 
             Toggle("Skip Credits", isOn: Binding(
                 get: { viewModel.skipCredits },
@@ -253,13 +253,13 @@ struct PlaybackSettingsView: View {
                     Task { await viewModel.setSkipCredits(enabled) }
                 }
             ))
-            .foregroundStyle(Color.continuumOnSurface)
-            .tint(.continuumAccent)
+            .foregroundStyle(Color.siloOnSurface)
+            .tint(.siloAccent)
         } header: {
             Text("Episodes")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
     }
 
     // MARK: - Reset
@@ -271,9 +271,9 @@ struct PlaybackSettingsView: View {
             }
         } footer: {
             Text("Resets playback choices for this device and profile back to the server fallback.")
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.continuumSurfaceElevated)
+        .listRowBackground(Color.siloSurfaceElevated)
     }
 
     // MARK: - Options

@@ -190,7 +190,7 @@ struct TVItemDetailLoadingView: View {
                     placeholder(
                         width: railCardSize.width,
                         height: railCardSize.height,
-                        cornerRadius: ContinuumTheme.cornerRadius
+                        cornerRadius: SiloTheme.cornerRadius
                     )
                 }
             }
@@ -212,7 +212,7 @@ struct TVItemDetailLoadingView: View {
                 audiobookIdentity
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, ContinuumTheme.safePadding)
+            .padding(.horizontal, SiloTheme.safePadding)
             .padding(.leading, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -268,20 +268,20 @@ struct TVItemDetailLoadingView: View {
                 placeholder(
                     width: 460,
                     height: 460,
-                    cornerRadius: ContinuumTheme.cornerRadius
+                    cornerRadius: SiloTheme.cornerRadius
                 )
             }
         }
         .frame(width: 460, height: 460)
         .clipShape(
             RoundedRectangle(
-                cornerRadius: ContinuumTheme.cornerRadius,
+                cornerRadius: SiloTheme.cornerRadius,
                 style: .continuous
             )
         )
         .overlay {
             RoundedRectangle(
-                cornerRadius: ContinuumTheme.cornerRadius,
+                cornerRadius: SiloTheme.cornerRadius,
                 style: .continuous
             )
             .stroke(Color.white.opacity(0.12), lineWidth: 1)

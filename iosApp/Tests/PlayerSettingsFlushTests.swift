@@ -1440,137 +1440,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "480p", bitrateKbps: 300), "328p")
     }
 
-    /// What the join gave up, the transcode request has to honour: the stored
-    /// cap clamps the encode target rather than being lost.
-    func testTheStoredCapClampsTheLegacyTranscodeTarget() throws {
-        let id = AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 6_000)
-        let option = try XCTUnwrap(ApplePlaybackQuality.settingsOptions.first { $0.id == id })
-        XCTAssertEqual(option.bitrateKbps, 8_000, "precondition: the chosen rung is above the cap")
-
-        let source = Self.version(fileId: 1, resolution: "1080p", bitrateKbps: 30_000)
-        XCTAssertEqual(
-            ApplePlaybackQuality.targetBitrateKbps(for: option, selectedVersion: source, capKbps: 6_000),
-            6_000,
-            "the cap must bound the encode target, not the rung"
-        )
-        // And a source inside the rung but over the cap still has to be
-        // re-encoded, or the cap would be silently uncapped.
-        let modest = Self.version(fileId: 2, resolution: "1080p", bitrateKbps: 7_000)
-        XCTAssertTrue(
-            ApplePlaybackQuality.shouldForceTranscode(
-                preferredQualityId: id, selectedVersion: modest, capKbps: 6_000
-            ),
-            "a source above the cap must transcode even when it is under the rung"
-        )
-        XCTAssertFalse(
-            ApplePlaybackQuality.shouldForceTranscode(
-                preferredQualityId: id, selectedVersion: modest, capKbps: nil
-            ),
-            "without a cap the rung alone decides"
-        )
-    }
-
-    func testAutoResolutionStillEnforcesANumericBitrateCap() throws {
-        let qualityId = AppleQualityAxes.join(resolution: "auto", bitrateKbps: 6_000)
-        XCTAssertEqual(qualityId, ApplePlaybackQuality.autoId)
-        let option = try XCTUnwrap(
-            ApplePlaybackQuality.settingsOptions.first { $0.id == qualityId }
-        )
-        let source = Self.version(fileId: 3, resolution: "1080p", bitrateKbps: 7_000)
-
-        XCTAssertTrue(
-            ApplePlaybackQuality.shouldForceTranscode(
-                preferredQualityId: qualityId,
-                selectedVersion: source,
-                capKbps: 6_000
-            ),
-            "Auto removes the resolution ceiling, not the independent bandwidth ceiling"
-        )
-        XCTAssertEqual(
-            ApplePlaybackQuality.targetBitrateKbps(
-                for: option,
-                selectedVersion: source,
-                capKbps: 6_000
-            ),
-            6_000
-        )
-    }
-
-    func testOriginalResolutionStillEnforcesANumericBitrateCapOnLegacyPlayback() throws {
-        let qualityId = AppleQualityAxes.join(resolution: "original", bitrateKbps: 6_000)
-        XCTAssertEqual(qualityId, ApplePlaybackQuality.originalId)
-        let option = try XCTUnwrap(
-            ApplePlaybackQuality.settingsOptions.first { $0.id == qualityId }
-        )
-        let source = Self.version(fileId: 4, resolution: "2160p", bitrateKbps: 30_000)
-
-        let forcedByQuality = ApplePlaybackQuality.shouldForceTranscode(
-            preferredQualityId: qualityId,
-            selectedVersion: source,
-            capKbps: 6_000
-        )
-        XCTAssertTrue(
-            forcedByQuality,
-            "Original removes the resolution ceiling, not the independent bandwidth ceiling"
-        )
-        for delivery in [PlaybackDeliveryStrategy.direct, .remux, .transcode] {
-            XCTAssertFalse(
-                ApplePlaybackQuality.shouldUseLegacyCopyVideo(
-                    delivery: delivery,
-                    option: option,
-                    forcedByQuality: forcedByQuality
-                ),
-                "legacy playback must encode rather than copy video above the cap"
-            )
-        }
-        XCTAssertEqual(
-            ApplePlaybackQuality.targetBitrateKbps(
-                for: option,
-                selectedVersion: source,
-                capKbps: 6_000
-            ),
-            6_000
-        )
-    }
-
-    func testWideningToOriginalOr4KReselectsAHigherResolutionSource() throws {
-        let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
-        let tenEighty = Self.version(fileId: 2, resolution: "1080p", bitrateKbps: 10_000)
-        let fourK = Self.version(fileId: 3, resolution: "2160p", bitrateKbps: 30_000)
-        let versions = [sevenTwenty, tenEighty, fourK]
-
-        XCTAssertTrue(
-            ApplePlaybackQuality.shouldReselectSource(
-                preferredQualityId: "original",
-                selectedVersion: sevenTwenty,
-                availableVersions: versions
-            )
-        )
-        XCTAssertTrue(
-            ApplePlaybackQuality.shouldReselectSource(
-                preferredQualityId: "2160p",
-                selectedVersion: sevenTwenty,
-                availableVersions: versions
-            )
-        )
-        XCTAssertFalse(
-            ApplePlaybackQuality.shouldReselectSource(
-                preferredQualityId: "720p-high",
-                selectedVersion: sevenTwenty,
-                availableVersions: versions
-            ),
-            "a higher file above the requested ceiling is not eligible"
-        )
-        XCTAssertFalse(
-            ApplePlaybackQuality.shouldReselectSource(
-                preferredQualityId: "2160p",
-                selectedVersion: fourK,
-                availableVersions: versions
-            ),
-            "the selected file already satisfies the highest eligible resolution"
-        )
-    }
-
     func testInitialOriginalSelectionIgnoresARememberedLowerResolutionSource() throws {
         let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
         let fourK = Self.version(fileId: 2, resolution: "2160p", bitrateKbps: 30_000)
@@ -1595,26 +1464,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
-    func testOriginalCopyFailureCannotFallBackToATranscode() throws {
-        XCTAssertFalse(
-            ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
-                preferredQualityId: "original"
-            )
-        )
-        XCTAssertTrue(
-            ApplePlaybackQuality.allowsLegacyCopyFallbackToTranscode(
-                preferredQualityId: nil
-            ),
-            "Auto retains the older-server compatibility fallback"
-        )
-    }
-
-    func testLegacyCopyRejectionFallbackRetainsTheBandwidthCap() throws {
-        XCTAssertEqual(ApplePlaybackQuality.legacyCopyFallbackBitrateKbps(capKbps: nil), 6_000)
-        XCTAssertEqual(ApplePlaybackQuality.legacyCopyFallbackBitrateKbps(capKbps: 12_000), 6_000)
-        XCTAssertEqual(ApplePlaybackQuality.legacyCopyFallbackBitrateKbps(capKbps: 3_000), 3_000)
-    }
-
     func testAnUncappedResolutionPicksThatResolutionsBestTier() throws {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: nil), "1080p-high")
         XCTAssertEqual(AppleQualityAxes.join(resolution: "720p", bitrateKbps: nil), "720p-high")
@@ -1632,54 +1481,6 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(
             AppleQualityAxes.split("2160p"),
             .init(resolution: "2160p", bitrateKbps: nil)
-        )
-        XCTAssertEqual(
-            ApplePlaybackQuality.activeQualityId(
-                requestedQualityId: "2160p",
-                selectedVersion: Self.version(
-                    fileId: 4,
-                    resolution: "2160p",
-                    bitrateKbps: 30_000
-                ),
-                delivery: .direct
-            ),
-            "2160p"
-        )
-
-        let fourKSource = Self.version(fileId: 5, resolution: "2160p", bitrateKbps: 60_000)
-        XCTAssertFalse(
-            ApplePlaybackQuality.shouldForceTranscode(
-                preferredQualityId: "2160p",
-                selectedVersion: fourKSource
-            )
-        )
-        XCTAssertEqual(
-            ApplePlaybackQuality.targetResolution(for: option, selectedVersion: fourKSource),
-            ""
-        )
-        XCTAssertEqual(
-            ApplePlaybackQuality.targetBitrateKbps(
-                for: option,
-                selectedVersion: fourKSource
-            ),
-            0,
-            "the resolution-only option must not invent a bitrate ceiling"
-        )
-        XCTAssertEqual(
-            ApplePlaybackQuality.targetBitrateKbps(
-                for: option,
-                selectedVersion: fourKSource,
-                capKbps: 15_000
-            ),
-            15_000,
-            "an independent bandwidth cap still applies to 4K"
-        )
-        XCTAssertTrue(
-            ApplePlaybackQuality.shouldForceTranscode(
-                preferredQualityId: "2160p",
-                selectedVersion: fourKSource,
-                capKbps: 15_000
-            )
         )
     }
 
@@ -1725,6 +1526,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testOriginalRemainsDistinctFromAuto() throws {
         XCTAssertEqual(ApplePlaybackQuality.normalizeStoredId("original"), "original")
         XCTAssertEqual(AppleQualityAxes.join(resolution: "original", bitrateKbps: nil), "original")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "original", bitrateKbps: 6_000), "original")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "auto", bitrateKbps: 6_000), "auto")
         XCTAssertEqual(AppleQualityAxes.split("original"), .init(resolution: "original", bitrateKbps: nil))
     }
 

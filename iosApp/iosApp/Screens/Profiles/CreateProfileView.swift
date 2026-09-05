@@ -85,7 +85,7 @@ struct CreateProfileView: View {
             Text(err.message)
         }
         .task {
-            libraries = (try? await ContinuumAPI.shared.libraries().libraries) ?? []
+            libraries = (try? await SiloAPI.shared.libraries().libraries) ?? []
         }
         .onChange(of: isChild) { _, child in
             if child {
@@ -104,7 +104,7 @@ struct CreateProfileView: View {
     #if os(tvOS)
     private var tvOSLayout: some View {
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            Color.siloBackground.ignoresSafeArea()
             RadialGradient(
                 colors: [Color.white.opacity(0.06), Color.black.opacity(0)],
                 center: .center,
@@ -223,7 +223,7 @@ struct CreateProfileView: View {
 
             section(title: "Name") {
                 TextField("Profile name", text: $name)
-                    .textFieldStyle(ContinuumTextFieldStyle())
+                    .textFieldStyle(SiloTextFieldStyle())
                     .focused($focusedField, equals: .name)
                     .autocorrectionDisabled()
                     #if !os(macOS)
@@ -234,7 +234,7 @@ struct CreateProfileView: View {
 
             section(title: "PIN (optional)") {
                 TextField("4-digit PIN", text: $pin)
-                    .textFieldStyle(ContinuumTextFieldStyle())
+                    .textFieldStyle(SiloTextFieldStyle())
                     .focused($focusedField, equals: .pin)
                     .autocorrectionDisabled()
                     .onChange(of: pin) { _, newValue in
@@ -253,7 +253,7 @@ struct CreateProfileView: View {
                 guard !isLoading else { return }
                 Task { await createProfile() }
             }
-            .buttonStyle(ContinuumPrimaryButtonStyle(isLoading: isLoading))
+            .buttonStyle(SiloPrimaryButtonStyle(isLoading: isLoading))
             // Gate validity via .disabled, but not the in-flight state: disabling
             // the focused button mid-create bounces focus to a neighbour. The
             // spinner label signals progress and re-entry is guarded above.
@@ -288,10 +288,10 @@ struct CreateProfileView: View {
     private var iOSLayout: some View {
         NavigationStack {
             ZStack {
-                ContinuumPageBackdrop()
+                SiloPageBackdrop()
 
                 ScrollView {
-                    VStack(spacing: ContinuumTheme.largePadding) {
+                    VStack(spacing: SiloTheme.largePadding) {
                         ProfileTile(profile: previewProfile, action: {})
                             .allowsHitTesting(false)
                             .disabled(true)
@@ -304,8 +304,8 @@ struct CreateProfileView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 HStack {
                                     Text("Avatar")
-                                        .font(.continuumCaption)
-                                        .foregroundColor(.continuumSecondaryText)
+                                        .font(.siloCaption)
+                                        .foregroundColor(.siloSecondaryText)
                                     Spacer()
                                     shuffleButton
                                 }
@@ -315,10 +315,10 @@ struct CreateProfileView: View {
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Name")
-                                .font(.continuumCaption)
-                                .foregroundColor(.continuumSecondaryText)
+                                .font(.siloCaption)
+                                .foregroundColor(.siloSecondaryText)
                             TextField("Profile name", text: $name)
-                                .textFieldStyle(ContinuumTextFieldStyle())
+                                .textFieldStyle(SiloTextFieldStyle())
                                 .focused($focusedField, equals: .name)
                                 .autocorrectionDisabled()
                                 #if !os(macOS)
@@ -328,10 +328,10 @@ struct CreateProfileView: View {
 
                         VStack(alignment: .leading, spacing: 6) {
                             Text("PIN (optional)")
-                                .font(.continuumCaption)
-                                .foregroundColor(.continuumSecondaryText)
+                                .font(.siloCaption)
+                                .foregroundColor(.siloSecondaryText)
                             TextField("4-digit PIN", text: $pin)
-                                .textFieldStyle(ContinuumTextFieldStyle())
+                                .textFieldStyle(SiloTextFieldStyle())
                                 .focused($focusedField, equals: .pin)
                                 #if !os(macOS)
                                 .keyboardType(.numberPad)
@@ -345,14 +345,14 @@ struct CreateProfileView: View {
                         Toggle(isOn: $isChild) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Child Profile")
-                                    .font(.continuumBody)
-                                    .foregroundColor(.continuumOnSurface)
+                                    .font(.siloBody)
+                                    .foregroundColor(.siloOnSurface)
                                 Text("Restricts content to kid-friendly ratings")
-                                    .font(.continuumCaption)
-                                    .foregroundColor(.continuumSecondaryText)
+                                    .font(.siloCaption)
+                                    .foregroundColor(.siloSecondaryText)
                             }
                         }
-                        .tint(.continuumAccent)
+                        .tint(.siloAccent)
 
                         if isChild {
                             childAccessControls
@@ -364,27 +364,27 @@ struct CreateProfileView: View {
                         .siloPrimaryButton(isLoading: isLoading)
                         .disabled(isLoading || name.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    .padding(.horizontal, ContinuumTheme.largePadding)
-                    .padding(.vertical, ContinuumTheme.largePadding)
+                    .padding(.horizontal, SiloTheme.largePadding)
+                    .padding(.vertical, SiloTheme.largePadding)
                 }
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .foregroundColor(.continuumPrimary)
+                        .foregroundColor(.siloPrimary)
                 }
             }
             .navigationTitle("New Profile")
-            .continuumNavigationTitleDisplayMode(.inline)
-            .continuumToolbarColorSchemeDark()
+            .siloNavigationTitleDisplayMode(.inline)
+            .siloToolbarColorSchemeDark()
         }
     }
 
     private var stylePickerRow: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Style")
-                .font(.continuumCaption)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(ProfileAvatarPresets.styles) { style in
@@ -432,8 +432,8 @@ struct CreateProfileView: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 7) {
                 Text("Maximum content rating")
-                    .font(.continuumCaption)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .font(.siloCaption)
+                    .foregroundStyle(Color.siloSecondaryText)
                 Picker("Maximum content rating", selection: $maxContentRating) {
                     ForEach(Self.contentRatings, id: \.value) { option in
                         Text(option.label).tag(option.value)
@@ -443,18 +443,18 @@ struct CreateProfileView: View {
             }
 
             Toggle("Restrict libraries", isOn: $libraryRestrictionsEnabled)
-                .tint(.continuumAccent)
+                .tint(.siloAccent)
 
             if libraryRestrictionsEnabled {
                 if libraries.isEmpty {
                     Text("No libraries are available to assign.")
-                        .font(.continuumCaption)
-                        .foregroundStyle(Color.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundStyle(Color.siloSecondaryText)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Allowed libraries")
-                            .font(.continuumCaption)
-                            .foregroundStyle(Color.continuumSecondaryText)
+                            .font(.siloCaption)
+                            .foregroundStyle(Color.siloSecondaryText)
                         ForEach(libraries) { library in
                             Toggle(
                                 library.name,
@@ -469,14 +469,14 @@ struct CreateProfileView: View {
                                     }
                                 )
                             )
-                            .tint(.continuumAccent)
+                            .tint(.siloAccent)
                         }
                     }
                 }
             }
         }
         .padding(14)
-        .background(Color.continuumSurfaceElevated, in: RoundedRectangle(cornerRadius: 12))
+        .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 12))
     }
 
     /// Drive the preview tile from a synthetic `UserProfile`. The avatar
@@ -535,7 +535,7 @@ struct CreateProfileView: View {
             #if os(tvOS)
             .font(.system(size: 18, weight: .medium))
             #else
-            .font(.continuumCaption)
+            .font(.siloCaption)
             #endif
         }
         .buttonStyle(GhostChipButtonStyle())
@@ -666,15 +666,15 @@ private struct StyleChip: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
             .accessibilityLabel(style.label)
             .accessibilityHint(style.summary)
             .accessibilityAddTraits(.isButton)
     }
 
     private var foreground: Color {
-        if isSelected { return Color.continuumBackground }
+        if isSelected { return Color.siloBackground }
         return Color.white.opacity(isFocused ? 1.0 : 0.75)
     }
 
@@ -730,8 +730,8 @@ private struct PresetCell: View {
             #if os(tvOS)
             .focusEffectDisabled()
             #endif
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
-            .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isSelected)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
             .accessibilityLabel("Avatar \(preset.seed)")
             .accessibilityAddTraits(.isButton)
     }
@@ -797,7 +797,7 @@ private struct ChildProfileRow: View {
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isFocused)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isOn)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
@@ -811,12 +811,12 @@ private struct ChildProfileRow: View {
                 .fill(isOn ? Color.white : Color.white.opacity(0.2))
                 .frame(width: switchWidth, height: switchHeight)
             Circle()
-                .fill(isOn ? Color.continuumBackground : Color.white)
+                .fill(isOn ? Color.siloBackground : Color.white)
                 .frame(width: puckSize, height: puckSize)
                 .padding(4)
         }
     }
 }
 
-// `GhostChipButtonStyle` now lives in `Theme/ContinuumButtonStyles.swift`
+// `GhostChipButtonStyle` now lives in `Theme/SiloButtonStyles.swift`
 // (shared with `ProfileSelectionView`).

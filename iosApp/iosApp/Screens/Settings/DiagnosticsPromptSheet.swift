@@ -57,7 +57,7 @@ struct DiagnosticsPromptSheet: View {
                     ProgressView("Sending diagnostics…")
                 }
             }
-            .continuumGroupedListStyle()
+            .siloGroupedListStyle()
             .navigationTitle(prompt.title)
             .onChange(of: model.allowsAlwaysSend) { _, allowsAlwaysSend in
                 if !allowsAlwaysSend {

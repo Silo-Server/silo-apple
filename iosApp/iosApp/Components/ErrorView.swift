@@ -14,23 +14,23 @@ struct ErrorView: View {
     @Environment(AppRouter.self) private var router
 
     var body: some View {
-        VStack(spacing: ContinuumTheme.padding) {
+        VStack(spacing: SiloTheme.padding) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 48))
-                .foregroundColor(.continuumError)
+                .foregroundColor(.siloError)
 
             Text(headline)
-                .font(.continuumHeadline)
-                .foregroundColor(.continuumOnSurface)
+                .font(.siloHeadline)
+                .foregroundColor(.siloOnSurface)
                 .multilineTextAlignment(.center)
 
             Text(state.message)
-                .font(.continuumBody)
-                .foregroundColor(.continuumSecondaryText)
+                .font(.siloBody)
+                .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, ContinuumTheme.largePadding)
+                .padding(.horizontal, SiloTheme.largePadding)
 
-            VStack(spacing: ContinuumTheme.smallPadding) {
+            VStack(spacing: SiloTheme.smallPadding) {
                 if let primary = primaryAction {
                     Button(primary.title, action: primary.run)
                         .siloPrimaryButton()
@@ -39,12 +39,12 @@ struct ErrorView: View {
                 if let secondary = secondaryAction {
                     Button(secondary.title, action: secondary.run)
                         .buttonStyle(.plain)
-                        .foregroundColor(.continuumSecondaryText)
-                        .font(.continuumBody)
+                        .foregroundColor(.siloSecondaryText)
+                        .font(.siloBody)
                         .padding(.top, 4)
                 }
             }
-            .padding(.top, ContinuumTheme.smallPadding)
+            .padding(.top, SiloTheme.smallPadding)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

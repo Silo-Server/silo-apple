@@ -6,7 +6,7 @@
 
 **Architecture:** Pure iOS view-layer change. `SiloCastViews.swift` is split into four focused, `#if os(iOS)`-guarded files under `iosApp/iosApp/Cast/iOS/`. Artwork is resolved client-side from the `contentId` already in the cast state (cache → API), so no protocol field is added. The remote screen is split into a thin controller-observing wrapper plus a pure presentational view driven by plain `SiloCastPlaybackState` + a command callback, which makes it previewable with mock data.
 
-**Tech Stack:** Swift 5, SwiftUI, `@Observable`, XcodeGen (`project.yml`), existing app primitives (`AsyncImageView`, `PlayerTimeFormatter`, `ContinuumAPI`, `ResponseCache`, `Color.continuum*` tokens).
+**Tech Stack:** Swift 5, SwiftUI, `@Observable`, XcodeGen (`project.yml`), existing app primitives (`AsyncImageView`, `PlayerTimeFormatter`, `SiloAPI`, `ResponseCache`, `Color.silo*` tokens).
 
 ---
 
@@ -33,7 +33,7 @@ The artwork resolver is low-risk network/cache glue (not critical/high-risk shar
   ```
 - **`Silo.xcodeproj` is gitignored** (XcodeGen output) — never `git add` it. Commit only the Swift/doc files.
 - **Every new file under `Cast/iOS/` MUST be wrapped in `#if os(iOS) … #endif`** — the tvOS (`SiloTV`) target also globs `iosApp/` and will otherwise try to compile iOS-only types.
-- **Monochrome chrome** (spec §3): no chromatic accent. White (`continuumOnSurface`) fills, black (`continuumBackground`) glyph on the play button; artwork is the only color.
+- **Monochrome chrome** (spec §3): no chromatic accent. White (`siloOnSurface`) fills, black (`siloBackground`) glyph on the play button; artwork is the only color.
 
 ## File structure (decomposition)
 
@@ -85,7 +85,7 @@ final class SiloCastArtworkResolver {
         }
 
         do {
-            let detail = try await ContinuumAPI.shared.itemDetail(contentId: contentId)
+            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
             apply(detail, contentId: contentId)
         } catch {
             // Degrade silently: the remote simply shows the flat background.
@@ -106,7 +106,7 @@ struct SiloCastArtworkBackground: View {
 
     var body: some View {
         ZStack {
-            Color.continuumBackground
+            Color.siloBackground
             if let urlString, !urlString.isEmpty {
                 AsyncImageView(url: urlString, contentMode: .fill, placeholderStyle: .clear)
                     .id(urlString)
@@ -114,7 +114,7 @@ struct SiloCastArtworkBackground: View {
                     .opacity(0.45)
                     .clipped()
             }
-            Color.continuumBackground.opacity(0.55)
+            Color.siloBackground.opacity(0.55)
         }
         .ignoresSafeArea()
     }
@@ -234,21 +234,21 @@ struct SiloCastRemoteControlView: View {
     private var connectingView: some View {
         VStack(spacing: 18) {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.continuumSurfaceElevated)
+                .fill(Color.siloSurfaceElevated)
                 .frame(width: 150, height: 216)
             if let error = controller.errorMessage, !error.isEmpty {
                 Text(error)
                     .font(.subheadline)
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.continuumError.opacity(0.9)))
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.siloError.opacity(0.9)))
             } else {
                 ProgressView()
                 Text("Connecting to \(controller.activeTarget?.name ?? "Silo TV")…")
                     .font(.headline)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
         }
         .padding(24)
@@ -292,12 +292,12 @@ private struct RemoteNowPlayingContent: View {
                 AsyncImageView(url: posterURL, contentMode: .fit)
             } else {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.continuumSurfaceElevated)
+                    .fill(Color.siloSurfaceElevated)
                     .aspectRatio(2.0 / 3.0, contentMode: .fit)
                     .overlay {
                         Image(systemName: "tv")
                             .font(.system(size: 36))
-                            .foregroundStyle(Color.continuumSecondaryText)
+                            .foregroundStyle(Color.siloSecondaryText)
                     }
             }
         }
@@ -312,13 +312,13 @@ private struct RemoteNowPlayingContent: View {
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
-                .foregroundStyle(Color.continuumOnSurface)
+                .foregroundStyle(Color.siloOnSurface)
             if let subtitle = state.subtitle, !subtitle.isEmpty {
                 Text(subtitle)
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
-                    .foregroundStyle(Color.continuumSecondaryText)
+                    .foregroundStyle(Color.siloSecondaryText)
             }
         }
     }
@@ -332,10 +332,10 @@ private struct RemoteNowPlayingContent: View {
                 Text("Playing on \(targetName)")
                     .font(.caption.weight(.medium))
             }
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Capsule().fill(Color.continuumChromeRestingFill))
+            .background(Capsule().fill(Color.siloChromeRestingFill))
         }
     }
 
@@ -353,7 +353,7 @@ private struct RemoteNowPlayingContent: View {
                     self.scrubPreview = nil
                 }
             )
-            .tint(Color.continuumOnSurface)
+            .tint(Color.siloOnSurface)
             .disabled(state.duration <= 0)
             .accessibilityLabel("Playback position")
 
@@ -363,7 +363,7 @@ private struct RemoteNowPlayingContent: View {
                 Text(remainingLabel)
             }
             .font(.caption.monospacedDigit())
-            .foregroundStyle(Color.continuumSecondaryText)
+            .foregroundStyle(Color.siloSecondaryText)
         }
     }
 
@@ -386,13 +386,13 @@ private struct RemoteNowPlayingContent: View {
                 onCommand(.playPause)
             } label: {
                 ZStack {
-                    Circle().fill(Color.continuumOnSurface).frame(width: 64, height: 64)
+                    Circle().fill(Color.siloOnSurface).frame(width: 64, height: 64)
                     if state.isLoading || state.isBuffering {
-                        ProgressView().tint(Color.continuumBackground)
+                        ProgressView().tint(Color.siloBackground)
                     } else {
                         Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 28, weight: .medium))
-                            .foregroundStyle(Color.continuumBackground)
+                            .foregroundStyle(Color.siloBackground)
                     }
                 }
             }
@@ -406,7 +406,7 @@ private struct RemoteNowPlayingContent: View {
             }
             .accessibilityLabel("Forward 30 seconds")
         }
-        .foregroundStyle(Color.continuumOnSurface)
+        .foregroundStyle(Color.siloOnSurface)
         .buttonStyle(.plain)
     }
 
@@ -503,12 +503,12 @@ private struct RemoteNowPlayingContent: View {
     private func errorBanner(_ message: String) -> some View {
         Text(message)
             .font(.footnote)
-            .foregroundStyle(Color.continuumOnSurface)
+            .foregroundStyle(Color.siloOnSurface)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .padding(.horizontal, 14)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.continuumError.opacity(0.9)))
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.siloError.opacity(0.9)))
     }
 }
 
@@ -523,7 +523,7 @@ private struct RemoteChipLabel: View {
             Text(caption)
                 .font(.caption2)
         }
-        .foregroundStyle(Color.continuumOnSurface.opacity(0.9))
+        .foregroundStyle(Color.siloOnSurface.opacity(0.9))
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
     }
@@ -622,7 +622,7 @@ struct SiloCastTargetPickerView: View {
                     searchingState
                 }
             }
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .background(Color.siloBackground.ignoresSafeArea())
             .navigationTitle("Cast")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -645,7 +645,7 @@ struct SiloCastTargetPickerView: View {
             ProgressView()
             Text("Searching for Silo TVs…")
                 .font(.headline)
-                .foregroundStyle(Color.continuumSecondaryText)
+                .foregroundStyle(Color.siloSecondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -673,16 +673,16 @@ struct SiloCastTargetPickerView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "tv")
                         .font(.title3)
-                        .foregroundStyle(Color.continuumOnSurface)
+                        .foregroundStyle(Color.siloOnSurface)
                         .frame(width: 38, height: 38)
-                        .background(Circle().fill(Color.continuumChromeRestingFill))
+                        .background(Circle().fill(Color.siloChromeRestingFill))
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
                         if let serverName = target.serverName {
                             Text(serverName)
                                 .font(.subheadline)
-                                .foregroundStyle(Color.continuumSecondaryText)
+                                .foregroundStyle(Color.siloSecondaryText)
                         }
                     }
 
@@ -695,7 +695,7 @@ struct SiloCastTargetPickerView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .listRowBackground(Color.continuumSurface)
+            .listRowBackground(Color.siloSurface)
         }
         .scrollContentBackground(.hidden)
     }
@@ -781,13 +781,13 @@ struct SiloCastControlModeButton: View {
     private func buttonLabel(isActive: Bool) -> some View {
         Image(systemName: "airplayvideo")
             .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(isActive ? Color.continuumBackground : Color.continuumOnSurface)
+            .foregroundStyle(isActive ? Color.siloBackground : Color.siloOnSurface)
             .frame(width: 40, height: 40)
             .background {
-                Circle().fill(isActive ? Color.continuumOnSurface : Color.continuumChromeRestingFill)
+                Circle().fill(isActive ? Color.siloOnSurface : Color.siloChromeRestingFill)
             }
             .overlay {
-                Circle().stroke(isActive ? Color.clear : Color.continuumOutline, lineWidth: 1)
+                Circle().stroke(isActive ? Color.clear : Color.siloOutline, lineWidth: 1)
             }
             .contentShape(Circle())
     }
@@ -799,7 +799,7 @@ struct SiloCastControlModeButton: View {
         SiloCastControlModeButton(controller: SiloCastController(), onChooseTarget: {})
     }
     .padding()
-    .background(Color.continuumBackground)
+    .background(Color.siloBackground)
 }
 #endif
 #endif
@@ -881,6 +881,6 @@ Expected: clean working tree for the cast files; `Silo.xcodeproj` does not appea
 
 **2. Placeholder scan:** No TBD/TODO/"handle errors"/"similar to". Every code step is complete and compilable.
 
-**3. Type consistency:** `SiloCastArtworkResolver.resolve(contentId:)` / `.posterURL` / `.backdropURL`; `SiloCastArtworkBackground(urlString:)`; `RemoteNowPlayingContent(state:targetName:posterURL:onCommand:)`; `RemoteChipLabel(systemImage:caption:)`; `SiloCastPlaybackState.previewPlaying()` — all used consistently across tasks. Command factories (`.seek`, `.playPause`, `.stop`, `.selectAudioTrack`, `.selectSubtitleTrack`, `.setPlaybackSpeed`, `.setQuality`, `.setVideoGravity`, `.setHDREnabled`) match `SiloCastControlCommand`. State fields match `SiloCastPlaybackState`. `VideoGravity.allCases`/`.label`/`.rawValue`, `ResponseCache.shared.get`/`CacheKey.itemDetail`, `ContinuumAPI.shared.itemDetail(contentId:)`/`ItemDetail.posterUrl`/`.backdropUrl`, `AsyncImageView(url:contentMode:placeholderStyle:)`, `PlayerTimeFormatter.formatHMS` — all verified against the codebase.
+**3. Type consistency:** `SiloCastArtworkResolver.resolve(contentId:)` / `.posterURL` / `.backdropURL`; `SiloCastArtworkBackground(urlString:)`; `RemoteNowPlayingContent(state:targetName:posterURL:onCommand:)`; `RemoteChipLabel(systemImage:caption:)`; `SiloCastPlaybackState.previewPlaying()` — all used consistently across tasks. Command factories (`.seek`, `.playPause`, `.stop`, `.selectAudioTrack`, `.selectSubtitleTrack`, `.setPlaybackSpeed`, `.setQuality`, `.setVideoGravity`, `.setHDREnabled`) match `SiloCastControlCommand`. State fields match `SiloCastPlaybackState`. `VideoGravity.allCases`/`.label`/`.rawValue`, `ResponseCache.shared.get`/`CacheKey.itemDetail`, `SiloAPI.shared.itemDetail(contentId:)`/`ItemDetail.posterUrl`/`.backdropUrl`, `AsyncImageView(url:contentMode:placeholderStyle:)`, `PlayerTimeFormatter.formatHMS` — all verified against the codebase.
 
 No gaps found.

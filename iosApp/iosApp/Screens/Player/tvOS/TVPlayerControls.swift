@@ -135,7 +135,7 @@ struct TVPlayerControls: View {
             )
             .frame(width: 1, height: 1)
         }
-        .animation(.easeOut(duration: ContinuumTheme.fastDuration), value: isHUDPresented)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHUDPresented)
         // Menu / exit handling intentionally lives at the `PlayerView` level
         // rather than here. That higher handler reads `viewModel.isHUDPresented`
         // directly so it catches Menu presses even when focus has drifted off
@@ -399,7 +399,7 @@ struct TVPlayerControls: View {
             if viewModel.sleepTimer.isActive {
                 Label(formatCountdown(viewModel.sleepTimer.remainingSeconds),
                       systemImage: "moon.zzz.fill")
-                    .font(.continuumSmall.weight(.medium))
+                    .font(.siloSmall.weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
                     .monospacedDigit()
                     .padding(.horizontal, 12)
@@ -502,11 +502,11 @@ struct TVPlayerControls: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 11)
         .background(
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                 .fill(Color.black.opacity(0.46))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: ContinuumTheme.smallCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.24), lineWidth: 1.2)
         )
         .shadow(color: .black.opacity(0.32), radius: 10, y: 4)
@@ -585,18 +585,18 @@ struct TVPlayerControls: View {
             VStack(alignment: .leading, spacing: 2) {
                 if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
                     Text(series)
-                        .font(.continuumSmall.weight(.medium))
+                        .font(.siloSmall.weight(.medium))
                         .foregroundStyle(.white.opacity(0.65))
                         .lineLimit(1)
                 }
                 HStack(spacing: 10) {
                     Text(title)
-                        .font(.continuumHeadline)
+                        .font(.siloHeadline)
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     if let episode = viewModel.metadata.episodeTag {
                         Text(episode)
-                            .font(.continuumSmall)
+                            .font(.siloSmall)
                             .foregroundStyle(.white.opacity(0.6))
                     }
                 }

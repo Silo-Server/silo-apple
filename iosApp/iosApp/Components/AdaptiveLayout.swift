@@ -53,7 +53,7 @@ enum AdaptiveColumns {
         containerWidth: CGFloat,
         columnCount: Int,
         spacing: CGFloat,
-        maximumWidth: CGFloat = ContinuumTheme.posterCardWidth
+        maximumWidth: CGFloat = SiloTheme.posterCardWidth
     ) -> CGFloat {
         guard containerWidth > 0, columnCount > 0 else { return maximumWidth }
         let totalSpacing = CGFloat(max(0, columnCount - 1)) * spacing
@@ -66,7 +66,7 @@ extension View {
     /// Caps form/content width so text fields and buttons don't stretch
     /// edge-to-edge on iPad. iPhones are already narrower than the cap, so
     /// this is a no-op on phone. The second `frame` centers the capped view.
-    func continuumFormWidth(_ maxWidth: CGFloat = 600) -> some View {
+    func siloFormWidth(_ maxWidth: CGFloat = 600) -> some View {
         self
             .frame(maxWidth: maxWidth)
             .frame(maxWidth: .infinity, alignment: .center)

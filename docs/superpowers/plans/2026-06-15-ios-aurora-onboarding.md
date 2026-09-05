@@ -136,7 +136,7 @@ struct AuroraInputField<F: Hashable>: View {
         )
         .shadow(color: isFocused ? Color.auroraAccent.opacity(0.4) : .clear,
                 radius: isFocused ? 20 : 0, y: 0)
-        .animation(ContinuumTheme.springAnimation, value: isFocused)
+        .animation(SiloTheme.springAnimation, value: isFocused)
     }
 
     private var displayString: String {
@@ -229,7 +229,7 @@ import SwiftUI
 
 // MARK: - Field content classification (platform-neutral)
 
-/// Mirrors the small enum pattern in the old Continuum forms so the shared
+/// Mirrors the small enum pattern in the old Silo forms so the shared
 /// component carries no UIKit types in its signature — macOS has no
 /// `UITextContentType`.
 enum AuroraFieldContentType { case username, password, email, oneTimeCode, url }
@@ -259,8 +259,8 @@ struct AuroraErrorLabel: View {
             Text(text)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .font(.continuumCaption)
-        .foregroundStyle(Color.continuumError)
+        .font(.siloCaption)
+        .foregroundStyle(Color.siloError)
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
     }
@@ -338,7 +338,7 @@ struct AuroraTextField<F: Hashable>: View {
             )
             .shadow(color: isFocused ? Color.auroraAccent.opacity(0.35) : .clear,
                     radius: isFocused ? 16 : 0)
-            .animation(ContinuumTheme.springAnimation, value: isFocused)
+            .animation(SiloTheme.springAnimation, value: isFocused)
         }
     }
 
@@ -471,7 +471,7 @@ struct ServerSetupView: View {
             VStack(spacing: 12) {
                 AuroraEyebrow(text: "Step 01 — Connect", centered: true)
                 Text("Add your server")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
             }
             .frame(maxWidth: .infinity)
@@ -519,7 +519,7 @@ struct ServerSetupView: View {
     @ViewBuilder
     private var advancedDisclosure: some View {
         Button {
-            withAnimation(ContinuumTheme.springAnimation) {
+            withAnimation(SiloTheme.springAnimation) {
                 viewModel.showsAdvancedOptions.toggle()
             }
         } label: {
@@ -636,7 +636,7 @@ with:
 
 ```swift
             Button {
-                withAnimation(ContinuumTheme.springAnimation) {
+                withAnimation(SiloTheme.springAnimation) {
                     viewModel.showsAdvancedOptions.toggle()
                 }
             } label: {
@@ -681,7 +681,7 @@ On `manualCard`, add an animation for the toggle next to the existing error anim
 to:
 ```swift
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
-        .animation(ContinuumTheme.springAnimation, value: viewModel.showsAdvancedOptions)
+        .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
 ```
 
 - [ ] **Step 4: Build tvOS**
@@ -731,7 +731,7 @@ struct LoginView: View {
             VStack(spacing: 12) {
                 AuroraEyebrow(text: "Step 02 — Sign in", centered: true)
                 Text("Welcome back")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                 if let host = hostLabel {
                     Text(host)
@@ -865,7 +865,7 @@ struct SignupView: View {
             VStack(spacing: 12) {
                 AuroraEyebrow(text: "Create account", centered: true)
                 Text("Create your account")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
             }
@@ -965,7 +965,7 @@ In `background`, replace the `#else` branch:
 ```swift
         #else
         ZStack {
-            Color.continuumBackground.ignoresSafeArea()
+            Color.siloBackground.ignoresSafeArea()
             RadialGradient(
                 colors: [Color.white.opacity(0.07), Color.black.opacity(0)],
                 center: .center,
@@ -1086,11 +1086,11 @@ struct ServerNeedsSetupView: View {
 
             VStack(spacing: 12) {
                 Text("Finish setup in your browser")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
                 Text("This server doesn't have an account yet. Open it in a browser to create the first one, then come back here to sign in.")
-                    .font(.continuumBody)
+                    .font(.siloBody)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1233,7 +1233,7 @@ In `iosApp/iosApp/ContentView.swift`, replace the whole `destinationView(for:)` 
                 title: "Finish setup in your browser",
                 subtitle: nil
             )
-            .continuumBackground()
+            .siloBackground()
             #else
             ServerNeedsSetupView(router: router)
             #endif
@@ -1244,7 +1244,7 @@ In `iosApp/iosApp/ContentView.swift`, replace the whole `destinationView(for:)` 
                 title: "Sign up from a phone or the web",
                 subtitle: nil
             )
-            .continuumBackground()
+            .siloBackground()
             #else
             SignupView(router: router)
             #endif
@@ -1262,7 +1262,7 @@ In `iosApp/iosApp/ContentView.swift`, replace the whole `destinationView(for:)` 
                 title: "Coming Soon",
                 subtitle: "This screen is under construction."
             )
-            .continuumBackground()
+            .siloBackground()
         }
     }
 ```
@@ -1278,7 +1278,7 @@ with:
         case .serverNeedsSetup:
             #if os(tvOS)
             EmptyStateView(icon: "gearshape.2", title: "Finish setup in your browser", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
             #else
             ServerNeedsSetupView(router: router)
             #endif
@@ -1289,7 +1289,7 @@ And gate the `.signup` arm in `profileFlowDestination` the same way (it currentl
         case .signup:
             #if os(tvOS)
             EmptyStateView(icon: "person.badge.plus", title: "Sign up from a phone or the web", subtitle: nil)
-                .continuumBackground()
+                .siloBackground()
             #else
             SignupView(router: router)
             #endif

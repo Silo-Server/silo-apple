@@ -3,15 +3,19 @@ import XCTest
 @testable import Silo
 
 final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
-    func testServerErrorEnvelopeDecodes() throws {
-        let fixture = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3ErrorFixture.self,
+    func testHTTPErrorDecodesServerErrorEnvelope() throws {
+        let url = try PlaybackV3FixtureTestSupport.fixtureURL(
             named: "error_response",
             bundleClass: Self.self
         )
+        let body = try String(contentsOf: url, encoding: .utf8)
+        let error = HTTPError.http(statusCode: 426, body: body)
 
-        XCTAssertEqual(fixture.error, "client_upgrade_required")
-        XCTAssertFalse(fixture.message.isEmpty)
+        XCTAssertEqual(error.serverErrorCode, "client_upgrade_required")
+        XCTAssertEqual(
+            error.errorDescription,
+            "This server requires playback protocol v3. Update the app to continue."
+        )
     }
 
     func testMatrixCoversEveryNeutralContractCategory() throws {
@@ -62,6 +66,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(Set(names).count, names.count, "conformance scenario names must be unique")
     }
 
+    // These checks cover fixture integrity and production model decoding, not server planning.
     func testMatrixDecodesHDRDVAudioAndSubtitleExpectations() throws {
         let matrix = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3ConformanceMatrix.self,
@@ -153,7 +158,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(dvd.expected.delivery, "server_transcode_hls")
     }
 
-    func testMatrixPreservesOpaqueAttemptIdentityAndClientIntent() throws {
+    func testMatrixDecodesClientIntentAndMapsOutputChangeOperation() throws {
         let matrix = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3ConformanceMatrix.self,
             named: "conformance_matrix",
@@ -174,7 +179,6 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
             PlaybackProtocolV3.ReplanOperation.outputChange
         )
         XCTAssertNil(outputChange.request.failure)
-        XCTAssertEqual(outputChange.expected.preserveUnmodifiedTracks, true)
         XCTAssertEqual(
             PlaybackSessionBridge.replanOperation(
                 forClassification: "output_route_changed",
@@ -192,36 +196,9 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         XCTAssertEqual(recoveryRequest.failure?.classification, "network_degraded")
         XCTAssertEqual(recoveryRequest.attemptedPlanKeys, [recoveryRequest.planAttemptKey])
         XCTAssertEqual(recoveryRequest.selectedTracks.subtitle?.index, 2)
-        XCTAssertEqual(recovery.expected.selectionPreserved, true)
-        XCTAssertEqual(recovery.expected.positionPreserved, true)
 
         let restart = try protocolScenario(named: "restart_replays_terminal_attempt", in: matrix)
-        XCTAssertEqual(restart.input.restarted, true)
         XCTAssertEqual(restart.input.persistedDecision?.terminal?.reason, "transcode_start_failed")
-        XCTAssertEqual(restart.expected.responseReplayedVerbatim, true)
-        XCTAssertEqual(restart.expected.capacityDelta, 0)
-
-        let capacity = try protocolScenario(named: "capacity_unavailable_cleans_up", in: matrix)
-        XCTAssertEqual(capacity.input.capacityAvailable, false)
-        XCTAssertEqual(capacity.expected.terminalReason, "capacity_unavailable")
-        XCTAssertEqual(capacity.expected.cleanupComplete, true)
-
-        let routeLimit = try protocolScenario(named: "route_event_diagnostic_limit", in: matrix)
-        XCTAssertEqual(routeLimit.input.routeEvent?.diagnostics.count, 33)
-        XCTAssertEqual(routeLimit.expected.httpStatus, 400)
-        XCTAssertEqual(routeLimit.expected.action, "reject_without_persisting")
-
-        let opaque = try protocolScenario(named: "opaque_attempt_key_loop", in: matrix)
-        let serverKey = try XCTUnwrap(opaque.input.serverPlanAttemptKey)
-        XCTAssertEqual(opaque.input.replanEcho, serverKey)
-        XCTAssertEqual(opaque.input.attemptedPlanKeys, [serverKey])
-        XCTAssertEqual(opaque.expected.action, "reject_already_attempted_plan")
-
-        let draft = try protocolScenario(named: "draft_v3_start_requires_upgrade", in: matrix)
-        XCTAssertEqual(draft.input.body?.protocolVersion, 3)
-        XCTAssertEqual(draft.input.body?.fileId, 42)
-        XCTAssertEqual(draft.expected.httpStatus, 426)
-        XCTAssertEqual(draft.expected.error, "client_upgrade_required")
 
         let restartRequest = try XCTUnwrap(restart.input.startRequest)
         XCTAssertEqual(restartRequest.progressPersistence, "client")
@@ -253,11 +230,6 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
     ) throws -> PlaybackV3ConformanceProtocolScenario {
         try XCTUnwrap(matrix.protocolScenarios.first { $0.name == name })
     }
-}
-
-private struct PlaybackV3ErrorFixture: Decodable {
-    let error: String
-    let message: String
 }
 
 private struct PlaybackV3ConformanceMatrix: Decodable {
@@ -334,7 +306,6 @@ private struct PlaybackV3ConformanceReplanScenario: Decodable {
     let name: String
     let category: String
     let request: PlaybackV3ConformanceReplanRequest
-    let expected: PlaybackV3ConformanceReplanExpectation
 }
 
 private struct PlaybackV3ConformanceReplanRequest: Decodable {
@@ -349,26 +320,10 @@ private struct PlaybackV3ConformanceReplanRequest: Decodable {
     let failure: PlaybackV3Failure?
 }
 
-private struct PlaybackV3ConformanceReplanExpectation: Decodable {
-    let httpStatus: Int?
-    let preserveUnmodifiedTracks: Bool?
-    let selectedQuality: String?
-    let positionPreserved: Bool?
-    let positionSeconds: Double?
-    let responseReplayedVerbatim: Bool?
-    let sameRequestAndBodyStatus: Int?
-    let changedBodyStatus: Int?
-    let changedBodyError: String?
-    let whileFirstLeaseActiveStatus: Int?
-    let concurrentError: String?
-    let afterCompletionStatus: Int?
-}
-
 private struct PlaybackV3ConformanceProtocolScenario: Decodable {
     let name: String
     let category: String
     let input: PlaybackV3ConformanceProtocolInput
-    let expected: PlaybackV3ConformanceProtocolExpectation
 }
 
 private struct PlaybackV3ConformanceProtocolInput: Decodable {
@@ -404,19 +359,4 @@ private struct PlaybackV3ConformanceRouteEvent: Decodable {
     let event: String
     let outputContextId: String?
     let diagnostics: [String: String]
-}
-
-private struct PlaybackV3ConformanceProtocolExpectation: Decodable {
-    let httpStatus: Int?
-    let error: String?
-    let outcome: String?
-    let terminalReason: String?
-    let planIdUnchanged: Bool?
-    let planAttemptKeyChanged: Bool?
-    let selectionPreserved: Bool?
-    let positionPreserved: Bool?
-    let responseReplayedVerbatim: Bool?
-    let capacityDelta: Int?
-    let cleanupComplete: Bool?
-    let action: String?
 }

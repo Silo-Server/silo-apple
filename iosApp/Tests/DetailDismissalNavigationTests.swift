@@ -320,41 +320,6 @@ final class DetailDismissalNavigationTests: XCTestCase {
                        "Cancellation must not consume the pending resume entry")
     }
 
-    func testContinueWatchingHierarchyRequestBenchmark() async throws {
-        let (detail, seasons, episodes) = try resumeLoadFixture()
-        defer { clearResumeLoadFixture() }
-        let clock = ContinuousClock()
-        var serialMilliseconds: [Double] = []
-        var resumeMilliseconds: [Double] = []
-        let fetchSeasons: @Sendable (String) async throws -> SeasonsResponse = { _ in
-            try await Task.sleep(for: .milliseconds(150))
-            return seasons
-        }
-        let fetchEpisodes: @Sendable (String, Int) async throws -> EpisodesResponse = { _, _ in
-            try await Task.sleep(for: .milliseconds(150))
-            return episodes
-        }
-        func milliseconds(_ duration: Duration) -> Double {
-            Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
-        }
-        for _ in 0..<5 {
-            let serialStart = clock.now
-            _ = try await fetchSeasons(detail.contentId)
-            _ = try await fetchEpisodes(detail.contentId, 3)
-            serialMilliseconds.append(milliseconds(serialStart.duration(to: clock.now)))
-            let model = ItemDetailViewModel()
-            let resumeStart = clock.now
-            await model.loadContinueWatchingStructure(
-                contentId: detail.contentId, seasonNumber: 3,
-                fetchSeasons: fetchSeasons, fetchEpisodes: fetchEpisodes
-            )
-            resumeMilliseconds.append(milliseconds(resumeStart.duration(to: clock.now)))
-            XCTAssertEqual(model.episodes.count, 2)
-        }
-        // Synthetic hierarchy latency only, not server timing or a scroll-FPS claim.
-        print("CW hierarchy benchmark; 5 repetitions; 150ms per resource; serial-ms=\(serialMilliseconds); resume-ms=\(resumeMilliseconds)")
-    }
-
     func testRotationLockCapturesTheExactScreenOrientation() {
         for orientation: UIInterfaceOrientationMask in [.portrait, .landscapeLeft, .landscapeRight] {
             var state = PlayerRotationState()

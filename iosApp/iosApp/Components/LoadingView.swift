@@ -8,22 +8,22 @@ struct LoadingView: View {
     var body: some View {
         ZStack {
             if usesPageBackground {
-                ContinuumPageBackdrop()
+                SiloPageBackdrop()
             } else {
-                Color.continuumBackground.ignoresSafeArea()
+                Color.siloBackground.ignoresSafeArea()
             }
 
             VStack(spacing: 20) {
                 SiloWordmarkView(width: 132)
 
                 ProgressView()
-                    .tint(.continuumOnSurface)
+                    .tint(.siloOnSurface)
                     .scaleEffect(1.2)
 
                 if let message {
                     Text(message)
-                        .font(.continuumCaption)
-                        .foregroundColor(.continuumSecondaryText)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
             }
         }

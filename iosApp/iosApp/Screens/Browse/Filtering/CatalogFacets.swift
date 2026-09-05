@@ -113,7 +113,7 @@ final class FacetLoader {
     private func fetch(libraryId: Int?, includeTechnical: Bool, key: String) async throws -> CatalogFilters {
         if let existing = inFlight[key] { return try await existing.value }
         let task = Task {
-            try await ContinuumAPI.shared.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
+            try await SiloAPI.shared.catalogFilters(libraryId: libraryId, includeTechnical: includeTechnical)
         }
         inFlight[key] = task
         do {

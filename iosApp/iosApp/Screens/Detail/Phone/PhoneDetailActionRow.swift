@@ -1,39 +1,6 @@
 #if !os(tvOS)
 import SwiftUI
 
-// MARK: - Primary play
-
-/// Primary play control for the refined detail page.
-///
-/// Still full-width — on a phone detail page Play *is* the page's job, and
-/// both Apple TV and Netflix commit to a wide primary. What made the shipping
-/// version read as a web CTA was everything around it: 52pt of pure white with
-/// a row of naked, unlabelled circles floating underneath and a ragged grid of
-/// form fields below that. Trimmed to 50pt with a slightly quieter label, it
-/// anchors the stack instead of shouting over it.
-struct PhoneRefinedPlayButton: View {
-    let icon: String
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .bold))
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.black)
-            .frame(maxWidth: .infinity)
-            .frame(height: 50)
-            .background(Capsule().fill(.white))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: - Labelled secondary action
 
 /// One named secondary action — a filled circle with no outline, over a
@@ -67,7 +34,7 @@ struct PhoneLabeledAction: View {
             VStack(spacing: 6) {
                 Image(systemName: resolvedIcon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(width: 42, height: 42)
                     .background(
                         Circle().fill(Color.white.opacity(isActive ? 0.18 : 0.10))
@@ -76,7 +43,7 @@ struct PhoneLabeledAction: View {
 
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(isActive ? 0.92 : 0.6))
+                    .foregroundStyle(Color.siloOnSurface.opacity(isActive ? 0.92 : 0.6))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
@@ -103,12 +70,12 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
             VStack(spacing: 6) {
                 Image(systemName: icon)
                     .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(Color.continuumOnSurface)
+                    .foregroundStyle(Color.siloOnSurface)
                     .frame(width: 42, height: 42)
                     .background(Circle().fill(Color.white.opacity(0.10)))
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.continuumOnSurface.opacity(0.6))
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 58)

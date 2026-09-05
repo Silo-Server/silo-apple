@@ -38,11 +38,11 @@ struct ServerNeedsSetupView: View {
 
             VStack(spacing: 12) {
                 Text("This server isn't ready")
-                    .font(.continuumTitle)
+                    .font(.siloTitle)
                     .foregroundStyle(Color.auroraInk)
                     .multilineTextAlignment(.center)
                 Text("Ask the server administrator to finish setup. When it's ready, return here and check again.")
-                    .font(.continuumBody)
+                    .font(.siloBody)
                     .foregroundStyle(Color.auroraInkSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

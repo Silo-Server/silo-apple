@@ -25,7 +25,7 @@ import OSLog
 
 /// The slice of the canonical settings API the profile preferences need.
 ///
-/// A protocol rather than a direct ``ContinuumAPI`` reference so the mapping
+/// A protocol rather than a direct ``SiloAPI`` reference so the mapping
 /// between editor state and wire values can be exercised without a network.
 /// The scope is baked in at `profile`: these are the household member's own
 /// choices, and the contract resolves device, library and series overrides
@@ -40,11 +40,11 @@ protocol ProfileSettingsTransport: AnyObject, Sendable {
     ) async throws
 }
 
-/// The production transport: the canonical endpoints on ``ContinuumAPI``.
-final class ContinuumProfileSettingsTransport: ProfileSettingsTransport {
-    private let api: ContinuumAPI
+/// The production transport: the canonical endpoints on ``SiloAPI``.
+final class SiloProfileSettingsTransport: ProfileSettingsTransport {
+    private let api: SiloAPI
 
-    init(api: ContinuumAPI = .shared) {
+    init(api: SiloAPI = .shared) {
         self.api = api
     }
 
@@ -123,7 +123,7 @@ struct ProfilePreferences: Equatable, Sendable {
 final class ProfileSettingsWriter: @unchecked Sendable {
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.continuum.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ProfileSettingsWriter"
     )
 
@@ -147,7 +147,7 @@ final class ProfileSettingsWriter: @unchecked Sendable {
     }
 
     convenience init() {
-        self.init(transport: ContinuumProfileSettingsTransport())
+        self.init(transport: SiloProfileSettingsTransport())
     }
 
     // MARK: - Read

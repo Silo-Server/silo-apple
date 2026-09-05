@@ -361,7 +361,7 @@ private struct PhonePlaybackSelectorSheet: View {
             .listStyle(.insetGrouped)
             #endif
             .scrollContentBackground(.hidden)
-            .background(Color.continuumBackground.ignoresSafeArea())
+            .background(Color.siloBackground.ignoresSafeArea())
             .task {
                 await ProfilePrefsStore.shared.hydrateIfNeeded()
                 preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
@@ -374,12 +374,12 @@ private struct PhonePlaybackSelectorSheet: View {
                 #if os(macOS)
                 ToolbarItem {
                     Button("Done") { dismiss() }
-                        .tint(.continuumOnSurface)
+                        .tint(.siloOnSurface)
                 }
                 #else
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
-                        .tint(.continuumOnSurface)
+                        .tint(.siloOnSurface)
                 }
                 #endif
             }
@@ -576,12 +576,12 @@ private struct PhonePlaybackSelectorSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                         .lineLimit(2)
                     if let detail, !detail.isEmpty {
                         Text(detail)
-                            .font(.continuumCaption)
-                            .foregroundColor(.continuumSecondaryText)
+                            .font(.siloCaption)
+                            .foregroundColor(.siloSecondaryText)
                             .lineLimit(2)
                     }
                 }
@@ -589,7 +589,7 @@ private struct PhonePlaybackSelectorSheet: View {
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.continuumOnSurface)
+                        .foregroundColor(.siloOnSurface)
                 }
             }
             .padding(.vertical, 4)
@@ -598,7 +598,7 @@ private struct PhonePlaybackSelectorSheet: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.56)
-        .listRowBackground(Color.continuumSurfaceVariant)
+        .listRowBackground(Color.siloSurfaceVariant)
     }
 }
 #endif

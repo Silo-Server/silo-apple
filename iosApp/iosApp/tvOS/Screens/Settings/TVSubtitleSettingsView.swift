@@ -6,7 +6,7 @@ import SwiftUI
 /// / forced) save through the root view's `onChange` handlers; the
 /// appearance block writes a per-device override directly.
 struct TVSubtitleSettingsPane: View {
-    @Bindable var viewModel: TVSettingsViewModel
+    @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
     @State private var showResetConfirmation = false
@@ -21,7 +21,7 @@ struct TVSubtitleSettingsPane: View {
         }
         .alert("Reset Custom Appearance?", isPresented: $showResetConfirmation) {
             Button("Reset", role: .destructive) {
-                Task { await viewModel.resetSubtitleAppearance() }
+                Task { await viewModel.setSubtitleAppearance(.default) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -38,32 +38,32 @@ struct TVSubtitleSettingsPane: View {
         TVSettingsPickerRow(
             title: "Language",
             value: TVSettingsOptions.label(
-                for: viewModel.editorSubtitleLanguage,
+                for: viewModel.prefs.subtitleLanguage,
                 in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
             )
         ) { showPicker(.language) }
         .focused(detailFocus, equals: .top)
-        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
+        .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
 
         TVSettingsPickerRow(
             title: "Behavior",
-            value: TVSettingsOptions.label(for: viewModel.editorSubtitleMode, in: TVSettingsOptions.subtitleMode)
+            value: TVSettingsOptions.label(for: viewModel.prefs.subtitleMode, in: TVSettingsOptions.subtitleMode)
         ) { showPicker(.mode) }
         .focused(detailFocus, equals: .subtitleBehavior)
-        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
+        .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
 
         TVSettingsToggleRow(
             title: "Show Forced Subtitles",
-            isOn: viewModel.editorShowForcedSubtitles == "on"
+            isOn: viewModel.prefs.showForcedSubtitles == "on"
         ) {
-            viewModel.editorShowForcedSubtitles =
-                viewModel.editorShowForcedSubtitles == "on" ? "off" : "on"
+            viewModel.prefs.showForcedSubtitles =
+                viewModel.prefs.showForcedSubtitles == "on" ? "off" : "on"
         }
-        .disabled(viewModel.settingsServerUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
+        .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
 
         if viewModel.subtitleMatchesSystemAppearance {
             TVSettingsFooter("Language, display behavior, forced captions, and CC/SDH preference follow this Apple TV's Accessibility settings.")
-        } else if viewModel.settingsServerUpgradeRequired {
+        } else if viewModel.prefs.serverUpgradeRequired {
             TVSettingsWarningFooter(ProfilePrefsEditor.serverUpgradeMessage)
         } else {
             TVSettingsFooter("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
@@ -81,12 +81,12 @@ struct TVSubtitleSettingsPane: View {
         TVSettingsPickerRow(
             title: "Metadata Language",
             value: TVSettingsOptions.label(
-                for: viewModel.editorPreferredMetadataLanguage,
+                for: viewModel.prefs.preferredMetadataLanguage,
                 in: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions)
             )
         ) { showPicker(.metadataLanguage) }
         .focused(detailFocus, equals: .subtitleMetadataLanguage)
-        .disabled(viewModel.settingsServerUpgradeRequired)
+        .disabled(viewModel.prefs.serverUpgradeRequired)
 
         TVSettingsFooter("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
     }
@@ -212,8 +212,8 @@ struct TVSubtitleSettingsPane: View {
 
     @ViewBuilder
     private var prefSaveFooter: some View {
-        if let state = viewModel.prefSaveState,
-           !(viewModel.settingsServerUpgradeRequired && state == .serverUpgradeRequired) {
+        if let state = viewModel.prefs.saveState,
+           !(viewModel.prefs.serverUpgradeRequired && state == .serverUpgradeRequired) {
             switch state {
             case .saving:
                 TVSettingsFooter("Saving…")
@@ -252,13 +252,14 @@ struct TVSubtitleSettingsPane: View {
     }
 
     private func pickerRequest(for kind: PickerKind) -> TVSettingsPickerRequest {
-        switch kind {
+        @Bindable var prefs = viewModel.prefs
+        return switch kind {
         case .language:
             TVSettingsPickerRequest(
                 id: kind.id,
                 title: "Language",
                 options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions),
-                selection: $viewModel.editorSubtitleLanguage,
+                selection: $prefs.subtitleLanguage,
                 returnFocus: kind.returnFocus
             )
         case .mode:
@@ -266,7 +267,7 @@ struct TVSubtitleSettingsPane: View {
                 id: kind.id,
                 title: "Behavior",
                 options: TVSettingsOptions.subtitleMode,
-                selection: $viewModel.editorSubtitleMode,
+                selection: $prefs.subtitleMode,
                 returnFocus: kind.returnFocus
             )
         case .metadataLanguage:
@@ -274,7 +275,7 @@ struct TVSubtitleSettingsPane: View {
                 id: kind.id,
                 title: "Metadata Language",
                 options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions),
-                selection: $viewModel.editorPreferredMetadataLanguage,
+                selection: $prefs.preferredMetadataLanguage,
                 returnFocus: kind.returnFocus
             )
         case .fontSize:

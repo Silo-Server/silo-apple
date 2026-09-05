@@ -440,7 +440,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(Color.continuumSuccess.opacity(0.9))
+                    .foregroundColor(Color.siloSuccess.opacity(0.9))
                 Text(value)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundColor(Color.white.opacity(0.88))
@@ -735,7 +735,7 @@ enum TVHeroMetadata {
         return rating
     }
 
-    // Facts line (year · runtime · maturity · quality chips)
+    // Movie/episode year or air date and runtime; series year and season count.
 
     static func movieFactsLine(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [TVHeroFactToken] {
         var tokens: [TVHeroFactToken] = []
@@ -804,84 +804,6 @@ enum TVHeroMetadata {
     }
 
     // MARK: - Helpers
-
-    private static func typeLabel(detail: ItemDetail) -> String {
-        switch detail.type.lowercased() {
-        case "movie": return "Movie"
-        case "series": return "TV Show"
-        case "episode": return "Episode"
-        default: return detail.type.capitalized
-        }
-    }
-
-    private static func qualityTokens(from detail: ItemDetail, version selectedVersion: FileVersion? = nil) -> [TVHeroFactToken] {
-        guard let version = selectedVersion ?? preferredVersion(from: detail) else { return [] }
-        var tokens: [TVHeroFactToken] = []
-        if let res = resolutionLabel(version.resolution) {
-            tokens.append(.chip(res))
-        }
-        if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
-        }
-        if let audio = primaryAudioLabel(version: version) {
-            tokens.append(.chip(audio))
-        }
-        if hasSubtitles(version: version) {
-            tokens.append(.chip("CC"))
-        }
-        return tokens
-    }
-
-    private static func preferredVersion(from detail: ItemDetail) -> FileVersion? {
-        guard let versions = detail.versions, !versions.isEmpty else { return nil }
-        if let lastId = detail.userData?.lastFileId,
-           let lastVersion = versions.first(where: { $0.fileId == lastId }) {
-            return lastVersion
-        }
-        return versions.first
-    }
-
-    private static func resolutionLabel(_ raw: String?) -> String? {
-        guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
-        return nil
-    }
-
-    private static func dolbyVisionLabel(version: FileVersion) -> String? {
-        let videoTracks = version.videoTracks ?? []
-        if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
-        }
-        return nil
-    }
-
-    private static func primaryAudioLabel(version: FileVersion) -> String? {
-        let tracks = version.audioTracks ?? []
-        let defaultTrack = tracks.first(where: { $0.isDefault == true }) ?? tracks.first
-        guard let track = defaultTrack else { return nil }
-
-        if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
-            if layout.contains("7.1") { return "7.1" }
-            if layout.contains("5.1") { return "5.1" }
-            if layout.contains("stereo") || layout == "2.0" { return nil }
-        }
-        if let channels = track.channels {
-            switch channels {
-            case 8: return "7.1"
-            case 6: return "5.1"
-            default: return nil
-            }
-        }
-        return nil
-    }
-
-    private static func hasSubtitles(version: FileVersion) -> Bool {
-        !(version.subtitleTracks ?? []).isEmpty
-    }
 
     private static func formatRuntime(_ minutes: Int) -> String {
         if minutes >= 60 {

@@ -15,9 +15,9 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 6.34.0 | `0ae80496ab6f3fda135f43ef195ff10961c0e625` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
-| FFmpegBuild 2.4.3 | `b2185fa842b829cd53d182a5e9a53182c1d9c84c` | Nine separately embedded dynamic frameworks | See the component table below |
-| LibDovi 2.0.0 | `89be93431c2a5f2e54fb77e93059071b8d2ddb3a` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
+| AetherEngine 6.67.2 + Silo handover patches | `745de1ccdc4b226adccdf18f03a28071f0e972d5` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| FFmpegBuild 3.0.0 | `421e13be7061de67d91b85ac34a6b22a002b164f` | Nine separately embedded dynamic frameworks | See the component table below |
+| LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
 SwiftPM also resolves SMBClient 0.3.1 because AetherEngine publishes an
@@ -31,11 +31,19 @@ included here.
 Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
-Store / DRM exception. Silo uses the source unmodified at the exact revision
-above. The bundled acknowledgements include AetherEngine's complete license
-and exception plus the GNU GPL version 3 text incorporated by LGPLv3.
+Store / DRM exception. Silo builds a published fork revision: upstream release
+`6.67.2` plus two commits: one lets a host request the in-place native item
+handover on a foreground episode change through `prepareForItemReplacement()`,
+and one makes the remote-HLS bypass honour that handover instead of dropping
+the item across the swap. Both modifications are published under the LGPL on
+the fork branch below, which satisfies the license's source obligation for
+modified code. The bundled
+acknowledgements include AetherEngine's complete license and exception plus
+the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/superuser404notfound/AetherEngine/tree/0ae80496ab6f3fda135f43ef195ff10961c0e625>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/745de1ccdc4b226adccdf18f03a28071f0e972d5>
+  (fork branch `silo/host-requested-item-handover`)
+- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/6.67.2>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
   `GPL-3.0.txt`
@@ -43,8 +51,9 @@ and exception plus the GNU GPL version 3 text incorporated by LGPLv3.
 The exception permits Apple App Store and TestFlight distribution despite
 store signing, DRM, and relinking restrictions. It does not waive source-code
 obligations: the exact-revision link above must stay current for each release,
-and any downstream modifications must be published under the LGPL. Silo ships
-the source unmodified, so the pointer is the whole obligation.
+and any downstream modifications must be published under the LGPL. The fork
+branch above is that publication; keep it public for as long as builds that
+link this revision are distributed.
 
 ## FFmpegBuild and its component libraries
 
@@ -54,40 +63,48 @@ dynamic frameworks:
 
 | Frameworks | Upstream input | License |
 | --- | --- | --- |
-| Libavcodec, Libavformat, Libavutil, Libswresample, Libswscale, Libavfilter | FFmpeg `n8.1.2` (currently `38b88335f99e76ed89ff3c93f877fdefce736c13`) | LGPL-2.1-or-later |
-| Libdav1d | dav1d `1.5.1` (currently `42b2b24fb8819f1ed3643aa9cf2a62f03868e3aa`) | BSD-2-Clause |
-| Libzimg | zimg `release-3.0.5` (currently `e5b0de6bebbcbc66732ed5afaafef6b2c7dfef87`) | WTFPL-2.0 |
-| Libzvbi | libzvbi `v0.2.44` (currently `5169a428d51c3ae8ff7b0897e8a687d8e05e37b5`) | LGPL-2.0-or-later, conveyed under LGPL-2.1; `src/ure.c` is MIT |
+| AetherLibavcodec, AetherLibavformat, AetherLibavutil, AetherLibswresample, AetherLibswscale, AetherLibavfilter | FFmpeg `n8.1.2` (currently `38b88335f99e76ed89ff3c93f877fdefce736c13`) | LGPL-2.1-or-later |
+| AetherLibdav1d | dav1d `1.5.4` (currently `54706fc6bc0cdecab7e9593974a4039cc038fca7`) | BSD-2-Clause |
+| AetherLibzimg | zimg `release-3.0.6` (currently `f819b14e8f39d1282400b0d9543e8ef73c1b2bbd`) | WTFPL-2.0 |
+| AetherLibzvbi | libzvbi `v0.2.45` (currently `d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0`) | LGPL-2.0-or-later, conveyed under LGPL-2.1; `src/ure.c` is MIT |
 
-The exact FFmpegBuild 2.4.3 `build.sh` is the rebuild recipe and patch record:
+FFmpegBuild 3.0.0 renamed every target, framework bundle, and install name
+with an `Aether` prefix so the build can coexist with another FFmpeg in the
+same app; the binaries are the same as 2.5.0. The exact FFmpegBuild 3.0.0
+`build.sh` is the rebuild recipe and patch record:
 
 - it builds FFmpeg with dynamic linkage and does not enable GPL, version-3,
   or nonfree FFmpeg components;
 - it removes libzvbi's three GPL-family source files (`packet-830.c`, `pdc.c`,
   and `exp-vtx.c`) before compilation and publishes the LGPL replacement stubs;
 - it records its FFmpeg, dav1d, zimg, and libzvbi tags and every downstream
-  patch applied to those sources.
+  patch applied to those sources;
+- it does not build the FFmpeg `concat` demuxer, which 2.5.0 removed.
 
-The commit IDs in the table are the tags' dereferenced values observed on
-2026-08-22. FFmpegBuild's script records tag names rather than immutable
+libzvbi 0.2.45 is the GHSA-86rm-g7qf-j2fh security update (out-of-bounds
+read, out-of-bounds write, integer underflow reachable through the teletext
+decoder). The commit IDs in the table are the tags' dereferenced values
+observed on 2026-09-04. FFmpegBuild's script records tag names rather than immutable
 upstream commit IDs; recording the dereferenced commits here pins them if the
 tags ever move. Forking the pinned FFmpegBuild revision is cheap,
 commit-immutable insurance if stronger provenance is ever wanted, but the
 exact-revision links satisfy the source pointer as they stand.
 
-The checked iOS debug app embeds exactly the nine frameworks in the table,
-and its FFmpeg configure strings contain `--enable-shared` without
-`--enable-gpl`, `--enable-version3`, or nonfree enablement. Repeat this
-inventory against each release archive; debug evidence is not a release
-substitute.
+A tvOS Simulator debug build against FFmpegBuild 3.0.0, inspected on
+2026-09-04, embeds exactly the nine `Aether`-prefixed frameworks in the table
+under `SiloTV.app/Frameworks/`, its `AetherLibavcodec` configure string
+contains `--enable-shared` without `--enable-gpl`, `--enable-version3`, or
+nonfree enablement, and the app binary exports no `avcodec_`/`avformat_`
+symbols of its own. Repeat this inventory against each release archive;
+debug evidence is not a release substitute.
 
 - Exact packaging source and rebuild script:
-  <https://github.com/superuser404notfound/FFmpegBuild/tree/b2185fa842b829cd53d182a5e9a53182c1d9c84c>
+  <https://github.com/superuser404notfound/FFmpegBuild/tree/421e13be7061de67d91b85ac34a6b22a002b164f>
 - Current upstream tag resolutions:
   [FFmpeg](https://github.com/FFmpeg/FFmpeg/tree/38b88335f99e76ed89ff3c93f877fdefce736c13),
-  [dav1d](https://code.videolan.org/videolan/dav1d/-/tree/42b2b24fb8819f1ed3643aa9cf2a62f03868e3aa),
-  [zimg](https://github.com/sekrit-twc/zimg/tree/e5b0de6bebbcbc66732ed5afaafef6b2c7dfef87),
-  and [libzvbi](https://github.com/zapping-vbi/zvbi/tree/5169a428d51c3ae8ff7b0897e8a687d8e05e37b5)
+  [dav1d](https://code.videolan.org/videolan/dav1d/-/tree/54706fc6bc0cdecab7e9593974a4039cc038fca7),
+  [zimg](https://github.com/sekrit-twc/zimg/tree/f819b14e8f39d1282400b0d9543e8ef73c1b2bbd),
+  and [libzvbi](https://github.com/zapping-vbi/zvbi/tree/d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0)
 - Bundled texts: `FFmpegBuild-LGPL-2.1.txt`,
   `dav1d-BSD-2-Clause.txt`, `zimg-WTFPL.txt`, `libzvbi-ure-MIT.txt`
 
@@ -99,23 +116,23 @@ a substitute for a final release archive scan.
 
 LibDovi's packaging and rebuild script are MIT licensed, Copyright (c) 2026
 Vincent Herbst. Its `Dovi.xcframework` contains the static `dolby_vision`
-3.3.2 crate built from dovi_tool tag `libdovi-3.3.2`, exact upstream revision
-`4fd2b2235c9f93582dd4a00e65ee34a07800afd7`, under the MIT license,
-Copyright (c) 2025 quietvoid.
+3.4.0 crate built from dovi_tool tag `libdovi-3.4.0`, exact upstream revision
+`d1abe0e27ff2c7ab3339614d06db9f8a058af6b2`, under the MIT license,
+Copyright (c) 2026 quietvoid.
 
 As with FFmpegBuild, LibDovi's rebuild script clones the tag name rather than
 an immutable commit. The commit above is the tag's value observed on
-2026-08-22; preserve the actual release source alongside the static library.
+2026-09-04; preserve the actual release source alongside the static library.
 LibDovi's packaging `LICENSE` describes the embedded crate as dual MIT or
-Apache-2.0, but the exact `libdovi-3.3.2` source's `LICENSE` and Cargo manifest
+Apache-2.0, but the exact `libdovi-3.4.0` source's `LICENSE` and Cargo manifest
 declare MIT. The bundled files reproduce the packaging license unmodified and
 also include quietvoid's controlling MIT text; this notice uses MIT for the
 embedded crate.
 
 - Exact packaging source and rebuild script:
-  <https://github.com/superuser404notfound/LibDovi/tree/89be93431c2a5f2e54fb77e93059071b8d2ddb3a>
+  <https://github.com/superuser404notfound/LibDovi/tree/0d7cce1d6836a30d13a3a2326e50a153af53f014>
 - Exact embedded crate source:
-  <https://github.com/quietvoid/dovi_tool/tree/4fd2b2235c9f93582dd4a00e65ee34a07800afd7/dolby_vision>
+  <https://github.com/quietvoid/dovi_tool/tree/d1abe0e27ff2c7ab3339614d06db9f8a058af6b2/dolby_vision>
 - Bundled texts: `LibDovi-Packaging-MIT.txt`, `libdovi-MIT.txt`
 
 ## Nuke and NukeUI

@@ -180,29 +180,6 @@ enum DetailPlaybackFormatting {
         return summary
     }
 
-    /// Compact codec/layout disclosure for a passive UI readout. Unlike the
-    /// interactive selector value, this intentionally omits language and the
-    /// "Auto" prefix (for example, "EAC3 5.1").
-    static func audioTechnicalSummary(
-        version: FileVersion?,
-        selectedAudioTrackIndex: Int?
-    ) -> String? {
-        guard let version,
-              let ordinal = resolvedAudioOrdinal(
-                  version: version,
-                  selectedAudioTrackIndex: selectedAudioTrackIndex
-              ),
-              let track = version.audioTracks?[safe: ordinal] else {
-            return normalizedAudioCodec(version?.codecAudio)
-        }
-        return [
-            normalizedAudioCodec(track.codec) ?? normalizedAudioCodec(version.codecAudio),
-            compactAudioLayout(track),
-        ]
-        .compactMap { $0 }
-        .joined(separator: " ")
-    }
-
     /// Language of the track that `audioValueLabel` would display, used to
     /// feed the subtitle auto-resolver (Auto mode hides subs when the audio
     /// is already in the preferred subtitle language).
@@ -271,7 +248,7 @@ enum DetailPlaybackFormatting {
         if let signature,
            let tracks = version?.subtitleTracks,
            let match = bestSignatureMatch(signature, in: tracks) {
-            return match.index
+            return match.selectionIndex
         }
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return -1
@@ -305,7 +282,9 @@ enum DetailPlaybackFormatting {
         in tracks: [SubtitleTrack]
     ) -> SubtitleTrack? {
         var best: (SubtitleTrack, Int)?
-        for track in tracks where track.index != nil {
+        // Every row is a candidate, external ones included, exactly as the
+        // player's `SubtitleAutoResolver.bestSignatureMatch` scores them.
+        for track in tracks {
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
@@ -358,13 +337,11 @@ enum DetailPlaybackFormatting {
         // tie resolves to the same track playback will start. The returned
         // ordinal stays the catalog offset so "Track N" labels line up with
         // `subtitleOptions`.
-        // `SubtitleTrackCandidates` drops embedded tracks with no stream index
-        // because the plan cannot select them; the preview must not name one.
-        let ordered = (
-            catalog.filter { $0.element.external == true }
-                + catalog.filter { $0.element.external != true }
-        ).filter { $0.element.external == true || $0.element.index != nil }
-        guard !ordered.isEmpty else { return nil }
+        // Same candidate set and order as `SubtitleTrackCandidates`: externals
+        // first, then embedded. An embedded row with no index is FFmpeg stream
+        // 0 (the wire omits a zero index), so it stays selectable.
+        let ordered = catalog.filter { $0.element.external == true }
+            + catalog.filter { $0.element.external != true }
         guard let pick = autoResolvedSubtitle(in: ordered.map(\.element), context: context) else {
             return nil
         }
@@ -483,7 +460,9 @@ enum DetailPlaybackFormatting {
             )
         }
         return ordered.map { ordinal, track in
-            let index = track.index
+            // `selectionIndex` reads an embedded nil index as stream 0, so
+            // only external sidecars without a stream index are unselectable.
+            let index = track.selectionIndex
             let isSelectable = index != nil
             return SubtitleOption(
                 selectionIndex: index,
@@ -532,7 +511,7 @@ enum DetailPlaybackFormatting {
         if selectedSubtitleTrackIndex == -1 { return "Off" }
         guard let selectedSubtitleTrackIndex,
               let match = (version?.subtitleTracks ?? []).enumerated().first(where: { _, track in
-                  track.index == selectedSubtitleTrackIndex
+                  track.selectionIndex == selectedSubtitleTrackIndex
               }) else {
             // An explicit positive selection that doesn't resolve in this
             // version's track list (e.g. the displayed version was re-scoped):

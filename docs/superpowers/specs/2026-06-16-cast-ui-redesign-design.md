@@ -48,16 +48,16 @@ From `iosApp/iosApp/Cast/iOS/SiloCastViews.swift`:
 Reuse the existing iOS tokens — do not introduce new colors or a new type scale.
 From `iosApp/iosApp/Theme/Colors.swift`:
 
-- Background OLED black `continuumBackground` `#000000`; elevated surface
-  `continuumSurfaceElevated` `#15171C`; glass `continuumGlassStrong`
+- Background OLED black `siloBackground` `#000000`; elevated surface
+  `siloSurfaceElevated` `#15171C`; glass `siloGlassStrong`
   (`#16171B` @ 86%).
-- Monochrome chrome — primary `continuumOnSurface` `#EDEDED`, secondary
-  `continuumSecondaryText` (`#EDEDED` @ 60%), hairline `continuumOutline`
-  (white @ 12%). Active/selected chrome uses `continuumChromeSelectedFill`
-  (white @ 14%) / resting `continuumChromeRestingFill` (white @ 7%).
+- Monochrome chrome — primary `siloOnSurface` `#EDEDED`, secondary
+  `siloSecondaryText` (`#EDEDED` @ 60%), hairline `siloOutline`
+  (white @ 12%). Active/selected chrome uses `siloChromeSelectedFill`
+  (white @ 14%) / resting `siloChromeRestingFill` (white @ 7%).
 - **No chromatic accent.** The play button is a white (`#EDEDED`) filled circle
   with a black glyph; artwork is the only place full color lives. Errors use
-  `continuumError`.
+  `siloError`.
 
 Typography uses the system text styles already in the file (`.title2`,
 `.headline`, `.subheadline`, `.caption.monospacedDigit()`), not custom fonts.
@@ -85,13 +85,13 @@ background:
 1. **Top bar** — leading `chevron.down` (minimize: `hideRemoteControl()` +
    `dismiss()`, session stays alive); trailing `•••` overflow menu (see §8).
    The TV name moves out of the nav title into the now-playing block.
-2. **Artwork card** — rounded (`continuumSurfaceElevated` placeholder), poster
+2. **Artwork card** — rounded (`siloSurfaceElevated` placeholder), poster
    aspect, rendered with `AsyncImageView(url:thumbhash:contentMode:)`. Modest
    max height so the controls always fit without scrolling on small devices.
 3. **Title / subtitle** — `state.title` (`.title2`, semibold) and `state.subtitle`
    (`.subheadline`, secondary), centered, line-limited (2).
 4. **"Playing on {TV}" pill** — `airplayvideo`/`tv` glyph + `activeTarget.name`
-   in a subtle `continuumChromeRestingFill` capsule.
+   in a subtle `siloChromeRestingFill` capsule.
 5. **Scrubber** (§6).
 6. **Transport row** (§6).
 7. **Secondary control row** (§7).
@@ -99,7 +99,7 @@ background:
 
 ### Background
 A full-bleed `AsyncImageView` of the backdrop (poster fallback), `.blur(radius:)`
-+ a `continuumBackground` scrim at high opacity for legibility, behind the
++ a `siloBackground` scrim at high opacity for legibility, behind the
 foreground stack. This is the single biggest contributor to the native feel.
 
 ## 6. Artwork resolution, scrubber & transport
@@ -111,7 +111,7 @@ A small resolver keyed on `state.contentId`:
 - Resolves through the **same path the detail screen uses**: check
   `ResponseCache.shared` under `CacheKey.itemDetail(contentId)` first (warm and
   instant when the user cast from a detail page), otherwise
-  `ContinuumAPI.shared.itemDetail(contentId:)`, reading `posterUrl` /
+  `SiloAPI.shared.itemDetail(contentId:)`, reading `posterUrl` /
   `backdropUrl` off the returned `ItemDetail`.
 - Holds `posterURL` / `backdropURL` in `@State`; nil `contentId` (idle) → flat
   black, no artwork. Failures degrade silently to the flat background.
@@ -165,7 +165,7 @@ as the entry point from Home.
 - **Loading / buffering** (`isLoading` / `isBuffering`): spinner replaces the
   play/pause glyph; scrubber disabled if `duration <= 0`.
 - **Error** (`state.error ?? controller.errorMessage`): compact inline banner on
-  `continuumSurfaceElevated` with `continuumError` text, not raw red caption.
+  `siloSurfaceElevated` with `siloError` text, not raw red caption.
 
 ## 10. Target picker (`SiloCastTargetPickerView`)
 
@@ -181,8 +181,8 @@ as the entry point from Home.
 ## 11. Control-mode button (`SiloCastControlModeButton`, Home top bar)
 
 Keep the `airplayvideo`-in-a-circle. Replace the ad-hoc `Color.white`/`.clear`
-fills with the chrome tokens (`continuumChromeSelectedFill` /
-`continuumChromeRestingFill`, `continuumOutline` border). Active/connected state
+fills with the chrome tokens (`siloChromeSelectedFill` /
+`siloChromeRestingFill`, `siloOutline` border). Active/connected state
 reads clearly (filled + subtle connected indicator). Behavior (menu vs. picker)
 is unchanged.
 

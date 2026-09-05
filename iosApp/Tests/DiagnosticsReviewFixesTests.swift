@@ -117,29 +117,6 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertEqual(tracker.recentSessionIDs(for: binding), ["failed-run-session"])
     }
 
-    func testCMPLogCaptureRequiresDiagnosticsGateAndVerboseOptIn() {
-        XCTAssertFalse(shouldCaptureCMPLog(
-            verbose: false,
-            debugLoggingEnabled: true,
-            captureEnabled: false
-        ))
-        XCTAssertTrue(shouldCaptureCMPLog(
-            verbose: false,
-            debugLoggingEnabled: false,
-            captureEnabled: true
-        ))
-        XCTAssertFalse(shouldCaptureCMPLog(
-            verbose: true,
-            debugLoggingEnabled: false,
-            captureEnabled: true
-        ))
-        XCTAssertTrue(shouldCaptureCMPLog(
-            verbose: true,
-            debugLoggingEnabled: true,
-            captureEnabled: true
-        ))
-    }
-
     // MARK: - Byte-safe stack truncation (#11)
 
     func testStackExcerptTruncatesToUTF8ByteLimit() throws {

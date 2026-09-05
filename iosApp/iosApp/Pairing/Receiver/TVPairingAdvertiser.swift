@@ -17,7 +17,7 @@ final class TVPairingAdvertiser {
     private var busy = false
     private var generation = 0
     private var onConnection: ((PairingSession, AsyncThrowingStream<PairingMessage, Error>) -> Void)?
-    private nonisolated static let logger = Logger(subsystem: "com.continuum.app", category: "pairing.advertiser")
+    private nonisolated static let logger = Logger(subsystem: "org.siloserver.silo", category: "pairing.advertiser")
 
     /// - Parameter onConnection: called on the main actor with an opened
     ///   session + its inbound stream for the coordinator to drive.
