@@ -232,17 +232,14 @@ struct SiloTheme {
         /// thrashing large backdrops. Matches Android's
         /// `TvMarqueeFocusRestMillis`.
         static let marqueeRestDebounceMilliseconds = 150
+        /// An isolated move gets its backdrop promptly. A second move before
+        /// this expires establishes a roll and switches to the longer gate.
+        static let marqueeBackdropIsolatedRestMilliseconds = 400
+        /// Once focus is rolling, keep hero decoding and compositing out of
+        /// navigation until the final selection has been quiet this long.
+        static let marqueeBackdropRollRestMilliseconds = 800
         /// Backdrop + tint crossfade between rested selections (§4.2).
         static let marqueeCrossfadeDuration: Double = 0.24
-        /// Longest a row-change scroll may hold the backdrop swap. The hold
-        /// keeps the crossfade out of the row animation, but the band's
-        /// scroll phase stays non-idle for over a second after a single
-        /// move, so the swap releases once the visible motion has finished.
-        static let marqueeBackdropHoldCapMilliseconds = 320
-        /// Neighbouring cards on either side of a rested selection whose
-        /// backdrop bytes are pulled into the disk cache at low priority,
-        /// so the next rest skips the network round trip.
-        static let marqueeNeighborBackdropPrefetchRadius = 2
 
         // MARK: Row band under the marquee (§5.7, revised)
 

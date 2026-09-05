@@ -64,7 +64,8 @@ struct HomeView: View {
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: navigateToDetail,
                     onRemoveFromContinueWatching: dismissContinueWatching,
-                    onSetWatched: setWatched
+                    onSetWatched: setWatched,
+                    warmsFocusedRowArtwork: true
                 )
                 // Preference edits replace the row band as one stable unit:
                 // the next visible row takes the vacated slot at the fixed

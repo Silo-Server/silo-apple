@@ -33,9 +33,13 @@ struct TVSkylineSectionFeed: View {
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     /// Optional Home-only watched-state mutation. Library feeds leave this nil.
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
+    /// Home opts into a bounded decoded working set for whichever horizontal
+    /// rail owns focus. Library landings keep their existing prefetch policy.
+    var warmsFocusedRowArtwork = false
 
     /// Immediate foreground content with a separately delayed backdrop.
     @State private var marqueeModel = TVFocusMarqueeModel()
+    @State private var uiCustomization = UICustomizationPreferences.shared
     /// Token handed only to row 1 when the shell explicitly enters content.
     /// It is never changed during ordinary row-to-row navigation.
     @State private var contentFocusToken = 0
@@ -76,7 +80,12 @@ struct TVSkylineSectionFeed: View {
             seedMarqueeFromFirstItem()
             requestEntryFocus(focusRequest)
         }
-        .onDisappear { marqueeModel.suspend() }
+        .onDisappear {
+            marqueeModel.suspend()
+            if warmsFocusedRowArtwork {
+                PosterImageCache.cancelHomeRowCardWarmup()
+            }
+        }
         .onChange(of: focusRequest) { _, request in requestEntryFocus(request) }
         .onChange(of: isTopMenuFocused) { _, isFocused in
             if isFocused {
@@ -99,6 +108,7 @@ struct TVSkylineSectionFeed: View {
     private var scrollingRows: some View {
         GeometryReader { proxy in
             let bandHeight = proxy.size.height * SiloTheme.Skyline.rowBandHeightFraction
+            let focusBandTop = max(0, proxy.size.height - bandHeight)
             // Position the focusable viewport with layout, not a render
             // offset. Its bottom must match the screen's bottom: otherwise
             // tvOS can resolve directional clicks against offscreen space
@@ -108,6 +118,13 @@ struct TVSkylineSectionFeed: View {
                 max(0, proxy.size.height - bandHeight + SiloTheme.Skyline.landingContentVerticalOffset)
             )
             let visibleBandHeight = max(0, proxy.size.height - bandTop)
+            // Keep the layout-only strip above the visual band inside the
+            // physical screen. When a short first row (for example Continue
+            // Watching) scrolls just above the band, this runway keeps its
+            // native focus section materialized so Up can discover it. A
+            // render mask below still hides every departing row at `bandTop`.
+            let focusRetentionInset = max(0, bandTop - focusBandTop)
+            let focusBandHeight = max(0, proxy.size.height - focusBandTop)
             let trailingPreviewPadding = max(
                 0,
                 visibleBandHeight - SiloTheme.Skyline.rowBandBottomInset
@@ -132,13 +149,10 @@ struct TVSkylineSectionFeed: View {
                     // with a blank preview area underneath instead of clamping.
                     .padding(.bottom, trailingPreviewPadding)
                 }
+                // The inset preserves the exact on-screen row position while
+                // the scroll view itself retains focus geometry above it.
+                .contentMargins(.top, focusRetentionInset, for: .scrollContent)
                 .scrollTargetBehavior(.viewAligned)
-                // Row changes animate the band; the marquee holds its backdrop
-                // swap until the scroll settles so the two never composite in
-                // the same frames.
-                .onScrollPhaseChange { _, phase in
-                    marqueeModel.setBackdropDeferred(phase != .idle)
-                }
                 // Animated ride home; the first card's focus claim is
                 // re-asserted by MediaRow until the scroll settles, so the
                 // animation can't lose the claim to mid-flight focus repairs.
@@ -150,9 +164,15 @@ struct TVSkylineSectionFeed: View {
                     }
                 }
             }
-            .frame(width: proxy.size.width, height: visibleBandHeight, alignment: .topLeading)
+            .frame(width: proxy.size.width, height: focusBandHeight, alignment: .topLeading)
             .clipped()
-            .padding(.top, bandTop)
+            // Focus uses the full layout frame; painting still begins at the
+            // original visual band edge, so the marquee remains unobstructed.
+            .mask(alignment: .top) {
+                Rectangle()
+                    .padding(.top, focusRetentionInset)
+            }
+            .padding(.top, focusBandTop)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
     }
@@ -239,36 +259,15 @@ struct TVSkylineSectionFeed: View {
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
+        warmFocusedRowArtworkIfNeeded(section, focusedItemId: item.contentId)
         marqueeModel.preview(
             TVMarqueeContent(
                 item: item,
                 rowId: section.id,
                 rowTitle: section.title,
                 isContinueWatching: section.isContinueWatchingSection
-            ),
-            neighborBackdropURLs: neighborBackdropURLs(around: item, in: section)
+            )
         )
-    }
-
-    /// Section-level backdrops of the cards on either side of `item` in its
-    /// row. Only direct backdrops qualify: episodes and items without one
-    /// resolve their hero art from detail enrichment, which is a metadata
-    /// request the marquee already rate-limits and must not be duplicated
-    /// here for cards the user may never rest on.
-    private func neighborBackdropURLs(
-        around item: SectionItem,
-        in section: ResolvedSection
-    ) -> [String] {
-        guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return [] }
-        let radius = SiloTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
-        let window = section.items.indices.clamped(to: (index - radius)..<(index + radius + 1))
-        return window.compactMap { neighborIndex -> String? in
-            guard neighborIndex != index else { return nil }
-            let neighbor = section.items[neighborIndex]
-            guard neighbor.type.lowercased() != "episode",
-                  let url = neighbor.backdropUrl, !url.isEmpty else { return nil }
-            return url
-        }
     }
 
     /// Seed the first card as soon as sections exist, so cold entry does not
@@ -278,6 +277,7 @@ struct TVSkylineSectionFeed: View {
         guard marqueeModel.content == nil,
               let section = sections.first,
               let item = section.items.first else { return }
+        warmFocusedRowArtworkIfNeeded(section, focusedItemId: item.contentId)
         marqueeModel.seed(
             TVMarqueeContent(
                 item: item,
@@ -285,6 +285,57 @@ struct TVSkylineSectionFeed: View {
                 rowTitle: section.title,
                 isContinueWatching: section.isContinueWatchingSection
             )
+        )
+    }
+
+    private func warmFocusedRowArtworkIfNeeded(
+        _ section: ResolvedSection,
+        focusedItemId: String
+    ) {
+        guard warmsFocusedRowArtwork,
+              section.items.contains(where: { $0.contentId == focusedItemId }) else { return }
+        let sectionType = section.sectionType.lowercased()
+        let usesEpisodeStills = sectionType.contains("next")
+            || section.isContinueWatchingSection
+            || section.items.contains { $0.type.lowercased() == "episode" }
+        // Home supplies a fixed 20-card row. Queue it once in stable order
+        // instead of sliding a 16-card window on every Left/Right press; the
+        // latter left a repeatable cold edge at the end of the rail.
+        let rowItems = section.items.prefix(20)
+        let urls = rowItems.compactMap { item -> URL? in
+            let value = usesEpisodeStills
+                ? (item.backdropUrl ?? item.posterUrl)
+                : item.posterUrl
+            guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !trimmed.isEmpty else { return nil }
+            return URL(string: trimmed)
+        }
+        PosterImageCache.warmHomeRowCardArtwork(
+            urls,
+            pointSize: cardArtworkPointSize(for: section, usesEpisodeStills: usesEpisodeStills)
+        )
+    }
+
+    private func cardArtworkPointSize(
+        for section: ResolvedSection,
+        usesEpisodeStills: Bool
+    ) -> CGSize {
+        let scale = uiCustomization.cardPresentation.posterSize.scale
+        if usesEpisodeStills {
+            let width = SiloTheme.thumbnailCardWidth * scale
+            return CGSize(
+                width: width,
+                height: width * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth)
+            )
+        }
+
+        let width = SiloTheme.Skyline.densePosterCardWidth * scale
+        let isSquare = !section.items.isEmpty && section.items.allSatisfy(\.isAudiobook)
+        return CGSize(
+            width: width,
+            height: isSquare
+                ? width
+                : width * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
         )
     }
 

@@ -9,6 +9,9 @@ struct TVDetailCastRail: View {
     /// Non-zero changes explicitly hand focus into the first cast card from
     /// the composite Series episode carousel.
     var focusRequest = 0
+    var focusRequestIsActive = true
+    var onFocusRequestFailed: (() -> Void)? = nil
+    var onFocus: (() -> Void)? = nil
 
     private let photoWidth: CGFloat = 200
     private let photoHeight: CGFloat = 200
@@ -17,25 +20,46 @@ struct TVDetailCastRail: View {
     @FocusState private var focusedCastId: String?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: cardSpacing) {
-                ForEach(cast.prefix(maxEntries)) { member in
-                    TVCastCard(
-                        member: member,
-                        photoSize: CGSize(width: photoWidth, height: photoHeight),
-                        onTap: onTap
-                    )
-                    .focused($focusedCastId, equals: member.id)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: cardSpacing) {
+                    ForEach(cast.prefix(maxEntries)) { member in
+                        TVCastCard(
+                            member: member,
+                            photoSize: CGSize(width: photoWidth, height: photoHeight),
+                            onTap: onTap
+                        )
+                        .focused($focusedCastId, equals: member.id)
+                        .id(member.id)
+                    }
                 }
+                .padding(.vertical, 12)
             }
-            .padding(.vertical, 12)
-        }
-        .focusSection()
-        .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
-        .scrollClipDisabled()
-        .onChange(of: focusRequest) { _, request in
-            guard request > 0, let defaultFocusId else { return }
-            focusedCastId = defaultFocusId
+            .focusSection()
+            .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
+            .scrollClipDisabled()
+            .task(id: "\(focusRequest):\(focusRequestIsActive)") {
+                guard focusRequest > 0, focusRequestIsActive, let defaultFocusId else { return }
+                // A previously scrolled cast strip may not have its first lazy
+                // card mounted. Reveal it before handing focus across the boundary.
+                proxy.scrollTo(defaultFocusId, anchor: .leading)
+                for _ in 0..<12 {
+                    do {
+                        try await Task.sleep(for: .milliseconds(50))
+                    } catch { return }
+                    guard !Task.isCancelled else { return }
+                    if focusedCastId == defaultFocusId { return }
+                    focusedCastId = defaultFocusId
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(50))
+                } catch { return }
+                guard !Task.isCancelled, focusedCastId != defaultFocusId else { return }
+                onFocusRequestFailed?()
+            }
+            .onChange(of: focusedCastId) { _, id in
+                if id != nil { onFocus?() }
+            }
         }
     }
 

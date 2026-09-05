@@ -24,6 +24,9 @@ struct ContentView: View {
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
     @State private var pendingInitialAuthState: AppRouter.AuthState?
+    #if os(tvOS)
+    @State private var didPrepareInitialHome = false
+    #endif
     #if os(iOS) || os(tvOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
@@ -563,11 +566,20 @@ struct ContentView: View {
     }
     #endif
 
+    private var initialSplashContentReady: Bool {
+        #if os(tvOS)
+        guard let target = pendingInitialAuthState else { return false }
+        return target != .authenticated || didPrepareInitialHome
+        #else
+        return true
+        #endif
+    }
+
     @ViewBuilder
     private var authContent: some View {
         switch router.authState {
         case .loading:
-            StartupSplashView {
+            StartupSplashView(isContentReady: initialSplashContentReady) {
                 #if os(iOS) || os(tvOS)
                 LaunchTimeline.recordSplashFinished()
                 #endif
@@ -582,6 +594,12 @@ struct ContentView: View {
                 #endif
                 await checkInitialState()
             }
+            #if os(tvOS)
+            .task(id: pendingInitialAuthState == .authenticated) {
+                guard pendingInitialAuthState == .authenticated else { return }
+                await prepareInitialTVHome()
+            }
+            #endif
 
         case .needsServerSetup:
             #if os(tvOS)
@@ -854,12 +872,47 @@ struct ContentView: View {
         #endif
     }
 
+    #if os(tvOS)
+    @MainActor
+    private func prepareInitialTVHome() async {
+        let serverID = ServerRegistry.shared.activeServerId
+        let profileID = AuthService.shared.profileId
+        func finishPreparation() {
+            guard !Task.isCancelled,
+                  router.authState == .loading,
+                  pendingInitialAuthState == .authenticated,
+                  ServerRegistry.shared.activeServerId == serverID,
+                  AuthService.shared.profileId == profileID else { return }
+            didPrepareInitialHome = true
+            finishInitialStartupIfReady()
+        }
+
+        // Start alongside the splash, not after its animation. A slow/offline
+        // server still gets the ordinary Home retry UI after a bounded wait.
+        let timeout = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(8))
+            } catch { return }
+            finishPreparation()
+        }
+        defer { timeout.cancel() }
+        await StartupContentPrefetcher.prepareTVHomeForLaunch()
+        finishPreparation()
+    }
+    #endif
+
     private func finishInitialStartupIfReady() {
+        #if os(tvOS)
+        guard router.authState == .loading else { return }
+        #endif
         guard didFinishStartupSplash, let targetState = pendingInitialAuthState else { return }
+        #if os(tvOS)
+        guard targetState != .authenticated || didPrepareInitialHome else { return }
+        #endif
         pendingInitialAuthState = nil
         #if os(iOS) || os(tvOS)
-        // Closes the cold-launch chain. Both gates (splash animation and state
-        // resolution) have cleared, so this is the moment the user first sees
+        // The splash, route resolution and tvOS Home preparation gates have
+        // cleared, so this is the moment the user first sees
         // real content. `AppRouter` logs the auth transition itself; this line
         // records that launch reached a terminal, usable state at all.
         LaunchTimeline.recordFirstContent(state: targetState.diagnosticsState)

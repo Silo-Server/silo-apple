@@ -1,6 +1,7 @@
 import SwiftUI
 #if os(tvOS)
 import os
+import Nuke
 #endif
 
 /// Layout mode for a horizontal media row.
@@ -20,6 +21,13 @@ struct MediaRow: View {
     let title: String
     let items: [SectionItem]
     let onItemTap: (String) -> Void
+    /// Detail surfaces can reuse the exact Home rail without drawing a second
+    /// section heading above it. Home keeps the default.
+    var showsHeader = true
+    /// Nested season pages keep every episode mounted so the native focus
+    /// engine sees a finite set of card targets at both ends of the strip.
+    /// Home retains its lazy working set.
+    var usesLazyCardLayout = true
     /// tvOS-only direct-play action for focused leaf items. Container items
     /// intentionally receive no Play/Pause command and retain normal focus.
     var onItemPlay: ((SectionItem) -> Void)? = nil
@@ -30,6 +38,11 @@ struct MediaRow: View {
     /// Preserve a caller's immediate thumbnail action instead of presenting
     /// item detail. Used by Player "On Deck"; normal media rows leave this off.
     var usesProvidedThumbnailTapAction: Bool = false
+    /// Series pages identify each thumbnail by episode code and title.
+    /// Home keeps its series title and optional metadata line.
+    var usesEpisodeCaption = false
+    /// Keep focus targets mounted while deferring offscreen thumbnail work.
+    var defersOffscreenArtwork = false
     /// When true (and there are items), the row's first card becomes the
     /// default focus target — on initial appearance AND on user-driven
     /// d-pad entry into the row's focus section. Implemented via
@@ -48,6 +61,9 @@ struct MediaRow: View {
     /// where `.userInitiated` defaultFocus alone doesn't fire because the
     /// focus engine isn't doing the moving.
     var focusRequest: Int = 0
+    /// Optional item used by native default-focus resolution when entering the
+    /// row. Home normally leaves this nil and uses the first card.
+    var defaultFocusItemId: String? = nil
     /// Optional item to claim for a programmatic row handoff. When absent the
     /// request retains its existing first-item behavior. Skyline uses this to
     /// restore the exact card last focused in the preceding row.
@@ -65,6 +81,7 @@ struct MediaRow: View {
     /// only, avoiding a redundant menu entry on ordinary discovery cards.
     var showsPlayInContextMenu = false
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
+    var onSetFavorite: ((SectionItem, Bool) async -> Bool)? = nil
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: reports which of the row's items holds card focus —
     /// the Skyline focus marquee mirrors it. Fires on focus gain only;
@@ -77,6 +94,9 @@ struct MediaRow: View {
     /// Optional tvOS-only vertical padding override for the card strip.
     /// Standard rows keep the default breathing room for focus lift.
     var cardVerticalPadding: CGFloat? = nil
+    /// Home uses the standard safe-area gutter. Embedded detail rails can
+    /// supply the gutter already established by their parent layout.
+    var horizontalContentMargin: CGFloat = SiloTheme.safePadding
     /// Down at the row's boundary — used by the Skyline section pager to
     /// page to the next section (there is no row geometrically below).
     var onMoveDown: (() -> Void)? = nil
@@ -100,6 +120,76 @@ struct MediaRow: View {
     @State private var focusRestorationGeneration = 0
     @State private var lastAppliedDetailReturnFocusRequest = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.tvArtworkLoadingEnabled) private var parentArtworkLoadingEnabled
+    @State private var artworkScrollIsActive = false
+    @State private var artworkScrollIsInteractive = false
+    @State private var lastArtworkFocusTime: TimeInterval?
+    @State private var artworkScrollHasSettled = true
+    @State private var visibleArtworkIds = Set<String>()
+    @State private var episodeArtworkWarmer = EpisodeArtworkWarmer()
+    @State private var artworkCustomization = UICustomizationPreferences.shared
+    @Environment(\.displayScale) private var artworkDisplayScale
+
+    private struct ArtworkActivity: Hashable {
+        let scrolling: Bool
+        let focusTime: TimeInterval?
+    }
+
+    private final class EpisodeArtworkWarmer {
+        private let prefetcher = ImagePrefetcher(
+            pipeline: ImagePipeline.shared, destination: .memoryCache,
+            maxConcurrentRequestCount: 1
+        )
+        private var urls = Set<URL>()
+        private var size = CGSize.zero
+
+        func update(_ candidates: [URL], pixelSize: CGSize, enabled: Bool) {
+            prefetcher.isPaused = true
+            guard enabled else { return }
+            if size != pixelSize { cancel(); size = pixelSize }
+            let next = Set(candidates)
+            prefetcher.stopPrefetching(with: urls.subtracting(next).map {
+                PosterImageCache.displayRequest(url: $0, pixelSize: size, priority: .low)
+            })
+            var added = Set<URL>()
+            prefetcher.startPrefetching(with: candidates.filter {
+                !urls.contains($0) && added.insert($0).inserted
+            }.map {
+                PosterImageCache.displayRequest(url: $0, pixelSize: size, priority: .low)
+            })
+            urls = next
+            prefetcher.isPaused = false
+        }
+
+        func cancel() {
+            prefetcher.stopPrefetching()
+            urls.removeAll()
+        }
+    }
+
+    private var episodeArtworkPixelSize: CGSize {
+        let scale = artworkCustomization.cardPresentation.posterSize.scale * artworkDisplayScale
+        return CGSize(width: SiloTheme.thumbnailCardWidth * scale,
+                      height: SiloTheme.thumbnailCardHeight * scale)
+    }
+
+    private var episodeArtworkWarmURLs: [URL] {
+        guard defersOffscreenArtwork else { return [] }
+        let indices = items.indices.filter { visibleArtworkIds.contains(items[$0].contentId) }
+        guard let first = indices.first, let last = indices.last else { return [] }
+        return [last + 1, first - 1, last + 2, first - 2].compactMap { index in
+            guard items.indices.contains(index) else { return nil }
+            let item = items[index]
+            let url = item.backdropUrl.flatMap { $0.isEmpty ? nil : $0 } ?? item.posterUrl
+            return url.flatMap(URL.init(string:))
+        }
+    }
+
+    private var episodeArtworkWarmKey: String {
+        "\(parentArtworkLoadingEnabled && artworkScrollHasSettled):\(episodeArtworkPixelSize):"
+            + episodeArtworkWarmURLs.map(\.absoluteString).joined(separator: "|")
+    }
+
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -108,7 +198,9 @@ struct MediaRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: rowVerticalSpacing) {
-            header
+            if showsHeader {
+                header
+            }
             scrollContent
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,6 +209,14 @@ struct MediaRow: View {
         .modifier(TVRowMoveHandler(onMoveUp: onMoveUp, onMoveDown: onMoveDown))
         .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { newValue in
             guard let item = items.first(where: { $0.contentId == newValue }) else { return }
+            if defersOffscreenArtwork, newValue != lastFocusedItemId {
+                let now = ProcessInfo.processInfo.systemUptime
+                let rapid = lastArtworkFocusTime.map { now - $0 < 0.13 } == true
+                lastArtworkFocusTime = now
+                // Moderate clicks can keep loading the next cards throughout
+                // their native scroll animation. Only a burst pauses new work.
+                artworkScrollHasSettled = !rapid && !artworkScrollIsInteractive
+            }
             lastFocusedItemId = newValue
             Self.focusLogger.debug("mediaRow.focus changed")
             onItemFocus?(item)
@@ -346,11 +446,14 @@ struct MediaRow: View {
 
     private func scrollStrip(_ rowProxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
-                ForEach(items) { item in
-                    mediaCard(for: item)
-                }
-            }
+            cardStack
+            #if os(tvOS)
+            .environment(
+                \.tvArtworkLoadingEnabled,
+                parentArtworkLoadingEnabled
+                    && (!defersOffscreenArtwork || artworkScrollHasSettled)
+            )
+            #endif
             #if !os(tvOS)
             .padding(.horizontal, SiloTheme.safePadding)
             #endif
@@ -364,14 +467,54 @@ struct MediaRow: View {
         // the engine's scroll-to-focused both align to the margin-inset
         // viewport, so with inner padding they overshoot left by the gutter
         // width and then visibly drift back to the rest position.
-        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .contentMargins(.horizontal, horizontalContentMargin, for: .scrollContent)
         // tvOS focus lift expands cards on focus — give them breathing room
         // so they don't clip against the row above/below.
         .scrollClipDisabled()
+        .onScrollPhaseChange { _, phase in
+            guard defersOffscreenArtwork else { return }
+            artworkScrollIsActive = phase != .idle
+            artworkScrollIsInteractive = phase == .tracking
+                || phase == .interacting || phase == .decelerating
+            if artworkScrollIsInteractive {
+                artworkScrollHasSettled = false
+            }
+        }
+        .task(id: ArtworkActivity(scrolling: artworkScrollIsActive, focusTime: lastArtworkFocusTime)) {
+            guard defersOffscreenArtwork, !artworkScrollIsActive else { return }
+            // Native focus keeps moving immediately. Only new image work waits
+            // for a quiet interval, avoiding decode churn between rapid clicks.
+            do {
+                try await Task.sleep(for: .milliseconds(160))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            artworkScrollHasSettled = true
+        }
+        .onChange(of: episodeArtworkWarmKey, initial: true) { _, _ in
+            guard defersOffscreenArtwork else { return }
+            episodeArtworkWarmer.update(
+                episodeArtworkWarmURLs, pixelSize: episodeArtworkPixelSize,
+                enabled: parentArtworkLoadingEnabled && artworkScrollHasSettled
+            )
+        }
+        .onDisappear {
+            artworkScrollIsActive = false
+            artworkScrollIsInteractive = false
+            lastArtworkFocusTime = nil
+            artworkScrollHasSettled = true
+            visibleArtworkIds.removeAll()
+            episodeArtworkWarmer.cancel()
+        }
         .applyDefaultFirstItemFocus(
             enabled: prefersDefaultFocusOnFirstItem,
             binding: $focusedItemId,
-            firstItemId: items.first?.contentId,
+            firstItemId: defaultFocusItemId.flatMap { requestedId in
+                items.contains(where: { $0.contentId == requestedId })
+                    ? requestedId
+                    : nil
+            } ?? items.first?.contentId,
             priority: defaultFocusPriority
         )
         // The programmatic focus kick needs the scroll proxy (it scrolls the
@@ -386,6 +529,25 @@ struct MediaRow: View {
             restoreFocusAfterDetailReturn(request, proxy: rowProxy)
         }
         #endif
+    }
+
+    @ViewBuilder
+    private var cardStack: some View {
+        if usesLazyCardLayout {
+            LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+                cards
+            }
+        } else {
+            HStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+                cards
+            }
+        }
+    }
+
+    private var cards: some View {
+        ForEach(items) { item in
+            mediaCard(for: item)
+        }
     }
 
     @ViewBuilder
@@ -420,13 +582,23 @@ struct MediaRow: View {
                 showProgress: showProgress,
                 action: { onItemTap(item.contentId) },
                 usesProvidedTapAction: usesProvidedThumbnailTapAction,
+                usesEpisodeCaption: usesEpisodeCaption,
+                defersOffscreenArtwork: defersOffscreenArtwork,
+                onArtworkVisibilityChange: { visible in
+                    #if os(tvOS)
+                    if visible { visibleArtworkIds.insert(item.contentId) }
+                    else { visibleArtworkIds.remove(item.contentId) }
+                    #endif
+                },
                 playAction: playAction(for: item),
                 focusedItemId: rowFocusBinding,
                 contextPlayTitle: contextPlayTitle(for: item),
                 contextDetailTitle: contextDetailTitle(for: item),
                 onOpenContextDetail: contextDetailAction(for: item),
                 onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                onSetWatched: watchedToggleAction(for: item)
+                onSetWatched: watchedToggleAction(for: item),
+                initialIsFavorite: item.userState?.isFavorite == true,
+                onSetFavorite: favoriteToggleAction(for: item)
             )
         }
     }
@@ -506,6 +678,13 @@ struct MediaRow: View {
             }
             #endif
             return await onSetWatched(item, played)
+        }
+    }
+
+    private func favoriteToggleAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
+        guard let onSetFavorite else { return nil }
+        return { isFavorite in
+            await onSetFavorite(item, isFavorite)
         }
     }
 

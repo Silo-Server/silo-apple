@@ -621,6 +621,28 @@ enum StartupContentPrefetcher {
         }
     }
 
+    #if os(tvOS)
+    /// Join the launch requests before revealing Home. Completed responses
+    /// are already in the cache used by HomeViewModel and TVMainTabView's
+    /// initializers; an empty library is a completed response too.
+    static func prepareTVHomeForLaunch() async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                guard ResponseCache.shared.get(
+                    CacheKey.homeSections, as: SectionsResponse.self
+                ) == nil else { return }
+                _ = try? await fetchHomeSections()
+            }
+            group.addTask { @MainActor in
+                guard ResponseCache.shared.get(
+                    CacheKey.userLibraries, as: LibrariesResponse.self
+                ) == nil else { return }
+                _ = try? await fetchUserLibraries()
+            }
+        }
+    }
+    #endif
+
     static func prefetchAuthenticatedContent() {
         prefetchHomeSections()
         prefetchRecommendations()
@@ -745,6 +767,62 @@ enum StartupContentPrefetcher {
             #endif
         }
 
+        #if os(tvOS)
+        // No client renders a featured hero anymore — featured sections show
+        // as ordinary rows. Entry still earns the first logo and hero backdrop,
+        // but card slots are dealt round-robin across the first four rows. A
+        // row-major fill spent the whole budget on row one and left every row
+        // below it cold just as its LazyHStack began mounting new cards.
+        let contentSections = response.sections.filter { !$0.items.isEmpty }
+        if let firstRow = contentSections.first {
+            append(firstRow.items.first?.logoUrl, into: &logoURLs, seen: &seenLogos)
+            // Only the marquee's initial selection earns a hero-size decode.
+            // A w1920 backdrop is ~8 MB decoded, so warming the whole first
+            // row would spend the entire 96 MB tvOS budget on artwork the
+            // user may never rest on and evict the very cards this warm-up
+            // exists to paint. The neighbours the user is most likely to
+            // reach are pulled into the disk cache (bytes only) by
+            // `PosterImageCache.warmNeighborBackdrops` once the marquee
+            // rests, which removes the network round trip without a decode.
+            appendBackdrop(firstRow.items.first?.backdropUrl)
+        }
+
+        func appendCardArtwork(_ item: SectionItem, in section: ResolvedSection) {
+            if episodeSectionTypes.contains(section.sectionType.lowercased()) {
+                // Episode stills render the backdrop as the card art and the
+                // marquee may show the same source at a separate hero size.
+                append(item.backdropUrl ?? item.posterUrl, into: &cardURLs, seen: &seenCards)
+            } else {
+                append(item.posterUrl, into: &cardURLs, seen: &seenCards)
+            }
+        }
+
+        let startupRows = Array(contentSections.prefix(4))
+        var itemOffset = 0
+        while count < maxHomeArtworkURLs {
+            var foundItemAtOffset = false
+            for section in startupRows where itemOffset < section.items.count {
+                foundItemAtOffset = true
+                appendCardArtwork(section.items[itemOffset], in: section)
+                if count >= maxHomeArtworkURLs { break }
+            }
+            guard foundItemAtOffset else { break }
+            itemOffset += 1
+        }
+
+        // Very short leading rows can leave budget unused. Preserve the old
+        // fallback by spending any remainder on later Home rows.
+        if count < maxHomeArtworkURLs {
+            for section in contentSections.dropFirst(startupRows.count) {
+                for item in section.items {
+                    appendCardArtwork(item, in: section)
+                    if count >= maxHomeArtworkURLs { break }
+                }
+                if count >= maxHomeArtworkURLs { break }
+            }
+        }
+
+        #else
         // No client renders a featured hero anymore — featured sections show
         // as ordinary rows. Entry lands on the first card of the first content
         // row. Warm that row's logo + art first (so a cold start paints a
@@ -787,6 +865,8 @@ enum StartupContentPrefetcher {
             }
             if count >= maxHomeArtworkURLs { break }
         }
+
+        #endif
 
         PosterImageCache.prefetchOriginalArtwork(logoURLs)
         PosterImageCache.prefetchCardArtwork(cardURLs)

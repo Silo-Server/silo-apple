@@ -6,14 +6,26 @@ import SwiftUI
 /// keyframes in `StartupSplashAnimation`. No AVPlayer is involved: AetherEngine
 /// remains the only production media engine constructed by Silo.
 struct StartupSplashView: View {
-    private static let maximumDisplayDuration: Duration = .seconds(4)
+    #if os(tvOS)
+    // The wordmark lands at frame 160; the remaining source frames are a
+    // static hold. Continue into the loading cycle as soon as it lands.
+    private static let introDuration = 160 / StartupSplashAnimation.framesPerSecond
+    private let repeatsTowerWhileWaiting = true
+    #else
+    private static let introDuration: Double = 4
+    private let repeatsTowerWhileWaiting = false
+    #endif
 
+    var isContentReady = true
     let onFinished: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var completionTask: Task<Void, Never>?
     @State private var didFinish = false
+    @State private var didFinishIntro = false
     @State private var startDate: Date?
+    @State private var waitingStartDate: Date?
+    @State private var completionCycle: Int?
 
     var body: some View {
         ZStack {
@@ -21,8 +33,14 @@ struct StartupSplashView: View {
 
             GeometryReader { proxy in
                 let size = surfaceSize(in: proxy.size)
-                TimelineView(.animation(paused: reduceMotion)) { context in
-                    StartupSplashCanvas(frame: frame(at: context.date))
+                TimelineView(.animation(paused: reduceMotion || (didFinishIntro && !repeatsTowerWhileWaiting))) { context in
+                    StartupSplashCanvas(
+                        frame: frame(at: context.date),
+                        towerFrame: waitingTowerFrame(at: context.date)
+                    )
+                    .onChange(of: towerIsComplete(at: context.date)) { _, complete in
+                        if complete { finishIfReady() }
+                    }
                 }
                 .frame(width: size.width, height: size.height)
                 .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
@@ -33,6 +51,25 @@ struct StartupSplashView: View {
         .onAppear {
             startDate = Date()
             scheduleCompletion()
+        }
+        .onChange(of: isContentReady) { _, ready in
+            if ready, let waitingStartDate {
+                // Finish the cycle currently on screen, without interrupting
+                // its unstack or restack and without starting another one.
+                let elapsed = max(Date().timeIntervalSince(waitingStartDate), 0)
+                completionCycle = Int(elapsed / StartupSplashCanvas.cycleDuration) + 1
+            } else {
+                completionCycle = nil
+            }
+            finishIfReady()
+        }
+        .onChange(of: didFinishIntro) { _, _ in
+            // Reveal immediately if Home was prepared during the opening.
+            // Otherwise begin reversing from the completed stack right now.
+            finishIfReady()
+            if !didFinish, repeatsTowerWhileWaiting, !reduceMotion {
+                waitingStartDate = Date()
+            }
         }
         .onDisappear {
             completionTask?.cancel()
@@ -63,18 +100,39 @@ struct StartupSplashView: View {
         return min(max(elapsed * StartupSplashAnimation.framesPerSecond, 0), last)
     }
 
+    private func waitingTowerFrame(at date: Date) -> Double? {
+        guard repeatsTowerWhileWaiting, !reduceMotion, let waitingStartDate else { return nil }
+        let elapsed = date.timeIntervalSince(waitingStartDate)
+        if let completionCycle,
+           elapsed >= Double(completionCycle) * StartupSplashCanvas.cycleDuration {
+            return StartupSplashCanvas.stackEnd
+        }
+        return StartupSplashCanvas.waitingTowerFrame(elapsed: elapsed)
+    }
+
+    private func towerIsComplete(at date: Date) -> Bool {
+        guard repeatsTowerWhileWaiting, !reduceMotion, let waitingStartDate else { return true }
+        guard let completionCycle else { return false }
+        return date.timeIntervalSince(waitingStartDate)
+            >= Double(completionCycle) * StartupSplashCanvas.cycleDuration
+    }
+
     private func scheduleCompletion() {
         guard completionTask == nil else { return }
-        let duration: Duration = reduceMotion ? .seconds(1) : Self.maximumDisplayDuration
+        let duration: Duration = reduceMotion ? .seconds(1) : .seconds(Self.introDuration)
         completionTask = Task {
             try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
-            finish()
+            didFinishIntro = true
+            #if !os(tvOS)
+            finishIfReady()
+            #endif
         }
     }
 
-    private func finish() {
-        guard !didFinish else { return }
+    private func finishIfReady() {
+        guard !didFinish, didFinishIntro, isContentReady,
+              towerIsComplete(at: Date()) else { return }
         didFinish = true
         completionTask?.cancel()
         completionTask = nil
@@ -86,6 +144,22 @@ struct StartupSplashView: View {
 /// so the mark occludes the wordmark while it slides out from behind it.
 private struct StartupSplashCanvas: View {
     let frame: Double
+    var towerFrame: Double? = nil
+
+    private static let stackStart: Double = 2
+    static let stackEnd: Double = 92
+    private static let stackDuration = (stackEnd - stackStart) / StartupSplashAnimation.framesPerSecond
+    static let cycleDuration = 2 * stackDuration
+
+    /// The source already contains its easing. Advance through its frames at
+    /// the original 60 fps in each direction; do not apply a second easing curve.
+    static func waitingTowerFrame(elapsed: TimeInterval) -> Double {
+        let phase = max(elapsed, 0).truncatingRemainder(dividingBy: cycleDuration)
+        if phase < stackDuration {
+            return stackEnd - phase * StartupSplashAnimation.framesPerSecond
+        }
+        return stackStart + (phase - stackDuration) * StartupSplashAnimation.framesPerSecond
+    }
 
     var body: some View {
         Canvas(rendersAsynchronously: false) { context, size in
@@ -93,9 +167,17 @@ private struct StartupSplashCanvas: View {
             let scale = size.width / composition.width
             context.scaleBy(x: scale, y: scale)
 
-            for layer in StartupSplashAnimation.layers where frame >= layer.inPoint {
-                let position = Self.interpolate(layer.position, at: frame)
-                let layerScale = Self.interpolate(layer.scale, at: frame)
+            for layer in StartupSplashAnimation.layers {
+                let isWaitingTower = towerFrame != nil && layer.name != "wordmark"
+                let layerFrame = layer.name == "wordmark" ? frame : (towerFrame ?? frame)
+                guard layerFrame >= layer.inPoint else { continue }
+                var position = Self.interpolate(layer.position, at: layerFrame)
+                let layerScale = Self.interpolate(layer.scale, at: layerFrame)
+                if isWaitingTower, let finalPosition = layer.position.last {
+                    // Keep the completed wordmark and tower's final horizontal
+                    // placement. Only the block assembly motion is replayed.
+                    position[0] = finalPosition.v[0]
+                }
 
                 var transform = CGAffineTransform.identity
                 transform = transform.translatedBy(x: position[0], y: position[1])

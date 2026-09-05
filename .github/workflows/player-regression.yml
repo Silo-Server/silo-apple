@@ -5,11 +5,13 @@ on:
     paths:
       - 'iosApp/**'
       - '.github/workflows/player-regression.yml'
+      - 'scripts/ci/test-tvos-browsing.py'
   push:
     branches: [main]
     paths:
       - 'iosApp/**'
       - '.github/workflows/player-regression.yml'
+      - 'scripts/ci/test-tvos-browsing.py'
   workflow_dispatch:
     inputs:
       baseline_ref:
@@ -53,6 +55,10 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: '26.3'
+      - name: Check tvOS rolling gate and startup timing
+        if: matrix.scheme == 'SiloTV'
+        timeout-minutes: 2
+        run: python3 scripts/ci/test-tvos-browsing.py
       - name: Prepare iOS simulator
         if: matrix.action == 'test'
         timeout-minutes: 10

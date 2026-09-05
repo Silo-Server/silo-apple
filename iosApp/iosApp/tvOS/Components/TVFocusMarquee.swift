@@ -69,9 +69,9 @@ struct TVMarqueeContent: Equatable {
     /// The previewed item's content id — keys the low-priority detail
     /// enrichment (§9 backfill). `nil` for collections.
     let contentId: String?
-    /// Stable identity of the source row (`ResolvedSection.id`). Row
-    /// changes are detected on this, never on the display title, which
-    /// adjacent sections may share. `nil` for previews without a section.
+    /// Stable identity of the source row (`ResolvedSection.id`). This keeps
+    /// otherwise identical content in same-named sections distinguishable.
+    /// `nil` for previews without a section.
     let rowId: String?
     /// The source row's title (`Continue Watching`). Not rendered — the
     /// row's own header names the source — but kept for the VoiceOver
@@ -602,12 +602,12 @@ struct TVMarqueeEnrichment: Equatable {
 // MARK: - Debounce model
 
 /// Focused-card → marquee state shared by the tvOS Home and library
-/// Browse landings. Rows report card focus immediately; the marquee text
-/// and cached metadata follow on the same frame, while the backdrop swaps
-/// only after focus has rested 150 ms (§4.2), so scrubbing across a row
-/// never flashes intermediate backdrops. While focus is in chrome the last
-/// previewed item is retained — rows never report focus loss, only focus
-/// gain.
+/// Browse landings. Rows report card focus immediately; foreground text and
+/// cached metadata follow on the same frame. Uncached enrichment waits for
+/// the short rest debounce, while the large backdrop uses the longer stop
+/// gate so rolling never composites intermediate hero artwork. While focus
+/// is in chrome the last previewed item is retained — rows report focus gain,
+/// never focus loss.
 @Observable
 @MainActor
 final class TVFocusMarqueeModel {
@@ -655,31 +655,16 @@ final class TVFocusMarqueeModel {
     private var backdropTask: Task<Void, Never>?
     private var tintTask: Task<Void, Never>?
     private var enrichTask: Task<Void, Never>?
-    /// Decodes a held backdrop (and samples its tint) while the row band is
-    /// still scrolling, so releasing the hold is a memory-cache hit.
-    private var backdropWarmTask: Task<Void, Never>?
-    private var warmedDeferredBackdropURL: String?
-    /// Neighbour backdrops queued by `preview`, warmed once focus rests.
-    private var pendingNeighborBackdropURLs: [String] = []
+    /// A second preview before the isolated gate expires establishes a roll.
+    /// The state remains sticky until the final long gate completes, so slower
+    /// focus delivery while a rail scrolls cannot be mistaken for a stop.
+    private var isBackdropRoll = false
     /// The content whose backdrop may be shown. `nil` while a previewed
-    /// selection has not rested yet, so enrichment landing early cannot
-    /// swap the backdrop ahead of the 150 ms gate.
+    /// selection has not rested yet, so enrichment landing early cannot swap
+    /// the backdrop ahead of the stop gate.
     private var backdropContentID: String?
     /// False while the feed is offscreen; every entry point is a no-op then.
     private var isActive = true
-    /// True while the host's row band is mid-scroll. Swapping the large
-    /// composited backdrop during the row-change animation competes with it
-    /// for GPU time, so the swap waits for the scroll to settle.
-    private var isBackdropDeferred = false
-    private var hasDeferredBackdropUpdate = false
-    /// Releases a held swap once the visible row animation has had time to
-    /// finish. The band's scroll phase can stay non-idle for over a second
-    /// after a single row move, long after the motion the hold protects.
-    private var backdropHoldCapTask: Task<Void, Never>?
-    /// True once the cap has elapsed for the current row move, so a swap
-    /// that becomes ready afterwards (episode backdrop from detail) applies
-    /// at once instead of waiting for the scroll phase to report idle.
-    private var backdropHoldCapElapsed = false
     private var enrichmentState: TVHeroEnrichmentState = .notStarted
     private var lastSampledTintURL: String?
     /// Per-item enrichment cache so scrubbing back over a row never
@@ -694,172 +679,63 @@ final class TVFocusMarqueeModel {
     func seed(_ candidate: TVMarqueeContent) {
         guard isActive, content == nil else { return }
         content = candidate
-        restImmediately(on: candidate)
-    }
-
-    /// Keep foreground information responsive while rapid focus movement
-    /// leaves the existing backdrop still. Only a rested selection (150 ms,
-    /// §4.2) replaces the large composited image and starts its palette
-    /// work — the same gate Android uses, so a roll across a row never
-    /// flashes intermediate backdrops while a single click still lands the
-    /// new art well under half a second.
-    ///
-    /// `neighborBackdropURLs` are the backdrops of the cards on either side
-    /// of the candidate in its row. Once the candidate rests their bytes are
-    /// pulled into the disk cache at low priority so the user's most likely
-    /// next stop skips the network round trip and only pays one decode.
-    func preview(_ candidate: TVMarqueeContent, neighborBackdropURLs: [String] = []) {
-        guard isActive, candidate != content else { return }
-        // A row change is one discrete move whose scroll already holds the
-        // visible swap, so the rest gate would only delay the warm-up. The
-        // band's scroll phase lingers non-idle after the move, so a Left/
-        // Right roll inside the new row must still see the rest gate: only
-        // a change of row identity counts, never the display title, which
-        // adjacent sections may share.
-        let isRowChange = isBackdropDeferred
-            && candidate.rowId != nil
-            && candidate.rowId != content?.rowId
-        cancelBackdropWork()
-        content = candidate
-        pendingNeighborBackdropURLs = neighborBackdropURLs
-        if isRowChange {
-            restForRowChange(on: candidate)
-            return
-        }
-        loadEnrichment(for: candidate, deferNetwork: true)
-        backdropTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(SiloTheme.Skyline.marqueeRestDebounceMilliseconds))
-            guard !Task.isCancelled, let self,
-                  self.isActive, self.content == candidate else { return }
-            self.rest(on: candidate)
-        }
-    }
-
-    /// The row band's scroll is the gate for `candidate`: restart the hold
-    /// cap for this move, start enrichment without the network debounce
-    /// (episode backdrops resolve from detail, so until it starts there is
-    /// nothing to warm), and rest immediately.
-    private func restForRowChange(on candidate: TVMarqueeContent) {
-        armBackdropHoldCap()
-        loadEnrichment(for: candidate, deferNetwork: false)
-        rest(on: candidate)
-    }
-
-    /// Focus has settled on `candidate`: allow its backdrop through and
-    /// warm the cards beside it.
-    private func rest(on candidate: TVMarqueeContent) {
-        backdropTask?.cancel()
-        backdropTask = nil
-        backdropContentID = candidate.id
-        updateBackdropIfReady()
-        PosterImageCache.warmNeighborBackdrops(pendingNeighborBackdropURLs)
-        pendingNeighborBackdropURLs = []
-    }
-
-    /// Feed left the screen: stop every in-flight task and warmup. `content`
-    /// is kept so `resume` can restore the same selection.
-    func suspend() {
-        isActive = false
-        // Drop any hold left over from an in-flight scroll. The feed can
-        // disappear mid-scroll without ever reporting `.idle`, and a feed
-        // that comes back already at rest has no phase change to release the
-        // hold — `resume` would then pin the restored selection behind the
-        // previous artwork until the user scrolled the band again.
-        isBackdropDeferred = false
-        hasDeferredBackdropUpdate = false
-        backdropHoldCapTask?.cancel()
-        backdropHoldCapTask = nil
-        backdropHoldCapElapsed = false
-        PosterImageCache.cancelNeighborBackdropWarmup()
-        cancelBackdropWork()
-        enrichTask?.cancel()
-        enrichTask = nil
-    }
-
-    /// Feed is back on screen: show the retained selection without waiting
-    /// for a fresh focus report or the rest debounce.
-    func resume() {
-        guard !isActive else { return }
-        isActive = true
-        guard let content else { return }
-        restImmediately(on: content)
-    }
-
-    /// Treat `candidate` as already rested: point the backdrop at it, then
-    /// load enrichment (which may itself complete the backdrop synchronously
-    /// from cache) and apply whatever artwork is resolvable now.
-    private func restImmediately(on candidate: TVMarqueeContent) {
         backdropContentID = candidate.id
         loadEnrichment(for: candidate)
         updateBackdropIfReady()
     }
 
-    /// Cancel the pending rest and palette work and forget which content
-    /// the backdrop belongs to. The displayed artwork itself stays put.
-    private func cancelBackdropWork() {
+    /// Keep foreground information responsive while rapid focus movement
+    /// leaves the existing backdrop still. Only a genuinely rested selection
+    /// replaces the large composited image and starts its palette work.
+    func preview(_ candidate: TVMarqueeContent) {
+        guard isActive, candidate != content else { return }
+        if backdropTask != nil {
+            isBackdropRoll = true
+        }
+        let backdropRestMilliseconds = isBackdropRoll
+            ? SiloTheme.Skyline.marqueeBackdropRollRestMilliseconds
+            : SiloTheme.Skyline.marqueeBackdropIsolatedRestMilliseconds
         backdropTask?.cancel()
         tintTask?.cancel()
-        backdropWarmTask?.cancel()
+        lastSampledTintURL = nil
+        backdropContentID = nil
+        content = candidate
+        loadEnrichment(for: candidate, deferNetwork: true)
+        backdropTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(backdropRestMilliseconds))
+            guard !Task.isCancelled, let self,
+                  self.isActive, self.content == candidate else { return }
+            self.backdropTask = nil
+            self.isBackdropRoll = false
+            self.backdropContentID = candidate.id
+            self.updateBackdropIfReady()
+        }
+    }
+
+    func suspend() {
+        isActive = false
+        backdropTask?.cancel()
+        enrichTask?.cancel()
+        tintTask?.cancel()
         backdropTask = nil
+        enrichTask = nil
         tintTask = nil
-        backdropWarmTask = nil
-        warmedDeferredBackdropURL = nil
+        isBackdropRoll = false
         backdropContentID = nil
         lastSampledTintURL = nil
     }
 
-    /// Hold backdrop swaps while `deferred` is true; the latest pending swap
-    /// applies as soon as the hold is released.
-    func setBackdropDeferred(_ deferred: Bool) {
-        guard isBackdropDeferred != deferred else { return }
-        isBackdropDeferred = deferred
-        if deferred {
-            armBackdropHoldCap()
-            // The scroll started after the focus report: the row band is
-            // now the gate, so stop waiting out the rest debounce and the
-            // enrichment debounce, and begin warming the new backdrop
-            // while the band animates.
-            if backdropTask != nil, let content { restForRowChange(on: content) }
-        } else {
-            backdropHoldCapTask?.cancel()
-            backdropHoldCapTask = nil
-            backdropHoldCapElapsed = false
-            releaseDeferredBackdrop()
-        }
+    func resume() {
+        guard !isActive else { return }
+        isActive = true
+        guard let content else { return }
+        backdropContentID = content.id
+        loadEnrichment(for: content)
+        updateBackdropIfReady()
     }
 
-    /// Restart the hold cap for a new row move. The scroll phase can stay
-    /// non-idle across several quick moves, so the cap is per move rather
-    /// than per scroll.
-    private func armBackdropHoldCap() {
-        backdropHoldCapTask?.cancel()
-        backdropHoldCapElapsed = false
-        backdropHoldCapTask = Task { [weak self] in
-            try? await Task.sleep(
-                for: .milliseconds(SiloTheme.Skyline.marqueeBackdropHoldCapMilliseconds)
-            )
-            guard !Task.isCancelled, let self, self.isBackdropDeferred else { return }
-            self.backdropHoldCapElapsed = true
-            self.releaseDeferredBackdrop()
-        }
-    }
-
-    /// Apply the latest held swap, if any. Safe while the hold is still set:
-    /// a later update during the same scroll is held again until the phase
-    /// change or the next cap.
-    private func releaseDeferredBackdrop() {
-        guard hasDeferredBackdropUpdate else { return }
-        hasDeferredBackdropUpdate = false
-        updateBackdropIfReady(ignoringHold: true)
-    }
-
-    private func updateBackdropIfReady(ignoringHold: Bool = false) {
+    private func updateBackdropIfReady() {
         guard isActive, let content, backdropContentID == content.id else { return }
-        if isBackdropDeferred, !ignoringHold, !backdropHoldCapElapsed {
-            hasDeferredBackdropUpdate = true
-            warmDeferredBackdrop()
-            return
-        }
         if let artwork = resolvedArtwork {
             displayedArtwork = artwork
             sampleTintIfNeeded(for: artwork.url)
@@ -868,25 +744,6 @@ final class TVFocusMarqueeModel {
             tintColor = .siloBackground
             tintTask?.cancel()
             lastSampledTintURL = nil
-        }
-    }
-
-    /// The hold only exists to keep the crossfade's compositing out of the
-    /// row-change animation. The expensive half of a swap — the fetch, the
-    /// hero-size decode, and the palette sample — runs on the pipeline's
-    /// background queues, so start it now instead of after the scroll
-    /// settles. When the hold lifts the swap reads both from memory and the
-    /// crossfade begins on the same frame. Row changes are single moves, so
-    /// this is at most one warm per rested row change.
-    private func warmDeferredBackdrop() {
-        guard let artwork = resolvedArtwork,
-              artwork.url != displayedArtwork?.url,
-              artwork.url != warmedDeferredBackdropURL,
-              let url = URL(string: artwork.url) else { return }
-        warmedDeferredBackdropURL = artwork.url
-        backdropWarmTask?.cancel()
-        backdropWarmTask = Task {
-            await PosterImageCache.warmHeroBackdrop(url)
         }
     }
 

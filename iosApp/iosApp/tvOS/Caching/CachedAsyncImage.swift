@@ -35,12 +35,19 @@ struct CachedAsyncImage: View {
     var body: some View {
         GeometryReader { geometry in
             let resolvedSize = targetSize ?? geometry.size
-            let warmedImage = prefetchedImage()
+            let imageRequest = request(for: resolvedSize)
+            // A gated rail must not discard artwork that has already been
+            // decoded at its display size when LazyImage's request becomes nil.
+            // This is a memory-cache lookup only; it starts no image work.
+            let retainedImage = artworkLoadingEnabled ? nil : imageRequest.flatMap {
+                ImagePipeline.shared.cache[$0]?.image
+            }
+            let warmedImage = retainedImage ?? prefetchedImage()
             let loadAnimation: Animation? = reduceMotion || warmedImage != nil
                 ? nil
                 : .easeOut(duration: SiloTheme.slowDuration)
             LazyImage(
-                request: artworkLoadingEnabled ? request(for: resolvedSize) : nil,
+                request: artworkLoadingEnabled ? imageRequest : nil,
                 transaction: Transaction(animation: loadAnimation)
             ) { state in
                 if let image = state.image {
@@ -126,6 +133,93 @@ struct CachedAsyncImage: View {
         .frame(width: size.width, height: size.height)
     }
 }
+
+#if os(tvOS)
+/// Episode strips retain the painted image independently of the request gate.
+/// Pausing new work must never replace every visible card's image subtree.
+struct TVEpisodeArtwork: View {
+    let url: String
+    let thumbhash: String?
+    let size: CGSize
+    let isVisible: Bool
+
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.tvArtworkLoadingEnabled) private var loadingEnabled
+    @State private var retainedImage: PlatformImage?
+    @State private var retainedKey: ImageKey?
+
+    private struct ImageKey: Hashable {
+        let url: String
+        let width: CGFloat
+        let height: CGFloat
+    }
+
+    private struct LoadKey: Hashable {
+        let image: ImageKey
+        let visible: Bool
+        let enabled: Bool
+    }
+
+    var body: some View {
+        let key = ImageKey(url: url, width: size.width * displayScale, height: size.height * displayScale)
+        let request = URL(string: url).map {
+            PosterImageCache.displayRequest(url: $0, pixelSize: CGSize(width: key.width, height: key.height))
+        }
+        let cached = isVisible ? request.flatMap { ImagePipeline.shared.cache[$0]?.image } : nil
+        let image = isVisible ? (retainedKey == key ? retainedImage : nil) ?? cached : nil
+        Group {
+            if let image {
+                Image(platformImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .transition(.opacity)
+            } else if isVisible {
+                ThumbhashImage(thumbhash: thumbhash)
+            } else {
+                Color.siloSurface
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .task(id: LoadKey(image: key, visible: isVisible, enabled: loadingEnabled)) {
+            guard isVisible else {
+                retainedImage = nil
+                retainedKey = nil
+                return
+            }
+            guard retainedKey != key || retainedImage == nil else { return }
+            // Cached artwork paints even during a fast scroll. No request or
+            // decode is needed, and the image branch keeps the same identity.
+            if let cached {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    retainedKey = key
+                    retainedImage = cached
+                }
+                return
+            }
+            guard loadingEnabled, let request else { return }
+            do {
+                let loaded = try await ImagePipeline.shared.image(for: request)
+                guard !Task.isCancelled else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    retainedKey = key
+                    retainedImage = loaded
+                }
+            } catch {
+                // Keep the placeholder; the next visibility/settle change can
+                // retry. Cancelled work must never repaint a departed card.
+            }
+        }
+        .onDisappear {
+            retainedImage = nil
+            retainedKey = nil
+        }
+    }
+}
+#endif
 
 #if os(tvOS)
 private struct TVArtworkLoadingEnabledKey: EnvironmentKey {

@@ -17,6 +17,10 @@ struct EpisodeThumbCard: View {
     /// card must start that episode. Ordinary Home and browse thumbnails keep
     /// the source-aware detail-card presentation.
     var usesProvidedTapAction: Bool = false
+    /// Use one episode caption beneath the artwork on Series pages.
+    var usesEpisodeCaption = false
+    var defersOffscreenArtwork = false
+    var onArtworkVisibilityChange: ((Bool) -> Void)? = nil
     /// tvOS-only shortcut invoked by the remote's Play/Pause button while
     /// this card owns focus. Select continues to invoke `action`.
     var playAction: (() -> Void)? = nil
@@ -28,13 +32,17 @@ struct EpisodeThumbCard: View {
     var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
+    var initialIsFavorite = false
+    var onSetFavorite: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
+    @State private var favoriteOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
+    @State private var artworkIsVisible = false
     #endif
     /// iOS 26 zoom transition namespace, shared from `MainTabView`. Lets the
     /// tapped thumbnail act as the `.matchedTransitionSource` for the zoom into
@@ -101,8 +109,16 @@ struct EpisodeThumbCard: View {
         }
         .frame(width: cardWidth)
         .focusSection()
+        .onScrollVisibilityChange(threshold: 0.01) { isVisible in
+            guard defersOffscreenArtwork else { return }
+            artworkIsVisible = isVisible
+            onArtworkVisibilityChange?(isVisible)
+        }
         .onChange(of: item.userState?.played) { _, _ in
             playedOverride = nil
+        }
+        .onChange(of: initialIsFavorite) { _, _ in
+            favoriteOverride = nil
         }
         .task(id: continueWatchingMetadataTaskId) {
             guard onRemoveFromContinueWatching != nil else { return }
@@ -164,14 +180,36 @@ struct EpisodeThumbCard: View {
 
     // MARK: - Thumbnail
 
-    private var thumbnail: some View {
-        ZStack(alignment: .bottomLeading) {
-            AsyncImageView(
+    @ViewBuilder
+    private var thumbnailArtwork: some View {
+        #if os(tvOS)
+        if defersOffscreenArtwork {
+            TVEpisodeArtwork(
                 url: imageUrl,
                 thumbhash: item.backdropThumbhash ?? item.posterThumbhash,
-                targetSize: CGSize(width: cardWidth, height: cardHeight),
-                contentMode: .fill
+                size: CGSize(width: cardWidth, height: cardHeight),
+                isVisible: artworkIsVisible || isFocused
             )
+        } else {
+            standardThumbnailArtwork
+        }
+        #else
+        standardThumbnailArtwork
+        #endif
+    }
+
+    private var standardThumbnailArtwork: some View {
+        AsyncImageView(
+            url: imageUrl,
+            thumbhash: item.backdropThumbhash ?? item.posterThumbhash,
+            targetSize: CGSize(width: cardWidth, height: cardHeight),
+            contentMode: .fill
+        )
+    }
+
+    private var thumbnail: some View {
+        ZStack(alignment: .bottomLeading) {
+            thumbnailArtwork
             .frame(width: cardWidth, height: cardHeight)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
@@ -238,6 +276,10 @@ struct EpisodeThumbCard: View {
         playedOverride ?? (item.userState?.played == true)
     }
 
+    private var isFavorite: Bool {
+        favoriteOverride ?? initialIsFavorite
+    }
+
     private var resolvedOverlayData: OverlayData {
         #if os(tvOS)
         if onRemoveFromContinueWatching != nil,
@@ -262,13 +304,25 @@ struct EpisodeThumbCard: View {
         return item.posterUrl ?? ""
     }
 
-    /// Series title for episodes, otherwise the item title.
+    /// Series pages already show the series name in their hero, so their
+    /// primary caption identifies the individual episode instead.
     private var displayTitle: String {
-        item.seriesTitle ?? item.title
+        if usesEpisodeCaption, EpisodeCardCaption.isEpisode(item) {
+            let code: String?
+            if let season = item.seasonNumber, let episode = item.episodeNumber {
+                code = String(format: "S%02d E%02d", season, episode)
+            } else {
+                code = nil
+            }
+            let parts = [code, EpisodeCardCaption.episodeTitle(for: item)].compactMap { $0 }
+            return parts.isEmpty ? item.title : parts.joined(separator: " · ")
+        }
+        return item.seriesTitle ?? item.title
     }
 
     /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
     private var subtitleLine: String? {
+        if usesEpisodeCaption, EpisodeCardCaption.isEpisode(item) { return nil }
         if let episodeLine = EpisodeCardCaption.line(for: item) {
             return episodeLine
         }
@@ -282,7 +336,7 @@ struct EpisodeThumbCard: View {
     }
 
     private var accessibilityDescription: String {
-        var components = [displayTitle]
+        var components = [usesEpisodeCaption ? (item.seriesTitle ?? item.title) : displayTitle]
         if let episodeAccessibilityLabel {
             components.append(episodeAccessibilityLabel)
         } else if let subtitleLine {
@@ -376,6 +430,7 @@ struct EpisodeThumbCard: View {
         (contextPlayTitle != nil && playAction != nil)
             || onOpenContextDetail != nil
             || onSetWatched != nil
+            || onSetFavorite != nil
             || onRemoveFromContinueWatching != nil
     }
 
@@ -407,6 +462,24 @@ struct EpisodeThumbCard: View {
                 Label(
                     isPlayed ? "Mark as Unwatched" : "Mark as Watched",
                     systemImage: isPlayed ? "circle" : "checkmark.circle"
+                )
+            }
+        }
+
+        if let onSetFavorite {
+            Button {
+                let newFavoriteValue = !isFavorite
+                Task { @MainActor in
+                    favoriteOverride = newFavoriteValue
+                    let succeeded = await onSetFavorite(newFavoriteValue)
+                    if !succeeded {
+                        favoriteOverride = nil
+                    }
+                }
+            } label: {
+                Label(
+                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: isFavorite ? "heart.slash" : "heart"
                 )
             }
         }
