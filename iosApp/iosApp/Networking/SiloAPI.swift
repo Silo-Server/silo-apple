@@ -230,21 +230,19 @@ actor SiloAPI {
     }
 
     func itemDetail(contentId: String) async throws -> ItemDetail {
-        try await http.get("/api/v1/catalog/items/\(contentId)", query: await imageSizeQuery)
+        let value = try await v2.catalogItem(id: contentId, imageSize: await imageSizeQuery["image_size"])
+        return try ItemDetail(catalog: value)
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
-        try await http.get(
-            "/api/v1/catalog/series/\(seriesId)/seasons",
-            query: await imageSizeQuery
-        )
+        let items = try await v2.catalogSeasons(seriesId: seriesId, imageSize: await imageSizeQuery["image_size"])
+        return try SeasonsResponse(catalog: items)
     }
 
     func episodes(seriesId: String, seasonNumber: Int) async throws -> EpisodesResponse {
-        try await http.get(
-            "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes",
-            query: await imageSizeQuery
-        )
+        let items = try await v2.catalogEpisodes(seriesId: seriesId, seasonNumber: seasonNumber,
+                                                 imageSize: await imageSizeQuery["image_size"])
+        return try EpisodesResponse(catalog: items)
     }
 
     func watchDetail(contentId: String) async throws -> WatchDetail {
@@ -252,7 +250,7 @@ actor SiloAPI {
     }
 
     func person(id: Int) async throws -> Person {
-        try await http.get("/api/v1/people/\(id)")
+        try await Person(catalog: v2.catalogPerson(id: String(id)))
     }
 
     func refreshPerson(id: Int) async throws -> PersonRefreshQueuedResponse {

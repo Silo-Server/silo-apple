@@ -20,6 +20,111 @@ final class CatalogV2Tests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { updateRequired }), tokens)
     }
 
+    private func playableDetail(fileID: String = "41") throws -> String {
+        var body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailJSON.utf8)) as? [String: Any])
+        body["type"] = "audiobook"
+        body["versions"] = [["file_id": fileID, "file_name": "part-one.m4b", "resolution": "", "codec_video": "", "codec_audio": "aac",
+            "hdr": false, "container": "m4b", "file_size": 123, "duration": 90, "bitrate": 12, "added_at": "2026-09-05T12:00:00.123Z",
+            "presentation_kind": "audiobook_part", "presentation_part_index": 1,
+            "chapters": [["index": 0, "title": "Chapter", "start_seconds": 0, "end_seconds": 90, "source": "embedded"]]]]
+        body["user_data"] = ["played": false, "watched_count": 0, "unplayed_count": 1, "in_progress_count": 1,
+            "position_seconds": 25, "duration_seconds": 90, "last_file_id": fileID]
+        return String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+    }
+
+    func testReadFacadePreservesAudioFilesChaptersAndResume() async throws {
+        let (api, tokens) = try await client()
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        CatalogProtocol.reply(200, try playableDetail())
+        let detail = try await facade.itemDetail(contentId: "book")
+        let context = try XCTUnwrap(AudiobookPlaybackContext(detail: detail))
+        XCTAssertEqual(context.tracks.map(\.fileId), [41])
+        XCTAssertEqual(context.totalDurationSeconds, 90)
+        XCTAssertEqual(context.resumePositionSeconds, 25)
+        XCTAssertEqual(context.chapters.first?.startSeconds, 0)
+        XCTAssertEqual(context.chapters.first?.endSeconds, 90)
+        XCTAssertEqual(detail.userData?.lastFileId, 41)
+        XCTAssertEqual(CatalogProtocol.requests().first?.0.url?.path, "/api/v2/catalog/items/book")
+    }
+
+    func testReadProjectionRejectsUnrepresentableLegacyIDs() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        for id in ["opaque-file", "0", "-1", "999999999999999999999999999999"] {
+            let wire = try decoder.decode(APIv2CatalogRead.CatalogItemDetail.self, from: Data(playableDetail(fileID: id).utf8))
+            XCTAssertThrowsError(try ItemDetail(catalog: wire)) { error in
+                guard case APIv2Error.unsupportedCatalogReadValue = error else { return XCTFail("Unexpected \(error)") }
+            }
+        }
+        let person = try decoder.decode(APIv2CatalogRead.Person.self, from: Data(#"{"id":"23","name":"Person"}"#.utf8))
+        XCTAssertEqual(try Person(catalog: person).id, 23)
+    }
+
+    private func hierarchyReplies() {
+        CatalogProtocol.reply(path: "/api/v2/catalog/series/series/seasons", 200,
+            #"{"items":[{"content_id":"season2","season_number":2,"title":"Two","episode_count":1},{"content_id":"specials","season_number":0,"is_specials":true,"title":"Specials","episode_count":1},{"content_id":"season1","season_number":1,"title":"One","episode_count":2}]}"#)
+        CatalogProtocol.reply(path: "/api/v2/catalog/series/series/seasons/1/episodes", 200,
+            #"{"items":[{"content_id":"ep2","season_number":1,"episode_number":2,"title":"Two","runtime":40},{"content_id":"ep1","season_number":1,"episode_number":1,"title":"One","runtime":40,"files":[{"file_id":"77","hdr":false,"file_size":1234}]}]}"#)
+        CatalogProtocol.reply(path: "/api/v2/catalog/series/series/seasons/2/episodes", 200,
+            #"{"items":[{"content_id":"ep3","season_number":2,"episode_number":1,"title":"Three","runtime":40}]}"#)
+    }
+
+    func testReadFacadePreservesDownloadEpisodeFilesAndSeasonOrdering() async throws {
+        let (api, tokens) = try await client()
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        hierarchyReplies()
+        let seasons = try await facade.seasons(seriesId: "series")
+        XCTAssertEqual(seasons.seasons.sortedForDisplay().map(\.seasonNumber), [0, 1, 2])
+        let episodes = try await facade.episodes(seriesId: "series", seasonNumber: 1)
+        let downloadable = try XCTUnwrap(episodes.episodes.first { $0.contentId == "ep1" })
+        XCTAssertEqual(downloadable.files?.first?.fileId, 77)
+        XCTAssertEqual(downloadable.files?.first?.fileSize, 1234)
+        XCTAssertEqual(downloadable.seasonNumber, 1)
+    }
+
+    func testNextUpUsesV2HierarchyForSameAndNextSeason() async throws {
+        let (api, tokens) = try await client()
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        hierarchyReplies()
+        let next = try await PlayerNextUpEpisode.resolve(contentId: "ep1", seriesId: "series", seriesTitle: "Series",
+            seasonNumber: 1, episodeNumber: 1, api: facade)
+        XCTAssertEqual(next?.contentId, "ep2")
+        let rollover = try await PlayerNextUpEpisode.resolve(contentId: "ep2", seriesId: "series", seriesTitle: "Series",
+            seasonNumber: 1, episodeNumber: 2, api: facade)
+        XCTAssertEqual(rollover?.contentId, "ep3")
+        XCTAssertFalse(CatalogProtocol.requests().contains { $0.0.url!.path.contains("/seasons/0/episodes") })
+    }
+
+    func testNextUpRefusesPartialCurrentSeason() async throws {
+        let (api, tokens) = try await client()
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        hierarchyReplies()
+        CatalogProtocol.reply(path: "/api/v2/catalog/series/series/seasons/1/episodes", 200,
+            #"{"items":[],"page":{"has_more":true,"next_cursor":"unsupported"}}"#)
+        do {
+            _ = try await PlayerNextUpEpisode.resolve(contentId: "ep1", seriesId: "series", seriesTitle: nil,
+                seasonNumber: 1, episodeNumber: 1, api: facade)
+            XCTFail("Expected incomplete hierarchy")
+        } catch APIv2Error.incompleteCatalogRead { }
+    }
+
+    func testMetadataReadPoolRejectsPriorViewerAndRefetches() async throws {
+        let (api, tokens) = try await client()
+        let pool = MetadataRequestPool(api: SiloAPI(tokenStore: tokens, v2: api), tokenStore: tokens)
+        CatalogProtocol.reply(200, try playableDetail())
+        let received = expectation(description: "metadata request captured")
+        CatalogProtocol.hold { received.fulfill() }
+        let request = Task { try await pool.itemDetail(contentId: "book") }
+        await fulfillment(of: [received], timeout: 2)
+        await tokens.setProfileId("new-profile")
+        CatalogProtocol.release()
+        do { _ = try await request.value; XCTFail("Expected changed viewer") }
+        catch HTTPError.requestIdentityChanged { }
+        let fresh = try await pool.itemDetail(contentId: "book")
+        XCTAssertEqual(fresh.versions?.first?.fileId, 41)
+        XCTAssertEqual(CatalogProtocol.requests().count, 2)
+        XCTAssertEqual(CatalogProtocol.requests().last?.0.value(forHTTPHeaderField: "X-Profile-Id"), "new-profile")
+    }
+
     private var detailJSON: String {
         #"{"content_id":"movie:one","type":"movie","title":"One","status":"available","genres":[],"keywords":[],"cast":[],"crew":[],"versions":[],"subtitles":[]}"#
     }
@@ -366,6 +471,8 @@ final class CatalogV2Tests: XCTestCase {
 private final class CatalogProtocol: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var response = (200, "{}")
+    nonisolated(unsafe) private static var routes: [String: (Int, String)] = [:]
+    static func reply(path: String, _ status: Int, _ body: String) { lock.withLock { routes[path] = (status, body) } }
     nonisolated(unsafe) private static var searchAllowed = true
     nonisolated(unsafe) private static var onHeldRequest: (() -> Void)?
     nonisolated(unsafe) private static var pending: (() -> Void)?
@@ -376,7 +483,7 @@ private final class CatalogProtocol: URLProtocol {
     }
     static func denySearch() { lock.withLock { searchAllowed = false } }
     nonisolated(unsafe) private static var recorded: [(URLRequest, Data?)] = []
-    static func reset() { lock.withLock { recorded = []; response = (200, "{}"); searchAllowed = true; onHeldRequest = nil; pending = nil } }
+    static func reset() { lock.withLock { recorded = []; response = (200, "{}"); searchAllowed = true; onHeldRequest = nil; pending = nil; routes = [:] } }
     static func reply(_ status: Int, _ body: String) { lock.withLock { response = (status, body) } }
     static func requests() -> [(URLRequest, Data?)] { lock.withLock { recorded } }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -398,7 +505,7 @@ private final class CatalogProtocol: URLProtocol {
             if request.url?.path == "/api/v2/catalog/search/capabilities" {
                 return (200, "{\"revision\":\"one\",\"state\":\"ready\",\"provider\":\"search\",\"allowed\":\(Self.searchAllowed)}")
             }
-            return Self.response
+            return Self.routes[request.url!.path] ?? Self.response
         }
         let deliver: () -> Void = { [self] in
             let response = HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil,

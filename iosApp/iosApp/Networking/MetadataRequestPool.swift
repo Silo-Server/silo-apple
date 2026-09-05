@@ -112,7 +112,13 @@ final class MetadataRequestPool: @unchecked Sendable {
     private let episodesFlights = MetadataSingleFlight<EpisodesKey, EpisodesResponse>()
     private let watchDetailFlights = MetadataSingleFlight<WatchDetailKey, WatchDetail>()
 
-    private init() {}
+    private let api: SiloAPI
+    private let tokenStore: TokenStore
+
+    init(api: SiloAPI = .shared, tokenStore: TokenStore = .shared) {
+        self.api = api
+        self.tokenStore = tokenStore
+    }
 
     func itemDetail(
         contentId: String,
@@ -124,14 +130,18 @@ final class MetadataRequestPool: @unchecked Sendable {
             freshnessDiscriminator: freshnessDiscriminator
         )
         return try await itemDetailFlights.value(for: key) {
-            try await SiloAPI.shared.itemDetail(contentId: contentId)
+            let value = try await self.api.itemDetail(contentId: contentId)
+            guard await self.requestScope() == key.scope else { throw HTTPError.requestIdentityChanged }
+            return value
         }
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
         let key = SeasonsKey(scope: await requestScope(), seriesID: seriesId)
         return try await seasonsFlights.value(for: key) {
-            try await SiloAPI.shared.seasons(seriesId: seriesId)
+            let value = try await self.api.seasons(seriesId: seriesId)
+            guard await self.requestScope() == key.scope else { throw HTTPError.requestIdentityChanged }
+            return value
         }
     }
 
@@ -142,10 +152,12 @@ final class MetadataRequestPool: @unchecked Sendable {
             seasonNumber: seasonNumber
         )
         return try await episodesFlights.value(for: key) {
-            try await SiloAPI.shared.episodes(
+            let value = try await self.api.episodes(
                 seriesId: seriesId,
                 seasonNumber: seasonNumber
             )
+            guard await self.requestScope() == key.scope else { throw HTTPError.requestIdentityChanged }
+            return value
         }
     }
 
@@ -157,7 +169,7 @@ final class MetadataRequestPool: @unchecked Sendable {
     }
 
     private func requestScope() async -> RequestScope {
-        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        let auth = await tokenStore.captureOrdinaryRequestAuth()
         return RequestScope(account: auth?.account, profileID: auth?.profileId)
     }
 }

@@ -11,6 +11,7 @@ enum APIv2Error: LocalizedError, Sendable {
     case invalidCatalogQuery
     case invalidCatalogContinuation
     case incompleteCatalogRead
+    case unsupportedCatalogReadValue
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -21,6 +22,8 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .unsupportedCatalogReadValue:
+            return "This item uses a value this client cannot support. Please update the client."
         case .incompleteCatalogRead:
             return "The server returned an incomplete catalog list. Reload to try again."
         case .invalidCatalogQuery:
