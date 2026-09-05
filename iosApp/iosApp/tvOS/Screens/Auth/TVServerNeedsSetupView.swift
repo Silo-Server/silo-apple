@@ -117,7 +117,10 @@ struct TVServerNeedsSetupView: View {
                 await MainActor.run {
                     isChecking = false
                     guard !Task.isCancelled else { return }
-                    self.error = "Could not reach the server. Check that it is running and try again."
+                    self.error = ServerNeedsSetupMessage.forError(
+                        error,
+                        unreachable: "Could not reach the server. Check that it is running and try again."
+                    )
                 }
             }
         }
