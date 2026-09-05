@@ -27,8 +27,8 @@ concurrency:
   group: testflight-release
   cancel-in-progress: false
 
-# Least privilege: the jobs only check out code and talk to Apple via the ASC
-# API key. They never use GITHUB_TOKEN to write to the repo.
+# Apple build jobs only read the repository. The source publication job gets
+# contents: write so it can attach rebuild sources before binary distribution.
 permissions:
   contents: read
 
@@ -38,6 +38,13 @@ env:
   TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS: "true"
 
 jobs:
+  source:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-source.yml
+    with:
+      release_tag: ${{ github.event_name == 'push' && github.ref_name || format('source-{0}', github.sha) }}
+
   # Resolve the target platform from either the dispatch input or the tag's
   # +ios / +tvos build-metadata suffix, so both trigger paths share one gate.
   setup:
@@ -84,7 +91,7 @@ jobs:
           BUILD_NUMBERS_FILE="$GITHUB_OUTPUT" bundle exec fastlane ios reserve_build_numbers
 
   ios:
-    needs: [setup, build-numbers]
+    needs: [setup, build-numbers, source]
     # Skip only when the selection is tvOS-only. 'both' and 'ios' both run iOS.
     # No status function in the if -> implicit success() gate on needs, so a
     # failed build-numbers job skips this build.
@@ -139,13 +146,14 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
           TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
+          SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
 
   tvos:
     # No longer needs: ios — build numbers are reserved up front, so tvOS runs in
     # parallel with iOS rather than after it. (Trade-off: on a both run, tvOS now
     # releases even if iOS fails; the platforms' build-number sequences are
     # independent, so a gap is harmless.)
-    needs: [setup, build-numbers]
+    needs: [setup, build-numbers, source]
     # Skip only when the selection is iOS-only. Implicit success() gate on needs.
     if: ${{ needs.setup.outputs.platform != 'ios' }}
     runs-on: macos-15
@@ -198,3 +206,4 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}
           TESTFLIGHT_EXTERNAL_GROUPS: ${{ secrets.TESTFLIGHT_EXTERNAL_GROUPS }}
+          SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}

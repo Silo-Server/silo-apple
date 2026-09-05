@@ -286,7 +286,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(native.count, 1)
         XCTAssertEqual(native.first?.container, "mkv")
         XCTAssertEqual(native.first?.trackIdentity, "ffmpeg_stream_index")
-        XCTAssertEqual(native.first?.assStyling, false)
+        XCTAssertEqual(native.first?.assStyling, true)
+        XCTAssertEqual(native.first?.fontAttachments, true)
         XCTAssertFalse(native.first?.codecs.contains("xsub") ?? true)
         XCTAssertEqual(ApplePlaybackV3Capabilities.normalizedSubtitleCodec("srt"), "subrip")
     }
@@ -1339,8 +1340,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         XCTAssertTrue(original.subtitles.embeddedBitmap)
         XCTAssertFalse(original.subtitles.sidecarBitmap)
-        XCTAssertFalse(original.subtitles.assStyling)
-        XCTAssertFalse(original.subtitles.fontAttachments)
+        XCTAssertTrue(original.subtitles.assStyling)
+        XCTAssertTrue(original.subtitles.fontAttachments)
         for delivery in snapshot.context.deliveries.values {
             XCTAssertEqual(delivery.features, [])
             XCTAssertFalse(delivery.authHeaderRefresh)
@@ -1531,6 +1532,47 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testEmptySubtitleInventoryStartsDownloadedIdentityAtZero() {
         XCTAssertEqual(PlayerViewModel.protocolV3DownloadedSubtitleBaseTrackCount([]), 0)
+    }
+
+    func testBurnInSelectionSurvivesInventoryBeforeAndAfterLoadEstablishes() async {
+        let model = PlayerViewModel()
+        let plan = makePlan(selectedSubtitleIndex: 3, subtitleMode: "burn_in",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 3, source: "embedded")])
+        let rows = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan)
+        let selectedID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        model.armAdoptedProtocolV3TrackIntent(plan: plan, request: request)
+        model.subtitleTracks = rows
+        // Inventory can publish repeatedly before finishLoad returns. Each
+        // publication starts from the plan's selected row, then applies pending
+        // renderer intent. The final pass must not mistake local-Off for Off.
+        for established in [false, false, true, true] {
+            model.selectedSubtitleId = rows.first(where: \.isSelected)?.trackId
+            model.applyPendingSubtitleSelections(
+                aetherSubtitleTracks: [], publishedSubtitleTracks: rows,
+                loadIsEstablished: established
+            )
+            XCTAssertEqual(model.selectedSubtitleId, selectedID,
+                           "Lost burn-in selection with established=\(established)")
+            XCTAssertNil(model.aetherEngine.activeSubtitleTrackIndex)
+            XCTAssertFalse(PlayerViewModel.serverSubtitlesDisabledForResume(
+                selectedTrackID: model.selectedSubtitleId, hasExplicitChoice: true,
+                pendingEmbeddedIndex: nil, pendingSidecarID: nil
+            ))
+        }
+        // A subsequent explicit Off plan must still clear the menu selection.
+        let off = makePlan(subtitleMode: "off")
+        model.armAdoptedProtocolV3TrackIntent(plan: off, request: request)
+        model.applyPendingSubtitleSelections(
+            aetherSubtitleTracks: [], publishedSubtitleTracks: [], loadIsEstablished: true
+        )
+        XCTAssertNil(model.selectedSubtitleId)
+        model.cleanup()
+        await model.waitForCleanupCompletion()
     }
 
     func testV3ReplanRestoresServerRenderedSubtitleAsDisplayOnlySelection() {

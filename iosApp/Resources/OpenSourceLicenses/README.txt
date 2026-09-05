@@ -6,11 +6,11 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5 (upstream release
-  6.67.2 plus two Silo-published patches that let the host request the
-  in-place native item handover on an episode change)
+  Revision: f8239c206097c88b53492b281af15cf906c8295b (upstream release
+  6.67.2 plus Silo patches for native item handover, subtitle renditions,
+  source timing, and primary ASS routing with normalized secondary/PiP text)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/745de1ccdc4b226adccdf18f03a28071f0e972d5
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/f8239c206097c88b53492b281af15cf906c8295b
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/6.67.2
   Rebuild: the Package.swift and source tree at that revision
 
@@ -81,3 +81,24 @@ The links above identify the exact source and rebuild inputs for this build,
 including each component's rebuild script and patches at the pinned revision.
 They are this build's corresponding-source pointer; keep them matched to the
 revisions each release actually resolves.
+
+AssKit and local ASS rendering
+  Revision: 0ac384f4478f86abbee826a42a79c3d0c117e96a
+  Source and rebuild: https://github.com/bitxeno/AssKit/tree/0ac384f4478f86abbee826a42a79c3d0c117e96a
+  Wrapper: MIT
+  libass 0.17.4: ISC
+  FreeType 2.14.3: FreeType License; this product uses the FreeType project
+  FriBidi 1.0.16: LGPL-2.1-or-later
+  HarfBuzz 14.2.0: MIT
+  libunibreak 6.1: zlib
+  Complete notices: AssKit-MIT.txt and AssKit-Lib*.txt
+
+  FriBidi is statically linked. Matching app and library source, revision
+  manifest, and instructions for rebuilding with a modified library are
+  published as Silo-source-<app-commit>.tar.gz at:
+  https://github.com/Silo-Server/silo-apple/releases
+  Tagged builds place the archive on their release; manually dispatched
+  TestFlight builds use a source-<app-commit> release. The TestFlight build's
+  What to Test notes include the exact archive URL. No original release
+  signing keys are needed to rebuild for a simulator; physical-device builds
+  use the recipient's signing identity.

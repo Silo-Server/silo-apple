@@ -220,10 +220,10 @@ struct StreamRequest {
     /// The V3 progressive-remux contract uses one non-secret `seek` value to
     /// anchor the media transport. The subtitle artifact family
     /// (`/stream/<session>/subtitles/...`, including its `/fonts` variant)
-    /// additionally carries `file_id` and, for imported subtitles,
-    /// `downloaded_subtitle_id`: plain non-negative catalog row identifiers
-    /// that name a row the caller is already authorized to read, never a
-    /// credential or a signed grant. Every other query field is rejected in
+    /// additionally carries `file_id` and one subtitle identity: an embedded
+    /// stream index, external file key, or downloaded subtitle ID. These pin
+    /// the selected track when inventory order changes; they are not credentials
+    /// or signed grants. Every other query field is rejected in
     /// header-authenticated mode — and duplicates are rejected too — so an old
     /// or compromised server cannot smuggle a signed media credential into
     /// Aether's source URL. Media (non-subtitle) routes keep the seek-only rule.
@@ -234,6 +234,7 @@ struct StreamRequest {
         guard !items.isEmpty else { return true }
         let allowsSubtitleArtifactIdentifiers = isSubtitleArtifactPath(path)
         var seenNames = Set<String>()
+        var hasSubtitleIdentity = false
         for item in items {
             guard seenNames.insert(item.name).inserted, let value = item.value else {
                 return false
@@ -243,10 +244,23 @@ struct StreamRequest {
                 guard let seconds = Double(value), seconds.isFinite, seconds >= 0 else {
                     return false
                 }
-            case "file_id", "downloaded_subtitle_id":
+            case "file_id":
                 guard allowsSubtitleArtifactIdentifiers, isNonNegativeInteger(value) else {
                     return false
                 }
+            case "downloaded_subtitle_id", "embedded_stream_index":
+                guard allowsSubtitleArtifactIdentifiers, !hasSubtitleIdentity,
+                      isNonNegativeInteger(value) else {
+                    return false
+                }
+                hasSubtitleIdentity = true
+            case "external_subtitle_key":
+                guard allowsSubtitleArtifactIdentifiers, !hasSubtitleIdentity,
+                      value.utf8.count == 64,
+                      value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                    return false
+                }
+                hasSubtitleIdentity = true
             default:
                 return false
             }

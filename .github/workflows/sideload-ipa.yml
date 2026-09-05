@@ -121,13 +121,22 @@ jobs:
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
               --title "$TITLE" \
-              --notes "Unsigned iOS/tvOS IPAs for third-party signing / sideloading. See docs/release/sideloading.md."
+              --notes "Unsigned iOS/tvOS IPAs for third-party signing / sideloading. See docs/release/sideloading.md. The Silo-source archive contains the matching source and rebuild instructions." \
+              || gh release view "$TAG" >/dev/null
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Releasing as $TAG (build $BUILD)"
 
+  source:
+    needs: release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-source.yml
+    with:
+      release_tag: ${{ needs.release.outputs.tag }}
+
   build:
-    needs: [setup, release]
+    needs: [setup, release, source]
     runs-on: macos-15
     # Only the release-upload step (tag builds) needs write; scope it to the job
     # rather than the whole workflow to keep the rest at least privilege.

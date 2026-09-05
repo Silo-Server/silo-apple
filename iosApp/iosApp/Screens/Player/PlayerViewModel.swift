@@ -217,6 +217,7 @@ class PlayerViewModel {
     private var pendingProtocolV3TrackChange: QueuedProtocolV3TrackChange?
     @ObservationIgnored
     private var scrubPreviewProvider: AetherScrubPreviewProvider!
+    @MainActor var assSubtitles: ASSSubtitleSession { aetherPlaybackController.assSubtitles }
     @MainActor var aetherEngine: AetherEngine { aetherPlaybackController.engine }
     private var hasActiveAetherSession: Bool {
         aetherPlaybackController.activeSpec != nil
@@ -3123,6 +3124,22 @@ class PlayerViewModel {
             }
         }
 
+        applyPendingSubtitleSelections(
+            aetherSubtitleTracks: aetherSubtitleTracks,
+            publishedSubtitleTracks: publishedSubtitleTracks,
+            loadIsEstablished: loadIsEstablished
+        )
+        applyAutoSubtitlePreferencesIfNeeded()
+    }
+
+    /// Reconcile deferred renderer choices after each inventory publication.
+    /// Burned-in subtitles retain a picker selection without a local renderer.
+    func applyPendingSubtitleSelections(
+        aetherSubtitleTracks: [PlayerTrack],
+        publishedSubtitleTracks: [PlayerTrack],
+        loadIsEstablished: Bool
+    ) {
+        let engine = aetherPlaybackController.engine
         if let wantedIndex = pendingSubtitleFfIndex {
             if wantedIndex < 0 {
                 switch DeferredTrackSelectionGate.outcome(
@@ -3177,11 +3194,14 @@ class PlayerViewModel {
             performDeferredLiveSubtitleCloseIfNeeded()
         }
         if let pendingTrackID = pendingServerRenderedSubtitleTrackId,
+           loadIsEstablished,
            subtitleTracks.contains(where: { $0.trackId == pendingTrackID }) {
+            // Consume this only after the deferred local-Off step above. An
+            // early inventory can arrive before that step is allowed to run;
+            // clearing the restore intent then leaves the next pass showing Off.
             pendingServerRenderedSubtitleTrackId = nil
             selectedSubtitleId = pendingTrackID
         }
-        applyAutoSubtitlePreferencesIfNeeded()
     }
 
     @MainActor
@@ -3832,7 +3852,7 @@ class PlayerViewModel {
         }
     }
 
-    private func armAdoptedProtocolV3TrackIntent(
+    func armAdoptedProtocolV3TrackIntent(
         plan: PlaybackV3Plan,
         request: LoadRequest
     ) {
@@ -6707,7 +6727,6 @@ class PlayerViewModel {
         )
         for descriptor in descriptors {
             let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
-            guard !aetherPlaybackController.containsSubtitle(appTrackID: appTrackID) else { continue }
             aetherPlaybackController.addExternalSubtitleTrack(
                 ExternalSubtitleTrack(
                     url: descriptor.url,
@@ -6720,7 +6739,12 @@ class PlayerViewModel {
                     formatHint: descriptor.codec,
                     nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
                 ),
-                appTrackID: appTrackID
+                appTrackID: appTrackID,
+                fontRequest: descriptor.fontBundleUrl.map { url in
+                    var request = URLRequest(url: url)
+                    request.allHTTPHeaderFields = aetherSubtitleRequestHeaders(for: url)
+                    return request
+                }
             )
         }
         adoptAetherInventory()
