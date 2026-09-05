@@ -8,6 +8,8 @@ enum APIv2Error: LocalizedError, Sendable {
     case incompleteRequestList
     case missingCollectionVersion
     case incompleteCollection
+    case invalidCatalogQuery
+    case invalidCatalogContinuation
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -18,6 +20,10 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .invalidCatalogQuery:
+            return "The catalog query is not valid."
+        case .invalidCatalogContinuation:
+            return "The catalog page could not be continued. Reload to start again."
         case .incompleteCollection:
             return "The collection could not be loaded completely. Reload to try again."
         case .missingCollectionVersion:
@@ -224,6 +230,77 @@ struct APIv2Client: Sendable {
             try await http.requestData(method: method, path: version.path, body: body,
                 headers: ["If-Match": version.etag], requestIdentity: version.identity)
         }
+    }
+
+    // MARK: Catalog contract
+
+    func catalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation = .get) async throws -> APIv2CatalogResult {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        return try await fetchCatalogPage(query: query, operation: operation, cursor: nil, seen: [],
+            identity: identity, account: auth.account)
+    }
+
+    func nextCatalogPage(_ continuation: APIv2CatalogContinuation) async throws -> APIv2CatalogResult {
+        try await fetchCatalogPage(query: continuation.query, operation: continuation.operation,
+            cursor: continuation.cursor, seen: continuation.seen,
+            identity: continuation.identity, account: continuation.account)
+    }
+
+    private func fetchCatalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation,
+        cursor: String?, seen: Set<String>, identity: HTTPRequestIdentity,
+        account: RefreshAccountIdentity) async throws -> APIv2CatalogResult {
+        try await gate()
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == account,
+              current.profileId == identity.profileId else { throw HTTPError.requestIdentityChanged }
+        var parameters = try query.getParameters()
+        var body: Data?
+        if operation == .query {
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            body = try encoder.encode(APIv2CatalogQueryBody(query: query, cursor: cursor))
+            parameters = [:]
+            if let size = query.imageSize { parameters["image_size"] = size }
+        } else {
+            guard (parameters["groups"]?.utf8.count ?? 0) <= 32768 else { throw APIv2Error.invalidCatalogQuery }
+            if let cursor { parameters["cursor"] = cursor }
+        }
+        let page: APIv2CatalogPage = try await mapErrors {
+            let response = try await http.requestData(method: operation == .get ? "GET" : "POST",
+                path: operation == .get ? "/api/v2/catalog" : "/api/v2/catalog/query",
+                query: parameters, body: body, requestIdentity: identity)
+            return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogPage.self, from: response.data)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == account,
+              current.profileId == identity.profileId else { throw HTTPError.requestIdentityChanged }
+        var continuation: APIv2CatalogContinuation?
+        if page.page.hasMore {
+            guard let next = page.page.nextCursor, !next.isEmpty, !seen.contains(next) else {
+                throw APIv2Error.invalidCatalogContinuation
+            }
+            continuation = APIv2CatalogContinuation(query: query, operation: operation, cursor: next,
+                seen: seen.union([next]), identity: identity, account: account)
+        }
+        return APIv2CatalogResult(value: page, continuation: continuation)
+    }
+
+    func catalogFilters(libraryId: String?, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {
+        var query: [String: String] = [:]
+        if let libraryId { query["library_id"] = libraryId }
+        if !includeTechnical { query["skip_technical"] = "true" }
+        return try await requestGet("/api/v2/catalog/filters", query: query)
+    }
+
+    func catalogSearchCapabilities() async throws -> APIv2CatalogSearchCapabilities {
+        try await requestGet("/api/v2/catalog/search/capabilities")
+    }
+
+    func libraryCollectionTab(libraryId: String) async throws -> APIv2LibraryCollectionTab {
+        try await requestGet("/api/v2/library/\(libraryId)/collections")
     }
 
     // MARK: Internals
