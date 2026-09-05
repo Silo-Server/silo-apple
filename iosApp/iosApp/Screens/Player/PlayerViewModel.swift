@@ -2904,6 +2904,9 @@ class PlayerViewModel {
                   aetherPlaybackController.activeLoadEpoch == loadEpoch else {
                 throw CancellationError()
             }
+            if let embedded = prepared.protocolV3?.plan.subtitle.embedded {
+                try aetherPlaybackController.validateEmbeddedSubtitleSelection(embedded.streamIndex)
+            }
         } catch {
             if aetherPlaybackController.activeLoadEpoch == loadEpoch {
                 disposeAetherPlayback()
@@ -2912,9 +2915,6 @@ class PlayerViewModel {
         }
         // Startup ran to completion on this epoch, so the decode route is now
         // settled and deferred track picks may drive the engine.
-        if let embedded = prepared.protocolV3?.plan.subtitle.embedded {
-            try aetherPlaybackController.validateEmbeddedSubtitleSelection(embedded.streamIndex)
-        }
         establishedAetherLoadEpoch = loadEpoch
         scrubPreviewProvider.activate(spec)
         adoptAetherInventory()
