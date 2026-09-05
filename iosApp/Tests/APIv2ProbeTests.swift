@@ -131,6 +131,11 @@ final class APIv2ProbeTests: XCTestCase {
         XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: nil))
         XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: ""))
         XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: "<h1>404 page not found</h1>"))
+        // Only the single trailing newline Go writes is tolerated.
+        XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: " 404 page not found"))
+        XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: "\n404 page not found\n"))
+        XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: "404 page not found\n\n"))
+        XCTAssertFalse(APIv2Probe.isLegacyNotFound(body: "404 page not found \n"))
     }
 
     // MARK: State
