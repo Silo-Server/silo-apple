@@ -40,17 +40,38 @@ final class ConnectionMonitor {
     private(set) var isDeviceOnline = true
     private(set) var serverStatus: ServerStatus = .unknown
     private(set) var contractStatus: ServerContractStatus = .unknown
+    /// Registry id of the server `contractStatus` describes. A verdict is
+    /// only meaningful while that server is the active one: a candidate
+    /// probed during setup, or a server the user has since switched away
+    /// from, must never gate the active session.
+    private(set) var contractServerId: String?
 
-    /// Drive the "server update required" message from this.
+    /// Where "the active server" is read from at record and read time.
+    /// Overridable so tests can drive it without touching the real registry.
+    var activeServerIdProvider: () -> String? = { ServerRegistry.shared.activeServerId }
+
+    /// Drive the "server update required" message from this. False whenever
+    /// the recorded verdict belongs to a server other than the active one.
     var isServerUpdateRequired: Bool {
-        contractStatus == .updateRequired
+        contractStatus == .updateRequired && contractServerId == activeServerIdProvider()
     }
 
-    /// Record the probe outcome for the server the app is connected to. Only
-    /// `.v2` and `.updateServer` are contract evidence; a transport or HTTP
-    /// failure leaves the previous verdict in place, exactly as the
-    /// compatibility rule requires (a timeout is not an old server).
-    func noteContractProbe(_ result: APIv2ProbeResult) {
+    /// Record the probe outcome for `serverId`. The result is dropped when
+    /// that server is not active at record time, so a probe of a setup
+    /// candidate or a probe that outlived a server switch cannot overwrite
+    /// the active verdict. Only `.v2` and `.updateServer` are contract
+    /// evidence; a transport or HTTP failure leaves the previous verdict for
+    /// the same server in place, exactly as the compatibility rule requires
+    /// (a timeout is not an old server).
+    func noteContractProbe(_ result: APIv2ProbeResult, serverId: String) {
+        guard serverId == activeServerIdProvider() else {
+            Self.logger.debug("Dropping v2 contract verdict for a server that is not active")
+            return
+        }
+        if contractServerId != serverId {
+            contractStatus = .unknown
+            contractServerId = serverId
+        }
         switch result {
         case .v2:
             contractStatus = .v2
@@ -67,6 +88,7 @@ final class ConnectionMonitor {
     /// Forget the contract verdict, e.g. when the active server changes.
     func resetContractStatus() {
         contractStatus = .unknown
+        contractServerId = nil
     }
 
     /// Optimistic gate for starting server-backed work: `.unknown` passes so

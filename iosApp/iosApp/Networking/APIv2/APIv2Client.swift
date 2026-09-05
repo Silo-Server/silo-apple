@@ -37,7 +37,7 @@ struct APIv2Client: Sendable {
     init(
         http: HTTPClient = .shared,
         isUpdateRequired: @escaping @Sendable () async -> Bool = {
-            await MainActor.run { ConnectionMonitor.shared.contractStatus == .updateRequired }
+            await MainActor.run { ConnectionMonitor.shared.isServerUpdateRequired }
         }
     ) {
         self.http = http

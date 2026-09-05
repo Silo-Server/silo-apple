@@ -35,17 +35,24 @@ final class AuthService: @unchecked Sendable {
         self.v2 = v2
     }
 
-    /// Runs the v2 contract probe once for a server and records the verdict.
-    /// Throws only for a v1-only server; any other failure is left to the
-    /// request that follows, which reports its own connection error.
-    private func probeContract(serverURL: String, resetFirst: Bool) async throws {
+    /// Runs the v2 contract probe once for a server and returns the verdict
+    /// without recording it. Throws only for a v1-only server; any other
+    /// failure is left to the request that follows, which reports its own
+    /// connection error. Recording is separate so a setup candidate can be
+    /// probed without touching the active server's verdict.
+    private func probeContract(serverURL: String) async throws -> APIv2ProbeResult {
         let result = await contractProbe.probe(serverURL: serverURL)
-        await MainActor.run {
-            if resetFirst { ConnectionMonitor.shared.resetContractStatus() }
-            ConnectionMonitor.shared.noteContractProbe(result)
-        }
         if case .updateServer = result {
             throw APIv2Error.serverUpdateRequired
+        }
+        return result
+    }
+
+    /// Records a probe verdict for `serverId`. The monitor drops it unless
+    /// that server is the active one at record time.
+    private func recordContract(_ result: APIv2ProbeResult, serverId: String) async {
+        await MainActor.run {
+            ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId)
         }
     }
 
@@ -98,9 +105,11 @@ final class AuthService: @unchecked Sendable {
         let fetchedName = await serverIdentityResolver.fetchServerName(serverURL: normalized)
         try Task.checkCancellation()
 
-        // The contract probe runs once per connection. A v1-only server is
-        // reported as update-required here, before anything is committed.
-        try await probeContract(serverURL: normalized, resetFirst: true)
+        // The contract probe runs once per connection. A v1-only candidate is
+        // rejected here, before anything is committed, and nothing is
+        // recorded yet: the candidate is not the active server, so its
+        // verdict must not touch the current session's state.
+        let contractResult = try await probeContract(serverURL: normalized)
         try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
@@ -124,6 +133,9 @@ final class AuthService: @unchecked Sendable {
                 throw ServerRegistryError.persistenceFailed
             }
         }
+        // Now that the candidate is the active server, its verdict is the
+        // one the pilot gate should see.
+        await recordContract(contractResult, serverId: id)
 
         return status
     }
@@ -136,7 +148,9 @@ final class AuthService: @unchecked Sendable {
         let serverId = server.id
         // Refreshing the cached identity is the other moment the contract
         // verdict is (re)established; the result only updates state here.
-        try? await probeContract(serverURL: server.url, resetFirst: false)
+        // The verdict is scoped to the server captured above, so a switch
+        // during the probe drops it instead of mislabelling the new server.
+        await recordContract(await contractProbe.probe(serverURL: server.url), serverId: serverId)
         guard serverRegistry.activeServerId == serverId else { return }
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
               serverRegistry.activeServerId == serverId else {

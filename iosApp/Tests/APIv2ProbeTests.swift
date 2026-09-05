@@ -138,13 +138,19 @@ final class APIv2ProbeTests: XCTestCase {
     @MainActor
     func testConnectionMonitorRecordsOnlyContractEvidence() {
         let monitor = ConnectionMonitor.shared
+        let previousProvider = monitor.activeServerIdProvider
+        addTeardownBlock { @MainActor in
+            monitor.activeServerIdProvider = previousProvider
+            monitor.resetContractStatus()
+        }
+        monitor.activeServerIdProvider = { "server-a" }
         monitor.resetContractStatus()
         XCTAssertEqual(monitor.contractStatus, .unknown)
-        monitor.noteContractProbe(.failure(.timeout))
+        monitor.noteContractProbe(.failure(.timeout), serverId: "server-a")
         XCTAssertEqual(monitor.contractStatus, .unknown, "a timeout is not contract evidence")
-        monitor.noteContractProbe(.updateServer)
+        monitor.noteContractProbe(.updateServer, serverId: "server-a")
         XCTAssertTrue(monitor.isServerUpdateRequired)
-        monitor.noteContractProbe(.failure(.httpStatus(500)))
+        monitor.noteContractProbe(.failure(.httpStatus(500)), serverId: "server-a")
         XCTAssertTrue(monitor.isServerUpdateRequired, "a later 5xx does not clear the verdict")
         monitor.resetContractStatus()
         XCTAssertFalse(monitor.isServerUpdateRequired)
