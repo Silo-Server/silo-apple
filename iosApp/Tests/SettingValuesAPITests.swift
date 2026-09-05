@@ -2234,13 +2234,17 @@ final class SettingValuesAPITests: XCTestCase {
         )
         let refreshAfterWrongURL = await tokenStore.getRefreshToken()
         XCTAssertFalse(wrongURLStored)
-        XCTAssertEqual(refreshAfterWrongURL, "dummy")
+        XCTAssertNil(refreshAfterWrongURL, "Canonical credentials cannot authorize a retargeted origin")
 
         await tokenStore.setServerUrl(identity.serverURL)
+        let afterReturnValue = await tokenStore.refreshAccountIdentity()
+        let afterReturn = try XCTUnwrap(afterReturnValue)
+        let afterReturnCredentialValue = await tokenStore.captureRefreshCredential(expected: afterReturn)
+        let afterReturnCredential = try XCTUnwrap(afterReturnCredentialValue)
         let rotated = await tokenStore.saveRefreshedTokens(
             "placeholder",
             "redacted",
-            replacing: originalRefresh
+            replacing: afterReturnCredential
         )
         XCTAssertTrue(rotated)
         let staleStored = await tokenStore.saveRefreshedTokens(

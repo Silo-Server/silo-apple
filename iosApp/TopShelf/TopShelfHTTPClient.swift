@@ -34,6 +34,22 @@ struct TopShelfHTTPClient {
         self.session = session
     }
 
+    private func credential(serverID: String) -> (access: String, epoch: String)? {
+        do {
+            switch try AccountSessionPersistence(keychain: accountKeychain).load(serverID) {
+            case .session(let value):
+                guard value.origin == defaults.string(forKey: SharedStorage.serverUrlKey),
+                      let access = value.accessToken, let epoch = value.epoch else { return nil }
+                return (access, epoch.uuidString)
+            case .signedOut: return nil
+            case .legacy:
+                guard let access = accountKeychain.get(SharedStorage.accessTokenAccount(for: serverID)),
+                      let epoch = accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID)) else { return nil }
+                return (access, epoch)
+            }
+        } catch { return nil }
+    }
+
     var isPersonalizedContentAllowed: Bool {
         guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else {
             return false
@@ -43,9 +59,7 @@ struct TopShelfHTTPClient {
             state: state,
             serverID: serverID,
             activeProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(
-                SharedStorage.accountEpochAccount(for: serverID)
-            ),
+            accountEpoch: credential(serverID: serverID)?.epoch,
             hasStoredProfileToken: profileKeychain.get(
                 SharedStorage.profileTokenAccount(for: serverID)
             ) != nil
@@ -99,9 +113,7 @@ struct TopShelfHTTPClient {
               isPersonalizedContentAllowed,
               let serverUrl = defaults.string(forKey: SharedStorage.serverUrlKey),
               !serverUrl.isEmpty,
-              let accessToken = accountKeychain.get(
-                SharedStorage.accessTokenAccount(for: serverID)
-              )
+              let accessToken = credential(serverID: serverID)?.access
         else {
             throw Error.notAuthenticated
         }

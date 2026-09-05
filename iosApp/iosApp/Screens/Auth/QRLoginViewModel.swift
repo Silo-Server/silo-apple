@@ -109,6 +109,7 @@ class QRLoginViewModel {
             case .approved:
                 guard let accessToken = response.accessToken,
                       let refreshToken = response.refreshToken,
+                      let user = response.user,
                       let expectedAccount else {
                     finalize(.error(message: "Server approved the session but did not return tokens."))
                     return
@@ -116,6 +117,7 @@ class QRLoginViewModel {
                 try await auth.installSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken,
+                    accountID: String(user.id),
                     expectedAccount: expectedAccount
                 )
                 finalize(.approved)

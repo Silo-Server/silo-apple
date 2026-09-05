@@ -497,11 +497,12 @@ final class ServerRegistry {
     /// `purgeCurrentBinding: false` when the caller already purged the active
     /// binding while still authenticated (AuthService.signOut does, so the
     /// binding resolves against a live session) to avoid duplicate current work.
+    @discardableResult
     func signOut(
         serverId: String,
         purgeCurrentBinding: Bool = true,
         purgeRegistryBindings: Bool = true
-    ) async {
+    ) async -> Bool {
         #if os(iOS) || os(tvOS)
         if purgeCurrentBinding, serverId == activeServerId {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
@@ -510,7 +511,7 @@ final class ServerRegistry {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         }
         #endif
-        await TokenStore.shared.deleteTokens(for: serverId)
+        let durable = await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         // Read *after* the awaits above, not snapshotted at entry: the legacy
         // `profileId` key always describes whichever server is active right
@@ -545,9 +546,10 @@ final class ServerRegistry {
         // that is the case the reason names.
         recordRegistryEvent(
             phase: "signOutServer",
-            outcome: "succeeded",
+            outcome: durable ? "succeeded" : "failed",
             reason: signsOutActiveServer ? "activeServer" : "otherServer"
         )
+        return durable
     }
 
     /// Remove a server entirely (entry + tokens). If it was active, the
@@ -728,7 +730,7 @@ final class ServerRegistry {
         if removesActiveServer {
             await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
         }
-        await TokenStore.shared.deleteTokens(for: serverId)
+        let credentialsRemoved = await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         if removesActiveServer,
            resolveFallbackProfile,
@@ -762,7 +764,7 @@ final class ServerRegistry {
                 Task { await SubtitleProvidersStore.shared.refresh() }
             }
         }
-        return true
+        return credentialsRemoved
     }
 
     // MARK: - ID derivation

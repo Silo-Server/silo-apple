@@ -123,7 +123,7 @@ private func entry(_ id: String, name: String) -> ServerEntry {
 }
 
 private let approvedPoll = DeviceLoginPollResponse(
-    status: "approved", pollAfter: nil, accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600, user: nil
+    status: "approved", pollAfter: nil, accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600, user: AuthUser(id: 12, username: "test", email: "", role: "user", downloadAllowed: nil, impersonation: nil)
 )
 
 private let pendingPoll = DeviceLoginPollResponse(
@@ -421,7 +421,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(api: FakePairingAPI, recorder: PersistRecorder) -> ReceiverPairingCoordinator {
-        ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+        ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
             recorder.persisted.append(Persisted(url: url, access: access))
             return true
         }
@@ -576,7 +576,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         api.pollResponse = approvedPoll
         let recorder = PersistRecorder()
         let gate = PersistGate()
-        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
             await gate.wait()
             recorder.persisted.append(Persisted(url: url, access: access))
             return true
@@ -618,7 +618,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         api.pollResponse = approvedPoll
         let recorder = PersistRecorder()
         let gate = PersistGate()
-        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
             await gate.wait()
             recorder.persisted.append(Persisted(url: url, access: access))
             return true
@@ -747,7 +747,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         let api = FakePairingAPI()
         api.pollResponse = approvedPoll
         let recorder = PersistRecorder()
-        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _ in
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
             guard let lease = await http.beginIdentityTransition() else {
                 return false
             }

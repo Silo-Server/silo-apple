@@ -94,7 +94,13 @@ struct APIv2Client: Sendable {
 
     func currentUser() async throws -> APIv2Account {
         try await gate()
-        return try await mapErrors { try await http.get("/api/v2/account/me") }
+        guard let captured = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let value: APIv2Account = try await mapErrors { try await http.get("/api/v2/account/me") }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == captured.account else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try await tokenStore.bindVerifiedAccount(value.id, expected: current)
+        return value
     }
 
     // MARK: listProgress (profile_scoped)

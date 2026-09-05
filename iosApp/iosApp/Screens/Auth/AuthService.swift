@@ -208,17 +208,18 @@ final class AuthService: @unchecked Sendable {
         try await installSession(
             accessToken: response.accessToken,
             refreshToken: response.refreshToken,
+            accountID: String(response.user.id),
             expectedAccount: expectedAccount
         )
     }
 
-    /// A login response establishes a brand-new session. Wipe every piece of
-    /// prior auth state before persisting the new tokens — no need to carry
-    /// `profileId` or `profileToken` across the boundary, and keeping them
-    /// just strands stale values that the server rejects.
+    /// A login response establishes a new durable session before credentials
+    /// are published. The checked installer clears the previous profile binding
+    /// within the same actor turn while request dispatch remains closed.
     func installSession(
         accessToken: String,
         refreshToken: String,
+        accountID: String,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
@@ -238,11 +239,12 @@ final class AuthService: @unchecked Sendable {
         if let serverID = serverRegistry.activeServerId {
             launchPreferences.clearRememberedProfile(for: serverID)
         }
-        await TokenStore.shared.clearTokens()
-        await TokenStore.shared.saveTokens(
-            accessToken: accessToken,
-            refreshToken: refreshToken
-        )
+        do {
+            try await TokenStore.shared.installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: accountID)
+        } catch {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            throw error
+        }
         await clearAllCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
     }
@@ -726,18 +728,19 @@ final class AuthService: @unchecked Sendable {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
+        let durable: Bool
         if let signingOutServerId {
-            await ServerRegistry.shared.signOut(
+            durable = await ServerRegistry.shared.signOut(
                 serverId: signingOutServerId,
                 purgeCurrentBinding: false,
                 purgeRegistryBindings: false
             )
         } else {
-            await TokenStore.shared.clearTokens()
+            durable = await TokenStore.shared.clearTokens()
         }
         await clearAllCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
-        return true
+        return durable
     }
 
     /// Decide whether a captured credential can authorize local sign-out.

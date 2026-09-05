@@ -52,7 +52,7 @@ final class ReceiverPairingCoordinator {
     private(set) var state: State = .idle
 
     private let api: any PairingDeviceAuthorizing
-    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String) async -> Bool
+    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String, _ accountID: String) async -> Bool
     private var signedInNames: [String] = []
     private var consented = false
     private var pendingPush: (serverURL: String, serverName: String?)?
@@ -70,7 +70,7 @@ final class ReceiverPairingCoordinator {
 
     init(
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
-        persist: @escaping @MainActor (String, String?, String, String) async -> Bool = ReceiverPairingCoordinator.persistServer
+        persist: @escaping @MainActor (String, String?, String, String, String) async -> Bool = ReceiverPairingCoordinator.persistServer
     ) {
         self.api = api
         self.persist = persist
@@ -298,10 +298,10 @@ final class ReceiverPairingCoordinator {
                 try Task.checkCancellation() // a cancel that raced the network must win — persist nothing
                 switch poll.status {
                 case "approved":
-                    guard let access = poll.accessToken, let refresh = poll.refreshToken else {
+                    guard let access = poll.accessToken, let refresh = poll.refreshToken, let user = poll.user else {
                         throw PairingDeviceAPI.APIError.decode
                     }
-                    guard await persist(normalized, serverName, access, refresh) else {
+                    guard await persist(normalized, serverName, access, refresh, String(user.id)) else {
                         return
                     }
                     signedInNames.append(displayName)
@@ -335,7 +335,7 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
-    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String) async -> Bool {
+    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String, accountID: String) async -> Bool {
         let id = ServerRegistry.serverId(for: url)
         let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, profileId: nil, lastUsedAt: Date())
         // Device authorization can replace the account for an already-saved
@@ -354,6 +354,7 @@ final class ReceiverPairingCoordinator {
             return false
         }
         let previousTokenServerID = await TokenStore.shared.getActiveServerId()
+        let previousTokenServerURL = await TokenStore.shared.getServerUrl()
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
@@ -363,13 +364,19 @@ final class ReceiverPairingCoordinator {
         }
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
-        await TokenStore.shared.setProfileId(nil)
-        await TokenStore.shared.setProfileToken(nil)
-        await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
+        do {
+            try await TokenStore.shared.installAccountSession(accessToken: access, refreshToken: refresh, accountID: accountID)
+        } catch {
+            await TokenStore.shared.setServerUrl(previousTokenServerURL)
+            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
         guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
             holding: transitionLease
         ) else {
+            await TokenStore.shared.setServerUrl(previousTokenServerURL)
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
