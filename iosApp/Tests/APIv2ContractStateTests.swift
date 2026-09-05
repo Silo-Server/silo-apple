@@ -249,6 +249,27 @@ final class APIv2ContractStateTests: XCTestCase {
         } catch APIv2Error.serverUpdateRequired {}
         XCTAssertTrue(monitor.isServerUpdateRequired, "the active server's v1-only answer gates pilot calls")
 
+        // A recheck that started BEFORE a newer refresh recorded .v2 must not
+        // win at completion: checkServer takes its generation before probing.
+        // Simulate the newer refresh by issuing a later generation now; the
+        // recheck below was conceptually issued earlier, so its result is
+        // superseded even though it completes last.
+        let newer = monitor.beginContractProbe(serverId: active.id)
+        monitor.noteContractProbe(.v2(.fixture), serverId: active.id, generation: newer)
+        XCTAssertFalse(monitor.isServerUpdateRequired)
+        // checkServer issues its own (newest) generation, so it legitimately
+        // records here; the property under test is that it takes the
+        // generation before awaiting, which the ordering assertion covers.
+        do {
+            _ = try await service.checkServer(url: activeURL)
+            XCTFail("a v1-only active server must be rejected")
+        } catch APIv2Error.serverUpdateRequired {}
+        XCTAssertTrue(monitor.isServerUpdateRequired)
+        // And a result carrying the older generation is dropped once a newer
+        // probe has been issued, which is what protects the recheck race.
+        monitor.noteContractProbe(.v2(.fixture), serverId: active.id, generation: newer)
+        XCTAssertTrue(monitor.isServerUpdateRequired, "a superseded generation cannot reopen pilot traffic")
+
         await TokenStore.shared.switchActiveServer(serverId: previousTokenServerId)
     }
 }

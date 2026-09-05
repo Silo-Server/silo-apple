@@ -121,12 +121,18 @@ final class AuthService: @unchecked Sendable {
         // rechecking the server that IS active (e.g. "Check again" on the
         // needs-setup screen), a v1-only answer must land so the pilot gate
         // closes instead of letting v2 calls keep hitting an old server.
+        // The generation is issued before the await so a "Check again" that
+        // overlaps a foreground or recovery refresh cannot declare itself the
+        // newest result at completion and overwrite a newer verdict.
+        let generation = await MainActor.run {
+            ConnectionMonitor.shared.beginContractProbe(serverId: id)
+        }
         let contractResult: APIv2ProbeResult
         do {
             contractResult = try await probeContract(serverURL: normalized)
         } catch APIv2Error.serverUpdateRequired {
             if serverRegistry.activeServerId == id {
-                await recordContract(.updateServer, serverId: id)
+                await recordContract(.updateServer, serverId: id, generation: generation)
             }
             throw APIv2Error.serverUpdateRequired
         }
@@ -155,7 +161,7 @@ final class AuthService: @unchecked Sendable {
         }
         // Now that the candidate is the active server, its verdict is the
         // one the pilot gate should see.
-        await recordContract(contractResult, serverId: id)
+        await recordContract(contractResult, serverId: id, generation: generation)
 
         return status
     }
