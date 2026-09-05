@@ -127,6 +127,9 @@ struct AetherLoadSpec {
     /// picking "English" ends up rendering the first sidecar in the plan. Both
     /// arrays are therefore built at a single append site.
     let externalSubtitleAppTrackIDs: [Int64?]
+    /// The selected native row uses the same picker ID space as sidecars,
+    /// but resolves directly to its container stream, without an external slot.
+    let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
 
     /// The bridge this app assumes for codecs Aether cannot stream-copy, when
     /// a caller does not name one.
@@ -189,6 +192,7 @@ struct AetherLoadSpec {
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         aetherStartPosition = timeline.aetherStartPosition
         self.audioSourceStreamIndex = audioSourceStreamIndex
+        embeddedSubtitleAlias = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -255,6 +259,7 @@ struct AetherLoadSpec {
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         aetherStartPosition = timeline.aetherStartPosition
         audioSourceStreamIndex = nil
+        embeddedSubtitleAlias = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -295,9 +300,7 @@ struct AetherLoadSpec {
         resumeSourcePosition: Double? = nil,
         panelIsInHDRMode: Bool? = nil
     ) throws {
-        guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
-            throw ValidationError.unsupportedDelivery(plan.delivery)
-        }
+        try ApplePlaybackV3PlanAdapter.validate(plan)
         let resolvedPlanSourceURL: URL?
         if let resolveURL {
             resolvedPlanSourceURL = resolveURL(plan.stream.url)
@@ -331,9 +334,10 @@ struct AetherLoadSpec {
         // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
-        if let artifact = plan.subtitle.artifact,
+        if plan.subtitle.embedded == nil,
+           let artifact = plan.subtitle.artifact,
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
-            guard abs(artifact.timingOriginSeconds - plan.timeline.timelineOffsetSeconds) < 0.001 else {
+            guard artifact.timingOriginSeconds.isFinite, abs(artifact.timingOriginSeconds) < 0.001 else {
                 throw ValidationError.unsupportedSubtitleTimingOrigin(
                     origin: artifact.timingOriginSeconds,
                     timelineOffset: plan.timeline.timelineOffsetSeconds
@@ -369,7 +373,8 @@ struct AetherLoadSpec {
                     resourceURL: artifactURL,
                     trustedOriginURLs: [sourceURL, apiOriginURL].compactMap { $0 }
                 ),
-                formatHint: artifact.format
+                formatHint: artifact.format,
+                nativeTimelineOffsetSeconds: plan.timeline.timelineOffsetSeconds
             ))
             // A declared artifact the inventory does not name has no stable
             // Silo id; leaving the slot empty keeps the arrays parallel and
@@ -393,6 +398,16 @@ struct AetherLoadSpec {
         }
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
+        if PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let embedded = plan.subtitle.embedded,
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            embeddedSubtitleAlias = (
+                SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex),
+                embedded.streamIndex
+            )
+        } else {
+            embeddedSubtitleAlias = nil
+        }
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,

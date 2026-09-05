@@ -1,11 +1,11 @@
 Source: silo-server internal/playback/testdata/protocol_v3
-Server ref: main
-Server commit: 745b767f73088309953972de9ea23f33d854496e
-Vendored: 2026-08-25
+Server commit: 5afc5bdd616e4f9c304889c8cadc4c6d31fbc7b7
+Server pull request: https://github.com/Silo-Server/silo-server/pull/938
+Vendored: 2026-09-04
 
-All nine files come from internal/playback/testdata/protocol_v3. Six of them are
+All nine JSON files come from internal/playback/testdata/protocol_v3. Six are
 also published byte-identically under docs/design/schemas/playback-v3/v3/fixtures/valid;
 attempt_keys.json, conformance_matrix.json and subtitle_inventory.json exist only
 under testdata, so the testdata directory is the single copy source.
 
-Refresh these files from the exact server commit above, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.
+Refresh these files together from the server, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.

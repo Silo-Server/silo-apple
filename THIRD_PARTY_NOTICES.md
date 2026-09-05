@@ -15,7 +15,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 6.67.2 + Silo handover patches | `745de1ccdc4b226adccdf18f03a28071f0e972d5` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 6.67.2 + Silo handover/subtitle patches | `f68ad1309001d879ad69f95dd03b9c57410550b1` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.0.0 | `421e13be7061de67d91b85ac34a6b22a002b164f` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
@@ -32,16 +32,18 @@ Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
-`6.67.2` plus two commits: one lets a host request the in-place native item
+`6.67.2` plus three commits: one lets a host request the in-place native item
 handover on a foreground episode change through `prepareForItemReplacement()`,
 and one makes the remote-HLS bypass honour that handover instead of dropping
-the item across the swap. Both modifications are published under the LGPL on
+the item across the swap. The third preserves complete native subtitle renditions
+and maps external subtitle timing after an upstream media reanchor. These modifications
+are published under the LGPL on
 the fork branch below, which satisfies the license's source obligation for
 modified code. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/745de1ccdc4b226adccdf18f03a28071f0e972d5>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/f68ad1309001d879ad69f95dd03b9c57410550b1>
   (fork branch `silo/host-requested-item-handover`)
 - Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/6.67.2>
 - Rebuild input: `Package.swift` and the source tree at that revision

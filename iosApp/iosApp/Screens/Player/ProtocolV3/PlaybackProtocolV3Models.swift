@@ -39,6 +39,7 @@ enum PlaybackProtocolV3 {
     static let clientManagedDynamicRangeClaim = "client_managed_dynamic_range_v1"
     /// Scoped to `original_http`: after probing the complete source, Aether
     /// maps the plan's selected audio ordinal to its concrete stream id.
+    static let embeddedSubtitlesFeature = "embedded_subtitles_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
 
     /// Delivery classes are the unit a client negotiates in
@@ -205,7 +206,16 @@ struct PlaybackV3OutputContext: Codable, Equatable {
     let outputContextId: String?
 }
 
+struct PlaybackV3NativeEmbeddedSubtitleCapability: Codable, Equatable {
+    let container: String
+    let codecs: [String]
+    let trackIdentity: String
+    let assStyling: Bool
+    let fontAttachments: Bool
+}
+
 struct PlaybackV3DeliverySubtitleCapabilities: Codable, Equatable {
+    var nativeEmbedded: [PlaybackV3NativeEmbeddedSubtitleCapability]? = nil
     let embeddedText: Bool
     let sidecarText: Bool
     let assStyling: Bool
@@ -460,10 +470,16 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
     let fontBundleUrl: String?
 }
 
+struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
+    let streamIndex: Int
+    var containerTrackId: String? = nil
+}
+
 struct PlaybackV3SubtitleDecision: Codable, Equatable {
     let mode: String
     let trackId: String?
     let artifact: PlaybackV3SubtitleArtifact?
+    var embedded: PlaybackV3EmbeddedSubtitle? = nil
     /// Authoritative list of every subtitle track for this plan. Select a track
     /// by echoing an entry's `trackId` or `combinedIndex` — never by counting
     /// tracks, summing arrays, or taking max(index) + 1.

@@ -2,6 +2,8 @@ import SwiftUI
 
 /// A single, shell-level buffering indicator shared by every player surface.
 struct PlayerBufferingCapsule: View {
+    var label: LocalizedStringKey = "Loading…"
+
     var body: some View {
         HStack(spacing: spacing) {
             ProgressView()
@@ -9,7 +11,7 @@ struct PlayerBufferingCapsule: View {
                 .progressViewStyle(.circular)
                 .scaleEffect(spinnerScale)
 
-            Text("Loading…")
+            Text(label)
                 .font(.siloSmall.weight(.medium))
                 .foregroundStyle(.white.opacity(0.82))
         }
@@ -23,7 +25,7 @@ struct PlayerBufferingCapsule: View {
         .allowsHitTesting(false)
         .transition(.opacity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading")
+        .accessibilityLabel(label)
     }
 
     private var spacing: CGFloat {

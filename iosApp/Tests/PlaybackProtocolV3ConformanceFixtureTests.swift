@@ -25,7 +25,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
             bundleClass: Self.self
         )
         XCTAssertEqual(matrix.schemaVersion, 1)
-        XCTAssertEqual(matrix.plannerScenarios.count, 20)
+        XCTAssertEqual(matrix.plannerScenarios.count, 21)
         XCTAssertEqual(matrix.replanScenarios.count, 10)
         XCTAssertEqual(matrix.protocolScenarios.count, 8)
 
