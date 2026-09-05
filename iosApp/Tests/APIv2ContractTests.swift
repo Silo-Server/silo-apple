@@ -116,7 +116,7 @@ final class APIv2ContractTests: XCTestCase {
         XCTAssertTrue(page.page.hasMore)
         XCTAssertEqual(
             page.page.nextCursor,
-            "eyJ2IjoxLCJwIjp7InUiOiIyMDI2LTAxLTAyVDAzOjA0OjA1WiIsIm0iOiJtb3ZpZS04ZjJjMWEifX0.i9Iz-3URhvDchLeIECW5NkDYdAgcktS3Fyrj9sKPbE0"
+            "eyJ2IjoxLCJwIjp7InUiOiIyMDI2LTAxLTAyVDAzOjA0OjA1WiIsIm0iOiJtb3ZpZS04ZjJjMWEifX0.7fNOMpzpMssIVUy2sr5knHSZhSdx8HPH7x4WWFoLLDQ"
         )
     }
 
