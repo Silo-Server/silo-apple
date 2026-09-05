@@ -166,7 +166,7 @@ final class APIv2ProbeTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [APIv2StubProtocol.self]
         let http = HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokenStore)
-        let api = ContinuumAPI(
+        let api = SiloAPI(
             http: http,
             tokenStore: tokenStore,
             v2: APIv2Client(http: http, isUpdateRequired: { false })
