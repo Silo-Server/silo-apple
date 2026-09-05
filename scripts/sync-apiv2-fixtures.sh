@@ -4,6 +4,13 @@
 # in SOURCE. Only the selected fixtures, the index entries that describe them,
 # and fixtures.schema.json are copied; the OpenAPI document is never vendored.
 #
+# The bytes come from the server checkout's HEAD commit (`git show HEAD:...`),
+# never from its working tree, so the commit recorded in SOURCE always
+# reproduces the vendored files. The script refuses to run while the fixture
+# paths are dirty in that checkout; commit or stash first. There is no
+# --allow-dirty escape hatch on purpose: a SOURCE that names a commit the
+# fixtures did not come from is worse than no SOURCE at all.
+#
 # Usage: scripts/sync-apiv2-fixtures.sh /path/to/silo-server
 set -euo pipefail
 
@@ -37,17 +44,35 @@ SELECTED=(
 [ -d "$SRC" ] || { echo "no fixtures at $SRC" >&2; exit 1; }
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 
+# Refuse a dirty source: the bytes below are read from HEAD, and a working
+# tree or index that differs from HEAD means the caller is probably looking at
+# fixtures the recorded commit cannot reproduce. Untracked files count too.
+dirty="$(git -C "$SERVER" status --porcelain -- "$SRC_DIR" "$SCHEMA")"
+if [ -n "$dirty" ]; then
+  {
+    echo "refusing to vendor: $SRC_DIR or $SCHEMA is modified in $SERVER"
+    echo "SOURCE records the HEAD commit, so the fixtures must come from it."
+    echo "Commit or stash the server changes first (no --allow-dirty is offered on purpose):"
+    echo "$dirty"
+  } >&2
+  exit 1
+fi
+
+# Read from HEAD, not the working tree, so a clean status is not even required
+# for byte-for-byte reproducibility from the commit recorded in SOURCE.
+show_head() { git -C "$SERVER" show "HEAD:$1"; }
+
 mkdir -p "$DEST"
 find "$DEST" -maxdepth 1 -name '*.json' -delete
 for name in "${SELECTED[@]}"; do
-  cp "$SRC/$name.json" "$DEST/$name.json"
+  show_head "$SRC_DIR/$name.json" > "$DEST/$name.json"
 done
 
 names_json="$(printf '%s\n' "${SELECTED[@]}" | jq -R . | jq -s .)"
-jq --argjson names "$names_json" \
+show_head "$SRC_DIR/index.json" | jq --argjson names "$names_json" \
   '{fixtures: [.fixtures[] | select(.name as $n | $names | index($n))]}' \
-  "$SRC/index.json" > "$DEST/index.json"
-cp "$SERVER/$SCHEMA" "$DEST/fixtures.schema.json"
+  > "$DEST/index.json"
+show_head "$SCHEMA" > "$DEST/fixtures.schema.json"
 
 sha="$(git -C "$SERVER" rev-parse HEAD)"
 ref="$(git -C "$SERVER" rev-parse --abbrev-ref HEAD)"
@@ -57,8 +82,10 @@ ref="$(git -C "$SERVER" rev-parse --abbrev-ref HEAD)"
   printf 'Server commit: %s\n' "$sha"
   printf 'Vendored: %s\n\n' "$(date -u +%Y-%m-%d)"
   printf 'Selected fixtures only (see SELECTED in scripts/sync-apiv2-fixtures.sh); index.json is\n'
-  printf 'filtered to those entries. Refresh with scripts/sync-apiv2-fixtures.sh <silo-server checkout>\n'
-  printf 'from the server commit above, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.\n'
+  printf 'filtered to those entries. Bytes are read from the server commit above (git show HEAD:...),\n'
+  printf 'never from a working tree. Refresh with scripts/sync-apiv2-fixtures.sh <silo-server checkout>\n'
+  printf 'with the fixture paths clean in that checkout, then regenerate Silo.xcodeproj with\n'
+  printf 'cd iosApp && xcodegen generate.\n'
 } > "$DEST/SOURCE"
 
 echo "vendored ${#SELECTED[@]} fixtures from $sha into $DEST"
