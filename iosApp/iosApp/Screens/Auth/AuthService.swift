@@ -13,6 +13,8 @@ final class AuthService: @unchecked Sendable {
     private let serverIdentityResolver: ServerIdentityResolver
     private let serverRegistry: ServerRegistry
     private let launchPreferences: ProfileLaunchPreferences
+    private let contractProbe: APIv2Probe
+    private let v2: APIv2Client
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -22,11 +24,45 @@ final class AuthService: @unchecked Sendable {
     init(
         serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
         serverRegistry: ServerRegistry = .shared,
-        launchPreferences: ProfileLaunchPreferences = .shared
+        launchPreferences: ProfileLaunchPreferences = .shared,
+        contractProbe: APIv2Probe = APIv2Probe(),
+        v2: APIv2Client = APIv2Client()
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
         self.launchPreferences = launchPreferences
+        self.contractProbe = contractProbe
+        self.v2 = v2
+    }
+
+    /// Runs the v2 contract probe once for a server and returns the verdict
+    /// without recording it. Throws only for a v1-only server; any other
+    /// failure is left to the request that follows, which reports its own
+    /// connection error. Recording is separate so a setup candidate can be
+    /// probed without touching the active server's verdict.
+    private func probeContract(serverURL: String) async throws -> APIv2ProbeResult {
+        let result = await contractProbe.probe(serverURL: serverURL)
+        if case .updateServer = result {
+            throw APIv2Error.serverUpdateRequired
+        }
+        return result
+    }
+
+    /// Records a probe verdict for `serverId`. The monitor drops it unless
+    /// that server is the active one at record time, and, when `generation`
+    /// is given, unless it is still the latest probe issued for that server.
+    private func recordContract(
+        _ result: APIv2ProbeResult,
+        serverId: String,
+        generation: UInt64? = nil
+    ) async {
+        await MainActor.run {
+            if let generation {
+                ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId, generation: generation)
+            } else {
+                ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId)
+            }
+        }
     }
 
     // MARK: - Stored State Accessors
@@ -78,11 +114,33 @@ final class AuthService: @unchecked Sendable {
         let fetchedName = await serverIdentityResolver.fetchServerName(serverURL: normalized)
         try Task.checkCancellation()
 
+        // The contract probe runs once per connection. A v1-only candidate is
+        // rejected here, before anything is committed. Nothing is recorded
+        // for a candidate that is not the active server, so its verdict
+        // cannot touch the current session's state; when the caller is
+        // rechecking the server that IS active (e.g. "Check again" on the
+        // needs-setup screen), a v1-only answer must land so the pilot gate
+        // closes instead of letting v2 calls keep hitting an old server.
+        // The generation is issued before the await so a "Check again" that
+        // overlaps a foreground or recovery refresh cannot declare itself the
+        // newest result at completion and overwrite a newer verdict.
+        let generation = await MainActor.run {
+            ConnectionMonitor.shared.beginContractProbe(serverId: id)
+        }
+        let contractResult: APIv2ProbeResult
+        do {
+            contractResult = try await probeContract(serverURL: normalized)
+        } catch APIv2Error.serverUpdateRequired {
+            if serverRegistry.activeServerId == id {
+                await recordContract(.updateServer, serverId: id, generation: generation)
+            }
+            throw APIv2Error.serverUpdateRequired
+        }
+        try Task.checkCancellation()
+
         // Commit only after the candidate proves it can serve setup status.
-        let status: SetupStatus = try await HTTPClient.shared.getUnauthenticated(
-            serverURL: normalized,
-            path: "/api/v1/auth/setup"
-        )
+        let v2Status = try await v2.setupStatus(serverURL: normalized)
+        let status = SetupStatus(needsSetup: v2Status.needsSetup)
         try Task.checkCancellation()
 
         // Success: upsert the registry entry and make it active.
@@ -101,6 +159,9 @@ final class AuthService: @unchecked Sendable {
                 throw ServerRegistryError.persistenceFailed
             }
         }
+        // Now that the candidate is the active server, its verdict is the
+        // one the pilot gate should see.
+        await recordContract(contractResult, serverId: id, generation: generation)
 
         return status
     }
@@ -111,6 +172,22 @@ final class AuthService: @unchecked Sendable {
     func refreshActiveServerName() async {
         guard let server = serverRegistry.activeServer else { return }
         let serverId = server.id
+        // Refreshing the cached identity is the other moment the contract
+        // verdict is (re)established; the result only updates state here.
+        // The verdict is scoped to the server captured above, so a switch
+        // during the probe drops it instead of mislabelling the new server.
+        // Foreground return and unreachable->reachable recovery can both call
+        // this concurrently; the generation makes sure an older probe that
+        // finishes last cannot overwrite the newer verdict.
+        let generation = await MainActor.run {
+            ConnectionMonitor.shared.beginContractProbe(serverId: serverId)
+        }
+        await recordContract(
+            await contractProbe.probe(serverURL: server.url),
+            serverId: serverId,
+            generation: generation
+        )
+        guard serverRegistry.activeServerId == serverId else { return }
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
               serverRegistry.activeServerId == serverId else {
             return

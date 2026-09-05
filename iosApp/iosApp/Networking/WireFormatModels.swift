@@ -59,9 +59,10 @@ struct Profile: Codable {
     }
 }
 
-/// PUT body for `/api/v1/profiles/{id}`. All fields are optional so the
-/// caller can patch one or many at a time. Wire format mirrors the
-/// server's `updateProfileRequest`.
+/// Profile fields a screen wants to change. All fields are optional so the
+/// caller can patch one or many at a time. `ContinuumAPI.updateProfile`
+/// converts this to the `PATCH /api/v2/profiles/{id}` body (`APIv2ProfilePatch`);
+/// nil here means "leave unchanged" — nothing in this shape can clear a field.
 struct UpdateProfileBody: Encodable {
     /// Streaming quality ceiling preset ("auto", "1080p", "4k"). Encodes as
     /// `quality_preference`. Written by the onboarding tour's quality step.
@@ -75,6 +76,32 @@ struct UpdateProfileBody: Encodable {
     var autoSkipIntro: Bool?
     var autoSkipCredits: Bool?
     var autoSkipRecap: Bool?
+
+    /// The v2 PATCH body. Only set members are sent; string enums pass through
+    /// unchanged so an unsupported value is rejected by the server's
+    /// validation rather than silently rewritten here. The legacy `""`
+    /// "inherit" sentinel on the language members becomes the v2 clearing
+    /// form (JSON `null`): v2 reads `""` as a value, not as "no preference".
+    var asAPIv2Patch: APIv2ProfilePatch {
+        var patch = APIv2ProfilePatch()
+        patch.qualityPreference = qualityPreference.map(APIv2QualityPreference.init(wireValue:))
+        if let subtitleLanguage { patch.subtitleLanguage = Self.languagePatch(subtitleLanguage) }
+        patch.subtitleMode = subtitleMode.map(APIv2SubtitleMode.init(wireValue:))
+        patch.showForcedSubtitles = showForcedSubtitles
+        if let preferredMetadataLanguage {
+            patch.preferredMetadataLanguage = Self.languagePatch(preferredMetadataLanguage)
+        }
+        patch.autoSkipIntro = autoSkipIntro
+        patch.autoSkipCredits = autoSkipCredits
+        patch.autoSkipRecap = autoSkipRecap
+        return patch
+    }
+
+    /// `""` is the legacy "inherit" sentinel for a language member; on v2 that
+    /// intent is expressed by clearing the member.
+    private static func languagePatch(_ value: String) -> APIv2Patch<String> {
+        value.isEmpty ? .clear : .set(value)
+    }
 }
 
 struct ProfilesResponse: Codable {

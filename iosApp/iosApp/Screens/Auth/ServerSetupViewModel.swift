@@ -26,11 +26,21 @@ class ServerSetupViewModel {
     var isLoading: Bool = false
     var error: String?
 
-    private let auth = AuthService.shared
+    /// Probes one candidate URL; see `AuthService.checkServer(url:)`.
+    /// Injectable so tests can drive the error handling without a network.
+    private let checkServer: @Sendable (String) async throws -> SetupStatus
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerSetup"
     )
+
+    init(
+        checkServer: @escaping @Sendable (String) async throws -> SetupStatus = {
+            try await AuthService.shared.checkServer(url: $0)
+        }
+    ) {
+        self.checkServer = checkServer
+    }
 
     /// Validate the server URL and determine whether setup or login is needed.
     func connect(router: AppRouter) async {
@@ -56,15 +66,25 @@ class ServerSetupViewModel {
 
         var attempted: [String] = []
         var lastError: Error?
+        // A candidate that answered but is v1-only is a verdict about the
+        // server, not a connectivity failure. It is not the active server, so
+        // nothing is recorded in ConnectionMonitor and no Home pill will
+        // appear; the message has to be shown here. It wins over "could not
+        // reach" from the other candidates, which typically fail on the same
+        // host with a different scheme or port.
+        var sawUpdateRequired = false
         for candidate in candidates {
             attempted.append(candidate)
             do {
-                let status = try await auth.checkServer(url: candidate)
+                let status = try await checkServer(candidate)
                 router.authState = .needsLogin
                 if status.needsSetup {
                     router.navigate(to: .serverNeedsSetup)
                 }
                 return
+            } catch APIv2Error.serverUpdateRequired {
+                sawUpdateRequired = true
+                lastError = APIv2Error.serverUpdateRequired
             } catch let connectError {
                 lastError = connectError
             }
@@ -73,7 +93,9 @@ class ServerSetupViewModel {
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
-        self.error = "Could not reach a Silo server at that address."
+        self.error = sawUpdateRequired
+            ? APIv2Error.serverUpdateRequiredMessage
+            : "Could not reach a Silo server at that address."
     }
 
     func buildCandidateURLs() throws -> [String] {

@@ -111,6 +111,18 @@ extension SiloAPI {
         if let cursor, !cursor.isEmpty { query["since"] = cursor }
         return try await http.get("/api/v1/progress", query: query)
     }
+
+    /// One page of the active profile's watch progress from
+    /// `GET /api/v2/progress` (the pilot's profile-scoped read). The `since`
+    /// delta pull above is a different operation and deliberately stays v1.
+    func listProgress(
+        status: APIv2ProgressStatus? = nil,
+        libraryId: String? = nil,
+        limit: Int? = nil,
+        cursor: String? = nil
+    ) async throws -> APIv2ProgressPage {
+        try await v2.listProgress(status: status, libraryId: libraryId, limit: limit, cursor: cursor)
+    }
 }
 
 // MARK: - Request/response helpers

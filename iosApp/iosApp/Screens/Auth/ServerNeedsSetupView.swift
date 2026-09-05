@@ -98,7 +98,10 @@ struct ServerNeedsSetupView: View {
                 await MainActor.run {
                     isChecking = false
                     guard !Task.isCancelled else { return }
-                    self.error = "Couldn't reach the server. Check it's running and try again."
+                    self.error = ServerNeedsSetupMessage.forError(
+                        error,
+                        unreachable: "Couldn't reach the server. Check it's running and try again."
+                    )
                 }
             }
         }

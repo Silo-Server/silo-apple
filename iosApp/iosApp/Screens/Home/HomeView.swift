@@ -89,6 +89,17 @@ struct HomeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .top) {
+            // tvOS has no offline pill; the update-required message still
+            // needs a home, or a v1-only server blocks pilot calls silently.
+            if ConnectionMonitor.shared.isServerUpdateRequired {
+                ServerUpdateRequiredPill()
+                    .padding(.top, 40)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isServerUpdateRequired)
         .task {
             homeSectionPreferences.refresh()
             await viewModel.loadSections()
@@ -177,11 +188,19 @@ struct HomeView: View {
                     .padding(.top, 64)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(2)
+            } else if ConnectionMonitor.shared.isServerUpdateRequired {
+                // The server is reachable but v1-only: pilot v2 operations
+                // are refused until it is updated.
+                ServerUpdateRequiredPill()
+                    .padding(.top, 64)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
             }
 
         }
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
+        .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isServerUpdateRequired)
         #if !os(macOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif

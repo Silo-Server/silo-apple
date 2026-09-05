@@ -1,0 +1,10 @@
+Source: silo-server contracts/api/v2/fixtures (plus contracts/api/v2/fixtures.schema.json)
+Server ref: api-v2/phase-3-pilot
+Server commit: 7bd3af1430962a8b6662510caffe49e2954c4055
+Vendored: 2026-09-05
+
+Selected fixtures only (see SELECTED in scripts/sync-apiv2-fixtures.sh); index.json is
+filtered to those entries. Bytes are read from the server commit above (git show HEAD:...),
+never from a working tree. Refresh with scripts/sync-apiv2-fixtures.sh <silo-server checkout>
+with the fixture paths clean in that checkout, then regenerate Silo.xcodeproj with
+cd iosApp && xcodegen generate.

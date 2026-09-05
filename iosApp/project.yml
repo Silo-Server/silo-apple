@@ -297,6 +297,8 @@ targets:
           - "Fixtures/SettingsContract/**"
           - "Fixtures/PlaybackV3"
           - "Fixtures/PlaybackV3/**"
+          - "Fixtures/APIv2"
+          - "Fixtures/APIv2/**"
       # The vendored settings contract. SettingsConformanceTests reads both
       # files out of the test bundle at runtime and fails hard when either is
       # missing, so the build phase is stated rather than left to XcodeGen's
@@ -333,6 +335,43 @@ targets:
       - path: Tests/Fixtures/PlaybackV3/subtitle_inventory.json
         buildPhase: resources
       - path: Tests/Fixtures/PlaybackV3/SOURCE
+        buildPhase: none
+      # API v2 contract fixtures selected for the pilot (scripts/sync-apiv2-fixtures.sh).
+      # Listed explicitly for the same reason as Playback V3: the bundle must
+      # not silently lose a cross-repository gate.
+      - path: Tests/Fixtures/APIv2/authentication_required.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/fixtures.schema.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/get_current_user_ok.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/get_setup_status_ok.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/get_system_info_ok.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/index.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/list_progress_offset_rejected.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/list_progress_ok.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/list_progress_profile_header_required.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/not_acceptable.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/not_found.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/profile_verification_required.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/rate_limited.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/update_profile_null_not_clearable.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/update_profile_ok.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/validation_failed_body.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/SOURCE
         buildPhase: none
     dependencies:
       - target: Silo

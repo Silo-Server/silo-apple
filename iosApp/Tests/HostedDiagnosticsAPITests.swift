@@ -1880,7 +1880,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 ))
                 XCTAssertEqual(SelfHostedDiagnosticsStubProtocol.requestedPaths(), [
                     "/api/v1/diagnostics/status",
-                    "/api/v1/auth/me",
+                    "/api/v2/account/me",
                     "/api/v1/diagnostics/reports",
                 ])
 
@@ -3362,10 +3362,12 @@ private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
                     200,
                     #"{"status":"available","server_instance_id":"\#(Self.serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#
                 )
-            case ("GET", "/api/v1/auth/me"):
+            case ("GET", "/api/v2/account/me"):
+                // The coordinator reads the account over v2 now (pilot
+                // operation getCurrentUser); the body mirrors the v2 fixture.
                 return (
                     200,
-                    #"{"id":42,"username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","download_allowed":true,"impersonation":null}"#
+                    #"{"id":"42","username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","permissions":[],"download_allowed":true}"#
                 )
             case ("POST", "/api/v1/diagnostics/reports"):
                 return (
