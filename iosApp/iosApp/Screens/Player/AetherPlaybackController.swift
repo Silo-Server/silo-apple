@@ -168,6 +168,10 @@ final class AetherPlaybackController {
             spec.externalSubtitleAppTrackIDs,
             declaredTrackCount: spec.options.externalSubtitles.count
         )
+        if let alias = spec.embeddedSubtitleAlias {
+            aetherSubtitleIDByAppID[alias.appTrackID] = alias.streamIndex
+            appSubtitleIDByAetherID[alias.streamIndex] = alias.appTrackID
+        }
         didPublishFirstFrame = false
         didPublishEnd = false
         return epoch

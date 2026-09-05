@@ -127,6 +127,9 @@ struct AetherLoadSpec {
     /// picking "English" ends up rendering the first sidecar in the plan. Both
     /// arrays are therefore built at a single append site.
     let externalSubtitleAppTrackIDs: [Int64?]
+    /// The selected native row uses the same picker ID space as sidecars,
+    /// but resolves directly to its container stream, without an external slot.
+    let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
 
     /// The bridge this app assumes for codecs Aether cannot stream-copy, when
     /// a caller does not name one.
@@ -189,6 +192,7 @@ struct AetherLoadSpec {
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         aetherStartPosition = timeline.aetherStartPosition
         self.audioSourceStreamIndex = audioSourceStreamIndex
+        embeddedSubtitleAlias = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -255,6 +259,7 @@ struct AetherLoadSpec {
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         aetherStartPosition = timeline.aetherStartPosition
         audioSourceStreamIndex = nil
+        embeddedSubtitleAlias = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -393,6 +398,16 @@ struct AetherLoadSpec {
         }
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
+        if PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let embedded = plan.subtitle.embedded,
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            embeddedSubtitleAlias = (
+                SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex),
+                embedded.streamIndex
+            )
+        } else {
+            embeddedSubtitleAlias = nil
+        }
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,

@@ -39,6 +39,52 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ))
     }
 
+    func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
+        let nativePlan = makePlan(
+            container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11)
+        )
+        let spec = try AetherLoadSpec(
+            validating: nativePlan, sessionID: "session-v3", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/movie.mkv")
+        )
+        let row = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: nativePlan).first)
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        controller.beginLoad(spec)
+        // AI-live primary selection clears only Aether's primary slot. The
+        // native picker identity must remain usable by the secondary slot.
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertTrue(controller.containsSubtitle(appTrackID: row.trackId))
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: row.trackId), 11)
+        XCTAssertEqual(controller.appSubtitleID(forAetherID: 11), row.trackId)
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: row.trackId, slot: .secondary))
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
+
+        // The next load replaces native identity, including when the same
+        // combined ordinal now resolves to a different container stream.
+        let replacement = makePlan(
+            container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 12)
+        )
+        controller.beginLoad(try AetherLoadSpec(
+            validating: replacement, sessionID: "session-next", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/movie.mkv")
+        ))
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: row.trackId), 12)
+        XCTAssertEqual(controller.appSubtitleID(forAetherID: 11), 11)
+
+        controller.beginLoad(try AetherLoadSpec(
+            validating: makePlan(), sessionID: "session-off", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/movie.mkv")
+        ))
+        XCTAssertFalse(controller.containsSubtitle(appTrackID: row.trackId))
+        XCTAssertNil(controller.aetherSubtitleID(forAppID: row.trackId))
+    }
+
     func testNativeResumeIdentityDoesNotOverrideLaterLocalSelection() {
         let plan = makePlan(container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
             subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
