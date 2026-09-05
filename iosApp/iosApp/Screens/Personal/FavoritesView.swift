@@ -193,9 +193,10 @@ struct FavoritesView: View {
     var isTopMenuFocused: Bool
     var onTopMenuFocusRequest: (() -> Void)?
 
-    @State private var items: [BrowseItem] = []
-    @State private var isLoading = false
-    @State private var error: ErrorState?
+    @State private var list = PersonalListViewModel(kind: .favorites)
+    private var items: [BrowseItem] { list.items }
+    private var isLoading: Bool { list.isLoading }
+    private var error: ErrorState? { list.error }
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(tvOS)
     @State private var selectedSection: FavoriteMediaSection = .movies
@@ -248,7 +249,7 @@ struct FavoritesView: View {
                     IOSPersonalMediaPosterLayout(items: filteredIOSItems) { item, state in
                         guard !state.isFavorite else { return }
                         withAnimation {
-                            items.removeAll { $0.contentId == item.contentId }
+                            list.remove(id: item.contentId)
                         }
                     }
                 }
@@ -266,7 +267,7 @@ struct FavoritesView: View {
         ContentUnavailableView(
             "No Favorite \(selectedSection.rawValue)",
             systemImage: selectedSection == .movies ? "film" : "tv",
-            description: Text("Add favorites from a detail page and they will appear here.")
+            description: Text(list.hasMore ? "Load more to see additional items." : "Add favorites from a detail page and they will appear here.")
         )
         .frame(maxWidth: .infinity, minHeight: 360)
     }
@@ -274,7 +275,7 @@ struct FavoritesView: View {
 
     var body: some View {
         Group {
-            if !items.isEmpty {
+            if !items.isEmpty || list.hasMore {
                 #if os(iOS)
                 iosGridContent
                 #else
@@ -299,6 +300,8 @@ struct FavoritesView: View {
             }
         }
         .siloPageBackground()
+        .safeAreaInset(edge: .bottom) { PersonalListPagingControls(model: list, onMoveUp: onTopMenuFocusRequest) }
+        .onDisappear { list.cancel() }
         .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Favorites" : nil))
         .task {
             await loadFavorites()
@@ -336,7 +339,7 @@ struct FavoritesView: View {
                         onUserStateChanged: { state in
                             guard !state.isFavorite else { return }
                             withAnimation {
-                                items.removeAll { $0.contentId == item.contentId }
+                                list.remove(id: item.contentId)
                             }
                         }
                     )
@@ -424,7 +427,7 @@ struct FavoritesView: View {
                 .font(.system(size: 30, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface)
 
-            Text("Add favorites from any detail page and they will appear here.")
+            Text(list.hasMore ? "Load more to see additional items." : "Add favorites from any detail page and they will appear here.")
                 .font(.system(size: 22))
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -448,7 +451,7 @@ struct FavoritesView: View {
             onUserStateChanged: { state in
                 guard !state.isFavorite else { return }
                 withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                    items.removeAll { $0.contentId == item.contentId }
+                    list.remove(id: item.contentId)
                 }
             }
         )
@@ -488,26 +491,7 @@ struct FavoritesView: View {
     }
 
     private func loadFavorites() async {
-        if items.isEmpty,
-           let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.favorites) {
-            items = cached.items
-        }
-        if items.isEmpty {
-            isLoading = true
-        }
-        error = nil
-        do {
-            let response: CatalogResponse = try await SiloAPI.shared.favorites(
-                offset: 0, limit: 100
-            )
-            ResponseCache.shared.set(response, for: CacheKey.favorites)
-            items = response.items
-        } catch let err {
-            if items.isEmpty {
-                self.error = ErrorState(err)
-            }
-        }
-        isLoading = false
+        await list.reload()
     }
 }
 

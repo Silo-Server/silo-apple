@@ -58,6 +58,109 @@ final class PersonalListsV2Tests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { updateRequired }), tokens)
     }
 
+    @MainActor
+    func testViewModelContinuesEmptyAndDuplicatePages() async throws {
+        ResponseCache.shared.clearAll()
+        let (api, tokens) = try await client()
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        CatalogProtocol.reply(200, #"{"items":[],"page":{"has_more":true,"next_cursor":"one"}}"#)
+        await model.reload()
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertTrue(model.hasMore, "Load More must remain available on an empty page")
+        CatalogProtocol.reply(200, #"{"items":[{"content_id":"same","title":"Same","type":"movie"},{"content_id":"same","title":"Same","type":"movie"}],"page":{"has_more":true,"next_cursor":"two"}}"#)
+        await model.loadMore()
+        XCTAssertEqual(model.items.map(\.contentId), ["same"])
+        XCTAssertTrue(model.hasMore)
+        CatalogProtocol.reply(200, terminal)
+        await model.loadMore()
+        XCTAssertEqual(model.items.count, 1)
+        XCTAssertFalse(model.hasMore)
+        XCTAssertEqual(CatalogProtocol.requests().count, 3)
+    }
+
+    @MainActor
+    func testViewModelRetainsCardsAndRequiresExplicitReloadAfterFailure() async throws {
+        ResponseCache.shared.clearAll()
+        let (api, tokens) = try await client()
+        let model = PersonalListViewModel(kind: .watchlist, api: api, tokenStore: tokens)
+        CatalogProtocol.reply(200, watchlistFixture)
+        await model.reload()
+        CatalogProtocol.reply(400, #"{"type":"https://siloserver.org/docs/api/v2/problems/invalid_cursor","title":"Expired","status":400,"detail":"Reload list"}"#)
+        await model.loadMore()
+        XCTAssertEqual(model.items.map(\.contentId), ["series:c"])
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.hasMore)
+        await model.loadMore()
+        XCTAssertEqual(CatalogProtocol.requests().count, 2)
+        CatalogProtocol.reply(200, terminal)
+        await model.reload()
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testViewModelCacheContainsCardsButCannotResumeAfterFailedRefresh() async throws {
+        ResponseCache.shared.clearAll()
+        let (api, tokens) = try await client()
+        let first = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        CatalogProtocol.reply(200, favoritesFixture)
+        await first.reload()
+        let restored = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        CatalogProtocol.reply(503, #"{"type":"about:blank","title":"Unavailable","status":503,"detail":"Try later"}"#)
+        await restored.reload()
+        XCTAssertEqual(restored.items.map(\.contentId), ["movie:c"])
+        XCTAssertFalse(restored.hasMore)
+        XCTAssertNotNil(restored.error)
+        await restored.loadMore()
+        XCTAssertEqual(CatalogProtocol.requests().count, 2)
+        await tokens.setProfileId("another-profile")
+        await restored.reload()
+        XCTAssertTrue(restored.items.isEmpty, "A different viewer must not hydrate cached cards")
+    }
+
+    @MainActor
+    func testViewModelClearsCardsWhenViewerChangesDuringPaging() async throws {
+        ResponseCache.shared.clearAll()
+        let (api, tokens) = try await client()
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        CatalogProtocol.reply(200, favoritesFixture)
+        await model.reload()
+        let captured = expectation(description: "page captured")
+        CatalogProtocol.hold { captured.fulfill() }
+        let request = Task { await model.loadMore() }
+        await fulfillment(of: [captured], timeout: 2)
+        await tokens.setProfileId("new-profile")
+        CatalogProtocol.release()
+        await request.value
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertFalse(model.hasMore)
+        XCTAssertNotNil(model.error)
+        CatalogProtocol.reply(200, terminal)
+        await model.reload()
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testViewModelCancellationCannotPublishHeldResponse() async throws {
+        ResponseCache.shared.clearAll()
+        let (api, tokens) = try await client()
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        CatalogProtocol.reply(200, favoritesFixture)
+        let captured = expectation(description: "page captured")
+        CatalogProtocol.hold { captured.fulfill() }
+        let request = Task { await model.reload() }
+        await fulfillment(of: [captured], timeout: 2)
+        model.cancel()
+        CatalogProtocol.release()
+        await request.value
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertFalse(model.isLoading)
+        CatalogProtocol.reply(200, terminal)
+        await model.reload()
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertNil(model.error)
+    }
+
     func testActualServerFixturesDecodeWithoutCatalogTotalsOrWindow() throws {
         let decoder = HTTPClient.makeJSONDecoder()
         for (fixture, id) in [(favoritesFixture, "movie:c"), (watchlistFixture, "series:c")] {
