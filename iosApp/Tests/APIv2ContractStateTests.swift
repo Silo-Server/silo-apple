@@ -152,6 +152,67 @@ final class APIv2ContractStateTests: XCTestCase {
         monitor.noteServerResponded()
         XCTAssertEqual(fired, 0, "a stale verdict for another server never triggers a re-probe")
     }
+
+    // MARK: checkServer rechecking the active server
+
+    /// "Check again" on the needs-setup screen re-runs `checkServer` for the
+    /// server that is already active. A v1-only answer there must be
+    /// recorded so the pilot gate closes; the same answer for a non-active
+    /// candidate must leave the active verdict alone.
+    func testCheckServerRecordsUpdateRequiredForTheActiveServerOnly() async throws {
+        let previousTokenServerId = await TokenStore.shared.getActiveServerId()
+        let suiteName = "APIv2ContractStateTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let registry = ServerRegistry(
+            defaults: SharedDefaults(suite: suite, standard: suite),
+            keychain: SharedKeychain(service: suiteName)
+        )
+        let activeURL = "https://active.example"
+        let active = ServerEntry(
+            id: ServerRegistry.serverId(for: activeURL),
+            url: activeURL,
+            fetchedName: "Active",
+            profileId: nil,
+            lastUsedAt: .now
+        )
+        registry.addOrUpdate(active)
+        _ = await registry.switchTo(serverId: active.id)
+        activeServerId = active.id
+
+        // Every probed URL answers as a v1-only server.
+        APIv2StubProtocol.reset()
+        defer { APIv2StubProtocol.reset() }
+        APIv2StubProtocol.configure([
+            APIv2Probe.path: .response(404, "404 page not found\n", "text/plain; charset=utf-8"),
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIv2StubProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: configuration))
+        let service = AuthService(
+            serverIdentityResolver: ServerIdentityResolver(httpClient: http),
+            serverRegistry: registry,
+            contractProbe: APIv2Probe(httpClient: http),
+            v2: APIv2Client(http: http)
+        )
+
+        // A non-active candidate: rejected, but the active verdict is untouched.
+        monitor.noteContractProbe(.v2(.fixture), serverId: active.id)
+        do {
+            _ = try await service.checkServer(url: "https://candidate.example")
+            XCTFail("a v1-only candidate must be rejected")
+        } catch APIv2Error.serverUpdateRequired {}
+        XCTAssertFalse(monitor.isServerUpdateRequired, "a candidate's verdict never touches the active server")
+
+        // Rechecking the active server itself: the verdict lands.
+        do {
+            _ = try await service.checkServer(url: activeURL)
+            XCTFail("a v1-only active server must be rejected")
+        } catch APIv2Error.serverUpdateRequired {}
+        XCTAssertTrue(monitor.isServerUpdateRequired, "the active server's v1-only answer gates pilot calls")
+
+        await TokenStore.shared.switchActiveServer(serverId: previousTokenServerId)
+    }
 }
 
 private extension APIv2SystemInfo {

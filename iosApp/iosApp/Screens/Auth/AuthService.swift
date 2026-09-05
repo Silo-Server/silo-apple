@@ -106,10 +106,21 @@ final class AuthService: @unchecked Sendable {
         try Task.checkCancellation()
 
         // The contract probe runs once per connection. A v1-only candidate is
-        // rejected here, before anything is committed, and nothing is
-        // recorded yet: the candidate is not the active server, so its
-        // verdict must not touch the current session's state.
-        let contractResult = try await probeContract(serverURL: normalized)
+        // rejected here, before anything is committed. Nothing is recorded
+        // for a candidate that is not the active server, so its verdict
+        // cannot touch the current session's state; when the caller is
+        // rechecking the server that IS active (e.g. "Check again" on the
+        // needs-setup screen), a v1-only answer must land so the pilot gate
+        // closes instead of letting v2 calls keep hitting an old server.
+        let contractResult: APIv2ProbeResult
+        do {
+            contractResult = try await probeContract(serverURL: normalized)
+        } catch APIv2Error.serverUpdateRequired {
+            if serverRegistry.activeServerId == id {
+                await recordContract(.updateServer, serverId: id)
+            }
+            throw APIv2Error.serverUpdateRequired
+        }
         try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
