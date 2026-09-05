@@ -136,6 +136,16 @@ struct CatalogResponse: Codable {
     let title: String?
     let snapshot: String?
 
+    init(collectionCards: [BrowseItem]) {
+        total = collectionCards.count
+        totalExact = true
+        hasMore = false
+        items = collectionCards
+        source = "user_collection"
+        title = nil
+        snapshot = nil
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         total = try c.decodeIfPresent(Int.self, forKey: .total)
@@ -1565,4 +1575,9 @@ struct PersonalCollectionsV2: Decodable {
 }
 struct CollectionCapabilitiesV2: Decodable {
     let groups: Bool
+}
+
+struct CollectionCardsV2: Decodable {
+    let items: [BrowseItem]
+    let page: APIv2Page
 }

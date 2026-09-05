@@ -702,6 +702,10 @@ struct LibraryCollectionDetailView: View {
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
+                if let error {
+                    Text(error.message).foregroundColor(.siloError)
+                    Button("Reload collection") { Task { await loadItems(reset: true) } }
+                }
                 Text(countLabel)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
@@ -760,6 +764,11 @@ struct LibraryCollectionDetailView: View {
                 snapshot = nil
             }
         }
+        if reset {
+            hasMore = true
+            nextOffset = 0
+            snapshot = nil
+        }
         guard hasMore else { return }
 
         isLoading = true
@@ -769,10 +778,7 @@ struct LibraryCollectionDetailView: View {
             let response: CatalogResponse
             if kind == .userCollections {
                 response = try await SiloAPI.shared.userCollectionItems(
-                    collectionId: collectionId,
-                    offset: nextOffset,
-                    limit: pageSize,
-                    snapshot: snapshot
+                    collectionId: collectionId
                 )
             } else {
                 response = try await SiloAPI.shared.libraryCollectionItems(
@@ -796,9 +802,7 @@ struct LibraryCollectionDetailView: View {
                 snapshot = response.snapshot
             }
         } catch let err {
-            if items.isEmpty {
-                error = ErrorState(err)
-            }
+            error = ErrorState(err)
         }
 
         isLoading = false

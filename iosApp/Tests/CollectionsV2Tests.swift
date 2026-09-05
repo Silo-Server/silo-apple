@@ -61,6 +61,38 @@ final class CollectionsV2Tests: XCTestCase {
         XCTAssertEqual(model.pendingGroupAction?.id, "move:c1")
     }
 
+    func testPersonalCardsFollowOpaqueCursorAndNeverDecodeMembership() async throws {
+        CollectionProtocol.sequence([
+            (200, #"{"items":[{"content_id":"film1","type":"movie","title":"Film"}],"page":{"has_more":true,"next_cursor":"opaque-next"}}"#, nil),
+            (200, #"{"items":[],"page":{"has_more":false}}"#, nil),
+        ])
+        let api = try await api()
+        let result = try await api.collectionItems(collectionId: "c1")
+        XCTAssertEqual(result.items.map(\.contentId), ["film1"])
+        XCTAssertEqual(result.hasMore, false)
+        let sent = CollectionProtocol.requests()
+        XCTAssertEqual(sent.count, 2)
+        for request in sent {
+            XCTAssertEqual(request.url?.path, "/api/v2/catalog")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            XCTAssertEqual(query.first { $0.name == "source" }?.value, "user_collection")
+            XCTAssertEqual(query.first { $0.name == "collection_id" }?.value, "c1")
+            XCTAssertEqual(query.first { $0.name == "limit" }?.value, "50")
+            XCTAssertFalse(query.contains { $0.name == "offset" || $0.name == "sort" })
+        }
+        XCTAssertTrue(sent[1].url!.absoluteString.contains("cursor=opaque-next"))
+    }
+
+    func testPersonalCardsRejectIncompletePage() async throws {
+        CollectionProtocol.reply(status: 200,
+            body: #"{"items":[],"page":{"has_more":true}}"#, etag: nil)
+        let api = try await api()
+        do {
+            _ = try await api.collectionItems(collectionId: "c1")
+            XCTFail("Expected incomplete page error")
+        } catch APIv2Error.incompleteCollection { }
+    }
+
     func testMissingETagCannotOpenEditor() async throws {
         CollectionProtocol.reply(status: 200, body: collection, etag: nil)
         let api = try await api()
@@ -76,10 +108,12 @@ private final class CollectionProtocol: URLProtocol {
     nonisolated(unsafe) private static var response = (200, "{}", Optional<String>.none)
     nonisolated(unsafe) private static var recorded: [URLRequest] = []
     nonisolated(unsafe) private static var body: Data?
-    static func reset() { lock.withLock { recorded = []; body = nil } }
+    nonisolated(unsafe) private static var queued: [(Int, String, String?)] = []
+    static func reset() { lock.withLock { recorded = []; body = nil; queued = [] } }
     static func reply(status: Int, body: String, etag: String?) {
         lock.withLock { response = (status, body, etag) }
     }
+    static func sequence(_ values: [(Int, String, String?)]) { lock.withLock { queued = values } }
     static func requests() -> [URLRequest] { lock.withLock { recorded } }
     static func lastBody() -> Data? { lock.withLock { body } }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -96,7 +130,7 @@ private final class CollectionProtocol: URLProtocol {
             }
             data = bytes
         }
-        let reply = Self.lock.withLock { Self.recorded.append(request); Self.body = data; return Self.response }
+        let reply = Self.lock.withLock { Self.recorded.append(request); Self.body = data; return Self.queued.isEmpty ? Self.response : Self.queued.removeFirst() }
         var headers = ["Content-Type": reply.0 >= 400 ? "application/problem+json" : "application/json"]
         if let tag = reply.2 { headers["ETag"] = tag }
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil, headerFields: headers)!

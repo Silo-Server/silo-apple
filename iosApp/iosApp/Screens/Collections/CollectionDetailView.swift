@@ -54,6 +54,9 @@ struct CollectionDetailView: View {
 
     private var gridContent: some View {
         ScrollView {
+            if let error {
+                ErrorView(state: error, onRetry: { Task { await loadItems() } })
+            }
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
                     MediaCard(
@@ -132,14 +135,12 @@ struct CollectionDetailView: View {
         error = nil
         do {
             let response: CatalogResponse = try await SiloAPI.shared.collectionItems(
-                collectionId: collectionId, offset: 0, limit: 200
+                collectionId: collectionId
             )
             ResponseCache.shared.set(response, for: cacheKey)
             items = response.items
         } catch let err {
-            if items.isEmpty {
-                self.error = ErrorState(err)
-            }
+            self.error = ErrorState(err)
         }
         isLoading = false
     }

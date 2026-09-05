@@ -7,6 +7,7 @@ enum APIv2Error: LocalizedError, Sendable {
     case serverUpdateRequired
     case incompleteRequestList
     case missingCollectionVersion
+    case incompleteCollection
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -17,6 +18,8 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .incompleteCollection:
+            return "The collection could not be loaded completely. Reload to try again."
         case .missingCollectionVersion:
             return "The server did not provide a collection version. Reload before editing."
         case .incompleteRequestList:
@@ -147,6 +150,39 @@ struct APIv2Client: Sendable {
             cursor = next
         }
         throw APIv2Error.incompleteRequestList
+    }
+
+    /// Hydrated personal collection cards. Membership endpoints return join records instead.
+    func personalCollectionCards(id: String) async throws -> CatalogResponse {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        var items: [BrowseItem] = []
+        var cursor: String?
+        var seen: Set<String> = []
+        for _ in 0..<100 {
+            try await gate()
+            guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+                  current.profileId == profile else { throw HTTPError.requestIdentityChanged }
+            var query = ["source": "user_collection", "collection_id": id, "limit": "50"]
+            if let cursor { query["cursor"] = cursor }
+            let page: CollectionCardsV2 = try await mapErrors {
+                let raw = try await http.requestData(method: "GET", path: "/api/v2/catalog",
+                    query: query, requestIdentity: identity)
+                return try HTTPClient.makeJSONDecoder().decode(CollectionCardsV2.self, from: raw.data)
+            }
+            guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+                  current.profileId == profile else { throw HTTPError.requestIdentityChanged }
+            items.append(contentsOf: page.items)
+            if !page.page.hasMore { return CatalogResponse(collectionCards: items) }
+            guard let next = page.page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {
+                throw APIv2Error.incompleteCollection
+            }
+            cursor = next
+        }
+        throw APIv2Error.incompleteCollection
     }
 
     // MARK: Collection editors

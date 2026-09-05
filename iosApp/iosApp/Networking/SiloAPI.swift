@@ -351,25 +351,9 @@ actor SiloAPI {
         )
     }
 
-    /// User-collection items resolved through the unified catalog endpoint.
-    /// The raw `/api/v1/collections/{id}/items` route returns un-hydrated
-    /// join records; only the catalog resolver re-hydrates them into the
-    /// `CatalogResponse` shape that views expect.
-    func userCollectionItems(
-        collectionId: String,
-        offset: Int = 0,
-        limit: Int = 60,
-        snapshot: String? = nil,
-        includeTotal: Bool = false
-    ) async throws -> CatalogResponse {
-        try await catalogCollectionItems(
-            kind: .userCollections,
-            collectionId: collectionId,
-            offset: offset,
-            limit: limit,
-            snapshot: snapshot,
-            includeTotal: includeTotal
-        )
+    /// Fully hydrated personal collection cards, using bounded v2 cursor pages.
+    func userCollectionItems(collectionId: String) async throws -> CatalogResponse {
+        try await v2.personalCollectionCards(id: collectionId)
     }
 
     private func catalogCollectionItems(
@@ -482,15 +466,8 @@ actor SiloAPI {
         return CollectionsResponse(collections: response.items, groups: response.groups)
     }
 
-    func collectionItems(
-        collectionId: String,
-        offset: Int,
-        limit: Int
-    ) async throws -> CatalogResponse {
-        try await http.get("/api/v1/collections/\(collectionId)/items", query: [
-            "offset": String(offset),
-            "limit": String(limit),
-        ])
+    func collectionItems(collectionId: String) async throws -> CatalogResponse {
+        try await userCollectionItems(collectionId: collectionId)
     }
 
     func createCollection(name: String, collectionType: String) async throws -> UserCollection {
