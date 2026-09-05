@@ -46,6 +46,7 @@ struct CollectionsView: View {
                     Image(systemName: "folder.badge.plus")
                         .foregroundColor(.siloPrimary)
                 }
+                .disabled(!viewModel.supportsGroups)
             }
             ToolbarItem {
                 Button {
@@ -63,6 +64,7 @@ struct CollectionsView: View {
                     Image(systemName: "folder.badge.plus")
                         .foregroundColor(.siloPrimary)
                 }
+                .disabled(!viewModel.supportsGroups)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -106,7 +108,7 @@ struct CollectionsView: View {
                                 #if !os(tvOS)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
-                                        Task { await viewModel.deleteCollection(id: collection.id) }
+                                        viewModel.pendingGroupAction = .deleteCollection(collection)
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
@@ -116,6 +118,7 @@ struct CollectionsView: View {
                                         Label("Move", systemImage: "folder")
                                     }
                                     .tint(.siloPrimary)
+                                    .disabled(!viewModel.supportsGroups)
                                 }
                                 #endif
                         }
@@ -140,7 +143,7 @@ struct CollectionsView: View {
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
             Spacer()
-            if let groupId = section.groupId,
+            if viewModel.supportsGroups, let groupId = section.groupId,
                let group = viewModel.groups.first(where: { $0.id == groupId }) {
                 Menu {
                     Button {
@@ -263,6 +266,7 @@ private struct GroupActionSheet: View {
             default: break
             }
         }
+        .task(id: action.id) { await viewModel.reloadEditor() }
     }
 
     @ViewBuilder
@@ -286,6 +290,16 @@ private struct GroupActionSheet: View {
             }
             .padding(SiloTheme.padding)
             .navigationTitle("Delete group")
+        case .deleteCollection(let collection):
+            VStack(spacing: SiloTheme.padding) {
+                Text("Delete “\(collection.name)”?")
+                    .font(.siloTitle)
+                Text("This cannot be undone.").foregroundStyle(Color.siloSecondaryText)
+                errorBanner
+                Spacer()
+            }
+            .padding(SiloTheme.padding)
+            .navigationTitle("Delete collection")
         case .move(let collection):
             VStack(spacing: 0) {
                 List {
@@ -333,11 +347,16 @@ private struct GroupActionSheet: View {
 
     @ViewBuilder
     private var errorBanner: some View {
+        if let currentName = viewModel.editorCurrentName {
+            Text("Current name: \(currentName)").font(.siloCaption)
+        }
         if let message = viewModel.groupError {
             Text(message)
                 .font(.siloCaption)
                 .foregroundColor(.siloError)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Reload current version") { Task { await viewModel.reloadEditor() } }
+                .disabled(viewModel.isSaving)
         }
     }
 
@@ -358,16 +377,19 @@ private struct GroupActionSheet: View {
         switch action {
         case .create: return "Create"
         case .rename: return "Save"
-        case .delete: return "Delete"
+        case .delete, .deleteCollection: return "Delete"
         case .move: return "Move"
         }
     }
 
     private var canConfirm: Bool {
+        guard !viewModel.isSaving, !viewModel.editorNeedsReload else { return false }
+        if case .create = action { return viewModel.supportsGroups && !name.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard viewModel.editorVersion != nil else { return false }
         switch action {
         case .create, .rename:
             return !name.trimmingCharacters(in: .whitespaces).isEmpty
-        case .delete, .move:
+        case .delete, .move, .deleteCollection:
             return true
         }
     }
@@ -380,6 +402,8 @@ private struct GroupActionSheet: View {
             await viewModel.renameGroup(id: group.id, name: name)
         case .delete(let group):
             await viewModel.deleteGroup(id: group.id)
+        case .deleteCollection(let collection):
+            await viewModel.deleteCollection(id: collection.id)
         case .move(let collection):
             await viewModel.moveCollection(id: collection.id, toGroupId: pendingMoveTarget)
         }

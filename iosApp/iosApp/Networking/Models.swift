@@ -1547,3 +1547,22 @@ struct OverlayConfigResponse: Codable {
     let enabled: Bool
     let defaults: String?
 }
+
+/// The validator belongs to the canonical read and its captured viewer, never a list row.
+struct CollectionEditVersion: Sendable {
+    let path: String
+    let etag: String
+    let identity: HTTPRequestIdentity
+    let account: RefreshAccountIdentity
+}
+struct CollectionEditor<Value> {
+    let value: Value
+    let version: CollectionEditVersion
+}
+struct PersonalCollectionsV2: Decodable {
+    let items: [UserCollection]
+    let groups: [CollectionGroup]
+}
+struct CollectionCapabilitiesV2: Decodable {
+    let groups: Bool
+}

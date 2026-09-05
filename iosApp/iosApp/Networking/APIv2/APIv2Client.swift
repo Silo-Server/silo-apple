@@ -6,6 +6,7 @@ enum APIv2Error: LocalizedError, Sendable {
     /// are refused rather than routed to a v1 path.
     case serverUpdateRequired
     case incompleteRequestList
+    case missingCollectionVersion
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -16,6 +17,8 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .missingCollectionVersion:
+            return "The server did not provide a collection version. Reload before editing."
         case .incompleteRequestList:
             return "The request list could not be loaded completely. Please reload."
         case .serverUpdateRequired:
@@ -144,6 +147,47 @@ struct APIv2Client: Sendable {
             cursor = next
         }
         throw APIv2Error.incompleteRequestList
+    }
+
+    // MARK: Collection editors
+
+    func collectionEditor<T: Decodable>(_ path: String) async throws -> CollectionEditor<T> {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: path, requestIdentity: identity)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == profile else { throw HTTPError.requestIdentityChanged }
+        guard let tag = raw.headers["etag"], !tag.isEmpty else { throw APIv2Error.missingCollectionVersion }
+        return CollectionEditor(value: try HTTPClient.makeJSONDecoder().decode(T.self, from: raw.data),
+            version: CollectionEditVersion(path: path, etag: tag, identity: identity, account: auth.account))
+    }
+
+    func mutateCollection<T: Decodable, B: Encodable>(method: String, version: CollectionEditVersion,
+                                                     body: B) async throws -> T {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let raw = try await collectionMutation(method: method, version: version, body: encoder.encode(body))
+        return try HTTPClient.makeJSONDecoder().decode(T.self, from: raw.data)
+    }
+
+    func deleteCollection(version: CollectionEditVersion) async throws {
+        _ = try await collectionMutation(method: "DELETE", version: version, body: nil)
+    }
+
+    private func collectionMutation(method: String, version: CollectionEditVersion, body: Data?) async throws -> HTTPRawResponse {
+        try await gate()
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == version.account,
+              current.profileId == version.identity.profileId else { throw HTTPError.requestIdentityChanged }
+        return try await mapErrors {
+            try await http.requestData(method: method, path: version.path, body: body,
+                headers: ["If-Match": version.etag], requestIdentity: version.identity)
+        }
     }
 
     // MARK: Internals

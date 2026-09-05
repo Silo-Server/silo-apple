@@ -33,8 +33,16 @@ class CollectionsViewModel {
     var isLoading = false
     var isRefreshing = false
     var error: ErrorState?
+    private(set) var supportsGroups = false
+    private(set) var editorVersion: CollectionEditVersion?
+    private(set) var editorCurrentName: String?
+    private(set) var editorNeedsReload = false
+    private(set) var isSaving = false
+    private let api: SiloAPI
 
-    init() {
+
+    init(api: SiloAPI = .shared) {
+        self.api = api
         if let cached: CollectionsResponse = ResponseCache.shared.get(CacheKey.collections) {
             collections = cached.collections ?? []
             groups = sortGroups(cached.groups ?? [])
@@ -48,7 +56,7 @@ class CollectionsViewModel {
 
     // Group action sheets
     var pendingGroupAction: GroupAction? {
-        didSet { groupError = nil }
+        didSet { groupError = nil; editorVersion = nil; editorCurrentName = nil; editorNeedsReload = false }
     }
     /// Error message scoped to the currently-open group action sheet.
     /// Cleared on success, on dismissal, and when a new action starts.
@@ -59,6 +67,7 @@ class CollectionsViewModel {
         case rename(CollectionGroup)
         case delete(CollectionGroup)
         case move(UserCollection)
+        case deleteCollection(UserCollection)
 
         var id: String {
             switch self {
@@ -66,6 +75,7 @@ class CollectionsViewModel {
             case .rename(let g): return "rename:\(g.id)"
             case .delete(let g): return "delete:\(g.id)"
             case .move(let c): return "move:\(c.id)"
+            case .deleteCollection(let c): return "delete-collection:\(c.id)"
             }
         }
     }
@@ -77,8 +87,9 @@ class CollectionsViewModel {
             isRefreshing = true
         }
         error = nil
+        supportsGroups = (try? await api.collectionCapabilities().groups) ?? false
         do {
-            let response: CollectionsResponse = try await SiloAPI.shared.collections()
+            let response: CollectionsResponse = try await api.collections()
             ResponseCache.shared.set(response, for: CacheKey.collections)
             collections = response.collections ?? []
             groups = sortGroups(response.groups ?? [])
@@ -130,11 +141,14 @@ class CollectionsViewModel {
     }
 
     func createCollection() async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         let name = newCollectionName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
 
         do {
-            let _: UserCollection = try await SiloAPI.shared.createCollection(
+            let _: UserCollection = try await api.createCollection(
                 name: name, collectionType: "manual"
             )
             newCollectionName = ""
@@ -150,43 +164,55 @@ class CollectionsViewModel {
     }
 
     func deleteCollection(id: String) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         do {
-            try await SiloAPI.shared.deleteCollection(id: id)
+            guard let version = editorVersion, !editorNeedsReload else { return }
+            try await api.deleteCollection(version: version)
+            pendingGroupAction = nil
             collections.removeAll { $0.id == id }
             rebuildSections()
             writeBackCache()
         } catch let err {
-            self.error = ErrorState(err)
+            handleEditorError(err, fallback: "Failed to delete collection")
         }
     }
 
     // MARK: - Groups
 
     func createGroup(name: String) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             groupError = "Name is required"
             return
         }
         do {
-            let created = try await SiloAPI.shared.createCollectionGroup(name: trimmed)
+            let created = try await api.createCollectionGroup(name: trimmed)
             groups = sortGroups(groups + [created])
             rebuildSections()
             writeBackCache()
             pendingGroupAction = nil
         } catch let err {
-            groupError = groupErrorMessage(err, fallback: "Failed to add group")
+            handleEditorError(err, fallback: "Failed to add group")
         }
     }
 
     func renameGroup(id: String, name: String) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             groupError = "Name is required"
             return
         }
+        guard let version = editorVersion, !editorNeedsReload else { return }
         do {
-            let updated = try await SiloAPI.shared.renameCollectionGroup(id: id, name: trimmed)
+            let updated = try await api.renameCollectionGroup(version: version, name: trimmed)
             if let i = groups.firstIndex(where: { $0.id == id }) {
                 groups[i] = updated
             }
@@ -194,13 +220,17 @@ class CollectionsViewModel {
             writeBackCache()
             pendingGroupAction = nil
         } catch let err {
-            groupError = groupErrorMessage(err, fallback: "Failed to rename group")
+            handleEditorError(err, fallback: "Failed to rename group")
         }
     }
 
     func deleteGroup(id: String) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
+        guard let version = editorVersion, !editorNeedsReload else { return }
         do {
-            try await SiloAPI.shared.deleteCollectionGroup(id: id)
+            try await api.deleteCollectionGroup(version: version)
             groups.removeAll { $0.id == id }
             // Collections in the deleted group fall back to Ungrouped.
             collections = collections.map { c in
@@ -223,13 +253,17 @@ class CollectionsViewModel {
             writeBackCache()
             pendingGroupAction = nil
         } catch let err {
-            groupError = groupErrorMessage(err, fallback: "Failed to delete group")
+            handleEditorError(err, fallback: "Failed to delete group")
         }
     }
 
     func moveCollection(id: String, toGroupId targetGroupId: String?) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
+        guard let version = editorVersion, !editorNeedsReload else { return }
         do {
-            let updated = try await SiloAPI.shared.moveCollectionToGroup(id: id, groupId: targetGroupId)
+            let updated = try await api.moveCollectionToGroup(version: version, groupId: targetGroupId)
             if let i = collections.firstIndex(where: { $0.id == id }) {
                 collections[i] = updated
             }
@@ -237,7 +271,43 @@ class CollectionsViewModel {
             writeBackCache()
             pendingGroupAction = nil
         } catch let err {
-            groupError = groupErrorMessage(err, fallback: "Failed to move collection")
+            handleEditorError(err, fallback: "Failed to move collection")
+        }
+    }
+
+    /// Called once when a dialog opens, or explicitly by its Reload button.
+    /// Draft text and selected destination remain owned by the sheet.
+    func reloadEditor() async {
+        guard let action = pendingGroupAction else { return }
+        editorVersion = nil
+        groupError = nil
+        do {
+            switch action {
+            case .create: return
+            case .rename(let group), .delete(let group):
+                let editor = try await api.collectionGroupEditor(id: group.id)
+                guard pendingGroupAction?.id == action.id else { return }
+                editorVersion = editor.version
+                editorCurrentName = editor.value.name
+            case .move(let collection), .deleteCollection(let collection):
+                let editor = try await api.collectionEditor(id: collection.id)
+                guard pendingGroupAction?.id == action.id else { return }
+                editorVersion = editor.version
+                editorCurrentName = editor.value.name
+            }
+            editorNeedsReload = false
+        } catch {
+            guard pendingGroupAction?.id == action.id else { return }
+            groupError = error.localizedDescription
+        }
+    }
+
+    private func handleEditorError(_ error: Error, fallback: String) {
+        if case APIv2Error.problem(let problem) = error, problem.status == 412 {
+            editorNeedsReload = true
+            groupError = "This collection changed elsewhere. Your edits are kept. Reload the current version and review before trying again."
+        } else {
+            groupError = groupErrorMessage(error, fallback: fallback)
         }
     }
 

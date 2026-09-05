@@ -478,7 +478,8 @@ actor SiloAPI {
     // --- Collections ---
 
     func collections() async throws -> CollectionsResponse {
-        try await http.get("/api/v1/collections")
+        let response: PersonalCollectionsV2 = try await v2.requestGet("/api/v2/collections")
+        return CollectionsResponse(collections: response.items, groups: response.groups)
     }
 
     func collectionItems(
@@ -493,43 +494,49 @@ actor SiloAPI {
     }
 
     func createCollection(name: String, collectionType: String) async throws -> UserCollection {
-        try await http.post(
-            "/api/v1/collections",
+        try await v2.requestPost(
+            "/api/v2/collections",
             body: CreateCollectionRequest(name: name, collectionType: collectionType)
         )
     }
 
-    func deleteCollection(id: String) async throws {
-        try await http.delete("/api/v1/collections/\(id)")
+    func collectionCapabilities() async throws -> CollectionCapabilitiesV2 {
+        try await v2.requestGet("/api/v2/collections/capabilities")
     }
 
-    /// Move a personal collection between groups (pass `nil` for
-    /// Ungrouped). Returns the updated collection.
-    func moveCollectionToGroup(id: String, groupId: String?) async throws -> UserCollection {
-        try await http.put(
-            "/api/v1/collections/\(id)",
-            body: UpdateUserCollectionGroupBody(groupId: groupId)
-        )
+    func collectionEditor(id: String) async throws -> CollectionEditor<UserCollection> {
+        try await v2.collectionEditor("/api/v2/collections/\(id)")
+    }
+
+    func collectionGroupEditor(id: String) async throws -> CollectionEditor<CollectionGroup> {
+        try await v2.collectionEditor("/api/v2/collections/groups/\(id)")
+    }
+
+    func deleteCollection(version: CollectionEditVersion) async throws {
+        try await v2.deleteCollection(version: version)
+    }
+
+    func moveCollectionToGroup(version: CollectionEditVersion, groupId: String?) async throws -> UserCollection {
+        try await v2.mutateCollection(method: "PATCH", version: version,
+            body: UpdateUserCollectionGroupBody(groupId: groupId))
     }
 
     // --- Collection groups (personal) ---
 
     func createCollectionGroup(name: String) async throws -> CollectionGroup {
-        try await http.post(
-            "/api/v1/collections/groups",
+        try await v2.requestPost(
+            "/api/v2/collections/groups",
             body: CreateCollectionGroupRequest(name: name, slug: nil)
         )
     }
 
-    func renameCollectionGroup(id: String, name: String) async throws -> CollectionGroup {
-        try await http.put(
-            "/api/v1/collections/groups/\(id)",
-            body: UpdateCollectionGroupRequest(name: name)
-        )
+    func renameCollectionGroup(version: CollectionEditVersion, name: String) async throws -> CollectionGroup {
+        try await v2.mutateCollection(method: "PATCH", version: version,
+            body: UpdateCollectionGroupRequest(name: name))
     }
 
-    func deleteCollectionGroup(id: String) async throws {
-        try await http.delete("/api/v1/collections/groups/\(id)")
+    func deleteCollectionGroup(version: CollectionEditVersion) async throws {
+        try await v2.deleteCollection(version: version)
     }
 
     // --- Profiles ---
