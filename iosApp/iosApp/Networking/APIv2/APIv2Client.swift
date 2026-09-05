@@ -5,6 +5,7 @@ enum APIv2Error: LocalizedError, Sendable {
     /// The connected server is v1-only (see `APIv2Probe`). Pilot operations
     /// are refused rather than routed to a v1 path.
     case serverUpdateRequired
+    case incompleteRequestList
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -15,6 +16,8 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .incompleteRequestList:
+            return "The request list could not be loaded completely. Please reload."
         case .serverUpdateRequired:
             return Self.serverUpdateRequiredMessage
         case .problem(let problem):
@@ -30,17 +33,20 @@ enum APIv2Error: LocalizedError, Sendable {
 /// another API major (a source-level test enforces both).
 struct APIv2Client: Sendable {
     private let http: HTTPClient
+    private let tokenStore: TokenStore
     /// Whether the connected server was found to be v1-only. Read once per
     /// call so the update-server state set by the probe blocks pilot traffic.
     private let isUpdateRequired: @Sendable () async -> Bool
 
     init(
         http: HTTPClient = .shared,
+        tokenStore: TokenStore = .shared,
         isUpdateRequired: @escaping @Sendable () async -> Bool = {
             await MainActor.run { ConnectionMonitor.shared.isServerUpdateRequired }
         }
     ) {
         self.http = http
+        self.tokenStore = tokenStore
         self.isUpdateRequired = isUpdateRequired
     }
 
@@ -89,6 +95,55 @@ struct APIv2Client: Sendable {
     func updateProfile(id: String, patch: APIv2ProfilePatch) async throws -> APIv2Profile {
         try await gate()
         return try await mapErrors { try await http.patch("/api/v2/profiles/\(id)", body: patch) }
+    }
+
+    // MARK: Requests
+
+    func requestGet<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
+        try await gate()
+        return try await mapErrors { try await http.get(path, query: query) }
+    }
+
+    /// Create and cancel are never replayed after an ambiguous transport failure.
+    func requestPost<T: Decodable, B: Encodable>(_ path: String, body: B) async throws -> T {
+        try await gate()
+        return try await mapErrors { try await http.post(path, body: body) }
+    }
+
+    func myRequests() async throws -> [MediaRequest] {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
+              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId,
+            serverURL: auth.account.serverURL, profileId: profile,
+            clientFamily: AppleDeviceIdentity.current.clientFamily)
+        var records: [MediaRequest] = []
+        var cursor: String?
+        var seen: Set<String> = []
+        for _ in 0..<100 {
+            try await gate()
+            guard let current = await tokenStore.captureOrdinaryRequestAuth(),
+                  current.account == auth.account, current.profileId == profile else {
+                throw HTTPError.requestIdentityChanged
+            }
+            var query = ["limit": "50"]
+            if let cursor { query["cursor"] = cursor }
+            let response: MediaRequestsResponse = try await mapErrors {
+                let raw = try await http.requestData(method: "GET", path: "/api/v2/requests/mine",
+                    query: query, requestIdentity: identity)
+                return try HTTPClient.makeJSONDecoder().decode(MediaRequestsResponse.self, from: raw.data)
+            }
+            guard let current = await tokenStore.captureOrdinaryRequestAuth(),
+                  current.account == auth.account, current.profileId == profile else {
+                throw HTTPError.requestIdentityChanged
+            }
+            records.append(contentsOf: response.items)
+            if !response.page.hasMore { return records }
+            guard let next = response.page.nextCursor, !next.isEmpty, seen.insert(next).inserted else {
+                throw APIv2Error.incompleteRequestList
+            }
+            cursor = next
+        }
+        throw APIv2Error.incompleteRequestList
     }
 
     // MARK: Internals

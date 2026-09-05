@@ -134,7 +134,7 @@ struct RequestDiscoverySection: Codable, Identifiable {
 }
 
 struct RequestDiscoverResponse: Codable {
-    let sections: [RequestDiscoverySection]
+    let items: [RequestDiscoverySection]
 }
 
 // MARK: - Detail
@@ -201,8 +201,9 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     let completedAt: Date?
 }
 
-struct MediaRequestsResponse: Codable {
-    let requests: [MediaRequest]
+struct MediaRequestsResponse: Decodable {
+    let items: [MediaRequest]
+    let page: APIv2Page
 }
 
 // MARK: - Mutations

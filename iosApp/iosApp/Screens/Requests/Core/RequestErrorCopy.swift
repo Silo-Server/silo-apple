@@ -24,6 +24,9 @@ enum RequestErrorCopy {
     /// Copy for a failed create/cancel, preferring the structured server
     /// token and falling back to `ErrorState`'s generic humanization.
     static func message(for error: Error) -> String {
+        if let apiError = error as? APIv2Error {
+            return apiError.localizedDescription
+        }
         if let httpError = error as? HTTPError,
            let token = httpError.serverErrorCode,
            let copy = message(forToken: token) {

@@ -20,7 +20,7 @@ actor SiloAPI {
     init(http: HTTPClient = .shared, tokenStore: TokenStore = .shared, v2: APIv2Client? = nil) {
         self.http = http
         self.tokenStore = tokenStore
-        self.v2 = v2 ?? APIv2Client(http: http)
+        self.v2 = v2 ?? APIv2Client(http: http, tokenStore: tokenStore)
     }
 
     // MARK: - Session state accessors
