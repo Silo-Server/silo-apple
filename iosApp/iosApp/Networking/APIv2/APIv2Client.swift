@@ -47,9 +47,15 @@ struct APIv2Client: Sendable {
     // MARK: getSetupStatus (public)
 
     /// Probes a candidate server by explicit URL without credentials.
+    ///
+    /// Deliberately not gated on the active session's verdict: that verdict
+    /// describes the active server, not this candidate. Gating here would make
+    /// it impossible to add an updated server while the active one is
+    /// update-required. The candidate's own contract probe, which
+    /// `AuthService.checkServer` runs first and which throws on
+    /// `.updateServer`, is the gate for explicit-URL operations.
     func setupStatus(serverURL: String) async throws -> APIv2SetupStatus {
-        try await gate()
-        return try await mapErrors {
+        try await mapErrors {
             try await http.getUnauthenticated(serverURL: serverURL, path: "/api/v2/system/setup")
         }
     }
@@ -87,6 +93,8 @@ struct APIv2Client: Sendable {
 
     // MARK: Internals
 
+    /// Refuses relative-URL (active-session) operations while the active
+    /// server is known to be v1-only. Explicit-URL candidate probes skip this.
     private func gate() async throws {
         if await isUpdateRequired() { throw APIv2Error.serverUpdateRequired }
     }

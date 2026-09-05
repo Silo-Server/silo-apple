@@ -205,11 +205,29 @@ final class APIv2ProbeTests: XCTestCase {
         let http = HTTPClient(session: URLSession(configuration: configuration))
         let client = APIv2Client(http: http, isUpdateRequired: { true })
         do {
-            _ = try await client.setupStatus(serverURL: serverURL)
+            _ = try await client.currentUser()
             XCTFail("expected refusal")
         } catch APIv2Error.serverUpdateRequired {
             XCTAssertEqual(APIv2StubProtocol.requestedPaths(), [], "no request leaves the device")
         }
+    }
+
+    /// The active server's verdict must not block probing a different,
+    /// explicit-URL candidate; otherwise an updated server could never be
+    /// added while the active one is update-required.
+    func testUpdateServerStateDoesNotBlockCandidateSetupStatus() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIv2StubProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: configuration))
+        let client = APIv2Client(http: http, isUpdateRequired: { true })
+        APIv2StubProtocol.configure([
+            "/api/v2/system/setup": .response(200, #"{"needs_setup":true}"#, "application/json"),
+        ])
+
+        let status = try await client.setupStatus(serverURL: serverURL)
+
+        XCTAssertTrue(status.needsSetup)
+        XCTAssertEqual(APIv2StubProtocol.requestedPaths(), ["/api/v2/system/setup"], "the candidate is contacted")
     }
 }
 
