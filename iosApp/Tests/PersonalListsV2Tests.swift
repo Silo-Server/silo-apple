@@ -59,6 +59,39 @@ final class PersonalListsV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testLoadMoreReservesBeforeSuspendingForIdentityCapture() async throws {
+        ResponseCache.shared.clearAll()
+        let (api, tokens) = try await client()
+        let captureStarted = expectation(description: "Identity capture suspended")
+        let releaseCapture = expectation(description: "Release identity capture")
+        var holdCapture = false
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens,
+            captureBarrier: {
+                if holdCapture {
+                    holdCapture = false
+                    captureStarted.fulfill()
+                    await self.fulfillment(of: [releaseCapture], timeout: 5)
+                }
+            })
+        CatalogProtocol.reply(200, favoritesFixture)
+        await model.reload()
+        holdCapture = true
+        CatalogProtocol.reply(200, terminal)
+        let first = Task { await model.loadMore() }
+        await fulfillment(of: [captureStarted], timeout: 5)
+        XCTAssertTrue(model.isLoading)
+        await model.loadMore()
+        XCTAssertEqual(CatalogProtocol.requests().count, 1, "Overlapping action must not dispatch before the owner resumes")
+        releaseCapture.fulfill()
+        await first.value
+        XCTAssertEqual(CatalogProtocol.requests().count, 2)
+        XCTAssertFalse(model.hasMore)
+        XCTAssertFalse(model.isLoading)
+        await model.loadMore()
+        XCTAssertEqual(CatalogProtocol.requests().count, 2, "An exhausted continuation must remain closed")
+    }
+
+    @MainActor
     func testViewModelContinuesEmptyAndDuplicatePages() async throws {
         ResponseCache.shared.clearAll()
         let (api, tokens) = try await client()

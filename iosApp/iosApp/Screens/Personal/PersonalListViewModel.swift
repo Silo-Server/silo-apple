@@ -12,6 +12,7 @@ final class PersonalListViewModel {
     private let kind: APIv2PersonalListKind
     private let api: APIv2Client
     private let tokenStore: TokenStore
+    private let captureBarrier: (@MainActor () async -> Void)?
     private var continuation: APIv2PersonalListContinuation?
     private var generation = 0
     private var task: Task<APIv2PersonalListResult, Error>?
@@ -24,10 +25,12 @@ final class PersonalListViewModel {
         let profile: String
     }
 
-    init(kind: APIv2PersonalListKind, api: APIv2Client = APIv2Client(), tokenStore: TokenStore = .shared) {
+    init(kind: APIv2PersonalListKind, api: APIv2Client = APIv2Client(), tokenStore: TokenStore = .shared,
+         captureBarrier: (@MainActor () async -> Void)? = nil) {
         self.kind = kind
         self.api = api
         self.tokenStore = tokenStore
+        self.captureBarrier = captureBarrier
     }
 
     private var cacheKey: String { kind == .favorites ? CacheKey.favorites : CacheKey.watchlist }
@@ -59,6 +62,13 @@ final class PersonalListViewModel {
     private func load(reset: Bool) async {
         if reset { cancel(); continuation = nil; hasMore = false }
         let requestGeneration = generation
+        // Reserve this generation before suspending so a second Load More cannot
+        // dispatch the same continuation or later reopen an exhausted page.
+        isLoading = true
+        defer {
+            if requestGeneration == generation { isLoading = false; task = nil }
+        }
+        if let captureBarrier { await captureBarrier() }
         let captured = await tokenStore.captureOrdinaryRequestAuth()
         guard requestGeneration == generation else { return }
         guard let auth = captured, let requestedProfile = auth.profileId else {
@@ -82,11 +92,7 @@ final class PersonalListViewModel {
            cached.owner == owner, cached.profile == profile {
             items = cached.items
         }
-        isLoading = true
         error = nil
-        defer {
-            if requestGeneration == generation { isLoading = false; task = nil }
-        }
         let cursor = reset ? nil : continuation
         let api = self.api
         let kind = self.kind
