@@ -55,6 +55,72 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             selectedTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)))
     }
 
+    func testRenewalRequestsNewerDownloadedSidecarInsteadOfPreviousEmbeddedTrack() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        let localID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)
+        let original = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: 11, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false, preferredProtocolV3SubtitleIndex: 7
+        )
+        // A download completes after the embedded plan was adopted. Recovery
+        // resolves its sidecar id from the current selection, before teardown.
+        let recovery = original.copyForRecovery(
+            preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1, preferredSidecarSubtitleTrackId: localID,
+            offlineDownloadId: nil
+        )
+        XCTAssertEqual(recovery.preferredProtocolV3SubtitleIndex, 8)
+        let initialIntent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: recovery.preferredSubtitleTrackIndex,
+            explicitCombinedIndex: recovery.preferredProtocolV3SubtitleIndex,
+            preferredLanguage: nil, mode: nil, showForced: false,
+            trackSignature: nil, currentAudioLanguage: nil
+        )
+        XCTAssertEqual(initialIntent.combinedIndex, 8)
+        XCTAssertNil(initialIntent.ffmpegStreamIndex)
+        // Session creation rebuilds inventory, including the completed download,
+        // and honors the requested combined ordinal.
+        let refreshedPlan = makePlan(
+            container: "mkv", selectedSubtitleIndex: initialIntent.combinedIndex,
+            subtitleMode: "render", subtitleInventory: [
+                makeInventoryItem(combinedIndex: 7, source: "embedded"),
+                makeInventoryItem(combinedIndex: 8, source: "downloaded")
+            ]
+        )
+        let adopted = recovery.adoptingProtocolV3Intent(
+            plan: refreshedPlan, selectedVersion: version, activeQualityId: "original"
+        )
+        XCTAssertEqual(adopted.preferredSidecarSubtitleTrackId, localID)
+        XCTAssertNil(adopted.preferredSubtitleTrackIndex)
+        let intent = PlayerViewModel.protocolV3PendingTrackIntent(plan: refreshedPlan, request: adopted)
+        XCTAssertEqual(intent.sidecarSubtitleTrackId, localID)
+        XCTAssertNil(intent.embeddedSubtitleIndex)
+    }
+
+    func testRenewalReplacesPlanSidecarWithItsNativeEmbeddedIdentity() {
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11))
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: -1,
+            preferredSidecarSubtitleTrackId: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7),
+            startFromBeginning: false
+        )
+        let adopted = request.adoptingProtocolV3Intent(
+            plan: plan,
+            selectedVersion: makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac"),
+            activeQualityId: "original"
+        )
+        XCTAssertNil(adopted.preferredSidecarSubtitleTrackId)
+        XCTAssertEqual(adopted.preferredSubtitleTrackIndex, 11)
+        XCTAssertEqual(adopted.preferredProtocolV3SubtitleIndex, 7)
+        let intent = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: adopted)
+        XCTAssertNil(intent.sidecarSubtitleTrackId)
+        XCTAssertEqual(intent.embeddedSubtitleIndex, 11)
+    }
+
     func testNativeEmbeddedDecisionRejectsRepackagedSourceAndInvalidIdentity() {
         for (delivery, index) in [("server_remux_progressive", 11), ("original_http", -1)] {
             let plan = makePlan(

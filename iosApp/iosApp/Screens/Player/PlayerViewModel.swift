@@ -813,7 +813,17 @@ class PlayerViewModel {
                 offlineDownloadId: offlineDownloadId,
                 preferredQualityOverride: preferredQualityOverride
             )
-            request.preferredProtocolV3SubtitleIndex = preferredProtocolV3SubtitleIndex
+            // A completed download can be selected after the last server plan.
+            // Ask the replacement session for that combined ordinal; retaining
+            // the old plan's ordinal would reselect its embedded subtitle.
+            if let preferredSidecarSubtitleTrackId,
+               SubtitleTrackIdSpace.isSidecar(preferredSidecarSubtitleTrackId) {
+                request.preferredProtocolV3SubtitleIndex = SubtitleTrackIdSpace.sidecarIndex(
+                    from: preferredSidecarSubtitleTrackId
+                )
+            } else {
+                request.preferredProtocolV3SubtitleIndex = preferredProtocolV3SubtitleIndex
+            }
             request.prefersLastUsedVersion = prefersLastUsedVersion
             return request
         }
