@@ -15,8 +15,12 @@ final class APIv2ContractStateTests: XCTestCase {
         let previousProvider = monitor.activeServerIdProvider
         addTeardownBlock { @MainActor [monitor] in
             monitor.activeServerIdProvider = previousProvider
+            monitor.onContractRecheckNeeded = nil
             monitor.resetContractStatus()
+            // Leave the shared monitor reachable for whatever runs next.
+            monitor.noteServerResponded()
         }
+        monitor.onContractRecheckNeeded = nil
         monitor.resetContractStatus()
         monitor.activeServerIdProvider = { [unowned self] in self.activeServerId }
     }
@@ -95,6 +99,58 @@ final class APIv2ContractStateTests: XCTestCase {
         XCTAssertEqual(monitor.contractServerId, "new")
         XCTAssertEqual(monitor.contractStatus, .unknown, "a timeout for the new server is not contract evidence")
         XCTAssertFalse(monitor.isServerUpdateRequired)
+    }
+
+    func testV2VerdictAfterUpdateRequiredClearsForSameServer() {
+        activeServerId = "active"
+        monitor.noteContractProbe(.updateServer, serverId: "active")
+        XCTAssertTrue(monitor.isServerUpdateRequired)
+
+        monitor.noteContractProbe(.v2(.fixture), serverId: "active")
+
+        XCTAssertEqual(monitor.contractStatus, .v2)
+        XCTAssertEqual(monitor.contractServerId, "active")
+        XCTAssertFalse(monitor.isServerUpdateRequired, "an upgraded server clears the sticky verdict")
+    }
+
+    func testRecheckHookFiresOnceOnRecoveryWhileUpdateRequired() {
+        var fired = 0
+        monitor.onContractRecheckNeeded = { fired += 1 }
+        activeServerId = "active"
+        monitor.noteContractProbe(.updateServer, serverId: "active")
+
+        // Steady-state responses and the first reachable step are not edges.
+        monitor.noteServerResponded()
+        XCTAssertEqual(fired, 0)
+
+        monitor.noteServerUnreachable()
+        XCTAssertEqual(fired, 0, "going down is not a recovery")
+        monitor.noteServerResponded()
+        XCTAssertEqual(fired, 1, "unreachable -> reachable while update-required requests a re-probe")
+        monitor.noteServerResponded()
+        XCTAssertEqual(fired, 1, "the hook fires on the edge, not on every response")
+
+        // The verdict itself is untouched by the edge; only a probe changes it.
+        XCTAssertTrue(monitor.isServerUpdateRequired)
+    }
+
+    func testRecheckHookStaysQuietWithoutUpdateRequired() {
+        var fired = 0
+        monitor.onContractRecheckNeeded = { fired += 1 }
+        activeServerId = "active"
+        monitor.noteContractProbe(.v2(.fixture), serverId: "active")
+
+        monitor.noteServerUnreachable()
+        monitor.noteServerResponded()
+        XCTAssertEqual(fired, 0, "a v2 server recovering needs no re-probe")
+
+        // A verdict that belongs to a server that is no longer active is not
+        // update-required for the active one, so recovery must not fire.
+        monitor.noteContractProbe(.updateServer, serverId: "active")
+        activeServerId = "other"
+        monitor.noteServerUnreachable()
+        monitor.noteServerResponded()
+        XCTAssertEqual(fired, 0, "a stale verdict for another server never triggers a re-probe")
     }
 }
 

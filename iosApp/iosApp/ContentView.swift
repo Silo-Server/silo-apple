@@ -100,6 +100,12 @@ struct ContentView: View {
         }
         .onAppear {
             drainIncomingDeepLink()
+            // Reachability recovery edge for a sticky update-required verdict
+            // (see `ConnectionMonitor.onContractRecheckNeeded`). Idempotent,
+            // so repeated appearances just reinstall the same closure.
+            ConnectionMonitor.shared.onContractRecheckNeeded = {
+                Task { await AuthService.shared.refreshActiveServerName() }
+            }
             #if os(iOS) || os(tvOS)
             // The first frame SwiftUI actually produced. A launch whose
             // breadcrumbs stop at `process_start` never got here, which
@@ -351,6 +357,16 @@ struct ContentView: View {
                 break
             }
             #endif
+
+            // Foreground recovery edge for a sticky update-required verdict
+            // (see `ConnectionMonitor.onContractRecheckNeeded`): a server
+            // upgraded while the app was backgrounded never trips the
+            // reachability edge, so re-probe here on every platform.
+            // `refreshActiveServerName` carries the server-identity checks
+            // and a failed probe leaves the verdict untouched.
+            if newPhase == .active, ConnectionMonitor.shared.isServerUpdateRequired {
+                Task { await AuthService.shared.refreshActiveServerName() }
+            }
 
             if newPhase == .background {
                 markProfileAwayStartIfNeeded()

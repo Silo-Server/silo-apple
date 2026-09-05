@@ -50,6 +50,18 @@ final class ConnectionMonitor {
     /// Overridable so tests can drive it without touching the real registry.
     var activeServerIdProvider: () -> String? = { ServerRegistry.shared.activeServerId }
 
+    /// Invoked when an `.updateRequired` verdict deserves a fresh probe: the
+    /// server just came back from `.unreachable`, which is what an in-place
+    /// upgrade looks like from here. The verdict is otherwise sticky for the
+    /// process (the only probe is `AuthService.refreshActiveServerName`), so
+    /// without a re-probe the pill would outlive the upgrade until relaunch.
+    /// A hook rather than a direct call keeps `Networking` from depending on
+    /// `AuthService`; `ContentView` installs it at startup. The other recovery
+    /// edge, returning to the foreground, lives in `ContentView`'s scene-phase
+    /// handler. Neither edge changes the verdict itself: only a probe result
+    /// does, and a failed re-probe leaves it in place.
+    var onContractRecheckNeeded: (() -> Void)?
+
     /// Drive the "server update required" message from this. False whenever
     /// the recorded verdict belongs to a server other than the active one.
     var isServerUpdateRequired: Bool {
@@ -148,8 +160,16 @@ final class ConnectionMonitor {
             )
             #endif
         }
+        // Only the unreachable -> reachable edge is upgrade evidence; the
+        // initial `.unknown` -> `.reachable` step is the first request after
+        // launch, which `refreshActiveServerName` already covers.
+        let recoveredFromOutage = serverStatus == .unreachable
         serverStatus = .reachable
         stopReprobeLoop()
+        if recoveredFromOutage, isServerUpdateRequired {
+            Self.logger.info("Server recovered while update-required; requesting contract re-probe")
+            onContractRecheckNeeded?()
+        }
     }
 
     /// A request failed at the transport layer (no HTTP response). Callers
