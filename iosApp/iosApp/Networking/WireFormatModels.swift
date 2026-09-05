@@ -79,20 +79,28 @@ struct UpdateProfileBody: Encodable {
 
     /// The v2 PATCH body. Only set members are sent; string enums pass through
     /// unchanged so an unsupported value is rejected by the server's
-    /// validation rather than silently rewritten here.
+    /// validation rather than silently rewritten here. The legacy `""`
+    /// "inherit" sentinel on the language members becomes the v2 clearing
+    /// form (JSON `null`): v2 reads `""` as a value, not as "no preference".
     var asAPIv2Patch: APIv2ProfilePatch {
         var patch = APIv2ProfilePatch()
         patch.qualityPreference = qualityPreference.map(APIv2QualityPreference.init(wireValue:))
-        if let subtitleLanguage { patch.subtitleLanguage = .set(subtitleLanguage) }
+        if let subtitleLanguage { patch.subtitleLanguage = Self.languagePatch(subtitleLanguage) }
         patch.subtitleMode = subtitleMode.map(APIv2SubtitleMode.init(wireValue:))
         patch.showForcedSubtitles = showForcedSubtitles
         if let preferredMetadataLanguage {
-            patch.preferredMetadataLanguage = .set(preferredMetadataLanguage)
+            patch.preferredMetadataLanguage = Self.languagePatch(preferredMetadataLanguage)
         }
         patch.autoSkipIntro = autoSkipIntro
         patch.autoSkipCredits = autoSkipCredits
         patch.autoSkipRecap = autoSkipRecap
         return patch
+    }
+
+    /// `""` is the legacy "inherit" sentinel for a language member; on v2 that
+    /// intent is expressed by clearing the member.
+    private static func languagePatch(_ value: String) -> APIv2Patch<String> {
+        value.isEmpty ? .clear : .set(value)
     }
 }
 

@@ -241,6 +241,19 @@ final class APIv2ContractTests: XCTestCase {
         XCTAssertEqual(object.count, 2, "nil in the legacy shape means omitted, never null")
     }
 
+    func testLegacyEmptyLanguageSentinelBecomesAClear() throws {
+        var body = UpdateProfileBody()
+        body.preferredMetadataLanguage = ""
+        body.subtitleLanguage = "de"
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let object = try Support.jsonObject(encoder.encode(body.asAPIv2Patch))
+        XCTAssertTrue(object.keys.contains("preferred_metadata_language"), "inherit must be sent, not omitted")
+        XCTAssertTrue(object["preferred_metadata_language"] is NSNull, "the legacy \"\" sentinel clears on v2")
+        XCTAssertEqual(object["subtitle_language"] as? String, "de")
+        XCTAssertEqual(object.count, 2)
+    }
+
     // MARK: Problems
 
     func testGenericProblemFixtures() throws {
