@@ -46,6 +46,11 @@ final class ConnectionMonitor {
     /// from, must never gate the active session.
     private(set) var contractServerId: String?
 
+    /// Latest probe generation issued per server id (see `beginContractProbe`).
+    /// Process-scoped and monotonic; never reset.
+    private var latestContractProbeGeneration: [String: UInt64] = [:]
+    private var contractProbeGenerationCounter: UInt64 = 0
+
     /// Where "the active server" is read from at record and read time.
     /// Overridable so tests can drive it without touching the real registry.
     var activeServerIdProvider: () -> String? = { ServerRegistry.shared.activeServerId }
@@ -76,6 +81,30 @@ final class ConnectionMonitor {
     /// the same server in place, exactly as the compatibility rule requires
     /// (a timeout is not an old server).
     func noteContractProbe(_ result: APIv2ProbeResult, serverId: String) {
+        noteContractProbe(result, serverId: serverId, generation: beginContractProbe(serverId: serverId))
+    }
+
+    /// Issue a generation for a probe of `serverId` that is about to start.
+    /// Probes can overlap (foreground return and unreachable->reachable both
+    /// re-probe), and an older probe finishing after a newer one must not
+    /// overwrite the newer verdict. Capture the generation before probing and
+    /// pass it to `noteContractProbe(_:serverId:generation:)`; only the latest
+    /// generation issued for that server id is recorded.
+    func beginContractProbe(serverId: String) -> UInt64 {
+        contractProbeGenerationCounter += 1
+        latestContractProbeGeneration[serverId] = contractProbeGenerationCounter
+        return contractProbeGenerationCounter
+    }
+
+    /// Record the probe outcome for `serverId` from the probe that was issued
+    /// `generation` by `beginContractProbe(serverId:)`. Dropped when a newer
+    /// generation has since been issued for that server, in addition to the
+    /// active-server rule of the two-argument overload.
+    func noteContractProbe(_ result: APIv2ProbeResult, serverId: String, generation: UInt64) {
+        guard latestContractProbeGeneration[serverId] == generation else {
+            Self.logger.debug("Dropping v2 contract verdict from a superseded probe generation")
+            return
+        }
         guard serverId == activeServerIdProvider() else {
             Self.logger.debug("Dropping v2 contract verdict for a server that is not active")
             return

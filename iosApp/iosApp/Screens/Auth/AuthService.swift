@@ -49,10 +49,19 @@ final class AuthService: @unchecked Sendable {
     }
 
     /// Records a probe verdict for `serverId`. The monitor drops it unless
-    /// that server is the active one at record time.
-    private func recordContract(_ result: APIv2ProbeResult, serverId: String) async {
+    /// that server is the active one at record time, and, when `generation`
+    /// is given, unless it is still the latest probe issued for that server.
+    private func recordContract(
+        _ result: APIv2ProbeResult,
+        serverId: String,
+        generation: UInt64? = nil
+    ) async {
         await MainActor.run {
-            ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId)
+            if let generation {
+                ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId, generation: generation)
+            } else {
+                ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId)
+            }
         }
     }
 
@@ -161,7 +170,17 @@ final class AuthService: @unchecked Sendable {
         // verdict is (re)established; the result only updates state here.
         // The verdict is scoped to the server captured above, so a switch
         // during the probe drops it instead of mislabelling the new server.
-        await recordContract(await contractProbe.probe(serverURL: server.url), serverId: serverId)
+        // Foreground return and unreachable->reachable recovery can both call
+        // this concurrently; the generation makes sure an older probe that
+        // finishes last cannot overwrite the newer verdict.
+        let generation = await MainActor.run {
+            ConnectionMonitor.shared.beginContractProbe(serverId: serverId)
+        }
+        await recordContract(
+            await contractProbe.probe(serverURL: server.url),
+            serverId: serverId,
+            generation: generation
+        )
         guard serverRegistry.activeServerId == serverId else { return }
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
               serverRegistry.activeServerId == serverId else {

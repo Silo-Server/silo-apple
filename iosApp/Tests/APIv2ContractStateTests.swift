@@ -113,6 +113,44 @@ final class APIv2ContractStateTests: XCTestCase {
         XCTAssertFalse(monitor.isServerUpdateRequired, "an upgraded server clears the sticky verdict")
     }
 
+    func testOlderProbeGenerationCompletingAfterNewerIsDropped() {
+        activeServerId = "active"
+        let older = monitor.beginContractProbe(serverId: "active")
+        let newer = monitor.beginContractProbe(serverId: "active")
+        XCTAssertGreaterThan(newer, older)
+
+        monitor.noteContractProbe(.v2(.fixture), serverId: "active", generation: newer)
+        monitor.noteContractProbe(.updateServer, serverId: "active", generation: older)
+
+        XCTAssertEqual(monitor.contractStatus, .v2, "a superseded probe must not overwrite the newer verdict")
+        XCTAssertFalse(monitor.isServerUpdateRequired)
+    }
+
+    func testNewestProbeGenerationStillRecords() {
+        activeServerId = "active"
+        _ = monitor.beginContractProbe(serverId: "active")
+        let newest = monitor.beginContractProbe(serverId: "active")
+
+        monitor.noteContractProbe(.updateServer, serverId: "active", generation: newest)
+
+        XCTAssertEqual(monitor.contractStatus, .updateRequired)
+        XCTAssertTrue(monitor.isServerUpdateRequired)
+    }
+
+    func testProbeGenerationForDifferentServerIsIgnored() {
+        activeServerId = "active"
+        monitor.noteContractProbe(.v2(.fixture), serverId: "active")
+        let candidateGeneration = monitor.beginContractProbe(serverId: "candidate")
+
+        monitor.noteContractProbe(.updateServer, serverId: "candidate", generation: candidateGeneration)
+        // A generation issued for one server does not authorise a record for another.
+        monitor.noteContractProbe(.updateServer, serverId: "active", generation: candidateGeneration)
+
+        XCTAssertEqual(monitor.contractStatus, .v2)
+        XCTAssertEqual(monitor.contractServerId, "active")
+        XCTAssertFalse(monitor.isServerUpdateRequired)
+    }
+
     func testRecheckHookFiresOnceOnRecoveryWhileUpdateRequired() {
         var fired = 0
         monitor.onContractRecheckNeeded = { fired += 1 }
