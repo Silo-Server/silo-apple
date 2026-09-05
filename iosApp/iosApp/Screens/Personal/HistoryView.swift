@@ -41,6 +41,10 @@ struct HistoryView: View {
     private var gridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
+                if let error = viewModel.error {
+                    Text(error.message).foregroundColor(.siloError)
+                    Button("Reload history") { Task { await viewModel.load(reset: true) } }
+                }
                 Text(viewModel.countLabel)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)

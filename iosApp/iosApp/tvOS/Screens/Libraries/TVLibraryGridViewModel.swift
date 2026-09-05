@@ -9,8 +9,7 @@ import Nuke
 ///
 /// Key differences from iOS:
 ///
-/// - **Pagination** uses the server's snapshot timestamp (`snapshot_at`) as a
-///   fence so pages stay coherent even if items are being ingested mid-scroll.
+/// - **Pagination** follows server-issued cursors pinned to the active viewer.
 /// - **Page size** is 100 (the server's hard cap) instead of 60.
 /// - **Prefetch trigger** fires earlier (more lead rows) and warms posters via
 ///   Nuke.
@@ -40,8 +39,7 @@ final class TVLibraryGridViewModel {
     private let sendsType: Bool
     private let pageSize: Int = 100
 
-    private var snapshot: String? = nil
-    private var nextOffset: Int = 0
+    private var continuation: APIv2CatalogContinuation?
     @ObservationIgnored private var prefetchedPosterURLs: Set<URL> = []
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
     /// Decoded into the memory cache so a cell scrolling into view paints the
@@ -83,9 +81,7 @@ final class TVLibraryGridViewModel {
             return
         }
         items = cached.items
-        hasMore = cached.hasMore ?? false
-        nextOffset = cached.items.count
-        snapshot = cached.snapshot
+        hasMore = false
     }
 
     // MARK: - Public API
@@ -198,9 +194,8 @@ final class TVLibraryGridViewModel {
         stopPosterPrefetchRequests()
         generation += 1
         items = []
-        nextOffset = 0
+        continuation = nil
         hasMore = true
-        snapshot = nil
         error = nil
         hydratePage1FromCache()
         refreshPosterPrefetch()
@@ -215,26 +210,21 @@ final class TVLibraryGridViewModel {
             isLoading = true
         }
         defer {
-            isLoading = false
-            isRefreshing = false
+            if myGeneration == generation {
+                isLoading = false
+                isRefreshing = false
+            }
         }
 
-        let requestOffset = reset ? 0 : nextOffset
-        let requestSnapshot = reset ? nil : snapshot
-        let query = CatalogQueryBuilder.build(
-            filter,
-            libraryId: libraryId,
-            mediaType: mediaType,
-            offset: requestOffset,
-            limit: pageSize,
-            snapshot: requestSnapshot,
-            includeType: sendsType
-        )
-
         do {
-            let response: CatalogResponse = try await SiloAPI.shared.catalog(
-                query: query
-            )
+            let result: APIv2CatalogResult
+            if !reset, let continuation {
+                result = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
+            } else {
+                let query = CatalogQueryBuilder.build(filter, libraryId: libraryId, mediaType: mediaType, limit: pageSize, includeType: sendsType)
+                result = try await SiloAPI.shared.catalogPage(query: query)
+            }
+            let response = CatalogResponse(catalogPage: result.value)
 
             // Discard if another reload superseded us while we awaited.
             guard myGeneration == generation else { return }
@@ -242,20 +232,16 @@ final class TVLibraryGridViewModel {
             if reset {
                 items = response.items
                 ResponseCache.shared.set(response, for: currentCacheKey)
-                nextOffset = response.items.count
-                snapshot = response.snapshot
             } else {
                 items.append(contentsOf: response.items)
-                nextOffset += response.items.count
-                if snapshot == nil { snapshot = response.snapshot }
             }
-            hasMore = response.hasMore ?? false
+            continuation = result.continuation
+            hasMore = result.continuation != nil
             refreshPosterPrefetch()
         } catch {
             guard myGeneration == generation else { return }
-            if items.isEmpty {
-                self.error = ErrorState(error)
-            }
+            self.error = ErrorState(error)
+            hasMore = false
         }
     }
 }

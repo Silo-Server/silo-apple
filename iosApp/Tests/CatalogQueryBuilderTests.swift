@@ -11,8 +11,32 @@ final class CatalogQueryBuilderTests: XCTestCase {
                        libraryId: Int? = 1,
                        mediaType: BrowseMediaType = .movie,
                        includeType: Bool = false) -> [String: String] {
-        CatalogQueryBuilder.build(state, libraryId: libraryId, mediaType: mediaType,
-                                  offset: 0, limit: 60, includeType: includeType)
+        let query = CatalogQueryBuilder.build(state, libraryId: libraryId, mediaType: mediaType,
+                                              limit: 60, includeType: includeType)
+        // Flatten typed groups only for readable assertions below. Wire GET
+        // uses one JSON groups parameter, verified by CatalogV2Tests.
+        var result = try! query.getParameters()
+        result["sort"] = query.sort
+        result["order"] = query.order
+        if let encoded = result.removeValue(forKey: "groups"),
+           let groups = try! JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]] {
+            for (g, group) in groups.enumerated() {
+                result["groups[\(g)][match]"] = group["match"] as? String
+                for (r, rule) in (group["rules"] as! [[String: Any]]).enumerated() {
+                    let base = "groups[\(g)][rules][\(r)]"
+                    result["\(base)[field]"] = rule["field"] as? String
+                    result["\(base)[op]"] = rule["op"] as? String
+                    if let values = rule["value"] as? [Int] {
+                        for (v, value) in values.enumerated() { result["\(base)[value][\(v)]"] = String(value) }
+                    } else if let value = rule["value"] as? String {
+                        result["\(base)[value]"] = value
+                    } else if let value = rule["value"] as? Bool {
+                        result["\(base)[value]"] = String(value)
+                    }
+                }
+            }
+        }
+        return result
     }
 
     func testDefaultStateBaseParams() {
@@ -22,7 +46,7 @@ final class CatalogQueryBuilderTests: XCTestCase {
         XCTAssertEqual(q["order"], "asc")
         XCTAssertEqual(q["match"], "all")
         XCTAssertEqual(q["library_id"], "5")
-        XCTAssertEqual(q["offset"], "0")
+        XCTAssertNil(q["offset"])
         XCTAssertEqual(q["limit"], "60")
         XCTAssertNil(q["type"], "iOS omits the media-scope param")
         XCTAssertNil(q["groups[0][match]"], "no facets → no groups")
@@ -137,10 +161,12 @@ final class CatalogQueryBuilderTests: XCTestCase {
         XCTAssertEqual(build(s)["match"], "any")
     }
 
-    func testIncludeTotalFalseEmitsFlag() {
-        let q = CatalogQueryBuilder.build(.none, libraryId: 1, mediaType: .movie,
-                                          offset: 0, limit: 1, includeTotal: false, includeType: false)
-        XCTAssertEqual(q["include_total"], "false")
+    func testDefaultQueryDoesNotEmitLegacyTotalOrSnapshotFlags() throws {
+        let query = CatalogQueryBuilder.build(.none, libraryId: 1, mediaType: .movie, limit: 1, includeType: false)
+        let parameters = try query.getParameters()
+        XCTAssertNil(parameters["include_total"])
+        XCTAssertNil(parameters["snapshot_at"])
+        XCTAssertNil(parameters["offset"])
     }
 
     func testCacheKeyFragmentIsSetOrderIndependent() {

@@ -50,8 +50,7 @@ final class PersonDetailViewModel {
         category: "PersonDetail"
     )
     private let pageSize = 60
-    private var nextOffset = 0
-    private var snapshot: String?
+    private var continuation: APIv2CatalogContinuation?
     private var generation = 0
     private var metadataRefreshTask: Task<Void, Never>?
     private var autoRefreshRequestedPersonId: Int?
@@ -217,18 +216,25 @@ final class PersonDetailViewModel {
     }
 
     private func fetchPage(reset: Bool, generation currentGeneration: Int) async {
-        guard hasMore, !isLoadingItems else { return }
+        guard hasMore, reset || !isLoadingItems else { return }
         isLoadingItems = true
-        defer { isLoadingItems = false }
+        defer { if currentGeneration == generation { isLoadingItems = false } }
 
         do {
-            let response = try await SiloAPI.shared.personCatalogItems(
-                personId: personId,
-                type: selectedFilter.catalogType,
-                offset: nextOffset,
-                limit: pageSize,
-                snapshot: snapshot
-            )
+            let page: APIv2CatalogResult
+            if !reset, let continuation {
+                page = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
+            } else {
+                var query = APIv2CatalogQuery()
+                query.source = "person"
+                query.personId = String(personId)
+                query.type = selectedFilter.catalogType
+                query.limit = pageSize
+                query.sort = "year"
+                query.order = "desc"
+                page = try await SiloAPI.shared.catalogPage(query: query)
+            }
+            let response = page.value
             guard currentGeneration == generation else { return }
 
             if reset {
@@ -236,13 +242,13 @@ final class PersonDetailViewModel {
             } else {
                 items.append(contentsOf: response.items)
             }
-            totalItems = response.total
-            hasMore = response.hasMore ?? false
-            nextOffset += response.items.count
-            if snapshot == nil { snapshot = response.snapshot }
+            totalItems = response.totalExact ? response.total : nil
+            hasMore = page.continuation != nil
+            continuation = page.continuation
         } catch {
             guard currentGeneration == generation else { return }
             self.error = ErrorState(error)
+            hasMore = false
         }
     }
 
@@ -262,13 +268,13 @@ final class PersonDetailViewModel {
     /// remains visible rather than hiding content based on a network error.
     private func catalogHasItems(type: String) async -> Bool? {
         do {
-            let response = try await SiloAPI.shared.personCatalogItems(
-                personId: personId,
-                type: type,
-                offset: 0,
-                limit: 1
-            )
-            return !response.items.isEmpty || (response.total ?? 0) > 0
+            var query = APIv2CatalogQuery()
+            query.source = "person"
+            query.personId = String(personId)
+            query.type = type
+            query.limit = 1
+            let response = try await SiloAPI.shared.catalogPage(query: query)
+            return !response.value.items.isEmpty
         } catch {
             return nil
         }
@@ -283,8 +289,7 @@ final class PersonDetailViewModel {
         #endif
         items = []
         totalItems = nil
-        nextOffset = 0
-        snapshot = nil
+        continuation = nil
         hasMore = true
     }
 }

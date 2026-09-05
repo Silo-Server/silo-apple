@@ -20,6 +20,43 @@ final class CatalogV2Tests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    @MainActor
+    func testSearchPreservesResultsAndRequiresReloadAfterCursorFailure() async throws {
+        let (api, _) = try await client()
+        let model = SearchViewModel(api: api)
+        model.query = "example"
+        CatalogProtocol.reply(200, #"{"items":[{"content_id":"one","type":"movie","title":"One"}],"page":{"has_more":true,"next_cursor":"next"},"total":10000,"total_exact":false,"window_cursor":"w","search_diagnostics":{"provider":"search","mode":"semantic","semantic_used":true,"result_window_limit":250}}"#)
+        await model.performSearch()
+        XCTAssertEqual(model.results.count, 1)
+        XCTAssertEqual(model.countLabel, "About 10000 results")
+        XCTAssertEqual(model.resultWindowLimit, 250)
+        CatalogProtocol.reply(400, #"{"type":"about:blank","title":"Expired","status":400,"detail":"Reload the search","code":"invalid_cursor"}"#)
+        await model.loadMore()
+        XCTAssertEqual(model.results.count, 1)
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.hasMore)
+        let count = CatalogProtocol.requests().count
+        await model.loadMore()
+        XCTAssertEqual(CatalogProtocol.requests().count, count)
+        CatalogProtocol.reply(200, terminal)
+        await model.performSearch(reset: true)
+        XCTAssertNil(model.error)
+        XCTAssertTrue(model.results.isEmpty)
+        XCTAssertEqual(CatalogProtocol.requests().count, count + 2)
+    }
+
+    @MainActor
+    func testSearchCapabilityDenialPreventsCatalogDispatch() async throws {
+        let (api, _) = try await client()
+        CatalogProtocol.denySearch()
+        let model = SearchViewModel(api: api)
+        model.query = "example"
+        await model.performSearch()
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.hasMore)
+        XCTAssertEqual(CatalogProtocol.requests().map { $0.0.url!.path }, ["/api/v2/catalog/search/capabilities"])
+    }
+
     func testStrictPageRejectsLegacyAndMalformedEnvelopes() throws {
         for body in [
             #"{"items":[],"has_more":false,"total":0,"total_exact":true,"snapshot":"old"}"#,
@@ -203,8 +240,10 @@ final class CatalogV2Tests: XCTestCase {
 private final class CatalogProtocol: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var response = (200, "{}")
+    nonisolated(unsafe) private static var searchAllowed = true
+    static func denySearch() { lock.withLock { searchAllowed = false } }
     nonisolated(unsafe) private static var recorded: [(URLRequest, Data?)] = []
-    static func reset() { lock.withLock { recorded = []; response = (200, "{}") } }
+    static func reset() { lock.withLock { recorded = []; response = (200, "{}"); searchAllowed = true } }
     static func reply(_ status: Int, _ body: String) { lock.withLock { response = (status, body) } }
     static func requests() -> [(URLRequest, Data?)] { lock.withLock { recorded } }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -221,7 +260,13 @@ private final class CatalogProtocol: URLProtocol {
             }
             data = bytes
         }
-        let reply = Self.lock.withLock { Self.recorded.append((request, data)); return Self.response }
+        let reply = Self.lock.withLock {
+            Self.recorded.append((request, data))
+            if request.url?.path == "/api/v2/catalog/search/capabilities" {
+                return (200, "{\"revision\":\"one\",\"state\":\"ready\",\"provider\":\"search\",\"allowed\":\(Self.searchAllowed)}")
+            }
+            return Self.response
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil,
             headerFields: ["Content-Type": reply.0 >= 400 ? "application/problem+json" : "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

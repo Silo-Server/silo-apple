@@ -148,7 +148,7 @@ struct APIv2CatalogQueryBody: Encodable {
     }
 }
 
-struct APIv2CatalogFilters: Decodable {
+struct APIv2CatalogFilters: Codable {
     let genres: [String]
     let studios: [String]
     let networks: [String]
@@ -160,7 +160,7 @@ struct APIv2CatalogFilters: Decodable {
     let series: [String]
     let technical: APIv2CatalogTechnicalFilters?
 }
-struct APIv2CatalogTechnicalFilters: Decodable {
+struct APIv2CatalogTechnicalFilters: Codable {
     let resolutions: [String]
     let audioLanguages: [String]
     let subtitleLanguages: [String]

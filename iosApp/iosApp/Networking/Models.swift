@@ -136,6 +136,16 @@ struct CatalogResponse: Codable {
     let title: String?
     let snapshot: String?
 
+    init(catalogPage: APIv2CatalogPage) {
+        total = catalogPage.total
+        totalExact = catalogPage.totalExact
+        hasMore = catalogPage.page.hasMore
+        items = catalogPage.items
+        source = nil
+        title = nil
+        snapshot = nil
+    }
+
     init(collectionCards: [BrowseItem]) {
         total = collectionCards.count
         totalExact = true

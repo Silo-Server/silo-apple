@@ -99,6 +99,11 @@ struct BrowseView: View {
                     activeFilterChips
                 }
 
+                if let error = viewModel.error {
+                    Text(error.message).foregroundColor(.siloError)
+                    Button("Reload results") { Task { await viewModel.loadItems(reset: true) } }
+                }
+
                 CatalogGrid(
                     items: viewModel.items,
                     isLoading: viewModel.isLoading,

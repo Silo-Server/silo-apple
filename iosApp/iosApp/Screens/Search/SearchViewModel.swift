@@ -32,6 +32,7 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
 }
 
 @Observable
+@MainActor
 class SearchViewModel {
     var query = ""
     var selectedMediaType: SearchMediaType = .all
@@ -61,9 +62,21 @@ class SearchViewModel {
     var hasMore = false
     var total = 0
 
+    private let api: APIv2Client
+
+    init(api: APIv2Client = APIv2Client()) { self.api = api }
+
     private var searchTask: Task<Void, Never>?
     private let pageSize = 60
-    private var offset = 0
+    private var continuation: APIv2CatalogContinuation?
+    private var generation = 0
+    var totalExact = true
+    var resultWindowLimit: Int?
+    var sessionExpiresAt: Date?
+
+    var countLabel: String {
+        "\(totalExact ? "" : "About ")\(total) result\(total == 1 ? "" : "s")"
+    }
 
     /// Debounced search triggered on query change.
     func onQueryChanged() {
@@ -108,27 +121,28 @@ class SearchViewModel {
             return
         }
 
-        let requestOffset = reset ? 0 : offset
+        if reset { generation += 1; continuation = nil }
+        let requestGeneration = generation
 
         isSearching = true
         error = nil
 
         do {
-            var searchQuery: [String: String] = [
-                "source": "query",
-                "q": trimmed,
-                "limit": String(pageSize),
-                "offset": String(requestOffset),
-            ]
-            if let mediaType = selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled) {
-                searchQuery["type"] = mediaType
+            let page: APIv2CatalogResult
+            if !reset, let continuation {
+                page = try await api.nextCatalogPage(continuation)
+            } else {
+                let capabilities = try await api.catalogSearchCapabilities()
+                guard capabilities.allowed != false else { throw CatalogSearchUnavailable() }
+                var searchQuery = APIv2CatalogQuery()
+                searchQuery.q = trimmed
+                searchQuery.limit = pageSize
+                searchQuery.imageSize = ImageSizeCapability.shared.requestQuery["image_size"]
+                searchQuery.type = selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled)
+                page = try await api.catalogPage(query: searchQuery)
             }
-
-            let response: CatalogResponse = try await SiloAPI.shared.catalog(
-                query: searchQuery
-            )
-            guard !Task.isCancelled else { return }
-
+            guard !Task.isCancelled, requestGeneration == generation else { return }
+            let response = page.value
             if reset {
                 results = response.items
             } else {
@@ -136,12 +150,16 @@ class SearchViewModel {
                 results.append(contentsOf: response.items.filter { !existingIds.contains($0.contentId) })
             }
 
-            offset = requestOffset + response.items.count
-            total = response.total ?? results.count
-            hasMore = response.hasMore ?? false
+            continuation = page.continuation
+            total = response.total
+            totalExact = response.totalExact
+            resultWindowLimit = response.searchDiagnostics?.resultWindowLimit
+            sessionExpiresAt = response.searchDiagnostics?.sessionExpiresAt
+            hasMore = page.continuation != nil
             hasSearched = true
         } catch let err {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, requestGeneration == generation else { return }
+            hasMore = false
             self.error = ErrorState(err)
             if reset {
                 results = []
@@ -160,6 +178,14 @@ class SearchViewModel {
         hasSearched = false
         hasMore = false
         total = 0
-        offset = 0
+        generation += 1
+        continuation = nil
+        totalExact = true
+        resultWindowLimit = nil
+        sessionExpiresAt = nil
     }
+}
+
+private struct CatalogSearchUnavailable: LocalizedError {
+    var errorDescription: String? { "Search is currently unavailable. Please try again later." }
 }

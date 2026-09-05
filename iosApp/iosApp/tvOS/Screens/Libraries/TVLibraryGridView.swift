@@ -164,6 +164,10 @@ struct TVLibraryGridView: View {
                 )
                 .padding(.horizontal, SiloTheme.safePadding)
 
+                if let error = viewModel.error, !viewModel.items.isEmpty {
+                    Text(error.message).foregroundColor(.siloError)
+                    Button("Reload results") { Task { await viewModel.loadInitial() } }
+                }
                 if viewModel.items.isEmpty && viewModel.isLoading {
                     Color.clear
                         .frame(maxWidth: .infinity, minHeight: 400)

@@ -36,7 +36,7 @@ enum StartupContentPrefetcher {
     private static var recommendationsTask: Task<SectionsResponse, Error>?
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
-    private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
+    private static var browseFirstPageTasks: [String: Task<APIv2CatalogResult, Error>] = [:]
     #if os(tvOS)
     /// One bounded cold-start warmup for the Series library the top-level tab
     /// will actually open. This is separate from `librarySectionsTasks`: the
@@ -565,7 +565,7 @@ enum StartupContentPrefetcher {
     static func fetchBrowseFirstPage(
         libraryId: Int?,
         state: CatalogFilterState = .none
-    ) async throws -> CatalogResponse {
+    ) async throws -> APIv2CatalogResult {
         let generation = profileScopedGeneration
         let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
         // Verbose for the same reason as `library_sections`, and the cache key
@@ -577,7 +577,7 @@ enum StartupContentPrefetcher {
             isOriginator: browseFirstPageTasks[key] == nil
         )
         #endif
-        let task: Task<CatalogResponse, Error>
+        let task: Task<APIv2CatalogResult, Error>
         if let existing = browseFirstPageTasks[key] {
             task = existing
         } else {
@@ -589,11 +589,10 @@ enum StartupContentPrefetcher {
                     state,
                     libraryId: libraryId,
                     mediaType: .movie,
-                    offset: 0,
                     limit: browsePageSize,
                     includeType: false
                 )
-                return try await SiloAPI.shared.catalog(query: query)
+                return try await SiloAPI.shared.catalogPage(query: query)
             }
             browseFirstPageTasks[key] = task
         }
@@ -607,8 +606,8 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: key)
-            prefetchBrowseArtwork(for: response)
+            ResponseCache.shared.set(CatalogResponse(catalogPage: response.value), for: key)
+            prefetchBrowseArtwork(for: CatalogResponse(catalogPage: response.value))
             return response
         } catch {
             if profileScopedGeneration == generation {

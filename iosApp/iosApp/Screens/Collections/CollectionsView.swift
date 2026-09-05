@@ -665,8 +665,8 @@ struct LibraryCollectionDetailView: View {
     @State private var error: ErrorState?
     @State private var hasMore = true
     @State private var totalItems: Int?
-    @State private var nextOffset = 0
-    @State private var snapshot: String?
+    @State private var continuation: APIv2CatalogContinuation?
+    @State private var generation = 0
 
     @Environment(AppRouter.self) private var router
 
@@ -733,7 +733,7 @@ struct LibraryCollectionDetailView: View {
         if let totalItems, !hasMore {
             return "\(totalItems) item\(totalItems == 1 ? "" : "s")"
         }
-        let suffix = hasMore ? "+" : ""
+        let suffix = hasMore || error != nil ? "+" : ""
         return "\(items.count)\(suffix) item\(items.count == 1 && !hasMore ? "" : "s")"
     }
 
@@ -743,7 +743,9 @@ struct LibraryCollectionDetailView: View {
     }
 
     private func loadItems(reset: Bool) async {
-        guard !isLoading else { return }
+        guard reset || !isLoading else { return }
+        if reset { generation += 1 }
+        let requestGeneration = generation
         if reset {
             // Surface the cached page-1 snapshot instantly so the grid
             // doesn't blank out while the network call runs.
@@ -754,41 +756,38 @@ struct LibraryCollectionDetailView: View {
                 items = cached.items
                 hasMore = cached.hasMore ?? false
                 totalItems = cached.totalExact == false ? nil : cached.total
-                nextOffset = cached.items.count
-                snapshot = cached.snapshot
+                hasMore = false
             } else {
                 items = []
                 hasMore = true
                 totalItems = nil
-                nextOffset = 0
-                snapshot = nil
+                continuation = nil
             }
         }
         if reset {
             hasMore = true
-            nextOffset = 0
-            snapshot = nil
+            continuation = nil
         }
         guard hasMore else { return }
 
         isLoading = true
+        defer { if requestGeneration == generation { isLoading = false } }
         error = nil
 
         do {
-            let response: CatalogResponse
-            if kind == .userCollections {
-                response = try await SiloAPI.shared.userCollectionItems(
-                    collectionId: collectionId
-                )
+            let page: APIv2CatalogResult
+            if !reset, let continuation {
+                page = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
             } else {
-                response = try await SiloAPI.shared.libraryCollectionItems(
-                    libraryId: libraryId,
-                    collectionId: collectionId,
-                    offset: nextOffset,
-                    limit: pageSize,
-                    snapshot: snapshot
-                )
+                var query = APIv2CatalogQuery()
+                query.source = (kind ?? .regular).catalogSource
+                query.collectionId = collectionId
+                if kind != .userCollections { query.libraryId = String(libraryId) }
+                query.limit = min(pageSize, 100)
+                page = try await SiloAPI.shared.catalogPage(query: query)
             }
+            guard requestGeneration == generation, !Task.isCancelled else { return }
+            let response = CatalogResponse(catalogPage: page.value)
             if reset {
                 items = response.items
                 ResponseCache.shared.set(response, for: CacheKey.collectionItems(collectionId))
@@ -797,14 +796,12 @@ struct LibraryCollectionDetailView: View {
             }
             totalItems = response.totalExact == false ? nil : response.total
             hasMore = response.hasMore ?? false
-            nextOffset += response.items.count
-            if snapshot == nil {
-                snapshot = response.snapshot
-            }
+            continuation = page.continuation
         } catch let err {
+            guard requestGeneration == generation, !Task.isCancelled else { return }
+            hasMore = false
             error = ErrorState(err)
         }
 
-        isLoading = false
     }
 }

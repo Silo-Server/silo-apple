@@ -1,46 +1,26 @@
 import Foundation
 
-/// Builds the `/api/v1/catalog` query params from a `CatalogFilterState`.
-///
-/// Multi-value facets are encoded as one structured group per facet
-/// (`match=any` inside, one rule per value) using the server's indexed
-/// bracket keys (`groups[g][rules][r][value][k]`). That is the only
-/// multi-value form expressible through the `[String: String]` HTTP layer
-/// (which emits one query item per key and cannot repeat a key), and it is
-/// the same shape the server itself produces for multi content-rating — see
-/// `catalog_parser.go`. The top-level `match` controls AND/OR across facets.
+/// Builds typed v2 queries shared by the phone and TV filters.
 enum CatalogQueryBuilder {
     static func build(
         _ state: CatalogFilterState,
         libraryId: Int?,
         mediaType: BrowseMediaType,
-        offset: Int,
         limit: Int,
-        snapshot: String? = nil,
-        includeTotal: Bool = true,
         /// Whether to emit the `type` media-scope param. iOS omits it — a
         /// `library_id`-scoped query is already homogeneous, and resolving
         /// the wrong scope (e.g. `movie` for an audiobook library) would
         /// filter every item out. tvOS sends it (it knows the library type).
         includeType: Bool = true
-    ) -> [String: String] {
-        var q: [String: String] = [
-            "source": "query",
-            "offset": String(offset),
-            "limit": String(limit),
-            "sort": state.sort.field,
-            "order": state.effectiveOrder.rawValue,
-            "match": state.matchAll ? "all" : "any",
-        ]
-        if let libraryId { q["library_id"] = String(libraryId) }
-        if state.mediaScope == nil,
-           includeType,
-           let type = mediaType.catalogTypeParam {
-            q["type"] = type
-        }
-        if let prefix = state.namePrefix { q["name_prefix"] = prefix }
-        if let snapshot { q["snapshot_at"] = snapshot }
-        if !includeTotal { q["include_total"] = "false" }
+    ) -> APIv2CatalogQuery {
+        var q = APIv2CatalogQuery()
+        q.limit = limit
+        q.sort = state.sort.field
+        q.order = state.effectiveOrder.rawValue
+        q.match = state.matchAll ? "all" : "any"
+        q.libraryId = libraryId.map(String.init)
+        if state.mediaScope == nil, includeType { q.type = mediaType.catalogTypeParam }
+        q.namePrefix = state.namePrefix
 
         var groups = GroupAccumulator()
         // A user-chosen Type facet (mixed libraries) is a filter facet, not an
@@ -65,14 +45,13 @@ enum CatalogQueryBuilder {
         groups.addYearRanges(state.decades)
         groups.addDynamicRange(hdr: state.hdr, dolbyVision: state.dolbyVision)
         if let status = state.watchStatus { groups.addWatchStatus(status) }
-        groups.encode(into: &q)
+        q.groups = groups.encoded()
 
         return q
     }
 }
 
-/// Accumulates `QueryGroup`s and flattens them into the server's bracketed
-/// `groups[…]` query keys.
+/// Accumulates typed groups with scalar booleans and numeric year ranges.
 private struct GroupAccumulator {
     private struct Rule {
         let field: String
@@ -122,21 +101,19 @@ private struct GroupAccumulator {
         groups.append((match: "any", rules: rules))
     }
 
-    func encode(into q: inout [String: String]) {
-        for (g, group) in groups.enumerated() {
-            q["groups[\(g)][match]"] = group.match
-            for (r, rule) in group.rules.enumerated() {
-                let base = "groups[\(g)][rules][\(r)]"
-                q["\(base)[field]"] = rule.field
-                q["\(base)[op]"] = rule.op
-                if rule.values.count == 1 {
-                    q["\(base)[value]"] = rule.values[0]
+    func encoded() -> [APIv2CatalogGroup] {
+        groups.map { group in
+            APIv2CatalogGroup(match: group.match, rules: group.rules.map { rule in
+                let value: APIv2CatalogRuleValue
+                if rule.field == "year" {
+                    value = .numbers(rule.values.compactMap(Double.init))
+                } else if ["hdr", "dolby_vision", "watched", "in_progress", "favorited", "in_watchlist"].contains(rule.field) {
+                    value = .bool(rule.values.first == "true")
                 } else {
-                    for (v, value) in rule.values.enumerated() {
-                        q["\(base)[value][\(v)]"] = value
-                    }
+                    value = .string(rule.values[0])
                 }
-            }
+                return APIv2CatalogRule(field: rule.field, op: rule.op, value: value)
+            })
         }
     }
 }

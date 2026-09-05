@@ -150,9 +150,14 @@ struct SearchView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                Text("\(viewModel.total) result\(viewModel.total == 1 ? "" : "s")")
+                Text(viewModel.countLabel)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
+
+                if let window = viewModel.resultWindowLimit, viewModel.total > window {
+                    Text("Showing up to \(window) ranked matches. Refine your search to see other results.")
+                        .font(.siloCaption).foregroundColor(.siloSecondaryText)
+                }
 
 #if os(tvOS)
                 TVCatalogGrid(

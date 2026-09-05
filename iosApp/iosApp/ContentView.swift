@@ -1015,12 +1015,10 @@ struct ContentView: View {
         }
     }
     private func resolveDebugSearchContentId(query: String) async throws -> String {
-        let response = try await SiloAPI.shared.catalog(query: [
-            "source": "query",
-            "q": query,
-            "limit": "20",
-            "offset": "0",
-        ])
+        var catalogQuery = APIv2CatalogQuery()
+        catalogQuery.q = query
+        catalogQuery.limit = 20
+        let response = try await SiloAPI.shared.catalogPage(query: catalogQuery).value
 
         let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         let preferredItem = response.items.first { item in

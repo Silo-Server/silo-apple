@@ -17,8 +17,7 @@ class BrowseViewModel {
     /// Live facet vocabulary for the filter sheet, loaded lazily.
     private(set) var facets: CatalogFacets?
 
-    private var currentPage = 0
-    private let pageSize = 60
+    private var continuation: APIv2CatalogContinuation?
     private var libraryId: Int?
     private var hasConfigured = false
     private var configurationGeneration = 0
@@ -40,7 +39,7 @@ class BrowseViewModel {
 
         if libraryChanged {
             generation += 1
-            currentPage = 0
+            continuation = nil
             hasMore = true
             items = []
             filterState = BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
@@ -65,7 +64,7 @@ class BrowseViewModel {
                 hydratePage1FromCache()
                 isRefreshing = !items.isEmpty
             }
-            currentPage = 0
+            continuation = nil
             hasMore = true
         } else if isLoading {
             return
@@ -81,27 +80,17 @@ class BrowseViewModel {
         error = nil
 
         do {
-            let response: CatalogResponse
-            if reset && currentPage == 0 {
-                response = try await StartupContentPrefetcher.fetchBrowseFirstPage(
-                    libraryId: libraryId,
-                    state: filterState
-                )
+            let result: APIv2CatalogResult
+            if !reset, let continuation {
+                result = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
             } else {
-                let query = CatalogQueryBuilder.build(
-                    filterState,
-                    libraryId: libraryId,
-                    mediaType: mediaType,
-                    offset: currentPage * pageSize,
-                    limit: pageSize,
-                    includeType: false
-                )
-                response = try await SiloAPI.shared.catalog(query: query)
+                result = try await StartupContentPrefetcher.fetchBrowseFirstPage(libraryId: libraryId, state: filterState)
             }
+            let response = CatalogResponse(catalogPage: result.value)
             // Discard if another reset superseded us while we awaited.
             guard myGeneration == generation else { return }
 
-            if reset {
+            if reset || continuation == nil {
                 items = response.items
                 ResponseCache.shared.set(response, for: currentCacheKey)
                 refineMediaType(from: response)
@@ -109,12 +98,11 @@ class BrowseViewModel {
                 items.append(contentsOf: response.items)
             }
             hasMore = response.hasMore ?? false
-            currentPage += 1
+            continuation = result.continuation
         } catch let err {
             guard myGeneration == generation else { return }
-            if items.isEmpty {
-                self.error = ErrorState(err)
-            }
+            self.error = ErrorState(err)
+            hasMore = false
         }
         finishLoading(for: myGeneration)
     }
@@ -187,7 +175,7 @@ class BrowseViewModel {
             return
         }
         items = cached.items
-        hasMore = cached.hasMore ?? false
+        hasMore = false
         refineMediaType(from: cached)
     }
 
