@@ -71,6 +71,27 @@ final class ASSSubtitleRendererTests: XCTestCase {
         XCTAssertEqual(pixel(cleared, x: 145, y: 95).a, 0)
     }
 
+    func testCanvasScaleKeepsPointGeometryAndReusesUnchangedImage() async throws {
+        let renderer = ASSSubtitleRenderer()
+        let event = ASSSubtitleRenderer.Event(text: drawing(x: 20, y: 30), start: 0, end: 4)
+        let first = try await renderer.render(header: header, fonts: [], events: [event],
+                                             revision: 1, time: 1, size: size, scale: 1)
+        let unchanged = try await renderer.render(header: header, fonts: [], events: [event],
+                                                 revision: 1, time: 1, size: size, scale: 1)
+        XCTAssertNotNil(first)
+        XCTAssertTrue(first?.image === unchanged?.image)
+        let scaled = try await renderer.render(header: header, fonts: [], events: [event],
+                                              revision: 1, time: 1, size: size, scale: 2)
+        // libass pads its bitmap allocations differently at each resolution.
+        // Verify painted pixels in canvas points, not transparent buffer bounds.
+        XCTAssertGreaterThan(pixel(scaled, x: 25, y: 35).r, 200)
+        XCTAssertGreaterThan(pixel(scaled, x: 35, y: 45).r, 200)
+        XCTAssertEqual(pixel(scaled, x: 45, y: 55).a, 0)
+        let invalid = try await renderer.render(header: header, fonts: [], events: [event],
+                                               revision: 1, time: 1, size: size, scale: .infinity)
+        XCTAssertNil(invalid)
+    }
+
     func testAttachedFontActuallyShapesTheRenderedGlyph() async throws {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "SiloASSFixture", withExtension: "ttf"))
         let font = FontAttachment(filename: "fixture.ttf", mimeType: "font/ttf", data: try Data(contentsOf: url))
@@ -222,10 +243,12 @@ final class ASSSubtitleRendererTests: XCTestCase {
     private func pixel(_ frame: ASSSubtitleRenderer.Frame?, x: Int, y: Int) -> (r: UInt8, g: UInt8, a: UInt8) {
         guard let frame, let data = frame.image.dataProvider?.data,
               let bytes = CFDataGetBytePtr(data) else { return (0, 0, 0) }
-        let px = x - Int(frame.rect.minX), py = y - Int(frame.rect.minY)
+        let px = Int((CGFloat(x) - frame.rect.minX) * CGFloat(frame.image.width) / frame.rect.width)
+        let py = Int((CGFloat(y) - frame.rect.minY) * CGFloat(frame.image.height) / frame.rect.height)
         guard px >= 0, py >= 0, px < frame.image.width, py < frame.image.height else { return (0, 0, 0) }
         let offset = py * frame.image.bytesPerRow + px * 4
-        return (bytes[offset + 2], bytes[offset + 1], bytes[offset + 3])
+        // SwiftAssRenderer’s blend pipeline returns RGBA pixels.
+        return (bytes[offset], bytes[offset + 1], bytes[offset + 3])
     }
 
     private func alphaCount(_ frame: ASSSubtitleRenderer.Frame?) -> Int {

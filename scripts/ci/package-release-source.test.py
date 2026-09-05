@@ -17,13 +17,36 @@ spec.loader.exec_module(release_source)
 
 
 class ReleaseSourceTests(unittest.TestCase):
+    def setUp(self):
+        # Use a small package graph fixture. git archive still reads the real
+        # committed app tree, proving that untracked files are excluded.
+        self.original_git = release_source.git
+        self.pins = json.loads((release_source.ROOT / "scripts/ci/swift-libass-sources.json").read_text())
+        self.resolved = {"pins": [{
+            "identity": "swift-libass",
+            "location": "https://github.com/mihai8804858/swift-libass",
+            "state": {"revision": self.pins["swift_libass_revision"]},
+        }]}
+
+        def fixture_git(repo, *args):
+            if args == ("show", f"HEAD:{release_source.RESOLVED}"):
+                return json.dumps(self.resolved).encode()
+            return self.original_git(repo, *args)
+
+        stub = patch.object(release_source, "git", side_effect=fixture_git)
+        stub.start()
+        self.addCleanup(stub.stop)
+
     def source_response(self, url, **kwargs):
-        pins = json.loads((release_source.ROOT / "scripts/ci/asskit-sources.json").read_text())
-        builder = "\n".join(f'{lib["version_variable"]}="{lib["tag"]}"' for lib in pins["libraries"])
-        builder += "\nfetch_sources() { echo fetch; }\nfetch_sources\necho build\n"
+        builder = "checkout() { echo fetch; }\ncheckout\necho build\n"
+        source_map = "\n".join(
+            f'  {lib["name"]})\n    SOURCE_REPO_URL="{lib["repository"]}"\n'
+            f'    SOURCE_ID="{lib["tag"]}"\n    ;;' for lib in self.pins["libraries"])
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-            for name, body in {"source/build.sh": builder, "source/source.txt": url}.items():
+            for name, body in {"source/build-libraries.sh": builder,
+                               "source/scripts/source.sh": source_map,
+                               "source/source.txt": url}.items():
                 data = body.encode()
                 member = tarfile.TarInfo(name)
                 member.size = len(data)
@@ -46,37 +69,34 @@ class ReleaseSourceTests(unittest.TestCase):
                 manifest = json.load(archive.extractfile(prefix + "revisions.json"))
                 self.assertEqual(manifest["app_revision"], release_source.git(
                     release_source.ROOT, "rev-parse", "HEAD").decode().strip())
-                self.assertEqual(len(manifest["asskit_libraries"]), 5)
-                self.assertIn("asskit", manifest["packages"])
-                self.assertEqual(fetch.call_count, len(manifest["packages"]) + 5)
-                for library, value in manifest["asskit_libraries"].items():
+                self.assertEqual(len(manifest["subtitle_libraries"]), 6)
+                self.assertIn("swift-libass", manifest["packages"])
+                self.assertNotIn("asskit", manifest["packages"])
+                self.assertEqual(fetch.call_count, len(manifest["packages"]) + 7)
+                for library, value in manifest["subtitle_libraries"].items():
                     self.assertRegex(value["archive_sha256"], r"^[0-9a-f]{64}$")
-                    contents = archive.extractfile(prefix + f"packages/asskit/build/src/{library}/source.txt").read().decode()
+                    contents = archive.extractfile(prefix + f"packages/swift-libass/.source/ffmpeg-kit/src/{library}/source.txt").read().decode()
                     self.assertIn(value["revision"], contents)
-                original = archive.extractfile(prefix + "packages/asskit/build.sh").read().decode()
-                local = archive.extractfile(prefix + "packages/asskit/build-local.sh").read().decode()
-                self.assertIn("\nfetch_sources\n", original)
-                self.assertEqual(local, original.replace("\nfetch_sources\n", "\n"))
+                original = archive.extractfile(prefix + "packages/swift-libass/build-libraries.sh").read().decode()
+                local = archive.extractfile(prefix + "packages/swift-libass/build-local.sh").read().decode()
+                self.assertIn("\ncheckout\n", original)
+                self.assertEqual(local, original.replace("\ncheckout\n", "\n"))
                 self.assertIn(prefix + "REBUILD.md", archive.getnames())
 
-    def test_asskit_revision_drift_blocks_publication_before_downloads(self):
-        original_git = release_source.git
-
-        def changed_pin(repo, *args):
-            result = original_git(repo, *args)
-            if args == ("show", f"HEAD:{release_source.RESOLVED}"):
-                resolved = json.loads(result)
-                for pin in resolved["pins"]:
-                    if pin["identity"] == "asskit":
-                        pin["state"]["revision"] = "0" * 40
-                return json.dumps(resolved).encode()
-            return result
-
-        with tempfile.TemporaryDirectory() as scratch, patch.object(
-                release_source, "git", side_effect=changed_pin), patch.object(release_source, "urlopen") as fetch:
-            with self.assertRaisesRegex(ValueError, "Update asskit-sources.json"):
+    def test_revision_drift_blocks_publication_before_downloads(self):
+        self.resolved["pins"][0]["state"]["revision"] = "0" * 40
+        with tempfile.TemporaryDirectory() as scratch, patch.object(release_source, "urlopen") as fetch:
+            with self.assertRaisesRegex(ValueError, "Update swift-libass-sources.json"):
                 release_source.package_sources(release_source.ROOT, Path(scratch))
             fetch.assert_not_called()
+
+    def test_builder_tag_drift_blocks_source_archive(self):
+        self.pins["libraries"][0]["tag"] = "unexpected-version"
+        with tempfile.TemporaryDirectory() as scratch, patch.object(
+                release_source, "urlopen", side_effect=self.source_response):
+            with self.assertRaisesRegex(ValueError, "Subtitle builder no longer matches"):
+                release_source.package_sources(release_source.ROOT, Path(scratch))
+            self.assertEqual(list(Path(scratch).iterdir()), [])
 
 
 if __name__ == "__main__":

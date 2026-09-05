@@ -59,9 +59,12 @@ packages:
   AetherEngine:
     url: https://github.com/Silo-Server/AetherEngine
     revision: f8239c206097c88b53492b281af15cf906c8295b
-  AssKit:
-    url: https://github.com/bitxeno/AssKit
-    revision: 0ac384f4478f86abbee826a42a79c3d0c117e96a
+  SwiftAssRenderer:
+    url: https://github.com/mihai8804858/swift-ass-renderer
+    exactVersion: 1.3.1
+  SwiftLibass:
+    url: https://github.com/mihai8804858/swift-libass
+    exactVersion: 1.4.0
   Nuke:
     url: https://github.com/kean/Nuke
     from: "13.2.0"
@@ -107,8 +110,10 @@ targets:
     dependencies:
       - package: AetherEngine
         product: AetherEngine
-      - package: AssKit
-        product: AssKit
+      - package: SwiftAssRenderer
+        product: SwiftAssRenderer
+      - package: SwiftLibass
+        product: SwiftLibass
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -155,8 +160,10 @@ targets:
     dependencies:
       - package: AetherEngine
         product: AetherEngine
-      - package: AssKit
-        product: AssKit
+      - package: SwiftAssRenderer
+        product: SwiftAssRenderer
+      - package: SwiftLibass
+        product: SwiftLibass
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -201,8 +208,10 @@ targets:
     dependencies:
       - package: AetherEngine
         product: AetherEngine
-      - package: AssKit
-        product: AssKit
+      - package: SwiftAssRenderer
+        product: SwiftAssRenderer
+      - package: SwiftLibass
+        product: SwiftLibass
       - package: Nuke
         product: Nuke
       - package: Nuke

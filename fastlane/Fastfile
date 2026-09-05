@@ -145,9 +145,16 @@ end
 # product here. The resulting IPA is NOT installable as-is — it is meant to be
 # re-signed by the end user with their own certificate via AltStore, Sideloadly,
 # SideStore, etc. before sideloading. See docs/release/sideloading.md.
+def validate_subtitle_packaging(product)
+  script = File.expand_path("../scripts/ci/validate-subtitle-packaging.py", __dir__)
+  product_path = File.expand_path(product, File.expand_path("..", __dir__))
+  sh("python3", script, product_path)
+end
+
 def package_unsigned_ipa(archive_path:, app_name:, output_dir:, output_ipa:)
   app_path = "#{archive_path}/Products/Applications/#{app_name}.app"
   UI.user_error!("Expected app not found at #{app_path}") unless File.exist?(app_path)
+  validate_subtitle_packaging(app_path)
 
   # zip must run from output_dir so the archive root is Payload/, not an
   # absolute path. Rebuild Payload/ from scratch each run for idempotency.
@@ -415,6 +422,8 @@ platform :ios do
       }
     )
 
+    validate_subtitle_packaging("build/ios/Silo.ipa")
+
     upload_to_testflight(
       api_key:                 api_key,
       app_identifier:          app_id,
@@ -535,6 +544,8 @@ platform :ios do
         }
       }
     )
+
+    validate_subtitle_packaging("build/tvos/SiloTV.ipa")
 
     upload_to_testflight(
       api_key:                 api_key,

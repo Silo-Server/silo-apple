@@ -82,18 +82,28 @@ including each component's rebuild script and patches at the pinned revision.
 They are this build's corresponding-source pointer; keep them matched to the
 revisions each release actually resolves.
 
-AssKit and local ASS rendering
-  Revision: 0ac384f4478f86abbee826a42a79c3d0c117e96a
-  Source and rebuild: https://github.com/bitxeno/AssKit/tree/0ac384f4478f86abbee826a42a79c3d0c117e96a
-  Wrapper: MIT
-  libass 0.17.4: ISC
-  FreeType 2.14.3: FreeType License; this product uses the FreeType project
-  FriBidi 1.0.16: LGPL-2.1-or-later
-  HarfBuzz 14.2.0: MIT
-  libunibreak 6.1: zlib
-  Complete notices: AssKit-MIT.txt and AssKit-Lib*.txt
+SwiftAssRenderer, SwiftLibass, and local ASS rendering
+  SwiftAssRenderer 1.3.1 (MIT)
+  Source: https://github.com/mihai8804858/swift-ass-renderer/tree/28919f6b5ddd896d327b0283f8d97624902236e6
+  SwiftLibass 1.4.0 (MIT)
+  Source and rebuild script: https://github.com/mihai8804858/swift-libass/tree/6513c488e377a26c06db327fb2acfc2653a041d5
+  Transitive Swift packages: Combine Schedulers 1.2.2, Concurrency Extras
+  1.4.1, and Issue Reporting 2.1.0, all MIT; their notices are included.
+  libass 0.17.3: ISC
+  Fontconfig 2.15.0: permissive notices in Fontconfig.txt
+  FreeType 2.13.2: FreeType License; this product uses the FreeType project
+  FriBidi 1.0.14: LGPL-2.1-or-later
+  HarfBuzz 8.5.0: notices in HarfBuzz.txt
+  libpng 1.6.43: PNG Reference Library License
+  Complete license texts are bundled alongside this overview.
 
-  FriBidi is statically linked. Matching app and library source, revision
+  SwiftLibass ships these as static libraries and headers in XCFrameworks.
+  It does not embed separate subtitle framework bundles in the application.
+  Its upstream builder uses an unpinned ffmpeg-kit checkout. Our source archive
+  records a builder revision and native source tags matching its documented
+  versions; upstream does not publish byte-for-byte binary build provenance.
+
+  FriBidi is statically linked. App and library source, a revision
   manifest, and instructions for rebuilding with a modified library are
   published as Silo-source-<app-commit>.tar.gz at:
   https://github.com/Silo-Server/silo-apple/releases
