@@ -5,7 +5,7 @@ import XCTest
 final class CatalogV2Tests: XCTestCase {
     private let terminal = #"{"items":[],"page":{"has_more":false},"total":10000,"total_exact":false,"window_cursor":"window"}"#
 
-    private func client() async throws -> (APIv2Client, TokenStore) {
+    private func client(updateRequired: Bool = false) async throws -> (APIv2Client, TokenStore) {
         let name = "CatalogV2Tests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name); CatalogProtocol.reset() }
@@ -17,7 +17,133 @@ final class CatalogV2Tests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CatalogProtocol.self]
         let http = HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokens)
-        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
+        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { updateRequired }), tokens)
+    }
+
+    private var detailJSON: String {
+        #"{"content_id":"movie:one","type":"movie","title":"One","status":"available","genres":[],"keywords":[],"cast":[],"crew":[],"versions":[],"subtitles":[]}"#
+    }
+
+    func testCatalogDetailRequiresArraysAndKeepsMarkerKeysSeparate() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let detail = try decoder.decode(APIv2CatalogRead.CatalogItemDetail.self, from: Data(detailJSON.utf8))
+        XCTAssertEqual(detail.contentId, "movie:one")
+        XCTAssertTrue(detail.versions.isEmpty)
+        XCTAssertThrowsError(try decoder.decode(APIv2CatalogRead.CatalogItemDetail.self,
+            from: Data(detailJSON.replacingOccurrences(of: ",\"versions\":[]", with: "").utf8)))
+        let marker = try decoder.decode(APIv2CatalogRead.Marker.self, from: Data(#"{"start":12.5,"end":25}"#.utf8))
+        XCTAssertEqual(marker.start, 12.5)
+        XCTAssertThrowsError(try decoder.decode(APIv2CatalogRead.Marker.self,
+            from: Data(#"{"start_seconds":12.5,"end_seconds":25}"#.utf8)))
+    }
+
+    func testCatalogReadIDsAreStrictStringsAndInstantsAreDates() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let file = #"{"file_id":"opaque-file","resolution":"2160p","codec_video":"hevc","codec_audio":"aac","hdr":false,"container":"mkv","file_size":123,"duration":90,"bitrate":12,"added_at":"2026-09-05T12:00:00.123Z"}"#
+        let value = try decoder.decode(APIv2CatalogRead.FileVersion.self, from: Data(file.utf8))
+        XCTAssertEqual(value.fileId, "opaque-file")
+        XCTAssertEqual(value.addedAt.timeIntervalSince1970, 1788609600.123, accuracy: 0.001)
+        XCTAssertThrowsError(try decoder.decode(APIv2CatalogRead.FileVersion.self,
+            from: Data(file.replacingOccurrences(of: "\"opaque-file\"", with: "123").utf8)))
+        XCTAssertThrowsError(try decoder.decode(APIv2CatalogRead.Person.self, from: Data(#"{"id":123,"name":"Person"}"#.utf8)))
+        let rollup = #"{"last_file_id":"opaque-file","watched_count":1,"unplayed_count":2,"in_progress_count":0,"played":false}"#
+        XCTAssertEqual(try decoder.decode(APIv2CatalogRead.WatchRollup.self, from: Data(rollup.utf8)).lastFileId, "opaque-file")
+        XCTAssertThrowsError(try decoder.decode(APIv2CatalogRead.WatchRollup.self,
+            from: Data(rollup.replacingOccurrences(of: "\"opaque-file\"", with: "123").utf8)))
+        let parts = #"{"variant_id":"variant","part_count":1,"default_file_id":"file","parts":[{"part_index":1,"default_file_id":"part-file","versions":[]}]}"#
+        let variant = try decoder.decode(APIv2CatalogRead.PlaybackVariant.self, from: Data(parts.utf8))
+        XCTAssertEqual(variant.parts.first?.defaultFileId, "part-file")
+    }
+
+    func testFiniteCatalogReadsAcceptMissingPageButRejectPartialHierarchy() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        typealias People = APIv2CatalogReadCollection<APIv2CatalogRead.Person>
+        let finite = try decoder.decode(People.self, from: Data(#"{"items":[{"id":"person","name":"Name"}]}"#.utf8))
+        XCTAssertEqual(try finite.completeItems().first?.id, "person")
+        XCTAssertThrowsError(try decoder.decode(People.self, from: Data(#"{"people":[]}"#.utf8)))
+        for page in [#"{"has_more":true,"next_cursor":"next"}"#, #"{"has_more":false,"next_cursor":"next"}"#] {
+            let partial = try decoder.decode(People.self, from: Data("{\"items\":[],\"page\":\(page)}".utf8))
+            XCTAssertThrowsError(try partial.completeItems())
+        }
+        XCTAssertTrue(try decoder.decode(People.self, from: Data(#"{"items":[],"page":{"has_more":false}}"#.utf8)).completeItems().isEmpty)
+    }
+
+    func testCatalogReadPathsScopesAndFiniteEnvelopes() async throws {
+        let (api, _) = try await client()
+        CatalogProtocol.reply(200, detailJSON)
+        _ = try await api.catalogItem(id: "movie:one/two", libraryId: "library", fileId: "file", imageSize: "small")
+        CatalogProtocol.reply(200, #"{"items":[]}"#)
+        _ = try await api.catalogSeasons(seriesId: "series", libraryId: "library", imageSize: "small")
+        _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 0, libraryId: "library", imageSize: "small")
+        _ = try await api.catalogPeople(query: "Some Person", limit: 25)
+        CatalogProtocol.reply(200, #"{"id":"opaque-person","name":"Person"}"#)
+        _ = try await api.catalogPerson(id: "opaque-person")
+        let calls = CatalogProtocol.requests()
+        XCTAssertEqual(calls.count, 5)
+        XCTAssertTrue(calls[0].0.url!.absoluteString.contains("movie:one%2Ftwo"))
+        XCTAssertEqual(calls[1].0.url?.path, "/api/v2/catalog/series/series/seasons")
+        XCTAssertEqual(calls[2].0.url?.path, "/api/v2/catalog/series/series/seasons/0/episodes")
+        XCTAssertEqual(calls[3].0.url?.path, "/api/v2/catalog/people")
+        XCTAssertEqual(calls[4].0.url?.path, "/api/v2/catalog/people/opaque-person")
+        for (index, call) in calls.enumerated() {
+            XCTAssertEqual(call.0.httpMethod, "GET")
+            XCTAssertEqual(call.0.value(forHTTPHeaderField: "X-Profile-Id"), "profile-one")
+            let items = URLComponents(url: call.0.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let query = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value!) })
+            XCTAssertNil(query["cursor"])
+            XCTAssertNil(query["offset"])
+            if index < 3 { XCTAssertEqual(query["library_id"], "library"); XCTAssertEqual(query["image_size"], "small") }
+            if index == 0 { XCTAssertEqual(query["file_id"], "file") }
+            if index == 3 { XCTAssertEqual(query["q"], "Some Person"); XCTAssertEqual(query["limit"], "25") }
+        }
+    }
+
+    func testCatalogReadRejectsInvalidInputsAndProblemDoesNotRetry() async throws {
+        let (api, _) = try await client()
+        do { _ = try await api.catalogPeople(query: "", limit: 101); XCTFail("Expected invalid limit") }
+        catch APIv2Error.invalidCatalogQuery { }
+        do { _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: -1); XCTFail("Expected invalid season") }
+        catch APIv2Error.invalidCatalogQuery { }
+        XCTAssertTrue(CatalogProtocol.requests().isEmpty)
+        CatalogProtocol.reply(404, #"{"type":"about:blank","title":"Missing","status":404,"detail":"No item","code":"not_found"}"#)
+        do { _ = try await api.catalogItem(id: "missing"); XCTFail("Expected problem") }
+        catch APIv2Error.problem(let problem) { XCTAssertEqual(problem.status, 404) }
+        XCTAssertEqual(CatalogProtocol.requests().count, 1)
+    }
+
+    func testCatalogReadGateBlocksDispatch() async throws {
+        let (api, _) = try await client(updateRequired: true)
+        do { _ = try await api.catalogSeasons(seriesId: "series"); XCTFail("Expected gate") }
+        catch APIv2Error.serverUpdateRequired { }
+        XCTAssertTrue(CatalogProtocol.requests().isEmpty)
+    }
+
+    func testCatalogReadRejectsAccountChangeBeforePublishing() async throws {
+        let (api, tokens) = try await client()
+        CatalogProtocol.reply(200, detailJSON)
+        let received = expectation(description: "request captured")
+        CatalogProtocol.hold { received.fulfill() }
+        let request = Task { try await api.catalogItem(id: "one") }
+        await fulfillment(of: [received], timeout: 2)
+        await tokens.switchActiveServer(serverId: "another-account")
+        CatalogProtocol.release()
+        do { _ = try await request.value; XCTFail("Expected changed account") }
+        catch HTTPError.requestIdentityChanged { }
+        XCTAssertEqual(CatalogProtocol.requests().count, 1)
+    }
+
+    func testCatalogReadRejectsProfileChangeBeforePublishing() async throws {
+        let (api, tokens) = try await client()
+        CatalogProtocol.reply(200, detailJSON)
+        let received = expectation(description: "request captured")
+        CatalogProtocol.hold { received.fulfill() }
+        let request = Task { try await api.catalogItem(id: "one") }
+        await fulfillment(of: [received], timeout: 2)
+        await tokens.setProfileId("another-profile")
+        CatalogProtocol.release()
+        do { _ = try await request.value; XCTFail("Expected changed viewer") }
+        catch HTTPError.requestIdentityChanged { }
+        XCTAssertEqual(CatalogProtocol.requests().count, 1)
     }
 
     @MainActor
@@ -241,9 +367,16 @@ private final class CatalogProtocol: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var response = (200, "{}")
     nonisolated(unsafe) private static var searchAllowed = true
+    nonisolated(unsafe) private static var onHeldRequest: (() -> Void)?
+    nonisolated(unsafe) private static var pending: (() -> Void)?
+    static func hold(_ notify: @escaping () -> Void) { lock.withLock { onHeldRequest = notify } }
+    static func release() {
+        let deliver = lock.withLock { let value = pending; pending = nil; onHeldRequest = nil; return value }
+        deliver?()
+    }
     static func denySearch() { lock.withLock { searchAllowed = false } }
     nonisolated(unsafe) private static var recorded: [(URLRequest, Data?)] = []
-    static func reset() { lock.withLock { recorded = []; response = (200, "{}"); searchAllowed = true } }
+    static func reset() { lock.withLock { recorded = []; response = (200, "{}"); searchAllowed = true; onHeldRequest = nil; pending = nil } }
     static func reply(_ status: Int, _ body: String) { lock.withLock { response = (status, body) } }
     static func requests() -> [(URLRequest, Data?)] { lock.withLock { recorded } }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -267,11 +400,19 @@ private final class CatalogProtocol: URLProtocol {
             }
             return Self.response
         }
-        let response = HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil,
+        let deliver: () -> Void = { [self] in
+            let response = HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil,
             headerFields: ["Content-Type": reply.0 >= 400 ? "application/problem+json" : "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(reply.1.utf8))
         client?.urlProtocolDidFinishLoading(self)
+        }
+        let notify: (() -> Void)? = Self.lock.withLock {
+            if let notify = Self.onHeldRequest { Self.pending = deliver; return notify }
+            return nil
+        }
+        if let notify { notify() } else { deliver() }
     }
+
     override func stopLoading() {}
 }

@@ -10,6 +10,7 @@ enum APIv2Error: LocalizedError, Sendable {
     case incompleteCollection
     case invalidCatalogQuery
     case invalidCatalogContinuation
+    case incompleteCatalogRead
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -20,6 +21,8 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .incompleteCatalogRead:
+            return "The server returned an incomplete catalog list. Reload to try again."
         case .invalidCatalogQuery:
             return "The catalog query is not valid."
         case .invalidCatalogContinuation:
@@ -301,6 +304,74 @@ struct APIv2Client: Sendable {
 
     func libraryCollectionTab(libraryId: String) async throws -> APIv2LibraryCollectionTab {
         try await requestGet("/api/v2/library/\(libraryId)/collections")
+    }
+
+    // MARK: Catalog detail and hierarchy reads
+
+    func catalogItem(id: String, libraryId: String? = nil, fileId: String? = nil,
+                     imageSize: String? = nil) async throws -> APIv2CatalogRead.CatalogItemDetail {
+        var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
+        if let fileId { query["file_id"] = fileId }
+        return try await catalogRead("/api/v2/catalog/items/\(try catalogPathSegment(id))", query: query)
+    }
+
+    func catalogSeasons(seriesId: String, libraryId: String? = nil,
+                        imageSize: String? = nil) async throws -> [APIv2CatalogRead.Season] {
+        let response: APIv2CatalogReadCollection<APIv2CatalogRead.Season> = try await catalogRead(
+            "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons",
+            query: catalogReadScope(libraryId: libraryId, imageSize: imageSize))
+        return try response.completeItems()
+    }
+
+    func catalogEpisodes(seriesId: String, seasonNumber: Int, libraryId: String? = nil,
+                         imageSize: String? = nil) async throws -> [APIv2CatalogRead.Episode] {
+        guard seasonNumber >= 0 else { throw APIv2Error.invalidCatalogQuery }
+        let response: APIv2CatalogReadCollection<APIv2CatalogRead.Episode> = try await catalogRead(
+            "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons/\(seasonNumber)/episodes",
+            query: catalogReadScope(libraryId: libraryId, imageSize: imageSize))
+        return try response.completeItems()
+    }
+
+    func catalogPerson(id: String) async throws -> APIv2CatalogRead.Person {
+        try await catalogRead("/api/v2/catalog/people/\(try catalogPathSegment(id))")
+    }
+
+    func catalogPeople(query: String, limit: Int = 20) async throws -> [APIv2CatalogRead.Person] {
+        guard (1...100).contains(limit), query.count <= 200 else { throw APIv2Error.invalidCatalogQuery }
+        let response: APIv2CatalogReadCollection<APIv2CatalogRead.Person> = try await catalogRead(
+            "/api/v2/catalog/people", query: ["q": query, "limit": String(limit)])
+        return try response.completeItems()
+    }
+
+    private func catalogReadScope(libraryId: String?, imageSize: String?) -> [String: String] {
+        var query: [String: String] = [:]
+        if let libraryId { query["library_id"] = libraryId }
+        if let imageSize { query["image_size"] = imageSize }
+        return query
+    }
+
+    private func catalogPathSegment(_ value: String) throws -> String {
+        guard !value.isEmpty, value != ".", value != "..",
+              let escaped = value.addingPercentEncoding(withAllowedCharacters:
+                CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else {
+            throw APIv2Error.invalidCatalogQuery
+        }
+        return escaped
+    }
+
+    private func catalogRead<Value: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> Value {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let response = try await mapErrors {
+            try await http.requestData(method: "GET", path: path, query: query, requestIdentity: identity)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == profile else { throw HTTPError.requestIdentityChanged }
+        return try HTTPClient.makeJSONDecoder().decode(Value.self, from: response.data)
     }
 
     // MARK: Internals
