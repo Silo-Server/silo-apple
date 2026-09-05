@@ -399,6 +399,8 @@ actor HTTPClient {
     /// caller can address a profile other than the session default. Everything
     /// else — server URL resolution, 401 refresh, non-2xx translation — is the
     /// path every other request takes.
+    /// `acceptedStatuses` only applies with `requestIdentity`; it exposes selected
+    /// non-2xx responses after normal scoped auth handling, without adding retries.
     func requestData(
         method: String,
         path: String,
@@ -408,7 +410,8 @@ actor HTTPClient {
         headers: [String: String] = [:],
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout = .standard,
-        requestIdentity: HTTPRequestIdentity? = nil
+        requestIdentity: HTTPRequestIdentity? = nil,
+        acceptedStatuses: Set<Int> = []
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -502,7 +505,11 @@ actor HTTPClient {
                 )
                 #endif
             }
-            try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+            // Scoped adapters may inspect documented error headers (for example Retry-After).
+            // All other callers retain the standard non-2xx error translation.
+            if !acceptedStatuses.contains(response.statusCode) {
+                try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+            }
             return HTTPRawResponse(
                 data: data,
                 statusCode: response.statusCode,

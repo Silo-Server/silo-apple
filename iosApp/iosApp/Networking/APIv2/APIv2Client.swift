@@ -432,6 +432,107 @@ struct APIv2Client: Sendable {
         return APIv2PersonalListResult(value: page, continuation: continuation)
     }
 
+    // MARK: Progress bootstrap (wire only)
+
+    func progressBootstrapCapabilities() async throws -> APIv2ProgressBootstrapCapabilities {
+        let intent = try await makeProgressSnapshotIntent(requestId: UUID(), limit: 200)
+        let response = try await progressBootstrapRequest(method: "GET",
+            path: "/api/v2/sync/progress/capabilities", intent: intent)
+        return try HTTPClient.makeJSONDecoder().decode(APIv2ProgressBootstrapCapabilities.self, from: response.data)
+    }
+
+    /// A future durable coordinator supplies and persists this UUID before dispatch.
+    func makeProgressSnapshotIntent(requestId: UUID, limit: Int = 200) async throws -> APIv2ProgressSnapshotIntent {
+        try await gate()
+        guard (1...200).contains(limit) else { throw APIv2ProgressBootstrapError.invalidIntent }
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        return APIv2ProgressSnapshotIntent(requestId: requestId, limit: limit,
+            identity: HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+                profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily), account: auth.account)
+    }
+
+    func createProgressSnapshot(_ intent: APIv2ProgressSnapshotIntent) async throws -> APIv2ProgressSnapshotResult {
+        struct Admission: Encodable { let request_id: String; let limit: Int }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let body = try encoder.encode(Admission(request_id: intent.requestId.uuidString.lowercased(), limit: intent.limit))
+        let response = try await progressBootstrapRequest(method: "POST", path: "/api/v2/sync/progress/snapshots",
+            body: body, intent: intent)
+        guard response.statusCode == 201 else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+        return try decodeProgressSnapshot(response, intent: intent, previous: nil)
+    }
+
+    func progressSnapshotPage(_ cursor: APIv2ProgressSnapshotCursor) async throws -> APIv2ProgressSnapshotResult {
+        let response = try await progressBootstrapRequest(method: "GET",
+            path: "/api/v2/sync/progress/snapshots/\(cursor.snapshot.snapshotId)",
+            query: ["cursor": cursor.token], intent: cursor.intent)
+        guard response.statusCode == 200 else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+        return try decodeProgressSnapshot(response, intent: cursor.intent, previous: cursor)
+    }
+
+    private func progressBootstrapRequest(method: String, path: String, query: [String: String] = [:],
+        body: Data? = nil, intent: APIv2ProgressSnapshotIntent) async throws -> HTTPRawResponse {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), auth.account == intent.account,
+              auth.profileId == intent.identity.profileId else { throw HTTPError.requestIdentityChanged }
+        // The transport only retries a rejected 401 after scoped refresh. Lost POST replies
+        // propagate; explicit replay reuses the exact domain-identity intent and body.
+        let response = try await mapErrors {
+            try await http.requestData(method: method, path: path, query: query, body: body,
+                requestIdentity: intent.identity, acceptedStatuses: [400, 401, 403, 404, 409, 413, 422, 429, 501, 503])
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == intent.account,
+              current.profileId == intent.identity.profileId else { throw HTTPError.requestIdentityChanged }
+        guard (200..<300).contains(response.statusCode) else {
+            let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: response.data)
+            throw APIv2ProgressBootstrapError.response(status: response.statusCode, problem: problem,
+                retryAfter: response.header("Retry-After"))
+        }
+        return response
+    }
+
+    private func decodeProgressSnapshot(_ response: HTTPRawResponse, intent: APIv2ProgressSnapshotIntent,
+        previous: APIv2ProgressSnapshotCursor?) throws -> APIv2ProgressSnapshotResult {
+        let value = try HTTPClient.makeJSONDecoder().decode(APIv2ProgressSnapshot.self, from: response.data)
+        let location = "/api/v2/sync/progress/snapshots/\(value.snapshotId)"
+        guard UUID(uuidString: value.snapshotId) != nil, !value.installationId.isEmpty,
+              !value.accountId.isEmpty, value.profileId == intent.identity.profileId,
+              !value.generation.isEmpty, value.mode == "full_replace", value.itemCount >= 0,
+              value.expiresAt > value.capturedAt, response.header("Location") == location,
+              value.items.count <= intent.limit else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+        if let old = previous?.snapshot {
+            guard value.snapshotId == old.snapshotId, value.installationId == old.installationId,
+                  value.accountId == old.accountId, value.profileId == old.profileId,
+                  value.generation == old.generation, value.capturedAt == old.capturedAt,
+                  value.expiresAt == old.expiresAt, value.itemCount == old.itemCount else {
+                throw APIv2ProgressBootstrapError.invalidSnapshot
+            }
+        }
+        var items = previous?.seenItems ?? []
+        for item in value.items {
+            guard !item.mediaItemId.isEmpty, item.positionSeconds.isFinite, item.durationSeconds.isFinite,
+                  item.positionSeconds >= 0, item.durationSeconds >= 0,
+                  items.insert(item.mediaItemId).inserted else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+        }
+        guard items.count <= value.itemCount else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+        let seen = previous?.seenCursors ?? []
+        if value.complete {
+            guard !value.page.hasMore, value.page.nextCursor == nil,
+                  let receipt = value.completionToken, !receipt.isEmpty,
+                  items.count == value.itemCount else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+            return APIv2ProgressSnapshotResult(value: value, location: location, continuation: nil,
+                receipt: APIv2ProgressCompletionReceipt(token: receipt))
+        }
+        guard value.page.hasMore, let next = value.page.nextCursor, !next.isEmpty,
+              next.count <= 8192, !seen.contains(next), value.completionToken == nil,
+              !value.items.isEmpty, items.count < value.itemCount else { throw APIv2ProgressBootstrapError.invalidSnapshot }
+        return APIv2ProgressSnapshotResult(value: value, location: location,
+            continuation: APIv2ProgressSnapshotCursor(token: next, snapshot: value, intent: intent,
+                seenCursors: seen.union([next]), seenItems: items), receipt: nil)
+    }
+
     // MARK: Internals
 
     /// Refuses relative-URL (active-session) operations while the active
