@@ -269,7 +269,8 @@ struct AetherLoadSpec {
         audioSourceStreamIndex = nil
         subtitleFontRequests = Dictionary(uniqueKeysWithValues: sidecars.compactMap { sidecar in
             guard let value = sidecar.fontBundleUrl,
-                  let url = Self.resolveSidecarURL(value, relativeTo: directURL) else { return nil }
+                  let url = Self.resolveSidecarURL(value, relativeTo: directURL),
+                  ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else { return nil }
             var request = URLRequest(url: url)
             request.allHTTPHeaderFields = Self.subtitleRequestHeaders(
                 headers, resourceURL: url, trustedOriginURLs: [directURL])

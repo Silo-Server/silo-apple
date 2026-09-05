@@ -205,6 +205,15 @@ def testflight_upload_config
   }
 end
 
+def testflight_changelog
+  changelog = ENV["TESTFLIGHT_CHANGELOG"] || `git log -1 --pretty=format:"%s"`.strip
+  source_url = ENV["SILO_RELEASE_SOURCE_URL"].to_s.strip
+  if testflight_distribution == "external" && source_url.empty?
+    UI.user_error!("Publish the matching release source archive and set SILO_RELEASE_SOURCE_URL before external TestFlight distribution.")
+  end
+  source_url.empty? ? changelog : "#{changelog}\n\nSource and rebuild instructions: #{source_url}"
+end
+
 # ── CI keychain teardown ──────────────────────────────────────────────────────
 #
 # setup_ci creates fastlane_tmp_keychain and makes it the user default. With
@@ -317,7 +326,7 @@ platform :ios do
     # Apple requires a "What to Test" note for every external group build.
     # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
     # falls back to the latest git commit subject when not set.
-    changelog       = ENV["TESTFLIGHT_CHANGELOG"] || `git log -1 --pretty=format:"%s"`.strip
+    changelog       = testflight_changelog
     ios_app_dir     = File.expand_path("../iosApp", __dir__)
     UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
 
@@ -437,7 +446,7 @@ platform :ios do
     # Apple requires a "What to Test" note for every external group build.
     # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
     # falls back to the latest git commit subject when not set.
-    changelog       = ENV["TESTFLIGHT_CHANGELOG"] || `git log -1 --pretty=format:"%s"`.strip
+    changelog       = testflight_changelog
     ios_app_dir     = File.expand_path("../iosApp", __dir__)
     UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
 

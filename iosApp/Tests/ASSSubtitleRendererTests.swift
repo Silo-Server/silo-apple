@@ -141,6 +141,29 @@ final class ASSSubtitleRendererTests: XCTestCase {
     }
 
     @MainActor
+    func testEmbeddedSecondaryASSKeepsNormalizedTextWhilePrimaryKeepsRawEvents() async throws {
+        let movie = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "authored", withExtension: "mkv"))
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let spec = try AetherLoadSpec(offlineURL: movie, startPosition: 0, audioOnly: false,
+                                      panelIsInHDRMode: false)
+        let epoch = controller.beginLoad(spec, shouldPlayWhenReady: false)
+        try await controller.finishLoad(epoch)
+        controller.selectSubtitleTrack(id: 3)
+        try await waitForASS(controller)
+        controller.selectSecondarySubtitleTrack(id: 2)
+        for _ in 0..<100 {
+            if !controller.engine.secondarySubtitleCues.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let text = controller.engine.secondarySubtitleCues.compactMap(\.text)
+        XCTAssertTrue(text.contains("X"), "The companion overlay must receive display text, not an ASS event")
+        XCTAssertFalse(text.contains { $0.contains("Default,,") || $0.contains("\\pos(") })
+        XCTAssertFalse(ASSSubtitleRenderer.Event.events(from: controller.engine.subtitleCues).isEmpty,
+                       "The primary overlay must retain authored ASS events")
+    }
+
+    @MainActor
     private func waitForASS(_ controller: AetherPlaybackController) async throws {
         for _ in 0..<100 {
             if !controller.engine.isLoadingSubtitles, !controller.engine.subtitleCues.isEmpty { return }

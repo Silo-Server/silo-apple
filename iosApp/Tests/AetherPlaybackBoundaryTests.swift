@@ -962,6 +962,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(spec.options.externalSubtitles.first?.httpHeaders, [:])
     }
 
+    func testDirectFontBundlesUseOnlySupportedTransports() throws {
+        let media = try XCTUnwrap(URL(string: "https://dev.example.test/media/movie.mkv"))
+        for (fontURL, accepted) in [
+            ("fonts.json", true),
+            ("https://dev.example.test/fonts.json", true),
+            ("http://fonts.example.test/fonts.json", true),
+            ("file:///tmp/fonts.json", true),
+            ("ftp://fonts.example.test/fonts.json", false),
+            ("data:application/json,[]", false),
+        ] {
+            let subtitle = SubtitleUrl(index: 3, language: "eng", codec: "ass", label: "English",
+                                       source: "server", forced: false, fontBundleUrl: fontURL,
+                                       url: "movie.ass")
+            let spec = try AetherLoadSpec(directURL: media, headers: [:], startPosition: 0,
+                                          audioOnly: false, sidecars: [subtitle])
+            XCTAssertEqual(spec.subtitleFontRequests.count, accepted ? 1 : 0, fontURL)
+            XCTAssertEqual(spec.options.externalSubtitles.count, 1)
+        }
+    }
+
     /// The reproduction for the ordering mismatch: a plan whose subtitle mode
     /// is `off` declares no external track to Aether, so it must publish no
     /// alias either — even when a stale artifact and `track_id` survive on the

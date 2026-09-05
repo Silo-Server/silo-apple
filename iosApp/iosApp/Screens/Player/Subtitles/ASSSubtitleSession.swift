@@ -71,11 +71,8 @@ final class ASSSubtitleSession: ObservableObject {
     }
 
     func beginLoad(timelineOffset: Double) {
-        enabled = false
+        stop()
         self.timelineOffset = timelineOffset
-        fontRequests = [:]
-        fontCache = [:]
-        clearSelection()
     }
 
     func finishLoad() { enabled = true }
