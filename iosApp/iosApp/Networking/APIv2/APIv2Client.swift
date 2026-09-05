@@ -5,6 +5,7 @@ enum APIv2Error: LocalizedError, Sendable {
     /// The connected server is v1-only (see `APIv2Probe`). Pilot operations
     /// are refused rather than routed to a v1 path.
     case serverUpdateRequired
+    case incompleteAuthResponse
     case incompleteRequestList
     case missingCollectionVersion
     case incompleteCollection
@@ -24,6 +25,7 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .incompleteAuthResponse: return "The server returned an incomplete sign-in response. Start sign-in again."
         case .invalidPersonalListQuery:
             return "The personal list request is not valid."
         case .invalidPersonalListContinuation:
@@ -537,6 +539,73 @@ struct APIv2Client: Sendable {
         return APIv2ProgressSnapshotResult(value: value, location: location,
             continuation: APIv2ProgressSnapshotCursor(token: next, snapshot: value, intent: intent,
                 seenCursors: seen.union([next]), seenItems: items), receipt: nil)
+    }
+
+    // MARK: Active account/device authentication
+
+    func login(username: String, password: String, expectedAccount: RefreshAccountIdentity) async throws -> APIv2LoginTokens {
+        try await gate()
+        let body = try JSONEncoder().encode(LoginRequest(username: username, password: password))
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/auth/login", body: body, expectedAccount: expectedAccount)
+        }
+        guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        let value = try HTTPClient.makeJSONDecoder().decode(APIv2LoginTokens.self, from: response.data)
+        guard response.statusCode == 200, !value.accessToken.isEmpty, !value.refreshToken.isEmpty,
+              !value.user.id.isEmpty else { throw APIv2Error.incompleteAuthResponse }
+        return value
+    }
+
+    func startDeviceLogin(_ input: DeviceLoginStartRequest, expectedAccount: RefreshAccountIdentity) async throws -> DeviceLoginStartResponse {
+        try await gate()
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/auth/device/start", body: encoder.encode(input), expectedAccount: expectedAccount)
+        }
+        guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 201 else { throw APIv2Error.incompleteAuthResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2DeviceStart.self, from: response.data).presentation
+    }
+
+    func pollDeviceLogin(deviceCode: String, expectedAccount: RefreshAccountIdentity) async throws -> DeviceLoginPollResponse {
+        try await gate()
+        let body = try JSONSerialization.data(withJSONObject: ["device_code": deviceCode])
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/auth/device/poll", body: body, expectedAccount: expectedAccount)
+        }
+        guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: response.data).presentation()
+    }
+
+    func deviceLookup(code: String, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity) async throws -> DeviceLookupResponse {
+        try await gate()
+        let response = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/auth/device", query: ["code": code], requestIdentity: identity, expectedAccount: expectedAccount)
+        }
+        guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2DeviceLookup.self, from: response.data).presentation
+    }
+
+    func decideDeviceLogin(code: String, approveHandoff: Bool, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity) async throws {
+        try await gate()
+        let body = try JSONSerialization.data(withJSONObject: ["code": code])
+        let path = approveHandoff ? "/api/v2/auth/device/approve-handoff" : "/api/v2/auth/device/deny"
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: path, body: body, requestIdentity: identity, expectedAccount: expectedAccount)
+        }
+        guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        let value = try HTTPClient.makeJSONDecoder().decode(APIv2DeviceDecision.self, from: response.data)
+        guard response.statusCode == 200, value.status == (approveHandoff ? "approved" : "denied") else { throw APIv2Error.incompleteAuthResponse }
+    }
+
+    func logout(expectedAccount: RefreshAccountIdentity) async throws {
+        try await gate()
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/auth/logout", expectedAccount: expectedAccount)
+        }
+        guard response.statusCode == 204 else { throw APIv2Error.incompleteAuthResponse }
     }
 
     // MARK: Internals

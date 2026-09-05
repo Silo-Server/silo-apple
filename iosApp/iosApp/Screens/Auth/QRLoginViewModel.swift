@@ -56,7 +56,8 @@ class QRLoginViewModel {
             }
             let session = try await auth.startDeviceLogin(
                 deviceName: deviceName,
-                devicePlatform: devicePlatform
+                devicePlatform: devicePlatform,
+                expectedAccount: account
             )
             guard await TokenStore.shared.refreshAccountIdentity() == account else {
                 throw HTTPError.requestIdentityChanged
@@ -102,22 +103,22 @@ class QRLoginViewModel {
 
     private func pollOnce(session: DeviceLoginStartResponse) async {
         do {
-            let response = try await auth.pollDeviceLogin(deviceCode: session.deviceCode)
+            guard let expectedAccount else { throw HTTPError.requestIdentityChanged }
+            let response = try await auth.pollDeviceLogin(deviceCode: session.deviceCode, expectedAccount: expectedAccount)
             switch DeviceLoginStatus(raw: response.status) {
             case .pending:
                 return
             case .approved:
                 guard let accessToken = response.accessToken,
                       let refreshToken = response.refreshToken,
-                      let user = response.user,
-                      let expectedAccount else {
+                      let user = response.user else {
                     finalize(.error(message: "Server approved the session but did not return tokens."))
                     return
                 }
                 try await auth.installSession(
                     accessToken: accessToken,
                     refreshToken: refreshToken,
-                    accountID: String(user.id),
+                    accountID: user.id,
                     expectedAccount: expectedAccount
                 )
                 finalize(.approved)
@@ -136,8 +137,9 @@ class QRLoginViewModel {
         } catch HTTPError.requestIdentityChanged {
             finalize(.error(message: "The active server changed during sign-in. Please try again."))
         } catch {
-            // Transient network error — keep trying until the countdown
-            // times out the session server-side.
+            // A collecting poll may already have consumed the one-use tokens.
+            // Require a new sign-in attempt after an uncertain response.
+            finalize(.error(message: "Sign-in could not be confirmed. Start a new sign-in request."))
         }
     }
 

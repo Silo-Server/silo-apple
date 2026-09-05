@@ -266,10 +266,13 @@ final class SiloControlClient {
         guard await waitForVersionNegotiation() == 2 else {
             throw SiloControlHandoffError.updateRequired
         }
-        guard await TokenStore.shared.getAccessToken() != nil else {
+        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(), auth.accessToken != nil,
+              auth.account.serverId == server.id, auth.profileId == profileId else {
             throw SiloControlHandoffError.identityChanged
         }
 
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profileId, clientFamily: AppleDeviceIdentity.current.clientFamily)
         let requestId = UUID().uuidString
         pendingHandoffRequestId = requestId
         handoffChallenge = nil
@@ -289,10 +292,8 @@ final class SiloControlClient {
         do {
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
 
-            let lookup: DeviceLookupResponse = try await HTTPClient.shared.get(
-                "/api/v1/auth/device",
-                query: ["code": challenge.userCode]
-            )
+            let lookup = try await APIv2Client().deviceLookup(code: challenge.userCode,
+                identity: identity, expectedAccount: auth.account)
             guard lookup.matchCode == challenge.matchCode,
                   lookup.clientPurpose == "remote_playback",
                   lookup.temporary == true else {
@@ -300,20 +301,19 @@ final class SiloControlClient {
             }
 
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
-            try await HTTPClient.shared.postVoid(
-                "/api/v1/auth/device/approve-handoff",
-                body: DeviceApproveRequest(code: challenge.userCode)
-            )
+            try await APIv2Client().decideDeviceLogin(code: challenge.userCode, approveHandoff: true,
+                identity: identity, expectedAccount: auth.account)
 
             let ready = try await waitForHandoffReady(requestId: requestId)
+            guard await TokenStore.shared.refreshAccountIdentity() == auth.account else {
+                throw SiloControlHandoffError.identityChanged
+            }
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
             resetPendingHandoff()
             return ready
         } catch {
-            try? await HTTPClient.shared.postVoid(
-                "/api/v1/auth/device/deny",
-                body: DeviceApproveRequest(code: challenge.userCode)
-            )
+            try? await APIv2Client().decideDeviceLogin(code: challenge.userCode, approveHandoff: false,
+                identity: identity, expectedAccount: auth.account)
             resetPendingHandoff()
             throw error
         }

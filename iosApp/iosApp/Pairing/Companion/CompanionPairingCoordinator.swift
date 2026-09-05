@@ -58,6 +58,7 @@ final class CompanionPairingCoordinator {
     private var confirmed = false
     private var isFirstPush = true
     private var pendingUserCode: String?
+    private var pendingApprovalToken: String?
     private var signedIn: [String] = []
     private var failed: [String] = []
     private var runTask: Task<Void, Never>?
@@ -174,6 +175,11 @@ final class CompanionPairingCoordinator {
                 await failCurrentAndAdvance(server)
                 return
             }
+            guard await accessToken(server.id) == token else {
+                await failCurrentAndAdvance(server)
+                return
+            }
+            pendingApprovalToken = token
             pendingUserCode = userCode
             if confirmed {
                 // Confirm-once multi-server: the user compared codes for the
@@ -261,7 +267,11 @@ final class CompanionPairingCoordinator {
 
     private func approveCurrent(_ server: ServerEntry) async {
         state = .working(progress: "Approving \(server.displayName)…")
-        let token = await accessToken(server.id) ?? ""
+        guard let token = pendingApprovalToken, !token.isEmpty,
+              await accessToken(server.id) == token else {
+            await conclude(.error("Your sign-in changed. Start pairing again."), goodbye: .cancel(reason: "identity_changed"))
+            return
+        }
         // Armed before the suspending approve call (same reasoning as
         // `pushNext`): the TV reports back once its poll mints tokens, and
         // the window covers the HTTP round-trip plus that report.

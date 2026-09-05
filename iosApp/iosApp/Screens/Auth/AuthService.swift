@@ -201,14 +201,11 @@ final class AuthService: @unchecked Sendable {
         guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }
-        let response: LoginResponse = try await HTTPClient.shared.post(
-            "/api/v1/auth/login",
-            body: LoginRequest(username: username, password: password)
-        )
+        let response = try await APIv2Client().login(username: username, password: password, expectedAccount: expectedAccount)
         try await installSession(
             accessToken: response.accessToken,
             refreshToken: response.refreshToken,
-            accountID: String(response.user.id),
+            accountID: response.user.id,
             expectedAccount: expectedAccount
         )
     }
@@ -236,14 +233,14 @@ final class AuthService: @unchecked Sendable {
             if Task.isCancelled { throw CancellationError() }
             throw HTTPError.requestIdentityChanged
         }
-        if let serverID = serverRegistry.activeServerId {
-            launchPreferences.clearRememberedProfile(for: serverID)
-        }
         do {
-            try await TokenStore.shared.installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: accountID)
+            try await TokenStore.shared.installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: accountID, expectedAccount: expectedAccount)
         } catch {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             throw error
+        }
+        if let serverID = serverRegistry.activeServerId {
+            launchPreferences.clearRememberedProfile(for: serverID)
         }
         await clearAllCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
@@ -644,24 +641,14 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Device Login (QR sign-in)
 
-    func startDeviceLogin(deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
-        try await HTTPClient.shared.post(
-            "/api/v1/auth/device/start",
-            body: DeviceLoginStartRequest(
-                deviceName: deviceName,
-                devicePlatform: devicePlatform
-            )
-        )
+    func startDeviceLogin(deviceName: String, devicePlatform: String,
+                          expectedAccount: RefreshAccountIdentity) async throws -> DeviceLoginStartResponse {
+        try await APIv2Client().startDeviceLogin(DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform),
+                                               expectedAccount: expectedAccount)
     }
 
-    /// Poll the pairing row for status. Terminal statuses (approved /
-    /// denied / expired / consumed) return HTTP 200 with a status field;
-    /// a 404 means the row no longer exists (cleaned up post-expiry).
-    func pollDeviceLogin(deviceCode: String) async throws -> DeviceLoginPollResponse {
-        try await HTTPClient.shared.post(
-            "/api/v1/auth/device/poll",
-            body: DeviceLoginPollRequest(deviceCode: deviceCode)
-        )
+    func pollDeviceLogin(deviceCode: String, expectedAccount: RefreshAccountIdentity) async throws -> DeviceLoginPollResponse {
+        try await APIv2Client().pollDeviceLogin(deviceCode: deviceCode, expectedAccount: expectedAccount)
     }
 
     // MARK: - Sign Out
@@ -696,10 +683,7 @@ final class AuthService: @unchecked Sendable {
         // regardless.
         if let signingOutAccount {
             do {
-                try await HTTPClient.shared.postVoid(
-                    "/api/v1/auth/logout",
-                    expectedAccount: signingOutAccount
-                )
+                try await APIv2Client().logout(expectedAccount: signingOutAccount)
             } catch {
                 // Swallow; the captured account check below still prevents
                 // clearing a server selected while logout was in flight.

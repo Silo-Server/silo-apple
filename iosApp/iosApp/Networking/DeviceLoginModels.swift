@@ -32,13 +32,13 @@ struct DeviceLoginPollRequest: Codable {
 /// Token fields are only populated on the first `approved` response — the
 /// server marks the record consumed atomically, so the TV must capture
 /// them immediately on that single reply.
-struct DeviceLoginPollResponse: Codable {
+struct DeviceLoginPollResponse {
     let status: String
     let pollAfter: Int?
     let accessToken: String?
     let refreshToken: String?
     let expiresIn: Int64?
-    let user: AuthUser?
+    let user: APIv2Account?
     var profileId: String? = nil
     var profileToken: String? = nil
     var temporary: Bool? = nil
@@ -58,14 +58,12 @@ enum DeviceLoginStatus: String {
     }
 }
 
-/// Body for POST /api/v1/auth/device/approve (sent by an authenticated client).
+/// Body for POST /api/v2/auth/device/approve (sent by an authenticated client).
 struct DeviceApproveRequest: Codable {
     let code: String
 }
 
-/// Response from GET /api/v1/auth/device?code=<userCode>. All optional: we
-/// only need the authoritative match code and a display name. Confirm field
-/// names against silo-server (see Step 1).
+/// Presentation projection of the strict v2 device lookup response.
 struct DeviceLookupResponse: Codable {
     let matchCode: String?
     let deviceName: String?

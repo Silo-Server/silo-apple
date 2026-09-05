@@ -411,7 +411,8 @@ actor HTTPClient {
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout = .standard,
         requestIdentity: HTTPRequestIdentity? = nil,
-        acceptedStatuses: Set<Int> = []
+        acceptedStatuses: Set<Int> = [],
+        expectedAccount: RefreshAccountIdentity? = nil
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -419,6 +420,7 @@ actor HTTPClient {
                 await requestCaptureBarrier()
             }
             var auth = try await tokenStore.captureRequestAuth(expected: requestIdentity)
+            if let expectedAccount, auth.account != expectedAccount { throw HTTPError.requestIdentityChanged }
             var request = try scopedRequest(
                 method: method,
                 path: path,
@@ -522,7 +524,8 @@ actor HTTPClient {
             path: path,
             additionalHeaders: headers,
             quietStatuses: quietStatuses,
-            timeout: timeout
+            timeout: timeout,
+            expectedAccount: expectedAccount
         ) { serverUrl in
             var request = try self.buildRequest(
                 serverUrl: serverUrl,
@@ -1131,7 +1134,7 @@ actor HTTPClient {
         let path = request.url?.path ?? ""
         // Skip auth injection for /auth/refresh (avoid recursion) and
         // /auth/login (a prior expired token can't authorize a fresh login).
-        if path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") {
+        if Self.isPublicAuthPath(path) {
             return
         }
 
@@ -1159,7 +1162,7 @@ actor HTTPClient {
         auth: CapturedOrdinaryRequestAuth
     ) {
         let path = request.url?.path ?? ""
-        if path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") {
+        if Self.isPublicAuthPath(path) {
             return
         }
 
@@ -1690,9 +1693,18 @@ actor HTTPClient {
     }
     #endif
 
+    /// Collecting polls and other public auth mutations may consume one-use state.
+    /// A rejected/uncertain request is never replayed by the auth refresh machinery.
+    private static func isPublicAuthPath(_ path: String) -> Bool {
+        path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") || [
+            "/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/oauth/complete",
+            "/api/v2/system/setup", "/api/v2/auth/signup"
+        ].contains(path)
+    }
+
     private func shouldAttemptRefresh(path: String) -> Bool {
         // Matches the guard in AuthInterceptorImpl.kt:96.
-        !path.hasSuffix("/auth/refresh") && !path.hasSuffix("/auth/login")
+        !Self.isPublicAuthPath(path)
     }
 
     private var isRequestDispatchBlocked: Bool {
@@ -1728,7 +1740,7 @@ actor HTTPClient {
               auth.account.serverId == expected.serverId,
               auth.account.serverURL == ServerRegistry.normalize(url: expected.serverURL),
               let refreshValue = auth.refreshToken, !refreshValue.isEmpty,
-              URL(string: auth.serverURL + "/api/v1/auth/refresh") != nil else {
+              URL(string: auth.serverURL + "/api/v2/auth/refresh") != nil else {
             return false
         }
         if await scopedCredentialsChanged(since: auth, expected: expected) {
@@ -1782,7 +1794,7 @@ actor HTTPClient {
         encoder: JSONEncoder
     ) async -> Bool {
         guard let refreshValue = auth.refreshToken,
-              let url = URL(string: auth.serverURL + "/api/v1/auth/refresh") else {
+              let url = URL(string: auth.serverURL + "/api/v2/auth/refresh") else {
             return false
         }
         let captured = CapturedRefreshCredential(
@@ -1941,7 +1953,7 @@ actor HTTPClient {
             return false
         }
 
-        guard let url = URL(string: expected.serverURL + "/api/v1/auth/refresh") else {
+        guard let url = URL(string: expected.serverURL + "/api/v2/auth/refresh") else {
             Self.logger.error("Refresh skipped: invalid server URL")
             return false
         }

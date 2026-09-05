@@ -621,7 +621,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(firstResponse.statusCode, 200)
         XCTAssertEqual(secondResponse.statusCode, 200)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
@@ -684,7 +684,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(scopedResponse.statusCode, 200)
         XCTAssertEqual(ordinaryResponse.statusCode, 200)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
@@ -772,7 +772,7 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
@@ -821,7 +821,7 @@ final class SettingValuesAPITests: XCTestCase {
             }
 
             let state = SettingsStubProtocol.state()
-            XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+            XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
             XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
             let accessToken = await harness.tokenStore.getAccessToken()
             let refreshToken = await harness.tokenStore.getRefreshToken()
@@ -954,7 +954,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "example")
         XCTAssertEqual(refreshToken, "sample")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -992,7 +992,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -1031,7 +1031,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "placeholder")
         XCTAssertEqual(refreshToken, "redacted")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -1062,7 +1062,7 @@ final class SettingValuesAPITests: XCTestCase {
             XCTAssertEqual((error as? HTTPError)?.statusCode, 401)
         }
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
         XCTAssertEqual(state.lastRequest?.header("X-Profile-Id"), "profile-a")
         XCTAssertEqual(state.lastRequest?.header("X-Profile-Token"), "decoy-token")
@@ -1108,7 +1108,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(current?.accessToken, "example")
         XCTAssertEqual(current?.refreshToken, "sample")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -1153,7 +1153,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(accessToken, "fake")
         XCTAssertEqual(refreshToken, "dummy")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"] ?? 0, 0)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -1198,7 +1198,7 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
         XCTAssertEqual(expiryCount.value, 1)
         let current = await harness.tokenStore.getTemporaryScope()
@@ -1266,7 +1266,7 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
         XCTAssertEqual(temporaryExpiryCount.value, 1)
         XCTAssertEqual(persistentExpiryCount.value, 0)
@@ -1315,7 +1315,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(persistentAccess, "fake")
         XCTAssertEqual(persistentRefresh, "dummy")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
     }
 
@@ -1634,7 +1634,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(replacementAccess, "placeholder")
         XCTAssertEqual(replacementRefresh, "redacted")
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -2053,7 +2053,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(serverBRefresh, "sample")
         XCTAssertEqual(sessionExpiredCount.value, 0)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -2139,7 +2139,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshToken, "redacted")
         XCTAssertEqual(sessionExpiredCount.value, 0)
         let state = SettingsStubProtocol.state()
-        XCTAssertEqual(state.requestCounts["/api/v1/auth/refresh"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
         XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
     }
 
@@ -2805,7 +2805,7 @@ final class SettingsStubProtocol: URLProtocol {
             switch (recorded.method, recorded.path) {
             case ("GET", "/api/v1/settings/contract/capabilities"):
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
-            case ("POST", "/api/v1/auth/refresh"):
+            case ("POST", "/api/v2/auth/refresh"):
                 respond(status: 401, body: #"{"error":"invalid_token"}"#)
             default:
                 respond(status: 404, body: #"{"error":"not_found"}"#)
@@ -2814,7 +2814,7 @@ final class SettingsStubProtocol: URLProtocol {
         }
         if mode == .concurrentScopedRefresh {
             switch (recorded.method, recorded.path) {
-            case ("POST", "/api/v1/auth/refresh"):
+            case ("POST", "/api/v2/auth/refresh"):
                 respond(
                     status: 200,
                     body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
@@ -2990,7 +2990,7 @@ final class SettingsStubProtocol: URLProtocol {
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
             }
 
-        case ("POST", "/api/v1/auth/refresh"):
+        case ("POST", "/api/v2/auth/refresh"):
             let pendingOrdinary: SettingsStubProtocol?
             Self.lock.lock()
             Self.mixedRefreshStarted = true
@@ -3035,7 +3035,7 @@ final class SettingsStubProtocol: URLProtocol {
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
             }
 
-        case ("POST", "/api/v1/auth/refresh"):
+        case ("POST", "/api/v2/auth/refresh"):
             Self.lock.lock()
             Self.pendingOrdinaryRefresh = self
             Self.lock.unlock()
@@ -3068,7 +3068,7 @@ final class SettingsStubProtocol: URLProtocol {
                 Self.lock.unlock()
             }
 
-        case ("POST", "/api/v1/auth/refresh"):
+        case ("POST", "/api/v2/auth/refresh"):
             respond(
                 status: 200,
                 body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#

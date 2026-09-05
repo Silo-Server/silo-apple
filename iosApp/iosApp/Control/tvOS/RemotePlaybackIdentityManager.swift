@@ -115,6 +115,7 @@ final class RemotePlaybackIdentityManager {
             )
         }
 
+        let expected = await TokenStore.shared.captureAccountInstallationExpectation()
         let capability = try await api.remotePlaybackCapability(serverURL: normalizedURL)
         guard capability.remotePlaybackHandoff,
               capability.protocolVersions.contains(SiloControlProtocol.version) else {
@@ -152,8 +153,9 @@ final class RemotePlaybackIdentityManager {
                       let profileToken = poll.profileToken, !profileToken.isEmpty else {
                     throw HandoffError.invalidResponse
                 }
-                let expiresAt = poll.sessionExpiresAt.flatMap(Self.parseISO8601)
-                    ?? Date().addingTimeInterval(24 * 60 * 60)
+                guard let expiresAt = poll.sessionExpiresAt.flatMap(Self.parseISO8601), expiresAt > Date() else {
+                    throw HandoffError.invalidResponse
+                }
                 guard await activate(TemporaryAuthScope(
                     serverId: offer.serverId,
                     serverURL: normalizedURL,
@@ -166,7 +168,8 @@ final class RemotePlaybackIdentityManager {
                 ),
                     serverName: offer.serverName,
                     profileName: offer.profileName,
-                    controllerDeviceName: controllerDeviceName
+                    controllerDeviceName: controllerDeviceName,
+                    expected: expected
                 ) else {
                     throw CancellationError()
                 }
@@ -201,8 +204,7 @@ final class RemotePlaybackIdentityManager {
                   expectedGenerationID: expectedGenerationID
               ) else { return false }
         if let scope, notifyServer {
-            try? await HTTPClient.shared.postVoid(
-                "/api/v1/auth/logout",
+            try? await APIv2Client().logout(
                 expectedAccount: RefreshAccountIdentity(
                     serverId: scope.serverId,
                     serverURL: scope.serverURL,
@@ -258,7 +260,8 @@ final class RemotePlaybackIdentityManager {
         _ scope: TemporaryAuthScope,
         serverName: String?,
         profileName: String?,
-        controllerDeviceName: String?
+        controllerDeviceName: String?,
+        expected: TokenStore.AccountInstallationExpectation
     ) async -> Bool {
         let generationID = scope.credentialGenerationID
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
@@ -283,7 +286,10 @@ final class RemotePlaybackIdentityManager {
             return await releaseIdentityTransition(transitionLease, returning: false)
         }
         AuthService.shared.clearCachesForTemporaryIdentityChange()
-        let previousScope = await TokenStore.shared.beginTemporaryScope(scope)
+        guard let previousScope = await TokenStore.shared.beginTemporaryScope(scope, expected: expected) else {
+            activationGenerationPending = nil
+            return await releaseIdentityTransition(transitionLease, returning: false)
+        }
         let previousOwnersAligned = previousIdentity?.generationID
             == previousScope.scope?.credentialGenerationID
         guard activationGenerationPending == generationID,

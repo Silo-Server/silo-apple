@@ -15,8 +15,9 @@ protocol PairingDeviceAuthorizing: Sendable {
 /// the Receiver calls start/poll against a pushed URL (no auth); the Companion
 /// calls lookup/approve against a chosen server (bearer = that server's token).
 struct PairingDeviceAPI: PairingDeviceAuthorizing {
-    enum APIError: Error { case badURL, http(Int), decode }
+    enum APIError: Error { case badURL, http(Int), decode, problem(APIv2Problem), incompatibleServer }
 
+    private let gate = CandidateGate()
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -57,17 +58,23 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
     // MARK: Receiver (unauthenticated)
 
     func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
-        try await post(serverURL, "/api/v1/auth/device/start", bearer: nil,
+        try await gate.require(serverURL, session: session)
+        let value: APIv2DeviceStart = try await post(serverURL, "/api/v2/auth/device/start", bearer: nil,
                        body: DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform))
+        return value.presentation
     }
 
     func poll(serverURL: String, deviceCode: String) async throws -> DeviceLoginPollResponse {
-        try await post(serverURL, "/api/v1/auth/device/poll", bearer: nil,
+        try await gate.require(serverURL, session: session)
+        let value: APIv2DevicePoll = try await post(serverURL, "/api/v2/auth/device/poll", bearer: nil,
                        body: DeviceLoginPollRequest(deviceCode: deviceCode))
+        return try value.presentation()
     }
 
     func remotePlaybackCapability(serverURL: String) async throws -> DeviceLoginCapabilityResponse {
-        try await get(serverURL, "/api/v1/auth/device/capability", query: [:], bearer: nil)
+        try await gate.require(serverURL, session: session)
+        let value: APIv2DeviceCapability = try await get(serverURL, "/api/v2/auth/device/capability", query: [:], bearer: nil)
+        return value.presentation
     }
 
     func startRemotePlayback(
@@ -75,9 +82,10 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         deviceName: String,
         devicePlatform: String
     ) async throws -> DeviceLoginStartResponse {
-        try await post(
+        try await gate.require(serverURL, session: session)
+        let value: APIv2DeviceStart = try await post(
             serverURL,
-            "/api/v1/auth/device/start",
+            "/api/v2/auth/device/start",
             bearer: nil,
             body: DeviceLoginStartRequest(
                 deviceName: deviceName,
@@ -86,25 +94,41 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
                 temporary: true
             )
         )
+        return value.presentation
     }
 
     // MARK: Companion (authenticated with the chosen server's token)
 
     func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse {
-        try await get(serverURL, "/api/v1/auth/device", query: ["code": userCode], bearer: bearer)
+        try await gate.require(serverURL, session: session)
+        let value: APIv2DeviceLookup = try await get(serverURL, "/api/v2/auth/device", query: ["code": userCode], bearer: bearer)
+        return value.presentation
     }
 
     func approve(serverURL: String, bearer: String, userCode: String) async throws {
-        let _: EmptyResponse = try await post(serverURL, "/api/v1/auth/device/approve",
+        try await gate.require(serverURL, session: session)
+        let value: APIv2DeviceDecision = try await post(serverURL, "/api/v2/auth/device/approve",
                                               bearer: bearer, body: DeviceApproveRequest(code: userCode))
+        guard value.status == "approved" else { throw APIError.decode }
     }
 
-    private struct EmptyResponse: Codable {}
+    /// One contract probe per explicit candidate for this pairing API lifetime.
+    private actor CandidateGate {
+        private var verified: Set<String> = []
+        func require(_ url: String, session: URLSession) async throws {
+            let origin = ServerRegistry.normalize(url: url)
+            guard !verified.contains(origin) else { return }
+            guard case .v2 = await APIv2Probe(httpClient: HTTPClient(session: session)).probe(serverURL: origin) else {
+                throw APIError.incompatibleServer
+            }
+            verified.insert(origin)
+        }
+    }
 
     // MARK: Transport
 
     private func get<R: Decodable>(_ serverURL: String, _ path: String, query: [String: String], bearer: String?) async throws -> R {
-        guard var comps = URLComponents(string: serverURL.appending(path)) else { throw APIError.badURL }
+        guard var comps = URLComponents(string: ServerRegistry.normalize(url: serverURL).appending(path)) else { throw APIError.badURL }
         comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         guard let url = comps.url else { throw APIError.badURL }
         var request = URLRequest(url: url)
@@ -119,7 +143,7 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
         bearer: String?,
         body: B
     ) async throws -> R {
-        guard let url = URL(string: serverURL.appending(path)) else { throw APIError.badURL }
+        guard let url = URL(string: ServerRegistry.normalize(url: serverURL).appending(path)) else { throw APIError.badURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -139,8 +163,11 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
     private func send<R: Decodable>(_ request: URLRequest) async throws -> R {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.http(-1) }
-        guard (200..<300).contains(http.statusCode) else { throw APIError.http(http.statusCode) }
-        if R.self == EmptyResponse.self { return EmptyResponse() as! R }
+        let expectedStatus = request.url?.path == "/api/v2/auth/device/start" ? 201 : 200
+        guard http.statusCode == expectedStatus else {
+            if let problem = try? decoder.decode(APIv2Problem.self, from: data) { throw APIError.problem(problem) }
+            throw APIError.http(http.statusCode)
+        }
         return try decoder.decode(R.self, from: data)
     }
 }

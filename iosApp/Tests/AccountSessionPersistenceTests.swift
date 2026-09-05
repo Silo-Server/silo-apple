@@ -19,6 +19,78 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.switchActiveServer(serverId: "server")
         return store
     }
+    func testDelayedLoginInstallRejectsSameAccountReloginInsideActor() async throws {
+        let (store, _, _, _) = try await harness()
+        try await store.installAccountSession(accessToken: "first", refreshToken: "first-refresh", accountID: "12")
+        let captured = await store.refreshAccountIdentity()
+        let expected = try XCTUnwrap(captured)
+        try await store.installAccountSession(accessToken: "new-login", refreshToken: "new-refresh", accountID: "12")
+        do {
+            try await store.installAccountSession(accessToken: "delayed", refreshToken: "delayed-refresh", accountID: "12", expectedAccount: expected)
+            XCTFail("Delayed installer replaced newer login")
+        } catch HTTPError.requestIdentityChanged {}
+        let current = await store.getAccessToken()
+        XCTAssertEqual(current, "new-login")
+    }
+
+    func testReceiverExpectationFencesSwitchAwayAndBackAndConsumesSuccess() async throws {
+        let (store, _, _, memory) = try await harness()
+        let expected = await store.captureAccountInstallationExpectation()
+        await store.switchActiveServer(serverId: "other")
+        await store.switchActiveServer(serverId: "server")
+        do {
+            try await store.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
+                accessToken: "delayed", refreshToken: "delayed-refresh", accountID: "12", expected: expected)
+            XCTFail("Changed owner accepted")
+        } catch HTTPError.requestIdentityChanged {}
+        let fresh = await store.captureAccountInstallationExpectation()
+        try await store.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
+            accessToken: "new", refreshToken: "new-refresh", accountID: "12", expected: fresh)
+        let active = await store.getActiveServerId()
+        XCTAssertEqual(active, "server", "Persisting an explicit candidate does not retarget active credentials")
+        do {
+            try await store.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
+                accessToken: "duplicate", refreshToken: "duplicate-refresh", accountID: "12", expected: fresh)
+            XCTFail("Successful installation must consume its expectation")
+        } catch HTTPError.requestIdentityChanged {}
+        guard case .session(let value) = try memory.persistence.load("candidate") else { return XCTFail() }
+        XCTAssertEqual(value.accessToken, "new")
+    }
+
+    func testTemporaryHandoffCannotReplaceNewerLogin() async throws {
+        let (store, _, _, _) = try await harness()
+        let expected = await store.captureAccountInstallationExpectation()
+        try await store.installAccountSession(accessToken: "new-login", refreshToken: "new-refresh", accountID: "12")
+        let scope = TemporaryAuthScope(serverId: "candidate", serverURL: "https://candidate.example",
+            accessToken: "temporary", refreshToken: "temporary-refresh", profileId: "profile",
+            profileToken: "proof", controllerDeviceId: "controller", expiresAt: Date().addingTimeInterval(600))
+        let installed = await store.beginTemporaryScope(scope, expected: expected)
+        XCTAssertNil(installed)
+        let current = await store.getAccessToken()
+        XCTAssertEqual(current, "new-login")
+    }
+
+    func testReceiverInitialSetupAndExistingProfileProofBoundary() async throws {
+        let (store, keys, defaults, memory) = try await harness()
+        try await store.installAccountSession(accessToken: "old", refreshToken: "old-refresh", accountID: "12")
+        await store.setProfileId("old-profile")
+        _ = await store.setProfileToken("old-proof")
+        let expected = await store.captureAccountInstallationExpectation()
+        try await store.installAccountSessionForServer(serverID: "server", origin: "https://session.example",
+            accessToken: "new", refreshToken: "new-refresh", accountID: "13", expected: expected)
+        let proof = await store.getProfileToken()
+        XCTAssertNil(proof)
+        let fresh = TokenStore(keychain: keys, defaults: defaults, sessionPersistence: memory.persistence)
+        let blankExpected = await fresh.captureAccountInstallationExpectation()
+        XCTAssertNil(blankExpected.account)
+        try await fresh.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
+            accessToken: "setup", refreshToken: "setup-refresh", accountID: "14", expected: blankExpected)
+        await fresh.setServerUrl("https://candidate.example")
+        await fresh.switchActiveServer(serverId: "candidate")
+        let access = await fresh.getAccessToken()
+        XCTAssertEqual(access, "setup")
+    }
+
     func testInstallRestartReloginAndOriginBinding() async throws {
         let (store, keys, defaults, memory) = try await harness()
         try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")

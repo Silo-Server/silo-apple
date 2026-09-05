@@ -123,7 +123,7 @@ private func entry(_ id: String, name: String) -> ServerEntry {
 }
 
 private let approvedPoll = DeviceLoginPollResponse(
-    status: "approved", pollAfter: nil, accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600, user: AuthUser(id: 12, username: "test", email: "", role: "user", downloadAllowed: nil, impersonation: nil)
+    status: "approved", pollAfter: nil, accessToken: "ACCESS", refreshToken: "REFRESH", expiresIn: 3600, user: APIv2Account(id: "12", username: "test", email: "", role: .user, permissions: [], downloadAllowed: false, impersonation: nil)
 )
 
 private let pendingPoll = DeviceLoginPollResponse(
@@ -247,6 +247,29 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         )
         coordinator.start()
         return coordinator
+    }
+
+    func testChangedAccountBeforeConfirmationNeverApprovesWithReplacementToken() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let servers = [entry("a", name: "Home")]
+        var token = "original"
+        let coordinator = CompanionPairingCoordinator(channel: channel, stream: channel.stream, api: api,
+            availableServers: { servers }, accessToken: { _ in token })
+        coordinator.start()
+        channel.deliver(hello())
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }; return false
+        }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("confirmation") {
+            if case .confirmMatch = coordinator.state { return true }; return false
+        }
+        token = "replacement-login"
+        await coordinator.confirmMatch()
+        XCTAssertTrue(api.approvedCodes.isEmpty)
+        guard case .error = coordinator.state else { return XCTFail("Explicit restart required") }
     }
 
     private func hello() -> PairingMessage {
@@ -421,7 +444,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(api: FakePairingAPI, recorder: PersistRecorder) -> ReceiverPairingCoordinator {
-        ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
+        ReceiverPairingCoordinator(api: api) { url, _, access, _, _, _ in
             recorder.persisted.append(Persisted(url: url, access: access))
             return true
         }
@@ -479,11 +502,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         XCTAssertTrue(api.startedServers.isEmpty)
     }
 
-    /// Regression: the server can restart or a reverse proxy can briefly
-    /// return an error while a valid device-login request is pending. Keep
-    /// polling the same request instead of making the whole companion setup
-    /// terminal after that single transient response.
-    func testTransientPollFailureRetriesAndEventuallySignsIn() async {
+    func testUncertainCollectingPollFailsWithoutRetry() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         api.pollResults = [
@@ -500,15 +519,15 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
             return false
         }
         coordinator.allowPendingServer()
-        await expectEventually("signed in after retry") {
-            if case .signedIn(let count) = coordinator.state { return count == 1 }
+        await expectEventually("uncertain collection failure") {
+            if case .failed = coordinator.state { return true }
             return false
         }
 
-        XCTAssertEqual(api.pollCount, 2)
-        XCTAssertEqual(recorder.persisted.map(\.access), ["ACCESS"])
+        XCTAssertEqual(api.pollCount, 1)
+        XCTAssertTrue(recorder.persisted.isEmpty)
         XCTAssertTrue(channel.sent.contains {
-            if case .serverResult(_, .signedIn, _) = $0 { return true }
+            if case .serverResult(_, .failed, _) = $0 { return true }
             return false
         })
 
@@ -541,10 +560,10 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         await runTask.value
     }
 
-    func testCancellationDuringTransientPollBackoffDoesNotPublishFailure() async {
+    func testCancellationDuringPendingPollWaitDoesNotPublishFailure() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.pollResults = [.failure(PairingDeviceAPI.APIError.http(502))]
+        api.pollResults = [.success(pendingPoll)]
         let recorder = PersistRecorder()
         let coordinator = makeCoordinator(api: api, recorder: recorder)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
@@ -555,7 +574,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
             return false
         }
         coordinator.allowPendingServer()
-        await expectEventually("first transient poll failure") { api.pollCount == 1 }
+        await expectEventually("pending poll") { api.pollCount == 1 }
 
         channel.deliver(.cancel(reason: "test_cancel"))
         await runTask.value
@@ -576,7 +595,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         api.pollResponse = approvedPoll
         let recorder = PersistRecorder()
         let gate = PersistGate()
-        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _, _ in
             await gate.wait()
             recorder.persisted.append(Persisted(url: url, access: access))
             return true
@@ -618,7 +637,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         api.pollResponse = approvedPoll
         let recorder = PersistRecorder()
         let gate = PersistGate()
-        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _, _ in
             await gate.wait()
             recorder.persisted.append(Persisted(url: url, access: access))
             return true
@@ -747,7 +766,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         let api = FakePairingAPI()
         api.pollResponse = approvedPoll
         let recorder = PersistRecorder()
-        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _ in
+        let coordinator = ReceiverPairingCoordinator(api: api) { url, _, access, _, _, _ in
             guard let lease = await http.beginIdentityTransition() else {
                 return false
             }

@@ -52,7 +52,7 @@ final class ReceiverPairingCoordinator {
     private(set) var state: State = .idle
 
     private let api: any PairingDeviceAuthorizing
-    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String, _ accountID: String) async -> Bool
+    private let persist: @MainActor (_ url: String, _ fetchedName: String?, _ access: String, _ refresh: String, _ accountID: String, _ expected: TokenStore.AccountInstallationExpectation) async -> Bool
     private var signedInNames: [String] = []
     private var consented = false
     private var pendingPush: (serverURL: String, serverName: String?)?
@@ -70,7 +70,7 @@ final class ReceiverPairingCoordinator {
 
     init(
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
-        persist: @escaping @MainActor (String, String?, String, String, String) async -> Bool = ReceiverPairingCoordinator.persistServer
+        persist: @escaping @MainActor (String, String?, String, String, String, TokenStore.AccountInstallationExpectation) async -> Bool = ReceiverPairingCoordinator.persistServer
     ) {
         self.api = api
         self.persist = persist
@@ -270,6 +270,7 @@ final class ReceiverPairingCoordinator {
         let displayName = serverName ?? normalized
         let device = AppleDeviceIdentity.current
         do {
+            let expected = await TokenStore.shared.captureAccountInstallationExpectation()
             // 1. Start device auth against the PENDING candidate (not persisted).
             let started = try await api.start(serverURL: normalized, deviceName: device.name, devicePlatform: device.platform)
             state = .awaitingApproval(serverName: displayName, matchCode: started.matchCode, automatic: automatic)
@@ -280,29 +281,17 @@ final class ReceiverPairingCoordinator {
             var pollInterval = max(1, started.interval)
             while Date() < deadline {
                 try Task.checkCancellation() // abort promptly on peer cancel / drop
-                let poll: DeviceLoginPollResponse
-                do {
-                    poll = try await api.poll(serverURL: normalized, deviceCode: started.deviceCode)
-                } catch {
-                    try Task.checkCancellation()
-                    if case PairingDeviceAPI.APIError.http(404) = error {
-                        throw error // the server has expired and removed this request
-                    }
-                    // Match the ordinary device-login flow and Android TV:
-                    // a deploy, proxy hiccup, or brief network loss must not
-                    // invalidate a still-live device code.
-                    Self.logger.notice("transient device-login poll failure; retrying")
-                    try await Task.sleep(for: .seconds(pollInterval))
-                    continue
-                }
-                try Task.checkCancellation() // a cancel that raced the network must win — persist nothing
+                // Collecting polls are non-retryable: an uncertain reply can mean
+                // the one-use credential response was consumed. Restart explicitly.
+                let poll = try await api.poll(serverURL: normalized, deviceCode: started.deviceCode)
+                try Task.checkCancellation()
                 switch poll.status {
                 case "approved":
                     guard let access = poll.accessToken, let refresh = poll.refreshToken, let user = poll.user else {
                         throw PairingDeviceAPI.APIError.decode
                     }
-                    guard await persist(normalized, serverName, access, refresh, String(user.id)) else {
-                        return
+                    guard await persist(normalized, serverName, access, refresh, user.id, expected) else {
+                        throw HTTPError.requestIdentityChanged
                     }
                     signedInNames.append(displayName)
                     state = .signedIn(serverCount: signedInNames.count)
@@ -335,7 +324,7 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Commit the now-trusted server + tokens. Runs only after a successful poll.
-    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String, accountID: String) async -> Bool {
+    static func persistServer(url: String, fetchedName: String?, access: String, refresh: String, accountID: String, expected: TokenStore.AccountInstallationExpectation) async -> Bool {
         let id = ServerRegistry.serverId(for: url)
         let entry = ServerEntry(id: id, url: url, fetchedName: fetchedName, profileId: nil, lastUsedAt: Date())
         // Device authorization can replace the account for an already-saved
@@ -358,17 +347,14 @@ final class ReceiverPairingCoordinator {
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
-        guard ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false) != nil else {
+        do {
+            try await TokenStore.shared.installAccountSessionForServer(serverID: id, origin: url,
+                accessToken: access, refreshToken: refresh, accountID: accountID, expected: expected)
+        } catch {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
-        await TokenStore.shared.setServerUrl(url)
-        await TokenStore.shared.switchActiveServer(serverId: id)
-        do {
-            try await TokenStore.shared.installAccountSession(accessToken: access, refreshToken: refresh, accountID: accountID)
-        } catch {
-            await TokenStore.shared.setServerUrl(previousTokenServerURL)
-            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+        guard ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false) != nil else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }

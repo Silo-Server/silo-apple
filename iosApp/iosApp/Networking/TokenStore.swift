@@ -374,6 +374,12 @@ actor TokenStore {
         return current
     }
 
+    /// An approved handoff must still belong to the owner captured before polling.
+    func beginTemporaryScope(_ scope: TemporaryAuthScope, expected: AccountInstallationExpectation) -> TemporaryAuthScopeSnapshot? {
+        guard captureAccountInstallationExpectation() == expected else { return nil }
+        return beginTemporaryScope(scope)
+    }
+
     @discardableResult
     func beginTemporaryScope(_ scope: TemporaryAuthScope) -> TemporaryAuthScopeSnapshot {
         let previous = TemporaryAuthScopeSnapshot(
@@ -806,7 +812,49 @@ actor TokenStore {
         return (try? installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: nil, clearProfile: false)) != nil
     }
 
-    func installAccountSession(accessToken: String, refreshToken: String, accountID: String?, clearProfile: Bool = true) throws {
+    struct AccountInstallationExpectation: Equatable, Sendable {
+        let account: RefreshAccountIdentity?
+        let generation: UUID
+    }
+
+    func captureAccountInstallationExpectation() -> AccountInstallationExpectation {
+        AccountInstallationExpectation(account: refreshAccountIdentity(), generation: persistentCredentialGenerationID)
+    }
+
+    /// Explicit receiver targets are persisted without changing the active owner.
+    /// Comparison and checked keychain publication occur in one actor turn.
+    func installAccountSessionForServer(serverID: String, origin: String, accessToken: String,
+        refreshToken: String, accountID: String, expected: AccountInstallationExpectation) throws {
+        guard captureAccountInstallationExpectation() == expected, temporaryScope == nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let origin = ServerRegistry.normalize(url: origin)
+        guard !serverID.isEmpty, !origin.isEmpty, !accountID.isEmpty,
+              !accessToken.isEmpty, !refreshToken.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
+        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin,
+            accountID: accountID, epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
+        do { try sessions.save(value, serverID: serverID) }
+        catch {
+            runtimeBlockedServers.insert(serverID)
+            if serverID == activeServerId { blockRuntimeSession() }
+            throw error
+        }
+        runtimeBlockedServers.remove(serverID)
+        profileKeychain.delete(Self.profileTokenKey(for: serverID))
+        if serverID == activeServerId { defaults.removeObject(forKey: profileIdDefaultsKey) }
+        // A successful install consumes this expectation even for an inactive target.
+        persistentCredentialGenerationID = UUID()
+        if serverID == activeServerId {
+            canonicalSession = nil
+            cachedAccessToken = nil
+            cachedRefreshToken = nil
+            cachedProfileToken = nil
+            loadedForServerId = nil
+        }
+    }
+
+    func installAccountSession(accessToken: String, refreshToken: String, accountID: String?, clearProfile: Bool = true, expectedAccount: RefreshAccountIdentity? = nil) throws {
+        if let expectedAccount, refreshAccountIdentity() != expectedAccount { throw HTTPError.requestIdentityChanged }
         guard temporaryScope == nil, !activeServerId.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
               accountID == nil || accountID?.isEmpty == false else { throw AccountSessionPersistenceError.invalidIdentity }
         let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
