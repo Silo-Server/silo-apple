@@ -40,6 +40,12 @@ struct TVDetailCastRail: View {
             .scrollClipDisabled()
             .task(id: "\(focusRequest):\(focusRequestIsActive)") {
                 guard focusRequest > 0, focusRequestIsActive, let defaultFocusId else { return }
+                // Disappearing or replacing this task must release its pending
+                // handoff. The parent checks the captured generation and request
+                // so an old cancellation cannot clear its replacement.
+                defer {
+                    if Task.isCancelled { onFocusRequestFailed?() }
+                }
                 // A previously scrolled cast strip may not have its first lazy
                 // card mounted. Reveal it before handing focus across the boundary.
                 proxy.scrollTo(defaultFocusId, anchor: .leading)

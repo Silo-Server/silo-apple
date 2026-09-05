@@ -1255,6 +1255,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         }
     }
 
+    private func failSupportingHandoff(_ generation: Int, request: Int) {
+        guard supportingHandoffPending,
+              supportingRailFocusGeneration == generation,
+              supportingRailFocusRequest == request else { return }
+        cancelSupportingHandoff()
+    }
+
     private func cancelSupportingHandoff() {
         supportingHandoffPending = false
         supportingRailFocusGeneration &+= 1
@@ -1447,7 +1454,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 onTap: onPersonTap,
                 focusRequest: supportingRailFocusRequest,
                 focusRequestIsActive: supportingHandoffPending,
-                onFocusRequestFailed: cancelSupportingHandoff,
+                onFocusRequestFailed: { [generation = supportingRailFocusGeneration,
+                                         request = supportingRailFocusRequest] in
+                    failSupportingHandoff(generation, request: request)
+                },
                 onFocus: {
                     cancelSupportingHandoff()
                     primaryFocusRegion = .outside

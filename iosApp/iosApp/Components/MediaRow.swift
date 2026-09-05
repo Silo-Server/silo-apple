@@ -684,7 +684,12 @@ struct MediaRow: View {
     private func favoriteToggleAction(for item: SectionItem) -> ((Bool) async -> Bool)? {
         guard let onSetFavorite else { return nil }
         return { isFavorite in
-            await onSetFavorite(item, isFavorite)
+            #if os(tvOS)
+            await MainActor.run {
+                preserveFocusForContextMutation(on: item)
+            }
+            #endif
+            return await onSetFavorite(item, isFavorite)
         }
     }
 

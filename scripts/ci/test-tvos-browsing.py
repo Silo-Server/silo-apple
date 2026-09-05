@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""Run actual tvOS gate/timeline function bodies with a virtual clock.
+"""Run actual tvOS gate, timeline and focus-lifecycle bodies with a virtual clock.
 
 SwiftUI, Nuke, networking and the native focus engine are not simulated here.
-These checks cover cancellation and frame math; physical TV checks cover UX.
+These checks cover cancellation, callback ownership and frame math; TV checks cover UX.
 """
 from pathlib import Path
+import os
 import re
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 APP = ROOT / "iosApp/iosApp"
+
+
+def app_source(path):
+    # Run these same regressions against a specified baseline without a checkout.
+    if ref := os.environ.get("SILO_TV_TEST_SOURCE_REF"):
+        return subprocess.check_output(
+            ["git", "show", f"{ref}:iosApp/iosApp/{path}"], cwd=ROOT, text=True)
+    return (APP / path).read_text()
 
 
 def function(source, signature):
@@ -24,10 +33,28 @@ def function(source, signature):
     return source[start:end]
 
 
-marquee = (APP / "tvOS/Components/TVFocusMarquee.swift").read_text()
-splash = (APP / "Components/StartupSplashView.swift").read_text()
-theme = (APP / "Theme/SiloTheme.swift").read_text()
-frames = (APP / "Components/StartupSplashAnimation.swift").read_text()
+marquee = app_source("tvOS/Components/TVFocusMarquee.swift")
+splash = app_source("Components/StartupSplashView.swift")
+theme = app_source("Theme/SiloTheme.swift")
+frames = app_source("Components/StartupSplashAnimation.swift")
+row = app_source("Components/MediaRow.swift")
+cast = app_source("tvOS/Screens/Detail/TVDetailCastRail.swift")
+series = app_source("tvOS/Screens/Detail/TVSeriesDetailView.swift")
+favorite = function(row, "private func favoriteToggleAction(").replace("private func", "func")
+favorite = favorite.replace("#if os(tvOS)", "").replace("#endif", "")
+cast_task = function(cast, '.task(id: "\\(focusRequest):')
+cast_body = cast_task[cast_task.index("{") + 1:-1].replace("Task.sleep(for:", "VirtualClock.sleep(for:")
+cancel = function(series, "private func cancelSupportingHandoff()").replace("private func", "func")
+# The baseline passed cancelSupportingHandoff directly; preserve that wiring.
+failure_callback = "{ parent.cancelSupportingHandoff() }"
+failure_method = ""
+if "private func failSupportingHandoff(" in series:
+    failure_method = function(series, "private func failSupportingHandoff(").replace("private func", "func")
+    callback_start = series.index("onFocusRequestFailed: {")
+    callback = function(series[callback_start:], "onFocusRequestFailed:").split(": ", 1)[1]
+    failure_callback = callback.replace("supportingRailFocusGeneration", "parent.supportingRailFocusGeneration").replace(
+        "supportingRailFocusRequest", "parent.supportingRailFocusRequest").replace(
+        "failSupportingHandoff(", "parent.failSupportingHandoff(")
 isolated = re.search(r"marqueeBackdropIsolatedRestMilliseconds = (\d+)", theme)[1]
 rolling = re.search(r"marqueeBackdropRollRestMilliseconds = (\d+)", theme)[1]
 fps = re.search(r"framesPerSecond: Double = (\d+)", frames)[1]
@@ -54,6 +81,7 @@ enum StartupSplashAnimation { static let framesPerSecond: Double = FPS }
         let parts = duration.components
         let ms = Int(parts.seconds * 1000 + parts.attoseconds / 1_000_000_000_000_000)
         await withCheckedContinuation { waiters.append((now + ms, $0)) }
+        try Task.checkCancellation()
     }
     static func advance(_ ms: Int) async {
         now += ms
@@ -94,7 +122,53 @@ enum StartupSplashCanvas { TIMELINE }
     COMPLETE
     FINISH
 }
+struct SectionItem { let id: String }
+@MainActor final class FavoriteState {
+    var onSetFavorite: ((SectionItem, Bool) async -> Bool)?
+    var events: [String] = []
+}
+@MainActor struct FavoriteHarness {
+    let state = FavoriteState()
+    var onSetFavorite: ((SectionItem, Bool) async -> Bool)? {
+        get { state.onSetFavorite }
+        nonmutating set { state.onSetFavorite = newValue }
+    }
+    var events: [String] {
+        get { state.events }
+        nonmutating set { state.events = newValue }
+    }
+    func preserveFocusForContextMutation(on item: SectionItem) { events.append("preserve:" + item.id) }
+    FAVORITE
+}
+@MainActor final class HandoffHarness {
+    var supportingHandoffPending = true
+    var supportingRailFocusGeneration = 1
+    var supportingRailFocusRequest = 1
+    CANCEL
+    FAILURE_METHOD
+}
+@MainActor final class CastHarness {
+    struct Proxy {
+        enum Anchor { case leading }
+        func scrollTo(_ id: String, anchor: Anchor) {}
+    }
+    let proxy = Proxy()
+    var focusRequest = 1
+    var focusRequestIsActive = true
+    var defaultFocusId: String? = "first"
+    var acceptsFocus = false
+    private var storedFocus: String?
+    var focusedCastId: String? {
+        get { storedFocus }
+        set { if acceptsFocus { storedFocus = newValue } }
+    }
+    var onFocusRequestFailed: (() -> Void)?
+    func runRequest() async { CAST_BODY }
+}
 @main struct Checks {
+    @MainActor static func failureCallback(_ parent: HandoffHarness) -> () -> Void {
+        FAILURE_CALLBACK
+    }
     @MainActor static func main() async {
         let a = TVMarqueeContent(id: "a"), b = TVMarqueeContent(id: "b"), c = TVMarqueeContent(id: "c")
         let m = MarqueeHarness()
@@ -158,11 +232,77 @@ enum StartupSplashCanvas { TIMELINE }
         reduced.finishIfReady()
         precondition(reduced.finishes == 1, "Reduce Motion cannot wait for an animated cycle")
         print("PASS: actual rolling-gate cancellation, suspension/reset, source-frame timing and ready-Home completion bodies")
+        var failures = 0
+        func expect(_ condition: Bool, _ label: String) {
+            print("\(condition ? "PASS" : "FAIL"): \(label)")
+            if !condition { failures += 1 }
+        }
+        let favorite = FavoriteHarness()
+        let item = SectionItem(id: "card")
+        expect(favorite.favoriteToggleAction(for: item) == nil, "missing favourite handler stays unavailable")
+        for result in [false, true] {
+            favorite.events = []
+            favorite.onSetFavorite = { item, value in
+                favorite.events.append("mutation:" + item.id)
+                return result
+            }
+            let returned = await favorite.favoriteToggleAction(for: item)!(result)
+            expect(favorite.events == ["preserve:card", "mutation:card"] && returned == result,
+                   "favourite preserves focus before mutation and returns \(result)")
+        }
+        for cancelAtEnd in [false, true] {
+            let rail = CastHarness(), parent = HandoffHarness()
+            rail.onFocusRequestFailed = failureCallback(parent)
+            let task = Task { await rail.runRequest() }
+            await VirtualClock.drain()
+            if cancelAtEnd { for _ in 0..<12 { await VirtualClock.advance(50) } }
+            task.cancel()
+            await VirtualClock.advance(50)
+            await task.value
+            expect(!parent.supportingHandoffPending && parent.supportingRailFocusGeneration == 2,
+                   "cancellation releases pending handoff during \(cancelAtEnd ? "final" : "first") wait")
+        }
+        for replacement in ["generation", "request"] {
+            let rail = CastHarness(), parent = HandoffHarness()
+            rail.onFocusRequestFailed = failureCallback(parent)
+            let staleFailure = rail.onFocusRequestFailed!
+            let task = Task { await rail.runRequest() }
+            await VirtualClock.drain()
+            if replacement == "generation" { parent.supportingRailFocusGeneration += 1 }
+            else { parent.supportingRailFocusRequest += 1 }
+            task.cancel()
+            await VirtualClock.advance(50)
+            await task.value
+            expect(parent.supportingHandoffPending, "old cancellation preserves replacement \(replacement)")
+            staleFailure()
+            expect(parent.supportingHandoffPending, "old timeout preserves replacement \(replacement)")
+            failureCallback(parent)()
+            expect(!parent.supportingHandoffPending, "replacement \(replacement) can still release its own handoff")
+        }
+        for outcome in ["success", "timeout", "inactive"] {
+            let rail = CastHarness()
+            var callbacks = 0
+            rail.onFocusRequestFailed = { callbacks += 1 }
+            rail.acceptsFocus = outcome == "success"
+            rail.focusRequestIsActive = outcome != "inactive"
+            let task = Task { await rail.runRequest() }
+            await VirtualClock.drain()
+            for _ in 0..<13 { await VirtualClock.advance(50) }
+            await task.value
+            expect(callbacks == (outcome == "timeout" ? 1 : 0), "cast \(outcome) preserves callback behaviour")
+        }
+        let completed = HandoffHarness()
+        completed.supportingHandoffPending = false
+        failureCallback(completed)()
+        expect(completed.supportingRailFocusGeneration == 1, "completed handoff ignores late failure")
+        if failures > 0 { exit(1) }
     }
 }
 '''
 for key, value in {"ISOLATED": isolated, "ROLLING": rolling, "FPS": fps,
-                   "METHODS": methods, "TIMELINE": timeline, "COMPLETE": complete, "FINISH": finish}.items():
+                   "METHODS": methods, "TIMELINE": timeline, "COMPLETE": complete, "FINISH": finish,
+                   "FAVORITE": favorite, "CAST_BODY": cast_body, "CANCEL": cancel,
+                   "FAILURE_METHOD": failure_method, "FAILURE_CALLBACK": failure_callback}.items():
     source = source.replace(key, value)
 with tempfile.TemporaryDirectory(prefix="silo-tvos-gates-") as folder:
     path = Path(folder)
