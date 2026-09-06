@@ -128,6 +128,11 @@ class ItemDetailViewModel {
             didCaptureTrackPreferenceAuth = true
             trackPreferenceAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
         }
+        let membershipAuth = trackPreferenceAuth
+        let mayReadMembershipCache: Bool
+        if let membershipAuth {
+            mayReadMembershipCache = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: membershipAuth) != nil
+        } else { mayReadMembershipCache = false }
         if detail?.contentId != contentId {
             #if !os(tvOS)
             seasonEpisodePrefetchTask?.cancel()
@@ -145,6 +150,14 @@ class ItemDetailViewModel {
         // first-ever visit) leaves the corresponding fields nil and the
         // view falls back to its skeleton.
         hydrateFromCache(contentId: contentId)
+        if mayReadMembershipCache, !Task.isCancelled,
+           let state: UserItemState = ResponseCache.shared.get(CacheKey.itemUserState(contentId)),
+           let owner = state.auth, let screenOwner = trackPreferenceAuth,
+           owner.account == screenOwner.account, owner.credentialOwner == screenOwner.credentialOwner,
+           owner.profileId == screenOwner.profileId, owner.profileToken == screenOwner.profileToken {
+            isFavorite = state.isFavorite
+            inWatchlist = state.inWatchlist
+        }
 
         #if os(tvOS)
         // Home / library focus may already have warmed this Series hierarchy.
@@ -195,10 +208,10 @@ class ItemDetailViewModel {
             // and related season/episode structure. They are intentionally
             // not on the critical path to the first painted hero.
             async let favoriteResult: Bool? = try? await SiloAPI.shared.isFavorite(
-                contentId: contentId
+                contentId: contentId, auth: membershipAuth
             )
             async let watchlistResult: Bool? = try? await SiloAPI.shared.isInWatchlist(
-                contentId: contentId
+                contentId: contentId, auth: membershipAuth
             )
             let userStateGeneration = userStateMutationGeneration
 
@@ -271,19 +284,23 @@ class ItemDetailViewModel {
             #endif
 
             let (favorite, watchlist) = await (favoriteResult, watchlistResult)
-            if let favorite, let watchlist,
+            let membershipIsCurrent: Bool
+            if let membershipAuth {
+                membershipIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: membershipAuth) != nil
+            } else { membershipIsCurrent = false }
+            if membershipIsCurrent, !Task.isCancelled, generation == detailGeneration,
+               let favorite, let watchlist,
                detail?.contentId == contentId,
                userStateMutationGeneration == userStateGeneration {
                 isFavorite = favorite
                 inWatchlist = watchlist
                 ResponseCache.shared.set(
-                    UserItemState(isFavorite: favorite, inWatchlist: watchlist),
+                    UserItemState(isFavorite: favorite, inWatchlist: watchlist, auth: membershipAuth),
                     for: CacheKey.itemUserState(contentId)
                 )
             } else {
                 // Leave whatever we hydrated from cache; per-item user
-                // state is non-fatal. Independent of the detail payload, so
-                // it still applies to a superseded load.
+                // state is non-fatal; a superseded read must not publish.
             }
         } catch let err {
             if detail == nil {
@@ -522,10 +539,6 @@ class ItemDetailViewModel {
                       let seriesId = cached.seriesId {
                 seriesContentId = seriesId
             }
-        }
-        if let state: UserItemState = ResponseCache.shared.get(CacheKey.itemUserState(contentId)) {
-            isFavorite = state.isFavorite
-            inWatchlist = state.inWatchlist
         }
         if let seriesId = seriesContentId,
            seasons.isEmpty,
@@ -1192,6 +1205,9 @@ class ItemDetailViewModel {
     ) async {
         episodeFavoriteRefreshGeneration += 1
         let generation = episodeFavoriteRefreshGeneration
+        guard let auth = trackPreferenceAuth,
+              await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+              generation == episodeFavoriteRefreshGeneration, !Task.isCancelled else { return }
         let mutationVersionsAtStart = episodeFavoriteMutationVersions
         var states: [String: Bool] = [:]
 
@@ -1206,7 +1222,7 @@ class ItemDetailViewModel {
                 for episode in batch {
                     group.addTask {
                         let isFavorite = try? await SiloAPI.shared.isFavorite(
-                            contentId: episode.contentId
+                            contentId: episode.contentId, auth: auth
                         )
                         return (episode.contentId, isFavorite)
                     }
@@ -1225,6 +1241,8 @@ class ItemDetailViewModel {
             states.merge(batchStates) { _, refreshed in refreshed }
         }
 
+        let authorityIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard authorityIsCurrent, !Task.isCancelled else { return }
         let currentIds = Set(self.episodes.map(\.contentId))
         guard generation == episodeFavoriteRefreshGeneration,
               currentIds == Set(episodes.map(\.contentId)) else { return }
@@ -1428,4 +1446,11 @@ enum ItemDetailViewModelError: LocalizedError {
 struct UserItemState {
     let isFavorite: Bool
     let inWatchlist: Bool
+    let auth: CapturedOrdinaryRequestAuth?
+
+    init(isFavorite: Bool, inWatchlist: Bool, auth: CapturedOrdinaryRequestAuth? = nil) {
+        self.isFavorite = isFavorite
+        self.inWatchlist = inWatchlist
+        self.auth = auth
+    }
 }

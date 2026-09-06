@@ -24,6 +24,52 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testMembershipReadsUseExactEntriesAndProblemAbsence() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let entry = Data(#"{"item_id":"movie/a?b","added_at":"2026-09-06T00:00:00.000Z"}"#.utf8)
+        LibraryReadProtocol.enqueue([entry, entry])
+        let favorite = try await api.isFavorite(contentId: "movie/a?b", auth: auth)
+        let watchlist = try await api.isInWatchlist(contentId: "movie/a?b", auth: auth)
+        XCTAssertTrue(favorite); XCTAssertTrue(watchlist)
+        XCTAssertEqual(LibraryReadProtocol.requests().map { $0.url!.absoluteString }, [
+            "https://libraries.example/api/v2/favorites/movie%2Fa%3Fb",
+            "https://libraries.example/api/v2/watchlist/movie%2Fa%3Fb"
+        ])
+        LibraryReadProtocol.status = 404
+        let absent = Data(#"{"type":"https://silo.test/problems/not_found","title":"Not found","status":404,"detail":"Not a member"}"#.utf8)
+        LibraryReadProtocol.enqueue([absent, absent])
+        let noFavorite = try await api.isFavorite(contentId: "movie/a?b", auth: auth)
+        let noWatchlist = try await api.isInWatchlist(contentId: "movie/a?b", auth: auth)
+        XCTAssertFalse(noFavorite); XCTAssertFalse(noWatchlist)
+        LibraryReadProtocol.enqueue([Data("route missing".utf8)])
+        do { _ = try await api.isFavorite(contentId: "movie/a?b", auth: auth); XCTFail("untyped absence") } catch {}
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([Data(#"{"item_id":"other","added_at":"2026-09-06T00:00:00.000Z"}"#.utf8)])
+        do { _ = try await api.isFavorite(contentId: "movie/a?b", auth: auth); XCTFail("wrong identity") } catch {}
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        do { _ = try await api.isInWatchlist(contentId: "movie/a?b", auth: auth); XCTFail("legacy success") } catch {}
+    }
+
+    func testMembershipReadsPinNilAndReplacementAuthority() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await v2.personalMembership(id: "movie", watchlist: false, auth: captured); XCTFail("PIN rebound") } catch {}
+        do { _ = try await v2.personalMembership(id: "movie", watchlist: true, auth: nil); XCTFail("missing owner recaptured") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.status = 404
+        LibraryReadProtocol.enqueue([Data(#"{"type":"https://silo.test/problems/not_found","title":"Not found","status":404,"detail":"Not a member"}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.personalMembership(id: "movie", watchlist: true, auth: current); XCTFail("foreign absence") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
     private var discoverBody: Data {
         Data(#"{"items":[{"type":"popular","title":"Popular","items":[{"content_id":"movie:one","type":"movie","title":"One","rating_imdb":8.1}]},{"type":"cluster","title":"For You","items":[{"content_id":"episode:two","type":"episode","title":"Two","series_id":"series:2","season_number":0,"episode_number":2}]},{"type":"genre","title":"Empty","items":[]}],"page":{"has_more":false}}"#.utf8)
     }

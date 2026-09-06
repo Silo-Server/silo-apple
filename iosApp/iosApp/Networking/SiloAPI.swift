@@ -365,15 +365,12 @@ actor SiloAPI {
         ]))
     }
 
-    /// Server returns 204 when the item is a favorite and 404 otherwise.
-    /// ``HTTPClient/exists(_:query:)`` translates that into a boolean
-    /// without trying to decode the empty response body.
-    func isFavorite(contentId: String) async throws -> Bool {
-        try await http.exists("/api/v1/favorites/\(contentId)")
+    func isFavorite(contentId: String, auth: CapturedOrdinaryRequestAuth?) async throws -> Bool {
+        try await v2.personalMembership(id: contentId, watchlist: false, auth: auth)
     }
 
-    func isInWatchlist(contentId: String) async throws -> Bool {
-        try await http.exists("/api/v1/watchlist/\(contentId)")
+    func isInWatchlist(contentId: String, auth: CapturedOrdinaryRequestAuth?) async throws -> Bool {
+        try await v2.personalMembership(id: contentId, watchlist: true, auth: auth)
     }
 
     func toggleFavorite(contentId: String, isFavorite: Bool) async throws {
