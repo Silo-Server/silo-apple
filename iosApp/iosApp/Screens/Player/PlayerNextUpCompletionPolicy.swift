@@ -35,10 +35,17 @@ enum PlayerNextUpCompletionPolicy {
     static func shouldFinalizeAsCompleted(
         isNextUpPresented: Bool,
         hasReachedEndOfFile: Bool,
+        endedPrematurely: Bool = false,
         currentTime: Double,
         duration: Double,
         promptSeconds: Int
     ) -> Bool {
+        // A connection-reset EOS still latches `hasReachedEndOfFile` so the
+        // player stays paused, but it is not a natural finish. Treating it as
+        // one would overwrite the real resume point with "watched".
+        if endedPrematurely {
+            return false
+        }
         if hasReachedEndOfFile {
             return true
         }
@@ -53,6 +60,7 @@ enum PlayerNextUpCompletionPolicy {
     static func progressPosition(
         isNextUpPresented: Bool,
         hasReachedEndOfFile: Bool,
+        endedPrematurely: Bool = false,
         currentTime: Double,
         duration: Double,
         promptSeconds: Int
@@ -63,6 +71,7 @@ enum PlayerNextUpCompletionPolicy {
         return shouldFinalizeAsCompleted(
             isNextUpPresented: isNextUpPresented,
             hasReachedEndOfFile: hasReachedEndOfFile,
+            endedPrematurely: endedPrematurely,
             currentTime: currentTime,
             duration: duration,
             promptSeconds: promptSeconds
