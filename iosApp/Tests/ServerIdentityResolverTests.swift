@@ -16,7 +16,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertEqual(name, "Home Silo")
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding", "/api/v1/theme/branding"])
     }
 
     func testFallsBackToHealthForOlderServer() async {
@@ -30,7 +30,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         XCTAssertEqual(name, "Legacy Home")
         XCTAssertEqual(
             ServerIdentityStubProtocol.requestedPaths(),
-            ["/api/v1/theme/branding", "/api/v1/health"]
+            ["/api/v2/theme/branding", "/api/v1/theme/branding", "/api/v1/health"]
         )
     }
 
@@ -54,7 +54,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertNil(name)
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding", "/api/v1/theme/branding"])
     }
 
     func testBrandingDecodeFailureDoesNotFallBackToHealth() async {
@@ -66,7 +66,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertNil(name)
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding", "/api/v1/theme/branding"])
     }
 
     func testStaleActiveServerResponseDoesNotRenameRegistryEntries() async {
@@ -101,25 +101,48 @@ final class ServerIdentityResolverTests: XCTestCase {
         await registry.switchTo(serverId: serverA.id)
 
         ServerIdentityStubProtocol.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":"Updated A"}"#),
-        ], blockedPaths: ["/api/v1/theme/branding"])
-        defer { ServerIdentityStubProtocol.release(path: "/api/v1/theme/branding") }
+            "/api/v2/theme/branding": (200, #"{"server_name":"Updated A"}"#),
+        ], blockedPaths: ["/api/v2/theme/branding"])
+        defer { ServerIdentityStubProtocol.release(path: "/api/v2/theme/branding") }
 
         let service = AuthService(
             serverIdentityResolver: resolver(),
             serverRegistry: registry
         )
         let refresh = Task { await service.refreshActiveServerName() }
-        await waitForRequest(path: "/api/v1/theme/branding")
+        await waitForRequest(path: "/api/v2/theme/branding")
 
         await registry.switchTo(serverId: serverB.id)
-        ServerIdentityStubProtocol.release(path: "/api/v1/theme/branding")
+        ServerIdentityStubProtocol.release(path: "/api/v2/theme/branding")
         await refresh.value
 
         XCTAssertEqual(registry.activeServerId, serverB.id)
         XCTAssertEqual(registry.entry(with: serverA.id)?.fetchedName, "Server A")
         XCTAssertEqual(registry.entry(with: serverB.id)?.fetchedName, "Server B")
         await TokenStore.shared.switchActiveServer(serverId: previousTokenServerId)
+    }
+
+    func testV2BrandingBeforeLoginIgnoresOptionalAssets() async {
+        for assets in ["", #", "wordmark_url":"/api/v2/branding/assets/wordmark?v=ref", "favicon_url":"/api/v2/branding/assets/favicon?v=ref""#] {
+            ServerIdentityStubProtocol.configure([
+                "/base/api/v2/theme/branding": (200, #"{"server_name":"  V2 Home  ","login_subtitle":"Welcome","storage_available":false\#(assets)}"#),
+            ])
+            let name = await resolver().fetchServerName(serverURL: "https://candidate.example/base")
+            XCTAssertEqual(name, "V2 Home")
+            XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/base/api/v2/theme/branding"])
+        }
+    }
+
+    func testV2FailureDoesNotDowngradeIdentity() async {
+        for response in [(500, #"{"error":"unavailable"}"#), (200, #"{"server_name":42}"#)] {
+            ServerIdentityStubProtocol.configure([
+                "/api/v2/theme/branding": response,
+                "/api/v1/theme/branding": (200, #"{"server_name":"Legacy"}"#),
+            ])
+            let name = await resolver().fetchServerName(serverURL: "https://silo.example")
+            XCTAssertNil(name)
+            XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding"])
+        }
     }
 
     private func resolver() -> ServerIdentityResolver {
@@ -154,7 +177,8 @@ private final class ServerIdentityStubProtocol: URLProtocol {
         blockedPaths configuredBlockedPaths: Set<String> = []
     ) {
         lock.withLock {
-            responses = configuredResponses
+            responses = ["/api/v2/theme/branding": (404, #"{"error":"not_found"}"#)]
+            responses.merge(configuredResponses) { _, supplied in supplied }
             paths = []
         }
         responseCondition.withLock {
@@ -191,6 +215,9 @@ private final class ServerIdentityStubProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(request.value(forHTTPHeaderField: "X-Profile-Id"))
+        XCTAssertNil(request.value(forHTTPHeaderField: "X-Profile-Token"))
         guard let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return

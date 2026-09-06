@@ -14,19 +14,26 @@ struct ServerIdentityResolver {
     }
 
     func fetchServerName(serverURL: String) async -> String? {
-        do {
-            let branding: ServerBrandingStatus = try await httpClient.getUnauthenticated(
-                serverURL: serverURL,
-                path: "/api/v1/theme/branding",
-                quietStatuses: [404]
-            )
-            if let name = Self.usableName(branding.serverName) {
-                return name
+        // Discovery runs before login/active-server negotiation, using only
+        // the explicit candidate URL. Only a missing v2 route permits v1.
+        for path in ["/api/v2/theme/branding", "/api/v1/theme/branding"] {
+            do {
+                let branding: ServerBrandingStatus = try await httpClient.getUnauthenticated(
+                    serverURL: serverURL,
+                    path: path,
+                    quietStatuses: [404]
+                )
+                if let name = Self.usableName(branding.serverName) {
+                    return name
+                }
+                // A supported but blank branding response keeps the existing
+                // health-name fallback; it does not retry branding over v1.
+                break
+            } catch HTTPError.http(let statusCode, _) where statusCode == 404 {
+                continue
+            } catch {
+                return nil
             }
-        } catch HTTPError.http(let statusCode, _) where statusCode == 404 {
-            // Older servers do not expose native branding.
-        } catch {
-            return nil
         }
 
         if let health: HealthStatus = try? await httpClient.getUnauthenticated(
