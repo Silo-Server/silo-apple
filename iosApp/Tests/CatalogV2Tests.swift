@@ -5,7 +5,8 @@ import XCTest
 final class CatalogV2Tests: XCTestCase {
     private let terminal = #"{"items":[],"page":{"has_more":false},"total":10000,"total_exact":false,"window_cursor":"window"}"#
 
-    private func client(updateRequired: Bool = false) async throws -> (APIv2Client, TokenStore) {
+    private func client(updateRequired: Bool = false,
+                        captureBarrier: (@Sendable (TokenStore) async -> Void)? = nil) async throws -> (APIv2Client, TokenStore) {
         let name = "CatalogV2Tests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name); CatalogProtocol.reset() }
@@ -16,8 +17,67 @@ final class CatalogV2Tests: XCTestCase {
         await tokens.setProfileId("profile-one")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CatalogProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokens)
+        let http = HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokens,
+            requestCaptureBarrier: { await captureBarrier?(tokens) })
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { updateRequired }), tokens)
+    }
+
+    func testCatalogPagesRetainFullOwnerAtCaptureAndContinuation() async throws {
+        for operation in [APIv2CatalogOperation.get, .query] {
+            CatalogProtocol.reset()
+            let (blocked, _) = try await client(captureBarrier: { await $0.setProfileToken("replacement") })
+            do {
+                _ = try await blocked.catalogPage(query: .init(), operation: operation)
+                XCTFail("Must not replace original absent PIN at HTTP capture")
+            } catch HTTPError.requestIdentityChanged { }
+            XCTAssertTrue(CatalogProtocol.requests().isEmpty)
+
+            let (api, tokens) = try await client()
+            await tokens.setProfileToken("original")
+            let captured = await tokens.captureOrdinaryRequestAuth()
+            let auth = try XCTUnwrap(captured)
+            CatalogProtocol.reply(200, #"{"items":[],"page":{"has_more":true,"next_cursor":"opaque-original"},"total":2,"total_exact":true,"window_cursor":"w"}"#)
+            let first = try await api.catalogPage(query: .init(), operation: operation, auth: auth)
+            let cursor = try XCTUnwrap(first.continuation)
+            XCTAssertEqual(first.auth, auth)
+            XCTAssertEqual(cursor.auth, auth)
+            XCTAssertEqual(cursor.cursor, "opaque-original")
+            XCTAssertEqual(cursor.operation, operation)
+            await tokens.setProfileToken("replacement")
+            do {
+                _ = try await api.nextCatalogPage(cursor)
+                XCTFail("Must not rebind continuation")
+            } catch HTTPError.requestIdentityChanged { }
+            do {
+                _ = try await api.catalogPage(query: .init(), operation: operation, auth: auth)
+                XCTFail("Must not rebind supplied first-page authority")
+            } catch HTTPError.requestIdentityChanged { }
+            XCTAssertEqual(CatalogProtocol.requests().count, 1)
+        }
+    }
+
+    func testCatalogPageRejectsLatePINReplacementAndNon200() async throws {
+        for operation in [APIv2CatalogOperation.get, .query] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            CatalogProtocol.reply(200, terminal)
+            let received = expectation(description: "catalog response suspended")
+            CatalogProtocol.hold { received.fulfill() }
+            let task = Task { try await api.catalogPage(query: .init(), operation: operation) }
+            await fulfillment(of: [received], timeout: 2)
+            await tokens.setProfileToken("replacement")
+            CatalogProtocol.release()
+            do { _ = try await task.value; XCTFail("Old PIN response cannot publish") }
+            catch HTTPError.requestIdentityChanged { }
+            XCTAssertEqual(CatalogProtocol.requests().count, 1)
+
+            CatalogProtocol.reply(202, terminal)
+            do {
+                _ = try await api.catalogPage(query: .init(), operation: operation)
+                XCTFail("Catalog requires exact 200")
+            } catch APIv2Error.httpStatus(202) { }
+            XCTAssertEqual(CatalogProtocol.requests().count, 2)
+        }
     }
 
     private func playableDetail(fileID: String = "41") throws -> String {

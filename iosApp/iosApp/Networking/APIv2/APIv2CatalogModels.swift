@@ -130,9 +130,11 @@ struct APIv2CatalogContinuation {
     let seen: Set<String>
     let identity: HTTPRequestIdentity
     let account: RefreshAccountIdentity
+    let auth: CapturedOrdinaryRequestAuth
 }
 
 struct APIv2CatalogResult {
+    let auth: CapturedOrdinaryRequestAuth
     let value: APIv2CatalogPage
     let continuation: APIv2CatalogContinuation?
 }

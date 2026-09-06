@@ -546,29 +546,33 @@ struct APIv2Client: Sendable {
 
     // MARK: Catalog contract
 
-    func catalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation = .get) async throws -> APIv2CatalogResult {
+    func catalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation = .get,
+                     auth suppliedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2CatalogResult {
         try await gate()
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
+        let captured = await tokenStore.captureOrdinaryRequestAuth()
+        guard let auth = suppliedAuth ?? captured, let profile = auth.profileId else {
             throw HTTPError.requestIdentityChanged
         }
         let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
             profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
         return try await fetchCatalogPage(query: query, operation: operation, cursor: nil, seen: [],
-            identity: identity, account: auth.account)
+            identity: identity, auth: auth)
     }
 
     func nextCatalogPage(_ continuation: APIv2CatalogContinuation) async throws -> APIv2CatalogResult {
         try await fetchCatalogPage(query: continuation.query, operation: continuation.operation,
             cursor: continuation.cursor, seen: continuation.seen,
-            identity: continuation.identity, account: continuation.account)
+            identity: continuation.identity, auth: continuation.auth)
     }
 
     private func fetchCatalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation,
         cursor: String?, seen: Set<String>, identity: HTTPRequestIdentity,
-        account: RefreshAccountIdentity) async throws -> APIv2CatalogResult {
+        auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogResult {
         try await gate()
-        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == account,
-              current.profileId == identity.profileId else { throw HTTPError.requestIdentityChanged }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
         var parameters = try query.getParameters()
         var body: Data?
         if operation == .query {
@@ -584,20 +588,28 @@ struct APIv2Client: Sendable {
         let page: APIv2CatalogPage = try await mapErrors {
             let response = try await http.requestData(method: operation == .get ? "GET" : "POST",
                 path: operation == .get ? "/api/v2/catalog" : "/api/v2/catalog/query",
-                query: parameters, body: body, requestIdentity: identity)
+                query: parameters, body: body, requestIdentity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
+            guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+                throw HTTPError.requestIdentityChanged
+            }
+            try Task.checkCancellation()
+            guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
             return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogPage.self, from: response.data)
         }
-        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == account,
-              current.profileId == identity.profileId else { throw HTTPError.requestIdentityChanged }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
         var continuation: APIv2CatalogContinuation?
         if page.page.hasMore {
             guard let next = page.page.nextCursor, !next.isEmpty, !seen.contains(next) else {
                 throw APIv2Error.invalidCatalogContinuation
             }
             continuation = APIv2CatalogContinuation(query: query, operation: operation, cursor: next,
-                seen: seen.union([next]), identity: identity, account: account)
+                seen: seen.union([next]), identity: identity, account: auth.account, auth: auth)
         }
-        return APIv2CatalogResult(value: page, continuation: continuation)
+        return APIv2CatalogResult(auth: auth, value: page, continuation: continuation)
     }
 
     func catalogFilters(libraryId: String?, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {

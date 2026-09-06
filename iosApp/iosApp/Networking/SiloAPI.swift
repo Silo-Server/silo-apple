@@ -224,9 +224,12 @@ actor SiloAPI {
     // --- Catalog ---
 
     func catalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation = .get) async throws -> APIv2CatalogResult {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+            throw HTTPError.requestIdentityChanged
+        }
         var query = query
         if query.imageSize == nil { query.imageSize = await imageSizeQuery["image_size"] }
-        return try await v2.catalogPage(query: query, operation: operation)
+        return try await v2.catalogPage(query: query, operation: operation, auth: auth)
     }
 
     func itemDetail(contentId: String) async throws -> ItemDetail {
