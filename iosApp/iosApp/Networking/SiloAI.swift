@@ -9,7 +9,7 @@ import Foundation
 /// ``HTTPClient/shared``; snake_case auto-converts both ways, so the wire
 /// shapes in ``AIModels`` stay camelCase.
 ///
-/// Subtitle capability reads use API v2. Other operations retain their
+/// Subtitle capability, stored-track, and search reads use API v2. Other operations retain their
 /// existing native routes until their server contracts migrate.
 actor SiloAI {
     static let shared = SiloAI()
@@ -78,10 +78,8 @@ actor SiloAI {
     /// combined `index`, **no** stream `url`); the player synthesizes those at
     /// handoff time, mirroring Android's `SubtitleTrackMerge`.
     func downloadedSubtitles(mediaFileId: Int) async throws -> [DownloadedSubtitle] {
-        let response: DownloadedSubtitlesResponse = try await http.get(
-            "/api/v1/subtitles/\(mediaFileId)"
-        )
-        return response.subtitles
+        let response: APIv2StoredSubtitles = try await v2.requestGet("/api/v2/subtitles/\(mediaFileId)")
+        return try response.subtitles.map { try $0.playerValue(mediaFileID: mediaFileId) }
     }
 
     // MARK: - Subtitle provider search
@@ -99,7 +97,9 @@ actor SiloAI {
     /// timeouts), so it opts out of the fail-fast timeout via `.extended`.
     /// No providers configured yields an empty result set, not an error.
     func searchSubtitles(_ body: SubtitleSearchBody) async throws -> SubtitleSearchResponse {
-        try await http.post("/api/v1/subtitles/search", body: body, timeout: .extended)
+        let response: APIv2SubtitleSearchResponse = try await v2.requestPost("/api/v2/subtitles/search",
+            body: APIv2SubtitleSearchBody(body), timeout: .extended)
+        return response.playerValue
     }
 
     /// Synchronously download one chosen search result. The server fetches

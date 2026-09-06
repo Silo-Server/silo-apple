@@ -339,6 +339,10 @@ targets:
       # API v2 contract fixtures selected for the pilot (scripts/sync-apiv2-fixtures.sh).
       # Listed explicitly for the same reason as Playback V3: the bundle must
       # not silently lose a cross-repository gate.
+      - path: Tests/Fixtures/APIv2/subtitles_stored.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/subtitles_search_partial.json
+        buildPhase: resources
       - path: Tests/Fixtures/APIv2/authentication_required.json
         buildPhase: resources
       - path: Tests/Fixtures/APIv2/fixtures.schema.json

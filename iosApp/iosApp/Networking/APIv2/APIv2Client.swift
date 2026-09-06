@@ -5,6 +5,7 @@ enum APIv2Error: LocalizedError, Sendable {
     /// The connected server is v1-only (see `APIv2Probe`). Pilot operations
     /// are refused rather than routed to a v1 path.
     case serverUpdateRequired
+    case invalidSubtitleResponse
     case invalidNotificationContinuation
     case incompleteAuthResponse
     case incompleteRequestList
@@ -26,6 +27,7 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .invalidSubtitleResponse: return "The subtitle response cannot be used by this player."
         case .invalidNotificationContinuation: return "The notification sync could not be continued. Try again."
         case .incompleteAuthResponse: return "The server returned an incomplete sign-in response. Start sign-in again."
         case .invalidPersonalListQuery:
@@ -139,9 +141,9 @@ struct APIv2Client: Sendable {
     }
 
     /// Create and cancel are never replayed after an ambiguous transport failure.
-    func requestPost<T: Decodable, B: Encodable>(_ path: String, body: B) async throws -> T {
+    func requestPost<T: Decodable, B: Encodable>(_ path: String, body: B, timeout: HTTPTimeout = .standard) async throws -> T {
         try await gate()
-        return try await mapErrors { try await http.post(path, body: body) }
+        return try await mapErrors { try await http.post(path, body: body, timeout: timeout) }
     }
 
     func myRequests() async throws -> [MediaRequest] {
