@@ -275,7 +275,7 @@ actor SiloAPI {
     // --- Libraries ---
 
     func libraries() async throws -> LibrariesResponse {
-        let libs: [Library] = try await http.get("/api/v1/user/libraries")
+        let libs = try await v2.userLibraries().map { try Library(v2: $0) }
         return LibrariesResponse(libraries: libs)
     }
 

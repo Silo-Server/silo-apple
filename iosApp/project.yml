@@ -343,6 +343,8 @@ targets:
         buildPhase: resources
       - path: Tests/Fixtures/APIv2/subtitle_ai_job_opaque_id.json
         buildPhase: resources
+      - path: Tests/Fixtures/APIv2/user_libraries.json
+        buildPhase: resources
       - path: Tests/Fixtures/APIv2/subtitle_ai_quota.json
         buildPhase: resources
       - path: Tests/Fixtures/APIv2/subtitles_search_partial.json

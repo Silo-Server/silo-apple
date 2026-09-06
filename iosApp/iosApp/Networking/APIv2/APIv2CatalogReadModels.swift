@@ -481,3 +481,12 @@ struct APIv2CatalogReadCollection<Item: Decodable>: Decodable {
         return items
     }
 }
+
+/// Viewer configuration projection; IDs remain strings on the wire.
+struct APIv2UserLibrary: Decodable {
+    let id: String
+    let name: String
+    let type: String
+    let sortOrder: Int
+    let posterUrl: String?
+}

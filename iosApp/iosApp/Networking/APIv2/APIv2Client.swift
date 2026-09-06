@@ -109,6 +109,27 @@ struct APIv2Client: Sendable {
         return value
     }
 
+    /// Account discovery is valid before selecting a household profile.
+    func userLibraries() async throws -> [APIv2UserLibrary] {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = auth.profileId.map {
+            HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+                profileId: $0, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        }
+        let response = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/user/libraries",
+                headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == auth.profileId else { throw HTTPError.requestIdentityChanged }
+        return try HTTPClient.makeJSONDecoder()
+            .decode(APIv2CatalogReadCollection<APIv2UserLibrary>.self, from: response.data).completeItems()
+    }
+
     // MARK: listProgress (profile_scoped)
 
     func listProgress(
