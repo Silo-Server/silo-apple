@@ -3,6 +3,37 @@ import XCTest
 @testable import Silo
 
 final class DownloadRegistryV2Tests: XCTestCase {
+    func testSubscriptionSyncContinuesZeroRegisteredPagesAndRetainsCursor() async throws {
+        var seen: [String?] = []
+        try await DownloadSubscriptionV2.sync(id: "monitor") { cursor in
+            seen.append(cursor)
+            return DownloadSubscriptionSyncPage(subscriptionId: "monitor", registered: 0, examined: 0,
+                page: APIv2Page(nextCursor: cursor == nil ? "opaque+/=" : nil, hasMore: cursor == nil))
+        }
+        XCTAssertEqual(seen, [nil, "opaque+/="])
+        do {
+            try await DownloadSubscriptionV2.sync(id: "monitor") { _ in
+                DownloadSubscriptionSyncPage(subscriptionId: "other", registered: 0, examined: 0,
+                    page: APIv2Page(nextCursor: nil, hasMore: false))
+            }
+            XCTFail("foreign monitor")
+        } catch {}
+    }
+
+    func testSubscriptionPagingNeverPublishesPartialOrRepeatedCollection() async throws {
+        var calls = 0
+        do {
+            _ = try await DownloadSubscriptionV2.collect { _ in
+                calls += 1
+                return DownloadSubscriptionPage(items: [], page: APIv2Page(nextCursor: "same", hasMore: true))
+            }
+            XCTFail("loop accepted")
+        } catch { XCTAssertEqual(calls, 2) }
+        XCTAssertThrowsError(try DownloadSubscriptionV2.validator(nil))
+        XCTAssertThrowsError(try DownloadSubscriptionV2.validator("*"))
+        XCTAssertEqual(try DownloadSubscriptionV2.validator("\"opaque-validator\""), "\"opaque-validator\"")
+    }
+
     private func fixture(_ name: String) throws -> Data {
         try APIv2FixtureTestSupport.data(named: name, bundleClass: Self.self)
     }

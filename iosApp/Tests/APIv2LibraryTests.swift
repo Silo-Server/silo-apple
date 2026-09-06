@@ -60,6 +60,21 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
     }
 
+    func testSubscriptionCreate401NeverRefreshesOrReplays() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data(#"{"detail":"Rejected"}"#.utf8)])
+        do {
+            let _: ServerSubscription = try await api.requestPost("/api/v2/downloads/subscriptions",
+                body: CreateSubscriptionRequest(seriesId: "series", mode: "specific_seasons", seasonNumbers: [0], deleteWatched: false, maxStorageBytes: 0))
+            XCTFail("accepted401")
+        } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(object["season_numbers"] as? [Int], [0])
+    }
+
     func testProviderDownload401NeverRefreshesOrReplays() async throws {
         let (api, tokens) = try await fixture()
         await tokens.setProfileId("profile")

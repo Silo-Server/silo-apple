@@ -18,32 +18,7 @@ extension SiloAPI {
         return response.downloads
     }
 
-    // MARK: - Subscriptions
-
-    func createSubscription(_ request: CreateSubscriptionRequest) async throws -> CreateSubscriptionResponse {
-        try await http.post("/api/v1/downloads/subscriptions", body: request)
-    }
-
-    /// Register newly in-scope episodes across all of this device's
-    /// monitors. Returns how many were registered.
-    @discardableResult
-    func syncSubscriptions() async throws -> Int {
-        let response: SubscriptionSyncResponse = try await http.post(
-            "/api/v1/downloads/subscriptions/sync"
-        )
-        return response.registered
-    }
-
-    func updateSubscription(
-        id: String,
-        _ request: UpdateSubscriptionRequest
-    ) async throws -> CreateSubscriptionResponse {
-        try await http.patch("/api/v1/downloads/subscriptions/\(id)", body: request)
-    }
-
-    func deleteSubscription(id: String) async throws {
-        try await http.delete("/api/v1/downloads/subscriptions/\(id)")
-    }
+    // Subscription lifecycle uses DownloadManager captured ownership.
 
     // MARK: - Progress reconciliation
 

@@ -1707,6 +1707,7 @@ actor HTTPClient {
         let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
         return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
             && path != "/api/v2/subtitles/download"
+            && path != "/api/v2/downloads/subscriptions"
             && path != diagnosticsUploads
             && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
     }

@@ -10,6 +10,9 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     var registryState: String? = nil
     var proxyDelivery: Bool? = nil
     var orderedStatus: Bool? = nil
+    var subscriptionMutations: Bool? = nil
+    var boundedSubscriptionSync: Bool? = nil
+    var subscriptionReads: Bool? = nil
     let enabled: Bool
     let downloadAllowed: Bool
     let qualityPresets: [String]
@@ -28,7 +31,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     var formats: [String] { qualityPresets }
 
     private enum CodingKeys: String, CodingKey {
-        case registryRevision, registryState, proxyDelivery, orderedStatus
+        case registryRevision, registryState, proxyDelivery, orderedStatus, subscriptionMutations, boundedSubscriptionSync, subscriptionReads
         case enabled
         case downloadAllowed
         case qualityPresets
@@ -66,6 +69,10 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         registryState = try container.decodeIfPresent(String.self, forKey: .registryState)
         proxyDelivery = try container.decodeIfPresent(Bool.self, forKey: .proxyDelivery)
         orderedStatus = try container.decodeIfPresent(Bool.self, forKey: .orderedStatus)
+        subscriptionMutations = try container.decodeIfPresent(Bool.self, forKey: .subscriptionMutations)
+        boundedSubscriptionSync = try container.decodeIfPresent(Bool.self, forKey: .boundedSubscriptionSync)
+        subscriptionReads = try container.decodeIfPresent(Bool.self, forKey: .subscriptionReads)
+
         enabled = try container.decode(Bool.self, forKey: .enabled)
         downloadAllowed = try container.decode(Bool.self, forKey: .downloadAllowed)
         qualityPresets = try container.decodeIfPresent([String].self, forKey: .qualityPresets)
@@ -84,6 +91,10 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         try container.encodeIfPresent(registryState, forKey: .registryState)
         try container.encodeIfPresent(proxyDelivery, forKey: .proxyDelivery)
         try container.encodeIfPresent(orderedStatus, forKey: .orderedStatus)
+        try container.encodeIfPresent(subscriptionMutations, forKey: .subscriptionMutations)
+        try container.encodeIfPresent(boundedSubscriptionSync, forKey: .boundedSubscriptionSync)
+        try container.encodeIfPresent(subscriptionReads, forKey: .subscriptionReads)
+
         try container.encode(enabled, forKey: .enabled)
         try container.encode(downloadAllowed, forKey: .downloadAllowed)
         try container.encode(qualityPresets, forKey: .qualityPresets)
@@ -568,6 +579,7 @@ struct ServerSubscription: Codable, Hashable, Sendable {
     let active: Bool
     let createdAt: Date?
     let updatedAt: Date?
+    var etag: String? = nil
 }
 
 /// Subscription modes the client may request. Filtered against
@@ -758,7 +770,10 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     var maxStorageBytes: Int64
     var active: Bool
 
+    var etag: String? = nil
+
     init(from server: ServerSubscription, seriesTitle: String?) {
+        self.etag = server.etag
         self.id = server.id
         self.seriesId = server.seriesId
         self.seriesTitle = seriesTitle

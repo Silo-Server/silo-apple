@@ -7,6 +7,9 @@ struct APIv2DownloadCapability: Decodable {
     let downloadAllowed: Bool
     let proxyDelivery: Bool
     let orderedStatus: Bool
+    let subscriptionMutations: Bool?
+    let boundedSubscriptionSync: Bool?
+    let subscriptionReads: Bool?
     let qualityPresets: [String]
     let transcodeEnabled: Bool
     let transcodeUserAllowed: Bool
@@ -23,6 +26,9 @@ struct APIv2DownloadCapability: Decodable {
         value.registryState = state
         value.proxyDelivery = proxyDelivery
         value.orderedStatus = orderedStatus
+        value.subscriptionMutations = subscriptionMutations
+        value.boundedSubscriptionSync = boundedSubscriptionSync
+        value.subscriptionReads = subscriptionReads
         return value
     }
 }
@@ -124,5 +130,87 @@ struct DownloadStatusEvent: Codable, Hashable, Sendable {
         }
         return DownloadStatusEvent(id: UUID(), status: status, updatedAt: formatter.string(from: time),
             revision: revision, deviceID: AppleDeviceIdentity.current.id, leaseGeneration: lease.generation)
+    }
+}
+
+struct DownloadSubscriptionPage: Decodable {
+    let items: [ServerSubscription]
+    let page: APIv2Page
+}
+struct DownloadSubscriptionSyncBody: Encodable {
+    let subscriptionId: String
+    let etag: String
+}
+struct DownloadSubscriptionSyncPage: Decodable {
+    let subscriptionId: String
+    let registered: Int
+    let examined: Int
+    let page: APIv2Page
+}
+
+enum DownloadSubscriptionV2 {
+    static func path(_ id: String) throws -> String {
+        let registryPath = try DownloadRegistryV2.path(id: id)
+        return registryPath.replacingOccurrences(of: "/api/v2/downloads/", with: "/api/v2/downloads/subscriptions/")
+    }
+
+    static func validator(_ tag: String?) throws -> String {
+        guard let tag, tag.count > 2, tag.first == "\"", tag.last == "\"",
+              !tag.contains("\r"), !tag.contains("\n") else { throw DownloadOwnershipError.incompleteAction }
+        return tag
+    }
+
+    static func validate(_ row: ServerSubscription, seriesID: String? = nil, id: String? = nil) throws {
+        guard !row.id.isEmpty, !row.seriesId.isEmpty, row.maxStorageBytes >= 0,
+              SubscriptionMode(rawValue: row.mode) != nil,
+              row.seasonNumbers?.allSatisfy({ $0 >= 0 }) != false,
+              seriesID == nil || seriesID == row.seriesId, id == nil || id == row.id else {
+            throw DownloadOwnershipError.incompleteAction
+        }
+        _ = try validator(row.etag)
+    }
+
+    static func collect(fetch: (String?) async throws -> DownloadSubscriptionPage) async throws -> [ServerSubscription] {
+        var rows: [ServerSubscription] = []
+        var ids = Set<String>()
+        var cursors = Set<String>()
+        var cursor: String?
+        for _ in 0..<100 {
+            let result = try await fetch(cursor)
+            guard result.items.count <= 100 else { throw DownloadOwnershipError.incompleteAction }
+            for row in result.items {
+                try validate(row)
+                guard ids.insert(row.id).inserted else { throw DownloadOwnershipError.incompleteAction }
+                rows.append(row)
+            }
+            guard result.page.hasMore else {
+                guard result.page.nextCursor?.isEmpty != false else { throw DownloadOwnershipError.incompleteAction }
+                return rows
+            }
+            guard let next = result.page.nextCursor, !next.isEmpty, cursors.insert(next).inserted else {
+                throw DownloadOwnershipError.incompleteAction
+            }
+            cursor = next
+        }
+        throw DownloadOwnershipError.incompleteAction
+    }
+
+    static func sync(id: String, fetch: (String?) async throws -> DownloadSubscriptionSyncPage) async throws {
+        var cursor: String?
+        var cursors = Set<String>()
+        for _ in 0..<1000 {
+            let result = try await fetch(cursor)
+            guard result.subscriptionId == id, result.registered >= 0, result.examined >= 0,
+                  result.examined <= 100, result.registered <= result.examined else { throw DownloadOwnershipError.incompleteAction }
+            guard result.page.hasMore else {
+                guard result.page.nextCursor?.isEmpty != false else { throw DownloadOwnershipError.incompleteAction }
+                return
+            }
+            guard let next = result.page.nextCursor, !next.isEmpty, cursors.insert(next).inserted else {
+                throw DownloadOwnershipError.incompleteAction
+            }
+            cursor = next
+        }
+        throw DownloadOwnershipError.incompleteAction
     }
 }

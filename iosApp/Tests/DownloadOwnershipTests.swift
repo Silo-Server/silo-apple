@@ -3,6 +3,26 @@ import XCTest
 @testable import Silo
 
 final class DownloadOwnershipTests: XCTestCase {
+    func testSubscriptionValidatorSurvivesRestartAndStaleCollectionCannotOverwriteEdit() async throws {
+        let (store, authority, root, _) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        let data = Data(#"{"id":"monitor","series_id":"series","mode":"specific_seasons","season_numbers":[0,2],"delete_watched":true,"max_storage_bytes":42,"active":false,"etag":"\"opaque-tag\""}"#.utf8)
+        let row = try HTTPClient.makeJSONDecoder().decode(ServerSubscription.self, from: data)
+        try DownloadSubscriptionV2.validate(row)
+        _ = try await store.applyLocal(.subscription(row, "Series"), generation: state.ownerGeneration)
+        let restarted = ProgressBootstrapStore(localRoot: root, authority: authority)
+        let loaded = try await restarted.openLocal(legacyData: nil, permitMigration: true)
+        let saved = try XCTUnwrap(loaded.downloads.subscriptions.first)
+        XCTAssertEqual(saved.etag, "\"opaque-tag\"")
+        XCTAssertEqual(saved.seasonNumbers, [0, 2]); XCTAssertFalse(saved.active)
+        do {
+            _ = try await restarted.applyLocal(.subscriptionCollection([], expected: []), generation: loaded.ownerGeneration)
+            XCTFail("stale list erased monitor")
+        } catch {}
+        let final = try await restarted.localSnapshot()
+        XCTAssertEqual(final.downloads.subscriptions, [saved])
+    }
+
     func testStatusEventsSurviveRestartAndOldAcknowledgmentCannotClearCompletion() async throws {
         let (store, authority, root, _) = try await harness()
         let state = try await store.openLocal(legacyData: nil, permitMigration: true)

@@ -136,7 +136,7 @@ final class DownloadManager {
     /// discarded before they can mutate the newly active scope.
     private var registrationScopeGeneration: UInt64 = 0
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
-    var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
+    var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true && capability?.subscriptionMutations == true && capability?.boundedSubscriptionSync == true && capability?.subscriptionReads == true }
 
     var availableFormats: [DownloadFormat] {
         (capability?.qualityPresets ?? []).compactMap(DownloadFormat.init(rawValue:))
@@ -359,25 +359,27 @@ final class DownloadManager {
         Self.logger.error("Download command did not commit")
     }
 
-    private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil, query: [String: String] = [:], maxResponseBytes: Int? = nil,
+    private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil, query: [String: String] = [:], maxResponseBytes: Int? = nil, headers: [String: String] = [:], expectedStatus: Int? = nil,
                                        owner handle: OwnerHandle) async throws -> T {
         let auth = try await verified(handle)
         let identity = HTTPRequestIdentity(serverId: handle.authority.serverID, serverURL: handle.authority.origin,
             profileId: handle.authority.profileID, clientFamily: AppleDeviceIdentity.current.clientFamily)
-        let response = try await HTTPClient.shared.requestData(method: method, path: path, query: query, body: body,
+        let response = try await HTTPClient.shared.requestData(method: method, path: path, query: query, body: body, headers: headers,
             requestIdentity: identity, expectedAccount: auth.account)
         _ = try await verified(handle)
+        if let expectedStatus, response.statusCode != expectedStatus { throw DownloadOwnershipError.incompleteAction }
         if let maxResponseBytes, response.data.count > maxResponseBytes { throw DownloadOwnershipError.incompleteAction }
         return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
     }
 
-    private func requestVoid(_ method: String, _ path: String, body: Data? = nil, owner handle: OwnerHandle) async throws {
+    private func requestVoid(_ method: String, _ path: String, body: Data? = nil, headers: [String: String] = [:], expectedStatus: Int? = nil, owner handle: OwnerHandle) async throws {
         let auth = try await verified(handle)
         let identity = HTTPRequestIdentity(serverId: handle.authority.serverID, serverURL: handle.authority.origin,
             profileId: handle.authority.profileID, clientFamily: AppleDeviceIdentity.current.clientFamily)
-        _ = try await HTTPClient.shared.requestData(method: method, path: path, body: body,
+        let response = try await HTTPClient.shared.requestData(method: method, path: path, body: body, headers: headers,
             requestIdentity: identity, expectedAccount: auth.account)
         _ = try await verified(handle)
+        if let expectedStatus, response.statusCode != expectedStatus { throw DownloadOwnershipError.incompleteAction }
     }
 
     private func encode<T: Encodable>(_ value: T) throws -> Data {
@@ -960,8 +962,10 @@ final class DownloadManager {
             maxStorageBytes: maxStorageBytes
         )
         let handle = try requireOwner()
-        let response: CreateSubscriptionResponse = try await self.request("POST", "/api/v1/downloads/subscriptions", body: encode(request), owner: handle)
-        try await command(.subscription(response.subscription, seriesTitle), owner: handle)
+        let response: ServerSubscription = try await self.request("POST", "/api/v2/downloads/subscriptions", body: encode(request), expectedStatus: 200, owner: handle)
+        try DownloadSubscriptionV2.validate(response, seriesID: seriesId)
+        try await command(.subscription(response, seriesTitle), owner: handle)
+        try await syncMonitors(owner: handle)
         await reconcileWithServer(triggerPipeline: true)
     }
 
@@ -982,25 +986,49 @@ final class DownloadManager {
             active: active
         )
         let handle = try requireOwner()
-        let response: CreateSubscriptionResponse = try await self.request("PATCH", "/api/v1/downloads/subscriptions/\(id)", body: encode(request), owner: handle)
-        try await command(.subscription(response.subscription, existingTitle), owner: handle)
+        guard let existing = file.subscriptions.first(where: { $0.id == id }) else { throw DownloadOwnershipError.stale }
+        let tag = try DownloadSubscriptionV2.validator(existing.etag)
+        let response: ServerSubscription = try await self.request("PATCH", DownloadSubscriptionV2.path(id), body: encode(request),
+            headers: ["If-Match": tag], expectedStatus: 200, owner: handle)
+        try DownloadSubscriptionV2.validate(response, seriesID: existing.seriesId, id: id)
+        try await command(.subscription(response, existingTitle), owner: handle)
+        try await syncMonitors(owner: handle)
         await reconcileWithServer(triggerPipeline: true)
     }
 
     func deleteSubscription(id: String) async {
         do {
             let handle = try requireOwner()
-            try await requestVoid("DELETE", "/api/v1/downloads/subscriptions/\(id)", owner: handle)
+            guard let existing = file.subscriptions.first(where: { $0.id == id }) else { throw DownloadOwnershipError.stale }
+            let tag = try DownloadSubscriptionV2.validator(existing.etag)
+            try await requestVoid("DELETE", DownloadSubscriptionV2.path(id), headers: ["If-Match": tag], expectedStatus: 204, owner: handle)
             try await command(.deleteSubscription(id), owner: handle)
         } catch { report(error) }
+    }
+
+    private func syncMonitors(owner handle: OwnerHandle) async throws {
+        guard capability?.subscriptionReads == true, capability?.boundedSubscriptionSync == true else { return }
+        let expected = file.subscriptions
+        let rows = try await DownloadSubscriptionV2.collect { cursor in
+            var query = ["limit": "100"]
+            if let cursor { query["cursor"] = cursor }
+            return try await self.request("GET", "/api/v2/downloads/subscriptions", query: query, owner: handle)
+        }
+        try await command(.subscriptionCollection(rows, expected: expected), owner: handle)
+        for row in rows where row.active {
+            let body = DownloadSubscriptionSyncBody(subscriptionId: row.id, etag: try DownloadSubscriptionV2.validator(row.etag))
+            try await DownloadSubscriptionV2.sync(id: row.id) { cursor in
+                var query = ["limit": "100"]
+                if let cursor { query["cursor"] = cursor }
+                return try await self.request("POST", "/api/v2/downloads/subscriptions/sync", body: self.encode(body), query: query, owner: handle)
+            }
+        }
     }
 
     func runMonitoringAndProgressSync() async {
         do {
             let handle = try requireOwner()
-            if !file.subscriptions.isEmpty {
-                let _: SubscriptionSyncResponse = try await request("POST", "/api/v1/downloads/subscriptions/sync", owner: handle)
-            }
+            try await syncMonitors(owner: handle)
             await reconcileWithServer(triggerPipeline: true)
         } catch { report(error) }
         // Uploads, bootstrap and progress-driven retention await their protocol checkpoint.

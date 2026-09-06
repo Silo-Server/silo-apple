@@ -370,6 +370,7 @@ enum DownloadLocalCommand: Sendable {
     case transferProgress(DownloadTaskBinding, Int64, Int64)
     case manifest(String, OfflineManifest)
     case subscription(ServerSubscription, String?)
+    case subscriptionCollection([ServerSubscription], expected: [DownloadSubscription])
     case deleteSubscription(String)
     case progress(QueuedProgress, Bool)
 }
@@ -594,6 +595,11 @@ extension ProgressBootstrapStore {
                 record.container = manifest.container
                 record.stableIdentity = manifest.stableIdentity
                 value.downloads.records[id] = record
+            case .subscriptionCollection(let rows, let expected):
+                guard value.downloads.subscriptions == expected else { throw DownloadOwnershipError.stale }
+                value.downloads.subscriptions = rows.map { row in
+                    DownloadSubscription(from: row, seriesTitle: expected.first { $0.id == row.id }?.seriesTitle)
+                }
             case .subscription(let subscription, let title):
                 let item = DownloadSubscription(from: subscription, seriesTitle: title)
                 value.downloads.subscriptions.removeAll { $0.id == item.id }
