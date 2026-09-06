@@ -87,3 +87,38 @@ struct APIv2SubtitleDownloadBody: Encodable {
 struct APIv2SubtitleDownloadResponse: Decodable {
     let subtitle: APIv2StoredSubtitle
 }
+
+
+struct APIv2SubtitleCreateBody: Encodable {
+    let mediaFileId: String
+    let kind: SubtitleAIKind
+    let sourceIndex: Int
+    let sourceLanguage: String
+    let targetLanguage: String
+    let sessionId: String?
+    let startPosition: Double
+
+    init(_ body: TranslateSubtitleBody) throws {
+        guard body.mediaFileId > 0, let kind = body.kind, body.sourceIndex >= -1,
+              let position = body.startPosition, position.isFinite, position >= 0 else {
+            throw APIv2Error.invalidSubtitleResponse
+        }
+        mediaFileId = String(body.mediaFileId); self.kind = kind
+        sourceIndex = body.sourceIndex; sourceLanguage = body.sourceLanguage ?? ""
+        targetLanguage = body.targetLanguage ?? ""; sessionId = body.sessionId; startPosition = position
+    }
+}
+struct APIv2SubtitleCreateResponse: Decodable {
+    let job: APIv2SubtitleJob
+    let liveDeliveryAttached: Bool
+}
+struct SubtitleCreationResult {
+    let job: SubtitleJob
+    let liveDeliveryAttached: Bool
+}
+enum SubtitleCreationError: LocalizedError {
+    case unresolved
+    var errorDescription: String? {
+        "The previous subtitle request may still be running. It cannot be submitted again without a confirmed result."
+    }
+}

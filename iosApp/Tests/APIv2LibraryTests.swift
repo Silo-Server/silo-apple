@@ -76,6 +76,74 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
     }
 
+    private func subtitleCreateBody() -> TranslateSubtitleBody {
+        TranslateSubtitleBody(mediaFileId: 42, kind: .translate, sourceIndex: 3, sourceLanguage: "en",
+            targetLanguage: "fr", sessionId: "session-exact", startPosition: 12.5)
+    }
+    private func subtitleCreateReply(file: String = "42") -> Data {
+        Data("""
+        {"job":{"id":"9007199254740993","media_file_id":"\(file)","kind":"translate","source_index":3,"source_language":"en","target_language":"fr","engine":"","model":"","status":"pending","progress":0,"progress_message":"","created_at":"1970-01-01T00:01:40.000Z","updated_at":"1970-01-01T00:01:40.000Z"},"live_delivery_attached":false}
+        """.utf8)
+    }
+    func testSubtitleCreationUsesExact202WireAndBackgroundFlag() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([subtitleCreateReply()])
+        let result = try await api.translateSubtitle(subtitleCreateBody(), auth: auth)
+        XCTAssertEqual(result.job.id, "9007199254740993")
+        XCTAssertFalse(result.liveDeliveryAttached)
+        let request = try XCTUnwrap(LibraryReadProtocol.requests().last)
+        XCTAssertEqual(request.url?.path, "/api/v2/subtitles/ai/translate")
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(fields["media_file_id"] as? String, "42")
+        XCTAssertEqual(fields["session_id"] as? String, "session-exact")
+        XCTAssertEqual(fields["source_index"] as? Int, 3)
+        XCTAssertEqual(fields["start_position"] as? Double, 12.5)
+    }
+    func testSubtitleCreation401CannotRefreshOrReenqueue() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data()])
+        for _ in 0..<2 {
+            do { _ = try await api.translateSubtitle(subtitleCreateBody(), auth: auth); XCTFail("replayed") } catch {}
+        }
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+    func testSubtitleCreationRejectsChangedProfileBeforeAndAfterDispatch() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        await tokens.setProfileId("other")
+        do { _ = try await v2.createSubtitle(APIv2SubtitleCreateBody(subtitleCreateBody()), auth: auth); XCTFail("stale caller") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([subtitleCreateReply()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await api.translateSubtitle(subtitleCreateBody(), auth: auth); XCTFail("stale response") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testSubtitleCreationRejectsForeignFileAndRetainsUncertainty() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([subtitleCreateReply(file: "43")])
+        for _ in 0..<2 {
+            do { _ = try await api.translateSubtitle(subtitleCreateBody(), auth: auth); XCTFail("foreign file") } catch {}
+        }
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
     func testSettingsEffectiveReadPreservesRepeatedQueryAndTypedValues() async throws {
         let (api, tokens) = try await fixture()
         await tokens.setProfileId("profile")

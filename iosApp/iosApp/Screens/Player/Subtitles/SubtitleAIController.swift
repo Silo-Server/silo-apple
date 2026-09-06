@@ -366,6 +366,8 @@ final class SubtitleAIController {
 
     // MARK: - Submit + poll
 
+    private var liveDeliveryAttached = true
+
     private func submit(
         kind: SubtitleAIKind,
         sourceIndex: Int,
@@ -376,6 +378,8 @@ final class SubtitleAIController {
             fail(with: "Playback isn't ready yet.")
             return
         }
+        guard phase != .submitting, phase != .running else { return }
+        let capturedSessionID = sessionIdProvider()
         let gen = beginSubmission()
 
         // M4: pass `session_id` so the server streams cues live over the
@@ -383,7 +387,7 @@ final class SubtitleAIController {
         // which case we omit it and behave exactly like M3 (poll, no live
         // cues). The poller runs regardless and remains the completion
         // authority.
-        let liveSessionId = realtimeUnavailableProvider() ? nil : sessionIdProvider()
+        let liveSessionId = realtimeUnavailableProvider() ? nil : capturedSessionID
         let body = TranslateSubtitleBody(
             mediaFileId: mediaFileId,
             kind: kind,
@@ -401,11 +405,16 @@ final class SubtitleAIController {
         pollDrainTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let job = try await self.api.translateSubtitle(body)
+                let auth = try await self.api.captureCreationAuthority()
+                guard gen == self.generation, self.mediaFileIdProvider() == mediaFileId,
+                      self.sessionIdProvider() == capturedSessionID else { return }
+                let result = try await self.api.translateSubtitle(body, auth: auth)
+                let job = result.job
                 // A reset (sign-out / profile or session switch) while the POST
                 // was in flight invalidates this submission.
-                guard gen == self.generation else { return }
-                self.onJobAccepted(job)
+                guard gen == self.generation, self.mediaFileIdProvider() == mediaFileId,
+                      self.sessionIdProvider() == capturedSessionID else { return }
+                self.onJobAccepted(job, liveDeliveryAttached: result.liveDeliveryAttached)
                 await self.drainPoll(jobId: job.id, isASR: kind != .translate, generation: gen)
             } catch {
                 if Task.isCancelled { return }
@@ -432,6 +441,7 @@ final class SubtitleAIController {
         // the new job).
         clearEarlyFrameBuffer()
 
+        liveDeliveryAttached = true
         phase = .submitting
         errorMessage = nil
         activeJob = nil
@@ -440,7 +450,13 @@ final class SubtitleAIController {
         return gen
     }
 
-    private func onJobAccepted(_ job: SubtitleJob) {
+    private func onJobAccepted(_ job: SubtitleJob, liveDeliveryAttached: Bool = true) {
+        self.liveDeliveryAttached = liveDeliveryAttached
+        if !liveDeliveryAttached {
+            clearEarlyFrameBuffer()
+            liveCoordinator?.cancelActivePresentation()
+            refreshLivePresentationState()
+        }
         activeJob = job
         if job.status.isTerminal {
             // A job that's already terminal at accept time never streams live;
@@ -494,8 +510,8 @@ final class SubtitleAIController {
 
     /// Seed `activeJob` as if the 202 accept landed (non-terminal), without
     /// hitting the network. Test-only.
-    func seedAcceptedJobForTesting(_ job: SubtitleJob) {
-        onJobAccepted(job)
+    func seedAcceptedJobForTesting(_ job: SubtitleJob, liveDeliveryAttached: Bool = true) {
+        onJobAccepted(job, liveDeliveryAttached: liveDeliveryAttached)
     }
 
     /// The number of frames currently buffered in the in-flight window
@@ -765,7 +781,7 @@ final class SubtitleAIController {
             return
         }
 
-        guard let job = activeJob, Self.trackKey(for: job.id) == trackKey else {
+        guard liveDeliveryAttached, let job = activeJob, Self.trackKey(for: job.id) == trackKey else {
             Self.logger.debug("[AI-LIVE] ignoring event for stale/unknown trackKey=\(trackKey, privacy: .public)")
             return
         }
@@ -869,6 +885,7 @@ final class SubtitleAIController {
     }
 
     private static func message(for error: Error) -> String {
+        if let unresolved = error as? SubtitleCreationError { return unresolved.localizedDescription }
         if let http = error as? HTTPError {
             // 503 from the AI endpoints means the feature is configured but the
             // AI service is unreachable right now — give a clearer line than the

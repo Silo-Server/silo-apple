@@ -191,6 +191,39 @@ struct APIv2Client: Sendable {
         return response.data
     }
 
+    func subtitleCreateAuthority() async throws -> CapturedOrdinaryRequestAuth {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        return auth
+    }
+
+    func createSubtitle(_ body: APIv2SubtitleCreateBody, auth: CapturedOrdinaryRequestAuth) async throws -> SubtitleCreationResult {
+        let current = try await subtitleCreateAuthority()
+        guard current.account == auth.account, current.profileId == auth.profileId,
+              current.profileToken == auth.profileToken else { throw HTTPError.requestIdentityChanged }
+        let identity = auth.profileId.map {
+            HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+                profileId: $0, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        }
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let raw = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/translate", body: encoder.encode(body),
+                headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        let after = try await subtitleCreateAuthority()
+        guard after.account == auth.account, after.profileId == auth.profileId,
+              after.profileToken == auth.profileToken else { throw HTTPError.requestIdentityChanged }
+        guard raw.statusCode == 202 else { throw APIv2Error.invalidSubtitleResponse }
+        let response = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleCreateResponse.self, from: raw.data)
+        guard let id = Int64(response.job.id), id > 0, String(id) == response.job.id,
+              response.job.mediaFileId == body.mediaFileId, response.job.kind == body.kind.rawValue,
+              response.job.sourceIndex == body.sourceIndex,
+              !response.liveDeliveryAttached || body.sessionId != nil else { throw APIv2Error.invalidSubtitleResponse }
+        return try SubtitleCreationResult(job: SubtitleJob(v2: response.job, expectedJobID: response.job.id),
+            liveDeliveryAttached: response.liveDeliveryAttached)
+    }
+
     /// Acknowledges a cancellation request; completion may already have won.
     func cancelSubtitleJob(id: String) async throws {
         guard let value = Int64(id), value > 0, String(value) == id else {

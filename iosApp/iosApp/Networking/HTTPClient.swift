@@ -1725,6 +1725,7 @@ actor HTTPClient {
             && path != "/api/v2/subtitles/download"
             && path != "/api/v2/downloads/subscriptions"
             && path != "/api/v2/onboarding/progress"
+            && path != "/api/v2/subtitles/ai/translate"
             && !(path == "/api/v2/profiles" && method == "POST")
             && !(path == "/api/v2/downloads" && method == "POST")
             && path != diagnosticsUploads

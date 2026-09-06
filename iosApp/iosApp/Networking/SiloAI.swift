@@ -16,6 +16,12 @@ actor SiloAI {
 
     private let http: HTTPClient
     private let v2: APIv2Client
+    private struct CreationAttempt {
+        let id: UUID
+        let auth: CapturedOrdinaryRequestAuth
+        let body: APIv2SubtitleCreateBody
+    }
+    private var unresolvedCreations: [CreationAttempt] = []
 
     init(http: HTTPClient = .shared, v2: APIv2Client? = nil) {
         self.http = http
@@ -52,12 +58,24 @@ actor SiloAI {
     }
 
     /// Start a subtitle translate / transcribe / transcribe-translate job.
-    func translateSubtitle(_ body: TranslateSubtitleBody) async throws -> SubtitleJob {
-        let envelope: SubtitleJobEnvelope = try await http.post(
-            "/api/v1/subtitles/ai/translate",
-            body: body
-        )
-        return envelope.job
+    func captureCreationAuthority() async throws -> CapturedOrdinaryRequestAuth {
+        try await v2.subtitleCreateAuthority()
+    }
+
+    func translateSubtitle(_ body: TranslateSubtitleBody, auth: CapturedOrdinaryRequestAuth) async throws -> SubtitleCreationResult {
+        let wire = try APIv2SubtitleCreateBody(body)
+        guard !unresolvedCreations.contains(where: {
+            $0.auth.account == auth.account && $0.auth.profileId == auth.profileId
+                && $0.body.mediaFileId == wire.mediaFileId && $0.body.kind == wire.kind
+                && $0.body.sourceIndex == wire.sourceIndex && $0.body.sourceLanguage == wire.sourceLanguage
+                && $0.body.targetLanguage == wire.targetLanguage
+        }) else { throw SubtitleCreationError.unresolved }
+        let attempt = CreationAttempt(id: UUID(), auth: auth, body: wire)
+        unresolvedCreations.append(attempt)
+        // Retain after any failed/uncertain dispatch. No retry, rebase or fallback.
+        let result = try await v2.createSubtitle(wire, auth: auth)
+        unresolvedCreations.removeAll { $0.id == attempt.id }
+        return result
     }
 
     /// Poll a single job by id.
