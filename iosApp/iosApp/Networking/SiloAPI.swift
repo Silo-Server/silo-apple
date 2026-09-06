@@ -178,8 +178,12 @@ actor SiloAPI {
         try await v2.dismissHomeItem(id: contentId, progressUpdatedAt: nil, seriesId: seriesId, auth: auth)
     }
 
-    func librarySections(libraryId: Int) async throws -> SectionsResponse {
-        try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
+    func librarySections(libraryId: Int, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibrarySectionsRead {
+        try await v2.librarySections(id: libraryId, imageSize: await imageSizeQuery["image_size"], auth: auth)
+    }
+
+    func itemDetail(contentId: String, auth: CapturedOrdinaryRequestAuth) async throws -> ItemDetail {
+        try await ItemDetail(catalog: v2.catalogItem(id: contentId, imageSize: await imageSizeQuery["image_size"], auth: auth))
     }
 
     /// Ordered viewer-authorized cards; v2 needs no per-item detail hydration.

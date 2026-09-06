@@ -709,6 +709,33 @@ struct APIv2Client: Sendable {
         guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
     }
 
+    func librarySections(id: Int, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibrarySectionsRead {
+        try await gate()
+        guard id > 0, let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/library/\(id)/sections",
+                query: imageSize.map { ["image_size": $0] } ?? [:],
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        struct Wire: Decodable { let sections: [ResolvedSection] }
+        let value = try HTTPClient.makeJSONDecoder().decode(Wire.self, from: raw.data)
+        guard Set(value.sections.map(\.id)).count == value.sections.count,
+              value.sections.allSatisfy({ !$0.id.isEmpty }) else { throw APIv2Error.incompleteCatalogRead }
+        return APIv2LibrarySectionsRead(libraryId: id, auth: auth,
+            response: SectionsResponse(sections: value.sections))
+    }
+
     func homeSections(imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> SectionsResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -825,6 +852,11 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         return raw
+    }
+
+    func catalogItem(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
+        // Same exact viewer detail read and authority fence used by bounded trailer observation.
+        try await trailerItem(id: id, imageSize: imageSize, auth: auth)
     }
 
     func catalogItem(id: String, libraryId: String? = nil, fileId: String? = nil,

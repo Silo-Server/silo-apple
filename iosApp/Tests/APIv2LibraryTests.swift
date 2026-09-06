@@ -24,6 +24,70 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testLibrarySectionsV2PreservesLibraryAndCardWire() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([homeBody])
+        let read = try await v2.librarySections(id: 17, imageSize: "large", auth: XCTUnwrap(captured))
+        XCTAssertEqual(read.libraryId, 17)
+        XCTAssertEqual(read.sections.first?.id, "continue")
+        XCTAssertEqual(read.sections.first?.totalCount, 20)
+        XCTAssertEqual(read.sections.first?.items.first?.seasonNumber, 0)
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.absoluteString,
+            "https://libraries.example/api/v2/library/17/sections?image_size=large")
+        LibraryReadProtocol.enqueue([Data(#"{}"#.utf8)])
+        do { _ = try await v2.librarySections(id: 17, imageSize: nil, auth: XCTUnwrap(captured)); XCTFail("missing sections") } catch {}
+        let wrongLibrary = await StartupContentPrefetcher.librarySectionsAreCurrent(read, libraryId: 18, tokens: tokens)
+        XCTAssertFalse(wrongLibrary)
+    }
+
+    func testLibrarySectionsAndWarmupPinAuthorityAtHTTPBoundary() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("replacement") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await v2.librarySections(id: 17, imageSize: nil, auth: XCTUnwrap(captured)); XCTFail("PIN rebound") } catch {}
+        do { _ = try await v2.catalogItem(id: "series:1", imageSize: nil, auth: XCTUnwrap(captured)); XCTFail("warmup rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([homeBody])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.librarySections(id: 17, imageSize: nil, auth: XCTUnwrap(current)); XCTFail("foreign receipt") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testLibraryModelReplacementAndForeignCacheRefusal() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.removeAll(withPrefix: "library:")
+        defer {
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.removeAll(withPrefix: "library:")
+        }
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let model = LibraryRecommendedViewModel(api: api, tokens: tokens)
+        let arrived = expectation(description: "old library awaiting response")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        LibraryReadProtocol.enqueue([homeBody, Data(String(decoding: homeBody, as: UTF8.self).replacingOccurrences(of: "Continue", with: "New library").utf8)])
+        LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+        let old = Task { await model.loadSections(libraryId: 17) }
+        await fulfillment(of: [arrived], timeout: 2)
+        await model.loadSections(libraryId: 18)
+        await gate.releaseOld(true)
+        await old.value
+        XCTAssertEqual(model.sections.first?.title, "New library")
+        XCTAssertFalse(model.isLoading)
+        let own = await StartupContentPrefetcher.cachedLibrarySections(libraryId: 18, tokens: tokens)
+        XCTAssertNotNil(own)
+        await tokens.setProfileToken("new")
+        await model.loadSections(libraryId: 18) // Synthetic network failure cannot reuse the old PIN's rows.
+        XCTAssertTrue(model.sections.isEmpty)
+        XCTAssertNotNil(model.error)
+        let foreign = await StartupContentPrefetcher.cachedLibrarySections(libraryId: 18, tokens: tokens)
+        XCTAssertNil(foreign)
+    }
+
     func testHomeDismissalV2PreservesExactAnchorsAnd204() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

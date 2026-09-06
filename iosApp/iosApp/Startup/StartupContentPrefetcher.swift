@@ -58,7 +58,13 @@ enum StartupContentPrefetcher {
         return cached.response
     }
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
-    private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
+    private struct LibrarySectionsFlight {
+        let id: UUID
+        let auth: CapturedOrdinaryRequestAuth
+        let task: Task<APIv2LibrarySectionsRead, Error>
+    }
+    private static var librarySectionsTasks: [Int: LibrarySectionsFlight] = [:]
+    private static var latestLibraryFlight: [Int: UUID] = [:]
     private static var browseFirstPageTasks: [String: Task<APIv2CatalogResult, Error>] = [:]
     #if os(tvOS)
     /// One bounded cold-start warmup for the Series library the top-level tab
@@ -78,7 +84,7 @@ enum StartupContentPrefetcher {
         homeSectionsTask?.task.cancel()
         recommendationsTask?.task.cancel()
         userLibrariesTask?.cancel()
-        librarySectionsTasks.values.forEach { $0.cancel() }
+        librarySectionsTasks.values.forEach { $0.task.cancel() }
         browseFirstPageTasks.values.forEach { $0.cancel() }
         #if os(tvOS)
         tvSeriesLandingTasks.values.forEach { $0.cancel() }
@@ -90,6 +96,7 @@ enum StartupContentPrefetcher {
         latestRecommendationFlight = nil
         userLibrariesTask = nil
         librarySectionsTasks.removeAll()
+        latestLibraryFlight.removeAll()
         browseFirstPageTasks.removeAll()
         #if os(tvOS)
         tvSeriesLandingTasks.removeAll()
@@ -544,14 +551,17 @@ enum StartupContentPrefetcher {
             guard let response = try? await fetchLibrarySections(libraryId: libraryId),
                   !Task.isCancelled,
                   profileScopedGeneration == generation,
-                  let item = firstSeriesItem(in: response) else { return }
+                  let item = firstSeriesItem(in: response.response) else { return }
 
             let key = CacheKey.itemDetail(item.contentId)
             if let _: ItemDetail = ResponseCache.shared.get(key) { return }
 
-            guard let detail = try? await MetadataRequestPool.shared.itemDetail(
-                contentId: item.contentId
+            guard await librarySectionsAreCurrent(response, libraryId: libraryId),
+                  !Task.isCancelled, profileScopedGeneration == generation,
+                  let detail = try? await SiloAPI.shared.itemDetail(
+                contentId: item.contentId, auth: response.auth
             ),
+            await librarySectionsAreCurrent(response, libraryId: libraryId),
             !Task.isCancelled,
             profileScopedGeneration == generation else { return }
 
@@ -569,46 +579,60 @@ enum StartupContentPrefetcher {
     }
     #endif
 
-    static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
-        let generation = profileScopedGeneration
-        // Verbose: these two run once per library on the landing prefetch and
-        // again on every browse navigation, so at essential tier a session's
-        // worth of them would crowd out the launch chain. The library id is
-        // deliberately not recorded — there is no registered key for it, and
-        // it identifies the user's own content.
-        #if os(iOS) || os(tvOS)
-        let probe = PrefetchProbe.begin(
-            "library_sections",
-            verbosity: .verbose,
-            isOriginator: librarySectionsTasks[libraryId] == nil
-        )
-        #endif
-        let task: Task<SectionsResponse, Error>
-        if let existing = librarySectionsTasks[libraryId] {
-            task = existing
-        } else {
-            task = Task {
-                try await SiloAPI.shared.librarySections(libraryId: libraryId)
-            }
-            librarySectionsTasks[libraryId] = task
-        }
+    static func librarySectionsAreCurrent(_ read: APIv2LibrarySectionsRead, libraryId: Int,
+                                         tokens: TokenStore = .shared) async -> Bool {
+        guard read.libraryId == libraryId else { return false }
+        return await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: read.auth) != nil
+    }
 
+    static func cachedLibrarySections(libraryId: Int, tokens: TokenStore = .shared) async -> APIv2LibrarySectionsRead? {
+        let generation = profileScopedGeneration
+        guard let read: APIv2LibrarySectionsRead = ResponseCache.shared.get(CacheKey.librarySections(libraryId)),
+              await librarySectionsAreCurrent(read, libraryId: libraryId, tokens: tokens),
+              profileScopedGeneration == generation else { return nil }
+        return read
+    }
+
+    static func fetchLibrarySections(libraryId: Int, api: SiloAPI = .shared,
+                                     tokens: TokenStore = .shared) async throws -> APIv2LibrarySectionsRead {
+        let generation = profileScopedGeneration
+        guard let auth = await tokens.captureOrdinaryRequestAuth(),
+              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try validateProfileScopedGeneration(generation)
+        try Task.checkCancellation()
+        #if os(iOS) || os(tvOS)
+        let probe = PrefetchProbe.begin("library_sections", verbosity: .verbose,
+            isOriginator: librarySectionsTasks[libraryId] == nil)
+        #endif
+        let flight: LibrarySectionsFlight
+        if let existing = librarySectionsTasks[libraryId], sameRecommendationOwner(existing.auth, auth) {
+            flight = existing
+        } else {
+            librarySectionsTasks[libraryId]?.task.cancel()
+            flight = LibrarySectionsFlight(id: UUID(), auth: auth, task: Task {
+                try await api.librarySections(libraryId: libraryId, auth: auth)
+            })
+            librarySectionsTasks[libraryId] = flight
+            latestLibraryFlight[libraryId] = flight.id
+        }
         do {
-            let response = try await task.value
+            let read = try await flight.task.value
+            let current = await librarySectionsAreCurrent(read, libraryId: libraryId, tokens: tokens)
             try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
-                librarySectionsTasks[libraryId] = nil
-            }
+            try Task.checkCancellation()
+            guard current else { throw HTTPError.requestIdentityChanged }
+            guard latestLibraryFlight[libraryId] == flight.id else { throw CancellationError() }
+            if librarySectionsTasks[libraryId]?.id == flight.id { librarySectionsTasks[libraryId] = nil }
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.librarySections(libraryId))
-            prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
-            return response
+            ResponseCache.shared.set(read, for: CacheKey.librarySections(libraryId))
+            prefetchSectionArtwork(for: read.response, maxCount: maxSectionArtworkURLs)
+            return read
         } catch {
-            if profileScopedGeneration == generation {
-                librarySectionsTasks[libraryId] = nil
-            }
+            if librarySectionsTasks[libraryId]?.id == flight.id { librarySectionsTasks[libraryId] = nil }
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif

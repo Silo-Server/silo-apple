@@ -915,11 +915,11 @@ struct TVMainTabView: View {
             StartupContentPrefetcher.prefetchTVSeriesLanding(libraryId: library.id)
             return
         }
-        let cached: SectionsResponse? = ResponseCache.shared.get(
-            CacheKey.librarySections(library.id)
-        )
-        guard cached == nil else { return }
-        StartupContentPrefetcher.prefetchLibrarySections(libraryId: library.id)
+        Task {
+            let cached = await StartupContentPrefetcher.cachedLibrarySections(libraryId: library.id)
+            guard cached == nil, !Task.isCancelled else { return }
+            StartupContentPrefetcher.prefetchLibrarySections(libraryId: library.id)
+        }
     }
 
     /// Commit a cascade selection (§5.3, §F): set + persist the tab scope,

@@ -384,7 +384,7 @@ struct LibraryDetailView: View {
 
 @Observable
 @MainActor
-private class LibraryRecommendedViewModel {
+final class LibraryRecommendedViewModel {
     var sections: [ResolvedSection] = []
     var isLoading = false
     var isRefreshing = false
@@ -394,30 +394,44 @@ private class LibraryRecommendedViewModel {
         sections.filter { !$0.isFeatured && !$0.items.isEmpty }
     }
 
+    private let api: SiloAPI
+    private let tokens: TokenStore
+    private var loadGeneration = 0
+    private var displayedRead: APIv2LibrarySectionsRead?
+
+    init(api: SiloAPI = .shared, tokens: TokenStore = .shared) {
+        self.api = api; self.tokens = tokens
+    }
+
     func loadSections(libraryId: Int) async {
-        let key = CacheKey.librarySections(libraryId)
-        if sections.isEmpty,
-           let cached: SectionsResponse = ResponseCache.shared.get(key) {
+        loadGeneration += 1
+        let generation = loadGeneration
+        if let displayedRead {
+            let current = await StartupContentPrefetcher.librarySectionsAreCurrent(displayedRead, libraryId: libraryId, tokens: tokens)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            if !current { sections = []; self.displayedRead = nil }
+        }
+        if let cached = await StartupContentPrefetcher.cachedLibrarySections(libraryId: libraryId, tokens: tokens) {
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             sections = cached.sections.filter { !$0.items.isEmpty }
+            displayedRead = cached
         }
-        if sections.isEmpty {
-            isLoading = true
-        } else {
-            isRefreshing = true
-        }
+        guard generation == loadGeneration, !Task.isCancelled else { return }
+        isLoading = sections.isEmpty
+        isRefreshing = !sections.isEmpty
         error = nil
-
+        defer { if generation == loadGeneration { isLoading = false; isRefreshing = false } }
         do {
-            let response = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: libraryId)
-            sections = response.sections.filter { !$0.items.isEmpty }
+            let read = try await StartupContentPrefetcher.fetchLibrarySections(libraryId: libraryId, api: api, tokens: tokens)
+            let current = await StartupContentPrefetcher.librarySectionsAreCurrent(read, libraryId: libraryId, tokens: tokens)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            guard current else { sections = []; return }
+            sections = read.sections.filter { !$0.items.isEmpty }
+            displayedRead = read
         } catch let err {
-            if sections.isEmpty {
-                error = ErrorState(err)
-            }
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            if sections.isEmpty { error = ErrorState(err) }
         }
-
-        isLoading = false
-        isRefreshing = false
     }
 }
 

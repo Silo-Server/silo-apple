@@ -497,3 +497,11 @@ struct APIv2DiscoverRow: Decodable {
     let title: String
     let items: [SectionItem]
 }
+
+/// In-memory provenance for the existing library section consumers.
+struct APIv2LibrarySectionsRead {
+    let libraryId: Int
+    let auth: CapturedOrdinaryRequestAuth
+    let response: SectionsResponse
+    var sections: [ResolvedSection] { response.sections }
+}
