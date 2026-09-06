@@ -332,20 +332,20 @@ actor SiloAPI {
 
     // --- Playback preferences ---
 
-    func setSubtitlePref(seriesId: String, body: SubtitlePrefRequest) async throws {
-        try await http.putVoid("/api/v1/subtitle-prefs/\(seriesId)", body: body)
+    func setSubtitlePref(seriesId: String, body: SubtitlePrefRequest, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.writeTrackPreference(kind: "subtitle", seriesId: seriesId, body: body, auth: auth)
     }
 
-    func deleteSubtitlePref(seriesId: String) async throws {
-        try await http.delete("/api/v1/subtitle-prefs/\(seriesId)")
+    func deleteSubtitlePref(seriesId: String, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.deleteTrackPreference(kind: "subtitle", seriesId: seriesId, auth: auth)
     }
 
-    func setAudioPref(seriesId: String, body: AudioPrefRequest) async throws {
-        try await http.putVoid("/api/v1/audio-prefs/\(seriesId)", body: body)
+    func setAudioPref(seriesId: String, body: AudioPrefRequest, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.writeTrackPreference(kind: "audio", seriesId: seriesId, body: body, auth: auth)
     }
 
-    func deleteAudioPref(seriesId: String) async throws {
-        try await http.delete("/api/v1/audio-prefs/\(seriesId)")
+    func deleteAudioPref(seriesId: String, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.deleteTrackPreference(kind: "audio", seriesId: seriesId, auth: auth)
     }
 
     // --- Personal data ---

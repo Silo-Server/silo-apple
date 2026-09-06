@@ -24,6 +24,130 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testTrackPreferencesFourOperationsAndOffOmission() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data(), Data(), Data(), Data(), Data()])
+        let key = "movie/a?b#c%"
+        try await api.setAudioPref(seriesId: key,
+            body: AudioPrefRequest(audioTrackIndex: -1, audioLanguage: "", trackSignature: nil), auth: auth)
+        let audio = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(audio["audio_track_index"] as? Int, -1)
+        XCTAssertEqual(audio["audio_language"] as? String, "")
+        try await api.setSubtitlePref(seriesId: key,
+            body: TrackSelectionPersistence.subtitleOffRequest(showForced: nil), auth: auth)
+        let off = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(off["subtitle_track_index"] as? Int, -1)
+        XCTAssertEqual(off["subtitle_mode"] as? String, "off")
+        XCTAssertEqual(off["subtitle_language"] as? String, "")
+        XCTAssertNil(off["show_forced_subtitles"])
+        XCTAssertNil(off["track_signature"])
+        try await api.setSubtitlePref(seriesId: key,
+            body: TrackSelectionPersistence.subtitleOffRequest(showForced: false), auth: auth)
+        let forced = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(forced["show_forced_subtitles"] as? Bool, false)
+        try await api.deleteAudioPref(seriesId: key, auth: auth)
+        try await api.deleteSubtitlePref(seriesId: key, auth: auth)
+        let requests = LibraryReadProtocol.requests()
+        XCTAssertEqual(requests.map(\.httpMethod), ["PUT", "PUT", "PUT", "DELETE", "DELETE"])
+        XCTAssertEqual(requests.first?.url?.absoluteString, "https://libraries.example/api/v2/audio-prefs/movie%2Fa%3Fb%23c%25")
+        XCTAssertTrue(requests.allSatisfy { $0.value(forHTTPHeaderField: "X-Profile-Id") == "profile" })
+    }
+
+    func testTrackPreferencesRequireProfileAndPreserveSignatures() async throws {
+        let (v2, tokens) = try await fixture()
+        let absent = await tokens.captureOrdinaryRequestAuth()
+        do {
+            try await v2.deleteTrackPreference(kind: "audio", seriesId: "series", auth: XCTUnwrap(absent))
+            XCTFail("profileless preference dispatched")
+        } catch HTTPError.requestIdentityChanged {} catch { XCTFail("Unexpected error: \(error)") }
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data(), Data()])
+        try await v2.writeTrackPreference(kind: "audio", seriesId: "series",
+            body: AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "eng",
+                trackSignature: AudioTrackSignature(embeddedTitle: "Surround", channels: 6, isDefault: true)), auth: auth)
+        let audio = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        let signature = try XCTUnwrap(audio["track_signature"] as? [String: Any])
+        XCTAssertEqual(signature["default"] as? Bool, true)
+        XCTAssertEqual(signature["embedded_title"] as? String, "Surround")
+        XCTAssertEqual(signature["channels"] as? Int, 6)
+        XCTAssertNil(signature["is_default"])
+        try await v2.writeTrackPreference(kind: "subtitle", seriesId: "series",
+            body: SubtitlePrefRequest(subtitleLanguage: "eng", subtitleTrackIndex: 3,
+                externalSubtitlePath: "sidecar.srt", subtitleMode: "always",
+                trackSignature: SubtitleTrackSignature(source: "external", language: "eng", forced: true, hearingImpaired: true),
+                showForcedSubtitles: nil), auth: auth)
+        let subtitle = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        let subSignature = try XCTUnwrap(subtitle["track_signature"] as? [String: Any])
+        XCTAssertEqual(subSignature["hearing_impaired"] as? Bool, true)
+        XCTAssertEqual(subSignature["forced"] as? Bool, true)
+        XCTAssertEqual(subtitle["external_subtitle_path"] as? String, "sidecar.srt")
+        XCTAssertNil(subtitle["show_forced_subtitles"])
+    }
+
+    func testTrackPreferencesScheduledWriterNeverRecapturesAuthority() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        // Same server/profile, different account epoch: routing alone is insufficient.
+        try await tokens.installAccountSession(accessToken: "replacement", refreshToken: "replacement-refresh", accountID: "2")
+        await tokens.setProfileId("profile")
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        await TrackSelectionPersistence.saveAudio(prefKey: "series",
+            request: AudioPrefRequest(audioTrackIndex: 0, audioLanguage: "eng", trackSignature: nil), auth: auth, api: api).value
+        await TrackSelectionPersistence.saveSubtitle(prefKey: "series",
+            request: TrackSelectionPersistence.subtitleOffRequest(showForced: nil), auth: auth, api: api).value
+        await TrackSelectionPersistence.clearAudio(prefKey: "series", auth: auth, api: api).value
+        await TrackSelectionPersistence.clearSubtitle(prefKey: "series", auth: auth, api: api).value
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+    }
+
+    func testTrackPreferencesPinsPINAtTransportIncludingNil() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("replacement") })
+        await tokens.setProfileId("profile")
+        for pin in [nil, "original"] as [String?] {
+            await tokens.setProfileToken(pin)
+            let captured = await tokens.captureOrdinaryRequestAuth()
+            let auth = try XCTUnwrap(captured)
+            do {
+                try await v2.deleteTrackPreference(kind: "audio", seriesId: "series", auth: auth)
+                XCTFail("replacement PIN dispatched")
+            } catch HTTPError.requestIdentityChanged {} catch { XCTFail("Unexpected error: \(error)") }
+        }
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+    }
+
+    func testTrackPreferencesRejectLateAuthorityAndRequire204() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do {
+            try await v2.deleteTrackPreference(kind: "subtitle", seriesId: "series", auth: auth)
+            XCTFail("late reply accepted")
+        } catch HTTPError.requestIdentityChanged {} catch { XCTFail("Unexpected error: \(error)") }
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([Data()])
+        do {
+            try await v2.deleteTrackPreference(kind: "audio", seriesId: "series", auth: auth)
+            XCTFail("non-contract response accepted")
+        } catch APIv2Error.httpStatus(200) {} catch { XCTFail("Unexpected error: \(error)") }
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+    }
+
     private var onboardingStateBody: Data { Data(#"{"tour_id":"tour","last_step":"welcome","done":false}"#.utf8) }
     private var onboardingFlowBody: Data { Data(#"{"version":1,"tour_id":"tour","steps":[]}"#.utf8) }
 

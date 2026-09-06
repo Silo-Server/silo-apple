@@ -155,10 +155,12 @@ enum TrackSelectionPersistence {
 
     // MARK: - Fire-and-forget writers
 
-    static func saveAudio(prefKey: String, request: AudioPrefRequest) {
+    @discardableResult
+    static func saveAudio(prefKey: String, request: AudioPrefRequest, auth: CapturedOrdinaryRequestAuth,
+                                 api: SiloAPI = .shared) -> Task<Void, Never> {
         Task {
             do {
-                try await SiloAPI.shared.setAudioPref(seriesId: prefKey, body: request)
+                try await api.setAudioPref(seriesId: prefKey, body: request, auth: auth)
             } catch {
                 logger.warning(
                     "audio pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -167,10 +169,12 @@ enum TrackSelectionPersistence {
         }
     }
 
-    static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest) {
+    @discardableResult
+    static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest, auth: CapturedOrdinaryRequestAuth,
+                                 api: SiloAPI = .shared) -> Task<Void, Never> {
         Task {
             do {
-                try await SiloAPI.shared.setSubtitlePref(seriesId: prefKey, body: request)
+                try await api.setSubtitlePref(seriesId: prefKey, body: request, auth: auth)
             } catch {
                 logger.warning(
                     "subtitle pref save failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -180,14 +184,14 @@ enum TrackSelectionPersistence {
     }
 
     /// The detail selectors' "Auto" choice — remove the sticky override
-    /// so the library/profile cascade applies again. A 404 just means
-    /// no override existed.
-    static func clearAudio(prefKey: String) {
+    /// so the library/profile cascade applies again. The v2 delete acknowledges
+    /// both removal and an already-absent override with 204.
+    @discardableResult
+    static func clearAudio(prefKey: String, auth: CapturedOrdinaryRequestAuth,
+                                  api: SiloAPI = .shared) -> Task<Void, Never> {
         Task {
             do {
-                try await SiloAPI.shared.deleteAudioPref(seriesId: prefKey)
-            } catch HTTPError.http(let code, _) where code == 404 {
-                // Nothing to clear.
+                try await api.deleteAudioPref(seriesId: prefKey, auth: auth)
             } catch {
                 logger.warning(
                     "audio pref clear failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -196,12 +200,12 @@ enum TrackSelectionPersistence {
         }
     }
 
-    static func clearSubtitle(prefKey: String) {
+    @discardableResult
+    static func clearSubtitle(prefKey: String, auth: CapturedOrdinaryRequestAuth,
+                                  api: SiloAPI = .shared) -> Task<Void, Never> {
         Task {
             do {
-                try await SiloAPI.shared.deleteSubtitlePref(seriesId: prefKey)
-            } catch HTTPError.http(let code, _) where code == 404 {
-                // Nothing to clear.
+                try await api.deleteSubtitlePref(seriesId: prefKey, auth: auth)
             } catch {
                 logger.warning(
                     "subtitle pref clear failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"

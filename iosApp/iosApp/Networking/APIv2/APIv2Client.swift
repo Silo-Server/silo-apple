@@ -198,6 +198,41 @@ struct APIv2Client: Sendable {
         return wire.playerValue
     }
 
+    // The selection owner supplies authority captured before scheduling the write.
+    func writeTrackPreference<Body: Encodable>(kind: String, seriesId: String, body: Body,
+                                              auth: CapturedOrdinaryRequestAuth) async throws {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
+                                        body: encoder.encode(body), auth: auth)
+    }
+
+    func deleteTrackPreference(kind: String, seriesId: String, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "DELETE", body: nil, auth: auth)
+    }
+
+    private func mutateTrackPreference(kind: String, seriesId: String, method: String, body: Data?,
+                                       auth: CapturedOrdinaryRequestAuth) async throws {
+        try await gate()
+        guard ["audio", "subtitle"].contains(kind), !seriesId.isEmpty,
+              let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+              let segment = seriesId.addingPercentEncoding(withAllowedCharacters:
+                CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let response = try await mapErrors {
+            try await http.requestData(method: method, path: "/api/v2/\(kind)-prefs/\(segment)", body: body,
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
+    }
+
     func matchesAIAuthority(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
         guard let current = await tokenStore.captureOrdinaryRequestAuth() else { return false }
         return current.account == auth.account && current.profileId == auth.profileId && current.profileToken == auth.profileToken

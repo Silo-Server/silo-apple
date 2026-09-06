@@ -1066,6 +1066,9 @@ class PlayerViewModel {
             }
         }
         settingsRefreshTask = Task { @MainActor [weak self] in
+            // The player keeps its initial owner for all subsequent selections.
+            // A profile/login change requires a new player, never a rebound write.
+            self?.trackPreferenceAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
             await self?.refreshSettingsFromServer()
         }
     }
@@ -3722,6 +3725,8 @@ class PlayerViewModel {
         pendingSidecarSubtitleTrackId = intent.sidecarSubtitleTrackId
     }
 
+    private var trackPreferenceAuth: CapturedOrdinaryRequestAuth?
+
     private func beginFreshLoad(
         request: LoadRequest,
         progressPosition: Double?,
@@ -5337,7 +5342,8 @@ class PlayerViewModel {
         } else {
             request = TrackSelectionPersistence.audioRequest(track: track, ordinal: ordinal)
         }
-        TrackSelectionPersistence.saveAudio(prefKey: key, request: request)
+        guard let auth = trackPreferenceAuth else { return }
+        TrackSelectionPersistence.saveAudio(prefKey: key, request: request, auth: auth)
     }
 
     /// Best-effort write of an explicit subtitle pick (or explicit
@@ -5364,7 +5370,8 @@ class PlayerViewModel {
         } else {
             request = TrackSelectionPersistence.subtitleOffRequest(showForced: showForced)
         }
-        TrackSelectionPersistence.saveSubtitle(prefKey: key, request: request)
+        guard let auth = trackPreferenceAuth else { return }
+        TrackSelectionPersistence.saveSubtitle(prefKey: key, request: request, auth: auth)
     }
 
     func selectSecondarySubtitle(_ track: PlayerTrack) {

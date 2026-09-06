@@ -114,11 +114,20 @@ class ItemDetailViewModel {
     ///   the preferred initial season would yank the ground out from under
     ///   the user — under focus, on tvOS. Entry loads and the player-dismiss
     ///   reload leave it false: there, re-picking the season is the point.
+    private(set) var trackPreferenceAuth: CapturedOrdinaryRequestAuth?
+    private var didCaptureTrackPreferenceAuth = false
+
     func loadDetail(
         contentId: String,
         preserveSeasonSelection: Bool = false,
         coalescesMetadataRequests: Bool = true
     ) async {
+        // Pin this screen's owner before exposing selectable detail. Refreshes
+        // must not rebind existing selectors to a replacement login or PIN.
+        if !didCaptureTrackPreferenceAuth {
+            didCaptureTrackPreferenceAuth = true
+            trackPreferenceAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        }
         if detail?.contentId != contentId {
             #if !os(tvOS)
             seasonEpisodePrefetchTask?.cancel()

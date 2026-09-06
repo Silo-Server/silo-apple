@@ -948,16 +948,16 @@ struct TVItemDetailView: View {
         requested: Int?,
         sanitized: Int?
     ) {
-        guard let prefKey else { return }
+        guard let prefKey, let auth = viewModel.trackPreferenceAuth else { return }
         guard let requested else {
-            TrackSelectionPersistence.clearAudio(prefKey: prefKey)
+            TrackSelectionPersistence.clearAudio(prefKey: prefKey, auth: auth)
             return
         }
         guard requested == sanitized,
               let version,
               let request = TrackSelectionPersistence.audioRequest(version: version, ordinal: requested)
         else { return }
-        TrackSelectionPersistence.saveAudio(prefKey: prefKey, request: request)
+        TrackSelectionPersistence.saveAudio(prefKey: prefKey, request: request, auth: auth)
     }
 
     private func persistSubtitleSelection(
@@ -967,9 +967,9 @@ struct TVItemDetailView: View {
         sanitized: Int?,
         showForced: Bool?
     ) {
-        guard let prefKey else { return }
+        guard let prefKey, let auth = viewModel.trackPreferenceAuth else { return }
         guard let requested else {
-            TrackSelectionPersistence.clearSubtitle(prefKey: prefKey)
+            TrackSelectionPersistence.clearSubtitle(prefKey: prefKey, auth: auth)
             return
         }
         guard requested == sanitized, let version,
@@ -979,7 +979,7 @@ struct TVItemDetailView: View {
                   showForced: showForced
               )
         else { return }
-        TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request)
+        TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request, auth: auth)
     }
 
     private func seasonNextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
