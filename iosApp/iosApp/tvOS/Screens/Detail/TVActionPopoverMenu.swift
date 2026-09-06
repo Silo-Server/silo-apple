@@ -18,22 +18,17 @@ struct TVActionPopoverItem: Identifiable, Equatable {
 /// input until the dismiss spring completes. That was the 1–2 s dead zone
 /// after confirming a Version/Audio/Subtitle choice.
 ///
-/// The popover is one composite focus item (docs/tvos-focus.md): the panel
-/// uses one transparent native Button, rows are passive labels, and d-pad up/down
-/// moves an internal highlight. Select commits the highlighted row; Menu/Back
-/// closes. Both hand focus straight back to the trigger, so the next d-pad
-/// press lands on the row with no system animation to wait out.
+/// Options are native focus targets so touchpad swipes and directional presses
+/// use the same focus graph. Selection and dismissal return directly to the
+/// trigger without presenting a system context menu.
 struct TVActionPopoverMenu: View {
     let title: String
     let items: [TVActionPopoverItem]
     let onSelect: (TVActionPopoverItem) -> Void
     let onClose: () -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @FocusState private var panelFocused: Bool
-    @State private var highlightedId: String?
-    @State private var didClaimFocus = false
-    @State private var focusClaim: Task<Void, Never>?
+    @FocusState private var highlightedId: String?
+    @Namespace private var optionFocusScope
 
     static let width: CGFloat = 560
     private static let maxRows = 7
@@ -56,70 +51,27 @@ struct TVActionPopoverMenu: View {
         .overlay(Self.shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
         .shadow(color: .black.opacity(0.45), radius: 32, y: 18)
         .contentShape(Self.shape)
-        .accessibilityHidden(true)
-        .overlay {
-            // The original surface owns layout and appearance. A transparent
-            // native Button owns activation and focus without styling the rows.
-            Button(action: commitHighlighted) {
-                Color.clear.contentShape(Self.shape)
-            }
-            .buttonStyle(TVPopoverActivationButtonStyle())
-            .focused($panelFocused)
-            .focusEffectDisabled()
-            .onMoveCommand(perform: handleMove)
-            .onExitCommand(perform: onClose)
-            // VoiceOver: the composite is one adjustable button. Its value is
-            // the highlighted row (what Select will commit), swipe up/down moves
-            // the highlight, and activate commits it. Rows stay hidden so the
-            // cursor cannot land on a label that does not react to Select.
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(title)
-            .accessibilityValue(highlightedAccessibilityValue)
-            .accessibilityAddTraits([.isButton, .updatesFrequently])
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: moveHighlight(by: 1)
-                case .decrement: moveHighlight(by: -1)
-                @unknown default: break
-                }
-            }
-            .accessibilityAction(.escape, onClose)
+        .focusScope(optionFocusScope)
+        .defaultFocus($highlightedId, initialOptionId, priority: .userInitiated)
+        .onMoveCommand { direction in
+            if direction == .left || direction == .right { onClose() }
         }
+        .onExitCommand(perform: onClose)
         .background(
             TVActionPopoverMenuPressCatcher(onExit: onClose)
                 .frame(width: 0, height: 0)
         )
-        .onAppear {
-            highlightedId = items.first(where: { $0.isSelected && $0.isEnabled })?.id
-                ?? items.first(where: \.isEnabled)?.id
-            claimFocus()
+        .task {
+            await Task.yield()
+            guard !Task.isCancelled, highlightedId == nil else { return }
+            highlightedId = initialOptionId
         }
-        .onDisappear {
-            focusClaim?.cancel()
-        }
-        .onChange(of: panelFocused) { _, focused in
-            if focused {
-                didClaimFocus = true
-                return
-            }
-            // The panel is the only focus owner while open. Losing focus
-            // after it was held (a cover, the watchdog, an engine repair)
-            // means the popover is stale; close instead of lingering
-            // unfocusable. A false before the claim landed is just the
-            // engine not having moved yet.
-            if didClaimFocus { onClose() }
-        }
+        .accessibilityAction(.escape, onClose)
     }
 
-    private var highlightedAccessibilityValue: String {
-        guard let item = items.first(where: { $0.id == highlightedId }) else { return "" }
-        var parts = [item.title]
-        if let detail = item.detail, !detail.isEmpty { parts.append(detail) }
-        if item.isSelected { parts.append("selected") }
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            parts.append("\(index + 1) of \(items.count)")
-        }
-        return parts.joined(separator: ", ")
+    private var initialOptionId: String? {
+        items.first(where: { $0.isSelected && $0.isEnabled })?.id
+            ?? items.first(where: \.isEnabled)?.id
     }
 
     private var header: some View {
@@ -131,17 +83,25 @@ struct TVActionPopoverMenu: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 10)
-            .accessibilityHidden(true)
+            .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
     private var rows: some View {
         let list = VStack(alignment: .leading, spacing: 2) {
             ForEach(items) { item in
-                TVActionPopoverRow(
-                    item: item,
-                    isHighlighted: item.id == highlightedId
-                )
+                Button { onSelect(item) } label: {
+                    TVActionPopoverRow(
+                        item: item,
+                        isHighlighted: item.id == highlightedId
+                    )
+                }
+                .buttonStyle(TVActionPopoverButtonStyle())
+                .focused($highlightedId, equals: item.id)
+                .disabled(!item.isEnabled)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel([item.title, item.detail].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityAddTraits(item.isSelected ? .isSelected : [])
                 .id(item.id)
             }
         }
@@ -149,12 +109,12 @@ struct TVActionPopoverMenu: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     list
+                        .scrollTargetLayout()
                 }
                 .frame(maxHeight: Self.rowHeightEstimate * CGFloat(Self.maxRows))
-                .onChange(of: highlightedId) { _, id in
-                    guard let id else { return }
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                        proxy.scrollTo(id, anchor: .center)
+                .onAppear {
+                    if let initialOptionId {
+                        proxy.scrollTo(initialOptionId, anchor: .center)
                     }
                 }
             }
@@ -164,63 +124,15 @@ struct TVActionPopoverMenu: View {
     }
 
     private static let rowHeightEstimate: CGFloat = 72
-
-    private func handleMove(_ direction: MoveCommandDirection) {
-        switch direction {
-        case .up:
-            moveHighlight(by: -1)
-        case .down:
-            moveHighlight(by: 1)
-        case .left, .right:
-            // Lateral moves leave the menu: close and let the next press
-            // land on the row's neighbour. Consuming them here would
-            // trap the user in a one-column list.
-            onClose()
-        @unknown default:
-            break
-        }
-    }
-
-    private func moveHighlight(by delta: Int) {
-        let enabled = items.filter(\.isEnabled)
-        guard !enabled.isEmpty else { return }
-        let index = enabled.firstIndex { $0.id == highlightedId } ?? 0
-        let next = index + delta
-        guard enabled.indices.contains(next) else { return }
-        highlightedId = enabled[next].id
-    }
-
-    /// A `@FocusState` write in `onAppear` lands only if the engine already
-    /// knows the new focusable. Re-assert across a few turns, the same way
-    /// `TVCascadeSelector.claimPanelFocus` does, and stop as soon as it
-    /// sticks or the user has moved on.
-    private func claimFocus() {
-        focusClaim?.cancel()
-        panelFocused = true
-        focusClaim = Task { @MainActor in
-            for attempt in 0..<6 {
-                if attempt == 0 {
-                    await Task.yield()
-                } else {
-                    try? await Task.sleep(nanoseconds: 32_000_000)
-                }
-                if Task.isCancelled || didClaimFocus || panelFocused { return }
-                panelFocused = true
-            }
-        }
-    }
-
-    private func commitHighlighted() {
-        guard let item = items.first(where: { $0.id == highlightedId }),
-              item.isEnabled else { return }
-        onSelect(item)
-    }
 }
 
-/// No system padding, tint, scale, or focus decoration on the invisible host.
-private struct TVPopoverActivationButtonStyle: ButtonStyle {
+/// Own the focus appearance completely; tvOS's plain style adds a second halo
+/// around the row even when a custom rounded highlight is already present.
+private struct TVActionPopoverButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .opacity(configuration.isPressed ? 0.94 : 1)
+            .focusEffectDisabled()
     }
 }
 
@@ -261,7 +173,6 @@ private struct TVActionPopoverRow: View {
                 .fill(isHighlighted ? Color.white : Color.clear)
         )
         .animation(reduceMotion ? nil : SiloTheme.springAnimation, value: isHighlighted)
-        .accessibilityHidden(true)
     }
 
     private var foreground: Color {
