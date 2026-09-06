@@ -64,7 +64,9 @@ struct HomeView: View {
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: navigateToDetail,
                     onRemoveFromContinueWatching: dismissContinueWatching,
-                    onSetWatched: setWatched
+                    onSetWatched: { [auth = viewModel.personalListAuth] item, played in
+                        await viewModel.setWatched(item, played: played, auth: auth)
+                    }
                 )
                 // Preference edits replace the row band as one stable unit:
                 // the next visible row takes the vacated slot at the fixed
@@ -246,7 +248,9 @@ struct HomeView: View {
                         HomeFeedRow(
                             section: section,
                             onRemoveFromContinueWatching: dismissContinueWatching,
-                            onSetWatched: setWatched
+                            onSetWatched: { [auth = viewModel.personalListAuth] item, played in
+                        await viewModel.setWatched(item, played: played, auth: auth)
+                    }
                         )
                         .id(HomeFocusTarget.row(section.id))
                     }
@@ -342,9 +346,6 @@ struct HomeView: View {
         }
     }
 
-    private func setWatched(_ item: SectionItem, played: Bool) async -> Bool {
-        await viewModel.setWatched(item, played: played)
-    }
 
     #if !os(tvOS)
     private var sectionSpacing: CGFloat {

@@ -160,7 +160,7 @@ class HomeViewModel {
         _ auth: CapturedOrdinaryRequestAuth?
     ) async throws -> Void
     typealias DismissNextUp = (_ contentId: String, _ seriesId: String, _ auth: CapturedOrdinaryRequestAuth?) async throws -> Void
-    typealias SetWatched = (_ contentId: String, _ played: Bool) async throws -> Void
+    typealias SetWatched = (_ contentId: String, _ played: Bool, _ auth: CapturedOrdinaryRequestAuth?) async throws -> Void
     typealias FetchHomeSections = () async throws -> SectionsResponse
 
     var sections: [ResolvedSection] = []
@@ -179,6 +179,7 @@ class HomeViewModel {
     private let dismissNextUp: DismissNextUp
     private let updateWatchedState: SetWatched
     private let fetchHomeSections: FetchHomeSections
+    private let reconcileHomeSections: (CapturedOrdinaryRequestAuth?) async throws -> SectionsResponse
     private let responseIsCurrent: (SectionsResponse) async -> Bool
     private var loadGeneration = 0
     private var displayedHomeResponse: SectionsResponse?
@@ -213,11 +214,16 @@ class HomeViewModel {
                 seriesId: seriesId, auth: auth
             )
         },
-        setWatched: @escaping SetWatched = { contentId, played in
-            try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
+        setWatched: @escaping SetWatched = { contentId, played, auth in
+            guard let auth else { throw HTTPError.requestIdentityChanged }
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: played, auth: auth)
         },
         fetchHomeSections: @escaping FetchHomeSections = {
             try await StartupContentPrefetcher.fetchHomeSections()
+        },
+        reconcileHomeSections: @escaping (CapturedOrdinaryRequestAuth?) async throws -> SectionsResponse = { auth in
+            guard let auth else { throw HTTPError.requestIdentityChanged }
+            return try await StartupContentPrefetcher.fetchHomeSections(auth: auth)
         },
         responseIsCurrent: @escaping (SectionsResponse) async -> Bool = {
             await StartupContentPrefetcher.homeResponseIsCurrent($0)
@@ -227,6 +233,7 @@ class HomeViewModel {
         self.dismissNextUp = dismissNextUp
         self.updateWatchedState = setWatched
         self.fetchHomeSections = fetchHomeSections
+        self.reconcileHomeSections = reconcileHomeSections
         self.responseIsCurrent = responseIsCurrent
     }
 
@@ -366,44 +373,48 @@ class HomeViewModel {
     /// completed item from membership-driven Home rows. A fresh Home fetch
     /// reconciles replacement Next Up episodes and watched state elsewhere.
     @discardableResult
-    func setWatched(_ item: SectionItem, played: Bool) async -> Bool {
-        guard pendingWatchedUpdates.insert(item.contentId).inserted else {
-            return false
-        }
+    func setWatched(_ item: SectionItem, played: Bool, auth: CapturedOrdinaryRequestAuth?) async -> Bool {
+        guard let observation = displayedHomeResponse, observation.homeReadAuth == auth,
+              sections.contains(where: { $0.items.contains(item) }),
+              pendingWatchedUpdates.insert(item.contentId).inserted else { return false }
+        var generation = loadGeneration
         defer { pendingWatchedUpdates.remove(item.contentId) }
-
         actionError = nil
-
         do {
-            try await updateWatchedState(item.contentId, played)
-
-            // Never join or apply a Home request that began before this
-            // mutation. It can carry the old Next Up membership.
+            let current = await responseIsCurrent(observation)
+            guard current, generation == loadGeneration, !Task.isCancelled,
+                  sections.contains(where: { $0.items.contains(item) }) else { return false }
+            try await updateWatchedState(item.contentId, played, auth)
+            let mayPublish = await responseIsCurrent(observation)
+            guard mayPublish, generation == loadGeneration, !Task.isCancelled else { return false }
             loadGeneration += 1
+            generation = loadGeneration
             isLoading = false
             isRefreshing = false
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-
             if played {
-                sections = HomeSectionsMutation.removingCompletedItem(
-                    contentId: item.contentId,
-                    from: sections
-                )
-                ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
-                    response = SectionsResponse(
-                        sections: HomeSectionsMutation.removingCompletedItem(
-                            contentId: item.contentId,
-                            from: response.sections
-                        )
-                    )
-                }
+                sections = HomeSectionsMutation.removingCompletedItem(contentId: item.contentId, from: sections)
             }
+            let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
+            if cached?.homeReadAuth == auth { ResponseCache.shared.remove(CacheKey.homeSections) }
 
-            // The server may advance a series to its following episode. Keep
-            // the local removal if this reconciliation cannot be fetched.
-            await loadSections()
+            // Preserve the accepted local change if reconciliation fails; the
+            // follow-up read must carry the write's original owner.
+            let refreshed = try? await reconcileHomeSections(auth)
+            let stillCurrent = await responseIsCurrent(observation)
+            guard stillCurrent, generation == loadGeneration, !Task.isCancelled else { return false }
+            if let refreshed {
+                let authorized = await responseIsCurrent(refreshed)
+                guard authorized, refreshed.homeReadAuth == auth,
+                      generation == loadGeneration, !Task.isCancelled else { return false }
+                sections = refreshed.sections.filter { !$0.items.isEmpty }
+                displayedHomeResponse = refreshed
+                error = nil
+            }
             return true
         } catch {
+            let current = await responseIsCurrent(observation)
+            guard current, generation == loadGeneration, !Task.isCancelled else { return false }
             actionError = ErrorState(error)
             return false
         }

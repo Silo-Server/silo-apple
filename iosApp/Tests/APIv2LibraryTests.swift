@@ -24,6 +24,65 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testHomeWatchedOldRenderedOwnerCannotRebindSameItem() async throws {
+        let (_, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let original = await tokens.captureOrdinaryRequestAuth()
+        var read = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self, from: homeBody)
+        read.homeReadAuth = original
+        var writes = 0
+        let model = HomeViewModel(setWatched: { _, _, _ in writes += 1 },
+            fetchHomeSections: { read }, responseIsCurrent: { _ in true })
+        await model.loadSections()
+        let item = try XCTUnwrap(model.sections.first?.items.first)
+        await tokens.setProfileToken("replacement")
+        read.homeReadAuth = await tokens.captureOrdinaryRequestAuth()
+        await model.loadSections()
+        let result = await model.setWatched(item, played: true, auth: original)
+        XCTAssertFalse(result)
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(model.sections.first?.items.count, 1)
+    }
+
+    func testHomeWatchedReplacementFencesSuccessAndFailure() async throws {
+        for fails in [false, true] {
+            let (_, tokens) = try await fixture()
+            await tokens.setProfileId("profile")
+            let auth = await tokens.captureOrdinaryRequestAuth()
+            var read = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self, from: homeBody)
+            read.homeReadAuth = auth
+            let arrived = expectation(description: "watched suspended \(fails)")
+            let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+            var reconciliations = 0
+            let model = HomeViewModel(setWatched: { _, _, owner in
+                XCTAssertEqual(owner, auth)
+                _ = await gate.check()
+                if fails { throw HTTPError.requestIdentityChanged }
+            }, fetchHomeSections: { read }, reconcileHomeSections: { _ in
+                reconciliations += 1
+                return read
+            }, responseIsCurrent: { response in
+                guard let owner = response.homeReadAuth else { return false }
+                return await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
+            })
+            await model.loadSections()
+            let item = try XCTUnwrap(model.sections.first?.items.first)
+            let pending = Task { await model.setWatched(item, played: true, auth: auth) }
+            await fulfillment(of: [arrived], timeout: 2)
+            read = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self,
+                from: Data(String(decoding: homeBody, as: UTF8.self).replacingOccurrences(of: "Continue", with: "Replacement").utf8))
+            read.homeReadAuth = auth
+            await model.loadSections()
+            await gate.releaseOld(true)
+            let result = await pending.value
+            XCTAssertFalse(result)
+            XCTAssertEqual(model.sections.first?.title, "Replacement")
+            XCTAssertEqual(model.sections.first?.items.count, 1)
+            XCTAssertNil(model.actionError)
+            XCTAssertEqual(reconciliations, 0)
+        }
+    }
+
     func testSeasonWatchedRefreshKeepsOriginalAuthority() async throws {
         let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("replacement") })
         await tokens.setProfileId("profile")
