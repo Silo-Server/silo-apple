@@ -16,13 +16,11 @@ final class PersonalListViewModel {
     private var continuation: APIv2PersonalListContinuation?
     private var generation = 0
     private var task: Task<APIv2PersonalListResult, Error>?
-    private var owner: RefreshAccountIdentity?
-    private var profile: String?
+    private(set) var displayedAuth: CapturedOrdinaryRequestAuth?
 
     private struct CachedCards {
         let items: [BrowseItem]
-        let owner: RefreshAccountIdentity
-        let profile: String
+        let auth: CapturedOrdinaryRequestAuth
     }
 
     init(kind: APIv2PersonalListKind, api: APIv2Client = APIv2Client(), tokenStore: TokenStore = .shared,
@@ -55,8 +53,8 @@ final class PersonalListViewModel {
     }
 
     private func cacheCards() {
-        guard let owner, let profile else { return }
-        ResponseCache.shared.set(CachedCards(items: Array(items.prefix(50)), owner: owner, profile: profile), for: cacheKey)
+        guard let auth = displayedAuth else { return }
+        ResponseCache.shared.set(CachedCards(items: Array(items.prefix(50)), auth: auth), for: cacheKey)
     }
 
     private func load(reset: Bool) async {
@@ -71,13 +69,13 @@ final class PersonalListViewModel {
         if let captureBarrier { await captureBarrier() }
         let captured = await tokenStore.captureOrdinaryRequestAuth()
         guard requestGeneration == generation else { return }
-        guard let auth = captured, let requestedProfile = auth.profileId else {
-            items = []; continuation = nil; hasMore = false
+        guard let auth = captured, let requestedProfile = auth.profileId, !requestedProfile.isEmpty else {
+            items = []; displayedAuth = nil; continuation = nil; hasMore = false
             error = ErrorState(HTTPError.requestIdentityChanged)
             return
         }
         guard requestGeneration == generation else { return }
-        if owner != auth.account || profile != requestedProfile {
+        if displayedAuth != auth {
             items = []
             if !reset {
                 continuation = nil; hasMore = false
@@ -85,11 +83,10 @@ final class PersonalListViewModel {
                 return
             }
         }
-        owner = auth.account
-        profile = requestedProfile
+        displayedAuth = auth
         if reset, items.isEmpty,
            let cached: CachedCards = ResponseCache.shared.get(cacheKey),
-           cached.owner == owner, cached.profile == profile {
+           cached.auth == auth {
             items = cached.items
         }
         error = nil
@@ -99,15 +96,15 @@ final class PersonalListViewModel {
         let request = Task {
             if let cursor { return try await api.nextPersonalListPage(cursor) }
             await ImageSizeCapability.shared.refresh()
-            return try await api.personalList(kind: kind, imageSize: ImageSizeCapability.shared.requestQuery["image_size"])
+            return try await api.personalList(kind: kind, imageSize: ImageSizeCapability.shared.requestQuery["image_size"], auth: auth)
         }
         task = request
         do {
             let result = try await request.value
             guard requestGeneration == generation, !Task.isCancelled else { return }
-            guard let current = await tokenStore.captureOrdinaryRequestAuth(), requestGeneration == generation,
-                  !Task.isCancelled, current.account == auth.account,
-                  current.profileId == requestedProfile else { throw HTTPError.requestIdentityChanged }
+            let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard current, result.auth == auth, requestGeneration == generation,
+                  !Task.isCancelled else { throw HTTPError.requestIdentityChanged }
             var seen = Set(reset ? [] : items.map(\.contentId))
             let incoming = result.value.items.filter { seen.insert($0.contentId).inserted }
             if reset { items = incoming } else { items.append(contentsOf: incoming) }
@@ -116,13 +113,13 @@ final class PersonalListViewModel {
             if reset { cacheCards() }
         } catch {
             guard requestGeneration == generation, !Task.isCancelled else { return }
-            let current = await tokenStore.captureOrdinaryRequestAuth()
+            let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
             guard requestGeneration == generation, !Task.isCancelled else { return }
-            if let current, current.account == auth.account,
-               current.profileId == requestedProfile {
+            if current {
                 self.error = ErrorState(error)
             } else {
                 items = []
+                displayedAuth = nil
                 self.error = ErrorState(HTTPError.requestIdentityChanged)
             }
             continuation = nil

@@ -24,6 +24,49 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testPersonalListPagesPinOriginalPINAtCaptureAndContinuation() async throws {
+        let (api, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("pin1") })
+        await tokens.setProfileId("profile")
+        let original = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await api.personalList(kind: .favorites, auth: XCTUnwrap(original)); XCTFail("capture rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":true,"next_cursor":"opaque/+?"}}"#.utf8)])
+        let first = try await api.personalList(kind: .favorites, auth: XCTUnwrap(current))
+        XCTAssertEqual(first.auth, current)
+        await tokens.setProfileToken("pin2")
+        do { _ = try await api.nextPersonalListPage(XCTUnwrap(first.continuation)); XCTFail("continuation rebound") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testPersonalListWarmFailureClearsForeignPINRowsAndCacheRefusesReuse() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        ResponseCache.shared.remove(CacheKey.favorites)
+        defer { ResponseCache.shared.remove(CacheKey.favorites) }
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        LibraryReadProtocol.enqueue([Data(#"{"items":[{"content_id":"movie:one","type":"movie","title":"One","genres":[],"keywords":[],"status":"matched"}],"page":{"has_more":false}}"#.utf8)])
+        await model.reload()
+        XCTAssertEqual(model.items.count, 1)
+        let arrived = expectation(description: "warm list refresh suspended")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        LibraryReadProtocol.status = 500
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+        let pending = Task { await model.reload() }
+        await fulfillment(of: [arrived], timeout: 2)
+        XCTAssertEqual(model.items.count, 1)
+        await tokens.setProfileToken("replacement")
+        await gate.releaseOld(true)
+        await pending.value
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertNil(model.displayedAuth)
+        let replacement = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        LibraryReadProtocol.enqueue([Data()])
+        await replacement.reload()
+        XCTAssertTrue(replacement.items.isEmpty)
+    }
+
     func testLibraryCardOwnerDoesNotCrossLibrarySelection() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

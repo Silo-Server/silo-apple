@@ -19,9 +19,11 @@ struct APIv2PersonalListContinuation {
     let seen: Set<String>
     let identity: HTTPRequestIdentity
     let account: RefreshAccountIdentity
+    let auth: CapturedOrdinaryRequestAuth
 }
 
 struct APIv2PersonalListResult {
+    let auth: CapturedOrdinaryRequestAuth
     let value: APIv2PersonalListPage
     let continuation: APIv2PersonalListContinuation?
 }
