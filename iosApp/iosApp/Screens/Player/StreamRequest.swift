@@ -29,7 +29,8 @@ struct StreamRequest {
         additionalHeaders: [String: String],
         accessToken: String?,
         requiresHeaderAuthenticatedMedia: Bool,
-        authorizedMediaOriginSessionId: String? = nil
+        authorizedMediaOriginSessionId: String? = nil,
+        apiV2SessionId: String? = nil
     ) -> StreamRequest? {
         let raw = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
@@ -73,6 +74,21 @@ struct StreamRequest {
             }
             resolvedURL = proxyURL
             isAuthorizedMediaOrigin = true
+        } else if requiresHeaderAuthenticatedMedia, raw.hasPrefix("/api/v2/") {
+            guard let sessionId = apiV2SessionId,
+                  UUID(uuidString: sessionId) != nil,
+                  let components = URLComponents(string: raw),
+                  components.fragment == nil,
+                  ["/api/v2/stream/\(sessionId)",
+                   "/api/v2/playback/transcode/\(sessionId)/master.m3u8"].contains(components.percentEncodedPath),
+                  let items = components.queryItems,
+                  items.count == 1,
+                  items[0].name == "st",
+                  let signature = items[0].value, !signature.isEmpty,
+                  let resolved = URL(string: normalizedServer + raw) else { return nil }
+            // Validate without rebuilding the server-issued path or query.
+            // The signed executor reference is opaque and bound to this session.
+            resolvedURL = resolved
         } else if requiresHeaderAuthenticatedMedia {
             guard !raw.contains("://"),
                   !raw.hasPrefix("//"),

@@ -772,7 +772,8 @@ final class AudioPlayerViewModel {
             serverURL: serverURL,
             additionalHeaders: additionalHeaders,
             accessToken: accessToken,
-            requiresHeaderAuthenticatedMedia: true
+            requiresHeaderAuthenticatedMedia: true,
+            apiV2SessionId: session.sessionId
         )
     }
 

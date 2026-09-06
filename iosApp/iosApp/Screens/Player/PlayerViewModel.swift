@@ -6417,7 +6417,8 @@ class PlayerViewModel {
             // different one is rejected rather than trusted.
             authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins
                 ? session.sessionId
-                : nil
+                : nil,
+            apiV2SessionId: session.sessionId
         )
     }
 

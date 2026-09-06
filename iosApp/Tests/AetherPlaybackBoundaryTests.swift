@@ -5,6 +5,37 @@ import XCTest
 
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
+    func testV2DeliveryURLPreservesOpaqueQueryAndSession() {
+        let session = "11111111-1111-4111-8111-111111111111"
+        for path in ["/api/v2/stream/\(session)", "/api/v2/playback/transcode/\(session)/master.m3u8"] {
+            let raw = path + "?st=opaque%2Bsignature%2Fvalue%3D"
+            let request = StreamRequest.resolve(rawURL: raw, serverURL: "https://silo.example/base",
+                additionalHeaders: ["X-Profile-Id": "profile", "X-Profile-Token": "pin"], accessToken: "account",
+                requiresHeaderAuthenticatedMedia: true, apiV2SessionId: session)
+            XCTAssertEqual(request?.url.absoluteString, "https://silo.example/base" + raw)
+            XCTAssertEqual(request?.headers["Authorization"], "Bearer account")
+            XCTAssertEqual(request?.headers["X-Profile-Id"], "profile")
+            XCTAssertEqual(request?.headers["X-Profile-Token"], "pin")
+            XCTAssertNil(StreamRequest.resolve(rawURL: raw, serverURL: "https://silo.example",
+                additionalHeaders: [:], accessToken: "account", requiresHeaderAuthenticatedMedia: true))
+            XCTAssertNil(StreamRequest.resolve(rawURL: raw, serverURL: "https://silo.example",
+                additionalHeaders: [:], accessToken: "account", requiresHeaderAuthenticatedMedia: true,
+                apiV2SessionId: "22222222-2222-4222-8222-222222222222"))
+        }
+    }
+
+    func testV2DeliveryURLRejectsOtherPathsAndCredentials() {
+        let session = "11111111-1111-4111-8111-111111111111"
+        let path = "/api/v2/stream/\(session)"
+        for raw in [path, path + "?st=", path + "?st=a&st=b", path + "?st=a&token=account",
+                    path + "?st=a#fragment", path + "/../other?st=a", path + "/extra?st=a",
+                    "https://other.example" + path + "?st=a", "//other.example" + path + "?st=a"] {
+            XCTAssertNil(StreamRequest.resolve(rawURL: raw, serverURL: "https://silo.example",
+                additionalHeaders: [:], accessToken: "account", requiresHeaderAuthenticatedMedia: true,
+                apiV2SessionId: session), raw)
+        }
+    }
+
     private struct LiveStreamFixture: Decodable {
         let label: String?
         let url: URL
