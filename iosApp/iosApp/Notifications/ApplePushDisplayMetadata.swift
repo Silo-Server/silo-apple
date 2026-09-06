@@ -112,7 +112,7 @@ enum ApplePushDisplayWire {
         }
         return baseURL
             .appendingPathComponent("api")
-            .appendingPathComponent("v1")
+            .appendingPathComponent("v2")
             .appendingPathComponent("notifications")
             .appendingPathComponent("push")
             .appendingPathComponent("apple")

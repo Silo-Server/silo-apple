@@ -101,7 +101,7 @@ final class ApplePushRegistrationTests: XCTestCase {
             deliveryID: "delivery-1"
         ))
 
-        XCTAssertEqual(url.absoluteString, "https://silo.example.test/api/v1/notifications/push/apple/display/delivery-1")
+        XCTAssertEqual(url.absoluteString, "https://silo.example.test/api/v2/notifications/push/apple/display/delivery-1")
     }
 
     func testNotificationDisplayResponseDecodesAndMutatesNotificationContent() throws {
