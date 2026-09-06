@@ -617,6 +617,27 @@ struct APIv2Client: Sendable {
 
     // MARK: Catalog detail and hierarchy reads
 
+    func setFavoriteMembership(id: String, included: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let path = "/api/v2/favorites/\(try catalogPathSegment(id))"
+        let raw = try await mapErrors {
+            try await http.requestData(method: included ? "PUT" : "DELETE", path: path,
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
+    }
+
     func setWatchlistMembership(id: String, included: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,

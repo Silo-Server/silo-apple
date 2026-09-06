@@ -24,6 +24,58 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testDetailFavoriteV2ExactIdentityMethodsAnd204() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data(), Data()])
+        try await api.toggleFavorite(contentId: "movie/a?b", isFavorite: true, auth: auth)
+        try await api.toggleFavorite(contentId: "movie/a?b", isFavorite: false, auth: auth)
+        XCTAssertEqual(LibraryReadProtocol.requests().map(\.httpMethod), ["PUT", "DELETE"])
+        XCTAssertTrue(LibraryReadProtocol.requests().allSatisfy {
+            $0.url?.absoluteString == "https://libraries.example/api/v2/favorites/movie%2Fa%3Fb"
+        })
+        XCTAssertTrue(LibraryReadProtocol.lastBody().isEmpty)
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([Data(#"{}"#.utf8)])
+        do { try await api.toggleFavorite(contentId: "movie/a?b", isFavorite: true, auth: auth); XCTFail("non204") } catch {}
+    }
+
+    func testDetailFavoriteV2RefusalsNeverReplayAuthentication() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        for included in [true, false] {
+            for status in [401, 500] {
+                LibraryReadProtocol.reset()
+                LibraryReadProtocol.status = status
+                LibraryReadProtocol.enqueue([Data(#"{"type":"https://silo.test/problems/refused","title":"Refused","status":401,"detail":"Synthetic refusal"}"#.utf8)])
+                do { try await v2.setFavoriteMembership(id: "movie", included: included, auth: XCTUnwrap(captured)); XCTFail("failure accepted") } catch {}
+                XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+                XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.path, "/api/v2/favorites/movie")
+            }
+        }
+    }
+
+    func testDetailFavoriteV2PinsAuthorityAtCaptureAndReceipt() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        let noProfile = await tokens.captureOrdinaryRequestAuth()
+        do { try await v2.setFavoriteMembership(id: "movie", included: true, auth: XCTUnwrap(noProfile)); XCTFail("missing profile") } catch {}
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { try await v2.setFavoriteMembership(id: "movie", included: true, auth: XCTUnwrap(captured)); XCTFail("PIN rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { try await v2.setFavoriteMembership(id: "movie", included: false, auth: XCTUnwrap(current)); XCTFail("foreign receipt") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
     func testDetailWatchlistV2ExactIdentityMethodsAnd204() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

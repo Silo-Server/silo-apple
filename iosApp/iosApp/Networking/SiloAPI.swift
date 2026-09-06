@@ -372,6 +372,10 @@ actor SiloAPI {
         try await v2.personalMembership(id: contentId, watchlist: true, auth: auth)
     }
 
+    func toggleFavorite(contentId: String, isFavorite: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.setFavoriteMembership(id: contentId, included: isFavorite, auth: auth)
+    }
+
     func toggleFavorite(contentId: String, isFavorite: Bool) async throws {
         if isFavorite {
             try await http.putVoid("/api/v1/favorites/\(contentId)")

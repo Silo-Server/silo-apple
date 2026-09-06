@@ -90,6 +90,7 @@ class ItemDetailViewModel {
     /// button tap and put the stale pair back into `ResponseCache`.
     private var userStateMutationGeneration = 0
     private var watchlistMutationPending = false
+    private var favoriteMutationPending = false
 
     // tvOS pre-play selector state. ItemDetailCache retains this view model
     // while the user enters playback or navigates to another item, so manual
@@ -1260,15 +1261,27 @@ class ItemDetailViewModel {
     // MARK: - User Actions
 
     func toggleFavorite() async {
-        guard let contentId = detail?.contentId else { return }
+        guard !favoriteMutationPending, let contentId = detail?.contentId,
+              let auth = trackPreferenceAuth else { return }
+        let generation = detailGeneration
+        let oldValue = isFavorite
+        let desiredValue = !oldValue
+        favoriteMutationPending = true
+        defer { favoriteMutationPending = false }
+        let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard current, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
         userStateMutationGeneration += 1
-        isFavorite.toggle()
+        isFavorite = desiredValue
         writeBackUserState(contentId: contentId)
         do {
-            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: desiredValue, auth: auth)
+            let mayPublish = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard mayPublish, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
             invalidateRelatedCaches(contentId: contentId)
         } catch {
-            isFavorite.toggle() // Revert on failure
+            let mayPublish = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard mayPublish, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
+            isFavorite = oldValue
             writeBackUserState(contentId: contentId)
         }
     }
