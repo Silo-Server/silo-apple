@@ -91,6 +91,7 @@ class ItemDetailViewModel {
     private var userStateMutationGeneration = 0
     private var watchlistMutationPending = false
     private var favoriteMutationPending = false
+    private var pendingEpisodeFavorites: Set<String> = []
 
     // tvOS pre-play selector state. ItemDetailCache retains this view model
     // while the user enters playback or navigates to another item, so manual
@@ -1262,6 +1263,7 @@ class ItemDetailViewModel {
 
     func toggleFavorite() async {
         guard !favoriteMutationPending, let contentId = detail?.contentId,
+              !pendingEpisodeFavorites.contains(contentId),
               let auth = trackPreferenceAuth else { return }
         let generation = detailGeneration
         let oldValue = isFavorite
@@ -1392,8 +1394,27 @@ class ItemDetailViewModel {
     }
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> Bool {
+        guard !pendingEpisodeFavorites.contains(contentId),
+              let auth = trackPreferenceAuth else { return false }
+        let generation = detailGeneration
+        let displayedItem = detail?.contentId
+        let episodeIds = Set(episodes.map(\.contentId))
+        guard contentId == displayedItem || episodeIds.contains(contentId),
+              contentId != displayedItem || !favoriteMutationPending else { return false }
+        pendingEpisodeFavorites.insert(contentId)
+        defer { pendingEpisodeFavorites.remove(contentId) }
+        let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard current, !Task.isCancelled, generation == detailGeneration,
+              displayedItem == detail?.contentId, episodeIds == Set(episodes.map(\.contentId)) else { return false }
+        // Invalidate an already-running membership read before dispatch as well
+        // as after success so it cannot publish across this explicit decision.
+        episodeFavoriteMutationVersions[contentId, default: 0] += 1
+        if contentId == displayedItem { userStateMutationGeneration += 1 }
         do {
-            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
+            try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite, auth: auth)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard current, !Task.isCancelled, generation == detailGeneration,
+                  displayedItem == detail?.contentId, episodeIds == Set(episodes.map(\.contentId)) else { return false }
             if contentId == detail?.contentId {
                 userStateMutationGeneration += 1
                 self.isFavorite = isFavorite
