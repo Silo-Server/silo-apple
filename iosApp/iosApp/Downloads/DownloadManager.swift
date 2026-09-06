@@ -64,6 +64,7 @@ final class DownloadManager {
     // Production marker publication remains disabled until the immutable review.
     private let permitOwnershipTransfer: Bool
     private let rootOverride: URL?
+    private let transferTokenStore: TokenStore
     private let captureAuthority: @Sendable () async -> CapturedDurableAccountAuth?
     private var owner: OwnerHandle?
     private var publishedRevision: UInt64 = 0
@@ -98,12 +99,13 @@ final class DownloadManager {
     private var lastProgressPublish: [String: Date] = [:]
     private static let progressPublishInterval: TimeInterval = 1.0
 
-    init(permitOwnershipTransfer: Bool = false, rootOverride: URL? = nil,
+    init(permitOwnershipTransfer: Bool = false, rootOverride: URL? = nil, tokenStore: TokenStore = .shared, sessionDelegate: DownloadSessionDelegate? = nil,
          captureAuthority: @escaping @Sendable () async -> CapturedDurableAccountAuth? = { await TokenStore.shared.captureDurableAccountAuth() }) {
         self.permitOwnershipTransfer = permitOwnershipTransfer
         self.rootOverride = rootOverride
         self.captureAuthority = captureAuthority
-        self.sessionDelegate = DownloadSessionDelegate(parkingRoot: rootOverride,
+        self.transferTokenStore = tokenStore
+        self.sessionDelegate = sessionDelegate ?? DownloadSessionDelegate(parkingRoot: rootOverride,
             identifier: rootOverride == nil ? DownloadSessionDelegate.sessionIdentifier : "com.continuum.play.downloads.test.\(UUID())")
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -750,7 +752,9 @@ final class DownloadManager {
         do {
             let result = try await handle.store.bindLocalTask(binding, generation: handle.generation)
             try await publish(result, owner: handle)
-            try await handle.store.resumeLocalTask(binding, generation: handle.generation) { task.resume() }
+            try await handle.store.resumeLocalTask(binding, generation: handle.generation,
+                tokenStore: transferTokenStore, auth: CapturedDurableAccountAuth(accountID: handle.authority.accountID,
+                    accountEpoch: handle.authority.accountEpoch, request: auth)) { task.resume() }
             try? await requestVoid("PATCH", "/api/v1/downloads/\(recordId)",
                 body: encode(["status": "downloading"]), owner: handle)
         } catch { task.cancel(); throw error }
@@ -843,7 +847,7 @@ final class DownloadManager {
         } catch { report(error) } // Unknown arrivals stay parked; never remove them here.
     }
 
-    private func recoverTransfers() async {
+    func recoverTransfers() async {
         guard let handle = owner else { return }
         do {
             _ = try await verified(handle)
@@ -868,7 +872,17 @@ final class DownloadManager {
                       let operation = snapshot.recordOperations[record.id] else { continue }
                 if let binding = snapshot.transfers.values.first(where: {
                     $0.lease.downloadID == record.id && $0.operationID == operation
-                }), active[binding.taskID] == binding.transferID { continue }
+                }), let task = active[binding.taskID], task.transferID == binding.transferID {
+                    if task.state == .suspended {
+                        let auth = try await verified(handle)
+                        try await handle.store.resumeLocalTask(binding, generation: handle.generation,
+                            tokenStore: transferTokenStore, auth: CapturedDurableAccountAuth(accountID: handle.authority.accountID,
+                                accountEpoch: handle.authority.accountEpoch, request: auth)) {
+                            if task.task.state == .suspended { task.task.resume() }
+                        }
+                    }
+                    if task.state == .running || task.state == .suspended { continue }
+                }
                 try await command(.status(record.id, .queued, nil), owner: handle, recordOperation: (record.id, operation))
             }
         } catch { report(error) }

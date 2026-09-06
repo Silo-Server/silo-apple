@@ -3,6 +3,12 @@ import OSLog
 
 /// Events surfaced by the background download session, consumed by
 /// `DownloadManager` on the MainActor via an `AsyncStream`.
+struct DownloadLiveTransfer: @unchecked Sendable {
+    let transferID: UUID
+    let state: URLSessionTask.State
+    let task: URLSessionTask
+}
+
 enum DownloadSessionEvent: Sendable {
     case progress(taskId: Int, transferID: UUID?, bytesWritten: Int64, totalExpected: Int64)
     /// Media transfer succeeded (HTTP 2xx). `stagedURL` is a stable file in
@@ -100,11 +106,11 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     /// Identifiers of tasks still live in the (possibly relaunched) session.
-    func activeTransfers() async -> [Int: UUID] {
+    func activeTransfers() async -> [Int: DownloadLiveTransfer] {
         await withCheckedContinuation { cont in
             session.getAllTasks { tasks in
                 cont.resume(returning: Dictionary(uniqueKeysWithValues: tasks.compactMap { task in
-                    task.taskDescription.flatMap(UUID.init(uuidString:)).map { (task.taskIdentifier, $0) }
+                    task.taskDescription.flatMap(UUID.init(uuidString:)).map { (task.taskIdentifier, DownloadLiveTransfer(transferID: $0, state: task.state, task: task)) }
                 }))
             }
         }

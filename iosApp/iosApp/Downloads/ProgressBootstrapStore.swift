@@ -634,19 +634,31 @@ extension ProgressBootstrapStore {
     }
 
     func resumeLocalTask(_ binding: DownloadTaskBinding, generation: UUID,
-                         resume: @Sendable () -> Void) throws {
-        guard let assets = localAssets else { throw DownloadOwnershipError.wrongAuthority }
-        try assets.withLock {
-            let value = try localSnapshot()
-            guard value.ownerGeneration == generation,
-                  value.transfers[binding.transferID] == binding,
-                  value.recordOperations[binding.lease.downloadID] == binding.operationID,
-                  let record = value.downloads.records[binding.lease.downloadID],
-                  record.taskIdentifier == binding.taskID, record.localStatus == .downloading else {
-                throw DownloadOwnershipError.stale
+                         tokenStore: TokenStore, auth: CapturedDurableAccountAuth,
+                         resume: @escaping @Sendable () -> Void) async throws {
+        guard let assets = localAssets, let authority = localAuthority,
+              try DownloadLocalAuthority(auth) == authority else { throw DownloadOwnershipError.wrongAuthority }
+        let stateURL = url
+        try Task.checkCancellation()
+        // TokenStore admits the actual synchronous effect. The asset lock is
+        // acquired inside that turn; neither lock spans an await or network IO.
+        try await tokenStore.withCurrentDurableAuthority(auth) {
+            try assets.withLock {
+                try Task.checkCancellation()
+                let value = try JSONDecoder().decode(DownloadLocalState.self, from: Data(contentsOf: stateURL))
+                let marker = try JSONDecoder().decode(DownloadLocalMarker.self,
+                    from: Data(contentsOf: stateURL.deletingLastPathComponent().appendingPathComponent("owner.json")))
+                guard value.version == 3, value.authority == authority, value.ownerGeneration == generation,
+                      marker.version == 1, marker.authority == authority, marker.ownerGeneration == generation,
+                      value.transfers[binding.transferID] == binding,
+                      value.recordOperations[binding.lease.downloadID] == binding.operationID,
+                      let record = value.downloads.records[binding.lease.downloadID],
+                      record.taskIdentifier == binding.taskID, record.localStatus == .downloading else {
+                    throw DownloadOwnershipError.stale
+                }
+                try assets.validateLocked(binding.lease)
+                resume()
             }
-            try assets.validateLocked(binding.lease)
-            resume()
         }
     }
 

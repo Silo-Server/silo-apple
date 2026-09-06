@@ -305,6 +305,18 @@ actor TokenStore {
         return CapturedDurableAccountAuth(accountID: accountID, accountEpoch: epoch, request: request)
     }
 
+    /// Execute a synchronous effect in the same actor turn as its authority
+    /// check. No credential/profile mutation can interleave before the effect.
+    func withCurrentDurableAuthority(_ expected: CapturedDurableAccountAuth,
+                                     operation: @Sendable () throws -> Void) throws {
+        try Task.checkCancellation()
+        guard let current = captureDurableAccountAuth(), current.accountID == expected.accountID,
+              current.accountEpoch == expected.accountEpoch, current.request == expected.request else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try operation()
+    }
+
     /// Capture the account, credential owner, and complete request auth header
     /// set in one actor turn. The request carries this immutable identity
     /// through its 401 path so a later server, temporary-owner, or profile

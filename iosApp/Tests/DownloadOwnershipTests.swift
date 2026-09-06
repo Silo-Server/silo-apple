@@ -314,7 +314,9 @@ final class DownloadOwnershipTests: XCTestCase {
     }
 
     func testPauseAfterBindingPreventsResume() async throws {
-        let (store, _, _, _) = try await harness()
+        let (store, _, _, tokens) = try await harness()
+        let captured = await tokens.captureDurableAccountAuth()
+        let auth = try XCTUnwrap(captured)
         let state = try await store.openLocal(legacyData: nil, permitMigration: true)
         _ = try await store.applyLocal(.registered([row()], .init()), generation: state.ownerGeneration)
         let (_, operation) = try await store.beginLocalPipeline(id: "download", generation: state.ownerGeneration)
@@ -323,9 +325,83 @@ final class DownloadOwnershipTests: XCTestCase {
         _ = try await store.bindLocalTask(binding, generation: state.ownerGeneration)
         _ = try await store.applyLocal(.status("download", .paused, nil), generation: state.ownerGeneration)
         do {
-            try await store.resumeLocalTask(binding, generation: state.ownerGeneration) { XCTFail("Paused transfer resumed") }
+            try await store.resumeLocalTask(binding, generation: state.ownerGeneration, tokenStore: tokens, auth: auth) { XCTFail("Paused transfer resumed") }
             XCTFail("Paused binding was accepted")
         } catch {}
+    }
+
+    func testActualResumeAdmissionRejectsChangedProfileAndCanceledCaller() async throws {
+        let (store, _, _, tokens) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        _ = try await store.applyLocal(.registered([row()], .init()), generation: state.ownerGeneration)
+        let (_, operation) = try await store.beginLocalPipeline(id: "download", generation: state.ownerGeneration)
+        let lease = try await store.localLease(downloadID: "download")
+        let binding = DownloadTaskBinding(transferID: UUID(), sessionID: "session", taskID: 7, lease: lease, operationID: operation)
+        _ = try await store.bindLocalTask(binding, generation: state.ownerGeneration)
+        let captured = await tokens.captureDurableAccountAuth()
+        let auth = try XCTUnwrap(captured)
+        await tokens.setProfileId("different")
+        do {
+            try await store.resumeLocalTask(binding, generation: state.ownerGeneration, tokenStore: tokens, auth: auth) {
+                XCTFail("Old profile resumed")
+            }
+            XCTFail("Old authority admitted")
+        } catch {}
+        await tokens.setProfileId("profile")
+        let current = await tokens.captureDurableAccountAuth()
+        let restored = try XCTUnwrap(current)
+        let canceled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                try await store.resumeLocalTask(binding, generation: state.ownerGeneration, tokenStore: tokens, auth: restored) {
+                    XCTFail("Canceled caller resumed")
+                }
+                XCTFail("Cancellation ignored")
+            } catch {}
+        }
+        await canceled.value
+    }
+
+    func testRestartedPreparedBindingCanResumeWithCurrentAuthority() async throws {
+        let (store, authority, root, tokens) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        _ = try await store.applyLocal(.registered([row()], .init()), generation: state.ownerGeneration)
+        let (_, operation) = try await store.beginLocalPipeline(id: "download", generation: state.ownerGeneration)
+        let lease = try await store.localLease(downloadID: "download")
+        let binding = DownloadTaskBinding(transferID: UUID(), sessionID: "session", taskID: 7, lease: lease, operationID: operation)
+        _ = try await store.bindLocalTask(binding, generation: state.ownerGeneration)
+        let restarted = ProgressBootstrapStore(localRoot: root, authority: authority)
+        let captured = await tokens.captureDurableAccountAuth()
+        let auth = try XCTUnwrap(captured)
+        let resumed = expectation(description: "prepared task resumed")
+        try await restarted.resumeLocalTask(binding, generation: state.ownerGeneration, tokenStore: tokens, auth: auth) {
+            resumed.fulfill()
+        }
+        await fulfillment(of: [resumed], timeout: 1)
+    }
+
+    @MainActor
+    func testManagerRecoveryResumesSuspendedTaskInsteadOfCountingItAsRunning() async throws {
+        let (store, _, root, tokens) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        _ = try await store.applyLocal(.registered([row()], .init()), generation: state.ownerGeneration)
+        let (_, operation) = try await store.beginLocalPipeline(id: "download", generation: state.ownerGeneration)
+        let lease = try await store.localLease(downloadID: "download")
+        let delegate = DownloadSessionDelegate(parkingRoot: root, identifier: "ownership-test.\(UUID())")
+        let transferID = UUID()
+        let task = delegate.prepare(request: URLRequest(url: URL(string: "http://127.0.0.1:9/prepared-fixture")!), transferID: transferID)
+        let binding = DownloadTaskBinding(transferID: transferID, sessionID: delegate.identifier,
+            taskID: task.taskIdentifier, lease: lease, operationID: operation)
+        _ = try await store.bindLocalTask(binding, generation: state.ownerGeneration)
+        XCTAssertEqual(task.state, .suspended)
+        let manager = DownloadManager(permitOwnershipTransfer: true, rootOverride: root, tokenStore: tokens,
+            sessionDelegate: delegate, captureAuthority: { await tokens.captureDurableAccountAuth() })
+        let activated = await manager.activateScopeIfNeeded()
+        XCTAssertTrue(activated)
+        await manager.recoverTransfers()
+        XCTAssertNotEqual(task.state, .suspended)
+        task.cancel()
+        manager.clearForSignOut()
     }
 
     func testSharedAssetScopeRejectsDifferentProfileAndTraversal() async throws {
