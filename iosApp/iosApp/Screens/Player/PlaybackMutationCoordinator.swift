@@ -26,6 +26,12 @@ actor PlaybackMutationCoordinator {
     private let store: PlaybackMutationStore
     private let retryDelays: [Duration]
     private var contexts: [String: Context] = [:]
+    private struct StopIntent {
+        let position: Double?
+        let isPaused: Bool
+        var proposed: PlaybackSequencedStop?
+    }
+    private var stopIntents: [UUID: StopIntent] = [:]
     private var draining: Set<UUID> = []
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared, store: PlaybackMutationStore = .shared,
@@ -63,7 +69,9 @@ actor PlaybackMutationCoordinator {
 
     func report(sessionID: String, position: Double, isPaused: Bool) async throws {
         guard let context = contexts[sessionID] else { throw PlaybackSequencedError.invalidSession }
+        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
         let auth = try await currentAuth(context.authority)
+        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
         let sample = try await store.prepareProgress(context.recordID, authority: context.authority,
             position: position, isPaused: isPaused)
         let receipt = try await api.reportSequencedPlaybackProgress(sessionID: sessionID, sample: sample, auth: auth)
@@ -74,15 +82,26 @@ actor PlaybackMutationCoordinator {
     @discardableResult
     func stop(sessionID: String, position: Double?, isPaused: Bool) async throws -> Bool {
         guard let context = contexts[sessionID] else { throw PlaybackSequencedError.invalidSession }
+        if stopIntents[context.recordID] == nil {
+            stopIntents[context.recordID] = StopIntent(position: position, isPaused: isPaused)
+        }
+        guard draining.insert(context.recordID).inserted else { return false }
+        defer { draining.remove(context.recordID) }
         await PlaybackStopNotices.shared.setPending(context.recordID, true)
-        let stop = try await store.prepareStop(context.recordID, authority: context.authority, position: position, isPaused: isPaused)
+        var intent = stopIntents[context.recordID]!
+        if intent.proposed == nil {
+            intent.proposed = try await store.proposedStop(context.recordID, authority: context.authority,
+                position: intent.position, isPaused: intent.isPaused)
+            stopIntents[context.recordID] = intent
+        }
+        // Keep the exact UUID and sample if durable publication fails. No request
+        // may leave this coordinator until that same intent is persisted.
+        let stop = try await store.persistStop(context.recordID, authority: context.authority, stop: intent.proposed!)
         let saved = try await store.session(context.recordID, authority: context.authority)
         if saved.stopState == .terminal {
             await PlaybackStopNotices.shared.setPending(context.recordID, false)
             return true
         }
-        guard draining.insert(context.recordID).inserted else { return false }
-        defer { draining.remove(context.recordID) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(30))
         for attempt in 0...retryDelays.count {
             do {
@@ -110,6 +129,10 @@ actor PlaybackMutationCoordinator {
     /// loaded into this context map automatically after process restart.
     func retryPendingStops() async {
         for context in Array(contexts.values) {
+            if stopIntents[context.recordID] != nil {
+                _ = try? await stop(sessionID: context.sessionID, position: nil, isPaused: true)
+                continue
+            }
             guard let session = try? await store.session(context.recordID, authority: context.authority),
                   session.stop != nil, session.stopState != .terminal else { continue }
             _ = try? await stop(sessionID: context.sessionID, position: nil, isPaused: true)

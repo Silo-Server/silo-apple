@@ -3,7 +3,7 @@ import XCTest
 @testable import Silo
 
 final class PlaybackSequencedTransportTests: XCTestCase {
-    private func fixture() async throws -> (PlaybackMutationCoordinator, TokenStore, CapturedDurableAccountAuth) {
+    private func fixture(writer: PlaybackTestWriter? = nil) async throws -> (PlaybackMutationCoordinator, TokenStore, CapturedDurableAccountAuth) {
         let name = "PlaybackSequencedTransportTests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil), defaults: SharedDefaults(suite: defaults, standard: defaults))
@@ -18,13 +18,44 @@ final class PlaybackSequencedTransportTests: XCTestCase {
         let http = HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokens)
         let api = SiloAPI(http: http, tokenStore: tokens)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        let store = PlaybackMutationStore(url: root.appendingPathComponent("sessions.json"))
+        let store = PlaybackMutationStore(url: root.appendingPathComponent("sessions.json"), write: { data, url in
+            if let writer { try writer.write(data, url) } else { try data.write(to: url, options: .atomic) }
+        })
         addTeardownBlock {
             try? FileManager.default.removeItem(at: root)
             UserDefaults().removePersistentDomain(forName: name)
             SequencedPlaybackProtocol.reset()
         }
         return (PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: []), tokens, auth)
+    }
+
+    func testAppRetryPersistsOriginalStopAfterDiskFailureAndPlayerTeardown() async throws {
+        let writer = PlaybackTestWriter()
+        let (owner, _, auth) = try await fixture(writer: writer)
+        try await owner.register(sessionID: "session", features: [PlaybackSequencedContract.feature], auth: auth)
+        writer.fail(true)
+        do { _ = try await owner.stop(sessionID: "session", position: 17, isPaused: false); XCTFail() } catch {}
+        XCTAssertTrue(SequencedPlaybackProtocol.requests().isEmpty)
+        // The player has gone away. Only the application-level Retry remains.
+        writer.fail(false)
+        SequencedPlaybackProtocol.status(202)
+        await owner.retryPendingStops()
+        SequencedPlaybackProtocol.status(200)
+        await owner.retryPendingStops()
+        let requests = SequencedPlaybackProtocol.requests()
+        XCTAssertEqual(requests.count, 2)
+        let stop = try JSONDecoder().decode(PlaybackSequencedStop.self, from: requests[0].1)
+        XCTAssertEqual(stop.sample?.position, 17)
+        XCTAssertEqual(stop.sample?.isPaused, false)
+        XCTAssertEqual(requests[0].1, requests[1].1)
+        let failed = try XCTUnwrap(writer.failedBody())
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: failed) as? [String: Any])
+        // UUID-keyed dictionaries encode as alternating key/value arrays.
+        let sessions = try XCTUnwrap(object["sessions"] as? [Any])
+        let session = try XCTUnwrap(sessions[1] as? [String: Any])
+        let proposed = try JSONDecoder().decode(PlaybackSequencedStop.self,
+            from: JSONSerialization.data(withJSONObject: try XCTUnwrap(session["stop"])))
+        XCTAssertEqual(stop, proposed)
     }
 
     func testDrainingRetryRetainsExactBodyAndCapturedProfile() async throws {
@@ -130,4 +161,17 @@ private final class SequencedPlaybackProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+private final class PlaybackTestWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failing = false
+    private var failed: Data?
+    func fail(_ value: Bool) { lock.lock(); defer { lock.unlock() }; failing = value }
+    func failedBody() -> Data? { lock.lock(); defer { lock.unlock() }; return failed }
+    func write(_ data: Data, _ url: URL) throws {
+        lock.lock(); defer { lock.unlock() }
+        if failing { failed = data; throw CocoaError(.fileWriteOutOfSpace) }
+        try data.write(to: url, options: .atomic)
+    }
 }

@@ -115,23 +115,34 @@ actor PlaybackMutationStore {
         try persist(file)
     }
 
-    func prepareStop(_ id: UUID, authority: PlaybackMutationAuthority, position: Double?,
-                     isPaused: Bool) throws -> PlaybackSequencedStop {
-        var file = try read()
-        guard var session = file.sessions[id], session.authority == authority else { throw PlaybackSequencedError.authorityChanged }
+    func proposedStop(_ id: UUID, authority: PlaybackMutationAuthority, position: Double?,
+                      isPaused: Bool) throws -> PlaybackSequencedStop {
+        let session = try session(id, authority: authority)
         if let stop = session.stop { return stop }
         let sample: PlaybackSequencedSample?
         if let position, position.isFinite, position >= 0 {
             guard session.allocatedSequence < Int64.max else { throw PlaybackSequencedError.invalidSample }
             sample = try PlaybackSequencedSample(sequence: session.allocatedSequence + 1, position: position, isPaused: isPaused)
-            session.allocatedSequence += 1
         } else { sample = nil }
-        let stop = PlaybackSequencedStop(stopID: UUID(), sample: sample)
+        return PlaybackSequencedStop(stopID: UUID(), sample: sample)
+    }
+
+    func persistStop(_ id: UUID, authority: PlaybackMutationAuthority, stop: PlaybackSequencedStop) throws -> PlaybackSequencedStop {
+        var file = try read()
+        guard var session = file.sessions[id], session.authority == authority else { throw PlaybackSequencedError.authorityChanged }
+        if let saved = session.stop { return saved }
+        session.allocatedSequence = max(session.allocatedSequence, stop.sample?.sequence ?? 0)
         session.stop = stop
         session.stopState = .pending
         file.sessions[id] = session
         try persist(file)
         return stop
+    }
+
+    func prepareStop(_ id: UUID, authority: PlaybackMutationAuthority, position: Double?,
+                     isPaused: Bool) throws -> PlaybackSequencedStop {
+        let stop = try proposedStop(id, authority: authority, position: position, isPaused: isPaused)
+        return try persistStop(id, authority: authority, stop: stop)
     }
 
     func acknowledgeStop(_ id: UUID, authority: PlaybackMutationAuthority, sent: PlaybackSequencedStop,
