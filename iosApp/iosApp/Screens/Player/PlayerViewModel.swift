@@ -2250,6 +2250,7 @@ class PlayerViewModel {
         nextUpOnDeckItems = []
         isLoadingNextUpOnDeck = true
 
+        let auth = trackPreferenceAuth
         nextUpOnDeckTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             defer {
@@ -2259,9 +2260,13 @@ class PlayerViewModel {
             }
 
             do {
-                let response = try await SiloAPI.shared.homeSections()
-                guard !Task.isCancelled, !self.isDisposed else { return }
-                self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                let response = try await SiloAPI.shared.homeSections(auth: auth)
+                let current = await StartupContentPrefetcher.homeResponseIsCurrent(response)
+                guard current, !Task.isCancelled, !self.isDisposed else { return }
+                let items = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                let mayPublish = await StartupContentPrefetcher.homeResponseIsCurrent(response)
+                guard mayPublish, !Task.isCancelled, !self.isDisposed else { return }
+                self.nextUpOnDeckItems = items
                 self.isLoadingNextUpOnDeck = false
                 self.updateNextUpPresentation(for: self.currentTime)
             } catch {

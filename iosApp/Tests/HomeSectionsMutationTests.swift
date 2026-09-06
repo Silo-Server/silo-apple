@@ -105,6 +105,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             }
         )
 
+        viewModel.sections = sections
         await viewModel.dismissContinueWatchingItem(target)
 
         let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
@@ -143,6 +144,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             }
         )
 
+        viewModel.sections = sections
         await viewModel.dismissContinueWatchingItem(target)
 
         let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
@@ -168,6 +170,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             dismissNextUp: { _, _ in XCTFail("unexpected next_up dismissal") }
         )
 
+        viewModel.sections = sections
         await viewModel.dismissContinueWatchingItem(target)
 
         let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
@@ -191,6 +194,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             }
         )
 
+        viewModel.sections = sections
         await viewModel.dismissContinueWatchingItem(target)
 
         let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
@@ -225,6 +229,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             }
         )
 
+        viewModel.sections = sections
         let succeeded = await viewModel.setWatched(target, played: true)
 
         let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
@@ -255,6 +260,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             }
         )
 
+        viewModel.sections = sections
         let succeeded = await viewModel.setWatched(target, played: true)
 
         let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
@@ -279,7 +285,8 @@ final class HomeSectionsMutationTests: XCTestCase {
                 id: "continue", type: "continue_watching", totalCount: 1, items: [updated]
             )])
             ResponseCache.shared.set(stale, for: CacheKey.homeSections)
-            let model = HomeViewModel(fetchHomeSections: { fresh })
+            let model = HomeViewModel(fetchHomeSections: { fresh }, responseIsCurrent: { _ in true })
+            model.sections = stale.sections
             let refresh = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
             let received = expectation(description: "Home refresh after \(contentId) progress write")
             let observer = NotificationCenter.default.addObserver(

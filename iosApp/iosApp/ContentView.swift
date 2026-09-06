@@ -936,7 +936,10 @@ struct ContentView: View {
         didAttemptDebugAutoPlay = true
 
         do {
-            let sections = try await SiloAPI.shared.homeSections()
+            let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+            let sections = try await SiloAPI.shared.homeSections(auth: auth)
+            let current = await StartupContentPrefetcher.homeResponseIsCurrent(sections)
+            guard current, !Task.isCancelled else { return }
             guard let contentId = sections.sections.lazy
                 .compactMap({ $0.items.first?.contentId })
                 .first else {

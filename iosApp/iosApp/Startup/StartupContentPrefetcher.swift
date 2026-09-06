@@ -32,7 +32,8 @@ enum StartupContentPrefetcher {
     ]
 
     private static var profilesTask: Task<[UserProfile], Error>?
-    private static var homeSectionsTask: Task<SectionsResponse, Error>?
+    private static var homeSectionsTask: RecommendationFlight?
+    private static var latestHomeFlight: UUID?
     private struct RecommendationFlight {
         let id: UUID
         let auth: CapturedOrdinaryRequestAuth
@@ -74,7 +75,7 @@ enum StartupContentPrefetcher {
     static func resetProfileScopedPrefetches() {
         profileScopedGeneration += 1
 
-        homeSectionsTask?.cancel()
+        homeSectionsTask?.task.cancel()
         recommendationsTask?.task.cancel()
         userLibrariesTask?.cancel()
         librarySectionsTasks.values.forEach { $0.cancel() }
@@ -84,6 +85,7 @@ enum StartupContentPrefetcher {
         #endif
 
         homeSectionsTask = nil
+        latestHomeFlight = nil
         recommendationsTask = nil
         latestRecommendationFlight = nil
         userLibrariesTask = nil
@@ -159,8 +161,9 @@ enum StartupContentPrefetcher {
     /// response cache is intentionally left intact for the caller to update.
     static func invalidateHomeSectionsInFlight() {
         homeSectionsGeneration += 1
-        homeSectionsTask?.cancel()
+        homeSectionsTask?.task.cancel()
         homeSectionsTask = nil
+        latestHomeFlight = nil
     }
 
     /// Capture the active profile/server generation when a player is created.
@@ -176,31 +179,57 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func fetchHomeSections() async throws -> SectionsResponse {
+    static func homeResponseIsCurrent(_ response: SectionsResponse, tokens: TokenStore = .shared) async -> Bool {
+        guard let auth = response.homeReadAuth else { return false }
+        return await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+    }
+
+    static func cachedHomeSections(tokens: TokenStore = .shared) async -> SectionsResponse? {
         let profileGeneration = profileScopedGeneration
         let homeGeneration = homeSectionsGeneration
-        let requestProfileID = AuthService.shared.profileId
+        guard let response: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections),
+              await homeResponseIsCurrent(response, tokens: tokens),
+              profileGeneration == profileScopedGeneration, homeGeneration == homeSectionsGeneration else { return nil }
+        return response
+    }
+
+    static func fetchHomeSections(auth original: CapturedOrdinaryRequestAuth? = nil,
+                                  api: SiloAPI = .shared, tokens: TokenStore = .shared) async throws -> SectionsResponse {
+        let profileGeneration = profileScopedGeneration
+        let homeGeneration = homeSectionsGeneration
+        let captured: CapturedOrdinaryRequestAuth?
+        if let original { captured = original }
+        else { captured = await tokens.captureOrdinaryRequestAuth() }
+        guard let auth = captured,
+              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try validateProfileScopedGeneration(profileGeneration)
+        try validateHomeSectionsGeneration(homeGeneration)
+        try Task.checkCancellation()
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("home_sections", isOriginator: homeSectionsTask == nil)
         #endif
-        let task: Task<SectionsResponse, Error>
-        if let homeSectionsTask {
-            task = homeSectionsTask
+        let flight: RecommendationFlight
+        if let current = homeSectionsTask, sameRecommendationOwner(current.auth, auth) {
+            flight = current
         } else {
-            task = Task {
-                try await SiloAPI.shared.homeSections()
-            }
-            homeSectionsTask = task
+            homeSectionsTask?.task.cancel()
+            flight = RecommendationFlight(id: UUID(), auth: auth, task: Task {
+                try await api.homeSections(auth: auth)
+            })
+            homeSectionsTask = flight
+            latestHomeFlight = flight.id
         }
-
         do {
-            let response = try await task.value
+            let response = try await flight.task.value
+            let current = await homeResponseIsCurrent(response, tokens: tokens)
             try validateProfileScopedGeneration(profileGeneration)
             try validateHomeSectionsGeneration(homeGeneration)
-            if profileScopedGeneration == profileGeneration,
-               homeSectionsGeneration == homeGeneration {
-                homeSectionsTask = nil
-            }
+            try Task.checkCancellation()
+            guard current else { throw HTTPError.requestIdentityChanged }
+            guard latestHomeFlight == flight.id else { throw CancellationError() }
+            if homeSectionsTask?.id == flight.id { homeSectionsTask = nil }
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
@@ -208,27 +237,24 @@ enum StartupContentPrefetcher {
             prefetchHomeArtwork(for: response)
             return response
         } catch {
-            if profileScopedGeneration == profileGeneration,
-               homeSectionsGeneration == homeGeneration {
-                homeSectionsTask = nil
-            }
-            // Emitted before the recovery call: `recoverFromInvalidProfile`
-            // tears the session down to profile selection, and the breadcrumb
-            // explaining why must precede the transition it causes.
+            if homeSectionsTask?.id == flight.id { homeSectionsTask = nil }
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
-            if let requestProfileID,
-               Self.indicatesInvalidProfile(error) {
-                await AuthService.shared.recoverFromInvalidProfile(
-                    expectedProfileID: requestProfileID
-                )
+            if Self.indicatesInvalidProfile(error),
+               await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+               profileScopedGeneration == profileGeneration, homeSectionsGeneration == homeGeneration,
+               !Task.isCancelled, let profile = auth.profileId {
+                await AuthService.shared.recoverFromInvalidProfile(expectedProfileID: profile)
             }
             throw error
         }
     }
 
     nonisolated static func indicatesInvalidProfile(_ error: Error) -> Bool {
+        if case APIv2Error.problem(let problem) = error {
+            return ["profile_unverified", "profile_not_found"].contains(problem.identifier)
+        }
         guard let error = error as? HTTPError else { return false }
         return ["profile_unverified", "profile_not_found"].contains(error.serverErrorCode)
     }

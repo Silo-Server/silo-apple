@@ -336,6 +336,8 @@ private struct TVHomeSectionsCustomizationSheet: View {
 
     @State private var preferences = HomeSectionPreferences.shared
     @State private var sections: [ResolvedSection] = []
+    @State private var homeReadGeneration = 0
+    @State private var displayedHomeResponse: SectionsResponse?
     @State private var isLoading = false
     @State private var loadFailed = false
     @State private var isEditing = false
@@ -565,22 +567,35 @@ private struct TVHomeSectionsCustomizationSheet: View {
     }
 
     private func loadSections() async {
+        homeReadGeneration += 1
+        let generation = homeReadGeneration
+        if let displayedHomeResponse {
+            let current = await StartupContentPrefetcher.homeResponseIsCurrent(displayedHomeResponse)
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
+            if !current { sections = []; self.displayedHomeResponse = nil }
+        }
         preferences.refresh()
 
-        if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
+        if let cached = await StartupContentPrefetcher.cachedHomeSections(),
+           generation == homeReadGeneration, !Task.isCancelled {
             sections = cached.sections.filter { !$0.items.isEmpty }
+            displayedHomeResponse = cached
         }
 
+        guard generation == homeReadGeneration, !Task.isCancelled else { return }
         isLoading = sections.isEmpty
         loadFailed = false
-        defer { isLoading = false }
+        defer { if generation == homeReadGeneration { isLoading = false } }
 
         do {
             let response = try await StartupContentPrefetcher.fetchHomeSections()
-            guard !Task.isCancelled else { return }
+            let current = await StartupContentPrefetcher.homeResponseIsCurrent(response)
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
+            guard current else { sections = []; return }
             sections = response.sections.filter { !$0.items.isEmpty }
+            displayedHomeResponse = response
         } catch {
-            guard !Task.isCancelled else { return }
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
             loadFailed = sections.isEmpty
         }
     }

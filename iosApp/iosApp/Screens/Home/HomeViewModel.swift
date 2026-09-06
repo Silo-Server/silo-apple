@@ -178,6 +178,9 @@ class HomeViewModel {
     private let dismissNextUp: DismissNextUp
     private let updateWatchedState: SetWatched
     private let fetchHomeSections: FetchHomeSections
+    private let responseIsCurrent: (SectionsResponse) async -> Bool
+    private var loadGeneration = 0
+    private var displayedHomeResponse: SectionsResponse?
 
     var isShowingActionError: Bool {
         get { actionError != nil }
@@ -213,45 +216,49 @@ class HomeViewModel {
         },
         fetchHomeSections: @escaping FetchHomeSections = {
             try await StartupContentPrefetcher.fetchHomeSections()
+        },
+        responseIsCurrent: @escaping (SectionsResponse) async -> Bool = {
+            await StartupContentPrefetcher.homeResponseIsCurrent($0)
         }
     ) {
         self.dismissContinueWatching = dismissContinueWatching
         self.dismissNextUp = dismissNextUp
         self.updateWatchedState = setWatched
         self.fetchHomeSections = fetchHomeSections
-
-        // Hydrate from the shared cache so the first render after a
-        // navigation paints last-known data without any network wait.
-        if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
-            sections = cached.sections.filter { !$0.items.isEmpty }
-        }
+        self.responseIsCurrent = responseIsCurrent
     }
 
     func loadSections() async {
-        if sections.isEmpty {
-            isLoading = true
-        } else {
-            isRefreshing = true
+        loadGeneration += 1
+        let generation = loadGeneration
+        if let displayedHomeResponse {
+            let current = await responseIsCurrent(displayedHomeResponse)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            if !current { sections = []; self.displayedHomeResponse = nil }
         }
+        if let cached = await StartupContentPrefetcher.cachedHomeSections() {
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            sections = cached.sections.filter { !$0.items.isEmpty }
+            displayedHomeResponse = cached
+        }
+        guard generation == loadGeneration, !Task.isCancelled else { return }
+        isLoading = sections.isEmpty
+        isRefreshing = !sections.isEmpty
         error = nil
-
+        defer {
+            if generation == loadGeneration { isLoading = false; isRefreshing = false }
+        }
         do {
-            try await fetchAndApplySections()
+            try await fetchAndApplySections(generation: generation)
         } catch let err {
-            // Don't blow away painted content on a transient failure —
-            // surface the error only when there's nothing to show.
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             if sections.isEmpty {
                 let state = ErrorState(err)
                 if state.isTransient {
-                    await retryTransientInitialLoad()
-                } else {
-                    self.error = state
-                }
+                    await retryTransientInitialLoad(generation: generation)
+                } else { self.error = state }
             }
         }
-
-        isLoading = false
-        isRefreshing = false
     }
 
     /// The Continue Watching row mixes two kinds of cards, and the server keys
@@ -310,6 +317,9 @@ class HomeViewModel {
             // removed item. Invalidate that generation before committing the
             // authoritative local/cache update so a late response cannot put it
             // back on screen.
+            loadGeneration += 1
+            isLoading = false
+            isRefreshing = false
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
             sections = removal.mutate(sections)
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
@@ -337,6 +347,9 @@ class HomeViewModel {
 
             // Never join or apply a Home request that began before this
             // mutation. It can carry the old Next Up membership.
+            loadGeneration += 1
+            isLoading = false
+            isRefreshing = false
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
 
             if played {
@@ -364,19 +377,24 @@ class HomeViewModel {
         }
     }
 
-    private func fetchAndApplySections() async throws {
+    private func fetchAndApplySections(generation: Int) async throws {
         let response = try await fetchHomeSections()
+        let current = await responseIsCurrent(response)
+        guard generation == loadGeneration, !Task.isCancelled else { throw CancellationError() }
+        guard current else { sections = []; throw HTTPError.requestIdentityChanged }
         sections = response.sections.filter { !$0.items.isEmpty }
+        displayedHomeResponse = response
         error = nil
     }
 
-    private func retryTransientInitialLoad() async {
+    private func retryTransientInitialLoad(generation: Int) async {
         try? await Task.sleep(nanoseconds: 750_000_000)
-        guard !Task.isCancelled else { return }
+        guard generation == loadGeneration, !Task.isCancelled else { return }
 
         do {
-            try await fetchAndApplySections()
+            try await fetchAndApplySections(generation: generation)
         } catch {
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             self.error = ErrorState(error)
         }
     }

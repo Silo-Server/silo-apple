@@ -24,6 +24,101 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private var homeBody: Data {
+        Data(#"{"sections":[{"id":"continue","section_type":"continue_watching","title":"Continue","featured":false,"item_limit":12,"total_count":20,"is_custom":false,"customized":false,"items":[{"content_id":"episode:1","type":"episode","title":"One","series_id":"series:1","season_number":0,"episode_number":1,"position_seconds":25,"duration_seconds":100,"progress_updated_at":"2026-09-06T00:00:00.000Z"}]}]}"#.utf8)
+    }
+
+    func testHomeV2PreservesSectionsAndPinsAuthority() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await v2.homeSections(imageSize: "medium", auth: XCTUnwrap(captured)); XCTFail("PIN rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([homeBody])
+        let response = try await v2.homeSections(imageSize: "medium", auth: XCTUnwrap(current))
+        XCTAssertEqual(response.sections.first?.totalCount, 20)
+        XCTAssertEqual(response.sections.first?.items.first?.seasonNumber, 0)
+        XCTAssertEqual(response.sections.first?.items.first?.progressUpdatedAt, "2026-09-06T00:00:00.000Z")
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.absoluteString,
+            "https://libraries.example/api/v2/home/sections?image_size=medium")
+        let encoded = try JSONEncoder().encode(response)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("homeReadAuth"))
+        LibraryReadProtocol.enqueue([homeBody])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.homeSections(imageSize: nil, auth: XCTUnwrap(current)); XCTFail("foreign reply") } catch {}
+    }
+
+    func testHomePrefetchInvalidationRefusesLateCacheAndForeignOwner() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        defer {
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.remove(CacheKey.homeSections)
+        }
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        LibraryReadProtocol.enqueue([homeBody])
+        LibraryReadProtocol.beforeNextReply { await MainActor.run { StartupContentPrefetcher.invalidateHomeSectionsInFlight() } }
+        do { _ = try await StartupContentPrefetcher.fetchHomeSections(api: api, tokens: tokens); XCTFail("pre-mutation read cached") } catch {}
+        let none: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
+        XCTAssertNil(none)
+        LibraryReadProtocol.enqueue([homeBody])
+        _ = try await StartupContentPrefetcher.fetchHomeSections(api: api, tokens: tokens)
+        let cached = await StartupContentPrefetcher.cachedHomeSections(tokens: tokens)
+        XCTAssertNotNil(cached)
+        await tokens.setProfileToken("new")
+        let foreign = await StartupContentPrefetcher.cachedHomeSections(tokens: tokens)
+        XCTAssertNil(foreign)
+    }
+
+    func testHomeModelRechecksRunAfterSuspendedAuthority() async throws {
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        let decoder = HTTPClient.makeJSONDecoder()
+        let original = try decoder.decode(SectionsResponse.self, from: homeBody)
+        let replacement = SectionsResponse(sections: [])
+        var reads = 0
+        let oldArrival = expectation(description: "old authority suspended")
+        let newArrival = expectation(description: "new authority suspended")
+        let gate = MetadataAuthorityGate(passFirst: false, old: oldArrival, new: newArrival)
+        let model = HomeViewModel(fetchHomeSections: {
+            reads += 1
+            return reads == 1 ? original : replacement
+        }, responseIsCurrent: { _ in await gate.check() })
+        let old = Task { await model.loadSections() }
+        await fulfillment(of: [oldArrival], timeout: 2)
+        let new = Task { await model.loadSections() }
+        await fulfillment(of: [newArrival], timeout: 2)
+        await gate.releaseNew()
+        await new.value
+        await gate.releaseOld(true)
+        await old.value
+        XCTAssertTrue(model.sections.isEmpty)
+        XCTAssertFalse(model.isLoading)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(reads, 2)
+    }
+
+    func testHomeDismissalDuringAuthorityCheckCannotResurrectCard() async throws {
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        let response = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self, from: homeBody)
+        let item = try XCTUnwrap(response.sections.first?.items.first)
+        let arrived = expectation(description: "read awaiting authority")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        let model = HomeViewModel(dismissContinueWatching: { _, _ in },
+            fetchHomeSections: { response }, responseIsCurrent: { _ in await gate.check() })
+        model.sections = response.sections
+        let read = Task { await model.loadSections() }
+        await fulfillment(of: [arrived], timeout: 2)
+        await model.dismissContinueWatchingItem(item)
+        await gate.releaseOld(true)
+        await read.value
+        XCTAssertTrue(model.sections.first?.items.isEmpty == true)
+        XCTAssertFalse(model.isLoading)
+        XCTAssertFalse(model.isRefreshing)
+    }
+
     func testMembershipReadsUseExactEntriesAndProblemAbsence() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

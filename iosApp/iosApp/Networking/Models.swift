@@ -379,6 +379,9 @@ struct ResolvedSection: Codable, Identifiable {
 
 struct SectionsResponse: Codable {
     let sections: [ResolvedSection]
+    /// Process-memory provenance only; never serialized into wire/cache documents.
+    var homeReadAuth: CapturedOrdinaryRequestAuth? = nil
+    private enum CodingKeys: String, CodingKey { case sections }
 
     init(sections: [ResolvedSection]) {
         self.sections = Self.strippingUnsupportedItems(sections)

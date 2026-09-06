@@ -574,6 +574,8 @@ struct InterfaceCustomizationView: View {
 private struct HomeSectionsCustomizationView: View {
     @State private var preferences = HomeSectionPreferences.shared
     @State private var sections: [ResolvedSection] = []
+    @State private var homeReadGeneration = 0
+    @State private var displayedHomeResponse: SectionsResponse?
     @State private var isLoading = false
     @State private var loadFailed = false
 
@@ -669,12 +671,22 @@ private struct HomeSectionsCustomizationView: View {
     }
 
     private func loadSections(forceRefresh: Bool = false) async {
+        homeReadGeneration += 1
+        let generation = homeReadGeneration
+        if let displayedHomeResponse {
+            let current = await StartupContentPrefetcher.homeResponseIsCurrent(displayedHomeResponse)
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
+            if !current { sections = []; self.displayedHomeResponse = nil }
+        }
         preferences.refresh()
 
-        if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
+        if let cached = await StartupContentPrefetcher.cachedHomeSections(),
+           generation == homeReadGeneration, !Task.isCancelled {
             sections = cached.sections.filter { !$0.items.isEmpty }
+            displayedHomeResponse = cached
         }
 
+        guard generation == homeReadGeneration, !Task.isCancelled else { return }
         _ = forceRefresh
         // Cached rows paint immediately; this awaited refresh remains owned by
         // the view task so it is cancelled cleanly when the editor disappears.
@@ -682,16 +694,26 @@ private struct HomeSectionsCustomizationView: View {
     }
 
     private func refreshFromServer() async {
+        homeReadGeneration += 1
+        let generation = homeReadGeneration
+        if let displayedHomeResponse {
+            let current = await StartupContentPrefetcher.homeResponseIsCurrent(displayedHomeResponse)
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
+            if !current { sections = []; self.displayedHomeResponse = nil }
+        }
         isLoading = sections.isEmpty
         loadFailed = false
-        defer { isLoading = false }
+        defer { if generation == homeReadGeneration { isLoading = false } }
 
         do {
             let response = try await StartupContentPrefetcher.fetchHomeSections()
-            guard !Task.isCancelled else { return }
+            let current = await StartupContentPrefetcher.homeResponseIsCurrent(response)
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
+            guard current else { sections = []; return }
             sections = response.sections.filter { !$0.items.isEmpty }
+            displayedHomeResponse = response
         } catch {
-            guard !Task.isCancelled else { return }
+            guard generation == homeReadGeneration, !Task.isCancelled else { return }
             loadFailed = sections.isEmpty
         }
     }

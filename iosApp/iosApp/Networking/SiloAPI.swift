@@ -163,8 +163,9 @@ actor SiloAPI {
 
     // --- Home / sections ---
 
-    func homeSections() async throws -> SectionsResponse {
-        try await http.get("/api/v1/home/sections", query: await imageSizeQuery)
+    func homeSections(auth: CapturedOrdinaryRequestAuth?) async throws -> SectionsResponse {
+        guard let auth else { throw HTTPError.requestIdentityChanged }
+        return try await v2.homeSections(imageSize: await imageSizeQuery["image_size"], auth: auth)
     }
 
     func dismissContinueWatchingItem(contentId: String, progressUpdatedAt: String) async throws {
