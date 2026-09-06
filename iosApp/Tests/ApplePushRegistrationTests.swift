@@ -69,6 +69,30 @@ final class ApplePushRegistrationTests: XCTestCase {
     }
 
     @MainActor
+    func testOrderedServerReturnReusesIntentAndConflictsStayOnTheirServer() async throws {
+        let (_, tokens, keychain, _) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let a = try XCTUnwrap(captured)
+        let journal = ApplePushRegistrationJournal(keychain: keychain)
+        let first = try journal.prepare(body: orderedBody, auth: a)
+        let b = CapturedOrdinaryRequestAuth(account: RefreshAccountIdentity(serverId: "other", serverURL: "https://other.example", credentialGenerationID: UUID()),
+            credentialOwner: .persistentServer(serverId: "other"), accessToken: "other-access", profileId: "profile", profileToken: nil)
+        let second = try journal.prepare(body: orderedBody, auth: b)
+        XCTAssertEqual(second.generation, 2)
+        let returning = try ApplePushRegistrationJournal(keychain: keychain).prepare(body: orderedBody, auth: a)
+        XCTAssertEqual(returning.generation, first.generation)
+        XCTAssertEqual(returning.installationKey, first.installationKey)
+        XCTAssertEqual(returning.authority, first.authority)
+        XCTAssertTrue(try journal.isCurrent(first))
+        try journal.requireReconciliation(second)
+        let stillA = try journal.prepare(body: orderedBody, auth: a)
+        XCTAssertEqual(stillA.generation, 1)
+        XCTAssertTrue(try journal.isCurrent(first))
+        XCTAssertFalse(try journal.isCurrent(second))
+        XCTAssertThrowsError(try journal.prepare(body: orderedBody, auth: b))
+    }
+
+    @MainActor
     func testOrderedRegistrationSuccessAndRenewalReuseExactPersistedWire() async throws {
         let (api, tokens, keychain, display) = try await orderedFixture()
         let captured = await tokens.captureOrdinaryRequestAuth()
@@ -92,6 +116,24 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertEqual(writes[0].0.value(forHTTPHeaderField: "X-Push-Installation-Key"), writes[1].0.value(forHTTPHeaderField: "X-Push-Installation-Key"))
         XCTAssertEqual(writes[0].1, writes[1].1)
         XCTAssertEqual(try journal.latest()?.generation, 1)
+    }
+
+    @MainActor
+    func testOrderedForeignDisplayTokenCannotSuppressSameGenerationRenewal() async throws {
+        let (api, tokens, keychain, display) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let journal = ApplePushRegistrationJournal(keychain: keychain)
+        let engine = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: journal, display: display)
+        AppleOrderedProtocol.reply(200, orderedReceipt(token: "current-server"))
+        try await engine.register(body: orderedBody, auth: auth)
+        // A retained foreign slot must not make this server's renewal look current.
+        display.store("foreign-server", expiresAt: "2099-01-01T00:00:00Z", serverId: "other")
+        try await engine.register(body: orderedBody, auth: auth)
+        XCTAssertEqual(keychain.get(SharedStorage.applePushDisplayTokenAccount), "current-server")
+        let writes = AppleOrderedProtocol.requests().filter { $0.0.httpMethod == "POST" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes.map { $0.0.value(forHTTPHeaderField: "X-Push-Generation") }, ["1", "1"])
     }
 
     @MainActor

@@ -45,7 +45,8 @@ struct ApplePushDisplayTokenStore {
     /// parse, is treated as needing renewal: the metadata is written only
     /// alongside a successful Keychain write, so its absence means the
     /// token's state is unknown and a fresh registration is the safe move.
-    func hasCurrentToken() -> Bool {
+    func hasCurrentToken(forServerID serverID: String? = nil) -> Bool {
+        if let serverID, defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey) != serverID { return false }
         let stored = keychain.get(SharedStorage.applePushDisplayTokenAccount) ?? ""
         guard !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         guard let raw = defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey),
@@ -185,6 +186,10 @@ struct ApplePushOrderedAuthority: Codable, Equatable {
             accessToken: accessToken, profileId: profileID, profileToken: profileToken)
     }
 
+    var installationScope: String {
+        Data(serverID.utf8).base64EncodedString() + ":" + Data(serverURL.utf8).base64EncodedString()
+    }
+
     func sameOwner(as other: Self) -> Bool {
         serverID == other.serverID && serverURL == other.serverURL && epoch == other.epoch
             && profileID == other.profileID && profileToken == other.profileToken
@@ -217,7 +222,7 @@ final class ApplePushRegistrationJournal {
     private struct Record: Codable {
         let installationKey: String
         var intents: [ApplePushOrderedIntent]
-        var requiresReconciliation: Bool
+        var blockedScopes: [String]?
     }
     private let keychain: SharedKeychain
     private let writer: (String) -> Bool
@@ -242,6 +247,11 @@ final class ApplePushRegistrationJournal {
 
     func latest() throws -> ApplePushOrderedIntent? { try load()?.intents.last }
 
+    func latest(for auth: CapturedOrdinaryRequestAuth) throws -> ApplePushOrderedIntent? {
+        let scope = try ApplePushOrderedAuthority(auth).installationScope
+        return try load()?.intents.last { $0.authority.installationScope == scope }
+    }
+
     /// Serialize the journal currency check and credential write with every
     /// journal save, including a newer same-owner APNs intent.
     func credentialEffect(for intent: ApplePushOrderedIntent, clearing: Bool,
@@ -252,9 +262,9 @@ final class ApplePushRegistrationJournal {
             try ApplePushJournalLock.value.withLock {
                 guard let raw = try keychain.getChecked(account),
                       let record = try? JSONDecoder().decode(Record.self, from: Data(raw.utf8)),
-                      let last = record.intents.last, last.generation == intent.generation,
+                      let last = record.intents.last(where: { $0.authority.installationScope == intent.authority.installationScope }), last.generation == intent.generation,
                       last.installationKey == intent.installationKey, last.body == intent.body,
-                      last.authority == intent.authority, clearing || !record.requiresReconciliation else {
+                      last.authority == intent.authority, clearing || !(record.blockedScopes ?? []).contains(intent.authority.installationScope) else {
                     throw ApplePushOrderedError.conflict
                 }
                 try effect()
@@ -270,10 +280,11 @@ final class ApplePushRegistrationJournal {
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw ApplePushOrderedError.persistence }
             let key = Data(bytes).base64EncodedString().replacingOccurrences(of: "+", with: "-")
                 .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-            record = Record(installationKey: key, intents: [], requiresReconciliation: false)
+            record = Record(installationKey: key, intents: [], blockedScopes: [])
         }
-        guard !record.requiresReconciliation else { throw ApplePushOrderedError.conflict }
-        if let last = record.intents.last, last.body == body, last.authority.sameOwner(as: authority) { return last }
+        guard !(record.blockedScopes ?? []).contains(authority.installationScope) else { throw ApplePushOrderedError.conflict }
+        if let last = record.intents.last(where: { $0.authority.installationScope == authority.installationScope }),
+           last.body == body, last.authority.sameOwner(as: authority) { return last }
         let previous = record.intents.last?.generation ?? 0
         guard previous < Int64.max else { throw ApplePushOrderedError.conflict }
         let intent = ApplePushOrderedIntent(installationKey: record.installationKey, generation: previous + 1,
@@ -284,31 +295,35 @@ final class ApplePushRegistrationJournal {
     }
 
     func isCurrent(_ intent: ApplePushOrderedIntent) throws -> Bool {
-        guard let record = try load(), !record.requiresReconciliation, let last = record.intents.last else { return false }
+        guard let record = try load(), !(record.blockedScopes ?? []).contains(intent.authority.installationScope),
+              let last = record.intents.last(where: { $0.authority.installationScope == intent.authority.installationScope }) else { return false }
         return last.generation == intent.generation && last.installationKey == intent.installationKey
             && last.body == intent.body && last.authority == intent.authority
     }
 
     func requireReconciliation(_ intent: ApplePushOrderedIntent) throws {
-        guard var record = try load(), record.intents.last?.generation == intent.generation else { return }
-        record.requiresReconciliation = true
+        guard var record = try load(),
+              record.intents.last(where: { $0.authority.installationScope == intent.authority.installationScope })?.generation == intent.generation else { return }
+        record.blockedScopes = Array(Set((record.blockedScopes ?? []) + [intent.authority.installationScope]))
         try save(record)
     }
 
     func markDisplayApplied(_ intent: ApplePushOrderedIntent) throws {
-        guard var record = try load(), try isCurrent(intent) else { return }
-        record.intents[record.intents.count - 1].displayApplied = true
+        guard var record = try load(), try isCurrent(intent),
+              let index = record.intents.lastIndex(where: { $0.generation == intent.generation }) else { return }
+        record.intents[index].displayApplied = true
         try save(record)
     }
 
     func accept(_ response: ApplePushRegistrationResponse, for intent: ApplePushOrderedIntent, now: Date) throws {
-        guard var record = try load(), try isCurrent(intent), let last = record.intents.last else { throw ApplePushOrderedError.conflict }
+        guard var record = try load(), try isCurrent(intent),
+              let index = record.intents.lastIndex(where: { $0.generation == intent.generation }) else { throw ApplePushOrderedError.conflict }
+        let last = record.intents[index]
         guard response.generation == String(intent.generation), response.pushMode == intent.body.pushMode,
               !response.id.isEmpty, !response.serverDeviceId.isEmpty,
               last.receipt.map({ $0.id == response.id && $0.serverDeviceID == response.serverDeviceId }) ?? true else {
             throw ApplePushOrderedError.invalidReceipt
         }
-        let index = record.intents.count - 1
         record.intents[index].receipt = ApplePushAcceptedState(id: response.id, serverDeviceID: response.serverDeviceId,
             enabled: response.enabled, removed: response.removed)
         record.intents[index].displayApplied = false
@@ -337,7 +352,7 @@ final class ApplePushOrderedRegistration {
         let intent: ApplePushOrderedIntent
         do { intent = try journal.prepare(body: body, auth: auth) }
         catch ApplePushOrderedError.conflict {
-            if let latest = try journal.latest() { try await storeDisplay(nil, expiry: nil, intent: latest) }
+            if let latest = try journal.latest(for: auth) { try await storeDisplay(nil, expiry: nil, intent: latest) }
             throw ApplePushOrderedError.conflict
         }
         let original = intent.authority.auth
@@ -345,7 +360,7 @@ final class ApplePushOrderedRegistration {
             try await storeDisplay(nil, expiry: nil, intent: intent)
             return
         }
-        if intent.receipt != nil && intent.displayApplied == true && (display.hasCurrentToken() || (intent.renewAfter.map { $0 > now() } ?? false)) { return }
+        if intent.receipt != nil && intent.displayApplied == true && (display.hasCurrentToken(forServerID: original.account.serverId) || (intent.renewAfter.map { $0 > now() } ?? false)) { return }
         guard inFlight.insert(intent.generation).inserted else { return }
         defer { inFlight.remove(intent.generation) }
         do {
