@@ -15,9 +15,8 @@ struct DiagnosticsStatusResponse: Codable, Equatable {
     let maxManifestBytes: Int
     let retentionDays: Int
     let consentNoticeVersion: Int
-    /// Chunk payload size for the chunked upload fallback. Absent (nil) on
-    /// servers that predate chunked uploads; those can only take the
-    /// single-shot multipart upload.
+    /// Positive only when this API namespace supports process-local chunks.
+    /// Choose chunking before dispatch; never replace an uncertain upload.
     let uploadChunkBytes: Int?
 
     var serverInstanceID: String {
@@ -74,6 +73,12 @@ struct DiagnosticsChunkedUploadSession: Codable, Equatable {
     let uploadId: String
     let chunkBytes: Int
     let totalChunks: Int
+    let expiresAt: Date
+}
+
+private struct DiagnosticsChunkAcknowledgment: Decodable {
+    let receivedChunks: Int
+    let totalChunks: Int
 }
 
 actor DiagnosticsAPI {
@@ -123,102 +128,80 @@ actor DiagnosticsAPI {
         }
     }
 
-    // MARK: - Chunked upload fallback
+    // MARK: - Process-local chunk upload
 
-    /// Uploads via the chunked endpoints: init → sequential chunk PUTs →
-    /// complete. Used when the single-shot upload is rejected by an
-    /// intermediary body-size cap (`.requestBlockedByProxy`); every request
-    /// here stays under the server-advertised `upload_chunk_bytes` (768 KiB),
-    /// which clears nginx's default 1 MiB `client_max_body_size`.
-    ///
-    /// `destinationUnchanged` re-validates the upload's destination identity
-    /// before every request after init. HTTPClient resolves the active server
-    /// URL and auth per request, so a server/profile switch mid-sequence
-    /// would otherwise send the remaining chunk bodies to whatever
-    /// destination became active. When the check fails the upload stops with
-    /// a retryable error and no abort is attempted — the DELETE would target
-    /// the *new* destination; the original server's session TTL reclaims the
-    /// spool.
-    ///
-    /// On failure after init, the session is aborted best-effort so the
-    /// server can reclaim its spool immediately instead of waiting out the
-    /// session TTL.
-    func uploadChunked(
-        manifestData: Data,
-        bundleData: Data,
-        destinationUnchanged: (() async -> Bool)? = nil
-    ) async throws -> DiagnosticsUploadResponse {
+    /// Select before a multipart POST, never as recovery from uncertain delivery.
+    /// The same HTTP session/origin is used throughout for deployment affinity.
+    /// An expired/restarted/other-replica session is terminal for this attempt.
+    func uploadChunked(manifestData: Data, bundleData: Data, capturedProfileID: String? = nil,
+                       expectedAccount: RefreshAccountIdentity? = nil, maximumChunkBytes: Int = 786_432,
+                       destinationUnchanged: (@Sendable () async -> Bool)? = nil) async throws -> DiagnosticsUploadResponse {
+        guard !bundleData.isEmpty, bundleData.count <= 268_435_456, maximumChunkBytes > 0,
+              let auth = await tokens.captureOrdinaryRequestAuth(), auth.accessToken?.isEmpty == false,
+              expectedAccount == nil || expectedAccount == auth.account else { throw HTTPError.requestIdentityChanged }
+        let headers = ["X-Profile-Id": capturedProfileID ?? ""]
+        let base = "/api/v2/diagnostics/reports/uploads"
+        var initBody = Data(#"{"bundle_bytes":\#(bundleData.count),"manifest":"#.utf8)
+        initBody.append(manifestData)
+        initBody.append(Data("}".utf8))
         let session: DiagnosticsChunkedUploadSession
         do {
-            // The manifest bytes are embedded verbatim into the init JSON
-            // rather than re-encoded: the server compares the received
-            // manifest against the archive's embedded manifest.json, and any
-            // re-serialization here could reorder keys and break equality.
-            var initBody = Data(#"{"bundle_bytes":\#(bundleData.count),"manifest":"#.utf8)
-            initBody.append(manifestData)
-            initBody.append(Data("}".utf8))
-            session = try await http.postRaw(
-                "/api/v1/diagnostics/reports/uploads",
-                body: initBody,
-                contentType: "application/json"
-            )
-        } catch let error as HTTPError {
-            throw Self.mapUploadError(error)
-        } catch {
-            throw DiagnosticsUploadError.underlying(String(describing: error))
-        }
+            let response = try await http.requestData(method: "POST", path: base, body: initBody,
+                headers: headers, expectedAccount: auth.account)
+            session = try HTTPClient.makeJSONDecoder().decode(DiagnosticsChunkedUploadSession.self, from: response.data)
+        } catch let error as HTTPError { throw Self.mapUploadError(error) }
 
-        func ensureDestinationUnchanged() async throws {
-            guard let destinationUnchanged else { return }
-            guard await destinationUnchanged() else {
+        guard !session.uploadId.isEmpty, session.uploadId != ".", session.uploadId != "..",
+              let segment = session.uploadId.addingPercentEncoding(withAllowedCharacters:
+                CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else {
+            throw DiagnosticsUploadError.underlying("Invalid upload session identity")
+        }
+        let path = base + "/" + segment
+        var completing = false
+        func requireDestination() async throws {
+            guard let current = await tokens.captureOrdinaryRequestAuth(), current.account == auth.account else {
+                throw DiagnosticsUploadError.retryable("destination_changed")
+            }
+            if let destinationUnchanged, !(await destinationUnchanged()) {
                 throw DiagnosticsUploadError.retryable("destination_changed")
             }
         }
-
         do {
-            // Fail fast on a nonsensical chunk size rather than degrade: a
-            // zero/negative value coerced to something tiny would turn one
-            // bundle into millions of sequential PUTs.
-            guard session.chunkBytes > 0 else {
-                throw DiagnosticsUploadError.underlying("invalid chunk_bytes \(session.chunkBytes)")
+            guard session.chunkBytes > 0, session.chunkBytes <= maximumChunkBytes,
+                  session.totalChunks == (bundleData.count - 1) / session.chunkBytes + 1,
+                  session.expiresAt > Date() else {
+                throw DiagnosticsUploadError.underlying("Invalid or expired upload session")
             }
-            let chunkBytes = session.chunkBytes
-            var index = 0
-            var offset = 0
-            while offset < bundleData.count {
-                try await ensureDestinationUnchanged()
-                let end = min(offset + chunkBytes, bundleData.count)
-                let _: EmptyDiagnosticsResponse = try await http.putRaw(
-                    "/api/v1/diagnostics/reports/uploads/\(session.uploadId)/chunks/\(index)",
-                    body: bundleData.subdata(in: offset..<end),
-                    contentType: "application/octet-stream"
-                )
-                offset = end
-                index += 1
+            for index in 0..<session.totalChunks {
+                try await requireDestination()
+                let offset = index * session.chunkBytes
+                let end = offset + min(session.chunkBytes, bundleData.count - offset)
+                let response = try await http.requestData(method: "PUT", path: path + "/chunks/\(index)",
+                    body: bundleData.subdata(in: offset..<end), contentType: "application/octet-stream",
+                    headers: headers, timeout: .extended, expectedAccount: auth.account)
+                let ack = try HTTPClient.makeJSONDecoder().decode(DiagnosticsChunkAcknowledgment.self, from: response.data)
+                guard ack.totalChunks == session.totalChunks, ack.receivedChunks == index + 1 else {
+                    throw DiagnosticsUploadError.underlying("Invalid chunk acknowledgment")
+                }
             }
-            try await ensureDestinationUnchanged()
-            return try await http.postRaw(
-                "/api/v1/diagnostics/reports/uploads/\(session.uploadId)/complete",
-                body: Data(),
-                contentType: "application/json",
-                timeout: .extended
-            )
+            try await requireDestination()
+            completing = true
+            let response = try await http.requestData(method: "POST", path: path + "/complete", body: Data(),
+                headers: headers, timeout: .extended, expectedAccount: auth.account)
+            guard let current = await tokens.captureOrdinaryRequestAuth(), current.account == auth.account else {
+                throw HTTPError.requestIdentityChanged
+            }
+            return try HTTPClient.makeJSONDecoder().decode(DiagnosticsUploadResponse.self, from: response.data)
         } catch DiagnosticsUploadError.retryable(let code) where code == "destination_changed" {
-            // Deliberately no abort: HTTPClient now points at a different
-            // server/account, so the DELETE would go to the wrong place.
             throw DiagnosticsUploadError.retryable(code)
         } catch {
-            // Free the server-side spool now rather than at TTL expiry. Errors
-            // are swallowed: the abort is a courtesy and must not mask the
-            // upload error the caller acts on.
-            try? await http.delete("/api/v1/diagnostics/reports/uploads/\(session.uploadId)")
-            if let httpError = error as? HTTPError {
-                throw Self.mapUploadError(httpError)
+            // Never abort/replay/reinitialize after completion may have consumed
+            // the session. Its404 is not evidence that no report was created.
+            if !completing, let current = await tokens.captureOrdinaryRequestAuth(), current.account == auth.account {
+                _ = try? await http.requestData(method: "DELETE", path: path, headers: headers, expectedAccount: auth.account)
             }
-            if let uploadError = error as? DiagnosticsUploadError {
-                throw uploadError
-            }
-            throw DiagnosticsUploadError.underlying(String(describing: error))
+            if let error = error as? HTTPError { throw Self.mapUploadError(error) }
+            throw error
         }
     }
 

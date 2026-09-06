@@ -1151,10 +1151,17 @@ actor DiagnosticsCoordinator {
             guard try pendingStore.beginServerUpload(report) else { return .keptDeliveryUncertain }
             let response: DiagnosticsUploadResponse
             do {
-                response = try await api.upload(manifestData: bundle.manifestData, bundleData: bundle.bundleData,
-                    capturedProfileID: capturedProfileID, expectedAccount: destinationAuth.account)
+                if let chunkBytes = cachedStatus?.status.uploadChunkBytes, chunkBytes > 0,
+                   bundle.bundleData.count > chunkBytes {
+                    response = try await api.uploadChunked(manifestData: bundle.manifestData, bundleData: bundle.bundleData,
+                        capturedProfileID: capturedProfileID, expectedAccount: destinationAuth.account,
+                        maximumChunkBytes: chunkBytes)
+                } else {
+                    response = try await api.upload(manifestData: bundle.manifestData, bundleData: bundle.bundleData,
+                        capturedProfileID: capturedProfileID, expectedAccount: destinationAuth.account)
+                }
             } catch {
-                // This transport has no replay receipt or chunk fallback. Keep
+                // Neither transport has a replay receipt. Keep
                 // the durable attempt fence even after a lost/invalid response.
                 return .keptDeliveryUncertain
             }

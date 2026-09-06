@@ -1704,7 +1704,10 @@ actor HTTPClient {
 
     private func shouldAttemptRefresh(path: String) -> Bool {
         // Matches the guard in AuthInterceptorImpl.kt:96.
-        !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
+        let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
+        return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
+            && path != diagnosticsUploads
+            && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
     }
 
     private var isRequestDispatchBlocked: Bool {

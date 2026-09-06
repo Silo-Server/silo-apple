@@ -91,7 +91,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
           "upload_id": "0123456789abcdef",
           "chunk_bytes": 786432,
           "total_chunks": 3,
-          "expires_at": "2026-07-27T12:00:00Z"
+          "expires_at": "2099-07-27T12:00:00.000Z"
         }
         """.utf8))
         XCTAssertEqual(session.uploadId, "0123456789abcdef")
@@ -113,12 +113,77 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
             keychain: SharedKeychain(service: "DiagnosticsChunkedUploadTests.\(UUID().uuidString)", accessGroup: nil),
             defaults: SharedDefaults(suite: suite, standard: suite)
         )
+        await tokenStore.switchActiveServer(serverId: "chunk-server")
         await tokenStore.setServerUrl("http://chunk-test.invalid")
+        try! await tokenStore.installAccountSession(accessToken: "access", refreshToken: "refresh", accountID: "1")
 
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ChunkedUploadStubProtocol.self]
         let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
-        return DiagnosticsAPI(http: http)
+        return DiagnosticsAPI(http: http, tokens: tokenStore)
+    }
+
+    func testChunkAuthenticationReplayKeepsExactSessionIndexAndBytes() async throws {
+        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+        ChunkedUploadStubProtocol.mutate { $0.expireFirstChunk = true }
+        let api = await makeStubbedAPI()
+        _ = try await api.uploadChunked(manifestData: Data("{}".utf8), bundleData: Data("0123456789".utf8), capturedProfileID: "captured")
+        let state = ChunkedUploadStubProtocol.state()
+        let chunks = zip(state.requests, state.requestBodies).filter { $0.0.url?.path.hasSuffix("/chunks/0") == true }
+        XCTAssertEqual(chunks.count, 2)
+        XCTAssertEqual(chunks.map { $0.1 }, [Data("0123".utf8), Data("0123".utf8)])
+        XCTAssertTrue(chunks.allSatisfy { $0.0.url?.path == "/api/v2/diagnostics/reports/uploads/stub-session/chunks/0" })
+        XCTAssertTrue(chunks.allSatisfy { $0.0.value(forHTTPHeaderField: "X-Profile-Id") == "captured" })
+        XCTAssertEqual(state.requests.filter { $0.url?.path == "/api/v2/diagnostics/reports/uploads" }.count, 1)
+    }
+
+    func testExpiredReceiptStopsBeforeChunksAndDoesNotReinitialize() async throws {
+        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+        ChunkedUploadStubProtocol.mutate { $0.expiry = "2020-01-01T00:00:00.000Z" }
+        let api = await makeStubbedAPI()
+        do { _ = try await api.uploadChunked(manifestData: Data("{}".utf8), bundleData: Data("0123456789".utf8)); XCTFail() } catch {}
+        let state = ChunkedUploadStubProtocol.state()
+        XCTAssertTrue(state.chunkIndexes.isEmpty)
+        XCTAssertFalse(state.completed)
+        XCTAssertTrue(state.aborted)
+        XCTAssertEqual(state.requests.filter { $0.httpMethod == "POST" }.count, 1)
+    }
+
+    func testInit401IsNeverRefreshedOrReplaced() async throws {
+        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+        ChunkedUploadStubProtocol.mutate { $0.initStatus = 401 }
+        let api = await makeStubbedAPI()
+        do { _ = try await api.uploadChunked(manifestData: Data("{}".utf8), bundleData: Data("0123456789".utf8)); XCTFail() } catch {}
+        XCTAssertEqual(ChunkedUploadStubProtocol.state().requests.count, 1)
+    }
+
+    func testUncertainCompletion404And401NeverAbortReplayOrReplace() async throws {
+        for status in [404, 401] {
+            ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+            ChunkedUploadStubProtocol.mutate { $0.completeStatus = status }
+            let api = await makeStubbedAPI()
+            do {
+                _ = try await api.uploadChunked(manifestData: Data("{}".utf8), bundleData: Data("0123456789".utf8), capturedProfileID: "captured")
+                XCTFail()
+            } catch {}
+            let state = ChunkedUploadStubProtocol.state()
+            XCTAssertEqual(state.requests.count, 5)
+            XCTAssertTrue(state.completed)
+            XCTAssertFalse(state.aborted)
+            XCTAssertEqual(state.requests.filter { $0.url?.path.hasSuffix("/complete") == true }.count, 1)
+            XCTAssertTrue(state.requests.allSatisfy { $0.value(forHTTPHeaderField: "X-Profile-Id") == "captured" })
+        }
+    }
+
+    func testMissingChunkSessionDoesNotCreateReplacement() async throws {
+        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: 1)
+        ChunkedUploadStubProtocol.mutate { $0.failChunkStatus = 404 }
+        let api = await makeStubbedAPI()
+        do { _ = try await api.uploadChunked(manifestData: Data("{}".utf8), bundleData: Data("0123456789".utf8)); XCTFail() } catch {}
+        let state = ChunkedUploadStubProtocol.state()
+        XCTAssertFalse(state.completed)
+        XCTAssertTrue(state.aborted)
+        XCTAssertEqual(state.requests.filter { $0.httpMethod == "POST" }.count, 1)
     }
 
     func testUploadChunkedSplitsSequentiallyAndCompletes() async throws {
@@ -236,6 +301,13 @@ final class ChunkedUploadStubProtocol: URLProtocol {
         var chunkBodies: [Data] = []
         var completed = false
         var aborted = false
+        var requests: [URLRequest] = []
+        var requestBodies: [Data] = []
+        var expireFirstChunk = false
+        var initStatus = 201
+        var completeStatus = 201
+        var failChunkStatus = 500
+        var expiry = "2099-01-01T00:00:00.000Z"
     }
 
     private static let lock = NSLock()
@@ -253,7 +325,7 @@ final class ChunkedUploadStubProtocol: URLProtocol {
         return current
     }
 
-    private static func mutate(_ apply: (inout State) -> Void) {
+    static func mutate(_ apply: (inout State) -> Void) {
         lock.lock()
         apply(&current)
         lock.unlock()
@@ -268,19 +340,32 @@ final class ChunkedUploadStubProtocol: URLProtocol {
     }
 
     override func startLoading() {
+        Self.mutate { $0.requests.append(request) }
         let path = request.url?.path ?? ""
         let method = request.httpMethod ?? ""
         let body = Self.requestBody(of: request)
+        Self.mutate { $0.requestBodies.append(body ?? Data()) }
 
         switch (method, path) {
-        case ("POST", "/api/v1/diagnostics/reports/uploads"):
+        case ("POST", "/api/v2/auth/refresh"):
+            respond(status: 200, json: #"{"access_token":"refreshed","refresh_token":"refreshed-refresh","expires_in":3600}"#)
+        case ("POST", "/api/v2/diagnostics/reports/uploads"):
+            if Self.state().initStatus != 201 {
+                respond(status: Self.state().initStatus, json: #"{"error":"authentication_required"}"#)
+                return
+            }
             Self.mutate { $0.initBody = body }
             let chunkBytes = Self.state().chunkBytes
-            respond(status: 201, json: #"{"upload_id":"stub-session","chunk_bytes":\#(chunkBytes),"total_chunks":3,"expires_at":"2026-01-01T00:00:00Z"}"#)
+            respond(status: 201, json: #"{"upload_id":"stub-session","chunk_bytes":\#(chunkBytes),"total_chunks":3,"expires_at":"\#(Self.state().expiry)"}"#)
         case ("PUT", let chunkPath) where chunkPath.contains("/uploads/stub-session/chunks/"):
             let index = Int(chunkPath.split(separator: "/").last ?? "") ?? -1
+            if index == 0, Self.state().expireFirstChunk {
+                Self.mutate { $0.expireFirstChunk = false }
+                respond(status: 401, json: #"{"error":"authentication_required"}"#)
+                return
+            }
             if Self.state().failChunkIndex == index {
-                respond(status: 500, json: #"{"error":"internal_error","message":"stub chunk failure"}"#)
+                respond(status: Self.state().failChunkStatus, json: #"{"error":"internal_error","message":"stub chunk failure"}"#)
                 return
             }
             Self.mutate {
@@ -288,10 +373,14 @@ final class ChunkedUploadStubProtocol: URLProtocol {
                 $0.chunkBodies.append(body ?? Data())
             }
             respond(status: 200, json: #"{"received_chunks":\#(index + 1),"total_chunks":3}"#)
-        case ("POST", "/api/v1/diagnostics/reports/uploads/stub-session/complete"):
+        case ("POST", "/api/v2/diagnostics/reports/uploads/stub-session/complete"):
             Self.mutate { $0.completed = true }
+            if Self.state().completeStatus != 201 {
+                respond(status: Self.state().completeStatus, json: #"{"error":"not_found"}"#)
+                return
+            }
             respond(status: 201, json: #"{"report_id":"11111111-1111-1111-1111-111111111111","short_id":"SILO-TEST12345678"}"#)
-        case ("DELETE", "/api/v1/diagnostics/reports/uploads/stub-session"):
+        case ("DELETE", "/api/v2/diagnostics/reports/uploads/stub-session"):
             Self.mutate { $0.aborted = true }
             respond(status: 204, json: "")
         default:
