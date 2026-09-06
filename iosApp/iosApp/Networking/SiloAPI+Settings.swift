@@ -79,35 +79,37 @@ extension SiloAPI {
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws -> EffectiveSettingValuesResponse {
-        let headers = try await profileHeaders(explicit: profileId)
-
-        var query: [String: String] = [:]
-        if !keys.isEmpty {
-            query["keys"] = keys.map(\.rawValue).joined(separator: ",")
-        }
-        if !libraryIds.isEmpty {
-            query["library_ids"] = libraryIds.map(String.init).joined(separator: ",")
-        }
-        if !seriesIds.isEmpty {
-            query["series_ids"] = seriesIds.joined(separator: ",")
-        }
-
+        guard keys.count <= 200, libraryIds.count + seriesIds.count <= 200,
+              libraryIds.allSatisfy({ $0 > 0 }) else { throw APIv2Error.invalidCatalogQuery }
+        let activeProfile = await currentProfileId()
+        let targetProfile = profileId ?? activeProfile
+        let query = keys.map { URLQueryItem(name: "keys", value: $0.rawValue) }
+            + libraryIds.map { URLQueryItem(name: "library_ids", value: String($0)) }
+            + seriesIds.map { URLQueryItem(name: "series_ids", value: $0) }
         do {
-            let response = try await http.requestData(
-                method: "GET",
-                path: "/api/v1/settings/values/effective",
-                query: query,
-                headers: headers,
-                requestIdentity: requestIdentity
-            )
-            let decoded = try SettingsWireCoding.makeDecoder()
-                .decode(EffectiveSettingValuesResponse.self, from: response.data)
+            let data = try await v2.settingsRead("/api/v2/settings/values/effective", query: query,
+                profileID: targetProfile, expectedIdentity: requestIdentity, profileRequired: true)
+            let wire = try SettingsWireCoding.makeDecoder().decode(APIv2EffectiveSettings.self, from: data)
+            guard !wire.page.hasMore, wire.page.nextCursor?.isEmpty != false else { throw APIv2Error.incompleteCatalogRead }
+            let settings = wire.items.map(\.value)
+            var identities = Set<String>()
+            for item in settings {
+                let identity = [item.key, item.libraryId.map(String.init) ?? "", item.seriesId ?? ""]
+                guard identities.insert(identity.joined(separator: "\u{0}")).inserted,
+                      item.profileId == nil || item.profileId == targetProfile,
+                      keys.isEmpty || keys.contains(where: { $0.rawValue == item.key }),
+                      item.libraryId == nil || libraryIds.contains(item.libraryId!),
+                      item.seriesId == nil || seriesIds.contains(item.seriesId!) else { throw APIv2Error.incompleteCatalogRead }
+            }
+            let decoded = EffectiveSettingValuesResponse(settings: settings, revision: wire.revision)
             guard !decoded.contractIsAheadOfServer else {
-                throw SettingsAPIError.serverUpgradeRequired
+                throw SettingsAPIError.transport(description: APIv2Error.serverUpdateRequiredMessage)
             }
             return decoded
         } catch {
-            throw SettingsAPIError.from(error)
+            // A v2 failure must not activate the overlay store's legacy fallback.
+            if let settingsError = error as? SettingsAPIError { throw settingsError }
+            throw SettingsAPIError.transport(description: error.localizedDescription)
         }
     }
 
@@ -275,4 +277,43 @@ extension SiloAPI {
 private struct NavigationShortcutItemWriteRequest: Encodable {
     let item: PrimaryMenuItem
     let present: Bool
+}
+
+private struct APIv2EffectiveSettings: Decodable {
+    let items: [APIv2EffectiveSetting]
+    let page: Page
+    let revision: Int
+    struct Page: Decodable {
+        let hasMore: Bool
+        let nextCursor: String?
+        enum CodingKeys: String, CodingKey {
+            case hasMore = "has_more"
+            case nextCursor = "next_cursor"
+        }
+    }
+}
+
+private struct APIv2EffectiveSetting: Decodable {
+    let value: EffectiveSettingValue
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: EffectiveSettingValue.CodingKeys.self)
+        let library = try c.decodeIfPresent(String.self, forKey: .libraryId)
+        let libraryID = library.flatMap(Int.init)
+        if let library {
+            guard let libraryID, libraryID > 0, String(libraryID) == library else { throw APIv2Error.incompleteCatalogRead }
+        }
+        value = try EffectiveSettingValue(
+            key: c.decode(String.self, forKey: .key), value: c.decode(SettingJSONValue.self, forKey: .value),
+            source: c.decode(SettingSource.self, forKey: .source),
+            storedValue: c.contains(.storedValue) ? c.decode(SettingJSONValue.self, forKey: .storedValue) : nil,
+            constrained: c.decodeIfPresent(Bool.self, forKey: .constrained) ?? false,
+            constraintKind: c.decodeIfPresent(SettingConstraintKind.self, forKey: .constraintKind),
+            suggestedValues: c.decodeIfPresent([String].self, forKey: .suggestedValues),
+            scope: c.decodeIfPresent(SettingScope.self, forKey: .scope),
+            profileId: c.decodeIfPresent(String.self, forKey: .profileId),
+            clientFamily: c.decodeIfPresent(String.self, forKey: .clientFamily),
+            deviceId: c.decodeIfPresent(String.self, forKey: .deviceId), libraryId: libraryID,
+            seriesId: c.decodeIfPresent(String.self, forKey: .seriesId))
+    }
 }

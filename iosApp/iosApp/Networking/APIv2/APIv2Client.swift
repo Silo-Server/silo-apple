@@ -167,6 +167,30 @@ struct APIv2Client: Sendable {
         return try await mapErrors { try await http.post(path, body: body, timeout: timeout) }
     }
 
+    func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
+                      expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
+        if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
+        let identity = auth.profileId.map {
+            HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+                profileId: $0, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        }
+        if let expectedIdentity, expectedIdentity != identity { throw HTTPError.requestIdentityChanged }
+        let response = try await mapErrors {
+            try await http.requestData(method: "GET", path: path, repeatedQuery: query,
+                headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == auth.profileId, current.profileToken == auth.profileToken else {
+            throw HTTPError.requestIdentityChanged
+        }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteCatalogRead }
+        return response.data
+    }
+
     /// Acknowledges a cancellation request; completion may already have won.
     func cancelSubtitleJob(id: String) async throws {
         guard let value = Int64(id), value > 0, String(value) == id else {

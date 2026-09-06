@@ -157,7 +157,8 @@ actor SiloAPI {
     /// switch and the optional baseline `card_overlays` defaults for
     /// users who haven't customized yet. Cached server-side for 60s.
     func overlayConfig() async throws -> OverlayConfigResponse {
-        try await http.get("/api/v1/settings/overlay-config")
+        try SettingsWireCoding.makeDecoder().decode(OverlayConfigResponse.self,
+            from: await v2.settingsRead("/api/v2/settings/overlay-config"))
     }
 
     // --- Home / sections ---

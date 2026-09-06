@@ -405,6 +405,7 @@ actor HTTPClient {
         method: String,
         path: String,
         query: [String: String] = [:],
+        repeatedQuery: [URLQueryItem] = [],
         body: Data? = nil,
         contentType: String = "application/json",
         headers: [String: String] = [:],
@@ -425,6 +426,7 @@ actor HTTPClient {
                 method: method,
                 path: path,
                 query: query,
+                repeatedQuery: repeatedQuery,
                 body: body,
                 contentType: contentType,
                 headers: headers,
@@ -464,6 +466,7 @@ actor HTTPClient {
                         method: method,
                         path: path,
                         query: query,
+                        repeatedQuery: repeatedQuery,
                         body: body,
                         contentType: contentType,
                         headers: headers,
@@ -534,6 +537,7 @@ actor HTTPClient {
                 query: query,
                 body: Optional<String>.none
             )
+            try Self.appendQuery(repeatedQuery, to: &request)
             if let body {
                 request.httpBody = body
                 request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -547,6 +551,7 @@ actor HTTPClient {
         method: String,
         path: String,
         query: [String: String],
+        repeatedQuery: [URLQueryItem] = [],
         body: Data?,
         contentType: String,
         headers: [String: String],
@@ -563,9 +568,20 @@ actor HTTPClient {
             request.httpBody = body
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
+        try Self.appendQuery(repeatedQuery, to: &request)
         attachCapturedAuthHeaders(&request, auth: auth)
         Self.apply(headers, to: &request)
         return request
+    }
+
+    private static func appendQuery(_ items: [URLQueryItem], to request: inout URLRequest) throws {
+        guard !items.isEmpty else { return }
+        guard let url = request.url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw HTTPError.requestIdentityChanged
+        }
+        components.queryItems = (components.queryItems ?? []) + items
+        guard let updated = components.url else { throw HTTPError.requestIdentityChanged }
+        request.url = updated
     }
 
     /// Cancel all in-flight tasks on the shared session and drop any

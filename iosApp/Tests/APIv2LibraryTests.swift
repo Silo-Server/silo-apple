@@ -76,6 +76,36 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
     }
 
+    func testSettingsEffectiveReadPreservesRepeatedQueryAndTypedValues() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        LibraryReadProtocol.enqueue([Data(#"{"revision":999,"items":[{"key":"ui.card_overlays","value":{"camelCase":true},"stored_value":null,"source":"profile","profile_id":"profile","library_id":"42"}],"page":{"has_more":false}}"#.utf8)])
+        let result = try await facade.getEffectiveValues(keys: [.uiCardOverlays], libraryIds: [42, 43])
+        XCTAssertEqual(result.settings.first?.libraryId, 42)
+        XCTAssertEqual(result.settings.first?.value, .object(["camelCase": .bool(true)]))
+        XCTAssertEqual(result.settings.first?.storedValue, .null)
+        let request = try XCTUnwrap(LibraryReadProtocol.requests().last)
+        let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query?.filter { $0.name == "library_ids" }.compactMap(\.value), ["42", "43"])
+        XCTAssertEqual(request.url?.path, "/api/v2/settings/values/effective")
+    }
+
+    func testSettingsReadsRejectStaleReplyAndDoNotFallback() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        LibraryReadProtocol.enqueue([Data(#"{"enabled":false,"quick_actions_enabled":false,"quick_actions_default":"off"}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await facade.overlayConfig(); XCTFail("stale reply") } catch {}
+        LibraryReadProtocol.status = 404
+        LibraryReadProtocol.enqueue([Data()])
+        do { _ = try await facade.getEffectiveValues(); XCTFail("missing route") }
+        catch SettingsAPIError.serverUpgradeRequired { XCTFail("would enable legacy fallback") }
+        catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+    }
+
     func testSubtitleCancellationUsesExactIDAndEmpty204() async throws {
         let (api, tokens) = try await fixture()
         await tokens.setProfileId("profile")
