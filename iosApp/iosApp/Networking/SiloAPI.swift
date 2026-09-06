@@ -399,6 +399,10 @@ actor SiloAPI {
 
     /// Mark a content item (movie / series / season / episode) as watched
     /// or unwatched. Server resolves the leaf targets.
+    func setWatched(contentId: String, played: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.setWatchedState(id: contentId, included: played, auth: auth)
+    }
+
     func setWatched(contentId: String, played: Bool) async throws {
         if played {
             try await http.postVoid("/api/v1/watched/\(contentId)")

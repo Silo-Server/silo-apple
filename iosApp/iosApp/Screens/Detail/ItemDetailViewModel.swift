@@ -91,6 +91,7 @@ class ItemDetailViewModel {
     private var userStateMutationGeneration = 0
     private var watchlistMutationPending = false
     private var favoriteMutationPending = false
+    private var watchedMutationPending = false
     private var pendingEpisodeFavorites: Set<String> = []
 
     // tvOS pre-play selector state. ItemDetailCache retains this view model
@@ -1314,17 +1315,27 @@ class ItemDetailViewModel {
         }
     }
 
-    /// Mark the detail item (and, for series/seasons, its leaf episodes)
-    /// as watched or unwatched. Backed by POST / DELETE
-    /// `/api/v1/watched/{contentId}` — the server resolves the targets.
+    /// Mark the displayed item; the server resolves any season/series fan-out.
     func toggleWatched() async {
-        guard let contentId = detail?.contentId else { return }
-        isWatched.toggle()
+        guard !watchedMutationPending, let contentId = detail?.contentId,
+              let auth = trackPreferenceAuth else { return }
+        let generation = detailGeneration
+        let oldValue = isWatched
+        let desiredValue = !oldValue
+        watchedMutationPending = true
+        defer { watchedMutationPending = false }
+        let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard current, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
+        isWatched = desiredValue
         do {
-            try await SiloAPI.shared.setWatched(contentId: contentId, played: isWatched)
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: desiredValue, auth: auth)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard current, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
             invalidateRelatedCaches(contentId: contentId)
         } catch {
-            isWatched.toggle() // Revert on failure
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard current, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
+            isWatched = oldValue
         }
     }
 
