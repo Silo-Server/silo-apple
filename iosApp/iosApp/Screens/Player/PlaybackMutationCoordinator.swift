@@ -25,6 +25,8 @@ actor PlaybackMutationCoordinator {
     private let tokens: TokenStore
     private let store: PlaybackMutationStore
     private let retryDelays: [Duration]
+    private let pendingStarts: @Sendable (PlaybackMutationAuthority) async throws -> [StoredPlaybackStart]
+    private var completedStarts: Set<UUID> = []
     private var resolvingStarts: Set<UUID> = []
     private var unresolvedStarts: [UUID: StoredPlaybackStart] = [:]
     private var contexts: [String: Context] = [:]
@@ -37,11 +39,13 @@ actor PlaybackMutationCoordinator {
     private var draining: Set<UUID> = []
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared, store: PlaybackMutationStore = .shared,
-         retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(5), .seconds(5), .seconds(5), .seconds(5)]) {
+         retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(5), .seconds(5), .seconds(5), .seconds(5)],
+         pendingStarts: (@Sendable (PlaybackMutationAuthority) async throws -> [StoredPlaybackStart])? = nil) {
         self.api = api
         self.tokens = tokens
         self.store = store
         self.retryDelays = retryDelays
+        self.pendingStarts = pendingStarts ?? { try await store.pendingStarts(authority: $0) }
     }
 
     func register(sessionID: String, features: [String], auth: CapturedDurableAccountAuth,
@@ -98,6 +102,7 @@ actor PlaybackMutationCoordinator {
         encoder.outputFormatting = [.sortedKeys]
         let body = try encoder.encode(APIv2PlaybackStartBody(request, installationID: installation))
         let start = try await store.prepareStart(authority: authority, attemptID: request.playbackAttemptId, body: body)
+        guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
         unresolvedStarts[start.id] = start
         await PlaybackStopNotices.shared.setPending(start.id, true)
         return try await resolveStart(start, retire: false)
@@ -106,8 +111,18 @@ actor PlaybackMutationCoordinator {
     private func resolveStart(_ start: StoredPlaybackStart, retire: Bool) async throws -> PlaybackV3DecisionResponse {
         // Explicit app Retry must not retire an allocation while its player
         // still owns the in-flight start and is about to begin playback.
+        guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
         guard resolvingStarts.insert(start.id).inserted else { throw PlaybackSequencedError.pendingStart }
         defer { resolvingStarts.remove(start.id) }
+        // Snapshots held across actor suspension are not permission to retire
+        // a start. Re-read the journal while owning this attempt's resolution.
+        let start = try await store.start(start.id, authority: start.authority)
+        guard !start.finished else {
+            completedStarts.insert(start.id)
+            unresolvedStarts.removeValue(forKey: start.id)
+            await PlaybackStopNotices.shared.setPending(start.id, false)
+            throw PlaybackSequencedError.invalidSession
+        }
         let auth = try await currentAuth(start.authority)
         let data: Data
         if let saved = start.response { data = saved }
@@ -135,6 +150,7 @@ actor PlaybackMutationCoordinator {
         // A known session is now independently journaled, even if local plan
         // projection fails. Explicit retry resolves uncertainty without autoplay.
         try await store.acknowledgeStart(start.id, authority: start.authority, response: data, finished: true)
+        completedStarts.insert(start.id)
         unresolvedStarts.removeValue(forKey: start.id)
         await PlaybackStopNotices.shared.setPending(start.id, false)
         do { return try wire.legacy() }
@@ -151,9 +167,14 @@ actor PlaybackMutationCoordinator {
             let capability = try await api.v2.playbackCapabilities(auth: auth.request)
             let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability.requireAvailable())
             _ = try await currentAuth(authority)
-            for start in try await store.pendingStarts(authority: authority) {
+            for start in try await pendingStarts(authority) {
+                guard !completedStarts.contains(start.id) else { continue }
                 unresolvedStarts[start.id] = start
                 await PlaybackStopNotices.shared.setPending(start.id, true)
+                if completedStarts.contains(start.id) {
+                    unresolvedStarts.removeValue(forKey: start.id)
+                    await PlaybackStopNotices.shared.setPending(start.id, false)
+                }
             }
             for session in try await store.pendingStops(authority: authority, afterRestart: true) {
                 try await register(sessionID: session.sessionID, features: [PlaybackSequencedContract.feature], auth: auth,

@@ -141,6 +141,35 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" })
     }
 
+    func testStaleRestoreSnapshotCannotRetireCompletedPlayerStart() async throws {
+        let (_, tokens, auth, api, store) = try await fixture()
+        let snapshotRead = expectation(description: "Unfinished snapshot read")
+        let barrier = PlaybackRestoreBarrier()
+        let owner = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [],
+            pendingStarts: { authority in
+                let snapshot = try await store.pendingStarts(authority: authority)
+                snapshotRead.fulfill()
+                await barrier.wait()
+                return snapshot
+            })
+        V2PlaybackProtocol.startFails(true)
+        do { _ = try await owner.startV2(request: request(), auth: auth, capability: capability()); XCTFail() } catch {}
+        let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability().requireAvailable())
+        let pending = try await store.pendingStarts(authority: authority)
+        let id = try XCTUnwrap(pending.first?.id)
+        let restoring = Task { await owner.restorePending() }
+        await fulfillment(of: [snapshotRead], timeout: 2)
+        V2PlaybackProtocol.startFails(false)
+        _ = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        await barrier.release()
+        await restoring.value
+        XCTAssertFalse(PlaybackStopNotices.shared.pending.contains(id))
+        let before = V2PlaybackProtocol.requests().count
+        await owner.retryPendingStops()
+        XCTAssertEqual(V2PlaybackProtocol.requests().count, before)
+        XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" })
+    }
+
     func testStartPersistenceFailureSendsNoMutation() async throws {
         let (owner, _, auth, _, _) = try await fixture(failWrites: true)
         do { _ = try await owner.startV2(request: request(), auth: auth, capability: capability()); XCTFail() } catch {}
@@ -288,4 +317,18 @@ private final class V2PlaybackProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+private actor PlaybackRestoreBarrier {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
 }

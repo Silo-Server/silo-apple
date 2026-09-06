@@ -185,6 +185,13 @@ actor PlaybackMutationStore {
         return start
     }
 
+    func start(_ id: UUID, authority: PlaybackMutationAuthority) throws -> StoredPlaybackStart {
+        guard let start = try read().starts?[id], start.authority == authority else {
+            throw PlaybackSequencedError.authorityChanged
+        }
+        return start
+    }
+
     func acknowledgeStart(_ id: UUID, authority: PlaybackMutationAuthority, response: Data?, finished: Bool) throws {
         var file = try read()
         guard var start = file.starts?[id], start.authority == authority else { throw PlaybackSequencedError.authorityChanged }
