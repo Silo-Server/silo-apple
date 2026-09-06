@@ -617,6 +617,32 @@ struct APIv2Client: Sendable {
 
     // MARK: Catalog detail and hierarchy reads
 
+    func similarCards(id: String, limit: Int, auth: CapturedOrdinaryRequestAuth) async throws -> [BrowseItem] {
+        try await gate()
+        guard (1...50).contains(limit), let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let path = "/api/v2/recommendations/similar/\(try catalogPathSegment(id))"
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: path, query: ["limit": String(limit)],
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let collection = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<BrowseItem>.self, from: raw.data)
+        let cards = try collection.completeItems()
+        guard cards.count <= limit, Set(cards.map(\.contentId)).count == cards.count,
+              cards.allSatisfy({ !$0.contentId.isEmpty }) else { throw APIv2Error.incompleteCatalogRead }
+        return cards
+    }
+
     func refreshTrailers(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> TrailerRefreshResponse {
         let raw = try await trailerRequest(id: id, refresh: true, auth: auth)
         let response = try HTTPClient.makeJSONDecoder().decode(TrailerRefreshResponse.self, from: raw.data)

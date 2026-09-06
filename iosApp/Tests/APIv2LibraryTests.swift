@@ -24,6 +24,43 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testSimilarRecommendationsUseOrderedCardsWithoutDetailRequests() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        LibraryReadProtocol.enqueue([Data(#"{"items":[{"content_id":"movie-b","type":"movie","title":"Second","year":2024,"poster_url":"/images/b"},{"content_id":"series-a","type":"series","title":"First"}],"page":{"limit":12,"has_more":false}}"#.utf8)])
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let cards = try await api.recommendationsSimilar(contentId: "movie/a?b", auth: auth)
+        XCTAssertEqual(cards.map(\.contentId), ["movie-b", "series-a"])
+        let posters = cards.map(SimilarPosterItem.init(card:))
+        XCTAssertEqual(posters.first?.title, "Second")
+        XCTAssertEqual(posters.first?.posterUrl, "/images/b")
+        XCTAssertEqual(posters.first?.year, 2024)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.absoluteString,
+            "https://libraries.example/api/v2/recommendations/similar/movie%2Fa%3Fb?limit=12")
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"limit":12,"has_more":false}}"#.utf8)])
+        let empty = try await api.recommendationsSimilar(contentId: "movie", auth: auth)
+        XCTAssertTrue(empty.isEmpty)
+    }
+
+    func testSimilarRecommendationsRefuseIncompleteCollectionAndAuthorityChanges() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await v2.similarCards(id: "movie", limit: 12, auth: XCTUnwrap(captured)); XCTFail("PIN rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(current)
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"limit":12,"has_more":true,"next_cursor":"next"}}"#.utf8)])
+        do { _ = try await v2.similarCards(id: "movie", limit: 12, auth: auth); XCTFail("incomplete collection") } catch {}
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"limit":12,"has_more":false}}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.similarCards(id: "movie", limit: 12, auth: auth); XCTFail("late authority") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+    }
+
     func testTrailerRefreshStatusPairsAndNoReplay() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

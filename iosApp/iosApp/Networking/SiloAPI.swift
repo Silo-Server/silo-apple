@@ -187,18 +187,10 @@ actor SiloAPI {
         try await http.get("/api/v1/library/\(libraryId)/sections", query: await imageSizeQuery)
     }
 
-    /// Fetch the IDs of items the recommendation engine considers
-    /// similar to `contentId`. The server returns scored IDs only —
-    /// resolve each into a poster card via `itemDetail` (in parallel).
-    func recommendationsSimilar(
-        contentId: String,
-        limit: Int = 12
-    ) async throws -> [ScoredItemRef] {
-        let response: ScoredItemsResponse = try await http.get(
-            "/api/v1/recommendations/similar/\(contentId)",
-            query: ["limit": String(limit)]
-        )
-        return response.items
+    /// Ordered viewer-authorized cards; v2 needs no per-item detail hydration.
+    func recommendationsSimilar(contentId: String, limit: Int = 12,
+                                auth: CapturedOrdinaryRequestAuth) async throws -> [BrowseItem] {
+        try await v2.similarCards(id: contentId, limit: limit, auth: auth)
     }
 
     func recommendationsDiscover() async throws -> SectionsResponse {

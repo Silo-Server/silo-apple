@@ -1,10 +1,10 @@
 #if os(tvOS)
 import SwiftUI
+import CryptoKit
 
 /// Horizontal poster rail of "More Like This" items used at the bottom
 /// of the tvOS Movie / Series detail pages. Mirrors `PhoneSimilarRail`
-/// — same `/recommendations/similar/{id}` flow, same parallel detail
-/// resolution — but renders `TVMediaCard` posters at the 10-foot scale
+/// — same ordered v2 recommendation cards — but renders `TVMediaCard` posters at the 10-foot scale
 /// so cards focus-lift consistently with the rest of the detail body.
 ///
 /// The rail self-loads on appear and silently hides if the request
@@ -124,7 +124,14 @@ struct TVSimilarRail: View {
             }
         }
         lastAppliedFocusRequest = 0
-        let cacheKey = CacheKey.similar(contentId)
+        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              !Task.isCancelled, loadedFor == requestedContentId else { return }
+        // Never read a legacy unscoped rail cache under a new viewer.
+        let owner = "\(auth.account.serverId)|\(auth.account.serverURL)|\(auth.account.credentialGenerationID)|\(auth.profileId ?? "")|\(auth.profileToken ?? "")"
+        let cacheKey = CacheKey.similar(requestedContentId) + ":v2:" + SHA256.hash(data: Data(owner.utf8)).map { String(format: "%02x", $0) }.joined()
+        let mayUseCache = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard !Task.isCancelled, loadedFor == requestedContentId else { return }
+        guard mayUseCache else { items = []; isLoading = false; return }
         let cached: [SimilarPosterItem]? = ResponseCache.shared.get(cacheKey)
         if let cached {
             items = cached
@@ -144,58 +151,18 @@ struct TVSimilarRail: View {
         }
 
         do {
-            let scored = try await SiloAPI.shared.recommendationsSimilar(
-                contentId: contentId,
-                limit: 12
-            )
-            var indexedDetails: [(Int, ItemDetail)] = []
-
-            // Resolve a few cards at a time. The previous all-at-once fanout
-            // could launch twelve full item requests while the above-fold
-            // poster and episode stills were still cold.
-            for batchStart in stride(from: 0, to: scored.count, by: 3) {
-                guard !Task.isCancelled else { return }
-                let batchEnd = min(batchStart + 3, scored.count)
-                let batch = Array(scored[batchStart..<batchEnd])
-                let resolvedBatch = await withTaskGroup(
-                    of: (Int, ItemDetail?).self
-                ) { group in
-                    for (offset, ref) in batch.enumerated() {
-                        group.addTask {
-                            let detail = try? await MetadataRequestPool.shared.itemDetail(
-                                contentId: ref.mediaItemId
-                            )
-                            return (batchStart + offset, detail)
-                        }
-                    }
-
-                    var pairs: [(Int, ItemDetail)] = []
-                    for await (index, detail) in group {
-                        if let detail { pairs.append((index, detail)) }
-                    }
-                    return pairs
-                }
-                indexedDetails.append(contentsOf: resolvedBatch)
-            }
-
-            guard !Task.isCancelled else { return }
-            let resolved = indexedDetails
-                .sorted(by: { $0.0 < $1.0 })
-                .map(\.1)
-            for detail in resolved {
-                // Selecting a recommendation can now paint its authoritative
-                // detail payload on the destination's first body evaluation.
-                ResponseCache.shared.set(
-                    detail,
-                    for: CacheKey.itemDetail(detail.contentId)
-                )
-            }
-            let refreshed = resolved.map(SimilarPosterItem.init(detail:))
+            let cards = try await SiloAPI.shared.recommendationsSimilar(
+                contentId: requestedContentId, limit: 12, auth: auth)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard !Task.isCancelled, loadedFor == requestedContentId else { return }
+            guard current else { items = []; isLoading = false; return }
+            let refreshed = cards.map(SimilarPosterItem.init(card:))
             items = refreshed
             ResponseCache.shared.set(refreshed, for: cacheKey)
         } catch {
-            guard !Task.isCancelled else { return }
-            if cached == nil { items = [] }
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard !Task.isCancelled, loadedFor == requestedContentId else { return }
+            if !current || cached == nil { items = [] }
         }
         isLoading = false
         completed = true
@@ -223,7 +190,7 @@ private extension View {
 
 // MARK: - Card model
 
-/// View-side projection of an `ItemDetail` containing only what the
+/// View-side projection of a catalog card containing only what the
 /// poster card needs. Decoupled so the card never re-renders when
 /// unrelated detail fields change.
 struct SimilarPosterItem: Identifiable, Hashable {
@@ -233,6 +200,14 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let posterThumbhash: String?
     let year: Int?
     var id: String { contentId }
+
+    init(card: BrowseItem) {
+        contentId = card.contentId
+        title = card.title
+        posterUrl = card.posterUrl
+        posterThumbhash = card.posterThumbhash
+        year = card.year
+    }
 
     init(detail: ItemDetail) {
         self.contentId = detail.contentId

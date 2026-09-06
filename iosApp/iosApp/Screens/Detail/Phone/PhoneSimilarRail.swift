@@ -3,10 +3,8 @@ import SwiftUI
 
 /// Horizontal poster rail of "More Like This" items shown at the bottom
 /// of Movie / Series detail pages. Mirrors the web frontend's
-/// `RecommendationGrid` flow:
-///   1. Hit `/recommendations/similar/{contentId}` for scored IDs
-///   2. Resolve each ID to an `ItemDetail` in parallel
-///   3. Render a poster card per resolved item; tap opens detail
+/// `RecommendationGrid` flow: fetch ordered v2 cards and render their
+/// posters directly; tapping a card opens its detail.
 ///
 /// The rail self-loads its data when the parent provides a
 /// `contentId`. Hidden when the request fails or returns nothing —
@@ -91,46 +89,30 @@ struct PhoneSimilarRail: View {
     // MARK: - Data loading
 
     private func load() async {
-        // Bail if we already populated for this id.
         guard loadedFor != contentId else { return }
-        loadedFor = contentId
+        let requested = contentId
+        loadedFor = requested
         isLoading = true
         items = []
-
+        defer { if loadedFor == requested { isLoading = false } }
+        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              !Task.isCancelled, loadedFor == requested else { return }
         do {
-            let scored = try await SiloAPI.shared.recommendationsSimilar(
-                contentId: contentId,
-                limit: 12
-            )
-            // Resolve detail pages in parallel — preserve the engine's
-            // ranking by zipping the resolved details back to their
-            // original index. Failed resolutions are dropped silently.
-            let resolved = await withTaskGroup(of: (Int, ItemDetail?).self) { group in
-                for (index, ref) in scored.enumerated() {
-                    group.addTask {
-                        let detail = try? await SiloAPI.shared.itemDetail(
-                            contentId: ref.mediaItemId
-                        )
-                        return (index, detail)
-                    }
-                }
-                var pairs: [(Int, ItemDetail)] = []
-                for await (index, detail) in group {
-                    if let detail { pairs.append((index, detail)) }
-                }
-                return pairs.sorted(by: { $0.0 < $1.0 }).map(\.1)
-            }
-            items = resolved.map(SimilarPosterItem.init(detail:))
+            let cards = try await SiloAPI.shared.recommendationsSimilar(contentId: requested, limit: 12, auth: auth)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard current, !Task.isCancelled, loadedFor == requested else { return }
+            items = cards.map(SimilarPosterItem.init(card:))
         } catch {
+            guard !Task.isCancelled, loadedFor == requested else { return }
             items = []
         }
-        isLoading = false
     }
+
 }
 
 // MARK: - Card model
 
-/// View-side projection of an `ItemDetail` containing only what the
+/// View-side projection of a catalog card containing only what the
 /// poster card needs. Decoupled so the card never re-renders when
 /// unrelated detail fields change.
 struct SimilarPosterItem: Identifiable, Hashable {
@@ -143,6 +125,14 @@ struct SimilarPosterItem: Identifiable, Hashable {
 
     var accessibilityDescription: String {
         [title, year.map(String.init)].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    init(card: BrowseItem) {
+        contentId = card.contentId
+        title = card.title
+        posterUrl = card.posterUrl
+        posterThumbhash = card.posterThumbhash
+        year = card.year
     }
 
     init(detail: ItemDetail) {
