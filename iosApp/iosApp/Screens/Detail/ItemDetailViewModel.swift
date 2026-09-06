@@ -1344,38 +1344,51 @@ class ItemDetailViewModel {
     /// mutation out to its episodes; refreshing the season + episode payloads
     /// keeps every checkmark and next-up calculation consistent afterward.
     func toggleSelectedSeasonWatched() async {
-        guard let selectedSeason,
-              let seriesId = seriesContentId else { return }
-
+        guard !watchedMutationPending, let selectedSeason,
+              let seriesId = seriesContentId, let auth = trackPreferenceAuth else { return }
+        let generation = detailGeneration
+        let displayedItem = detail?.contentId
+        let seasonId = selectedSeason.contentId
+        let seasonNumber = selectedSeason.seasonNumber
         let played = !(selectedSeason.userData?.played ?? false)
+        watchedMutationPending = true
+        defer { watchedMutationPending = false }
+        func isCurrent() async -> Bool {
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            return current && !Task.isCancelled && generation == detailGeneration
+                && displayedItem == detail?.contentId && seriesId == seriesContentId
+                && self.selectedSeason?.contentId == seasonId
+                && self.selectedSeason?.seasonNumber == seasonNumber
+        }
+        guard await isCurrent() else { return }
         do {
-            try await SiloAPI.shared.setWatched(
-                contentId: selectedSeason.contentId,
-                played: played
-            )
-            invalidateRelatedCaches(
-                contentId: selectedSeason.contentId,
-                seriesId: seriesId,
-                seasonNumber: selectedSeason.seasonNumber
-            )
-
-            await loadSeasons(
-                seriesId: seriesId,
-                autoSelectInitial: false,
-                coalescesMetadataRequest: false
-            )
-            if let refreshed = seasons.first(where: {
-                $0.contentId == selectedSeason.contentId
-                    || $0.seasonNumber == selectedSeason.seasonNumber
-            }) {
-                await selectSeason(
-                    refreshed,
-                    forceRefresh: true,
-                    coalescesMetadataRequest: false
-                )
-            }
+            try await SiloAPI.shared.setWatched(contentId: seasonId, played: played, auth: auth)
+            guard await isCurrent() else { return }
+            invalidateRelatedCaches(contentId: seasonId, seriesId: seriesId, seasonNumber: seasonNumber)
+            let response = try await SiloAPI.shared.seasons(seriesId: seriesId, auth: auth)
+            guard await isCurrent() else { return }
+            seasons = response.seasons.sortedForDisplay()
+            guard let refreshed = seasons.first(where: {
+                $0.contentId == seasonId && $0.seasonNumber == seasonNumber
+            }) else { return }
+            self.selectedSeason = refreshed
+            episodeLoadGeneration += 1
+            let refreshGeneration = episodeLoadGeneration
+            let episodeResponse = try? await SiloAPI.shared.episodes(seriesId: seriesId, seasonNumber: seasonNumber, auth: auth)
+            guard await isCurrent(), refreshGeneration == episodeLoadGeneration else { return }
+            isLoadingEpisodes = false
+            guard let episodeResponse else { return }
+            let sorted = episodeResponse.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+            episodesBySeason[seasonNumber] = sorted
+            episodes = sorted
+            loadedSeasonNumber = seasonNumber
+            #if os(tvOS)
+            scheduleEpisodeFavoriteStateRefresh(for: sorted, episodeLoadGeneration: refreshGeneration)
+            #else
+            await refreshEpisodeFavoriteStates(for: sorted)
+            #endif
         } catch {
-            // Leave the server-provided state untouched on failure.
+            // Keep the last displayed state; never replay an uncertain write.
         }
     }
 
