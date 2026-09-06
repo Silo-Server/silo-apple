@@ -32,6 +32,7 @@ struct TVTrailersRail: View {
     /// Non-zero changes explicitly hand focus into the first trailer when a
     /// Series has no cast rail above it.
     var focusRequest = 0
+    var onFocusChange: ((Bool) -> Void)? = nil
 
     @FocusState private var focusedEntryId: String?
 
@@ -71,6 +72,9 @@ struct TVTrailersRail: View {
         // episode rails, instead of the geometrically-nearest one.
         .applyTrailerRailDefaultFocus(entries.first?.id, binding: $focusedEntryId)
         .scrollClipDisabled()
+        .onChange(of: focusedEntryId != nil) { _, focused in
+            onFocusChange?(focused)
+        }
         .onChange(of: focusRequest) { _, request in
             guard request > 0, let firstId = entries.first?.id else { return }
             focusedEntryId = firstId

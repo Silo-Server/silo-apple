@@ -14,6 +14,7 @@ struct TVItemDetailView: View {
     let seed: TVItemDetailRouteSeed?
 
     @State private var viewModel: ItemDetailViewModel
+    @State private var hasStartedDetailLoad = false
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
     /// the server override is cleared with a fire-and-forget DELETE, but the
     /// already-fetched detail still carries the old `effectiveSubtitle*`, so
@@ -31,11 +32,11 @@ struct TVItemDetailView: View {
     @State private var failedSeriesRedirectEpisodeContentId: String?
     @State private var isLoadingNextUpPlaybackDetail = false
     @State private var didLoadNextUpPlaybackDetail = false
+    @State private var carouselLoadFailed = false
+    @State private var carouselRetryGeneration = 0
     /// Serializes rapid season-tab intent before it reaches the async view
     /// model. A superseded task must never begin after its replacement and
     /// make an older season the selected one.
-    @State private var seriesSeasonSelectionTask: Task<Void, Never>?
-    @State private var seriesSeasonSelectionGeneration = 0
     /// Whether remote YouTube trailers should be presented, probed once per
     /// page appearance. Real Apple TVs require the YouTube app because tvOS
     /// has no browser fallback. The simulator deliberately presents the
@@ -54,9 +55,7 @@ struct TVItemDetailView: View {
         self.seed = seed
         // Resolve the cached view model eagerly so the first `body`
         // evaluation can render cached content without a blank frame.
-        _viewModel = State(
-            initialValue: ItemDetailCache.shared.viewModel(for: contentId)
-        )
+        _viewModel = State(initialValue: ItemDetailCache.shared.viewModel(for: contentId))
     }
 
     var body: some View {
@@ -64,7 +63,9 @@ struct TVItemDetailView: View {
             // Skip the spinner on cache hits — `detail != nil` means we
             // already have something to paint and the `.task` below is
             // refreshing it in the background.
-            if let detail = viewModel.detail {
+            if !hasStartedDetailLoad, seed?.episodeContext?.seriesContentId == contentId {
+                TVItemDetailLoadingView(seed: seed)
+            } else if let detail = viewModel.detail {
                 content(for: detail)
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadDetail(contentId: contentId) } })
@@ -86,8 +87,6 @@ struct TVItemDetailView: View {
             viewModel.resumeTrailerFetchIfNeeded()
         }
         .onDisappear {
-            seriesSeasonSelectionTask?.cancel()
-            seriesSeasonSelectionTask = nil
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             viewModel.cancelDeferredEpisodeFavoriteStateRefresh()
             // The coordinator's poll is not owned by `.task`, so it would
@@ -115,12 +114,9 @@ struct TVItemDetailView: View {
             }
         }
         .task(id: contentId) {
-            seriesSeasonSelectionTask?.cancel()
-            seriesSeasonSelectionTask = nil
-            seriesSeasonSelectionGeneration &+= 1
-            let navigationContext = TVSeriesDetailNavigationContextStore.take(
-                for: contentId
-            )
+            let navigationContext = !hasStartedDetailLoad
+                && seed?.episodeContext?.seriesContentId == contentId
+                ? seed?.episodeContext : nil
             didClearSubtitleOverride = false
             didClearNextUpSubtitleOverride = false
             nextUpPlaybackDetail = nil
@@ -129,10 +125,15 @@ struct TVItemDetailView: View {
             failedSeriesRedirectEpisodeContentId = nil
             isLoadingNextUpPlaybackDetail = false
             didLoadNextUpPlaybackDetail = false
-            await viewModel.loadDetail(contentId: contentId)
-            if let navigationContext, !Task.isCancelled {
-                await applySeriesNavigationContext(navigationContext)
+            if let navigationContext {
+                viewModel.prepareInitialSeriesSeason(
+                    navigationContext.seasonNumber, seriesId: contentId
+                )
+            } else {
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
             }
+            hasStartedDetailLoad = true
+            await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlaybackStateDidRefresh)) { note in
@@ -147,24 +148,6 @@ struct TVItemDetailView: View {
     private var preferredVersionFileId: Int? {
         get { viewModel.preferredVersionFileId }
         nonmutating set { viewModel.preferredVersionFileId = newValue }
-    }
-
-    /// Continue Watching episodes open the combined Series page at their exact
-    /// season and episode. The marquee has normally warmed this hierarchy, but
-    /// this post-load resolution is authoritative when cached preference state
-    /// points at a different in-progress season.
-    private func applySeriesNavigationContext(
-        _ context: TVSeriesDetailNavigationContextStore.Context
-    ) async {
-        guard viewModel.detail?.type == "series" else { return }
-        if viewModel.selectedSeason?.seasonNumber != context.seasonNumber,
-           let season = viewModel.seasons.first(where: {
-               $0.seasonNumber == context.seasonNumber
-           }) {
-            await viewModel.selectSeason(season)
-        }
-        guard !Task.isCancelled else { return }
-        activeSeriesEpisodeContentId = context.episodeContentId
     }
 
     /// The cache has already reloaded authoritative watched/progress data when
@@ -193,12 +176,13 @@ struct TVItemDetailView: View {
         }
 
         if let activeSeriesEpisodeContentId,
-           let completedIndex = viewModel.episodes.firstIndex(where: {
+           let completedIndex = viewModel.seriesEpisodeWindow.episodes.firstIndex(where: {
                $0.contentId == activeSeriesEpisodeContentId
            }),
-           let next = viewModel.episodes.dropFirst(completedIndex + 1).first(where: {
+           let next = viewModel.seriesEpisodeWindow.episodes.dropFirst(completedIndex + 1).first(where: {
                !($0.userData?.played ?? false)
            }) {
+            viewModel.activateLoadedSeriesEpisode(next.contentId)
             self.activeSeriesEpisodeContentId = next.contentId
             return
         }
@@ -420,7 +404,13 @@ struct TVItemDetailView: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
-                episodesBySeason: viewModel.episodesBySeason,
+                episodeWindow: viewModel.seriesEpisodeWindow,
+                carouselLoadFailed: carouselLoadFailed,
+                onLoadMoreEpisodes: { _ in
+                    // Neighbors already load as focus approaches. Repeated
+                    // edge presses must not cancel and restart that request.
+                    if carouselLoadFailed { carouselRetryGeneration &+= 1 }
+                },
                 activeEpisodeContentId: activeSeriesEpisodeContentId,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
                 isLoadingEpisodes: viewModel.isLoadingEpisodes,
@@ -428,8 +418,6 @@ struct TVItemDetailView: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpPlaybackDetail: nextUpPlaybackDetail,
-                isLoadingNextUpPlaybackDetail: isLoadingNextUpPlaybackDetail,
-                didLoadNextUpPlaybackDetail: didLoadNextUpPlaybackDetail,
                 nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
@@ -446,23 +434,21 @@ struct TVItemDetailView: View {
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onSelectSeason: { season in
                     activeSeriesEpisodeContentId = nil
-                    seriesSeasonSelectionTask?.cancel()
-                    seriesSeasonSelectionGeneration &+= 1
-                    let generation = seriesSeasonSelectionGeneration
-                    seriesSeasonSelectionTask = Task { @MainActor in
-                        guard !Task.isCancelled,
-                              generation == seriesSeasonSelectionGeneration else { return }
-                        await viewModel.selectSeason(season)
-                        guard !Task.isCancelled,
-                              generation == seriesSeasonSelectionGeneration else { return }
-                        seriesSeasonSelectionTask = nil
-                    }
+                    await viewModel.selectSeason(season)
+                    guard !Task.isCancelled,
+                          viewModel.selectedSeason?.id == season.id,
+                          let first = viewModel.episodes.first,
+                          first.seasonNumber == season.seasonNumber else { return nil }
+                    return first.contentId
                 },
                 onActivateEpisode: { id in
+                    if let id {
+                        viewModel.activateLoadedSeriesEpisode(id)
+                    }
                     activeSeriesEpisodeContentId = id
                 },
                 onPlayEpisode: { id, fileId, startFromBeginning in
-                    let episode = viewModel.episodes.first(where: { $0.contentId == id })
+                    let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
                     let resumePosition = startFromBeginning
                         ? nil
                         : playableResumePosition(
@@ -556,11 +542,16 @@ struct TVItemDetailView: View {
                         .id(detail.contentId)
                 }
             )
+            .task(id: activeSeriesEpisodeContentId) {
+                guard let id = activeSeriesEpisodeContentId else { return }
+                do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+                await viewModel.refreshSeriesEpisodeFavorite(contentId: id)
+            }
             .task(id: seriesNextUpEpisodeContentId(for: detail)) {
                 await loadSeriesNextUpPlaybackDetail(for: detail)
             }
             .task(
-                id: viewModel.selectedSeason?.contentId,
+                id: "\(detail.contentId):\(viewModel.selectedSeason?.seasonNumber ?? -1):\(carouselRetryGeneration)",
                 priority: .background
             ) {
                 await prefetchAdjacentSeriesSeasons(for: detail)
@@ -719,7 +710,7 @@ struct TVItemDetailView: View {
 
     private func episodeSeriesDestination(
         for detail: ItemDetail
-    ) -> TVSeriesDetailNavigationContextStore.Context? {
+    ) -> TVItemDetailRouteSeed.EpisodeContext? {
         guard detail.type == "episode",
               let rawSeriesId = detail.seriesId,
               let seasonNumber = detail.seasonNumber else { return nil }
@@ -727,7 +718,7 @@ struct TVItemDetailView: View {
         let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !seriesId.isEmpty, seriesId != detail.contentId else { return nil }
 
-        return TVSeriesDetailNavigationContextStore.Context(
+        return TVItemDetailRouteSeed.EpisodeContext(
             seriesContentId: seriesId,
             seasonNumber: seasonNumber,
             episodeContentId: detail.contentId
@@ -735,12 +726,12 @@ struct TVItemDetailView: View {
     }
 
     private func redirectEpisodeToSeries(
-        _ destination: TVSeriesDetailNavigationContextStore.Context
+        _ destination: TVItemDetailRouteSeed.EpisodeContext
     ) async {
         let cacheKey = CacheKey.itemDetail(destination.seriesContentId)
         if let cached: ItemDetail = ResponseCache.shared.get(cacheKey),
            cached.type == "series" {
-            routeToSeries(destination)
+            routeToSeries(destination, series: cached)
             return
         }
 
@@ -755,7 +746,7 @@ struct TVItemDetailView: View {
                 return
             }
             ResponseCache.shared.set(series, for: cacheKey)
-            routeToSeries(destination)
+            routeToSeries(destination, series: series)
         } catch {
             guard !Task.isCancelled,
                   contentId == destination.episodeContentId else { return }
@@ -764,16 +755,15 @@ struct TVItemDetailView: View {
     }
 
     private func routeToSeries(
-        _ destination: TVSeriesDetailNavigationContextStore.Context
+        _ destination: TVItemDetailRouteSeed.EpisodeContext,
+        series: ItemDetail
     ) {
         guard contentId == destination.episodeContentId else { return }
-        TVSeriesDetailNavigationContextStore.stage(
-            seriesContentId: destination.seriesContentId,
-            seasonNumber: destination.seasonNumber,
-            episodeContentId: destination.episodeContentId
-        )
         router.replaceCurrent(
-            with: .itemDetail(contentId: destination.seriesContentId)
+            with: .itemDetail(
+                contentId: destination.seriesContentId,
+                tvSeed: TVItemDetailRouteSeed(series, episodeContext: destination)
+            )
         )
     }
 
@@ -1043,7 +1033,7 @@ struct TVItemDetailView: View {
     private func seriesNextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         guard detail.type == "series" else { return nil }
         if let activeSeriesEpisodeContentId,
-           let active = viewModel.episodes.first(where: {
+           let active = viewModel.seriesEpisodeWindow.episodes.first(where: {
                $0.contentId == activeSeriesEpisodeContentId
            }) {
             return active
@@ -1094,6 +1084,11 @@ struct TVItemDetailView: View {
         }
 
         do {
+            // Paint the episode and any cached selectors immediately. Wait
+            // only on uncached network work while focus sweeps through cards.
+            if activeSeriesEpisodeContentId != nil {
+                try await Task.sleep(for: .milliseconds(120))
+            }
             let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
@@ -1143,16 +1138,17 @@ struct TVItemDetailView: View {
     private func prefetchAdjacentEpisodePlayback(
         around episode: EpisodeListItem
     ) async {
-        guard let index = viewModel.episodes.firstIndex(where: {
+        let episodes = viewModel.seriesEpisodeWindow.episodes
+        guard let index = episodes.firstIndex(where: {
             $0.contentId == episode.contentId
         }) else { return }
 
         let neighborIndices = [index - 1, index + 1]
-            .filter { viewModel.episodes.indices.contains($0) }
+            .filter { episodes.indices.contains($0) }
 
         for neighborIndex in neighborIndices {
             guard !Task.isCancelled else { return }
-            let neighbor = viewModel.episodes[neighborIndex]
+            let neighbor = episodes[neighborIndex]
             let cached: ItemDetail? = ResponseCache.shared.get(
                 CacheKey.itemDetail(neighbor.contentId)
             )
@@ -1173,53 +1169,70 @@ struct TVItemDetailView: View {
         }
     }
 
-    /// Prefetch the episode lists and stills for the seasons beside the
-    /// selected one. `ItemDetailViewModel.selectSeason` already hydrates from
-    /// this same cache key, so first-time season changes avoid the empty/jumpy
-    /// state without duplicating ownership of the published episode array.
+    /// Load only the neighboring pages, walking through known empty seasons.
+    /// Keep artwork warming to the cards beside each boundary, not every still
+    /// in two potentially enormous seasons. The rail loads visible art lazily.
     private func prefetchAdjacentSeriesSeasons(for detail: ItemDetail) async {
-        guard detail.type == "series",
-              let selectedSeason = viewModel.selectedSeason,
-              let index = viewModel.seasons.firstIndex(where: {
-                  $0.contentId == selectedSeason.contentId
-              }) else { return }
+        guard detail.type == "series", let selected = viewModel.selectedSeason?.seasonNumber else { return }
+        let order = SeriesEpisodeWindow.orderedSeasons(viewModel.seasons)
+        guard let selectedIndex = order.firstIndex(where: { $0.seasonNumber == selected }) else { return }
+        carouselLoadFailed = false
+        viewModel.episodesBySeason = SeriesEpisodeWindow.retainedPages(
+            seasons: viewModel.seasons, selected: selected, pages: viewModel.episodesBySeason
+        )
+        async let previous: Void = prefetchSeriesSeasonNeighbor(
+            direction: -1, order: order, selectedIndex: selectedIndex, detail: detail
+        )
+        async let next: Void = prefetchSeriesSeasonNeighbor(
+            direction: 1, order: order, selectedIndex: selectedIndex, detail: detail
+        )
+        _ = await (previous, next)
+    }
 
-        let neighborIndices = [index - 1, index + 1]
-            .filter { viewModel.seasons.indices.contains($0) }
-
-        for neighborIndex in neighborIndices {
-            guard !Task.isCancelled else { return }
-            let season = viewModel.seasons[neighborIndex]
-            let key = CacheKey.itemEpisodes(
-                seriesId: detail.contentId,
-                seasonNumber: season.seasonNumber
-            )
-
-            let response: EpisodesResponse
-            if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
-                response = cached
-            } else {
-                guard let fetched = try? await MetadataRequestPool.shared.episodes(
-                    seriesId: detail.contentId,
-                    seasonNumber: season.seasonNumber
-                ), !Task.isCancelled else { continue }
-                ResponseCache.shared.set(fetched, for: key)
-                response = fetched
+    private func prefetchSeriesSeasonNeighbor(
+        direction: Int, order: [Season], selectedIndex: Int, detail: ItemDetail
+    ) async {
+        let selected = order[selectedIndex].seasonNumber
+        var index = selectedIndex + direction
+        while order.indices.contains(index) {
+            guard !Task.isCancelled, viewModel.selectedSeason?.seasonNumber == selected else { return }
+            let season = order[index]
+            if let page = viewModel.episodesBySeason[season.seasonNumber] {
+                if !page.isEmpty { break }
+                index += direction
+                continue
             }
-
-            let stillURLs = response.episodes.compactMap { episode in
-                episode.stillUrl.flatMap(URL.init(string:))
-            }
-            PosterImageCache.prefetchCardArtwork(stillURLs)
-
-            let sorted = response.episodes.sorted {
-                $0.episodeNumber < $1.episodeNumber
-            }
-            if viewModel.episodesBySeason[season.seasonNumber] == nil {
-                // Feed the route-scoped page cache as well as ResponseCache.
-                // The full season rail can then mount this neighbour before
-                // the first tab movement instead of warming only after it.
-                viewModel.episodesBySeason[season.seasonNumber] = sorted
+            let key = CacheKey.itemEpisodes(seriesId: detail.contentId, seasonNumber: season.seasonNumber)
+            do {
+                let response: EpisodesResponse
+                if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
+                    response = cached
+                } else {
+                    response = try await MetadataRequestPool.shared.episodes(
+                        seriesId: detail.contentId, seasonNumber: season.seasonNumber
+                    )
+                }
+                guard !Task.isCancelled, viewModel.selectedSeason?.seasonNumber == selected,
+                      viewModel.detail?.contentId == detail.contentId else { return }
+                ResponseCache.shared.set(response, for: key)
+                let sorted = response.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+                // A foreground selection may already have published newer progress.
+                if viewModel.episodesBySeason[season.seasonNumber] == nil {
+                    viewModel.episodesBySeason[season.seasonNumber] = sorted
+                }
+                viewModel.episodesBySeason = SeriesEpisodeWindow.retainedPages(
+                    seasons: viewModel.seasons, selected: selected, pages: viewModel.episodesBySeason
+                )
+                let edgeEpisodes = direction < 0 ? Array(sorted.suffix(3)) : Array(sorted.prefix(3))
+                PosterImageCache.prefetchCardArtwork(edgeEpisodes.compactMap {
+                    $0.stillUrl.flatMap(URL.init(string:))
+                })
+                if !sorted.isEmpty { break }
+                index += direction
+            } catch {
+                guard !Task.isCancelled else { return }
+                carouselLoadFailed = true
+                break
             }
         }
     }
@@ -1296,36 +1309,4 @@ struct TVItemDetailView: View {
     }
 }
 
-/// One-shot route payload for opening an episode in its parent Series overview.
-/// `Route.itemDetail` remains a shared iOS/tvOS destination; this tvOS-only
-/// store supplies the extra browse context without widening every platform's
-/// navigation enum.
-@MainActor
-enum TVSeriesDetailNavigationContextStore {
-    struct Context: Equatable {
-        let seriesContentId: String
-        let seasonNumber: Int
-        let episodeContentId: String
-    }
-
-    private static var pending: Context?
-
-    static func stage(
-        seriesContentId: String,
-        seasonNumber: Int,
-        episodeContentId: String
-    ) {
-        pending = Context(
-            seriesContentId: seriesContentId,
-            seasonNumber: seasonNumber,
-            episodeContentId: episodeContentId
-        )
-    }
-
-    static func take(for contentId: String) -> Context? {
-        guard pending?.seriesContentId == contentId else { return nil }
-        defer { pending = nil }
-        return pending
-    }
-}
 #endif

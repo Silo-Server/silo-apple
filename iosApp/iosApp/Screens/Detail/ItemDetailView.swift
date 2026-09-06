@@ -14,6 +14,9 @@ struct ItemDetailView: View {
     var body: some View {
         #if os(tvOS)
         TVItemDetailView(contentId: contentId, seed: tvSeed)
+            // Episode -> Series replaces the route with the same view type.
+            // Its cached model and entry state belong to the new content ID.
+            .id(contentId)
         #else
         ItemDetailPhoneContent(contentId: contentId, onClose: onClose, resumeContext: resumeContext)
         #endif
