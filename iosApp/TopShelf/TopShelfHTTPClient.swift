@@ -71,7 +71,7 @@ struct TopShelfHTTPClient {
     /// extension's existing fallback behavior.
     func fetchImageSizeQuery() async -> [String: String] {
         let capability: ImageSizeCapabilityResponse? = try? await get(
-            "/api/v1/images/capability"
+            "/api/v2/images/capabilities"
         )
         return ImageSizeSelection.queryEntries(
             capability: capability,

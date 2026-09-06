@@ -63,11 +63,11 @@ actor SiloAPI {
         query.merging(await imageSizeQuery) { caller, _ in caller }
     }
 
-    /// `GET /api/v1/images/capability`. Throws `HTTPError.http(404, _)`
+    /// `GET /api/v2/images/capabilities`. Unavailable
     /// on servers that predate image-size selection; the caller treats
     /// that as "feature off".
     func imageSizeCapability() async throws -> ImageSizeCapabilityResponse {
-        try await http.get("/api/v1/images/capability")
+        try await v2.requestGet("/api/v2/images/capabilities")
     }
 
     // MARK: - Typed endpoint methods
