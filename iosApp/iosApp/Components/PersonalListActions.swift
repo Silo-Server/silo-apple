@@ -9,11 +9,20 @@ private struct LibraryCardAuthorityKey: EnvironmentKey {
     static let defaultValue: LibraryCardAuthority? = nil
 }
 
+private struct HomePersonalListSurfaceKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 private struct HomePersonalListAuthKey: EnvironmentKey {
     static let defaultValue: CapturedOrdinaryRequestAuth? = nil
 }
 
 extension EnvironmentValues {
+    var isHomePersonalListSurface: Bool {
+        get { self[HomePersonalListSurfaceKey.self] }
+        set { self[HomePersonalListSurfaceKey.self] = newValue }
+    }
+
     var libraryCardAuthority: LibraryCardAuthority? {
         get { self[LibraryCardAuthorityKey.self] }
         set { self[LibraryCardAuthorityKey.self] = newValue }

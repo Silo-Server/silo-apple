@@ -221,6 +221,7 @@ struct HomeView: View {
         }
         #endif
         .environment(\.homePersonalListAuth, viewModel.personalListAuth)
+        .environment(\.isHomePersonalListSurface, true)
         .alert(
             "Couldn’t Update Item",
             isPresented: $viewModel.isShowingActionError
