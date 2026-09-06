@@ -359,7 +359,7 @@ final class DownloadManager {
         Self.logger.error("Download command did not commit")
     }
 
-    private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil, query: [String: String] = [:],
+    private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil, query: [String: String] = [:], maxResponseBytes: Int? = nil,
                                        owner handle: OwnerHandle) async throws -> T {
         let auth = try await verified(handle)
         let identity = HTTPRequestIdentity(serverId: handle.authority.serverID, serverURL: handle.authority.origin,
@@ -367,6 +367,7 @@ final class DownloadManager {
         let response = try await HTTPClient.shared.requestData(method: method, path: path, query: query, body: body,
             requestIdentity: identity, expectedAccount: auth.account)
         _ = try await verified(handle)
+        if let maxResponseBytes, response.data.count > maxResponseBytes { throw DownloadOwnershipError.incompleteAction }
         return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
     }
 
@@ -732,7 +733,13 @@ final class DownloadManager {
 
     private func startMediaPipeline(recordId: String, operationID: UUID, owner handle: OwnerHandle) async throws {
         let lease = try await handle.store.localLease(downloadID: recordId)
-        let manifest: OfflineManifest = try await request("GET", "/api/v1/downloads/\(recordId)/manifest", owner: handle)
+        let wire: APIv2DownloadManifest = try await request("GET", DownloadRegistryV2.path(id: recordId) + "/manifest",
+            maxResponseBytes: 1 << 20, owner: handle)
+        let snapshot = try await handle.store.localSnapshot()
+        guard let record = snapshot.downloads.records[recordId], snapshot.recordOperations[recordId] == operationID else {
+            throw DownloadOwnershipError.stale
+        }
+        let manifest = try wire.validated(for: record)
         try await attach(JSONEncoder().encode(manifest), suffix: "json", kind: .manifest, lease: lease, owner: handle, operationID: operationID)
         try await command(.manifest(recordId, manifest), owner: handle, recordOperation: (recordId, operationID))
         let assets: [(String?, DownloadAssetKind)] = [(manifest.artworkUrls?.poster, .poster),
@@ -744,13 +751,19 @@ final class DownloadManager {
             try await fetchOptionalAsset(path: subtitle.fetchUrl, suffix: subtitle.format ?? "srt", kind: .subtitle(subtitle.fetchUrl), lease: lease, owner: handle, operationID: operationID)
         }
         let auth = try await verified(handle)
-        guard let url = URL(string: handle.authority.origin + "/api/v1/downloads/\(recordId)/file") else { throw DownloadError.fileURLUnavailable }
+        let url = try APIv2DownloadManifest.fileURL(origin: handle.authority.origin, downloadID: recordId)
         let transferID = UUID()
         let request = DownloadAuthHeaders.authorizedRequest(url: url, allowsCellular: !DownloadSettings.shared.wifiOnly, auth: auth)
         let task: URLSessionDownloadTask
         if let record = file.records[recordId], let filename = record.resumeDataFilename,
            let data = try? Data(contentsOf: handle.assets.root.appendingPathComponent(recordId).appendingPathComponent(filename)) {
-            task = sessionDelegate.prepare(data: data, transferID: transferID)
+            let resumed = sessionDelegate.prepare(data: data, transferID: transferID)
+            if resumed.originalRequest?.url == url {
+                task = resumed
+            } else {
+                resumed.cancel()
+                task = sessionDelegate.prepare(request: request, transferID: transferID)
+            }
         } else { task = sessionDelegate.prepare(request: request, transferID: transferID) }
         let binding = DownloadTaskBinding(transferID: transferID, sessionID: sessionDelegate.identifier,
             taskID: task.taskIdentifier, lease: lease, operationID: operationID)

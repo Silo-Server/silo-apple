@@ -18,26 +18,6 @@ extension SiloAPI {
         return response.downloads
     }
 
-    func fetchManifest(downloadId: String) async throws -> OfflineManifest {
-        try await http.get("/api/v1/downloads/\(downloadId)/manifest")
-    }
-
-    /// Fetch the raw bytes of an authenticated proxy asset (artwork or
-    /// subtitle). `path` is an API-relative path taken from the manifest
-    /// (`artwork_urls.*` / `subtitles[].fetch_url`).
-    func fetchDownloadAssetData(path: String) async throws -> Data {
-        try await http.getData(path)
-    }
-
-    /// Build the absolute file-endpoint URL for a download, resolved
-    /// against the active server origin. Used by the background downloader.
-    func downloadFileURL(downloadId: String) async -> URL? {
-        let base = await currentServerUrl()
-        guard !base.isEmpty else { return nil }
-        let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
-        return URL(string: "\(trimmed)/api/v1/downloads/\(downloadId)/file")
-    }
-
     // MARK: - Subscriptions
 
     func createSubscription(_ request: CreateSubscriptionRequest) async throws -> CreateSubscriptionResponse {

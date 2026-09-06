@@ -393,7 +393,16 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         effectiveQuality = try keyed.decodeIfPresent(String.self, forKey: .effectiveQuality)
         deliveryFormat = try keyed.decodeIfPresent(String.self, forKey: .deliveryFormat)
         targetBitrateKbps = try keyed.decodeIfPresent(Int.self, forKey: .targetBitrateKbps)
-        mediaFileId = try keyed.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        let wireVersion = try keyed.decodeIfPresent(Int.self, forKey: .manifestVersion)
+        if wireVersion == 3 {
+            let raw = try keyed.decode(String.self, forKey: .mediaFileId)
+            guard let id = Int(raw), id > 0, String(id) == raw else {
+                throw DownloadOwnershipError.incompleteAction
+            }
+            mediaFileId = id
+        } else {
+            mediaFileId = try keyed.decodeIfPresent(Int.self, forKey: .mediaFileId) ?? 0
+        }
         fileSize = try keyed.decodeIfPresent(Int64.self, forKey: .fileSize)
         title = try keyed.decode(String.self, forKey: .title)
         year = try keyed.decodeIfPresent(Int.self, forKey: .year)
@@ -439,7 +448,8 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         try keyed.encodeIfPresent(effectiveQuality, forKey: .effectiveQuality)
         try keyed.encodeIfPresent(deliveryFormat, forKey: .deliveryFormat)
         try keyed.encodeIfPresent(targetBitrateKbps, forKey: .targetBitrateKbps)
-        try keyed.encode(mediaFileId, forKey: .mediaFileId)
+        if manifestVersion == 3 { try keyed.encode(String(mediaFileId), forKey: .mediaFileId) }
+        else { try keyed.encode(mediaFileId, forKey: .mediaFileId) }
         try keyed.encodeIfPresent(fileSize, forKey: .fileSize)
         try keyed.encode(title, forKey: .title)
         try keyed.encodeIfPresent(year, forKey: .year)
