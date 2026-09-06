@@ -641,6 +641,44 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
+    func refreshPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> PersonRefreshQueuedResponse {
+        let response = try await personRequest(id: id, method: "POST", auth: auth)
+        guard response.statusCode == 202 else { throw APIv2Error.httpStatus(response.statusCode) }
+        struct Queued: Decodable { let status: String; let personId: String }
+        let wire = try HTTPClient.makeJSONDecoder().decode(Queued.self, from: response.data)
+        guard wire.status == "queued", wire.personId == String(id) else { throw APIv2Error.incompleteCatalogRead }
+        return PersonRefreshQueuedResponse(status: wire.status, personId: id)
+    }
+
+    func catalogPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.Person {
+        let response = try await personRequest(id: id, method: "GET", auth: auth)
+        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        let person = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.Person.self, from: response.data)
+        guard person.id == String(id) else { throw APIv2Error.incompleteCatalogRead }
+        return person
+    }
+
+    private func personRequest(id: Int, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        guard id > 0, let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let suffix = method == "POST" ? "/refresh" : ""
+        let response = try await mapErrors {
+            try await http.requestData(method: method, path: "/api/v2/catalog/people/\(id)\(suffix)",
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        return response
+    }
+
     func catalogPerson(id: String) async throws -> APIv2CatalogRead.Person {
         try await catalogRead("/api/v2/catalog/people/\(try catalogPathSegment(id))")
     }

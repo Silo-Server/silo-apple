@@ -43,7 +43,7 @@ final class PersonDetailViewModel {
     private static let metadataRefreshWindowSeconds: TimeInterval = 120
     private static let metadataRefreshPollInterval: Duration = .seconds(3)
     /// Consecutive unchanged polls after which the person is treated as
-    /// settled — the server refresh ran and this is all the metadata it has.
+    /// unchanged enough to stop observing. This does not prove job completion.
     private static let metadataRefreshSettledPollCount = 5
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -60,8 +60,33 @@ final class PersonDetailViewModel {
     private var prefetchedPosterURLs: Set<URL> = []
     #endif
 
-    init(personId: Int) {
+    private let api: SiloAPI
+    private let tokens: TokenStore
+    private let pollDelay: () async throws -> Void
+    private let authorityCheck: (CapturedOrdinaryRequestAuth) async -> Bool
+    private var refreshAuth: CapturedOrdinaryRequestAuth?
+    private var didCaptureRefreshAuth = false
+    private var metadataRunID = UUID()
+    var metadataRefreshTaskForTesting: Task<Void, Never>? { metadataRefreshTask }
+
+    init(personId: Int, api: SiloAPI = .shared, tokens: TokenStore = .shared,
+         pollDelay: @escaping () async throws -> Void = { try await Task.sleep(for: PersonDetailViewModel.metadataRefreshPollInterval) },
+         authorityCheck: ((CapturedOrdinaryRequestAuth) async -> Bool)? = nil) {
         self.personId = personId
+        self.api = api
+        self.tokens = tokens
+        self.pollDelay = pollDelay
+        self.authorityCheck = authorityCheck ?? { await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: $0) != nil }
+    }
+
+    func captureMetadataRefreshAuthority() async {
+        guard !didCaptureRefreshAuth else { return }
+        didCaptureRefreshAuth = true
+        refreshAuth = await tokens.captureOrdinaryRequestAuth()
+    }
+
+    private func isCurrentMetadataRun(_ id: UUID) -> Bool {
+        id == metadataRunID && !Task.isCancelled
     }
 
     /// Cancel the manually-spawned refresh poll when this page leaves the
@@ -70,6 +95,7 @@ final class PersonDetailViewModel {
     func stopMetadataRefresh() {
         guard metadataRefreshTask != nil || isRefreshingMetadata else { return }
         Self.logger.debug("stopMetadataRefresh personId=\(self.personId, privacy: .public)")
+        metadataRunID = UUID()
         metadataRefreshTask?.cancel()
         metadataRefreshTask = nil
         isRefreshingMetadata = false
@@ -98,8 +124,15 @@ final class PersonDetailViewModel {
         defer { isLoadingPerson = false }
 
         do {
+            await captureMetadataRefreshAuthority()
+            guard currentGeneration == generation, !Task.isCancelled else { return }
+            guard let auth = refreshAuth else { throw HTTPError.requestIdentityChanged }
             if person == nil {
-                person = try await SiloAPI.shared.person(id: personId)
+                let loaded = try await api.person(id: personId, auth: auth)
+                let mayPublish = await authorityCheck(auth)
+                guard currentGeneration == generation, !Task.isCancelled else { return }
+                guard mayPublish else { throw HTTPError.requestIdentityChanged }
+                person = loaded
             }
             scheduleMetadataRefreshIfNeeded(for: person)
             async let availability: Void = refreshAvailableFilters(generation: currentGeneration)
@@ -139,11 +172,9 @@ final class PersonDetailViewModel {
     #endif
 
     private func scheduleMetadataRefreshIfNeeded(for person: Person?) {
-        guard let person else { return }
+        guard let person, person.id == personId, let auth = refreshAuth else { return }
         guard person.isMetadataIncomplete else {
-            metadataRefreshTask?.cancel()
-            metadataRefreshTask = nil
-            isRefreshingMetadata = false
+            stopMetadataRefresh()
             return
         }
         guard metadataRefreshTask == nil else { return }
@@ -155,62 +186,58 @@ final class PersonDetailViewModel {
         }
         isRefreshingMetadata = true
         Self.logger.debug("startMetadataRefresh personId=\(person.id, privacy: .public) queue=\(shouldQueueRefresh, privacy: .public)")
+        let runID = UUID()
+        metadataRunID = runID
         metadataRefreshTask = Task { [weak self] in
-            await self?.runMetadataAutoRefresh(
-                for: person.id,
-                shouldQueueRefresh: shouldQueueRefresh
-            )
+            await self?.runMetadataAutoRefresh(for: person.id, shouldQueueRefresh: shouldQueueRefresh,
+                                               auth: auth, runID: runID)
         }
     }
 
-    private func runMetadataAutoRefresh(for personId: Int, shouldQueueRefresh: Bool) async {
+    private func runMetadataAutoRefresh(for personId: Int, shouldQueueRefresh: Bool,
+                                        auth: CapturedOrdinaryRequestAuth, runID: UUID) async {
         defer {
-            let wasCancelled = Task.isCancelled
-            metadataRefreshTask = nil
-            isRefreshingMetadata = false
-            if !wasCancelled, person?.isMetadataIncomplete == true {
-                metadataRefreshExhaustedPersonId = personId
+            // An old suspended run must not clear a replacement task/phase.
+            if metadataRunID == runID {
+                metadataRefreshTask = nil
+                isRefreshingMetadata = false
+                if !Task.isCancelled, person?.isMetadataIncomplete == true {
+                    metadataRefreshExhaustedPersonId = personId
+                }
             }
-            Self.logger.debug("finishMetadataRefresh personId=\(personId, privacy: .public) cancelled=\(wasCancelled, privacy: .public)")
         }
-
-        if shouldQueueRefresh,
-           let token = await SiloAPI.shared.currentAccessToken(),
-           !token.isEmpty {
-            _ = try? await SiloAPI.shared.refreshPerson(id: personId)
+        let mayStart = await authorityCheck(auth)
+        guard isCurrentMetadataRun(runID), mayStart else { return }
+        if shouldQueueRefresh {
+            // The per-view latch was claimed before scheduling. A failed or
+            // ambiguous POST is never resubmitted by polling or resuming.
+            _ = try? await api.refreshPerson(id: personId, auth: auth)
+            guard isCurrentMetadataRun(runID) else { return }
         }
-
         let deadline = Date.now.addingTimeInterval(Self.metadataRefreshWindowSeconds)
         var unchangedPolls = 0
-        while !Task.isCancelled && Date.now < deadline {
+        while isCurrentMetadataRun(runID) && Date.now < deadline {
+            do { try await pollDelay() } catch { return }
+            guard isCurrentMetadataRun(runID) else { return }
+            let mayRead = await authorityCheck(auth)
+            guard isCurrentMetadataRun(runID), mayRead else { return }
             do {
-                try await Task.sleep(for: Self.metadataRefreshPollInterval)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-
-            do {
-                let updatedPerson = try await SiloAPI.shared.person(id: personId)
-                guard personId == self.personId else { return }
+                let updatedPerson = try await api.person(id: personId, auth: auth)
+                guard isCurrentMetadataRun(runID) else { return }
+                let mayPublish = await authorityCheck(auth)
+                guard isCurrentMetadataRun(runID), mayPublish, personId == self.personId else { return }
                 if updatedPerson == person {
                     unchangedPolls += 1
-                    if unchangedPolls >= Self.metadataRefreshSettledPollCount {
-                        Self.logger.debug("settledMetadataRefresh personId=\(personId, privacy: .public)")
-                        return
-                    }
+                    if unchangedPolls >= Self.metadataRefreshSettledPollCount { return }
                     continue
                 }
                 unchangedPolls = 0
                 person = updatedPerson
-                if !updatedPerson.isMetadataIncomplete {
-                    Self.logger.debug("completeMetadataRefresh personId=\(personId, privacy: .public)")
-                    isRefreshingMetadata = false
-                    return
-                }
+                if !updatedPerson.isMetadataIncomplete { return }
             } catch {
-                continue
+                guard isCurrentMetadataRun(runID) else { return }
+                let mayContinue = await authorityCheck(auth)
+                guard isCurrentMetadataRun(runID), mayContinue else { return }
             }
         }
     }

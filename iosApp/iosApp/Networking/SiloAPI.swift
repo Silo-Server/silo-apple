@@ -271,8 +271,12 @@ actor SiloAPI {
         try await Person(catalog: v2.catalogPerson(id: String(id)))
     }
 
-    func refreshPerson(id: Int) async throws -> PersonRefreshQueuedResponse {
-        try await http.post("/api/v1/people/\(id)/refresh")
+    func person(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> Person {
+        try await Person(catalog: v2.catalogPerson(id: id, auth: auth))
+    }
+
+    func refreshPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> PersonRefreshQueuedResponse {
+        try await v2.refreshPerson(id: id, auth: auth)
     }
 
     /// Ask the server to look for trailers for a movie or series.

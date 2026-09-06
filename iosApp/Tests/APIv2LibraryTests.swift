@@ -24,6 +24,110 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testViewerPersonRefreshExact202AndSingleSend() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([Data(#"{"status":"queued","person_id":"7"}"#.utf8)])
+        let response = try await v2.refreshPerson(id: 7, auth: auth)
+        XCTAssertEqual(response.personId, 7)
+        XCTAssertEqual(response.status, "queued")
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.path, "/api/v2/catalog/people/7/refresh")
+        XCTAssertTrue(LibraryReadProtocol.lastBody().isEmpty)
+        for body in [#"{"status":"queued","person_id":"8"}"#, #"{"status":"queued","person_id":7}"#, #"{"status":"done","person_id":"7"}"#] {
+            LibraryReadProtocol.enqueue([Data(body.utf8)])
+            do { _ = try await v2.refreshPerson(id: 7, auth: auth); XCTFail("invalid receipt") } catch {}
+        }
+        for status in [200, 401, 429, 503] {
+            LibraryReadProtocol.status = status
+            LibraryReadProtocol.enqueue([Data(#"{"status":"queued","person_id":"7"}"#.utf8)])
+            let count = LibraryReadProtocol.requests().count
+            do { _ = try await v2.refreshPerson(id: 7, auth: auth); XCTFail("unexpected success") } catch {}
+            XCTAssertEqual(LibraryReadProtocol.requests().count, count + 1)
+        }
+        XCTAssertTrue(LibraryReadProtocol.requests().allSatisfy { $0.httpMethod == "POST" })
+    }
+
+    func testViewerPersonRefreshAuthorityAtCaptureAndReply() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("replacement") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        do { _ = try await v2.refreshPerson(id: 7, auth: auth); XCTFail("PIN rebound") } catch {}
+        do { _ = try await v2.catalogPerson(id: 7, auth: auth); XCTFail("poll rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        let replacement = try XCTUnwrap(current)
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([Data(#"{"status":"queued","person_id":"7"}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.refreshPerson(id: 7, auth: replacement); XCTFail("late reply") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testViewerPersonFailedEnqueueOnlyPollsBoundedlyWithoutReplay() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let model = PersonDetailViewModel(personId: 7, api: api, tokens: tokens,
+            pollDelay: { LibraryReadProtocol.status = 200 })
+        await model.captureMetadataRefreshAuthority()
+        model.person = try HTTPClient.makeJSONDecoder().decode(Person.self, from: Data(#"{"id":7,"name":"Original"}"#.utf8))
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data()] + Array(repeating: Data(#"{"id":"7","name":"Original"}"#.utf8), count: 5))
+        model.resumeMetadataRefreshIfNeeded()
+        let task = try XCTUnwrap(model.metadataRefreshTaskForTesting)
+        await task.value
+        XCTAssertFalse(model.isRefreshingMetadata)
+        XCTAssertEqual(model.person?.name, "Original")
+        XCTAssertEqual(LibraryReadProtocol.requests().map(\.httpMethod), ["POST", "GET", "GET", "GET", "GET", "GET"])
+        model.resumeMetadataRefreshIfNeeded()
+        XCTAssertNil(model.metadataRefreshTaskForTesting)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 6)
+    }
+
+    func testViewerPersonCancelledRunCannotClearReplacementOrPublish() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        for beforePublish in [false, true] {
+            LibraryReadProtocol.reset()
+            LibraryReadProtocol.status = 202
+            LibraryReadProtocol.enqueue([Data(#"{"status":"queued","person_id":"7"}"#.utf8),
+                Data(#"{"id":"7","name":"Late result"}"#.utf8)])
+            let old = expectation(description: "old authority suspended")
+            let new = expectation(description: "replacement authority suspended")
+            let gate = MetadataAuthorityGate(passFirst: false, old: old, new: new)
+            var checks = 0
+            let model = PersonDetailViewModel(personId: 7, api: api, tokens: tokens,
+                pollDelay: { LibraryReadProtocol.status = 200 }, authorityCheck: { _ in
+                    checks += 1
+                    if beforePublish && checks <= 2 { return true }
+                    return await gate.check()
+                })
+            await model.captureMetadataRefreshAuthority()
+            model.person = try HTTPClient.makeJSONDecoder().decode(Person.self, from: Data(#"{"id":7,"name":"Original"}"#.utf8))
+            model.resumeMetadataRefreshIfNeeded()
+            await fulfillment(of: [old], timeout: 2)
+            let oldTask = try XCTUnwrap(model.metadataRefreshTaskForTesting)
+            model.stopMetadataRefresh()
+            model.resumeMetadataRefreshIfNeeded()
+            await fulfillment(of: [new], timeout: 2)
+            let replacement = try XCTUnwrap(model.metadataRefreshTaskForTesting)
+            await gate.releaseOld(true)
+            await oldTask.value
+            XCTAssertEqual(model.person?.name, "Original")
+            XCTAssertTrue(model.isRefreshingMetadata)
+            XCTAssertNotNil(model.metadataRefreshTaskForTesting)
+            XCTAssertEqual(LibraryReadProtocol.requests().filter { $0.httpMethod == "POST" }.count, beforePublish ? 1 : 0)
+            model.stopMetadataRefresh()
+            await gate.releaseNew()
+            await replacement.value
+        }
+    }
+
     func testTrackPreferencesFourOperationsAndOffOmission() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")
