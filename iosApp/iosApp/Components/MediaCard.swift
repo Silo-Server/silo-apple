@@ -105,6 +105,8 @@ struct MediaCard: View {
     @Environment(\.libraryCardAuthority) private var libraryOwner
     @State private var libraryFavoriteRun: UUID?
     @State private var libraryFavoritePending = false
+    @State private var libraryWatchlistRun: UUID?
+    @State private var libraryWatchlistPending = false
     @Environment(\.isHomePersonalListSurface) private var isHomeSurface
     @Environment(\.homePersonalListAuth) private var homeOwner
     @State private var homeFavoriteRun: UUID?
@@ -176,12 +178,12 @@ struct MediaCard: View {
         ) {
             posterImage
         }
-        .onChange(of: contentId) { _, _ in resetLibraryFavorite(); resetHomeFavorite() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomeFavorite() }
         .onChange(of: homeOwner) { _, _ in resetHomeFavorite() }
         .onChange(of: isHomeSurface) { _, _ in resetHomeFavorite() }
-        .onChange(of: libraryOwner) { _, _ in resetLibraryFavorite() }
+        .onChange(of: libraryOwner) { _, _ in resetLibraryPersonalActions() }
         .onChange(of: userState) { _, _ in
-            resetLibraryFavorite()
+            resetLibraryPersonalActions()
             resetHomeFavorite()
             playedOverride = nil
             favoriteOverride = nil
@@ -197,12 +199,12 @@ struct MediaCard: View {
                 iosCardButton
             }
         }
-        .onChange(of: contentId) { _, _ in resetLibraryFavorite(); resetHomeFavorite() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomeFavorite() }
         .onChange(of: homeOwner) { _, _ in resetHomeFavorite() }
         .onChange(of: isHomeSurface) { _, _ in resetHomeFavorite() }
-        .onChange(of: libraryOwner) { _, _ in resetLibraryFavorite() }
+        .onChange(of: libraryOwner) { _, _ in resetLibraryPersonalActions() }
         .onChange(of: userState) { _, _ in
-            resetLibraryFavorite()
+            resetLibraryPersonalActions()
             resetHomeFavorite()
             playedOverride = nil
             favoriteOverride = nil
@@ -357,9 +359,11 @@ struct MediaCard: View {
         }
     }
 
-    private func resetLibraryFavorite() {
+    private func resetLibraryPersonalActions() {
         libraryFavoriteRun = nil
         favoriteOverride = nil
+        libraryWatchlistRun = nil
+        watchlistOverride = nil
     }
 
     private func toggleLibraryFavorite(contentId: String, owner: LibraryCardAuthority) {
@@ -384,8 +388,34 @@ struct MediaCard: View {
         }
     }
 
+    private func toggleLibraryWatchlist(contentId: String, owner: LibraryCardAuthority) {
+        guard !libraryWatchlistPending, let auth = owner.auth else { return }
+        let run = UUID()
+        let oldOverride = watchlistOverride
+        let desired = !isInWatchlist
+        libraryWatchlistRun = run
+        libraryWatchlistPending = true
+        watchlistOverride = desired
+        Task { @MainActor in
+            defer { libraryWatchlistPending = false }
+            let success = await PersonalListSync.setLibraryWatchlist(contentId: contentId, inWatchlist: desired, owner: owner)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard libraryWatchlistRun == run, self.contentId == contentId, libraryOwner == owner,
+                  !Task.isCancelled else { return }
+            libraryWatchlistRun = nil
+            guard current else { watchlistOverride = nil; return }
+            if success {
+                onUserStateChanged?(MediaItemUserState(played: isPlayed, isFavorite: isFavorite, inWatchlist: desired))
+            } else { watchlistOverride = oldOverride }
+        }
+    }
+
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
+        if let owner = libraryOwner {
+            toggleLibraryWatchlist(contentId: contentId, owner: owner)
+            return
+        }
         let newValue = !isInWatchlist
         let favorite = isFavorite
         watchlistOverride = newValue

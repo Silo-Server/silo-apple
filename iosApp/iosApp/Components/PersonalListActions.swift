@@ -139,6 +139,23 @@ enum PersonalListSync {
         } catch { return false }
     }
 
+    static func setLibraryWatchlist(contentId: String, inWatchlist: Bool,
+                                   owner: LibraryCardAuthority,
+                                   api: SiloAPI = .shared, tokens: TokenStore = .shared) async -> Bool {
+        guard let auth = owner.auth else { return false }
+        do {
+            try await api.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist, auth: auth)
+            guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+                  !Task.isCancelled else { return false }
+            ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
+            ResponseCache.shared.remove(CacheKey.watchlist)
+            let key = CacheKey.librarySections(owner.libraryId)
+            let cached: APIv2LibrarySectionsRead? = ResponseCache.shared.get(key)
+            if cached?.auth == auth { ResponseCache.shared.remove(key) }
+            return true
+        } catch { return false }
+    }
+
     static func setFavorite(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
             try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)
