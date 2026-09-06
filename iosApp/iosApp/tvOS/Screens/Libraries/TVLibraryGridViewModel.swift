@@ -36,6 +36,81 @@ final class TVLibraryGridViewModel {
         let auth: CapturedOrdinaryRequestAuth
     }
 
+    struct CardAction {
+        let id: UUID
+        let contentId: String
+        let target: APIv2PersonalListKind
+        let included: Bool
+        let owner: DisplayedRead
+        let generation: Int
+    }
+
+    private(set) var cardGeneration = 0
+    private var pendingCardActions: [String: UUID] = [:]
+
+    /// Called synchronously by the rendered card before creating its Task.
+    func prepareCardAction(contentId: String, target: APIv2PersonalListKind,
+                           included: Bool, libraryId: Int) -> CardAction? {
+        guard let owner = displayedRead, owner.libraryId == libraryId,
+              owner.filterKey == filter.cacheKeyFragment,
+              pendingCardActions[contentId] == nil,
+              items.contains(where: { $0.contentId == contentId && $0.userState != nil }) else { return nil }
+        let action = CardAction(id: UUID(), contentId: contentId, target: target,
+            included: included, owner: owner, generation: cardGeneration)
+        pendingCardActions[contentId] = action.id
+        return action
+    }
+
+    private func cardActionIsCurrent(_ action: CardAction) -> Bool {
+        action.generation == cardGeneration && action.owner == displayedRead
+            && action.owner.filterKey == filter.cacheKeyFragment
+            && pendingCardActions[action.contentId] == action.id
+            && items.contains(where: { $0.contentId == action.contentId }) && !Task.isCancelled
+    }
+
+    /// nil denotes a stale action; false denotes a current failed send.
+    func performCardAction(_ action: CardAction) async -> Bool? {
+        defer {
+            if pendingCardActions[action.contentId] == action.id { pendingCardActions[action.contentId] = nil }
+        }
+        let current = await authorityCheck(action.owner.auth)
+        guard current, cardActionIsCurrent(action) else { return nil }
+        do {
+            switch action.target {
+            case .favorites:
+                try await api.v2.setFavoriteMembership(id: action.contentId, included: action.included, auth: action.owner.auth)
+            case .watchlist:
+                try await api.v2.setWatchlistMembership(id: action.contentId, included: action.included, auth: action.owner.auth)
+            }
+            let current = await authorityCheck(action.owner.auth)
+            guard current, cardActionIsCurrent(action) else { return nil }
+            // Older reads cannot overwrite this receipt. Other item actions
+            // from the same display and its opaque continuation stay valid.
+            generation += 1
+            isLoading = false
+            isRefreshing = false
+            if let index = items.firstIndex(where: { $0.contentId == action.contentId }) {
+                let old = items[index].userState
+                items[index].userState = MediaItemUserState(played: old?.played ?? false,
+                    isFavorite: action.target == .favorites ? action.included : old?.isFavorite ?? false,
+                    inWatchlist: action.target == .watchlist ? action.included : old?.inWatchlist ?? false)
+            }
+            ResponseCache.shared.remove(CacheKey.itemUserState(action.contentId))
+            ResponseCache.shared.remove(action.target == .favorites ? CacheKey.favorites : CacheKey.watchlist)
+            ResponseCache.shared.remove(CacheKey.homeSections)
+            let cached: CachedPage? = ResponseCache.shared.get(currentCacheKey)
+            if cached?.owner == action.owner { ResponseCache.shared.remove(currentCacheKey) }
+            let sectionsKey = CacheKey.librarySections(libraryId)
+            let sections: APIv2LibrarySectionsRead? = ResponseCache.shared.get(sectionsKey)
+            if sections?.auth == action.owner.auth { ResponseCache.shared.remove(sectionsKey) }
+            return true
+        } catch {
+            let current = await authorityCheck(action.owner.auth)
+            guard current, cardActionIsCurrent(action) else { return nil }
+            return false
+        }
+    }
+
     private struct CachedPage {
         let owner: DisplayedRead
         let response: CatalogResponse
@@ -103,6 +178,7 @@ final class TVLibraryGridViewModel {
     }
 
     private func clearDisplayedRows() {
+        cardGeneration += 1
         items = []
         displayedRead = nil
         continuation = nil
@@ -222,6 +298,7 @@ final class TVLibraryGridViewModel {
     // MARK: - Fetch logic
 
     private func reload() async {
+        cardGeneration += 1
         stopPosterPrefetchRequests()
         generation += 1
         continuation = nil

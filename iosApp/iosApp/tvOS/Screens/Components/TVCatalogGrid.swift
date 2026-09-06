@@ -20,6 +20,7 @@ struct TVCatalogGrid: View {
     let hasMore: Bool
     let onItemTap: (BrowseItem) -> Void
     let onNearEnd: (Int) -> Void
+    var libraryCardContext: TVLibraryCardContext? = nil
     var columnCount: Int = 6
     /// Per-card width. Defaults to the theme poster size; shrink when a
     /// side-rail squeezes the usable width and the default cards would
@@ -82,7 +83,8 @@ struct TVCatalogGrid: View {
                             defaultFocusNamespace: gridFocusNamespace,
                             focusBinding: $focusedItemId,
                             focusContentId: item.contentId,
-                            contentId: item.contentId
+                            contentId: item.contentId,
+                            libraryCardContext: libraryCardContext
                         )
                         .frame(maxWidth: .infinity)
                         .onAppear { onCellAppear(index: rowStart + indexed.index) }

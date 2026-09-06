@@ -4,6 +4,11 @@ private struct SavedPersonalListModelKey: EnvironmentKey {
     static let defaultValue: PersonalListViewModel? = nil
 }
 
+struct TVLibraryCardContext {
+    let libraryId: Int
+    let model: TVLibraryGridViewModel
+}
+
 struct LibraryCardAuthority: Equatable {
     let libraryId: Int
     let auth: CapturedOrdinaryRequestAuth?

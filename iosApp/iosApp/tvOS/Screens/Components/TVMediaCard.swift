@@ -45,6 +45,7 @@ struct TVMediaCard: View {
     /// Catalog identity for the long-press favorite/watchlist menu.
     /// `nil` (or a nil `userState`) leaves the card without a menu.
     var contentId: String? = nil
+    var libraryCardContext: TVLibraryCardContext? = nil
 
     enum FocusTreatment {
         case nativeCard
@@ -52,6 +53,7 @@ struct TVMediaCard: View {
     }
 
     @FocusState private var isFocused: Bool
+    @State private var cardActionRun: UUID?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -79,10 +81,13 @@ struct TVMediaCard: View {
             }
         }
         .frame(width: resolvedCardWidth)
-        .onChange(of: userState) { _, _ in
-            favoriteOverride = nil
-            watchlistOverride = nil
-        }
+        .onChange(of: userState) { _, _ in resetPersonalOverrides() }
+        .onChange(of: contentId) { _, _ in resetPersonalOverrides() }
+        .onChange(of: libraryCardContext?.libraryId) { _, _ in resetPersonalOverrides() }
+        .onChange(of: libraryCardContext.map { ObjectIdentifier($0.model) }) { _, _ in resetPersonalOverrides() }
+        .onChange(of: libraryCardContext?.model.displayedRead) { _, _ in resetPersonalOverrides() }
+        .onChange(of: libraryCardContext?.model.cardGeneration) { _, _ in resetPersonalOverrides() }
+        .onDisappear { resetPersonalOverrides() }
     }
 
     // MARK: - Favorite / watchlist context actions
@@ -108,7 +113,38 @@ struct TVMediaCard: View {
         )
     }
 
+    private func resetPersonalOverrides() {
+        cardActionRun = nil
+        favoriteOverride = nil
+        watchlistOverride = nil
+    }
+
+    private func toggleLibraryMembership(_ target: APIv2PersonalListKind, context: TVLibraryCardContext) {
+        guard let contentId, cardActionRun == nil else { return }
+        let included = target == .favorites ? !isFavorite : !isInWatchlist
+        guard let action = context.model.prepareCardAction(contentId: contentId, target: target,
+            included: included, libraryId: context.libraryId) else { return }
+        cardActionRun = action.id
+        if target == .favorites { favoriteOverride = included } else { watchlistOverride = included }
+        Task {
+            let result = await context.model.performCardAction(action)
+            guard cardActionRun == action.id, self.contentId == contentId,
+                  libraryCardContext?.model === context.model,
+                  libraryCardContext?.libraryId == context.libraryId else { return }
+            cardActionRun = nil
+            // A successful model receipt owns the new flag. Failure/staleness
+            // falls back to the displayed model rather than inventing state.
+            if result != true {
+                if target == .favorites { favoriteOverride = nil } else { watchlistOverride = nil }
+            }
+        }
+    }
+
     private func togglePersonalFavorite() {
+        if let libraryCardContext {
+            toggleLibraryMembership(.favorites, context: libraryCardContext)
+            return
+        }
         guard let contentId else { return }
         let newValue = !isFavorite
         let watchlist = isInWatchlist
@@ -123,6 +159,10 @@ struct TVMediaCard: View {
     }
 
     private func togglePersonalWatchlist() {
+        if let libraryCardContext {
+            toggleLibraryMembership(.watchlist, context: libraryCardContext)
+            return
+        }
         guard let contentId else { return }
         let newValue = !isInWatchlist
         let favorite = isFavorite

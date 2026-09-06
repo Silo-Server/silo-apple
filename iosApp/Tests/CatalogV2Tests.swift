@@ -162,6 +162,115 @@ final class CatalogV2Tests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testTVLibraryCardFeatureSendsFourMembershipOperationsAndPreservesCursor() async throws {
+        let (api, tokens) = try await client()
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        let library = 891201
+        let key = CacheKey.tvLibrary(libraryId: library, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer { ResponseCache.shared.remove(key) }
+        let model = TVLibraryGridViewModel(libraryId: library, libraryType: "movie", api: facade, tokens: tokens)
+        CatalogProtocol.reply(200, tvGridActionPage)
+        await model.loadInitial()
+        let owner = try XCTUnwrap(model.displayedRead)
+        XCTAssertNil(model.prepareCardAction(contentId: "movie:one", target: .favorites, included: true, libraryId: library + 1))
+        XCTAssertNil(model.prepareCardAction(contentId: "missing", target: .favorites, included: true, libraryId: library))
+        var favorite = false
+        var watchlist = false
+        let operations: [(APIv2PersonalListKind, Bool)] = [(.favorites, true), (.watchlist, true), (.favorites, false), (.watchlist, false)]
+        for (target, included) in operations {
+            let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: included, libraryId: library))
+            XCTAssertEqual(action.owner, owner)
+            XCTAssertNil(model.prepareCardAction(contentId: "movie:one", target: target, included: !included, libraryId: library))
+            CatalogProtocol.reply(204, "")
+            let accepted = await model.performCardAction(action)
+            XCTAssertEqual(accepted, true)
+            if target == .favorites { favorite = included } else { watchlist = included }
+            let state = try XCTUnwrap(model.items.first?.userState)
+            XCTAssertTrue(state.played)
+            XCTAssertEqual(state.isFavorite, favorite)
+            XCTAssertEqual(state.inWatchlist, watchlist)
+            XCTAssertTrue(model.hasMore)
+        }
+        let writes = CatalogProtocol.requests().filter { $0.0.httpMethod != "GET" }
+        XCTAssertEqual(writes.map { $0.0.httpMethod }, ["PUT", "PUT", "DELETE", "DELETE"])
+        XCTAssertEqual(writes.map { $0.0.url?.path }, ["/api/v2/favorites/movie:one", "/api/v2/watchlist/movie:one", "/api/v2/favorites/movie:one", "/api/v2/watchlist/movie:one"])
+        CatalogProtocol.reply(200, terminal)
+        await model.loadMoreIfNeeded()
+        let request = try XCTUnwrap(CatalogProtocol.requests().last?.0)
+        let query = try XCTUnwrap(URLComponents(url: XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(query.first(where: { $0.name == "cursor" })?.value, "card-original-cursor")
+        XCTAssertEqual(model.items.count, 1)
+        XCTAssertFalse(model.hasMore)
+        CatalogProtocol.reply(500, "{}")
+        let cached = TVLibraryGridViewModel(libraryId: library, libraryType: "movie", api: facade, tokens: tokens)
+        await cached.loadInitial()
+        XCTAssertTrue(cached.items.isEmpty, "Accepted card mutation invalidates older page cache")
+    }
+
+    @MainActor
+    func testTVLibraryCardCurrentFailuresSendOnceAndKeepBothFlags() async throws {
+        for target in [APIv2PersonalListKind.favorites, .watchlist] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let model = TVLibraryGridViewModel(libraryId: 891202, libraryType: "movie", api: SiloAPI(tokenStore: tokens, v2: api), tokens: tokens)
+            let key = CacheKey.tvLibrary(libraryId: 891202, filterKey: CatalogFilterState.none.cacheKeyFragment)
+            defer { ResponseCache.shared.remove(key) }
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await model.loadInitial()
+            let before = model.items.first?.userState
+            for status in [500, 401] {
+                let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true, libraryId: 891202))
+                let count = CatalogProtocol.requests().count
+                CatalogProtocol.reply(status, "{}")
+                let accepted = await model.performCardAction(action)
+                XCTAssertEqual(accepted, false)
+                XCTAssertEqual(CatalogProtocol.requests().count, count + 1)
+                XCTAssertEqual(model.items.first?.userState, before)
+            }
+        }
+    }
+
+    @MainActor
+    func testTVLibraryPreparedCardActionRefusesReplacementAndLateReceipt() async throws {
+        for target in [APIv2PersonalListKind.favorites, .watchlist] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let model = TVLibraryGridViewModel(libraryId: 891203, libraryType: "movie", api: SiloAPI(tokenStore: tokens, v2: api), tokens: tokens)
+            let key = CacheKey.tvLibrary(libraryId: 891203, filterKey: CatalogFilterState.none.cacheKeyFragment)
+            defer { ResponseCache.shared.remove(key) }
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await model.loadInitial()
+            let prepared = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true, libraryId: 891203))
+            await tokens.setProfileToken("replacement")
+            let count = CatalogProtocol.requests().count
+            let refused = await model.performCardAction(prepared)
+            XCTAssertNil(refused)
+            XCTAssertEqual(CatalogProtocol.requests().count, count)
+            await model.loadInitial()
+            let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true, libraryId: 891203))
+            CatalogProtocol.reply(204, "")
+            let sent = expectation(description: "card mutation awaiting receipt")
+            CatalogProtocol.hold { sent.fulfill() }
+            let pending = Task { await model.performCardAction(action) }
+            await fulfillment(of: [sent], timeout: 2)
+            // Same-authority reload is enough to replace the displayed run.
+            CatalogProtocol.allowNewRequests()
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await model.loadInitial()
+            CatalogProtocol.release()
+            let result = await pending.value
+            XCTAssertNil(result)
+            XCTAssertEqual(model.items.first?.userState?.isFavorite, false)
+            XCTAssertEqual(model.items.first?.userState?.inWatchlist, false)
+        }
+    }
+
+    private var tvGridActionPage: String {
+        tvGridPage.replacingOccurrences(of: "\"status\":\"matched\"", with: "\"status\":\"matched\",\"user_state\":{\"played\":true,\"is_favorite\":false,\"in_watchlist\":false}")
+            .replacingOccurrences(of: "\"has_more\":false", with: "\"has_more\":true,\"next_cursor\":\"card-original-cursor\"")
+    }
+
     private var tvGridPage: String {
         #"{"items":[{"content_id":"movie:one","type":"movie","title":"One","genres":[],"keywords":[],"status":"matched"}],"page":{"has_more":false},"total":1,"total_exact":true,"window_cursor":"window"}"#
     }
@@ -623,6 +732,7 @@ final class CatalogProtocol: URLProtocol {
     nonisolated(unsafe) private static var onHeldRequest: (() -> Void)?
     nonisolated(unsafe) private static var pending: (() -> Void)?
     static func hold(_ notify: @escaping () -> Void) { lock.withLock { onHeldRequest = notify } }
+    static func allowNewRequests() { lock.withLock { onHeldRequest = nil } }
     static func release() {
         let deliver = lock.withLock { let value = pending; pending = nil; onHeldRequest = nil; return value }
         deliver?()
