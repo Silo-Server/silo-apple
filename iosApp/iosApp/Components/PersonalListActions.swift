@@ -81,6 +81,24 @@ enum PersonalListSync {
         }
     }
 
+    /// Home supplies the owner of its displayed response before scheduling.
+    static func setHomeWatchlist(contentId: String, inWatchlist: Bool,
+                                auth: CapturedOrdinaryRequestAuth,
+                                api: SiloAPI = .shared, tokens: TokenStore = .shared) async -> Bool {
+        do {
+            try await api.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist, auth: auth)
+            guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+                  !Task.isCancelled else { return false }
+            // Do not combine this receipt with an unscoped cached sibling flag.
+            ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
+            ResponseCache.shared.remove(CacheKey.watchlist)
+            ResponseCache.shared.remove(CacheKey.homeSections)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     static func setFavorite(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
             try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)

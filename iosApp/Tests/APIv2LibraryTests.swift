@@ -41,6 +41,34 @@ final class APIv2LibraryTests: XCTestCase {
         do { _ = try await v2.catalogEpisodes(seriesId: "series", seasonNumber: 0, imageSize: nil, auth: XCTUnwrap(current)); XCTFail("foreign receipt") } catch {}
     }
 
+    func testHomeWatchlistReceiptInvalidationAndForeignRefusal() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let key = CacheKey.itemUserState("movie")
+        defer { ResponseCache.shared.remove(key) }
+        ResponseCache.shared.set(UserItemState(isFavorite: false, inWatchlist: true), for: key)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        let success = await PersonalListSync.setHomeWatchlist(contentId: "movie", inWatchlist: true, auth: auth, api: api, tokens: tokens)
+        XCTAssertTrue(success)
+        let cleared: UserItemState? = ResponseCache.shared.get(key)
+        XCTAssertNil(cleared)
+        ResponseCache.shared.set(UserItemState(isFavorite: false, inWatchlist: true), for: key)
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileToken("replacement") }
+        let foreign = await PersonalListSync.setHomeWatchlist(contentId: "movie", inWatchlist: false, auth: auth, api: api, tokens: tokens)
+        XCTAssertFalse(foreign)
+        let retained: UserItemState? = ResponseCache.shared.get(key)
+        XCTAssertEqual(retained?.inWatchlist, true)
+        let count = LibraryReadProtocol.requests().count
+        let stale = await PersonalListSync.setHomeWatchlist(contentId: "movie", inWatchlist: true, auth: auth, api: api, tokens: tokens)
+        XCTAssertFalse(stale)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, count)
+    }
+
     func testHomeFavoriteReceiptInvalidationAndForeignRefusal() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")
