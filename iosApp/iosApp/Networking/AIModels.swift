@@ -8,7 +8,7 @@
 //  translation/transcription (translate an existing track, transcribe
 //  audio via Whisper, or transcribe-and-translate).
 //
-//  All of these ride the native API (`/api/v1/...`) and go through
+//  These use native v1/v2 contracts through
 //  ``HTTPClient/shared``, whose coders are `.convertFromSnakeCase` /
 //  `.convertToSnakeCase`. Properties therefore stay camelCase with no
 //  `CodingKeys` boilerplate; the only exception is
@@ -19,9 +19,9 @@
 //    GET  /api/v1/metadata/ai/status
 //    POST /api/v1/items/{id}/translate-description
 //    GET  /api/v2/subtitles/ai/status
-//    GET  /api/v1/subtitles/ai/quota
+//    GET  /api/v2/subtitles/ai/quota
 //    POST /api/v1/subtitles/ai/translate
-//    GET  /api/v1/subtitles/ai/jobs/{job_id}
+//    GET  /api/v2/subtitles/ai/jobs/{job_id}
 //    GET  /api/v1/subtitles/ai/jobs?media_file_id=N
 //    POST /api/v1/subtitles/ai/jobs/{job_id}/cancel
 //    GET  /api/v1/subtitles/{media_file_id}
@@ -196,6 +196,39 @@ struct SubtitleJob: Codable, Identifiable, Equatable {
     let errorMessage: String?
     let createdAt: String?
     let updatedAt: String?
+
+    /// Keep job identity opaque; only the existing player subtitle handles
+    /// require checked integer projection.
+    init(v2 job: APIv2SubtitleJob, expectedJobID: String) throws {
+        guard job.id == expectedJobID,
+              let knownKind = SubtitleAIKind(rawValue: job.kind),
+              let fileID = Int(job.mediaFileId), fileID > 0,
+              String(fileID) == job.mediaFileId else { throw APIv2Error.invalidSubtitleResponse }
+        let resultID: Int?
+        if let raw = job.resultSubtitleId {
+            guard let value = Int(raw), value > 0, String(value) == raw else {
+                throw APIv2Error.invalidSubtitleResponse
+            }
+            resultID = value
+        } else {
+            resultID = nil
+        }
+        id = job.id
+        mediaFileId = fileID
+        kind = knownKind
+        sourceIndex = job.sourceIndex
+        sourceLanguage = job.sourceLanguage
+        targetLanguage = job.targetLanguage
+        engine = job.engine
+        model = job.model
+        status = job.status
+        progress = job.progress
+        progressMessage = job.progressMessage
+        resultSubtitleId = resultID
+        errorMessage = job.errorMessage
+        createdAt = job.createdAt
+        updatedAt = job.updatedAt
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

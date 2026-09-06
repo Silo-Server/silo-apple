@@ -48,7 +48,7 @@ actor SiloAI {
 
     /// The current user's ASR quota.
     func subtitleAIQuota() async throws -> SubtitleAIQuota {
-        try await http.get("/api/v1/subtitles/ai/quota")
+        try await v2.requestGet("/api/v2/subtitles/ai/quota")
     }
 
     /// Start a subtitle translate / transcribe / transcribe-translate job.
@@ -62,8 +62,11 @@ actor SiloAI {
 
     /// Poll a single job by id.
     func subtitleJob(id: String) async throws -> SubtitleJob {
-        let envelope: SubtitleJobEnvelope = try await http.get("/api/v1/subtitles/ai/jobs/\(id)")
-        return envelope.job
+        guard let value = Int64(id), value > 0, String(value) == id else {
+            throw APIv2Error.invalidSubtitleResponse
+        }
+        let envelope: APIv2SubtitleJobEnvelope = try await v2.requestGet("/api/v2/subtitles/ai/jobs/\(id)")
+        return try SubtitleJob(v2: envelope.job, expectedJobID: id)
     }
 
     /// Request cancellation of a running job (204, no body).

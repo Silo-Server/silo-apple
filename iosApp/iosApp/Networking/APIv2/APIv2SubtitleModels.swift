@@ -41,3 +41,25 @@ struct APIv2SubtitleSearchResponse: Decodable {
 
     var playerValue: SubtitleSearchResponse { SubtitleSearchResponse(results: results, warnings: warnings) }
 }
+
+struct APIv2SubtitleJobEnvelope: Decodable {
+    let job: APIv2SubtitleJob
+}
+
+struct APIv2SubtitleJob: Decodable {
+    let id: String
+    let mediaFileId: String
+    let kind: String
+    let sourceIndex: Int
+    let sourceLanguage: String
+    let targetLanguage: String
+    let engine: String
+    let model: String
+    let status: AIJobStatus
+    let progress: Double
+    let progressMessage: String
+    let resultSubtitleId: String?
+    let errorMessage: String?
+    let createdAt: String
+    let updatedAt: String
+}
