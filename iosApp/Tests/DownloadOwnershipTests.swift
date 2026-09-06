@@ -3,6 +3,73 @@ import XCTest
 @testable import Silo
 
 final class DownloadOwnershipTests: XCTestCase {
+    func testStatusEventsSurviveRestartAndOldAcknowledgmentCannotClearCompletion() async throws {
+        let (store, authority, root, _) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        let data = Data(#"{"id":"download","content_id":"movie","media_file_id":1,"revision":1,"quality":"original","status":"ready"}"#.utf8)
+        let row = try HTTPClient.makeJSONDecoder().decode(ServerDownloadRow.self, from: data)
+        _ = try await store.applyLocal(.registered([row], .init()), generation: state.ownerGeneration)
+        let (_, operation) = try await store.beginLocalPipeline(id: "download", generation: state.ownerGeneration)
+        let lease = try await store.localLease(downloadID: "download")
+        let binding = DownloadTaskBinding(transferID: UUID(), sessionID: "session", taskID: 7, lease: lease, operationID: operation)
+        let bound = try await store.bindLocalTask(binding, generation: state.ownerGeneration)
+        let start = try XCTUnwrap(bound.downloads.records["download"]?.pendingStatusEvent)
+        let restarted = ProgressBootstrapStore(localRoot: root, authority: authority)
+        let retry = try await restarted.pendingLocalStatus(id: "download", generation: state.ownerGeneration)
+        XCTAssertEqual(retry, start)
+        let source = root.appendingPathComponent("status-input")
+        try Data("bytes".utf8).write(to: source)
+        let completed = try await store.completeLocalTask(source: source, suffix: "mp4", binding: binding, generation: state.ownerGeneration)
+        let event = try XCTUnwrap(completed.downloads.records["download"]?.pendingStatusEvent)
+        XCTAssertEqual(event.status, "completed")
+        XCTAssertGreaterThan(event.updatedAt, start.updatedAt)
+        XCTAssertEqual(event.revision, start.revision)
+        let eventFormatter = ISO8601DateFormatter()
+        eventFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let response = APIv2DownloadEntry(id: "download", contentId: "movie", episodeId: nil, batchId: nil,
+            deviceId: event.deviceID, mediaFileId: "1", fileSize: 5, bytesSent: 5, kind: "", status: "completed",
+            quality: "original", effectiveQuality: "original", deliveryFormat: "original", targetBitrateKbps: 0,
+            revision: 1, createdAt: Date(), completedAt: nil, statusEventAt: eventFormatter.date(from: event.updatedAt))
+        do {
+            _ = try await store.acknowledgeLocalStatus(id: "download", event: start, row: response, generation: state.ownerGeneration)
+            XCTFail("old response erased completion")
+        } catch {}
+        let retained = try await restarted.pendingLocalStatus(id: "download", generation: state.ownerGeneration)
+        XCTAssertEqual(retained, event)
+        _ = try await store.acknowledgeLocalStatus(id: "download", event: event, row: response, generation: state.ownerGeneration)
+        let acked = try await restarted.pendingLocalStatus(id: "download", generation: state.ownerGeneration)
+        XCTAssertNil(acked)
+        let snapshot = try await restarted.localSnapshot()
+        let record = try XCTUnwrap(snapshot.downloads.records["download"])
+        XCTAssertEqual(record.lastStatusEventAt, event.updatedAt)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let sameInstant = try XCTUnwrap(formatter.date(from: event.updatedAt))
+        let next = try XCTUnwrap(DownloadStatusEvent.make(status: "completed", record: record, lease: lease, now: sameInstant))
+        XCTAssertGreaterThan(next.updatedAt, event.updatedAt, "acknowledgment must not erase the millisecond ordering fence")
+    }
+
+    func testReplacementRetiresOldStatusWithoutRewritingItsRevision() async throws {
+        let (store, _, _, _) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        func revisionRow(_ revision: Int) throws -> ServerDownloadRow {
+            let text = "{\"id\":\"download\",\"content_id\":\"movie\",\"media_file_id\":1,\"revision\":\(revision),\"quality\":\"original\",\"status\":\"ready\"}"
+            return try HTTPClient.makeJSONDecoder().decode(ServerDownloadRow.self, from: Data(text.utf8))
+        }
+        _ = try await store.applyLocal(.registered([revisionRow(1)], .init()), generation: state.ownerGeneration)
+        let (_, operation) = try await store.beginLocalPipeline(id: "download", generation: state.ownerGeneration)
+        let lease = try await store.localLease(downloadID: "download")
+        let binding = DownloadTaskBinding(transferID: UUID(), sessionID: "session", taskID: 7, lease: lease, operationID: operation)
+        let bound = try await store.bindLocalTask(binding, generation: state.ownerGeneration)
+        let event = try XCTUnwrap(bound.downloads.records["download"]?.pendingStatusEvent)
+        _ = try await store.applyLocal(.registered([revisionRow(2)], .init()), generation: state.ownerGeneration)
+        let pending = try await store.pendingLocalStatus(id: "download", generation: state.ownerGeneration)
+        XCTAssertNil(pending)
+        XCTAssertEqual(event.revision, 1)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(event.body)) as? [String: Any]
+        XCTAssertEqual(encoded?["revision"] as? Int, 1)
+    }
+
     private func harness() async throws -> (ProgressBootstrapStore, DownloadLocalAuthority, URL, TokenStore) {
         let name = "DownloadOwnershipTests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))

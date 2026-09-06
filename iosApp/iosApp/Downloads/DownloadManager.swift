@@ -359,12 +359,12 @@ final class DownloadManager {
         Self.logger.error("Download command did not commit")
     }
 
-    private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil,
+    private func request<T: Decodable>(_ method: String, _ path: String, body: Data? = nil, query: [String: String] = [:],
                                        owner handle: OwnerHandle) async throws -> T {
         let auth = try await verified(handle)
         let identity = HTTPRequestIdentity(serverId: handle.authority.serverID, serverURL: handle.authority.origin,
             profileId: handle.authority.profileID, clientFamily: AppleDeviceIdentity.current.clientFamily)
-        let response = try await HTTPClient.shared.requestData(method: method, path: path, body: body,
+        let response = try await HTTPClient.shared.requestData(method: method, path: path, query: query, body: body,
             requestIdentity: identity, expectedAccount: auth.account)
         _ = try await verified(handle)
         return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
@@ -470,8 +470,8 @@ final class DownloadManager {
     func refreshCapability() async {
         do {
             let handle = try requireOwner()
-            let capability: DownloadCapability = try await request("GET", "/api/v1/downloads/capability", owner: handle)
-            try await command(.capability(capability, Date()), owner: handle)
+            let capability: APIv2DownloadCapability = try await request("GET", "/api/v2/capabilities/downloads", owner: handle)
+            try await command(.capability(capability.localValue, Date()), owner: handle)
         } catch { report(error) }
     }
     func downloadMovie(
@@ -617,7 +617,12 @@ final class DownloadManager {
                     for binding in snapshot.transfers.values where binding.lease == lease { sessionDelegate.cancel(binding) }
                     pipelineTasks[id]?.cancel()
                     retryTasks[id]?.cancel()
-                    try await requestVoid("DELETE", "/api/v1/downloads/\(id)", owner: handle)
+                    do {
+                        try await requestVoid("DELETE", DownloadRegistryV2.path(id: id), owner: handle)
+                    } catch let error as HTTPError where error.statusCode == 404 {
+                        // The prior DELETE may have succeeded before its response was lost.
+                        _ = try await verified(handle)
+                    }
                     let result = try await handle.store.deleteLocalRecord(lease, generation: handle.generation)
                     try await publish(result, owner: handle)
                 }
@@ -755,8 +760,7 @@ final class DownloadManager {
             try await handle.store.resumeLocalTask(binding, generation: handle.generation,
                 tokenStore: transferTokenStore, auth: CapturedDurableAccountAuth(accountID: handle.authority.accountID,
                     accountEpoch: handle.authority.accountEpoch, request: auth)) { task.resume() }
-            try? await requestVoid("PATCH", "/api/v1/downloads/\(recordId)",
-                body: encode(["status": "downloading"]), owner: handle)
+            await flushStatus(id: recordId, owner: handle)
         } catch { task.cancel(); throw error }
     }
 
@@ -816,8 +820,7 @@ final class DownloadManager {
                 #if os(iOS)
                 if let completed = file.records[binding.lease.downloadID] { DownloadNotifier.downloadCompleted(completed) }
                 #endif
-                try? await requestVoid("PATCH", "/api/v1/downloads/\(binding.lease.downloadID)",
-                    body: encode(["status": "completed"]), owner: handle)
+                await flushStatus(id: binding.lease.downloadID, owner: handle)
                 refreshStorageUsage()
                 processQueue()
             case .failed(let taskID, let transferID, let status, let data, _):
@@ -900,13 +903,30 @@ final class DownloadManager {
         }
     }
 
+    private func flushStatus(id: String, owner handle: OwnerHandle) async {
+        do {
+            _ = try await verified(handle)
+            guard let event = try await handle.store.pendingLocalStatus(id: id, generation: handle.generation) else { return }
+            let row: APIv2DownloadEntry = try await request("PATCH", DownloadRegistryV2.path(id: id),
+                body: encode(event.body), owner: handle)
+            let result = try await handle.store.acknowledgeLocalStatus(id: id, event: event, row: row,
+                generation: handle.generation)
+            try await publish(result, owner: handle)
+        } catch { report(error) } // Keep the exact event after uncertainty or revision conflict.
+    }
+
     func reconcileWithServer(triggerPipeline: Bool) async {
         do {
             let handle = try requireOwner()
             let observed = try await handle.store.localSnapshot().recordOperations
-            let response: ServerDownloadsResponse = try await request("GET", "/api/v1/downloads", owner: handle)
-            try await command(.registered(response.downloads, DownloadRegistrationDisplay()), owner: handle)
-            try await command(.absentServerRows(observed: observed, present: Set(response.downloads.map(\.id))), owner: handle)
+            let rows = try await DownloadRegistryV2.collect(deviceID: AppleDeviceIdentity.current.id) { cursor in
+                var query = ["limit": "100"]
+                if let cursor { query["cursor"] = cursor }
+                return try await self.request("GET", "/api/v2/downloads", query: query, owner: handle)
+            }
+            try await command(.registered(rows, DownloadRegistrationDisplay()), owner: handle)
+            try await command(.absentServerRows(observed: observed, present: Set(rows.map(\.id))), owner: handle)
+            for id in rows.map(\.id) { await flushStatus(id: id, owner: handle) }
             if triggerPipeline { processQueue() }
             ensurePolling()
         } catch { report(error) }

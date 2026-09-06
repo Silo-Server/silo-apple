@@ -6,13 +6,7 @@ import Foundation
 /// than the legacy path dispatcher. Contract: server `docs/downloads-api.md`.
 extension SiloAPI {
 
-    // MARK: - Capability
-
-    func downloadCapability() async throws -> DownloadCapability {
-        try await http.get("/api/v1/downloads/capability")
-    }
-
-    // MARK: - Download registry
+    // Registry reads, status reports and deletion use DownloadManager ownership.
 
     /// Register a managed download. Returns one row for a single item, or
     /// every batch member for a series/season request.
@@ -22,26 +16,6 @@ extension SiloAPI {
             body: request
         )
         return response.downloads
-    }
-
-    /// The calling device's managed entries. Primary poll-for-readiness and
-    /// reconcile-on-launch call.
-    func listDownloads() async throws -> [ServerDownloadRow] {
-        let response: ServerDownloadsResponse = try await http.get("/api/v1/downloads")
-        return response.downloads
-    }
-
-    /// Report local progression so the server row reflects reality. Only
-    /// `downloading` / `completed` are accepted.
-    func patchDownloadStatus(id: String, status: String) async throws {
-        try await http.patchVoid(
-            "/api/v1/downloads/\(id)",
-            body: DownloadStatusUpdate(status: status)
-        )
-    }
-
-    func deleteDownloadRow(id: String) async throws {
-        try await http.delete("/api/v1/downloads/\(id)")
     }
 
     func fetchManifest(downloadId: String) async throws -> OfflineManifest {
@@ -126,10 +100,6 @@ extension SiloAPI {
 }
 
 // MARK: - Request/response helpers
-
-private struct DownloadStatusUpdate: Encodable {
-    let status: String
-}
 
 /// `POST /api/v1/downloads` returns either a bare row (single item) or a
 /// `{ "downloads": [...] }` batch. This decodes both into a row list.

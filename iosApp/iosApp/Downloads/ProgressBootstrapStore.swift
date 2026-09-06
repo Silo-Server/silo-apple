@@ -509,6 +509,8 @@ extension ProgressBootstrapStore {
                     if let revision = row.revision, let current = record.revision, revision < current { continue }
                     let replaced = Self.replacesAssets(record, row: row)
                     if replaced {
+                        record.pendingStatusEvent = nil
+                        record.lastStatusEventAt = nil
                         // New references are published under a fresh pipeline operation.
                         // Valid prior files remain owned recovery material; no directory deletion.
                         value.recordOperations[row.id] = UUID()
@@ -684,7 +686,42 @@ extension ProgressBootstrapStore {
             value.leases[record.id] = binding.lease
             record.taskIdentifier = binding.taskID
             record.localStatus = .downloading
+            record.pendingStatusEvent = DownloadStatusEvent.make(status: "downloading", record: record, lease: binding.lease)
+            record.lastStatusEventAt = record.pendingStatusEvent?.updatedAt ?? record.lastStatusEventAt
             value.downloads.records[record.id] = record
+            return try commitLocal(value)
+        }
+    }
+
+    func pendingLocalStatus(id: String, generation: UUID) throws -> DownloadStatusEvent? {
+        let value = try localSnapshot()
+        guard value.ownerGeneration == generation else { throw DownloadOwnershipError.stale }
+        guard let record = value.downloads.records[id], let event = record.pendingStatusEvent else { return nil }
+        let lease = try localLease(downloadID: id)
+        guard event.revision == record.revision, event.leaseGeneration == lease.generation,
+              event.deviceID == AppleDeviceIdentity.current.id else { throw DownloadOwnershipError.stale }
+        return event
+    }
+
+    func acknowledgeLocalStatus(id: String, event: DownloadStatusEvent, row: APIv2DownloadEntry,
+                                generation: UUID) throws -> DownloadLocalState {
+        guard let assets = localAssets else { throw DownloadOwnershipError.wrongAuthority }
+        return try assets.withLock {
+            var value = try localSnapshot()
+            guard value.ownerGeneration == generation, var record = value.downloads.records[id],
+                  let lease = value.leases[id] else { throw DownloadOwnershipError.stale }
+            try assets.validateLocked(lease)
+            guard record.pendingStatusEvent == event, record.revision == event.revision,
+                  event.leaseGeneration == lease.generation, row.id == id, row.deviceId == event.deviceID,
+                  row.revision == event.revision, row.contentId == record.contentId,
+                  row.mediaFileId == String(record.mediaFileId) else { throw DownloadOwnershipError.stale }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let sentAt = formatter.date(from: event.updatedAt), let acceptedAt = row.statusEventAt,
+                  acceptedAt >= sentAt else { throw DownloadOwnershipError.incompleteAction }
+            record.pendingStatusEvent = nil
+            record.serverStatus = row.status
+            value.downloads.records[id] = record
             return try commitLocal(value)
         }
     }
@@ -713,6 +750,9 @@ extension ProgressBootstrapStore {
                 record.mediaFilename = filename
                 record.localStatus = .completed
                 record.downloadedAt = Date()
+                record.pendingStatusEvent = DownloadStatusEvent.make(status: "completed", record: record, lease: lease,
+                    now: record.downloadedAt!)
+                record.lastStatusEventAt = record.pendingStatusEvent?.updatedAt ?? record.lastStatusEventAt
                 if let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize {
                     record.fileSize = Int64(size)
                     record.bytesDownloaded = Int64(size)
