@@ -110,12 +110,7 @@ actor SiloAI {
     /// legitimately slow call, so `.extended`. The returned
     /// ``DownloadedSubtitle`` then appears in
     /// ``downloadedSubtitles(mediaFileId:)``.
-    func downloadSubtitle(_ body: SubtitleDownloadBody) async throws -> DownloadedSubtitle {
-        let response: SubtitleDownloadResponse = try await http.post(
-            "/api/v1/subtitles/download",
-            body: body,
-            timeout: .extended
-        )
-        return response.subtitle
+    func downloadSubtitle(_ body: SubtitleDownloadBody, expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DownloadedSubtitle {
+        try await v2.downloadSubtitle(body, expectedAuth: expectedAuth)
     }
 }

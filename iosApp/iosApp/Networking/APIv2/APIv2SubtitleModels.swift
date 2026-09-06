@@ -63,3 +63,27 @@ struct APIv2SubtitleJob: Decodable {
     let createdAt: String
     let updatedAt: String
 }
+
+struct APIv2SubtitleDownloadBody: Encodable {
+    let mediaFileId: String
+    let provider: String
+    let subtitleId: String
+    let language: String
+    let releaseName: String
+    let score: Double
+    let hearingImpaired: Bool
+
+    init(_ body: SubtitleDownloadBody) {
+        mediaFileId = String(body.mediaFileId)
+        provider = body.provider
+        subtitleId = body.subtitleId
+        language = body.language
+        releaseName = body.releaseName
+        score = body.score
+        hearingImpaired = body.hearingImpaired
+    }
+}
+
+struct APIv2SubtitleDownloadResponse: Decodable {
+    let subtitle: APIv2StoredSubtitle
+}

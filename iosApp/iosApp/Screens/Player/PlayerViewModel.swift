@@ -5477,11 +5477,20 @@ class PlayerViewModel {
     /// is a harmless no-op — no ownership latch is needed here.
     @MainActor
     func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> Bool {
-        guard let fileId = currentSelectedVersion?.fileId else { return false }
+        guard let fileId = currentSelectedVersion?.fileId,
+              let sessionID = activePlaybackSessionId,
+              let auth = await TokenStore.shared.captureOrdinaryRequestAuth() else { return false }
+        func stillCurrent() async -> Bool {
+            guard let current = await TokenStore.shared.captureOrdinaryRequestAuth() else { return false }
+            return current.account == auth.account && current.profileId == auth.profileId
+                && current.profileToken == auth.profileToken && activePlaybackSessionId == sessionID
+                && currentSelectedVersion?.fileId == fileId
+        }
         do {
             let subtitle = try await SiloAI.shared.downloadSubtitle(
-                SubtitleDownloadBody(from: result, mediaFileId: fileId)
+                SubtitleDownloadBody(from: result, mediaFileId: fileId), expectedAuth: auth
             )
+            guard await stillCurrent() else { return false }
             let downloaded = try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId)
             // Revalidate after the awaits: if playback moved to a different
             // file while the download was in flight, `makeSubtitleHandoffContext`
@@ -5489,7 +5498,7 @@ class PlayerViewModel {
             // file's listing position against it would select a wrong or
             // invalid track. The download itself is persisted server-side
             // either way; the next session of that file picks it up.
-            guard currentSelectedVersion?.fileId == fileId else {
+            guard await stillCurrent() else {
                 Self.logger.info(
                     "[SUB-SEARCH] media file changed during download of subtitle id=\(subtitle.id, privacy: .public); skipping live handoff"
                 )

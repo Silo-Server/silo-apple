@@ -23,6 +23,62 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private func subtitleRequest() throws -> SubtitleDownloadBody {
+        let result = try HTTPClient.makeJSONDecoder().decode(SubtitleSearchResult.self,
+            from: Data(#"{"id":"opaque+/=01","provider":"provider","language":"en","format":"untrusted","release_name":"release"}"#.utf8))
+        return SubtitleDownloadBody(from: result, mediaFileId: 42)
+    }
+
+    private func subtitleReply(file: String = "42") -> Data {
+        Data("{\"subtitle\":{\"id\":\"9007199254740993\",\"media_file_id\":\"\(file)\",\"provider\":\"provider\",\"language\":\"en\",\"format\":\"srt\",\"release_name\":\"release\",\"score\":0,\"hearing_impaired\":false,\"created_at\":\"2026-01-01T00:00:00Z\"}}".utf8)
+    }
+
+    func testProviderDownloadUsesExactWireAndServerFormat() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.enqueue([subtitleReply()])
+        let value = try await api.downloadSubtitle(subtitleRequest())
+        XCTAssertEqual(value.id, 9007199254740993)
+        XCTAssertEqual(value.format, "srt")
+        let request = try XCTUnwrap(LibraryReadProtocol.requests().first)
+        XCTAssertEqual(request.url?.path, "/api/v2/subtitles/download")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Profile-Id"), "profile")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(object["media_file_id"] as? String, "42")
+        XCTAssertEqual(object["subtitle_id"] as? String, "opaque+/=01")
+        XCTAssertNil(object["format"])
+    }
+
+    func testProviderDownloadRefusesReplacedCallerBeforeDispatch() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let expected = try XCTUnwrap(captured)
+        await tokens.setProfileId("replacement")
+        do { _ = try await api.downloadSubtitle(subtitleRequest(), expectedAuth: expected); XCTFail("replaced caller") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+    }
+
+    func testProviderDownload401NeverRefreshesOrReplays() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data(#"{"detail":"Rejected"}"#.utf8)])
+        do { _ = try await api.downloadSubtitle(subtitleRequest()); XCTFail("accepted401") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testProviderDownloadRejectsStaleProfileAndForeignFile() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.enqueue([subtitleReply(), subtitleReply(file: "43")])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await api.downloadSubtitle(subtitleRequest()); XCTFail("stale profile") } catch {}
+        do { _ = try await api.downloadSubtitle(subtitleRequest()); XCTFail("foreign file") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+    }
+
     private func body() throws -> Data {
         try APIv2FixtureTestSupport.data(named: "user_libraries", bundleClass: Self.self)
     }
@@ -79,7 +135,10 @@ private final class LibraryReadProtocol: URLProtocol {
     nonisolated(unsafe) private static var pages: [Data] = []
     nonisolated(unsafe) private static var captured: [URLRequest] = []
     nonisolated(unsafe) private static var hook: (@Sendable () async -> Void)?
-    static func reset() { lock.withLock { pages = []; captured = []; hook = nil } }
+    nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) private static var body = Data()
+    static func lastBody() -> Data { lock.withLock { body } }
+    static func reset() { lock.withLock { pages = []; captured = []; hook = nil; status = 200; body = Data() } }
     static func enqueue(_ values: [Data]) { lock.withLock { pages.append(contentsOf: values) } }
     static func beforeNextReply(_ value: @escaping @Sendable () async -> Void) { lock.withLock { hook = value } }
     static func requests() -> [URLRequest] { lock.withLock { captured } }
@@ -91,6 +150,17 @@ private final class LibraryReadProtocol: URLProtocol {
     override func startLoading() {
         let state = Self.lock.withLock { () -> (Data?, (@Sendable () async -> Void)?) in
             Self.captured.append(request)
+            if let data = request.httpBody { Self.body = data }
+            else if let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var data = Data(); var buffer = [UInt8](repeating: 0, count: 4096)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count <= 0 { break }
+                    data.append(buffer, count: count)
+                }
+                Self.body = data
+            }
             let data = Self.pages.isEmpty ? nil : Self.pages.removeFirst()
             let hook = Self.hook
             Self.hook = nil
@@ -102,7 +172,7 @@ private final class LibraryReadProtocol: URLProtocol {
                 client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
                 return
             }
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200,
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.status,
                 httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)

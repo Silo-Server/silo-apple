@@ -167,6 +167,33 @@ struct APIv2Client: Sendable {
         return try await mapErrors { try await http.post(path, body: body, timeout: timeout) }
     }
 
+    /// Provider download has no durable replay receipt, including after401.
+    func downloadSubtitle(_ body: SubtitleDownloadBody, expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DownloadedSubtitle {
+        try await gate()
+        guard body.mediaFileId > 0, let auth = await tokenStore.captureOrdinaryRequestAuth(),
+              let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
+        if let expectedAuth {
+            guard auth.account == expectedAuth.account, auth.profileId == expectedAuth.profileId,
+                  auth.profileToken == expectedAuth.profileToken else { throw HTTPError.requestIdentityChanged }
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(APIv2SubtitleDownloadBody(body))
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/subtitles/download", body: data,
+                timeout: .extended, requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == auth.profileId, current.profileToken == auth.profileToken else {
+            throw HTTPError.requestIdentityChanged
+        }
+        guard response.statusCode == 200 else { throw APIv2Error.invalidSubtitleResponse }
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleDownloadResponse.self, from: response.data)
+        return try wire.subtitle.playerValue(mediaFileID: body.mediaFileId)
+    }
+
     func myRequests() async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
