@@ -1,10 +1,24 @@
 import SwiftUI
 
+struct LibraryCardAuthority: Equatable {
+    let libraryId: Int
+    let auth: CapturedOrdinaryRequestAuth?
+}
+
+private struct LibraryCardAuthorityKey: EnvironmentKey {
+    static let defaultValue: LibraryCardAuthority? = nil
+}
+
 private struct HomePersonalListAuthKey: EnvironmentKey {
     static let defaultValue: CapturedOrdinaryRequestAuth? = nil
 }
 
 extension EnvironmentValues {
+    var libraryCardAuthority: LibraryCardAuthority? {
+        get { self[LibraryCardAuthorityKey.self] }
+        set { self[LibraryCardAuthorityKey.self] = newValue }
+    }
+
     var homePersonalListAuth: CapturedOrdinaryRequestAuth? {
         get { self[HomePersonalListAuthKey.self] }
         set { self[HomePersonalListAuthKey.self] = newValue }
@@ -97,6 +111,23 @@ enum PersonalListSync {
         } catch {
             return false
         }
+    }
+
+    static func setLibraryFavorite(contentId: String, isFavorite: Bool,
+                                   owner: LibraryCardAuthority,
+                                   api: SiloAPI = .shared, tokens: TokenStore = .shared) async -> Bool {
+        guard let auth = owner.auth else { return false }
+        do {
+            try await api.toggleFavorite(contentId: contentId, isFavorite: isFavorite, auth: auth)
+            guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+                  !Task.isCancelled else { return false }
+            ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
+            ResponseCache.shared.remove(CacheKey.favorites)
+            let key = CacheKey.librarySections(owner.libraryId)
+            let cached: APIv2LibrarySectionsRead? = ResponseCache.shared.get(key)
+            if cached?.auth == auth { ResponseCache.shared.remove(key) }
+            return true
+        } catch { return false }
     }
 
     static func setFavorite(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {

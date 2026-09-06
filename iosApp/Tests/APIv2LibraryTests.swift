@@ -24,6 +24,58 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testLibraryCardOwnerDoesNotCrossLibrarySelection() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let auth = await tokens.captureOrdinaryRequestAuth()
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.removeAll(withPrefix: "library:")
+        defer {
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.removeAll(withPrefix: "library:")
+        }
+        let model = LibraryRecommendedViewModel(api: SiloAPI(tokenStore: tokens, v2: v2), tokens: tokens)
+        LibraryReadProtocol.enqueue([homeBody])
+        await model.loadSections(libraryId: 17)
+        XCTAssertEqual(model.personalListAuth(libraryId: 17), auth)
+        XCTAssertNil(model.personalListAuth(libraryId: 18))
+    }
+
+    func testLibraryFavoriteRequiresDisplayedOwnerAndFencesCacheReceipt() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let key = CacheKey.librarySections(17)
+        defer { ResponseCache.shared.remove(key) }
+        let missing = await PersonalListSync.setLibraryFavorite(contentId: "movie", isFavorite: true,
+            owner: LibraryCardAuthority(libraryId: 17, auth: nil), api: api, tokens: tokens)
+        XCTAssertFalse(missing)
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let read = APIv2LibrarySectionsRead(libraryId: 17, auth: auth,
+            response: try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self, from: homeBody))
+        ResponseCache.shared.set(read, for: key)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        let owner = LibraryCardAuthority(libraryId: 17, auth: auth)
+        let success = await PersonalListSync.setLibraryFavorite(contentId: "movie", isFavorite: true, owner: owner, api: api, tokens: tokens)
+        XCTAssertTrue(success)
+        let cleared: APIv2LibrarySectionsRead? = ResponseCache.shared.get(key)
+        XCTAssertNil(cleared)
+        ResponseCache.shared.set(read, for: key)
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileToken("replacement") }
+        let foreign = await PersonalListSync.setLibraryFavorite(contentId: "movie", isFavorite: false, owner: owner, api: api, tokens: tokens)
+        XCTAssertFalse(foreign)
+        let retained: APIv2LibrarySectionsRead? = ResponseCache.shared.get(key)
+        XCTAssertEqual(retained?.auth, auth)
+        let count = LibraryReadProtocol.requests().count
+        let stale = await PersonalListSync.setLibraryFavorite(contentId: "movie", isFavorite: true, owner: owner, api: api, tokens: tokens)
+        XCTAssertFalse(stale)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, count)
+    }
+
     func testHomeWatchedOldRenderedOwnerCannotRebindSameItem() async throws {
         let (_, tokens) = try await fixture()
         await tokens.setProfileId("profile")

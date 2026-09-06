@@ -398,6 +398,10 @@ final class LibraryRecommendedViewModel {
     private let tokens: TokenStore
     private var loadGeneration = 0
     private var displayedRead: APIv2LibrarySectionsRead?
+    func personalListAuth(libraryId: Int) -> CapturedOrdinaryRequestAuth? {
+        guard displayedRead?.libraryId == libraryId else { return nil }
+        return displayedRead?.auth
+    }
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared) {
         self.api = api; self.tokens = tokens
@@ -482,6 +486,7 @@ struct LibraryRecommendedView: View {
         .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .siloPageBackground()
+        .environment(\.libraryCardAuthority, LibraryCardAuthority(libraryId: libraryId, auth: viewModel.personalListAuth(libraryId: libraryId)))
         .task(id: libraryId) {
             await viewModel.loadSections(libraryId: libraryId)
         }

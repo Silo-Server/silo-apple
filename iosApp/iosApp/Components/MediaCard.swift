@@ -102,6 +102,9 @@ struct MediaCard: View {
 
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
+    @Environment(\.libraryCardAuthority) private var libraryOwner
+    @State private var libraryFavoriteRun: UUID?
+    @State private var libraryFavoritePending = false
     @State private var watchlistOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -169,7 +172,10 @@ struct MediaCard: View {
         ) {
             posterImage
         }
+        .onChange(of: contentId) { _, _ in resetLibraryFavorite() }
+        .onChange(of: libraryOwner) { _, _ in resetLibraryFavorite() }
         .onChange(of: userState) { _, _ in
+            resetLibraryFavorite()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -184,7 +190,10 @@ struct MediaCard: View {
                 iosCardButton
             }
         }
+        .onChange(of: contentId) { _, _ in resetLibraryFavorite() }
+        .onChange(of: libraryOwner) { _, _ in resetLibraryFavorite() }
         .onChange(of: userState) { _, _ in
+            resetLibraryFavorite()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -287,6 +296,10 @@ struct MediaCard: View {
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
+        if let owner = libraryOwner {
+            toggleLibraryFavorite(contentId: contentId, owner: owner)
+            return
+        }
         let newValue = !isFavorite
         let watchlist = isInWatchlist
         favoriteOverride = newValue
@@ -300,6 +313,33 @@ struct MediaCard: View {
             } else {
                 favoriteOverride = !newValue // Revert on failure
             }
+        }
+    }
+
+    private func resetLibraryFavorite() {
+        libraryFavoriteRun = nil
+        favoriteOverride = nil
+    }
+
+    private func toggleLibraryFavorite(contentId: String, owner: LibraryCardAuthority) {
+        guard !libraryFavoritePending, let auth = owner.auth else { return }
+        let run = UUID()
+        let oldOverride = favoriteOverride
+        let desired = !isFavorite
+        libraryFavoriteRun = run
+        libraryFavoritePending = true
+        favoriteOverride = desired
+        Task { @MainActor in
+            defer { libraryFavoritePending = false }
+            let success = await PersonalListSync.setLibraryFavorite(contentId: contentId, isFavorite: desired, owner: owner)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard libraryFavoriteRun == run, self.contentId == contentId, libraryOwner == owner,
+                  !Task.isCancelled else { return }
+            libraryFavoriteRun = nil
+            guard current else { favoriteOverride = nil; return }
+            if success {
+                onUserStateChanged?(MediaItemUserState(played: isPlayed, isFavorite: desired, inWatchlist: isInWatchlist))
+            } else { favoriteOverride = oldOverride }
         }
     }
 
