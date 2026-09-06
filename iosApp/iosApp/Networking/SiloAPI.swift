@@ -380,6 +380,11 @@ actor SiloAPI {
         }
     }
 
+    /// The detail screen carries its observed owner; shared card actions migrate separately.
+    func toggleWatchlist(contentId: String, isInWatchlist: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await v2.setWatchlistMembership(id: contentId, included: isInWatchlist, auth: auth)
+    }
+
     func toggleWatchlist(contentId: String, isInWatchlist: Bool) async throws {
         if isInWatchlist {
             try await http.putVoid("/api/v1/watchlist/\(contentId)")

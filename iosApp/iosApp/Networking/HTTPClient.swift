@@ -1741,6 +1741,7 @@ actor HTTPClient {
         let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
         return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
             && path != "/api/v2/subtitles/download"
+            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watchlist/"))
             && path != "/api/v2/downloads/subscriptions"
             && path != "/api/v2/onboarding/progress"
             && path != "/api/v2/subtitles/ai/translate"

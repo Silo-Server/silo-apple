@@ -89,6 +89,7 @@ class ItemDetailViewModel {
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
     private var userStateMutationGeneration = 0
+    private var watchlistMutationPending = false
 
     // tvOS pre-play selector state. ItemDetailCache retains this view model
     // while the user enters playback or navigates to another item, so manual
@@ -1273,15 +1274,27 @@ class ItemDetailViewModel {
     }
 
     func toggleWatchlist() async {
-        guard let contentId = detail?.contentId else { return }
+        guard !watchlistMutationPending, let contentId = detail?.contentId,
+              let auth = trackPreferenceAuth else { return }
+        let generation = detailGeneration
+        let oldValue = inWatchlist
+        let desiredValue = !oldValue
+        watchlistMutationPending = true
+        defer { watchlistMutationPending = false }
+        let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard current, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
         userStateMutationGeneration += 1
-        inWatchlist.toggle()
+        inWatchlist = desiredValue
         writeBackUserState(contentId: contentId)
         do {
-            try await SiloAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: inWatchlist)
+            try await SiloAPI.shared.toggleWatchlist(contentId: contentId, isInWatchlist: desiredValue, auth: auth)
+            let mayPublish = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard mayPublish, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
             invalidateRelatedCaches(contentId: contentId)
         } catch {
-            inWatchlist.toggle() // Revert on failure
+            let mayPublish = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard mayPublish, generation == detailGeneration, detail?.contentId == contentId, !Task.isCancelled else { return }
+            inWatchlist = oldValue
             writeBackUserState(contentId: contentId)
         }
     }
