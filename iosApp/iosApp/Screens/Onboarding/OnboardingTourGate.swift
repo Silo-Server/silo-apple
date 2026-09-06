@@ -25,26 +25,11 @@ final class OnboardingTourGateModel {
         resumeStepId = nil
 
         if let serverId = ServerRegistry.shared.activeServerId,
-           let tourId = UnrenderableOnboardingTourSuppression.pendingTourId(
+           UnrenderableOnboardingTourSuppression.pendingTourId(
                serverId: serverId,
                profileId: profileId
-           ) {
-            do {
-                try await SiloAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
-                    tourId: tourId,
-                    lastStep: nil,
-                    completed: true,
-                    skipped: false
-                ))
-                UnrenderableOnboardingTourSuppression.clear(
-                    serverId: serverId,
-                    profileId: profileId,
-                    tourId: tourId
-                )
-            } catch {
-                // Keep suppressing the empty UI and retry this completion on
-                // the next authenticated launch.
-            }
+           ) != nil {
+            // This local suppression is not a receipt authorizing another write.
             return
         }
 
@@ -83,11 +68,15 @@ final class OnboardingTourGateModel {
             }
 
             let flow = try await SiloAPI.shared.onboardingFlow(surface: "phone")
+            // Consume the legacy preference before dispatch so uncertainty
+            // cannot turn the next launch into an automatic replay.
+            LegacyInviteTourSuppression.clear(serverId: serverId, userId: expectedUserId)
             try await SiloAPI.shared.postOnboardingProgress(OnboardingProgressRequest(
                 tourId: flow.tourId,
                 lastStep: nil,
                 completed: false,
-                skipped: true
+                skipped: true,
+                writerID: flow.writerID
             ))
             LegacyInviteTourSuppression.clear(
                 serverId: serverId,
@@ -95,7 +84,7 @@ final class OnboardingTourGateModel {
             )
             return true
         } catch {
-            // Preserve the marker and retry on the next authenticated launch.
+            // Never repeat a dispatched skip. Before dispatch the legacy preference remains.
             return true
         }
     }

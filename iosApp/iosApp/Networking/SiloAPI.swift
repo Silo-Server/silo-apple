@@ -76,19 +76,36 @@ actor SiloAPI {
 
     // --- Onboarding tour (profile-scoped) ---
 
+    private var onboardingWriter: APIv2OnboardingSession?
+    private var onboardingBusy = false
+
     func onboardingFlow(surface: String) async throws -> OnboardingFlow {
-        try await http.get(
-            "/api/v1/onboarding/flow",
-            query: ["surface": surface]
-        )
+        guard !onboardingBusy else { throw HTTPError.requestIdentityChanged }
+        onboardingBusy = true
+        onboardingWriter = nil
+        defer { onboardingBusy = false }
+        let session = try await v2.onboardingRead(surface: surface)
+        guard var flow = session.flow else { throw APIv2Error.incompleteCollection }
+        onboardingWriter = session
+        flow.writerID = session.id
+        flow.acknowledgedState = session.state
+        return flow
     }
 
     func onboardingState() async throws -> OnboardingState {
-        try await http.get("/api/v1/onboarding/state")
+        try await v2.onboardingRead().state
     }
 
     func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {
-        try await http.postVoid("/api/v1/onboarding/progress", body: request)
+        guard !onboardingBusy, let session = onboardingWriter, request.writerID == session.id else {
+            throw APIv2Error.incompleteCollection
+        }
+        onboardingBusy = true
+        onboardingWriter = nil
+        defer { onboardingBusy = false }
+        // Consume before dispatch. Failure/412/uncertainty requires a fresh read,
+        // and can never replay the old operation under a newer validator.
+        onboardingWriter = try await v2.onboardingWrite(request, session: session)
     }
 
     func currentUser() async throws -> UserInfo {

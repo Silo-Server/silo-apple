@@ -239,6 +239,47 @@ struct APIv2Client: Sendable {
         return try await householdRequest("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data, status: 200)
     }
 
+    func onboardingRead(surface: String? = nil) async throws -> APIv2OnboardingSession {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await http.requestData(method: "GET", path: "/api/v2/onboarding/state",
+            requestIdentity: identity, expectedAccount: auth.account)
+        let state = try HTTPClient.makeJSONDecoder().decode(OnboardingState.self, from: raw.data)
+        let tag = try DownloadSubscriptionV2.validator(raw.header("ETag"))
+        var flow: OnboardingFlow?
+        if let surface {
+            let response = try await http.requestData(method: "GET", path: "/api/v2/onboarding/flow", query: ["surface": surface],
+                requestIdentity: identity, expectedAccount: auth.account)
+            flow = try HTTPClient.makeJSONDecoder().decode(OnboardingFlow.self, from: response.data)
+            guard flow?.tourId == state.tourId else { throw APIv2Error.incompleteCollection }
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == auth.profileId, current.profileToken == auth.profileToken else { throw HTTPError.requestIdentityChanged }
+        return APIv2OnboardingSession(id: UUID(), auth: auth, tag: tag, state: state, flow: flow)
+    }
+
+    func onboardingWrite(_ body: OnboardingProgressRequest, session: APIv2OnboardingSession) async throws -> APIv2OnboardingSession {
+        try await gate()
+        guard body.writerID == session.id, body.tourId == session.state.tourId,
+              let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == session.auth.account,
+              current.profileId == session.auth.profileId, current.profileToken == session.auth.profileToken,
+              let profile = current.profileId else { throw HTTPError.requestIdentityChanged }
+        let identity = HTTPRequestIdentity(serverId: current.account.serverId, serverURL: current.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let raw = try await http.requestData(method: "PUT", path: "/api/v2/onboarding/progress", body: encoder.encode(body),
+            headers: ["If-Match": session.tag], requestIdentity: identity, expectedAccount: session.auth.account)
+        guard let after = await tokenStore.captureOrdinaryRequestAuth(), after.account == session.auth.account,
+              after.profileId == session.auth.profileId, after.profileToken == session.auth.profileToken else { throw HTTPError.requestIdentityChanged }
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let state = try HTTPClient.makeJSONDecoder().decode(OnboardingState.self, from: raw.data)
+        guard state.tourId == body.tourId else { throw APIv2Error.incompleteCollection }
+        return APIv2OnboardingSession(id: session.id, auth: session.auth,
+            tag: try DownloadSubscriptionV2.validator(raw.header("ETag")), state: state, flow: session.flow)
+    }
+
     func myRequests() async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }

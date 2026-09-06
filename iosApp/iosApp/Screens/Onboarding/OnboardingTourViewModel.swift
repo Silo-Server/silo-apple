@@ -45,6 +45,8 @@ class OnboardingTourViewModel {
     var selectedValues: [String: String] = [:]
 
     private var tourId: String = ""
+    private var writerID: UUID?
+    private var needsReload = false
     private let api: any OnboardingTourAPI
     private let runtimeSettingsRefresher: any OnboardingRuntimeSettingsRefreshing
     private let activeProfileId: @MainActor () -> String?
@@ -63,6 +65,10 @@ class OnboardingTourViewModel {
     func load(resumeStepId: String? = nil) async {
         do {
             let flow = try await api.onboardingFlow(surface: "phone")
+            writerID = flow.writerID
+            needsReload = false
+            currentIndex = 0
+            if flow.acknowledgedState?.done == true { finished = true; return }
             let renderable = flow.steps.filter { Self.knownKinds.contains($0.kind) }
             if renderable.isEmpty {
                 // Nothing we can show: dismiss now and persist a retry marker
@@ -78,7 +84,7 @@ class OnboardingTourViewModel {
                     )
                 }
                 do {
-                    try await api.postOnboardingProgress(OnboardingProgressRequest(
+                    try await saveProgress(OnboardingProgressRequest(
                         tourId: flow.tourId,
                         lastStep: nil,
                         completed: true,
@@ -92,26 +98,39 @@ class OnboardingTourViewModel {
                         )
                     }
                 } catch {
-                    // The durable marker makes the gate retry without showing
-                    // an empty tour, so dismissal is still safe here.
+                    // Retain local suppression. An uncertain completion is never replayed.
                 }
                 finished = true
                 return
             }
             tourId = flow.tourId
             steps = renderable
-            if let resumeStepId,
+            if let resumeStepId = flow.acknowledgedState?.lastStep ?? resumeStepId,
                let resumeIndex = renderable.firstIndex(where: { $0.id == resumeStepId }) {
                 currentIndex = resumeIndex
             }
             isLoading = false
         } catch {
-            finished = true
+            isLoading = false
+            self.error = error.localizedDescription
+            needsReload = true
+        }
+    }
+
+    private func saveProgress(_ request: OnboardingProgressRequest) async throws {
+        var captured = request
+        captured.writerID = writerID
+        do { try await api.postOnboardingProgress(captured) }
+        catch {
+            needsReload = true
+            writerID = nil
+            throw error
         }
     }
 
     func advance() async {
         guard !isSaving else { return }
+        if needsReload { await load(); return }
         isSaving = true
         error = nil
         defer { isSaving = false }
@@ -127,7 +146,7 @@ class OnboardingTourViewModel {
         guard next < steps.count else {
             let lastStep = steps.indices.contains(currentIndex) ? steps[currentIndex].id : nil
             do {
-                try await api.postOnboardingProgress(OnboardingProgressRequest(
+                try await saveProgress(OnboardingProgressRequest(
                     tourId: tourId,
                     lastStep: lastStep,
                     completed: true,
@@ -142,7 +161,7 @@ class OnboardingTourViewModel {
         }
         let stepId = steps[next].id
         do {
-            try await api.postOnboardingProgress(OnboardingProgressRequest(
+            try await saveProgress(OnboardingProgressRequest(
                 tourId: tourId,
                 lastStep: stepId,
                 completed: false,
@@ -170,6 +189,7 @@ class OnboardingTourViewModel {
         persistCurrentDefault: Bool = true
     ) async {
         guard !isSaving else { return }
+        if needsReload { await load(); return }
         isSaving = true
         error = nil
         defer { isSaving = false }
@@ -178,7 +198,7 @@ class OnboardingTourViewModel {
             if !skipped, persistCurrentDefault {
                 try await persistDefaultForCurrentStepIfNeeded()
             }
-            try await api.postOnboardingProgress(OnboardingProgressRequest(
+            try await saveProgress(OnboardingProgressRequest(
                 tourId: tourId,
                 lastStep: lastStep,
                 completed: !skipped,
@@ -203,6 +223,7 @@ class OnboardingTourViewModel {
     /// targets or keys remain visible as a recoverable error.
     func choose(step: OnboardingStep, value: String) async {
         guard !isSaving, let spec = step.setting else { return }
+        if needsReload { await load(); return }
         isSaving = true
         error = nil
         defer { isSaving = false }

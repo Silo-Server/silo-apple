@@ -9,6 +9,9 @@ struct OnboardingFlow: Codable {
     let version: Int
     let tourId: String
     let steps: [OnboardingStep]
+    var writerID: UUID? = nil
+    var acknowledgedState: OnboardingState? = nil
+    private enum CodingKeys: String, CodingKey { case version, tourId, steps }
 }
 
 struct OnboardingStep: Codable, Identifiable, Hashable {
@@ -52,6 +55,8 @@ struct OnboardingProgressRequest: Codable {
     let lastStep: String?
     let completed: Bool
     let skipped: Bool
+    var writerID: UUID? = nil
+    private enum CodingKeys: String, CodingKey { case tourId, lastStep, completed, skipped }
 }
 
 /// Read-only compatibility for a tour preference stored by older builds after
@@ -127,4 +132,12 @@ enum UnrenderableOnboardingTourSuppression {
         guard pendingTourId(serverId: serverId, profileId: profileId) == tourId else { return }
         SharedDefaults.shared.removeObject(forKey: key)
     }
+}
+
+struct APIv2OnboardingSession: Sendable {
+    let id: UUID
+    let auth: CapturedOrdinaryRequestAuth
+    let tag: String
+    let state: OnboardingState
+    let flow: OnboardingFlow?
 }

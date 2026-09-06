@@ -9,13 +9,16 @@ final class OnboardingInvitationTests: XCTestCase {
 
     func testOnboardingSurfaceUsesAQueryItemInsteadOfEmbeddingQueryInPath() async throws {
         let (http, tokenStore) = await makeHTTPClient(activeURL: "https://active.example/silo")
-        let api = SiloAPI(http: http, tokenStore: tokenStore)
+        try await tokenStore.installAccountSession(accessToken: "existing-access", refreshToken: "existing-refresh", accountID: "account")
+        await tokenStore.setProfileId("profile")
+        let api = SiloAPI(http: http, tokenStore: tokenStore,
+            v2: APIv2Client(http: http, tokenStore: tokenStore, isUpdateRequired: { false }))
 
         let flow = try await api.onboardingFlow(surface: "phone")
         XCTAssertEqual(flow.tourId, "tour-test")
 
         let request = try XCTUnwrap(OnboardingRequestStubProtocol.requests().last)
-        XCTAssertEqual(request.url?.path, "/silo/api/v1/onboarding/flow")
+        XCTAssertEqual(request.url?.path, "/silo/api/v2/onboarding/flow")
         XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
             .queryItems, [URLQueryItem(name: "surface", value: "phone")])
     }
@@ -326,9 +329,12 @@ private final class OnboardingRequestStubProtocol: URLProtocol {
         let path = request.url?.path ?? ""
         let status: Int
         let body: Data
-        if path.hasSuffix("/api/v1/onboarding/flow") {
+        if path.hasSuffix("/api/v2/onboarding/flow") {
             status = 200
             body = Data(#"{"version":1,"tour_id":"tour-test","steps":[]}"#.utf8)
+        } else if path.hasSuffix("/api/v2/onboarding/state") {
+            status = 200
+            body = Data(#"{"tour_id":"tour-test","done":false}"#.utf8)
         } else {
             status = 500
             body = Data()
@@ -338,7 +344,7 @@ private final class OnboardingRequestStubProtocol: URLProtocol {
             url: request.url!,
             statusCode: status,
             httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
+            headerFields: ["Content-Type": "application/json", "ETag": "\"rev0\""]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)

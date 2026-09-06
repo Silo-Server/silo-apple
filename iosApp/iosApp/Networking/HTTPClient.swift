@@ -1708,6 +1708,7 @@ actor HTTPClient {
         return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
             && path != "/api/v2/subtitles/download"
             && path != "/api/v2/downloads/subscriptions"
+            && path != "/api/v2/onboarding/progress"
             && !(path == "/api/v2/profiles" && method == "POST")
             && path != diagnosticsUploads
             && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))

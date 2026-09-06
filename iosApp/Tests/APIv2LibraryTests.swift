@@ -23,6 +23,59 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private var onboardingStateBody: Data { Data(#"{"tour_id":"tour","last_step":"welcome","done":false}"#.utf8) }
+    private var onboardingFlowBody: Data { Data(#"{"version":1,"tour_id":"tour","steps":[]}"#.utf8) }
+
+    func testOnboardingAcknowledgedValidatorAndOldWriterRefusal() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        LibraryReadProtocol.tag = "\"rev0\""
+        LibraryReadProtocol.enqueue([onboardingStateBody, onboardingFlowBody])
+        let flow = try await facade.onboardingFlow(surface: "phone")
+        let request = OnboardingProgressRequest(tourId: "tour", lastStep: "next", completed: false, skipped: false, writerID: flow.writerID)
+        LibraryReadProtocol.tag = "\"rev1\""
+        LibraryReadProtocol.enqueue([onboardingStateBody])
+        try await facade.postOnboardingProgress(request)
+        XCTAssertEqual(LibraryReadProtocol.requests().last?.httpMethod, "PUT")
+        XCTAssertEqual(LibraryReadProtocol.requests().last?.value(forHTTPHeaderField: "If-Match"), "\"rev0\"")
+        LibraryReadProtocol.enqueue([onboardingStateBody])
+        try await facade.postOnboardingProgress(request)
+        XCTAssertEqual(LibraryReadProtocol.requests().last?.value(forHTTPHeaderField: "If-Match"), "\"rev1\"")
+        LibraryReadProtocol.enqueue([onboardingStateBody, onboardingFlowBody])
+        _ = try await facade.onboardingFlow(surface: "phone")
+        let count = LibraryReadProtocol.requests().count
+        do { try await facade.postOnboardingProgress(request); XCTFail("old writer") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, count)
+    }
+
+    func testOnboarding401ConsumesWriterWithoutRefreshOrReplay() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        LibraryReadProtocol.tag = "\"rev0\""
+        LibraryReadProtocol.enqueue([onboardingStateBody, onboardingFlowBody])
+        let flow = try await facade.onboardingFlow(surface: "phone")
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data(#"{"detail":"Rejected"}"#.utf8)])
+        let request = OnboardingProgressRequest(tourId: "tour", lastStep: "next", completed: false, skipped: false, writerID: flow.writerID)
+        for _ in 0..<2 { do { try await facade.postOnboardingProgress(request); XCTFail("replayed writer") } catch {} }
+        XCTAssertEqual(LibraryReadProtocol.requests().filter { $0.httpMethod == "PUT" }.count, 1)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 3)
+    }
+
+    func testOnboardingWriterRefusesChangedProfileBeforeDispatch() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        LibraryReadProtocol.tag = "\"rev0\""
+        LibraryReadProtocol.enqueue([onboardingStateBody, onboardingFlowBody])
+        let flow = try await facade.onboardingFlow(surface: "phone")
+        await tokens.setProfileId("other")
+        do { try await facade.postOnboardingProgress(OnboardingProgressRequest(tourId: "tour", lastStep: nil, completed: true, skipped: false, writerID: flow.writerID)); XCTFail("wrong profile") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+    }
+
     private func profileBody() throws -> Data {
         try APIv2FixtureTestSupport.data(named: "update_profile_ok", bundleClass: Self.self)
     }
@@ -198,9 +251,10 @@ private final class LibraryReadProtocol: URLProtocol {
     nonisolated(unsafe) private static var captured: [URLRequest] = []
     nonisolated(unsafe) private static var hook: (@Sendable () async -> Void)?
     nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) static var tag: String?
     nonisolated(unsafe) private static var body = Data()
     static func lastBody() -> Data { lock.withLock { body } }
-    static func reset() { lock.withLock { pages = []; captured = []; hook = nil; status = 200; body = Data() } }
+    static func reset() { lock.withLock { pages = []; captured = []; hook = nil; status = 200; tag = nil; body = Data() } }
     static func enqueue(_ values: [Data]) { lock.withLock { pages.append(contentsOf: values) } }
     static func beforeNextReply(_ value: @escaping @Sendable () async -> Void) { lock.withLock { hook = value } }
     static func requests() -> [URLRequest] { lock.withLock { captured } }
@@ -235,7 +289,7 @@ private final class LibraryReadProtocol: URLProtocol {
                 return
             }
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.status,
-                httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+                httpVersion: nil, headerFields: ["Content-Type": "application/json", "ETag": Self.tag ?? ""])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
         }
