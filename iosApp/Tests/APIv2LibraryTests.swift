@@ -140,6 +140,36 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertNil(foreign)
     }
 
+    func testLibraryRefreshFailureRevalidatesDisplayedOwner() async throws {
+        for change in ["same", "pin", "profile"] {
+            let (v2, tokens) = try await fixture()
+            await tokens.setProfileId("profile")
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.removeAll(withPrefix: "library:")
+            let model = LibraryRecommendedViewModel(api: SiloAPI(tokenStore: tokens, v2: v2), tokens: tokens)
+            LibraryReadProtocol.enqueue([homeBody])
+            await model.loadSections(libraryId: 17)
+            XCTAssertFalse(model.sections.isEmpty)
+            let arrived = expectation(description: "warm refresh suspended \(change)")
+            let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+            LibraryReadProtocol.status = 500
+            LibraryReadProtocol.enqueue([Data()])
+            LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+            let refresh = Task { await model.loadSections(libraryId: 17) }
+            await fulfillment(of: [arrived], timeout: 2)
+            XCTAssertFalse(model.sections.isEmpty)
+            if change == "pin" { await tokens.setProfileToken("replacement") }
+            if change == "profile" { await tokens.setProfileId("replacement") }
+            await gate.releaseOld(true)
+            await refresh.value
+            XCTAssertEqual(model.sections.isEmpty, change != "same")
+            XCTAssertEqual(model.error == nil, change == "same")
+            XCTAssertFalse(model.isRefreshing)
+        }
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.removeAll(withPrefix: "library:")
+    }
+
     func testHomeDismissalV2PreservesExactAnchorsAnd204() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

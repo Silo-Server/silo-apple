@@ -429,6 +429,11 @@ final class LibraryRecommendedViewModel {
             sections = read.sections.filter { !$0.items.isEmpty }
             displayedRead = read
         } catch let err {
+            if let displayedRead {
+                let current = await StartupContentPrefetcher.librarySectionsAreCurrent(displayedRead, libraryId: libraryId, tokens: tokens)
+                guard generation == loadGeneration, !Task.isCancelled else { return }
+                if !current { sections = []; self.displayedRead = nil }
+            }
             guard generation == loadGeneration, !Task.isCancelled else { return }
             if sections.isEmpty { error = ErrorState(err) }
         }

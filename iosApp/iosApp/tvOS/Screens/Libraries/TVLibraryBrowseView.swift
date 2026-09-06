@@ -112,6 +112,11 @@ struct TVLibraryBrowseView: View {
             sections = read.sections
             displayedRead = read
         } catch {
+            if let displayedRead {
+                let current = await StartupContentPrefetcher.librarySectionsAreCurrent(displayedRead, libraryId: libraryId)
+                guard generation == loadGeneration, !Task.isCancelled else { return }
+                if !current { sections = []; self.displayedRead = nil }
+            }
             guard generation == loadGeneration, !Task.isCancelled else { return }
             sectionsError = ErrorState(error)
         }
