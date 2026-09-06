@@ -24,6 +24,105 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testHomeDismissalV2PreservesExactAnchorsAnd204() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let auth = await tokens.captureOrdinaryRequestAuth()
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data(), Data()])
+        try await api.dismissContinueWatchingItem(contentId: "episode/a?b", progressUpdatedAt: "2026-09-06T00:00:00.000Z", auth: auth)
+        let progress = try JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: String]
+        XCTAssertEqual(progress, ["progress_updated_at": "2026-09-06T00:00:00.000Z"])
+        try await api.dismissNextUpItem(contentId: "episode/a?b", seriesId: "series:original", auth: auth)
+        let next = try JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: String]
+        XCTAssertEqual(next, ["series_id": "series:original"])
+        XCTAssertEqual(LibraryReadProtocol.requests().map { $0.url!.absoluteString }, [
+            "https://libraries.example/api/v2/home/dismissals/continue_watching/episode%2Fa%3Fb",
+            "https://libraries.example/api/v2/home/dismissals/next_up/episode%2Fa%3Fb"
+        ])
+        XCTAssertTrue(LibraryReadProtocol.requests().allSatisfy { $0.httpMethod == "PUT" })
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([Data(#"{}"#.utf8)])
+        do { try await api.dismissNextUpItem(contentId: "episode", seriesId: "series", auth: auth); XCTFail("non204") } catch {}
+    }
+
+    func testHomeDismissalPinsOriginalAuthorityAtCaptureAndReceipt() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        await tokens.setProfileId("profile")
+        let original = await tokens.captureOrdinaryRequestAuth()
+        do { try await v2.dismissHomeItem(id: "episode", progressUpdatedAt: nil, seriesId: "series", auth: original); XCTFail("PIN rebound") } catch {}
+        do { try await v2.dismissHomeItem(id: "episode", progressUpdatedAt: nil, seriesId: "series", auth: nil); XCTFail("recaptured missing owner") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { try await v2.dismissHomeItem(id: "episode", progressUpdatedAt: nil, seriesId: "series", auth: current); XCTFail("foreign receipt") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testHomeDismissalReceiptCannotRemoveNewProgressObservation() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let auth = await tokens.captureOrdinaryRequestAuth()
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        defer { ResponseCache.shared.remove(CacheKey.homeSections) }
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let model = HomeViewModel(dismissContinueWatching: { id, stamp, original in
+            XCTAssertEqual(original, auth)
+            try await api.dismissContinueWatchingItem(contentId: id, progressUpdatedAt: stamp, auth: original)
+        }, fetchHomeSections: { try await api.homeSections(auth: auth) },
+            responseIsCurrent: { await StartupContentPrefetcher.homeResponseIsCurrent($0, tokens: tokens) })
+        LibraryReadProtocol.enqueue([homeBody])
+        await model.loadSections()
+        let item = try XCTUnwrap(model.sections.first?.items.first)
+        let arrived = expectation(description: "PUT awaiting receipt")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+        let dismiss = Task { await model.dismissContinueWatchingItem(item) }
+        await fulfillment(of: [arrived], timeout: 2)
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([Data(String(decoding: homeBody, as: UTF8.self).replacingOccurrences(of: "00:00:00.000Z", with: "00:01:00.000Z").utf8)])
+        await model.loadSections()
+        LibraryReadProtocol.status = 204
+        await gate.releaseOld(true)
+        await dismiss.value
+        XCTAssertEqual(model.sections.first?.items.first?.progressUpdatedAt, "2026-09-06T00:01:00.000Z")
+        XCTAssertNil(model.actionError)
+        XCTAssertEqual(LibraryReadProtocol.requests().filter { $0.httpMethod == "PUT" }.count, 1)
+    }
+
+    func testHomeDismissalCannotRemoveNewerBackgroundCacheAnchor() async throws {
+        let (_, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let auth = await tokens.captureOrdinaryRequestAuth()
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        defer { ResponseCache.shared.remove(CacheKey.homeSections) }
+        var observed = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self, from: homeBody)
+        observed.homeReadAuth = auth
+        let item = try XCTUnwrap(observed.sections.first?.items.first)
+        let arrived = expectation(description: "dismissal pending")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        let model = HomeViewModel(dismissContinueWatching: { _, _, _ in _ = await gate.check() },
+            fetchHomeSections: { observed }, responseIsCurrent: { _ in true })
+        await model.loadSections()
+        let dismiss = Task { await model.dismissContinueWatchingItem(item) }
+        await fulfillment(of: [arrived], timeout: 2)
+        var newer = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self,
+            from: Data(String(decoding: homeBody, as: UTF8.self).replacingOccurrences(of: "00:00:00.000Z", with: "00:02:00.000Z").utf8))
+        newer.homeReadAuth = auth
+        ResponseCache.shared.set(newer, for: CacheKey.homeSections)
+        await gate.releaseOld(true)
+        await dismiss.value
+        let cached: SectionsResponse? = ResponseCache.shared.get(CacheKey.homeSections)
+        XCTAssertEqual(cached?.sections.first?.items.first?.progressUpdatedAt, "2026-09-06T00:02:00.000Z")
+        XCTAssertTrue(model.sections.first?.items.isEmpty == true)
+        XCTAssertNil(model.actionError)
+    }
+
     private var homeBody: Data {
         Data(#"{"sections":[{"id":"continue","section_type":"continue_watching","title":"Continue","featured":false,"item_limit":12,"total_count":20,"is_custom":false,"customized":false,"items":[{"content_id":"episode:1","type":"episode","title":"One","series_id":"series:1","season_number":0,"episode_number":1,"position_seconds":25,"duration_seconds":100,"progress_updated_at":"2026-09-06T00:00:00.000Z"}]}]}"#.utf8)
     }
@@ -106,7 +205,7 @@ final class APIv2LibraryTests: XCTestCase {
         let item = try XCTUnwrap(response.sections.first?.items.first)
         let arrived = expectation(description: "read awaiting authority")
         let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
-        let model = HomeViewModel(dismissContinueWatching: { _, _ in },
+        let model = HomeViewModel(dismissContinueWatching: { _, _, _ in },
             fetchHomeSections: { response }, responseIsCurrent: { _ in await gate.check() })
         model.sections = response.sections
         let read = Task { await model.loadSections() }

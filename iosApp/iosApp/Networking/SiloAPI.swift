@@ -168,20 +168,14 @@ actor SiloAPI {
         return try await v2.homeSections(imageSize: await imageSizeQuery["image_size"], auth: auth)
     }
 
-    func dismissContinueWatchingItem(contentId: String, progressUpdatedAt: String) async throws {
-        try await http.putVoid(
-            "/api/v1/home/dismissals/continue_watching/\(contentId)",
-            body: HomeDismissalBody(progressUpdatedAt: progressUpdatedAt)
-        )
+    func dismissContinueWatchingItem(contentId: String, progressUpdatedAt: String,
+                                     auth: CapturedOrdinaryRequestAuth?) async throws {
+        try await v2.dismissHomeItem(id: contentId, progressUpdatedAt: progressUpdatedAt, seriesId: nil, auth: auth)
     }
 
-    /// Next Up episodes carry no progress row, so the server keys their
-    /// dismissal on the parent series instead of `progress_updated_at`.
-    func dismissNextUpItem(contentId: String, seriesId: String) async throws {
-        try await http.putVoid(
-            "/api/v1/home/dismissals/next_up/\(contentId)",
-            body: NextUpDismissalBody(seriesId: seriesId)
-        )
+    func dismissNextUpItem(contentId: String, seriesId: String,
+                           auth: CapturedOrdinaryRequestAuth?) async throws {
+        try await v2.dismissHomeItem(id: contentId, progressUpdatedAt: nil, seriesId: seriesId, auth: auth)
     }
 
     func librarySections(libraryId: Int) async throws -> SectionsResponse {

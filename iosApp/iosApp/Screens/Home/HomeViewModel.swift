@@ -156,9 +156,10 @@ final class HomeSectionPreferences {
 class HomeViewModel {
     typealias DismissContinueWatching = (
         _ contentId: String,
-        _ progressUpdatedAt: String
+        _ progressUpdatedAt: String,
+        _ auth: CapturedOrdinaryRequestAuth?
     ) async throws -> Void
-    typealias DismissNextUp = (_ contentId: String, _ seriesId: String) async throws -> Void
+    typealias DismissNextUp = (_ contentId: String, _ seriesId: String, _ auth: CapturedOrdinaryRequestAuth?) async throws -> Void
     typealias SetWatched = (_ contentId: String, _ played: Bool) async throws -> Void
     typealias FetchHomeSections = () async throws -> SectionsResponse
 
@@ -199,16 +200,16 @@ class HomeViewModel {
     }
 
     init(
-        dismissContinueWatching: @escaping DismissContinueWatching = { contentId, progressUpdatedAt in
+        dismissContinueWatching: @escaping DismissContinueWatching = { contentId, progressUpdatedAt, auth in
             try await SiloAPI.shared.dismissContinueWatchingItem(
                 contentId: contentId,
-                progressUpdatedAt: progressUpdatedAt
+                progressUpdatedAt: progressUpdatedAt, auth: auth
             )
         },
-        dismissNextUp: @escaping DismissNextUp = { contentId, seriesId in
+        dismissNextUp: @escaping DismissNextUp = { contentId, seriesId, auth in
             try await SiloAPI.shared.dismissNextUpItem(
                 contentId: contentId,
-                seriesId: seriesId
+                seriesId: seriesId, auth: auth
             )
         },
         setWatched: @escaping SetWatched = { contentId, played in
@@ -269,6 +270,9 @@ class HomeViewModel {
     /// a Next Up card is accepted by the server but never matches anything,
     /// so the card returns on the next fresh fetch.
     func dismissContinueWatchingItem(_ item: SectionItem) async {
+        let observation = displayedHomeResponse
+        let auth = observation?.homeReadAuth
+        let generation = loadGeneration
         let removal: (
             request: () async throws -> Void,
             mutate: (_ sections: [ResolvedSection]) -> [ResolvedSection]
@@ -276,7 +280,7 @@ class HomeViewModel {
         if let progressUpdatedAt = item.progressUpdatedAt {
             removal = (
                 request: { [dismissContinueWatching] in
-                    try await dismissContinueWatching(item.contentId, progressUpdatedAt)
+                    try await dismissContinueWatching(item.contentId, progressUpdatedAt, auth)
                 },
                 mutate: { sections in
                     HomeSectionsMutation.removingContinueWatchingItem(
@@ -288,7 +292,7 @@ class HomeViewModel {
         } else if let seriesId = item.seriesId, !seriesId.isEmpty {
             removal = (
                 request: { [dismissNextUp] in
-                    try await dismissNextUp(item.contentId, seriesId)
+                    try await dismissNextUp(item.contentId, seriesId, auth)
                 },
                 mutate: { sections in
                     HomeSectionsMutation.removingNextUpItem(
@@ -311,7 +315,17 @@ class HomeViewModel {
         actionError = nil
 
         do {
+            if let observation {
+                let current = await responseIsCurrent(observation)
+                guard current, generation == loadGeneration, !Task.isCancelled else { return }
+            }
+            guard containsDismissalAnchor(item), !Task.isCancelled else { return }
             try await removal.request()
+            if let observation {
+                let current = await responseIsCurrent(observation)
+                guard current, generation == loadGeneration, !Task.isCancelled else { return }
+            }
+            guard containsDismissalAnchor(item), !Task.isCancelled else { return }
 
             // A Home request that started before the dismissal can contain the
             // removed item. Invalidate that generation before committing the
@@ -323,10 +337,27 @@ class HomeViewModel {
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
             sections = removal.mutate(sections)
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
+                if let auth {
+                    guard let owner = response.homeReadAuth,
+                          StartupContentPrefetcher.sameRecommendationOwner(owner, auth) else { return }
+                }
+                guard containsDismissalAnchor(item, in: response.sections) else { return }
                 response = SectionsResponse(sections: removal.mutate(response.sections))
             }
         } catch {
+            if let observation {
+                let current = await responseIsCurrent(observation)
+                guard current, generation == loadGeneration, !Task.isCancelled else { return }
+            }
             actionError = ErrorState(error)
+        }
+    }
+
+    private func containsDismissalAnchor(_ item: SectionItem, in observedSections: [ResolvedSection]? = nil) -> Bool {
+        (observedSections ?? sections).contains { section in
+            ["continue_watching", "in_progress", "next_up"].contains(section.sectionType) &&
+                section.items.contains { $0.contentId == item.contentId &&
+                    $0.progressUpdatedAt == item.progressUpdatedAt && $0.seriesId == item.seriesId }
         }
     }
 

@@ -677,6 +677,38 @@ struct APIv2Client: Sendable {
         return rows
     }
 
+    func dismissHomeItem(id: String, progressUpdatedAt: String?, seriesId: String?,
+                         auth: CapturedOrdinaryRequestAuth?) async throws {
+        guard let auth, let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
+        try await gate()
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let surface: String
+        if let progressUpdatedAt, !progressUpdatedAt.isEmpty { surface = "continue_watching" }
+        else if let seriesId, !seriesId.isEmpty { surface = "next_up" }
+        else { throw APIv2Error.incompleteCatalogRead }
+        struct Body: Encodable { let progressUpdatedAt: String?; let seriesId: String? }
+        // Preserve the observed anchor verbatim. Do not manufacture a timestamp or rebase it.
+        let body = Body(progressUpdatedAt: surface == "continue_watching" ? progressUpdatedAt : nil,
+                        seriesId: surface == "next_up" ? seriesId : nil)
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(body)
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let path = "/api/v2/home/dismissals/\(surface)/\(try catalogPathSegment(id))"
+        let raw = try await mapErrors {
+            try await http.requestData(method: "PUT", path: path, body: data,
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
+    }
+
     func homeSections(imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> SectionsResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,

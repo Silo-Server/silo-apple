@@ -99,7 +99,7 @@ final class HomeSectionsMutationTests: XCTestCase {
         var receivedContentId: String?
         var receivedProgressTimestamp: String?
         let viewModel = HomeViewModel(
-            dismissContinueWatching: { contentId, progressUpdatedAt in
+            dismissContinueWatching: { contentId, progressUpdatedAt, _ in
                 receivedContentId = contentId
                 receivedProgressTimestamp = progressUpdatedAt
             }
@@ -135,10 +135,10 @@ final class HomeSectionsMutationTests: XCTestCase {
         var receivedContentId: String?
         var receivedSeriesId: String?
         let viewModel = HomeViewModel(
-            dismissContinueWatching: { _, _ in
+            dismissContinueWatching: { _, _, _ in
                 continueWatchingCalls += 1
             },
-            dismissNextUp: { contentId, seriesId in
+            dismissNextUp: { contentId, seriesId, _ in
                 receivedContentId = contentId
                 receivedSeriesId = seriesId
             }
@@ -166,8 +166,8 @@ final class HomeSectionsMutationTests: XCTestCase {
         defer { ResponseCache.shared.remove(CacheKey.homeSections) }
 
         let viewModel = HomeViewModel(
-            dismissContinueWatching: { _, _ in XCTFail("unexpected continue_watching dismissal") },
-            dismissNextUp: { _, _ in XCTFail("unexpected next_up dismissal") }
+            dismissContinueWatching: { _, _, _ in XCTFail("unexpected continue_watching dismissal") },
+            dismissNextUp: { _, _, _ in XCTFail("unexpected next_up dismissal") }
         )
 
         viewModel.sections = sections
@@ -189,7 +189,7 @@ final class HomeSectionsMutationTests: XCTestCase {
         defer { ResponseCache.shared.remove(CacheKey.homeSections) }
 
         let viewModel = HomeViewModel(
-            dismissContinueWatching: { _, _ in
+            dismissContinueWatching: { _, _, _ in
                 throw TestError.failed
             }
         )
