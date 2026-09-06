@@ -18,7 +18,7 @@
 //  Endpoints in play (see ``SiloAI``):
 //    GET  /api/v1/metadata/ai/status
 //    POST /api/v1/items/{id}/translate-description
-//    GET  /api/v1/subtitles/ai/status
+//    GET  /api/v2/subtitles/ai/status
 //    GET  /api/v1/subtitles/ai/quota
 //    POST /api/v1/subtitles/ai/translate
 //    GET  /api/v1/subtitles/ai/jobs/{job_id}
@@ -92,7 +92,7 @@ struct TranslateDescriptionBody: Encodable {
 
 // MARK: - Subtitle AI
 
-/// `GET /api/v1/subtitles/ai/status`. `transcribeEnabled` additionally
+/// `GET /api/v2/subtitles/ai/status`. `transcribeEnabled` additionally
 /// gates the Whisper transcription controls + the quota gauge.
 struct SubtitleAIStatus: Codable {
     let enabled: Bool
@@ -105,7 +105,7 @@ struct SubtitleAIStatus: Codable {
     }
 }
 
-/// `GET /api/v1/subtitles/providers/status`. Whether the server has any
+/// `GET /api/v2/subtitles/providers/status`. Whether the server has any
 /// external subtitle providers (OpenSubtitles / SubDL / Subsource)
 /// configured, so the client can disable the in-player "Search Subtitles…"
 /// entry point instead of running a fan-out search that can only return

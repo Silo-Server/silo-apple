@@ -9,16 +9,17 @@ import Foundation
 /// ``HTTPClient/shared``; snake_case auto-converts both ways, so the wire
 /// shapes in ``AIModels`` stay camelCase.
 ///
-/// All paths are on the native API (`/api/v1/...`). The Jellyfin-compat
-/// API does not mirror the AI trigger/status/job endpoints; the Apple
-/// clients use the native API exclusively.
+/// Subtitle capability reads use API v2. Other operations retain their
+/// existing native routes until their server contracts migrate.
 actor SiloAI {
     static let shared = SiloAI()
 
     private let http: HTTPClient
+    private let v2: APIv2Client
 
-    init(http: HTTPClient = .shared) {
+    init(http: HTTPClient = .shared, v2: APIv2Client? = nil) {
         self.http = http
+        self.v2 = v2 ?? APIv2Client(http: http)
     }
 
     // MARK: - Metadata
@@ -42,7 +43,7 @@ actor SiloAI {
 
     /// Server-wide subtitle-AI capability (translate + transcribe).
     func subtitleAIStatus() async throws -> SubtitleAIStatus {
-        try await http.get("/api/v1/subtitles/ai/status")
+        try await v2.requestGet("/api/v2/subtitles/ai/status")
     }
 
     /// The current user's ASR quota.
@@ -87,14 +88,10 @@ actor SiloAI {
 
     /// Whether the server has any external subtitle providers configured.
     ///
-    /// Available to any authenticated user, and answered `200` by every
-    /// server that implements it (there is a fallback registration so it
-    /// never 404s on an instance where the feature is unwired). Servers
-    /// that predate the endpoint DO 404 — and those have working search, so
-    /// the caller must treat a thrown error as "assume enabled". See
-    /// ``SubtitleProvidersStore`` for that fail-open contract.
+    /// The v2 route returns explicit disabled state when no providers are
+    /// configured. Errors retain the store's last known availability.
     func subtitleProvidersStatus() async throws -> SubtitleProvidersStatus {
-        try await http.get("/api/v1/subtitles/providers/status")
+        try await v2.requestGet("/api/v2/subtitles/providers/status")
     }
 
     /// Synchronous fan-out search across the server's configured external
