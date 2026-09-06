@@ -1,5 +1,16 @@
 import SwiftUI
 
+private struct HomePersonalListAuthKey: EnvironmentKey {
+    static let defaultValue: CapturedOrdinaryRequestAuth? = nil
+}
+
+extension EnvironmentValues {
+    var homePersonalListAuth: CapturedOrdinaryRequestAuth? {
+        get { self[HomePersonalListAuthKey.self] }
+        set { self[HomePersonalListAuthKey.self] = newValue }
+    }
+}
+
 /// The favorite / watchlist entries shared by the media-card context
 /// menus (long press on iOS/macOS, long press on the touch surface on
 /// tvOS). Labels reflect the caller's current membership state; the
@@ -52,6 +63,24 @@ enum PersonalListSync {
     /// Returns false when the server call failed — the caller reverts
     /// its optimistic UI state. The sibling flag is only a write-back
     /// fallback; a fresher cached value for it wins (see `writeBack`).
+    /// Home supplies the owner of its displayed response before scheduling.
+    static func setHomeFavorite(contentId: String, isFavorite: Bool,
+                                auth: CapturedOrdinaryRequestAuth,
+                                api: SiloAPI = .shared, tokens: TokenStore = .shared) async -> Bool {
+        do {
+            try await api.toggleFavorite(contentId: contentId, isFavorite: isFavorite, auth: auth)
+            guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+                  !Task.isCancelled else { return false }
+            // Do not combine this receipt with an unscoped cached sibling flag.
+            ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
+            ResponseCache.shared.remove(CacheKey.favorites)
+            ResponseCache.shared.remove(CacheKey.homeSections)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     static func setFavorite(contentId: String, isFavorite: Bool, inWatchlist: Bool) async -> Bool {
         do {
             try await SiloAPI.shared.toggleFavorite(contentId: contentId, isFavorite: isFavorite)

@@ -182,6 +182,7 @@ class HomeViewModel {
     private let responseIsCurrent: (SectionsResponse) async -> Bool
     private var loadGeneration = 0
     private var displayedHomeResponse: SectionsResponse?
+    var personalListAuth: CapturedOrdinaryRequestAuth? { displayedHomeResponse?.homeReadAuth }
 
     var isShowingActionError: Bool {
         get { actionError != nil }

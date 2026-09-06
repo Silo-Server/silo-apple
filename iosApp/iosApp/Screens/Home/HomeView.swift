@@ -218,6 +218,7 @@ struct HomeView: View {
             Task { await viewModel.loadSections() }
         }
         #endif
+        .environment(\.homePersonalListAuth, viewModel.personalListAuth)
         .alert(
             "Couldn’t Update Item",
             isPresented: $viewModel.isShowingActionError

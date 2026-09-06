@@ -182,6 +182,9 @@ private struct HomeCardMenu: ViewModifier {
     /// `MediaCard` drives its badge from the same effective state.
     @Binding var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
+    @Environment(\.homePersonalListAuth) private var favoriteAuth
+    @State private var favoriteRun: UUID?
+    @State private var favoritePending = false
     @State private var watchlistOverride: Bool?
 
     private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
@@ -200,7 +203,10 @@ private struct HomeCardMenu: ViewModifier {
         if hasAnyAction {
             content
                 .contextMenu { menuItems }
+                .onChange(of: item.contentId) { _, _ in resetFavoriteAction() }
+                .onChange(of: favoriteAuth) { _, _ in resetFavoriteAction() }
                 .onChange(of: item.userState) { _, _ in
+                    resetFavoriteAction()
                     playedOverride = nil
                     favoriteOverride = nil
                     watchlistOverride = nil
@@ -245,16 +251,31 @@ private struct HomeCardMenu: ViewModifier {
         }
     }
 
+    private func resetFavoriteAction() {
+        favoriteRun = nil
+        favoriteOverride = nil
+    }
+
     private func toggleFavorite() {
+        guard !favoritePending, let auth = favoriteAuth else { return }
+        let contentId = item.contentId
+        let oldOverride = favoriteOverride
         let newValue = !isFavorite
-        let watchlist = inWatchlist
+        let run = UUID()
+        favoriteRun = run
+        favoritePending = true
         favoriteOverride = newValue
-        Task {
-            if await PersonalListSync.setFavorite(
-                contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) == false {
-                favoriteOverride = !newValue
-            }
+        Task { @MainActor in
+            defer { favoritePending = false }
+            let success = await PersonalListSync.setHomeFavorite(
+                contentId: contentId, isFavorite: newValue, auth: auth
+            )
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard favoriteRun == run, item.contentId == contentId, favoriteAuth == auth,
+                  !Task.isCancelled else { return }
+            favoriteRun = nil
+            guard current else { favoriteOverride = nil; return }
+            if !success { favoriteOverride = oldOverride }
         }
     }
 
