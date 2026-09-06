@@ -24,6 +24,97 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private var discoverBody: Data {
+        Data(#"{"items":[{"type":"popular","title":"Popular","items":[{"content_id":"movie:one","type":"movie","title":"One","rating_imdb":8.1}]},{"type":"cluster","title":"For You","items":[{"content_id":"episode:two","type":"episode","title":"Two","series_id":"series:2","season_number":0,"episode_number":2}]},{"type":"genre","title":"Empty","items":[]}],"page":{"has_more":false}}"#.utf8)
+    }
+
+    func testDiscoverV2ProjectsCompleteOrderedRowsAndRejectsContinuation() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        LibraryReadProtocol.enqueue([discoverBody])
+        let response = try await api.recommendationsDiscover(auth: auth)
+        XCTAssertEqual(response.sections.map(\.title), ["Popular", "For You", "Empty"])
+        XCTAssertEqual(response.sections[0].items.first?.ratingImdb, 8.1)
+        XCTAssertEqual(response.sections[1].items.first?.seasonNumber, 0)
+        XCTAssertEqual(response.sections[1].items.first?.seriesId, "series:2")
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.path, "/api/v2/recommendations/discover")
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":true,"next_cursor":"later"}}"#.utf8)])
+        do { _ = try await api.recommendationsDiscover(auth: auth); XCTFail("partial rows") } catch {}
+    }
+
+    func testDiscoverV2PinsAuthorityAtCaptureAndReply() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("replacement") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await v2.discover(auth: XCTUnwrap(captured)); XCTFail("rebound PIN") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([discoverBody])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.discover(auth: XCTUnwrap(current)); XCTFail("foreign reply") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testDiscoverModelScopesCacheAndPreservesForYouOrdering() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.remove(CacheKey.recommendations)
+        defer {
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.remove(CacheKey.recommendations)
+        }
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        LibraryReadProtocol.enqueue([discoverBody])
+        let model = RecommendationsViewModel(api: api, tokens: tokens)
+        await model.loadRecommendations()
+        XCTAssertEqual(model.sections.map(\.title), ["For You", "Popular"])
+        let original = await tokens.captureOrdinaryRequestAuth()
+        XCTAssertNotNil(StartupContentPrefetcher.cachedRecommendations(auth: try XCTUnwrap(original)))
+        ResponseCache.shared.remove(CacheKey.recommendations)
+        await model.refresh() // Failed refresh after invalidation keeps this owner's visible cards.
+        XCTAssertEqual(model.sections.map(\.title), ["For You", "Popular"])
+        // A changed PIN must not display the old owner's cache even when the fresh GET fails.
+        await tokens.setProfileToken("replacement")
+        await model.refresh()
+        XCTAssertTrue(model.sections.isEmpty)
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.isLoading)
+        XCTAssertFalse(model.isRefreshing)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        XCTAssertNil(StartupContentPrefetcher.cachedRecommendations(auth: try XCTUnwrap(current)))
+    }
+
+    func testDiscoverReplacementDoesNotJoinOrPublishOldAuthorityFlight() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.remove(CacheKey.recommendations)
+        defer {
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.remove(CacheKey.recommendations)
+        }
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let model = RecommendationsViewModel(api: api, tokens: tokens)
+        let arrived = expectation(description: "old GET awaiting reply")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        LibraryReadProtocol.enqueue([discoverBody, Data(#"{"items":[{"type":"popular","title":"New owner","items":[{"content_id":"movie:new","type":"movie","title":"New"}]}]}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+        let old = Task { await model.loadRecommendations() }
+        await fulfillment(of: [arrived], timeout: 2)
+        await tokens.setProfileToken("new")
+        await model.refresh()
+        await gate.releaseOld(true)
+        await old.value
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+        XCTAssertEqual(model.sections.map(\.title), ["New owner"])
+        XCTAssertFalse(model.isLoading)
+    }
+
     private var calendarBody: Data {
         Data(#"{"events":[{"date":"2026-09-07","items":[{"content_id":"episode:7","type":"episode","title":"Series","series_id":"series:1","season_number":0,"episode_number":1,"air_date":"2026-09-06","air_at":"2026-09-07T01:00:00.000Z","air_timezone":"America/New_York","local_air_date":"2026-09-07","watched":false,"badges":["season_premiere"]}]}]}"#.utf8)
     }

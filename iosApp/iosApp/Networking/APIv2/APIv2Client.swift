@@ -617,6 +617,33 @@ struct APIv2Client: Sendable {
 
     // MARK: Catalog detail and hierarchy reads
 
+    func discover(auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2DiscoverRow] {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/recommendations/discover",
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let collection = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<APIv2DiscoverRow>.self, from: raw.data)
+        let rows = try collection.completeItems()
+        guard rows.allSatisfy({ row in
+            Set(row.items.map(\.contentId)).count == row.items.count &&
+                row.items.allSatisfy { !$0.contentId.isEmpty }
+        }) else { throw APIv2Error.incompleteCatalogRead }
+        return rows
+    }
+
     func calendar(start: String, end: String, filter: String, timezone: String,
                   auth: CapturedOrdinaryRequestAuth) async throws -> CalendarResponse {
         try await gate()

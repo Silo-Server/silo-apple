@@ -193,13 +193,13 @@ actor SiloAPI {
         try await v2.similarCards(id: contentId, limit: limit, auth: auth)
     }
 
-    func recommendationsDiscover() async throws -> SectionsResponse {
-        let response: DiscoverResponse = try await http.get("/api/v1/recommendations/discover")
-        let resolved = response.rows.enumerated().map { index, row -> ResolvedSection in
+    func recommendationsDiscover(auth: CapturedOrdinaryRequestAuth) async throws -> SectionsResponse {
+        let rows = try await v2.discover(auth: auth)
+        let resolved = rows.enumerated().map { index, row -> ResolvedSection in
             ResolvedSection(
                 id: "discover_\(index)_\(row.type)",
                 sectionType: row.type,
-                title: row.label,
+                title: row.title,
                 featured: false,
                 itemLimit: row.items.count,
                 totalCount: row.items.count,

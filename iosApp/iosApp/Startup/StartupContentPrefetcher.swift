@@ -33,7 +33,29 @@ enum StartupContentPrefetcher {
 
     private static var profilesTask: Task<[UserProfile], Error>?
     private static var homeSectionsTask: Task<SectionsResponse, Error>?
-    private static var recommendationsTask: Task<SectionsResponse, Error>?
+    private struct RecommendationFlight {
+        let id: UUID
+        let auth: CapturedOrdinaryRequestAuth
+        let task: Task<SectionsResponse, Error>
+    }
+    private struct RecommendationCache {
+        let auth: CapturedOrdinaryRequestAuth
+        let response: SectionsResponse
+    }
+    private static var recommendationsTask: RecommendationFlight?
+    private static var latestRecommendationFlight: UUID?
+
+    static func sameRecommendationOwner(_ a: CapturedOrdinaryRequestAuth, _ b: CapturedOrdinaryRequestAuth) -> Bool {
+        a.account == b.account && a.credentialOwner == b.credentialOwner &&
+            a.profileId == b.profileId && a.profileToken == b.profileToken
+    }
+
+    /// Called only after the caller has checked current authority and its run token.
+    static func cachedRecommendations(auth: CapturedOrdinaryRequestAuth) -> SectionsResponse? {
+        guard let cached: RecommendationCache = ResponseCache.shared.get(CacheKey.recommendations),
+              sameRecommendationOwner(cached.auth, auth) else { return nil }
+        return cached.response
+    }
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
     private static var browseFirstPageTasks: [String: Task<APIv2CatalogResult, Error>] = [:]
@@ -53,7 +75,7 @@ enum StartupContentPrefetcher {
         profileScopedGeneration += 1
 
         homeSectionsTask?.cancel()
-        recommendationsTask?.cancel()
+        recommendationsTask?.task.cancel()
         userLibrariesTask?.cancel()
         librarySectionsTasks.values.forEach { $0.cancel() }
         browseFirstPageTasks.values.forEach { $0.cancel() }
@@ -63,6 +85,7 @@ enum StartupContentPrefetcher {
 
         homeSectionsTask = nil
         recommendationsTask = nil
+        latestRecommendationFlight = nil
         userLibrariesTask = nil
         librarySectionsTasks.removeAll()
         browseFirstPageTasks.removeAll()
@@ -370,40 +393,51 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func fetchRecommendations() async throws -> SectionsResponse {
+    static func fetchRecommendations(auth original: CapturedOrdinaryRequestAuth? = nil,
+                                     api: SiloAPI = .shared, tokens: TokenStore = .shared) async throws -> SectionsResponse {
         let generation = profileScopedGeneration
+        let captured: CapturedOrdinaryRequestAuth?
+        if let original { captured = original }
+        else { captured = await tokens.captureOrdinaryRequestAuth() }
+        guard let auth = captured, auth.profileId != nil,
+              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try validateProfileScopedGeneration(generation)
+        try Task.checkCancellation()
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("recommendations", isOriginator: recommendationsTask == nil)
         #endif
-        let task: Task<SectionsResponse, Error>
-        if let recommendationsTask {
-            task = recommendationsTask
+        let flight: RecommendationFlight
+        if let current = recommendationsTask, sameRecommendationOwner(current.auth, auth) {
+            flight = current
         } else {
-            task = Task {
-                try await SiloAPI.shared.recommendationsDiscover()
-            }
-            recommendationsTask = task
+            recommendationsTask?.task.cancel()
+            flight = RecommendationFlight(id: UUID(), auth: auth, task: Task {
+                try await api.recommendationsDiscover(auth: auth)
+            })
+            recommendationsTask = flight
+            latestRecommendationFlight = flight.id
         }
-
         do {
-            let response = try await task.value
+            let response = try await flight.task.value
+            let current = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
             try validateProfileScopedGeneration(generation)
-            if profileScopedGeneration == generation {
-                recommendationsTask = nil
-            }
+            try Task.checkCancellation()
+            guard current else { throw HTTPError.requestIdentityChanged }
+            guard latestRecommendationFlight == flight.id else { throw CancellationError() }
+            if recommendationsTask?.id == flight.id { recommendationsTask = nil }
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.recommendations)
+            ResponseCache.shared.set(RecommendationCache(auth: auth, response: response), for: CacheKey.recommendations)
             prefetchSectionArtwork(for: response, maxCount: maxSectionArtworkURLs)
             #if os(tvOS)
             prefetchRecommendationLogos(for: response)
             #endif
             return response
         } catch {
-            if profileScopedGeneration == generation {
-                recommendationsTask = nil
-            }
+            if recommendationsTask?.id == flight.id { recommendationsTask = nil }
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif

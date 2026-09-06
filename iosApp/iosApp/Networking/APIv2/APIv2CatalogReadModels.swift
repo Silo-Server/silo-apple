@@ -490,3 +490,10 @@ struct APIv2UserLibrary: Decodable {
     let sortOrder: Int
     let posterUrl: String?
 }
+
+/// Complete Discover rows use the same flat catalog-card fields as section shelves.
+struct APIv2DiscoverRow: Decodable {
+    let type: String
+    let title: String
+    let items: [SectionItem]
+}
