@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 /// Drives the Calendar tab: one Monday-anchored week of day-grouped
 /// events for the active filter preset, with stale-while-revalidate
@@ -22,7 +23,12 @@ final class CalendarViewModel {
     /// already navigated away from can't clobber the visible state.
     @ObservationIgnored private var requestToken = 0
 
-    init() {
+    private let api: SiloAPI
+    private let tokens: TokenStore
+
+    init(api: SiloAPI = .shared, tokens: TokenStore = .shared) {
+        self.api = api
+        self.tokens = tokens
         let stored = UserDefaults.standard.string(forKey: Self.filterDefaultsKey) ?? ""
         filter = CalendarFilter(rawValue: stored) ?? .following
     }
@@ -87,14 +93,29 @@ final class CalendarViewModel {
 
     // MARK: - Loading
 
-    func load() async {
+    func load(ignoreCache: Bool = false) async {
         requestToken += 1
         let token = requestToken
         let week = week
         let filter = filter
-        let key = CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
-
-        if let cached: CalendarResponse = ResponseCache.shared.get(key) {
+        let timezone = TimeZone.current.identifier
+        guard let auth = await tokens.captureOrdinaryRequestAuth(), auth.profileId != nil else {
+            guard token == requestToken, !Task.isCancelled else { return }
+            days = []; isLoading = false
+            error = ErrorState(HTTPError.requestIdentityChanged)
+            return
+        }
+        guard token == requestToken, !Task.isCancelled else { return }
+        let owner = [auth.account.serverId, auth.account.serverURL, String(describing: auth.account.credentialGenerationID),
+                     auth.profileId ?? "", auth.profileToken ?? "", timezone]
+        let ownerData = (try? JSONEncoder().encode(owner)) ?? Data()
+        let digest = SHA256.hash(data: ownerData).map { String(format: "%02x", $0) }.joined()
+        let key = CacheKey.calendarWeek(week.startString, filter: filter.rawValue) + ":v2:" + digest
+        let mayReadCache = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+        guard token == requestToken, !Task.isCancelled else { return }
+        guard mayReadCache else { days = []; isLoading = false; return }
+        if ignoreCache { ResponseCache.shared.remove(key) }
+        if !ignoreCache, let cached: CalendarResponse = ResponseCache.shared.get(key) {
             days = cached.events
             isLoading = false
         } else {
@@ -102,34 +123,25 @@ final class CalendarViewModel {
             isLoading = true
         }
         error = nil
-
+        defer { if token == requestToken { isLoading = false } }
         do {
-            let response = try await SiloAPI.shared.calendarEvents(
-                start: week.startString,
-                end: week.endString,
-                filter: filter.rawValue,
-                timezone: TimeZone.current.identifier
-            )
-            guard token == requestToken else { return }
+            let response = try await api.calendarEvents(start: week.startString, end: week.endString,
+                filter: filter.rawValue, timezone: timezone, auth: auth)
+            let mayPublish = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard token == requestToken, !Task.isCancelled else { return }
+            guard mayPublish else { days = []; return }
             ResponseCache.shared.set(response, for: key)
             days = response.events
         } catch let err {
-            guard token == requestToken else { return }
-            // A cancelled load (the tab was switched away mid-fetch) is
-            // not a failure — the next `.task` run reloads from scratch,
-            // so don't leave an error screen behind.
+            let current = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard token == requestToken, !Task.isCancelled else { return }
+            guard current else { days = []; return }
             if err is CancellationError || (err as? URLError)?.code == .cancelled { return }
-            if days.isEmpty {
-                error = ErrorState(err)
-            }
+            if days.isEmpty { error = ErrorState(err) }
         }
-        isLoading = false
     }
 
     func refresh() async {
-        ResponseCache.shared.remove(
-            CacheKey.calendarWeek(week.startString, filter: filter.rawValue)
-        )
-        await load()
+        await load(ignoreCache: true)
     }
 }

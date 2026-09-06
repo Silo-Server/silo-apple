@@ -24,6 +24,74 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private var calendarBody: Data {
+        Data(#"{"events":[{"date":"2026-09-07","items":[{"content_id":"episode:7","type":"episode","title":"Series","series_id":"series:1","season_number":0,"episode_number":1,"air_date":"2026-09-06","air_at":"2026-09-07T01:00:00.000Z","air_timezone":"America/New_York","local_air_date":"2026-09-07","watched":false,"badges":["season_premiere"]}]}]}"#.utf8)
+    }
+
+    func testCalendarV2PreservesLocalDaysFiltersAndEventNavigation() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        LibraryReadProtocol.enqueue([calendarBody])
+        let value = try await v2.calendar(start: "2026-09-07", end: "2026-09-13", filter: "following",
+            timezone: "America/New_York", auth: auth)
+        let event = try XCTUnwrap(value.events.first?.items.first)
+        XCTAssertEqual(value.events.first?.date, "2026-09-07")
+        XCTAssertEqual(event.navigationContentId, "series:1")
+        XCTAssertEqual(event.seasonNumber, 0)
+        XCTAssertEqual(event.airAt, "2026-09-07T01:00:00.000Z")
+        XCTAssertEqual(event.displayBadges.map(\.rawValue), ["season_premiere"])
+        let request = try XCTUnwrap(LibraryReadProtocol.requests().first)
+        XCTAssertEqual(request.url?.path, "/api/v2/calendar")
+        let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value ?? "") }),
+            ["start":"2026-09-07", "end":"2026-09-13", "filter":"following", "timezone":"America/New_York"])
+        LibraryReadProtocol.enqueue([Data(#"{"events":[]}"#.utf8)])
+        let empty = try await v2.calendar(start: "2026-09-07", end: "2026-09-13", filter: "everything", timezone: "UTC", auth: auth)
+        XCTAssertTrue(empty.events.isEmpty)
+    }
+
+    func testCalendarV2PinsAuthorityAtCaptureAndReply() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        do { _ = try await v2.calendar(start: "2026-09-07", end: "2026-09-13", filter: "trending", timezone: "UTC", auth: XCTUnwrap(captured)); XCTFail("PIN rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([calendarBody])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.calendar(start: "2026-09-07", end: "2026-09-13", filter: "trending", timezone: "UTC", auth: XCTUnwrap(current)); XCTFail("late reply") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testCalendarModelSupersededLoadCannotPublishOrReuseForeignCache() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAPI(tokenStore: tokens, v2: v2)
+        let model = CalendarViewModel(api: api, tokens: tokens)
+        let old = expectation(description: "old response held")
+        let gate = MetadataAuthorityGate(passFirst: false, old: old, new: old)
+        LibraryReadProtocol.enqueue([calendarBody, Data(#"{"events":[]}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+        let first = Task { await model.load(ignoreCache: true) }
+        await fulfillment(of: [old], timeout: 2)
+        await model.load(ignoreCache: true)
+        await gate.releaseOld(true)
+        await first.value
+        XCTAssertTrue(model.days.isEmpty)
+        XCTAssertFalse(model.isLoading)
+        LibraryReadProtocol.enqueue([calendarBody])
+        await model.load(ignoreCache: true)
+        XCTAssertFalse(model.days.isEmpty)
+        await tokens.setProfileToken("replacement")
+        LibraryReadProtocol.status = 503
+        LibraryReadProtocol.enqueue([Data()])
+        await model.load()
+        XCTAssertTrue(model.days.isEmpty, "old proof cache must not survive")
+        XCTAssertNotNil(model.error)
+    }
+
     func testSimilarRecommendationsUseOrderedCardsWithoutDetailRequests() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

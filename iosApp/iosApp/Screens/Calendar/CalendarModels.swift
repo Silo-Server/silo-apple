@@ -22,7 +22,7 @@ enum CalendarFilter: String, CaseIterable, Identifiable {
 
 // MARK: - Wire types
 
-/// Response from `GET /api/v1/calendar`. Snake_case keys are mapped by the
+/// Response from `GET /api/v2/calendar`. Snake_case keys are mapped by the
 /// shared decoder's `.convertFromSnakeCase` strategy.
 struct CalendarResponse: Codable {
     let events: [CalendarDay]

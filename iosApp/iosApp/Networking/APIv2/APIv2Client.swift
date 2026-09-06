@@ -617,6 +617,29 @@ struct APIv2Client: Sendable {
 
     // MARK: Catalog detail and hierarchy reads
 
+    func calendar(start: String, end: String, filter: String, timezone: String,
+                  auth: CapturedOrdinaryRequestAuth) async throws -> CalendarResponse {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/calendar",
+                query: ["start": start, "end": end, "filter": filter, "timezone": timezone],
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(CalendarResponse.self, from: raw.data)
+    }
+
     func similarCards(id: String, limit: Int, auth: CapturedOrdinaryRequestAuth) async throws -> [BrowseItem] {
         try await gate()
         guard (1...50).contains(limit), let profile = auth.profileId, !profile.isEmpty,

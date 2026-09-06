@@ -217,18 +217,9 @@ actor SiloAPI {
     /// `end` are inclusive "YYYY-MM-DD" bounds (the server caps the
     /// window at 31 days); `timezone` is the viewer's IANA identifier
     /// used for day grouping.
-    func calendarEvents(
-        start: String,
-        end: String,
-        filter: String,
-        timezone: String
-    ) async throws -> CalendarResponse {
-        try await http.get("/api/v1/calendar", query: [
-            "start": start,
-            "end": end,
-            "filter": filter,
-            "timezone": timezone,
-        ])
+    func calendarEvents(start: String, end: String, filter: String, timezone: String,
+                        auth: CapturedOrdinaryRequestAuth) async throws -> CalendarResponse {
+        try await v2.calendar(start: start, end: end, filter: filter, timezone: timezone, auth: auth)
     }
 
     // --- Catalog ---
