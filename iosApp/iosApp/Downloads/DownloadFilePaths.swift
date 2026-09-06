@@ -51,16 +51,6 @@ enum DownloadFilePaths {
             .appendingPathComponent(storeFileName, isDirectory: false)
     }
 
-    /// Staging area where the background session delegate parks a finished
-    /// download's temp file (which is only valid during the delegate
-    /// callback) before the manager resolves its record and moves it to the
-    /// final per-download directory. Keyed by task identifier.
-    static func stagingFileURL(taskIdentifier: Int) -> URL {
-        let dir = rootDirectory().appendingPathComponent("staging", isDirectory: true)
-        ensureDirectory(dir, excludeFromBackup: true)
-        return dir.appendingPathComponent("task-\(taskIdentifier).bin", isDirectory: false)
-    }
-
     static func downloadDirectory(serverId: String, profileId: String, downloadId: String) -> URL {
         let dir = scopeDirectory(serverId: serverId, profileId: profileId)
             .appendingPathComponent(sanitize(downloadId), isDirectory: true)
@@ -77,14 +67,6 @@ enum DownloadFilePaths {
     ) -> URL {
         downloadDirectory(serverId: serverId, profileId: profileId, downloadId: downloadId)
             .appendingPathComponent(filename, isDirectory: false)
-    }
-
-    /// Delete every on-disk asset for one download (media, manifest,
-    /// artwork, subtitles). The JSON store record is removed separately.
-    static func removeDownloadDirectory(serverId: String, profileId: String, downloadId: String) {
-        let dir = scopeDirectory(serverId: serverId, profileId: profileId)
-            .appendingPathComponent(sanitize(downloadId), isDirectory: true)
-        try? FileManager.default.removeItem(at: dir)
     }
 
     /// Total bytes used by all download assets in a scope.

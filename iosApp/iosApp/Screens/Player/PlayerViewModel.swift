@@ -684,6 +684,7 @@ class PlayerViewModel {
     private struct OfflinePlaybackContext {
         let downloadId: String
         let mediaItemId: String
+        let progressAuthority: DownloadManager.OfflineProgressAuthority?
     }
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
@@ -3862,7 +3863,8 @@ class PlayerViewModel {
                     )
                     preparedOfflineContext = OfflinePlaybackContext(
                         downloadId: offline.downloadId,
-                        mediaItemId: offline.mediaItemId
+                        mediaItemId: offline.mediaItemId,
+                        progressAuthority: await DownloadManager.shared.captureOfflineProgressAuthority()
                     )
                     preparedOfflineArtworkURL = offline.posterFileURL
                     prepared = offline.prepared
@@ -7253,7 +7255,8 @@ class PlayerViewModel {
             mediaItemId: context.mediaItemId,
             position: position,
             duration: duration,
-            completed: watched
+            completed: watched,
+            authority: context.progressAuthority
         )
     }
 

@@ -4,14 +4,14 @@ import OSLog
 /// Events surfaced by the background download session, consumed by
 /// `DownloadManager` on the MainActor via an `AsyncStream`.
 enum DownloadSessionEvent: Sendable {
-    case progress(taskId: Int, bytesWritten: Int64, totalExpected: Int64)
+    case progress(taskId: Int, transferID: UUID?, bytesWritten: Int64, totalExpected: Int64)
     /// Media transfer succeeded (HTTP 2xx). `stagedURL` is a stable file in
     /// the staging directory — the volatile temp file has already been
     /// moved there synchronously inside the delegate callback.
-    case finished(taskId: Int, stagedURL: URL, statusCode: Int)
+    case finished(DownloadParkedArrival)
     /// Transfer ended without a usable file: a network error, a
     /// cancellation, or a non-2xx server response (e.g. 409 revoked).
-    case failed(taskId: Int, statusCode: Int?, resumeData: Data?, message: String)
+    case failed(taskId: Int, transferID: UUID?, statusCode: Int?, resumeData: Data?, message: String)
     /// All background events for this launch have been delivered; the app
     /// may call the system-provided completion handler.
     case allEventsDelivered
@@ -36,7 +36,12 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     /// once `allEventsDelivered` is processed.
     var backgroundCompletionHandler: (() -> Void)?
 
-    override init() {
+    let identifier: String
+    private let parkingRoot: URL
+
+    init(parkingRoot: URL? = nil, identifier: String = DownloadSessionDelegate.sessionIdentifier) {
+        self.identifier = identifier
+        self.parkingRoot = parkingRoot ?? DownloadFilePaths.rootDirectory()
         let (stream, continuation) = AsyncStream<DownloadSessionEvent>.makeStream()
         self.events = stream
         self.continuation = continuation
@@ -45,7 +50,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     private(set) lazy var session: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        let config = URLSessionConfiguration.background(withIdentifier: identifier)
         config.sessionSendsLaunchEvents = true
         config.isDiscretionary = false
         config.allowsCellularAccess = true
@@ -57,32 +62,32 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 
     /// Start a fresh media download. Returns the task identifier to persist
     /// on the record for relaunch reconnection.
-    func start(request: URLRequest) -> Int {
+    func prepare(request: URLRequest, transferID: UUID) -> URLSessionDownloadTask {
         let task = session.downloadTask(with: request)
-        task.resume()
-        return task.taskIdentifier
+        task.taskDescription = transferID.uuidString
+        return task
     }
 
     /// Resume a previously-interrupted download from its `resumeData`.
-    func resume(data: Data) -> Int {
+    func prepare(data: Data, transferID: UUID) -> URLSessionDownloadTask {
         let task = session.downloadTask(withResumeData: data)
-        task.resume()
-        return task.taskIdentifier
+        task.taskDescription = transferID.uuidString
+        return task
     }
 
-    func cancel(taskId: Int) {
+    func cancel(_ binding: DownloadTaskBinding) {
         session.getAllTasks { tasks in
-            tasks.first(where: { $0.taskIdentifier == taskId })?.cancel()
+            tasks.first(where: { $0.taskIdentifier == binding.taskID && $0.taskDescription == binding.transferID.uuidString })?.cancel()
         }
     }
 
     /// Suspend a transfer by cancelling it with resume data. Returns `nil`
     /// when the server/transfer doesn't support ranged resume or the task is
     /// no longer live — callers must treat that as "restart from zero".
-    func pause(taskId: Int) async -> Data? {
+    func pause(_ binding: DownloadTaskBinding) async -> Data? {
         await withCheckedContinuation { cont in
             session.getAllTasks { tasks in
-                guard let task = tasks.first(where: { $0.taskIdentifier == taskId })
+                guard let task = tasks.first(where: { $0.taskIdentifier == binding.taskID && $0.taskDescription == binding.transferID.uuidString })
                     as? URLSessionDownloadTask else {
                     cont.resume(returning: nil)
                     return
@@ -95,10 +100,12 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     }
 
     /// Identifiers of tasks still live in the (possibly relaunched) session.
-    func activeTaskIdentifiers() async -> Set<Int> {
+    func activeTransfers() async -> [Int: UUID] {
         await withCheckedContinuation { cont in
             session.getAllTasks { tasks in
-                cont.resume(returning: Set(tasks.map { $0.taskIdentifier }))
+                cont.resume(returning: Dictionary(uniqueKeysWithValues: tasks.compactMap { task in
+                    task.taskDescription.flatMap(UUID.init(uuidString:)).map { (task.taskIdentifier, $0) }
+                }))
             }
         }
     }
@@ -114,6 +121,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
     ) {
         continuation.yield(.progress(
             taskId: downloadTask.taskIdentifier,
+            transferID: downloadTask.taskDescription.flatMap(UUID.init(uuidString:)),
             bytesWritten: totalBytesWritten,
             totalExpected: totalBytesExpectedToWrite
         ))
@@ -132,6 +140,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
             Self.logger.error("Download task \(taskId) finished with HTTP \(statusCode); treating as failure")
             continuation.yield(.failed(
                 taskId: taskId,
+                transferID: downloadTask.taskDescription.flatMap(UUID.init(uuidString:)),
                 statusCode: statusCode,
                 resumeData: nil,
                 message: "HTTP \(statusCode)"
@@ -141,15 +150,17 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 
         // The temp file is only valid during this callback — move it to a
         // stable staging location synchronously, then hand off the path.
-        let staged = DownloadFilePaths.stagingFileURL(taskIdentifier: taskId)
-        try? FileManager.default.removeItem(at: staged)
         do {
-            try FileManager.default.moveItem(at: location, to: staged)
-            continuation.yield(.finished(taskId: taskId, stagedURL: staged, statusCode: statusCode))
+            let arrival = try DownloadArrivalParking.park(source: location,
+                root: parkingRoot.appendingPathComponent("staging", isDirectory: true),
+                sessionID: identifier, taskID: taskId,
+                transferID: downloadTask.taskDescription.flatMap(UUID.init(uuidString:)), status: statusCode)
+            continuation.yield(.finished(arrival))
         } catch {
             Self.logger.error("Failed to stage finished download \(taskId): \(String(describing: error), privacy: .public)")
             continuation.yield(.failed(
                 taskId: taskId,
+                transferID: downloadTask.taskDescription.flatMap(UUID.init(uuidString:)),
                 statusCode: statusCode,
                 resumeData: nil,
                 message: "stage_failed"
@@ -168,10 +179,23 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         let nsError = error as NSError
         let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
         let statusCode = (task.response as? HTTPURLResponse)?.statusCode
+        // Preserve resume bytes even when no actor is active or a restarted task
+        // has no known binding. Adoption remains a separate checked actor command.
+        if let resumeData {
+            do {
+                _ = try DownloadArrivalParking.park(data: resumeData,
+                    root: parkingRoot.appendingPathComponent("resume-parking", isDirectory: true),
+                    sessionID: identifier, taskID: task.taskIdentifier,
+                    transferID: task.taskDescription.flatMap(UUID.init(uuidString:)), status: statusCode ?? 0)
+            } catch {
+                Self.logger.error("Failed to preserve interrupted transfer data: \(String(describing: error), privacy: .public)")
+            }
+        }
         // A user-initiated cancel still surfaces here; the manager checks
         // its own intent and ignores cancellations it requested.
         continuation.yield(.failed(
             taskId: task.taskIdentifier,
+            transferID: task.taskDescription.flatMap(UUID.init(uuidString:)),
             statusCode: statusCode,
             resumeData: resumeData,
             message: error.localizedDescription
@@ -187,20 +211,13 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
 /// session, replicating the header set `HTTPClient.attachAuthHeaders`
 /// applies (the background session can't share that actor's `URLSession`).
 enum DownloadAuthHeaders {
-    static func authorizedRequest(url: URL, allowsCellular: Bool) async -> URLRequest {
+    static func authorizedRequest(url: URL, allowsCellular: Bool, auth: CapturedOrdinaryRequestAuth) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.allowsCellularAccess = allowsCellular
-
-        if let token = await TokenStore.shared.getAccessToken() {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        if let profileId = await TokenStore.shared.getProfileId() {
-            request.setValue(profileId, forHTTPHeaderField: "X-Profile-Id")
-        }
-        if let profileToken = await TokenStore.shared.getProfileToken() {
-            request.setValue(profileToken, forHTTPHeaderField: "X-Profile-Token")
-        }
+        if let token = auth.accessToken { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let profile = auth.profileId { request.setValue(profile, forHTTPHeaderField: "X-Profile-Id") }
+        if let proof = auth.profileToken { request.setValue(proof, forHTTPHeaderField: "X-Profile-Token") }
         AppleDeviceIdentity.current.applyHeaders(to: &request)
         return request
     }

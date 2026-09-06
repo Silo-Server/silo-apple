@@ -45,6 +45,14 @@ struct DownloadsView: View {
         #endif
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .bottom) { bottomBar }
+        .safeAreaInset(edge: .top) {
+            if let error = manager.persistenceError {
+                Text(error).font(.footnote).padding().frame(maxWidth: .infinity)
+            } else if manager.downloadsEnabled && manager.progressSynchronizationIsQueuedOnly {
+                Text("Offline progress is queued on this device. Server synchronization is not active.")
+                    .font(.footnote).padding().frame(maxWidth: .infinity)
+            }
+        }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
         .confirmationDialog(
             "Delete downloaded files?",
