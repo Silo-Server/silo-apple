@@ -32,17 +32,18 @@ actor SiloAI {
 
     /// Server-wide metadata-translation capability + the on-view mode.
     func metadataAIStatus() async throws -> MetadataAIStatus {
-        try await http.get("/api/v1/metadata/ai/status")
+        try await v2.metadataAIStatus()
     }
 
     /// Kick off an on-demand description translation for `contentId`.
-    /// Returns `202` with no body; observe completion by re-fetching the
-    /// item detail until `pendingTranslationLanguage` clears.
-    func translateDescription(contentId: String, targetLanguage: String) async throws {
-        try await http.postVoid(
-            "/api/v1/items/\(contentId)/translate-description",
-            body: TranslateDescriptionBody(targetLanguage: targetLanguage)
-        )
+    /// Returns the bare v2 job; a recent failed job may be reused. Observe
+    /// completion through bounded item-detail reads, never by replaying the POST.
+    func translateDescription(contentId: String, targetLanguage: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
+        try await v2.translateDescription(contentID: contentId, language: targetLanguage, auth: auth)
+    }
+
+    func matchesAuthority(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        await v2.matchesAIAuthority(auth)
     }
 
     // MARK: - Subtitles

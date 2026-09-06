@@ -55,7 +55,7 @@ enum AIJobStatus: String, Codable {
 
 // MARK: - Metadata AI
 
-/// `GET /api/v1/metadata/ai/status`. `enabled` gates the metadata-language
+/// Native projection of the v2 metadata capability. `enabled` gates the metadata-language
 /// setting + the on-view translate affordance; `onView` decides whether the
 /// affordance is a button, auto-fires, or is hidden.
 struct MetadataAIStatus: Codable {
@@ -76,6 +76,10 @@ struct MetadataAIStatus: Codable {
         }
     }
 
+    init(enabled: Bool, onView: OnViewMode) {
+        self.enabled = enabled; self.onView = onView
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
@@ -83,9 +87,8 @@ struct MetadataAIStatus: Codable {
     }
 }
 
-/// Body for `POST /api/v1/items/{id}/translate-description` (202, no
-/// response body — observe completion by re-fetching the item detail
-/// until `pendingTranslationLanguage` clears).
+/// Body for the v2 catalog description action;202 returns a bare job.
+/// Completion remains observable through authorized item-detail reads.
 struct TranslateDescriptionBody: Encodable {
     let targetLanguage: String
 }
@@ -409,4 +412,22 @@ struct DownloadedSubtitlesResponse: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         subtitles = try c.decodeIfPresent([DownloadedSubtitle].self, forKey: .subtitles) ?? []
     }
+}
+
+
+struct APIv2MetadataAICapability: Decodable {
+    let state: String
+    let revision: String
+    let onView: MetadataAIStatus.OnViewMode
+    var playerValue: MetadataAIStatus {
+        MetadataAIStatus(enabled: state == "available", onView: state == "available" ? onView : .off)
+    }
+}
+struct APIv2MetadataTranslationJob: Decodable {
+    let id: String
+    let targetKind: String
+    let contentId: String
+    let targetLanguage: String
+    let status: String
+    var failed: Bool { status == "failed" || status == "canceled" || status == "cancelled" }
 }

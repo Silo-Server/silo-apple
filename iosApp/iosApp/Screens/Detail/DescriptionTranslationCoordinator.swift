@@ -77,8 +77,13 @@ final class DescriptionTranslationCoordinator {
             }
         }
 
+        let auth: CapturedOrdinaryRequestAuth
         do {
-            try await api.translateDescription(contentId: contentId, targetLanguage: targetLanguage)
+            auth = try await api.captureCreationAuthority()
+            guard isCurrentRun(runID) else { return }
+            let job = try await api.translateDescription(contentId: contentId, targetLanguage: targetLanguage, auth: auth)
+            guard isCurrentRun(runID) else { return }
+            if job.failed { phase = .failed; return }
         } catch {
             guard isCurrentRun(runID) else { return }
             phase = .failed
@@ -90,6 +95,7 @@ final class DescriptionTranslationCoordinator {
             try? await Task.sleep(for: .seconds(delay))
             guard isCurrentRun(runID) else { return }
 
+            guard await api.matchesAuthority(auth) else { phase = .failed; return }
             guard let refreshed = try? await catalog.itemDetail(contentId: contentId) else {
                 continue
             }
@@ -97,6 +103,7 @@ final class DescriptionTranslationCoordinator {
             // the fetch above; bail before applying so a stale poll can't
             // clobber the view model / cache with the previous item's detail.
             guard isCurrentRun(runID) else { return }
+            guard await api.matchesAuthority(auth) else { phase = .failed; return }
             apply(refreshed)
             ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId))
 

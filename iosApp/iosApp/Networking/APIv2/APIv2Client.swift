@@ -191,6 +191,43 @@ struct APIv2Client: Sendable {
         return response.data
     }
 
+    func metadataAIStatus() async throws -> MetadataAIStatus {
+        let data = try await settingsRead("/api/v2/capabilities/metadata-ai", profileRequired: true)
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataAICapability.self, from: data)
+        guard !wire.revision.isEmpty else { throw APIv2Error.incompleteCatalogRead }
+        return wire.playerValue
+    }
+
+    func matchesAIAuthority(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        guard let current = await tokenStore.captureOrdinaryRequestAuth() else { return false }
+        return current.account == auth.account && current.profileId == auth.profileId && current.profileToken == auth.profileToken
+    }
+
+    func translateDescription(contentID: String, language: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
+        try await gate()
+        guard auth.profileId != nil, await matchesAIAuthority(auth), !contentID.isEmpty,
+              !language.isEmpty, language.count <= 16,
+              let segment = contentID.addingPercentEncoding(withAllowedCharacters:
+                CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: auth.profileId!, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let raw = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/catalog/items/\(segment)/translate-description",
+                body: encoder.encode(TranslateDescriptionBody(targetLanguage: language)),
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard await matchesAIAuthority(auth) else { throw HTTPError.requestIdentityChanged }
+        guard raw.statusCode == 202 else { throw APIv2Error.incompleteCatalogRead }
+        let job = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataTranslationJob.self, from: raw.data)
+        guard !job.id.isEmpty, job.contentId == contentID, ["item", "season", "episode"].contains(job.targetKind) else {
+            throw APIv2Error.incompleteCatalogRead
+        }
+        return job
+    }
+
     func subtitleCreateAuthority() async throws -> CapturedOrdinaryRequestAuth {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }

@@ -76,6 +76,51 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
     }
 
+    func testMetadataCapabilityUnknownModesAndUnavailableRemainOff() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        LibraryReadProtocol.enqueue([
+            Data(#"{"state":"not_configured","revision":"opaque","on_view":"auto"}"#.utf8),
+            Data(#"{"state":"available","revision":"opaque","on_view":"future"}"#.utf8)])
+        let disabled = try await api.metadataAIStatus()
+        XCTAssertFalse(disabled.enabled); XCTAssertEqual(disabled.onView, .off)
+        let future = try await api.metadataAIStatus()
+        XCTAssertTrue(future.enabled); XCTAssertEqual(future.onView, .off)
+    }
+
+    func testMetadataTranslationDecodesBareFailedJobAndEncodesContentIdentity() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([Data(#"{"id":"opaque-job","target_kind":"season","content_id":"season/a?#%","target_language":"fr","status":"failed"}"#.utf8)])
+        let result = try await api.translateDescription(contentId: "season/a?#%", targetLanguage: "fr", auth: auth)
+        XCTAssertEqual(result.id, "opaque-job"); XCTAssertTrue(result.failed)
+        let request = try XCTUnwrap(LibraryReadProtocol.requests().last)
+        XCTAssertTrue(request.url!.absoluteString.contains("season%2Fa%3F%23%25/translate-description"))
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testMetadataTranslationProblemsAreSingleSendAndLateAuthorityIsRejected() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        for status in [401, 409, 422] {
+            LibraryReadProtocol.status = status
+            LibraryReadProtocol.enqueue([Data(#"{"detail":"Rejected"}"#.utf8)])
+            do { _ = try await api.translateDescription(contentId: "item", targetLanguage: "fr", auth: auth); XCTFail("accepted Problem") } catch {}
+        }
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 3)
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([Data(#"{"id":"job","target_kind":"item","content_id":"item","target_language":"fr","status":"pending"}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await api.translateDescription(contentId: "item", targetLanguage: "fr", auth: auth); XCTFail("stale reply") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 4)
+    }
+
     private func subtitleCreateBody() -> TranslateSubtitleBody {
         TranslateSubtitleBody(mediaFileId: 42, kind: .translate, sourceIndex: 3, sourceLanguage: "en",
             targetLanguage: "fr", sessionId: "session-exact", startPosition: 12.5)
