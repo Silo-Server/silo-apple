@@ -267,6 +267,286 @@ final class CatalogV2Tests: XCTestCase {
     }
 
     @MainActor
+    private func browsePersonFixture(_ person: Bool, api: APIv2Client, tokens: TokenStore,
+        authorityCheck: ((CapturedOrdinaryRequestAuth) async -> Bool)? = nil) async -> BrowsePersonFixture {
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        if person {
+            return .person(PersonDetailViewModel(personId: 42, api: facade, tokens: tokens, authorityCheck: authorityCheck))
+        }
+        let library = Int.random(in: 100000...999999)
+        let model = BrowseViewModel(api: facade, tokens: tokens, authorityCheck: authorityCheck)
+        _ = await model.configure(libraryId: library, libraryType: "movie")
+        return .browse(model)
+    }
+
+    @MainActor
+    func testBrowsePersonFourMembershipWritesPreservePlayedSiblingAndCursor() async throws {
+        for person in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let fixture = await browsePersonFixture(person, api: api, tokens: tokens)
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.load()
+            XCTAssertEqual(fixture.items.map(\.contentId), ["movie:one"])
+            XCTAssertNil(fixture.model.prepareCardAction(contentId: "absent", target: .favorites, included: true))
+            var favorite = false
+            var watchlist = false
+            for (target, included) in [(APIv2PersonalListKind.favorites, true), (.watchlist, true), (.favorites, false), (.watchlist, false)] {
+                let action = try XCTUnwrap(fixture.model.prepareCardAction(contentId: "movie:one", target: target, included: included))
+                XCTAssertNil(fixture.model.prepareCardAction(contentId: "movie:one", target: target, included: !included))
+                CatalogProtocol.reply(204, "")
+                let result = await fixture.model.performCardAction(action)
+                XCTAssertEqual(result, true)
+                if target == .favorites { favorite = included } else { watchlist = included }
+                XCTAssertEqual(fixture.items.first?.userState, MediaItemUserState(played: true, isFavorite: favorite, inWatchlist: watchlist))
+                XCTAssertTrue(fixture.hasMore)
+            }
+            let writes = CatalogProtocol.requests().filter { $0.0.httpMethod != "GET" }
+            XCTAssertEqual(writes.map { $0.0.httpMethod }, ["PUT", "PUT", "DELETE", "DELETE"])
+            XCTAssertEqual(writes.map { $0.0.url?.path }, ["/api/v2/favorites/movie:one", "/api/v2/watchlist/movie:one", "/api/v2/favorites/movie:one", "/api/v2/watchlist/movie:one"])
+            CatalogProtocol.reply(200, terminal)
+            await fixture.more()
+            let url = try XCTUnwrap(CatalogProtocol.requests().last?.0.url)
+            XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value, "card-original-cursor")
+            XCTAssertEqual(fixture.items.count, 1)
+        }
+    }
+
+    @MainActor
+    func testBrowsePersonFailedMembershipIsSingleSendAndDoesNotChangeRows() async throws {
+        for person in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let fixture = await browsePersonFixture(person, api: api, tokens: tokens)
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.load()
+            for target in [APIv2PersonalListKind.favorites, .watchlist] {
+                for status in [401, 500] {
+                    let action = try XCTUnwrap(fixture.model.prepareCardAction(contentId: "movie:one", target: target, included: true))
+                    let count = CatalogProtocol.requests().count
+                    CatalogProtocol.reply(status, "{}")
+                    let result = await fixture.model.performCardAction(action)
+                    XCTAssertEqual(result, false)
+                    XCTAssertEqual(CatalogProtocol.requests().count, count + 1)
+                    XCTAssertEqual(fixture.items.first?.userState, MediaItemUserState(played: true))
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testBrowsePersonPreparedActionCannotCaptureReplacementPIN() async throws {
+        for person in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let fixture = await browsePersonFixture(person, api: api, tokens: tokens)
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.load()
+            let action = try XCTUnwrap(fixture.model.prepareCardAction(contentId: "movie:one", target: .favorites, included: true))
+            await tokens.setProfileToken("replacement")
+            let count = CatalogProtocol.requests().count
+            let result = await fixture.model.performCardAction(action)
+            XCTAssertNil(result)
+            XCTAssertEqual(CatalogProtocol.requests().count, count)
+        }
+    }
+
+    @MainActor
+    func testBrowsePersonFirstReadEnforcesNilPINAndMissingProfileAtCapture() async throws {
+        for person in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client(captureBarrier: { await $0.setProfileToken("replacement") })
+            let fixture = await browsePersonFixture(person, api: api, tokens: tokens)
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.load()
+            XCTAssertNil(fixture.model.displayedRead)
+            XCTAssertTrue(fixture.items.isEmpty)
+            XCTAssertTrue(CatalogProtocol.requests().isEmpty)
+            let (missingAPI, missingTokens) = try await client()
+            await missingTokens.setProfileId(nil)
+            let missing = await browsePersonFixture(person, api: missingAPI, tokens: missingTokens)
+            await missing.load()
+            XCTAssertNil(missing.model.displayedRead)
+            XCTAssertTrue(CatalogProtocol.requests().isEmpty)
+        }
+    }
+
+    @MainActor
+    func testBrowsePersonCursorFailureKeepsOnlySameOwnerRows() async throws {
+        for person in [false, true] {
+            for replacement in ["same", "pin", "profile"] {
+                CatalogProtocol.reset()
+                let (api, tokens) = try await client()
+                let fixture = await browsePersonFixture(person, api: api, tokens: tokens)
+                CatalogProtocol.reply(200, tvGridActionPage)
+                await fixture.load()
+                let original = fixture.model.displayedRead
+                CatalogProtocol.reply(500, "{}")
+                let held = expectation(description: "page failure held")
+                CatalogProtocol.hold { held.fulfill() }
+                let task = Task { await fixture.more() }
+                await fulfillment(of: [held], timeout: 2)
+                if replacement == "pin" { await tokens.setProfileToken("replacement") }
+                if replacement == "profile" { await tokens.setProfileId("replacement") }
+                CatalogProtocol.release()
+                await task.value
+                XCTAssertEqual(fixture.items.isEmpty, replacement != "same")
+                XCTAssertEqual(fixture.model.displayedRead, replacement == "same" ? original : nil)
+                XCTAssertFalse(fixture.hasMore)
+                XCTAssertNotNil(fixture.error)
+            }
+        }
+    }
+
+    @MainActor
+    func testBrowseWarmCacheRequiresExactOwnerAndMutationInvalidatesIt() async throws {
+        let (api, tokens) = try await client()
+        let facade = SiloAPI(tokenStore: tokens, v2: api)
+        let library = Int.random(in: 100000...999999)
+        let key = CacheKey.browse(libraryId: library, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer { ResponseCache.shared.remove(key) }
+        let model = BrowseViewModel(api: facade, tokens: tokens)
+        _ = await model.configure(libraryId: library, libraryType: "movie")
+        CatalogProtocol.reply(200, tvGridActionPage)
+        await model.loadItems(reset: true)
+        let cached: BrowseViewModel.CachedPage = try XCTUnwrap(ResponseCache.shared.get(key))
+        let warm = BrowseViewModel(api: facade, tokens: tokens)
+        _ = await warm.configure(libraryId: library, libraryType: "movie")
+        CatalogProtocol.reply(500, "{}")
+        await warm.loadItems(reset: true)
+        XCTAssertEqual(warm.items.map(\.contentId), ["movie:one"])
+        XCTAssertEqual(warm.displayedRead, cached.owner)
+        let action = try XCTUnwrap(warm.prepareCardAction(contentId: "movie:one", target: .watchlist, included: true))
+        CatalogProtocol.reply(204, "")
+        let result = await warm.performCardAction(action)
+        XCTAssertEqual(result, true)
+        XCTAssertNil(ResponseCache.shared.get(key, as: BrowseViewModel.CachedPage.self))
+        ResponseCache.shared.set(cached, for: key)
+        await tokens.setProfileToken("replacement")
+        let foreign = BrowseViewModel(api: facade, tokens: tokens)
+        _ = await foreign.configure(libraryId: library, libraryType: "movie")
+        CatalogProtocol.reply(500, "{}")
+        await foreign.loadItems(reset: true)
+        XCTAssertTrue(foreign.items.isEmpty)
+        XCTAssertNil(foreign.displayedRead)
+        // An unchanged untagged startup-prefetch entry is not an owner receipt.
+        ResponseCache.shared.set(cached.response, for: key)
+        await foreign.loadItems(reset: true)
+        XCTAssertTrue(foreign.items.isEmpty)
+    }
+
+    @MainActor
+    func testBrowsePersonLateActionCannotOverwriteReplacementFilter() async throws {
+        for person in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let fixture = await browsePersonFixture(person, api: api, tokens: tokens)
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.load()
+            let action = try XCTUnwrap(fixture.model.prepareCardAction(contentId: "movie:one", target: .favorites, included: true))
+            CatalogProtocol.reply(204, "")
+            let held = expectation(description: "membership receipt held")
+            CatalogProtocol.hold { held.fulfill() }
+            let task = Task { await fixture.model.performCardAction(action) }
+            await fulfillment(of: [held], timeout: 2)
+            CatalogProtocol.allowNewRequests()
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.changeFilter()
+            let replacement = fixture.model.displayedRead
+            CatalogProtocol.release()
+            let result = await task.value
+            XCTAssertNil(result)
+            XCTAssertEqual(fixture.model.displayedRead, replacement)
+            XCTAssertEqual(fixture.items.first?.userState, MediaItemUserState(played: true))
+        }
+    }
+
+    @MainActor
+    func testBrowsePersonSuspendedReadAuthorityCannotPublishAfterReplacementOrDismissal() async throws {
+        for person in [false, true] {
+            for status in [200, 500] {
+                CatalogProtocol.reset()
+                let (api, tokens) = try await client()
+                let gate = TVGridReadCheckGate()
+                let fixture = await browsePersonFixture(person, api: api, tokens: tokens, authorityCheck: { auth in
+                    let current = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+                    await gate.suspendIfArmed()
+                    return current
+                })
+                CatalogProtocol.reply(status, status == 200 ? tvGridActionPage : "{}")
+                let held = expectation(description: "read authority held")
+                await gate.arm(skipping: person ? 0 : 1, held: held)
+                let old = Task { await fixture.load() }
+                await fulfillment(of: [held], timeout: 2)
+                fixture.cancel()
+                CatalogProtocol.reply(200, tvGridActionPage.replacingOccurrences(of: "movie:one", with: "movie:new"))
+                await fixture.changeFilter()
+                let owner = fixture.model.displayedRead
+                await gate.release()
+                await old.value
+                XCTAssertEqual(fixture.items.map(\.contentId), ["movie:new"])
+                XCTAssertEqual(fixture.model.displayedRead, owner)
+                XCTAssertNil(fixture.error)
+                XCTAssertFalse(fixture.isLoading)
+            }
+        }
+    }
+
+    @MainActor
+    func testBrowsePersonSuspendedActionAuthorityCannotSendAfterFilterReplacement() async throws {
+        for person in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let gate = TVGridReadCheckGate()
+            let fixture = await browsePersonFixture(person, api: api, tokens: tokens, authorityCheck: { auth in
+                let current = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+                await gate.suspendIfArmed()
+                return current
+            })
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await fixture.load()
+            let action = try XCTUnwrap(fixture.model.prepareCardAction(contentId: "movie:one", target: .watchlist, included: true))
+            let held = expectation(description: "action authority held")
+            await gate.arm(skipping: 0, held: held)
+            let old = Task { await fixture.model.performCardAction(action) }
+            await fulfillment(of: [held], timeout: 2)
+            await fixture.changeFilter()
+            await gate.release()
+            let result = await old.value
+            XCTAssertNil(result)
+            XCTAssertTrue(CatalogProtocol.requests().allSatisfy { $0.0.httpMethod == "GET" })
+        }
+    }
+
+    @MainActor
+    func testPersonAvailabilityAndFilmographyUseOriginalAuthorityOnReentry() async throws {
+        let (api, tokens) = try await client()
+        await tokens.setProfileToken("original")
+        let model = PersonDetailViewModel(personId: 42, api: SiloAPI(tokenStore: tokens, v2: api), tokens: tokens)
+        model.person = try JSONDecoder().decode(Person.self, from: Data(#"{"id":42,"name":"Person","bio":"Complete","birthDate":"1970-01-01","photoUrl":"https://images.example/person.jpg"}"#.utf8))
+        CatalogProtocol.reply(200, tvGridActionPage)
+        await model.reload()
+        XCTAssertEqual(model.items.count, 1)
+        XCTAssertEqual(CatalogProtocol.requests().count, 3)
+        for request in CatalogProtocol.requests().map(\.0) {
+            let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first(where: { $0.name == "source" })?.value, "person")
+            XCTAssertEqual(query?.first(where: { $0.name == "person_id" })?.value, "42")
+        }
+        model.cancelFilmography()
+        await model.loadInitial()
+        XCTAssertEqual(model.items.count, 1)
+        let count = CatalogProtocol.requests().count
+        await tokens.setProfileToken("replacement")
+        model.cancelFilmography()
+        await model.loadInitial()
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertNil(model.displayedRead)
+        XCTAssertEqual(CatalogProtocol.requests().count, count)
+        XCTAssertNil(model.metadataRefreshTaskForTesting)
+    }
+
+    @MainActor
     func testSearchFeaturePinsCapabilityAndClearsForeignContinuationFailure() async throws {
         let (blockedAPI, blockedTokens) = try await client(captureBarrier: { await $0.setProfileToken("replacement") })
         let blocked = SearchViewModel(api: blockedAPI, tokens: blockedTokens)
@@ -952,5 +1232,50 @@ private actor TVGridReadCheckGate {
     func release() {
         continuation?.resume()
         continuation = nil
+    }
+}
+
+@MainActor
+private enum BrowsePersonFixture {
+    case browse(BrowseViewModel)
+    case person(PersonDetailViewModel)
+    var model: any CatalogMembershipModel {
+        switch self { case .browse(let value): value; case .person(let value): value }
+    }
+    var items: [BrowseItem] {
+        switch self { case .browse(let value): value.items; case .person(let value): value.items }
+    }
+    var error: ErrorState? {
+        switch self { case .browse(let value): value.error; case .person(let value): value.error }
+    }
+    var hasMore: Bool {
+        switch self { case .browse(let value): value.hasMore; case .person(let value): value.hasMore }
+    }
+    var isLoading: Bool {
+        switch self { case .browse(let value): value.isLoading; case .person(let value): value.isLoadingItems }
+    }
+    func load() async {
+        switch self {
+        case .browse(let value): await value.loadItems(reset: true)
+        case .person(let value): await value.applyFilter(.movies)
+        }
+    }
+    func more() async {
+        switch self {
+        case .browse(let value): await value.loadItems()
+        case .person(let value): await value.loadMoreIfNeeded()
+        }
+    }
+    func changeFilter() async {
+        switch self {
+        case .browse(let value): await value.setSort(.year)
+        case .person(let value): await value.applyFilter(.series)
+        }
+    }
+    func cancel() {
+        switch self {
+        case .browse(let value): value.cancel()
+        case .person(let value): value.cancelFilmography()
+        }
     }
 }

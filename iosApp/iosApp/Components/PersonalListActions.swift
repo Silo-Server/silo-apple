@@ -1,5 +1,33 @@
 import SwiftUI
 
+/// The two catalog surfaces that share displayed-owner membership semantics.
+struct CatalogCardOwner: Equatable {
+    let auth: CapturedOrdinaryRequestAuth
+    let scope: String
+    let filterKey: String
+}
+
+struct CatalogMembershipAction {
+    let id: UUID
+    let contentId: String
+    let owner: CatalogCardOwner
+    let generation: Int
+    let target: APIv2PersonalListKind
+    let included: Bool
+}
+
+@MainActor
+protocol CatalogMembershipModel: AnyObject {
+    var displayedRead: CatalogCardOwner? { get }
+    var cardGeneration: Int { get }
+    func prepareCardAction(contentId: String, target: APIv2PersonalListKind, included: Bool) -> CatalogMembershipAction?
+    func performCardAction(_ action: CatalogMembershipAction) async -> Bool?
+}
+
+private struct CatalogMembershipModelKey: EnvironmentKey {
+    static let defaultValue: (any CatalogMembershipModel)? = nil
+}
+
 private struct CatalogSearchModelKey: EnvironmentKey {
     static let defaultValue: SearchViewModel? = nil
 }
@@ -31,6 +59,11 @@ private struct HomePersonalListAuthKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    var catalogMembershipModel: (any CatalogMembershipModel)? {
+        get { self[CatalogMembershipModelKey.self] }
+        set { self[CatalogMembershipModelKey.self] = newValue }
+    }
+
     var catalogSearchModel: SearchViewModel? {
         get { self[CatalogSearchModelKey.self] }
         set { self[CatalogSearchModelKey.self] = newValue }

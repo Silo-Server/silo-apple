@@ -27,7 +27,7 @@ enum PersonMediaFilter: String, CaseIterable, Identifiable {
 
 @Observable
 @MainActor
-final class PersonDetailViewModel {
+final class PersonDetailViewModel: CatalogMembershipModel {
     let personId: Int
     var person: Person?
     var items: [BrowseItem] = []
@@ -79,6 +79,66 @@ final class PersonDetailViewModel {
         self.authorityCheck = authorityCheck ?? { await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: $0) != nil }
     }
 
+
+    private(set) var displayedRead: CatalogCardOwner?
+    private(set) var cardGeneration = 0
+    private var pendingCardActions: [String: UUID] = [:]
+
+    private func matchesCardScope(_ owner: CatalogCardOwner) -> Bool {
+        owner.scope == "person:\(personId)" && owner.filterKey == selectedFilter.rawValue
+    }
+
+    func prepareCardAction(contentId: String, target: APIv2PersonalListKind, included: Bool) -> CatalogMembershipAction? {
+        guard let owner = displayedRead, matchesCardScope(owner), pendingCardActions[contentId] == nil,
+              items.contains(where: { $0.contentId == contentId && $0.userState != nil }) else { return nil }
+        let action = CatalogMembershipAction(id: UUID(), contentId: contentId, owner: owner,
+            generation: cardGeneration, target: target, included: included)
+        pendingCardActions[contentId] = action.id
+        return action
+    }
+
+    private func isCurrent(_ action: CatalogMembershipAction) -> Bool {
+        action.owner == displayedRead && matchesCardScope(action.owner) && action.generation == cardGeneration
+            && pendingCardActions[action.contentId] == action.id && !Task.isCancelled
+            && items.contains(where: { $0.contentId == action.contentId })
+    }
+
+    func performCardAction(_ action: CatalogMembershipAction) async -> Bool? {
+        defer { if pendingCardActions[action.contentId] == action.id { pendingCardActions[action.contentId] = nil } }
+        let current = await authorityCheck(action.owner.auth)
+        guard current, isCurrent(action) else { return nil }
+        do {
+            switch action.target {
+            case .favorites: try await api.v2.setFavoriteMembership(id: action.contentId, included: action.included, auth: action.owner.auth)
+            case .watchlist: try await api.v2.setWatchlistMembership(id: action.contentId, included: action.included, auth: action.owner.auth)
+            }
+            let current = await authorityCheck(action.owner.auth)
+            guard current, isCurrent(action) else { return nil }
+            generation += 1
+            isLoadingItems = false
+            if let index = items.firstIndex(where: { $0.contentId == action.contentId }) {
+                let old = items[index].userState
+                items[index].userState = MediaItemUserState(played: old?.played ?? false,
+                    isFavorite: action.target == .favorites ? action.included : old?.isFavorite ?? false,
+                    inWatchlist: action.target == .watchlist ? action.included : old?.inWatchlist ?? false)
+            }
+            ResponseCache.shared.remove(CacheKey.itemUserState(action.contentId))
+            ResponseCache.shared.remove(action.target == .favorites ? CacheKey.favorites : CacheKey.watchlist)
+            ResponseCache.shared.remove(CacheKey.homeSections)
+            return true
+        } catch {
+            let current = await authorityCheck(action.owner.auth)
+            guard current, isCurrent(action) else { return nil }
+            return false
+        }
+    }
+    func cancelFilmography() {
+        generation += 1
+        resetFilmography()
+        isLoadingItems = false
+        isLoadingPerson = false
+    }
+
     func captureMetadataRefreshAuthority() async {
         guard !didCaptureRefreshAuth else { return }
         didCaptureRefreshAuth = true
@@ -110,7 +170,7 @@ final class PersonDetailViewModel {
     }
 
     func loadInitial() async {
-        guard person == nil, items.isEmpty, !isLoadingPerson, !isLoadingItems else { return }
+        guard displayedRead == nil, !isLoadingPerson, !isLoadingItems else { return }
         await reload()
     }
 
@@ -121,7 +181,7 @@ final class PersonDetailViewModel {
         error = nil
 
         isLoadingPerson = person == nil
-        defer { isLoadingPerson = false }
+        defer { if currentGeneration == generation { isLoadingPerson = false } }
 
         do {
             await captureMetadataRefreshAuthority()
@@ -246,44 +306,63 @@ final class PersonDetailViewModel {
         guard hasMore, reset || !isLoadingItems else { return }
         isLoadingItems = true
         defer { if currentGeneration == generation { isLoadingItems = false } }
-
+        let filter = selectedFilter
+        // Filmography belongs to the person view's original authority, including nil PIN.
+        await captureMetadataRefreshAuthority()
+        guard currentGeneration == generation, !Task.isCancelled else { return }
+        guard let auth = refreshAuth, let profile = auth.profileId, !profile.isEmpty else {
+            resetFilmography()
+            hasMore = false
+            error = ErrorState(HTTPError.requestIdentityChanged)
+            return
+        }
+        let owner = CatalogCardOwner(auth: auth, scope: "person:\(personId)", filterKey: filter.rawValue)
         do {
             let page: APIv2CatalogResult
-            if !reset, let continuation {
-                page = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
+            if !reset {
+                guard displayedRead == owner, let continuation, continuation.auth == auth else {
+                    throw HTTPError.requestIdentityChanged
+                }
+                page = try await api.v2.nextCatalogPage(continuation)
             } else {
                 var query = APIv2CatalogQuery()
                 query.source = "person"
                 query.personId = String(personId)
-                query.type = selectedFilter.catalogType
+                query.type = filter.catalogType
                 query.limit = pageSize
                 query.sort = "year"
                 query.order = "desc"
-                page = try await SiloAPI.shared.catalogPage(query: query)
+                page = try await api.catalogPage(query: query, auth: auth)
             }
+            let current = await authorityCheck(auth)
+            guard currentGeneration == generation, !Task.isCancelled, matchesCardScope(owner) else { return }
+            guard current, page.auth == auth else { throw HTTPError.requestIdentityChanged }
             let response = page.value
-            guard currentGeneration == generation else { return }
-
-            if reset {
-                items = response.items
-            } else {
-                items.append(contentsOf: response.items)
+            if reset { items = response.items } else {
+                let existing = Set(items.map(\.contentId))
+                items.append(contentsOf: response.items.filter { !existing.contains($0.contentId) })
             }
+            displayedRead = owner
             totalItems = response.totalExact ? response.total : nil
             hasMore = page.continuation != nil
             continuation = page.continuation
         } catch {
-            guard currentGeneration == generation else { return }
-            self.error = ErrorState(error)
+            let current = await authorityCheck(auth)
+            guard currentGeneration == generation, !Task.isCancelled, matchesCardScope(owner) else { return }
+            if !current { resetFilmography() }
+            self.error = ErrorState(current ? error : HTTPError.requestIdentityChanged)
             hasMore = false
+            continuation = nil
         }
     }
 
     private func refreshAvailableFilters(generation currentGeneration: Int) async {
-        async let movies = catalogHasItems(type: "movie")
-        async let series = catalogHasItems(type: "series")
+        guard let auth = refreshAuth else { return }
+        async let movies = catalogHasItems(type: "movie", auth: auth)
+        async let series = catalogHasItems(type: "series", auth: auth)
         let results = await (movies, series)
-        guard currentGeneration == generation else { return }
+        let current = await authorityCheck(auth)
+        guard currentGeneration == generation, !Task.isCancelled, current else { return }
 
         var filters: [PersonMediaFilter] = [.all]
         if results.0 != false { filters.append(.movies) }
@@ -293,14 +372,14 @@ final class PersonDetailViewModel {
 
     /// `nil` means the availability check failed. In that case the filter
     /// remains visible rather than hiding content based on a network error.
-    private func catalogHasItems(type: String) async -> Bool? {
+    private func catalogHasItems(type: String, auth: CapturedOrdinaryRequestAuth) async -> Bool? {
         do {
             var query = APIv2CatalogQuery()
             query.source = "person"
             query.personId = String(personId)
             query.type = type
             query.limit = 1
-            let response = try await SiloAPI.shared.catalogPage(query: query)
+            let response = try await api.catalogPage(query: query, auth: auth)
             return !response.value.items.isEmpty
         } catch {
             return nil
@@ -308,6 +387,8 @@ final class PersonDetailViewModel {
     }
 
     private func resetFilmography() {
+        displayedRead = nil
+        cardGeneration += 1
         #if os(tvOS)
         if !prefetchedPosterURLs.isEmpty {
             PosterImageCache.stopPrefetchingCardArtwork(Array(prefetchedPosterURLs))
@@ -347,6 +428,7 @@ struct PersonDetailView: View {
             }
             .onDisappear {
                 viewModel.stopMetadataRefresh()
+                viewModel.cancelFilmography()
             }
     }
 
@@ -435,6 +517,7 @@ private struct TVPersonDetailContent: View {
                                 viewModel.prefetchPosters(in: index..<end)
                             }
                         )
+                        .environment(\.catalogMembershipModel, viewModel)
                     }
                 }
                 .padding(.horizontal, SiloTheme.safePadding)
@@ -562,6 +645,7 @@ private struct PhonePersonDetailContent: View {
                                 Task { await viewModel.loadMoreIfNeeded() }
                             }
                         )
+                        .environment(\.catalogMembershipModel, viewModel)
                         .padding(.horizontal, SiloTheme.padding)
                     }
                 }

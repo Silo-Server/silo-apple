@@ -113,6 +113,8 @@ struct MediaCard: View {
     @State private var homeFavoritePending = false
     @State private var homeWatchlistRun: UUID?
     @State private var homeWatchlistPending = false
+    @State private var catalogActionRun: UUID?
+    @Environment(\.catalogMembershipModel) private var catalogModel
     @State private var searchActionRun: UUID?
     @Environment(\.catalogSearchModel) private var searchModel
     @Environment(\.savedPersonalListModel) private var savedList
@@ -185,6 +187,11 @@ struct MediaCard: View {
             posterImage
         }
         .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction(); resetSearchAction() }
+        .onChange(of: catalogModel?.displayedRead) { _, _ in resetCatalogAction() }
+        .onChange(of: catalogModel?.cardGeneration) { _, _ in resetCatalogAction() }
+        .onChange(of: catalogModel.map { ObjectIdentifier($0) }) { _, _ in resetCatalogAction() }
+        .onChange(of: contentId) { _, _ in resetCatalogAction() }
+        .onDisappear { if catalogModel != nil { resetCatalogAction() } }
         .onChange(of: searchModel?.displayedRead) { _, _ in resetSearchAction() }
         .onChange(of: searchModel?.cardGeneration) { _, _ in resetSearchAction() }
         .onChange(of: searchModel.map { ObjectIdentifier($0) }) { _, _ in resetSearchAction() }
@@ -214,6 +221,11 @@ struct MediaCard: View {
             }
         }
         .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction(); resetSearchAction() }
+        .onChange(of: catalogModel?.displayedRead) { _, _ in resetCatalogAction() }
+        .onChange(of: catalogModel?.cardGeneration) { _, _ in resetCatalogAction() }
+        .onChange(of: catalogModel.map { ObjectIdentifier($0) }) { _, _ in resetCatalogAction() }
+        .onChange(of: contentId) { _, _ in resetCatalogAction() }
+        .onDisappear { if catalogModel != nil { resetCatalogAction() } }
         .onChange(of: searchModel?.displayedRead) { _, _ in resetSearchAction() }
         .onChange(of: searchModel?.cardGeneration) { _, _ in resetSearchAction() }
         .onChange(of: searchModel.map { ObjectIdentifier($0) }) { _, _ in resetSearchAction() }
@@ -329,6 +341,7 @@ struct MediaCard: View {
     }
 
     private func togglePersonalFavorite() {
+        if let catalogModel { toggleCatalogMembership(.favorites, model: catalogModel); return }
         if let searchModel { toggleSearchMembership(.favorites, model: searchModel); return }
         guard let contentId else { return }
         if let savedList {
@@ -363,6 +376,28 @@ struct MediaCard: View {
         searchActionRun = nil
         favoriteOverride = nil
         watchlistOverride = nil
+    }
+
+    private func resetCatalogAction() {
+        catalogActionRun = nil
+        favoriteOverride = nil
+        watchlistOverride = nil
+    }
+
+    private func toggleCatalogMembership(_ target: APIv2PersonalListKind, model: any CatalogMembershipModel) {
+        guard let contentId, catalogActionRun == nil else { return }
+        let included = target == .favorites ? !isFavorite : !isInWatchlist
+        guard let action = model.prepareCardAction(contentId: contentId, target: target, included: included) else { return }
+        catalogActionRun = action.id
+        if target == .favorites { favoriteOverride = included } else { watchlistOverride = included }
+        Task { @MainActor in
+            let result = await model.performCardAction(action)
+            guard catalogActionRun == action.id, catalogModel === model, self.contentId == contentId else { return }
+            catalogActionRun = nil
+            if result != true {
+                if target == .favorites { favoriteOverride = nil } else { watchlistOverride = nil }
+            }
+        }
     }
 
     private func toggleSearchMembership(_ target: APIv2PersonalListKind, model: SearchViewModel) {
@@ -512,6 +547,7 @@ struct MediaCard: View {
     }
 
     private func togglePersonalWatchlist() {
+        if let catalogModel { toggleCatalogMembership(.watchlist, model: catalogModel); return }
         if let searchModel { toggleSearchMembership(.watchlist, model: searchModel); return }
         guard let contentId else { return }
         if let savedList {

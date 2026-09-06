@@ -56,6 +56,7 @@ struct BrowseView: View {
         .refreshable {
             await viewModel.loadItems(reset: true)
         }
+        .onDisappear { viewModel.cancel() }
     }
 
     // MARK: - Content
@@ -114,6 +115,7 @@ struct BrowseView: View {
                         Task { await viewModel.loadItems() }
                     }
                 )
+                .environment(\.catalogMembershipModel, viewModel)
                 .padding(.horizontal, SiloTheme.padding)
             }
         }
