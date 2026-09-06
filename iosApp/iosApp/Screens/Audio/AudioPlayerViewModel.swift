@@ -12,6 +12,8 @@ final class AudioPlayerViewModel {
         let timeline: PlaybackTimelineMapper
     }
 
+    private let mutationCoordinator = PlaybackMutationCoordinator.shared
+    private var sequencedSessionIDs: Set<String> = []
     private let engine = AetherAudioPlaybackController()
     private let nowPlaying = AudioNowPlayingCoordinator()
     private var syncTask: Task<Void, Never>?
@@ -425,6 +427,7 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> StartedAudioSession {
+        let capturedPlaybackAuth = await TokenStore.shared.captureDurableAccountAuth()
         try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
         guard let profileId = await TokenStore.shared.getProfileId(),
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -462,14 +465,20 @@ final class AudioPlayerViewModel {
         )
         let response: PlaybackV3DecisionResponse
         do {
-            response = try await SiloAPI.shared.startPlaybackV3(request: request)
+            response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
         } catch let error as HTTPError {
             guard case .network = error else { throw error }
             // Preserve the logical attempt identity across an ambiguous
             // transport retry so the server replays instead of double-starting.
-            response = try await SiloAPI.shared.startPlaybackV3(request: request)
+            response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
         }
 
+        if response.serverFeatures.contains(PlaybackSequencedContract.feature),
+           let id = PlaybackSessionBridge.allocatedSessionId(in: response) {
+            sequencedSessionIDs.insert(id)
+            guard let capturedPlaybackAuth else { throw PlaybackSequencedError.authorityChanged }
+            try await mutationCoordinator.register(sessionID: id, features: response.serverFeatures, auth: capturedPlaybackAuth)
+        }
         switch response.validatedForApple() {
         case .terminal(let terminal):
             Task {
@@ -486,7 +495,7 @@ final class AudioPlayerViewModel {
             )
         case .incompatible(let allocatedSessionId):
             if let allocatedSessionId {
-                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+                try? await stopAllocatedSession(id: allocatedSessionId)
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
@@ -497,7 +506,7 @@ final class AudioPlayerViewModel {
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await stopAllocatedSession(id: sessionId)
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
                     message: "This server did not honor authenticated media transport for the playback plan.",
@@ -509,13 +518,13 @@ final class AudioPlayerViewModel {
                 try ApplePlaybackV3PlanAdapter.validate(plan)
                 timeline = try PlaybackTimelineMapper(validating: plan.timeline)
             } catch {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await stopAllocatedSession(id: sessionId)
                 throw error
             }
             guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await stopAllocatedSession(id: sessionId)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
                     message: "The server selected an unavailable audiobook part.",
@@ -552,12 +561,20 @@ final class AudioPlayerViewModel {
         }
     }
 
+    private func stopAllocatedSession(id: String) async throws {
+        if sequencedSessionIDs.contains(id) {
+            // Whole-book progress has its separate sink; stopping without a
+            // final local sample uses the last acknowledged file-local sample.
+            _ = try await mutationCoordinator.stop(sessionID: id, position: nil, isPaused: true)
+        } else { try await SiloAPI.shared.stopPlayback(sessionId: id) }
+    }
+
     private func stopPlaybackSession(
         _ session: PlaybackSessionResponse,
         reason: String
     ) async {
         do {
-            try await SiloAPI.shared.stopPlayback(sessionId: session.sessionId)
+            try await stopAllocatedSession(id: session.sessionId)
         } catch {
             logger.warning(
                 "stopPlayback failed for \(session.sessionId, privacy: .public) (\(reason, privacy: .public)): \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -669,13 +686,18 @@ final class AudioPlayerViewModel {
            let activeTrackIndex,
            let track = context.tracks.first(where: { $0.index == activeTrackIndex }) {
             do {
-                try await SiloAPI.shared.reportPlaybackProgress(
-                    sessionId: session.sessionId,
-                    report: ProgressReport(
-                        position: AudioPlaybackTimeline.localTime(for: currentTime, in: track),
-                        isPaused: !isPlaying
+                if sequencedSessionIDs.contains(session.sessionId) {
+                    try await mutationCoordinator.report(sessionID: session.sessionId,
+                        position: AudioPlaybackTimeline.localTime(for: currentTime, in: track), isPaused: !isPlaying)
+                } else {
+                    try await SiloAPI.shared.reportPlaybackProgress(
+                        sessionId: session.sessionId,
+                        report: ProgressReport(
+                            position: AudioPlaybackTimeline.localTime(for: currentTime, in: track),
+                            isPaused: !isPlaying
+                        )
                     )
-                )
+                }
             } catch {
                 logger.warning(
                     "reportPlaybackProgress failed for session \(session.sessionId, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"

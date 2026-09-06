@@ -516,8 +516,16 @@ actor SiloAPI {
     }
 
     // Stream probing and transcode startup can exceed the standard request timeout.
-    func startPlaybackV3(request: PlaybackV3StartRequest) async throws -> PlaybackV3DecisionResponse {
-        try await http.post("/api/v1/playback/start", body: request, timeout: .extended)
+    func startPlaybackV3(request: PlaybackV3StartRequest, auth: CapturedOrdinaryRequestAuth? = nil) async throws -> PlaybackV3DecisionResponse {
+        guard let auth else { return try await http.post("/api/v1/playback/start", body: request, timeout: .extended) }
+        guard let profile = auth.profileId, request.profileId == profile else { throw HTTPError.requestIdentityChanged }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let response = try await http.requestData(method: "POST", path: "/api/v1/playback/start",
+            body: encoder.encode(request), timeout: .extended, requestIdentity: identity, expectedAccount: auth.account)
+        return try HTTPClient.makeJSONDecoder().decode(PlaybackV3DecisionResponse.self, from: response.data)
     }
 
     func replanPlaybackV3(

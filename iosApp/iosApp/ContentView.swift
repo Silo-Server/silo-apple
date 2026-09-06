@@ -60,6 +60,17 @@ struct ContentView: View {
         // to the same auth state. Re-key the routed subtree so profile, home,
         // library, focus, and modal state cannot survive from the old server.
         .id(serverRegistry.activeServerId)
+        .safeAreaInset(edge: .top) {
+            if router.authState == .authenticated && !PlaybackStopNotices.shared.pending.isEmpty {
+                HStack {
+                    Text("Playback stop is still pending.")
+                    Button("Retry") { Task { await PlaybackMutationCoordinator.shared.retryPendingStops() } }
+                }
+                .font(.callout)
+                .padding()
+                .frame(maxWidth: .infinity)
+            }
+        }
         .environment(audioStore)
         #if os(iOS)
         .environment(siloControl)

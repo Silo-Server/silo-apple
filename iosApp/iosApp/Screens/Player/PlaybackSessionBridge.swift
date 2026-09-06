@@ -376,6 +376,9 @@ actor PlaybackSessionBridge {
         category: "Playback"
     )
 
+    private let mutationCoordinator = PlaybackMutationCoordinator.shared
+    private var sequencedSessionIDs: Set<String> = []
+    private var failedSequencedRegistrations: Set<String> = []
     private var sessionId: String?
     private var currentSession: PlaybackSessionResponse?
 
@@ -502,6 +505,20 @@ actor PlaybackSessionBridge {
         }
     }
 
+    private func registerSequencedAllocation(_ response: PlaybackV3DecisionResponse,
+                                             auth: CapturedDurableAccountAuth?) async throws {
+        guard response.serverFeatures.contains(PlaybackSequencedContract.feature),
+              let id = Self.allocatedSessionId(in: response) else { return }
+        sequencedSessionIDs.insert(id)
+        do {
+            guard let auth else { throw PlaybackSequencedError.authorityChanged }
+            try await mutationCoordinator.register(sessionID: id, features: response.serverFeatures, auth: auth)
+        } catch {
+            failedSequencedRegistrations.insert(id)
+            throw error
+        }
+    }
+
     /// Retires a server session this client allocated but will never execute.
     ///
     /// Recovery is impossible here — the server reclaims idle sessions on its
@@ -513,6 +530,11 @@ actor PlaybackSessionBridge {
         reason: String
     ) async {
         do {
+            if sequencedSessionIDs.contains(abandonedSessionId) {
+                guard !failedSequencedRegistrations.contains(abandonedSessionId) else { throw PlaybackSequencedError.authorityChanged }
+                _ = try await mutationCoordinator.stop(sessionID: abandonedSessionId, position: nil, isPaused: true)
+                return
+            }
             try await SiloAPI.shared.stopPlayback(sessionId: abandonedSessionId)
         } catch {
             logger.error(
@@ -984,6 +1006,7 @@ actor PlaybackSessionBridge {
         audioTrackIndex: Int?,
         subtitleCombinedIndex: Int?
     ) async throws -> StagedProtocolV3Start {
+        let capturedPlaybackAuth = await TokenStore.shared.captureDurableAccountAuth()
         let capability = try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
         // Optional opt-in: on a server that never advertises it the token is
         // simply absent and the attempt stays entirely on the API origin.
@@ -1029,19 +1052,22 @@ actor PlaybackSessionBridge {
         // allocated if the caller has already walked away.
         let response = try await PlaybackCancellationShield.run {
             do {
-                return try await SiloAPI.shared.startPlaybackV3(request: request)
+                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
             } catch let error as HTTPError {
                 guard case .network = error else { throw error }
                 // Reuse the exact request and playback_attempt_id so an
                 // ambiguous first response cannot allocate a second logical
                 // attempt. Retried inside the shield so the reclaim path below
                 // sees the final outcome, not the ambiguous one.
-                return try await SiloAPI.shared.startPlaybackV3(request: request)
+                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
             }
         } reclaim: { [self] abandoned in
             guard let orphaned = Self.allocatedSessionId(in: abandoned) else { return }
+            try? await registerSequencedAllocation(abandoned, auth: capturedPlaybackAuth)
             await retireAbandonedSession(orphaned, reason: "cancelled_start")
         }
+
+        try await registerSequencedAllocation(response, auth: capturedPlaybackAuth)
 
         switch response.validatedForApple() {
         case .terminal(let terminal):
@@ -1865,6 +1891,16 @@ actor PlaybackSessionBridge {
         guard let sid = sessionId else { return .transientFailure }
         guard position.isFinite, position >= 0 else { return .transientFailure }
 
+        if sequencedSessionIDs.contains(sid) {
+            do {
+                try await mutationCoordinator.report(sessionID: sid, position: position, isPaused: isPaused)
+                return .success
+            } catch {
+                logger.warning("Sequenced playback progress remains pending: \(MediaLogRedactor.sanitize(error), privacy: .public)")
+                // A rejected bound session cannot be silently renewed as a new attempt.
+                return .transientFailure
+            }
+        }
         let report = ProgressReport(position: position, isPaused: isPaused)
         do {
             try await SiloAPI.shared.reportPlaybackProgress(
@@ -1968,7 +2004,7 @@ actor PlaybackSessionBridge {
         DiagnosticsCoordinator.recordBreadcrumb(
             category: .playback,
             tag: "PlaybackSession",
-            message: "playback session stopped",
+            message: sequencedSessionIDs.contains(sid) ? "local playback closed; server stop pending" : "playback session stopped",
             attrs: [
                 "session_id": .string(sid),
                 // The attribute registry has no float type, so playback
@@ -1990,6 +2026,12 @@ actor PlaybackSessionBridge {
                         String(position.isFinite ? max(0, position) : 0),
                 ]
             )
+        }
+
+        if sequencedSessionIDs.contains(sid) {
+            do { _ = try await mutationCoordinator.stop(sessionID: sid, position: position, isPaused: isPaused) }
+            catch { logger.error("Playback stop remains pending: \(MediaLogRedactor.sanitize(error), privacy: .public)") }
+            return
         }
 
         if position.isFinite, position >= 0 {
