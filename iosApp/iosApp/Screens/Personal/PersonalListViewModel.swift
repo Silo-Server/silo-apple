@@ -17,6 +17,75 @@ final class PersonalListViewModel {
     private var generation = 0
     private var task: Task<APIv2PersonalListResult, Error>?
     private(set) var displayedAuth: CapturedOrdinaryRequestAuth?
+    private(set) var cardGeneration = 0
+    private var pendingCardActions: [String: UUID] = [:]
+
+    struct CardAction {
+        let id: UUID
+        let contentId: String
+        let target: APIv2PersonalListKind
+        let included: Bool
+        let auth: CapturedOrdinaryRequestAuth
+        let generation: Int
+    }
+
+    /// Reserve the displayed owner synchronously, before the UI creates a Task.
+    func prepareCardAction(contentId: String, target: APIv2PersonalListKind, included: Bool) -> CardAction? {
+        guard let auth = displayedAuth, pendingCardActions[contentId] == nil,
+              items.contains(where: { $0.contentId == contentId }) else { return nil }
+        let action = CardAction(id: UUID(), contentId: contentId, target: target,
+            included: included, auth: auth, generation: cardGeneration)
+        pendingCardActions[contentId] = action.id
+        return action
+    }
+
+    private func cardActionIsCurrent(_ action: CardAction) -> Bool {
+        action.generation == cardGeneration && displayedAuth == action.auth
+            && pendingCardActions[action.contentId] == action.id
+            && items.contains(where: { $0.contentId == action.contentId }) && !Task.isCancelled
+    }
+
+    /// nil is a stale action; false is a current failure eligible for UI revert.
+    func performCardAction(_ action: CardAction) async -> Bool? {
+        defer {
+            if pendingCardActions[action.contentId] == action.id {
+                pendingCardActions[action.contentId] = nil
+            }
+        }
+        let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: action.auth) != nil
+        guard current, cardActionIsCurrent(action) else { return nil }
+        do {
+            switch action.target {
+            case .favorites:
+                try await api.setFavoriteMembership(id: action.contentId, included: action.included, auth: action.auth)
+            case .watchlist:
+                try await api.setWatchlistMembership(id: action.contentId, included: action.included, auth: action.auth)
+            }
+            let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: action.auth) != nil
+            guard current, cardActionIsCurrent(action) else { return nil }
+            // Cancel older reads without invalidating other item actions from
+            // this same displayed list. Keep the accepted opaque continuation.
+            generation += 1
+            task?.cancel(); task = nil; isLoading = false
+            if action.target == kind && !action.included {
+                items.removeAll { $0.contentId == action.contentId }
+            } else if let index = items.firstIndex(where: { $0.contentId == action.contentId }) {
+                let old = items[index].userState
+                items[index].userState = MediaItemUserState(played: old?.played ?? false,
+                    isFavorite: action.target == .favorites ? action.included : old?.isFavorite ?? false,
+                    inWatchlist: action.target == .watchlist ? action.included : old?.inWatchlist ?? false)
+            }
+            ResponseCache.shared.remove(CacheKey.itemUserState(action.contentId))
+            ResponseCache.shared.remove(action.target == .favorites ? CacheKey.favorites : CacheKey.watchlist)
+            cacheCards()
+            return true
+        } catch {
+            let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: action.auth) != nil
+            guard current, cardActionIsCurrent(action) else { return nil }
+            return false
+        }
+    }
+
 
     private struct CachedCards {
         let items: [BrowseItem]
@@ -41,6 +110,7 @@ final class PersonalListViewModel {
     }
 
     func cancel() {
+        cardGeneration += 1
         generation += 1
         task?.cancel()
         task = nil

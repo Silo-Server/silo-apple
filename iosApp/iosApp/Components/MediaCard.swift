@@ -113,6 +113,8 @@ struct MediaCard: View {
     @State private var homeFavoritePending = false
     @State private var homeWatchlistRun: UUID?
     @State private var homeWatchlistPending = false
+    @Environment(\.savedPersonalListModel) private var savedList
+    @State private var savedListActionRun: UUID?
     @State private var watchlistOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -180,13 +182,16 @@ struct MediaCard: View {
         ) {
             posterImage
         }
-        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction() }
+        .onChange(of: savedList?.cardGeneration) { _, _ in resetSavedListAction() }
+        .onChange(of: savedList?.displayedAuth) { _, _ in resetSavedListAction() }
         .onChange(of: homeOwner) { _, _ in resetHomePersonalActions() }
         .onChange(of: isHomeSurface) { _, _ in resetHomePersonalActions() }
         .onChange(of: libraryOwner) { _, _ in resetLibraryPersonalActions() }
         .onChange(of: userState) { _, _ in
             resetLibraryPersonalActions()
             resetHomePersonalActions()
+            resetSavedListAction()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -201,13 +206,16 @@ struct MediaCard: View {
                 iosCardButton
             }
         }
-        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction() }
+        .onChange(of: savedList?.cardGeneration) { _, _ in resetSavedListAction() }
+        .onChange(of: savedList?.displayedAuth) { _, _ in resetSavedListAction() }
         .onChange(of: homeOwner) { _, _ in resetHomePersonalActions() }
         .onChange(of: isHomeSurface) { _, _ in resetHomePersonalActions() }
         .onChange(of: libraryOwner) { _, _ in resetLibraryPersonalActions() }
         .onChange(of: userState) { _, _ in
             resetLibraryPersonalActions()
             resetHomePersonalActions()
+            resetSavedListAction()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -310,6 +318,10 @@ struct MediaCard: View {
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
+        if let savedList {
+            toggleSavedList(contentId: contentId, target: .favorites, included: !isFavorite, model: savedList)
+            return
+        }
         if isHomeSurface {
             toggleHomeFavorite(contentId: contentId)
             return
@@ -330,6 +342,34 @@ struct MediaCard: View {
                 )
             } else {
                 favoriteOverride = !newValue // Revert on failure
+            }
+        }
+    }
+
+    private func resetSavedListAction() {
+        savedListActionRun = nil
+        favoriteOverride = nil
+        watchlistOverride = nil
+    }
+
+    private func toggleSavedList(contentId: String, target: APIv2PersonalListKind,
+                                 included: Bool, model: PersonalListViewModel) {
+        guard let action = model.prepareCardAction(contentId: contentId, target: target, included: included) else { return }
+        let oldOverride = target == .favorites ? favoriteOverride : watchlistOverride
+        savedListActionRun = action.id
+        if target == .favorites { favoriteOverride = included } else { watchlistOverride = included }
+        Task { @MainActor in
+            let result = await model.performCardAction(action)
+            guard savedListActionRun == action.id, savedList === model,
+                  self.contentId == contentId, model.cardGeneration == action.generation,
+                  model.displayedAuth == action.auth, !Task.isCancelled else { return }
+            savedListActionRun = nil
+            // Successful receipts already update/remove the model's item and
+            // cache. Do not invoke an unscoped second removal callback.
+            if result == false {
+                if target == .favorites { favoriteOverride = oldOverride } else { watchlistOverride = oldOverride }
+            } else {
+                if target == .favorites { favoriteOverride = nil } else { watchlistOverride = nil }
             }
         }
     }
@@ -438,6 +478,10 @@ struct MediaCard: View {
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
+        if let savedList {
+            toggleSavedList(contentId: contentId, target: .watchlist, included: !isInWatchlist, model: savedList)
+            return
+        }
         if isHomeSurface {
             toggleHomeWatchlist(contentId: contentId)
             return

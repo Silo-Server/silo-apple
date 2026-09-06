@@ -1,5 +1,9 @@
 import SwiftUI
 
+private struct SavedPersonalListModelKey: EnvironmentKey {
+    static let defaultValue: PersonalListViewModel? = nil
+}
+
 struct LibraryCardAuthority: Equatable {
     let libraryId: Int
     let auth: CapturedOrdinaryRequestAuth?
@@ -18,6 +22,11 @@ private struct HomePersonalListAuthKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    var savedPersonalListModel: PersonalListViewModel? {
+        get { self[SavedPersonalListModelKey.self] }
+        set { self[SavedPersonalListModelKey.self] = newValue }
+    }
+
     var isHomePersonalListSurface: Bool {
         get { self[HomePersonalListSurfaceKey.self] }
         set { self[HomePersonalListSurfaceKey.self] = newValue }

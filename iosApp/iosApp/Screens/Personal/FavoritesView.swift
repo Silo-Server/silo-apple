@@ -300,6 +300,7 @@ struct FavoritesView: View {
             }
         }
         .siloPageBackground()
+        .environment(\.savedPersonalListModel, list)
         .safeAreaInset(edge: .bottom) { PersonalListPagingControls(model: list, onMoveUp: onTopMenuFocusRequest) }
         .onDisappear { list.cancel() }
         .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Favorites" : nil))

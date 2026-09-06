@@ -24,6 +24,98 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private var savedListActionBody: Data {
+        Data(#"{"items":[{"content_id":"movie:one","type":"movie","title":"One","user_state":{"played":false,"is_favorite":true,"in_watchlist":true}}],"page":{"has_more":true,"next_cursor":"next-original"}}"#.utf8)
+    }
+
+    func testSavedListActionsApplyMembershipAndPreserveContinuation() async throws {
+        for kind in [APIv2PersonalListKind.favorites, .watchlist] {
+            let (api, tokens) = try await fixture()
+            await tokens.setProfileId("profile")
+            let key = kind == .favorites ? CacheKey.favorites : CacheKey.watchlist
+            ResponseCache.shared.remove(key)
+            let model = PersonalListViewModel(kind: kind, api: api, tokenStore: tokens)
+            LibraryReadProtocol.enqueue([savedListActionBody])
+            await model.reload()
+            let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: kind, included: false))
+            XCTAssertNil(model.prepareCardAction(contentId: "movie:one", target: kind, included: true))
+            LibraryReadProtocol.status = 204
+            LibraryReadProtocol.enqueue([Data()])
+            let result = await model.performCardAction(action)
+            XCTAssertEqual(result, true)
+            XCTAssertTrue(model.items.isEmpty)
+            XCTAssertTrue(model.hasMore)
+            LibraryReadProtocol.status = 200
+            LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":false}}"#.utf8)])
+            await model.loadMore()
+            XCTAssertTrue(LibraryReadProtocol.requests().last?.url?.query?.contains("cursor=next-original") == true)
+            XCTAssertFalse(model.hasMore)
+            ResponseCache.shared.remove(key)
+        }
+    }
+
+    func testSavedListSiblingMembershipAndCurrentFailurePreserveOtherState() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        ResponseCache.shared.remove(CacheKey.favorites)
+        defer { ResponseCache.shared.remove(CacheKey.favorites) }
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        LibraryReadProtocol.enqueue([savedListActionBody])
+        await model.reload()
+        let remove = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: .watchlist, included: false))
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        let removed = await model.performCardAction(remove)
+        XCTAssertEqual(removed, true)
+        XCTAssertEqual(model.items.first?.userState?.isFavorite, true)
+        XCTAssertEqual(model.items.first?.userState?.inWatchlist, false)
+        let add = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: .watchlist, included: true))
+        let count = LibraryReadProtocol.requests().count
+        LibraryReadProtocol.status = 500
+        LibraryReadProtocol.enqueue([Data()])
+        let failed = await model.performCardAction(add)
+        XCTAssertEqual(failed, false)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, count + 1)
+        XCTAssertEqual(model.items.first?.userState?.isFavorite, true)
+        XCTAssertEqual(model.items.first?.userState?.inWatchlist, false)
+        XCTAssertEqual(model.items.count, 1)
+    }
+
+    func testSavedListPreparedActionNeverRebindsAndLateReceiptCannotRemoveReplacement() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        ResponseCache.shared.remove(CacheKey.favorites)
+        defer { ResponseCache.shared.remove(CacheKey.favorites) }
+        let model = PersonalListViewModel(kind: .favorites, api: api, tokenStore: tokens)
+        LibraryReadProtocol.enqueue([savedListActionBody])
+        await model.reload()
+        let old = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: .favorites, included: false))
+        await tokens.setProfileToken("pin1")
+        let refused = await model.performCardAction(old)
+        XCTAssertNil(refused)
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+        LibraryReadProtocol.enqueue([savedListActionBody])
+        await model.reload()
+        let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: .favorites, included: false))
+        let arrived = expectation(description: "saved-list write awaiting receipt")
+        let gate = MetadataAuthorityGate(passFirst: false, old: arrived, new: XCTestExpectation(description: "unused"))
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { _ = await gate.check() }
+        let pending = Task { await model.performCardAction(action) }
+        await fulfillment(of: [arrived], timeout: 2)
+        await tokens.setProfileToken("pin2")
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([savedListActionBody])
+        await model.reload()
+        LibraryReadProtocol.status = 204
+        await gate.releaseOld(true)
+        let stale = await pending.value
+        XCTAssertNil(stale)
+        XCTAssertEqual(model.items.map(\.contentId), ["movie:one"])
+        XCTAssertNil(model.prepareCardAction(contentId: "unrelated", target: .favorites, included: false))
+    }
+
     func testPersonalListPagesPinOriginalPINAtCaptureAndContinuation() async throws {
         let (api, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("pin1") })
         await tokens.setProfileId("profile")

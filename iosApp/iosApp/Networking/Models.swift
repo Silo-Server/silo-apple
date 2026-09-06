@@ -27,7 +27,7 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let addedAt: String?
     let releaseDate: String?
     let lastAirDate: String?
-    let userState: MediaItemUserState?
+    var userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
     var id: String { contentId }
 
