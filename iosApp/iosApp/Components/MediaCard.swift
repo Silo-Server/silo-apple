@@ -111,6 +111,8 @@ struct MediaCard: View {
     @Environment(\.homePersonalListAuth) private var homeOwner
     @State private var homeFavoriteRun: UUID?
     @State private var homeFavoritePending = false
+    @State private var homeWatchlistRun: UUID?
+    @State private var homeWatchlistPending = false
     @State private var watchlistOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -178,13 +180,13 @@ struct MediaCard: View {
         ) {
             posterImage
         }
-        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomeFavorite() }
-        .onChange(of: homeOwner) { _, _ in resetHomeFavorite() }
-        .onChange(of: isHomeSurface) { _, _ in resetHomeFavorite() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions() }
+        .onChange(of: homeOwner) { _, _ in resetHomePersonalActions() }
+        .onChange(of: isHomeSurface) { _, _ in resetHomePersonalActions() }
         .onChange(of: libraryOwner) { _, _ in resetLibraryPersonalActions() }
         .onChange(of: userState) { _, _ in
             resetLibraryPersonalActions()
-            resetHomeFavorite()
+            resetHomePersonalActions()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -199,13 +201,13 @@ struct MediaCard: View {
                 iosCardButton
             }
         }
-        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomeFavorite() }
-        .onChange(of: homeOwner) { _, _ in resetHomeFavorite() }
-        .onChange(of: isHomeSurface) { _, _ in resetHomeFavorite() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions() }
+        .onChange(of: homeOwner) { _, _ in resetHomePersonalActions() }
+        .onChange(of: isHomeSurface) { _, _ in resetHomePersonalActions() }
         .onChange(of: libraryOwner) { _, _ in resetLibraryPersonalActions() }
         .onChange(of: userState) { _, _ in
             resetLibraryPersonalActions()
-            resetHomeFavorite()
+            resetHomePersonalActions()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -332,9 +334,11 @@ struct MediaCard: View {
         }
     }
 
-    private func resetHomeFavorite() {
+    private func resetHomePersonalActions() {
         homeFavoriteRun = nil
         favoriteOverride = nil
+        homeWatchlistRun = nil
+        watchlistOverride = nil
     }
 
     private func toggleHomeFavorite(contentId: String) {
@@ -356,6 +360,28 @@ struct MediaCard: View {
             if success {
                 onUserStateChanged?(MediaItemUserState(played: isPlayed, isFavorite: desired, inWatchlist: isInWatchlist))
             } else { favoriteOverride = oldOverride }
+        }
+    }
+
+    private func toggleHomeWatchlist(contentId: String) {
+        guard !homeWatchlistPending, let auth = homeOwner else { return }
+        let run = UUID()
+        let oldOverride = watchlistOverride
+        let desired = !isInWatchlist
+        homeWatchlistRun = run
+        homeWatchlistPending = true
+        watchlistOverride = desired
+        Task { @MainActor in
+            defer { homeWatchlistPending = false }
+            let success = await PersonalListSync.setHomeWatchlist(contentId: contentId, inWatchlist: desired, auth: auth)
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard homeWatchlistRun == run, self.contentId == contentId, isHomeSurface, homeOwner == auth,
+                  !Task.isCancelled else { return }
+            homeWatchlistRun = nil
+            guard current else { watchlistOverride = nil; return }
+            if success {
+                onUserStateChanged?(MediaItemUserState(played: isPlayed, isFavorite: isFavorite, inWatchlist: desired))
+            } else { watchlistOverride = oldOverride }
         }
     }
 
@@ -412,6 +438,10 @@ struct MediaCard: View {
 
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
+        if isHomeSurface {
+            toggleHomeWatchlist(contentId: contentId)
+            return
+        }
         if let owner = libraryOwner {
             toggleLibraryWatchlist(contentId: contentId, owner: owner)
             return
