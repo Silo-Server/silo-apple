@@ -83,6 +83,30 @@ final class OnboardingInvitationTests: XCTestCase {
     }
 
     @MainActor
+    func testInitialLoadFailureCanRetryWithoutProgressReplay() async {
+        let api = OnboardingTourAPIStub(flowFailures: 1, flow: Self.flow(steps: [Self.welcomeStep(id: "welcome")]))
+        let model = OnboardingTourViewModel(api: api)
+
+        await model.load()
+        XCTAssertFalse(model.isLoading)
+        XCTAssertTrue(model.steps.isEmpty)
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.finished)
+        let failedEvents = await api.events()
+        XCTAssertTrue(failedEvents.isEmpty)
+
+        await model.load()
+        XCTAssertFalse(model.isLoading)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.steps.map(\.id), ["welcome"])
+        XCTAssertFalse(model.finished)
+        let calls = await api.flowCalls()
+        let recoveredEvents = await api.events()
+        XCTAssertEqual(calls, 2)
+        XCTAssertTrue(recoveredEvents.isEmpty)
+    }
+
+    @MainActor
     func testUnrenderableFlowDismissesWhenCompletionPostFails() async {
         let api = OnboardingTourAPIStub(failProgress: true)
         let model = OnboardingTourViewModel(api: api)
@@ -257,23 +281,34 @@ private actor OnboardingTourAPIStub: OnboardingTourAPI {
     private let failWrites: Bool
     private let failProgress: Bool
     private let flow: OnboardingFlow
+    private var flowFailures: Int
+    private var flowReadCount = 0
 
     init(
         failWrites: Bool = false,
         failProgress: Bool = false,
+        flowFailures: Int = 0,
         flow: OnboardingFlow = OnboardingFlow(version: 1, tourId: "tour", steps: [])
     ) {
         self.failWrites = failWrites
         self.failProgress = failProgress
         self.flow = flow
+        self.flowFailures = flowFailures
     }
 
     func writes() -> [String] { recordedWrites }
     func events() -> [String] { recordedEvents }
     func profileUpdates() -> [String] { recordedProfileUpdates }
 
+    func flowCalls() -> Int { flowReadCount }
+
     func onboardingFlow(surface: String) async throws -> OnboardingFlow {
-        flow
+        flowReadCount += 1
+        if flowFailures > 0 {
+            flowFailures -= 1
+            throw URLError(.cannotConnectToHost)
+        }
+        return flow
     }
 
     func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {

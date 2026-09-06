@@ -63,6 +63,9 @@ class OnboardingTourViewModel {
     }
 
     func load(resumeStepId: String? = nil) async {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
         do {
             let flow = try await api.onboardingFlow(surface: "phone")
             writerID = flow.writerID
@@ -109,9 +112,7 @@ class OnboardingTourViewModel {
                let resumeIndex = renderable.firstIndex(where: { $0.id == resumeStepId }) {
                 currentIndex = resumeIndex
             }
-            isLoading = false
         } catch {
-            isLoading = false
             self.error = error.localizedDescription
             needsReload = true
         }

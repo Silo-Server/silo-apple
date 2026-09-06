@@ -16,7 +16,19 @@ struct OnboardingTourView: View {
 
     var body: some View {
         AuroraScreen(variant: .signIn, scrim: .soft) {
-            if viewModel.isLoading || viewModel.steps.isEmpty {
+            if !viewModel.isLoading, viewModel.steps.isEmpty, let error = viewModel.error {
+                VStack(spacing: 20) {
+                    AuroraErrorLabel(error)
+                    Button("Retry") {
+                        Task { await viewModel.load(resumeStepId: resumeStepId) }
+                    }
+                    .buttonStyle(AuroraPrimaryButtonStyle())
+                    Button("Close") { viewModel.finished = true }
+                        .buttonStyle(AuroraGhostButtonStyle())
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.isLoading || viewModel.steps.isEmpty {
                 ProgressView()
                     .tint(Color.auroraInk)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
