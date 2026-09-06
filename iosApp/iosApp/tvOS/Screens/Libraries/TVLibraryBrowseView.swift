@@ -33,6 +33,11 @@ struct TVLibraryBrowseView: View {
 
     // MARK: - Derived
 
+    private var personalListOwner: LibraryCardAuthority {
+        LibraryCardAuthority(libraryId: library.id,
+            auth: displayedRead?.libraryId == library.id ? displayedRead?.auth : nil)
+    }
+
     private var contentSections: [ResolvedSection] {
         sections.filter { !$0.isFeatured && !$0.items.isEmpty }
     }
@@ -66,6 +71,7 @@ struct TVLibraryBrowseView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.libraryCardAuthority, personalListOwner)
         .task { await loadContent() }
     }
 
