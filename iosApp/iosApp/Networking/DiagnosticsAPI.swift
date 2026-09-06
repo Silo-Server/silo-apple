@@ -80,39 +80,46 @@ actor DiagnosticsAPI {
     static let shared = DiagnosticsAPI()
 
     private let http: HTTPClient
+    private let tokens: TokenStore
 
-    init(http: HTTPClient = .shared) {
+    init(http: HTTPClient = .shared, tokens: TokenStore = .shared) {
         self.http = http
+        self.tokens = tokens
     }
 
     func getDiagnosticsStatus() async throws -> DiagnosticsStatusResponse {
-        try await http.get("/api/v1/diagnostics/status")
+        guard let auth = await tokens.captureOrdinaryRequestAuth(), auth.accessToken?.isEmpty == false else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let response = try await http.requestData(method: "GET", path: "/api/v2/diagnostics/capabilities",
+            headers: ["X-Profile-Id": ""], expectedAccount: auth.account)
+        guard let current = await tokens.captureOrdinaryRequestAuth(), current.account == auth.account else {
+            throw HTTPError.requestIdentityChanged
+        }
+        return try HTTPClient.makeJSONDecoder().decode(DiagnosticsStatusResponse.self, from: response.data)
     }
 
-    func upload(manifestData: Data, bundleData: Data) async throws -> DiagnosticsUploadResponse {
+    func upload(manifestData: Data, bundleData: Data, capturedProfileID: String? = nil,
+                expectedAccount: RefreshAccountIdentity? = nil) async throws -> DiagnosticsUploadResponse {
+        guard let auth = await tokens.captureOrdinaryRequestAuth(), auth.accessToken?.isEmpty == false,
+              expectedAccount == nil || expectedAccount == auth.account else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let boundary = "SiloDiagnostics-\(UUID())"
+        let body = HTTPClient.multipartBody(parts: [
+            HTTPMultipartPart(name: "manifest", filename: "manifest.json", contentType: "application/json", data: manifestData),
+            HTTPMultipartPart(name: "bundle", filename: "bundle.tar.gz", contentType: "application/gzip", data: bundleData)
+        ], boundary: boundary)
         do {
-            return try await http.postMultipart(
-                "/api/v1/diagnostics/reports",
-                parts: [
-                    HTTPMultipartPart(
-                        name: "manifest",
-                        filename: "manifest.json",
-                        contentType: "application/json",
-                        data: manifestData
-                    ),
-                    HTTPMultipartPart(
-                        name: "bundle",
-                        filename: "bundle.tar.gz",
-                        contentType: "application/gzip",
-                        data: bundleData
-                    ),
-                ],
-                timeout: .extended
-            )
+            let response = try await http.requestData(method: "POST", path: "/api/v2/diagnostics/reports",
+                body: body, contentType: "multipart/form-data; boundary=\(boundary)",
+                headers: ["X-Profile-Id": capturedProfileID ?? ""], timeout: .extended, expectedAccount: auth.account)
+            guard let current = await tokens.captureOrdinaryRequestAuth(), current.account == auth.account else {
+                throw HTTPError.requestIdentityChanged
+            }
+            return try HTTPClient.makeJSONDecoder().decode(DiagnosticsUploadResponse.self, from: response.data)
         } catch let error as HTTPError {
             throw Self.mapUploadError(error)
-        } catch {
-            throw DiagnosticsUploadError.underlying(String(describing: error))
         }
     }
 

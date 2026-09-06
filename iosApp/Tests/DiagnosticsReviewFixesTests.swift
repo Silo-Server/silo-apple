@@ -5,6 +5,22 @@ import XCTest
 /// review: permanent-failure gating, consent notice refresh on upload,
 /// binding-scoped playback sessions, and byte-safe stack truncation.
 final class DiagnosticsReviewFixesTests: XCTestCase {
+    func testServerUploadAttemptSurvivesRestartStaleStateAndCorruptState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("diagnostics-attempt-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = PendingReportStore(rootDirectory: root)
+        let report = try store.save(makeCapture(noticeVersion: 1))
+        XCTAssertTrue(try store.beginServerUpload(report))
+        XCTAssertFalse(try store.beginServerUpload(report))
+        let reopened = PendingReportStore(rootDirectory: root)
+        XCTAssertFalse(try reopened.beginServerUpload(report))
+        store.markTooLarge(report) // A stale state writer cannot erase the separate attempt marker.
+        XCTAssertTrue(try XCTUnwrap(reopened.report(id: report.id)).state.serverUploadAttempted)
+        try Data("invalid".utf8).write(to: report.directoryURL.appendingPathComponent("state.json"))
+        XCTAssertFalse(try reopened.beginServerUpload(report))
+        XCTAssertTrue(try XCTUnwrap(reopened.report(id: report.id)).state.isPermanentFailure)
+    }
+
     // MARK: - Permanent-failure state (#3 too_large, #9 needsServerUpdate)
 
     func testPendingReportStateDecodesLegacyStateWithoutTooLarge() throws {

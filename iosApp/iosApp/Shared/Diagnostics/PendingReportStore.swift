@@ -76,6 +76,8 @@ struct PendingReport: Identifiable, Equatable {
 }
 
 struct PendingReportState: Codable, Equatable {
+    /// A non-retryable server upload may have been accepted. Never replay it.
+    var serverUploadAttempted: Bool = false
     var needsServerUpdate: Bool
     /// The generated bundle exceeds the server's size limit. Like
     /// `needsServerUpdate`, this is a permanent local failure: retrying the
@@ -101,7 +103,7 @@ struct PendingReportState: Codable, Equatable {
     /// A declined prompt is not a permanent failure — the report can still be
     /// sent manually and auto-uploads under Always.
     var isPermanentFailure: Bool {
-        needsServerUpdate || tooLarge || hostedRejectionCode != nil
+        serverUploadAttempted || needsServerUpdate || tooLarge || hostedRejectionCode != nil
     }
 
     /// The collector has accepted this hosted report and local actions should
@@ -118,6 +120,7 @@ struct PendingReportState: Codable, Equatable {
         case hostedConsentRefreshRequired = "hosted_consent_refresh_required"
         case hostedRemoteShortID = "hosted_remote_short_id"
         case hostedRejectionCode = "hosted_rejection_code"
+        case serverUploadAttempted = "server_upload_attempted"
     }
 
     init(
@@ -140,6 +143,7 @@ struct PendingReportState: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        serverUploadAttempted = try container.decodeIfPresent(Bool.self, forKey: .serverUploadAttempted) ?? false
         needsServerUpdate = try container.decodeIfPresent(Bool.self, forKey: .needsServerUpdate) ?? false
         tooLarge = try container.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
         promptDeclined = try container.decodeIfPresent(Bool.self, forKey: .promptDeclined) ?? false
@@ -741,6 +745,26 @@ final class PendingReportStore {
         saveDateMap(state, fileName: Self.throttleFile)
     }
 
+    /// Commit before dispatch. Reload under the store lock so concurrent callers
+    /// and process restarts cannot issue the same non-retryable POST again.
+    func beginServerUpload(_ report: PendingReport) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let current = loadReport(from: report.directoryURL), current.id == report.id,
+              current.binding == report.binding else { throw DiagnosticsStoreError.invalidArtifactPath("report") }
+        let marker = current.directoryURL.appendingPathComponent("server-upload-attempt")
+        guard !current.state.serverUploadAttempted else { return false }
+        do {
+            // Existence is the fence, even if a crash leaves an empty marker.
+            // Exclusive creation also protects separate store instances.
+            try Data("1".utf8).write(to: marker, options: .withoutOverwriting)
+        } catch {
+            if fileManager.fileExists(atPath: marker.path) { return false }
+            throw error
+        }
+        return true
+    }
+
     func markNeedsServerUpdate(_ report: PendingReport) {
         lock.lock()
         defer { lock.unlock() }
@@ -1059,7 +1083,9 @@ final class PendingReportStore {
               let manifest = readJSON(DiagnosticsManifestDraft.self, from: directory.appendingPathComponent("manifest.json")) else {
             return nil
         }
-        let state = readJSON(PendingReportState.self, from: directory.appendingPathComponent("state.json")) ?? .empty
+        var state = readJSON(PendingReportState.self, from: directory.appendingPathComponent("state.json")) ?? .empty
+        state.serverUploadAttempted = state.serverUploadAttempted
+            || fileManager.fileExists(atPath: directory.appendingPathComponent("server-upload-attempt").path)
         return PendingReport(id: uuid, directoryURL: directory, binding: binding, manifest: manifest, state: state)
     }
 

@@ -509,6 +509,8 @@ final class DiagnosticsViewModel {
                 return "Collector rejected the report (\(code)); the local copy was kept."
             }
             return "Collector rejected the report; the local copy was kept."
+        case .keptDeliveryUncertain:
+            return "The upload could not be confirmed. The local report was kept and will not be sent again."
         case .keptRetryable:
             return "Report kept; Silo will retry."
         case .keptNeedsServerUpdate:

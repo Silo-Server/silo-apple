@@ -256,6 +256,7 @@ enum DiagnosticsUploadDecision: Equatable {
     case uploaded(DiagnosticsUploadResponse)
     case keptProcessing(shortID: String)
     case keptRejected(code: String?)
+    case keptDeliveryUncertain
     case keptRetryable
     case keptNeedsServerUpdate
     case keptTooLarge
@@ -1021,6 +1022,7 @@ actor DiagnosticsCoordinator {
 
     private func performUpload(report: PendingReport) async -> DiagnosticsUploadDecision {
         let destination = report.binding.binding.destinationChoice
+        if destination != .hosted, report.state.serverUploadAttempted { return .keptDeliveryUncertain }
         if destination == .hosted {
             guard let deletionIntents = try? pendingStore.hostedDeletionIntents(),
                   !deletionIntents.contains(report.id) else {
@@ -1133,6 +1135,7 @@ actor DiagnosticsCoordinator {
             // mismatch precisely.
             let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
             let destinationProfileID = await TokenStore.shared.getProfileId()
+            guard let destinationAuth = await TokenStore.shared.captureOrdinaryRequestAuth() else { return .keptRetryable }
             let capturedProfileID = report.manifest.report.profileID
             let bundle = try await buildBundle(for: report)
             let activeProfileID = await TokenStore.shared.getProfileId()
@@ -1145,19 +1148,18 @@ actor DiagnosticsCoordinator {
                   ) else {
                 return .keptRetryable
             }
+            guard try pendingStore.beginServerUpload(report) else { return .keptDeliveryUncertain }
             let response: DiagnosticsUploadResponse
             do {
-                response = try await api.upload(
-                    manifestData: bundle.manifestData,
-                    bundleData: bundle.bundleData
-                )
-            } catch DiagnosticsUploadError.requestBlockedByProxy {
-                // A proxy in front of the server capped the request body below
-                // the bundle size (nginx defaults to 1 MiB; bundles may be
-                // 10 MiB). Retrying the same request can never succeed, so
-                // fall back to the chunked upload, whose per-request size
-                // stays under such caps.
-                response = try await uploadChunkedFallback(report: report, bundle: bundle)
+                response = try await api.upload(manifestData: bundle.manifestData, bundleData: bundle.bundleData,
+                    capturedProfileID: capturedProfileID, expectedAccount: destinationAuth.account)
+            } catch {
+                // This transport has no replay receipt or chunk fallback. Keep
+                // the durable attempt fence even after a lost/invalid response.
+                return .keptDeliveryUncertain
+            }
+            guard UUID(uuidString: response.reportID) == report.id, !response.shortID.isEmpty else {
+                return .keptDeliveryUncertain
             }
             pendingStore.delete(report)
             return .uploaded(response)
@@ -1424,49 +1426,6 @@ actor DiagnosticsCoordinator {
             return .invalidLocalBundle
         default:
             return .retryable
-        }
-    }
-
-    /// Chunked-upload fallback for a single-shot upload the fronting proxy
-    /// refused. Throws `DiagnosticsUploadError` for the caller's shared
-    /// error mapping.
-    private func uploadChunkedFallback(
-        report: PendingReport,
-        bundle: DiagnosticsBundleBuildResult
-    ) async throws -> DiagnosticsUploadResponse {
-        // Chunking needs server support (upload_chunk_bytes in status). An
-        // older server behind a capping proxy can't take this bundle by any
-        // route until it updates — the same terminal state as an unsupported
-        // schema, so reuse that classification (kept, visible, manually
-        // retryable after the deployment is fixed; never auto-retried).
-        guard cachedStatus?.status.supportsChunkedUpload == true else {
-            throw DiagnosticsUploadError.unsupportedSchema
-        }
-        // Pin the destination identity for the whole multi-request sequence.
-        // HTTPClient resolves the active server URL and auth per request, so
-        // without this a server/account/profile switch between chunk PUTs
-        // would send the remaining bundle bytes to the newly active
-        // destination. Same stable identity as the single-shot pre-POST check:
-        // server registry id + profile, token presence only (a transparent
-        // token refresh mid-upload must not abort the sequence).
-        let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
-        let destinationProfileID = await TokenStore.shared.getProfileId()
-        do {
-            return try await api.uploadChunked(
-                manifestData: bundle.manifestData,
-                bundleData: bundle.bundleData,
-                destinationUnchanged: {
-                    guard await Self.currentAccessTokenFingerprint() != nil else { return false }
-                    guard ServerRegistry.activeServerIDSnapshot == destinationServerRegistryID else { return false }
-                    let activeProfileID = await TokenStore.shared.getProfileId()
-                    return activeProfileID == destinationProfileID
-                }
-            )
-        } catch DiagnosticsUploadError.requestBlockedByProxy {
-            // Even individual chunk-sized requests are blocked: the proxy cap
-            // is below the chunk size. No retry of this fixed payload can
-            // succeed — the same permanence as a server-side size rejection.
-            throw DiagnosticsUploadError.tooLarge
         }
     }
 
