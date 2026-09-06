@@ -77,6 +77,54 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
     }
 
+    func testMetadataCancelledAuthorityReadCannotStartPollOrFailReplacement() async throws {
+        try await exerciseMetadataAuthorityReplacement(afterDetailRead: false)
+    }
+
+    func testMetadataCancelledAuthorityPublicationCannotApplyOrFailReplacement() async throws {
+        try await exerciseMetadataAuthorityReplacement(afterDetailRead: true)
+    }
+
+    private func exerciseMetadataAuthorityReplacement(afterDetailRead: Bool) async throws {
+        for oldResult in [true, false] {
+            let (v2, tokens) = try await fixture()
+            await tokens.setProfileId("profile")
+            let api = SiloAI(v2: v2)
+            LibraryReadProtocol.status = 202
+            let job = Data(#"{"id":"job","target_kind":"item","content_id":"item","target_language":"fr","status":"pending"}"#.utf8)
+            LibraryReadProtocol.enqueue([job, job])
+            let oldSuspended = expectation(description: "old authority check")
+            let newSuspended = expectation(description: "new authority check")
+            let gate = MetadataAuthorityGate(passFirst: afterDetailRead, old: oldSuspended, new: newSuspended)
+            let wire = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.CatalogItemDetail.self,
+                from: Data(#"{"content_id":"item","type":"movie","title":"One","status":"available","genres":[],"keywords":[],"cast":[],"crew":[],"versions":[],"subtitles":[]}"#.utf8))
+            let detail = try ItemDetail(catalog: wire)
+            var reads = 0
+            var applied = 0
+            let cacheKey = CacheKey.itemDetail("item")
+            ResponseCache.shared.set("unchanged", for: cacheKey)
+            defer { ResponseCache.shared.remove(cacheKey) }
+            let coordinator = DescriptionTranslationCoordinator(api: api, backoff: [0],
+                authorityCheck: { _ in await gate.check() }, detailRead: { _ in reads += 1; return detail })
+            coordinator.translate(contentId: "item", targetLanguage: "fr") { _ in applied += 1 }
+            let oldTask = try XCTUnwrap(coordinator.runTaskForTesting)
+            await fulfillment(of: [oldSuspended], timeout: 2)
+            coordinator.cancel()
+            coordinator.translate(contentId: "item", targetLanguage: "fr") { _ in applied += 1 }
+            await fulfillment(of: [newSuspended], timeout: 2)
+            let newTask = try XCTUnwrap(coordinator.runTaskForTesting)
+            await gate.releaseOld(oldResult)
+            await oldTask.value
+            XCTAssertEqual(coordinator.phase, .translating)
+            XCTAssertEqual(applied, 0)
+            XCTAssertEqual(ResponseCache.shared.get(cacheKey, as: String.self), "unchanged")
+            XCTAssertEqual(reads, afterDetailRead ? 1 : 0)
+            coordinator.cancel()
+            await gate.releaseNew()
+            await newTask.value
+        }
+    }
+
     func testMetadataCapabilityUnknownModesAndUnavailableRemainOff() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")
@@ -500,4 +548,28 @@ private final class LibraryReadProtocol: URLProtocol {
         }
     }
     override func stopLoading() {}
+}
+
+
+private actor MetadataAuthorityGate {
+    private let passFirst: Bool
+    private let old: XCTestExpectation
+    private let new: XCTestExpectation
+    private var calls = 0
+    private var oldWaiter: CheckedContinuation<Bool, Never>?
+    private var newWaiter: CheckedContinuation<Bool, Never>?
+    init(passFirst: Bool, old: XCTestExpectation, new: XCTestExpectation) {
+        self.passFirst = passFirst; self.old = old; self.new = new
+    }
+    func check() async -> Bool {
+        calls += 1
+        if passFirst && calls == 1 { return true }
+        let isOld = calls == (passFirst ? 2 : 1)
+        return await withCheckedContinuation { continuation in
+            if isOld { oldWaiter = continuation; old.fulfill() }
+            else { newWaiter = continuation; new.fulfill() }
+        }
+    }
+    func releaseOld(_ result: Bool) { oldWaiter?.resume(returning: result); oldWaiter = nil }
+    func releaseNew() { newWaiter?.resume(returning: true); newWaiter = nil }
 }
