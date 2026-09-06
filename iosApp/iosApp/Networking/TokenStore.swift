@@ -386,6 +386,14 @@ actor TokenStore {
         return current
     }
 
+    /// The display credential effect must not race a profile/PIN/sign-out clear.
+    func withCurrentOrdinaryAuthority(_ expected: CapturedOrdinaryRequestAuth,
+                                      operation: @Sendable () throws -> Void) throws {
+        try Task.checkCancellation()
+        guard currentOrdinaryRequestAuth(matchingIdentityOf: expected) != nil else { throw HTTPError.requestIdentityChanged }
+        try operation()
+    }
+
     /// An approved handoff must still belong to the owner captured before polling.
     func beginTemporaryScope(_ scope: TemporaryAuthScope, expected: AccountInstallationExpectation) -> TemporaryAuthScopeSnapshot? {
         guard captureAccountInstallationExpectation() == expected else { return nil }

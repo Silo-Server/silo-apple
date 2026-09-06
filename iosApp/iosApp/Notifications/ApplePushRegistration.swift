@@ -1,10 +1,11 @@
 #if os(iOS)
 import Foundation
 import OSLog
+import Security
 import UIKit
 import UserNotifications
 
-struct ApplePushRegistrationRequest: Encodable, Equatable {
+struct ApplePushRegistrationRequest: Codable, Equatable {
     let deviceId: String
     let apnsToken: String
     let apnsEnvironment: String
@@ -13,6 +14,8 @@ struct ApplePushRegistrationRequest: Encodable, Equatable {
 }
 
 struct ApplePushRegistrationResponse: Decodable {
+    let generation: String
+    let removed: Bool
     let id: String
     let serverDeviceId: String
     let enabled: Bool
@@ -35,6 +38,7 @@ struct ApplePushDisplayTokenStore {
     var keychain: SharedKeychain = SharedKeychain(audience: TokenStore.profileCredentialAudience)
     var defaults: SharedDefaults = .shared
     var now: () -> Date = Date.init
+    var writeToken: ((String) -> Bool)? = nil
 
     /// `true` when a token is stored and is not within `renewalLeadTime` of
     /// its expiry. A token with no recorded expiry, or one that fails to
@@ -70,7 +74,7 @@ struct ApplePushDisplayTokenStore {
             }
             return removed
         }
-        let written = keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
+        let written = writeToken?(trimmed) ?? keychain.set(trimmed, for: SharedStorage.applePushDisplayTokenAccount)
         if written {
             defaults.set(expiresAt, forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
             defaults.set(serverId, forKey: SharedStorage.applePushDisplayTokenServerIdKey)
@@ -87,7 +91,7 @@ struct ApplePushDisplayTokenStore {
 }
 
 enum ApplePushRegistrationWire {
-    static let endpoint = "/api/v1/devices/push/apple"
+    static let endpoint = "/api/v2/devices/push/apple"
     static let defaultTopic = "org.siloserver.silo"
     static let privatePushMode = "private_push"
 
@@ -151,9 +155,240 @@ enum ApplePushRegistrationWire {
     }
 }
 
-struct ApplePushRegistrationIdentity: Equatable {
-    let account: RefreshAccountIdentity
+enum ApplePushOrderedError: Error {
+    case persistence, invalidAuthority, conflict, invalidReceipt
+}
+
+struct ApplePushOrderedAuthority: Codable, Equatable {
+    let serverID: String
+    let serverURL: String
+    let epoch: UUID
     let profileID: String
+    let profileToken: String?
+    let accessToken: String
+
+    init(_ auth: CapturedOrdinaryRequestAuth) throws {
+        guard case .persistentServer(let serverID) = auth.credentialOwner,
+              serverID == auth.account.serverId, let profile = auth.profileId, !profile.isEmpty,
+              let access = auth.accessToken, !access.isEmpty else { throw ApplePushOrderedError.invalidAuthority }
+        self.serverID = serverID
+        serverURL = auth.account.serverURL
+        epoch = auth.account.credentialGenerationID
+        profileID = profile
+        profileToken = auth.profileToken
+        accessToken = access
+    }
+
+    var auth: CapturedOrdinaryRequestAuth {
+        CapturedOrdinaryRequestAuth(account: RefreshAccountIdentity(serverId: serverID, serverURL: serverURL,
+            credentialGenerationID: epoch), credentialOwner: .persistentServer(serverId: serverID),
+            accessToken: accessToken, profileId: profileID, profileToken: profileToken)
+    }
+
+    func sameOwner(as other: Self) -> Bool {
+        serverID == other.serverID && serverURL == other.serverURL && epoch == other.epoch
+            && profileID == other.profileID && profileToken == other.profileToken
+    }
+}
+
+struct ApplePushAcceptedState: Codable {
+    let id: String
+    let serverDeviceID: String
+    let enabled: Bool
+    let removed: Bool
+}
+
+struct ApplePushOrderedIntent: Codable {
+    let installationKey: String
+    let generation: Int64
+    let body: ApplePushRegistrationRequest
+    let authority: ApplePushOrderedAuthority
+    var receipt: ApplePushAcceptedState?
+    var renewAfter: Date?
+    var displayApplied: Bool?
+}
+
+private enum ApplePushJournalLock { static let value = NSRecursiveLock() }
+
+/// One private, checked Keychain record owns the installation sequence.
+/// Historical commands remain intact; retries never reconstruct them from UI state.
+@MainActor
+final class ApplePushRegistrationJournal {
+    private struct Record: Codable {
+        let installationKey: String
+        var intents: [ApplePushOrderedIntent]
+        var requiresReconciliation: Bool
+    }
+    private let keychain: SharedKeychain
+    private let writer: (String) -> Bool
+    private let account = "apple-push-ordered-intents-v1"
+
+    init(keychain: SharedKeychain = SharedKeychain(), writer: ((String) -> Bool)? = nil) {
+        self.keychain = keychain
+        self.writer = writer ?? { keychain.set($0, for: "apple-push-ordered-intents-v1") }
+    }
+
+    private func load() throws -> Record? {
+        try ApplePushJournalLock.value.withLock {
+            guard let raw = try keychain.getChecked(account) else { return nil }
+            return try JSONDecoder().decode(Record.self, from: Data(raw.utf8))
+        }
+    }
+
+    private func save(_ record: Record) throws {
+        let raw = String(decoding: try JSONEncoder().encode(record), as: UTF8.self)
+        guard ApplePushJournalLock.value.withLock({ writer(raw) }) else { throw ApplePushOrderedError.persistence }
+    }
+
+    func latest() throws -> ApplePushOrderedIntent? { try load()?.intents.last }
+
+    /// Serialize the journal currency check and credential write with every
+    /// journal save, including a newer same-owner APNs intent.
+    func credentialEffect(for intent: ApplePushOrderedIntent, clearing: Bool,
+                          effect: @escaping @Sendable () throws -> Void) -> @Sendable () throws -> Void {
+        let keychain = self.keychain
+        let account = self.account
+        return {
+            try ApplePushJournalLock.value.withLock {
+                guard let raw = try keychain.getChecked(account),
+                      let record = try? JSONDecoder().decode(Record.self, from: Data(raw.utf8)),
+                      let last = record.intents.last, last.generation == intent.generation,
+                      last.installationKey == intent.installationKey, last.body == intent.body,
+                      last.authority == intent.authority, clearing || !record.requiresReconciliation else {
+                    throw ApplePushOrderedError.conflict
+                }
+                try effect()
+            }
+        }
+    }
+
+    func prepare(body: ApplePushRegistrationRequest, auth: CapturedOrdinaryRequestAuth) throws -> ApplePushOrderedIntent {
+        let authority = try ApplePushOrderedAuthority(auth)
+        var record: Record
+        if let existing = try load() { record = existing } else {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw ApplePushOrderedError.persistence }
+            let key = Data(bytes).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+            record = Record(installationKey: key, intents: [], requiresReconciliation: false)
+        }
+        guard !record.requiresReconciliation else { throw ApplePushOrderedError.conflict }
+        if let last = record.intents.last, last.body == body, last.authority.sameOwner(as: authority) { return last }
+        let previous = record.intents.last?.generation ?? 0
+        guard previous < Int64.max else { throw ApplePushOrderedError.conflict }
+        let intent = ApplePushOrderedIntent(installationKey: record.installationKey, generation: previous + 1,
+            body: body, authority: authority)
+        record.intents.append(intent)
+        try save(record)
+        return intent
+    }
+
+    func isCurrent(_ intent: ApplePushOrderedIntent) throws -> Bool {
+        guard let record = try load(), !record.requiresReconciliation, let last = record.intents.last else { return false }
+        return last.generation == intent.generation && last.installationKey == intent.installationKey
+            && last.body == intent.body && last.authority == intent.authority
+    }
+
+    func requireReconciliation(_ intent: ApplePushOrderedIntent) throws {
+        guard var record = try load(), record.intents.last?.generation == intent.generation else { return }
+        record.requiresReconciliation = true
+        try save(record)
+    }
+
+    func markDisplayApplied(_ intent: ApplePushOrderedIntent) throws {
+        guard var record = try load(), try isCurrent(intent) else { return }
+        record.intents[record.intents.count - 1].displayApplied = true
+        try save(record)
+    }
+
+    func accept(_ response: ApplePushRegistrationResponse, for intent: ApplePushOrderedIntent, now: Date) throws {
+        guard var record = try load(), try isCurrent(intent), let last = record.intents.last else { throw ApplePushOrderedError.conflict }
+        guard response.generation == String(intent.generation), response.pushMode == intent.body.pushMode,
+              !response.id.isEmpty, !response.serverDeviceId.isEmpty,
+              last.receipt.map({ $0.id == response.id && $0.serverDeviceID == response.serverDeviceId }) ?? true else {
+            throw ApplePushOrderedError.invalidReceipt
+        }
+        let index = record.intents.count - 1
+        record.intents[index].receipt = ApplePushAcceptedState(id: response.id, serverDeviceID: response.serverDeviceId,
+            enabled: response.enabled, removed: response.removed)
+        record.intents[index].displayApplied = false
+        record.intents[index].renewAfter = response.displayToken == nil ? now.addingTimeInterval(6 * 60 * 60) : nil
+        try save(record)
+    }
+}
+
+@MainActor
+final class ApplePushOrderedRegistration {
+    private let api: APIv2Client
+    private let tokens: TokenStore
+    private let journal: ApplePushRegistrationJournal
+    private let display: ApplePushDisplayTokenStore
+    private let now: () -> Date
+    private var inFlight = Set<Int64>()
+
+    init(api: APIv2Client = APIv2Client(), tokens: TokenStore = .shared,
+         journal: ApplePushRegistrationJournal? = nil,
+         display: ApplePushDisplayTokenStore = ApplePushDisplayTokenStore(), now: @escaping () -> Date = Date.init) {
+        self.api = api; self.tokens = tokens; self.journal = journal ?? ApplePushRegistrationJournal(); self.display = display; self.now = now
+    }
+
+    func register(body: ApplePushRegistrationRequest, auth: CapturedOrdinaryRequestAuth) async throws {
+        guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else { throw HTTPError.requestIdentityChanged }
+        let intent: ApplePushOrderedIntent
+        do { intent = try journal.prepare(body: body, auth: auth) }
+        catch ApplePushOrderedError.conflict {
+            if let latest = try journal.latest() { try await storeDisplay(nil, expiry: nil, intent: latest) }
+            throw ApplePushOrderedError.conflict
+        }
+        let original = intent.authority.auth
+        if let receipt = intent.receipt, !receipt.enabled || receipt.removed {
+            try await storeDisplay(nil, expiry: nil, intent: intent)
+            return
+        }
+        if intent.receipt != nil && intent.displayApplied == true && (display.hasCurrentToken() || (intent.renewAfter.map { $0 > now() } ?? false)) { return }
+        guard inFlight.insert(intent.generation).inserted else { return }
+        defer { inFlight.remove(intent.generation) }
+        do {
+            let capability = try await api.applePushRegistrationCapability(auth: original)
+            guard capability.revision == "ordered_apple_v1", capability.registrationAvailable else { return }
+            guard try journal.isCurrent(intent), !Task.isCancelled else { return }
+            let response = try await api.registerApplePush(intent: intent)
+            guard try journal.isCurrent(intent), !Task.isCancelled else { return }
+            if let token = response.displayToken, response.enabled && !response.removed, !token.isEmpty {
+                guard let raw = response.displayTokenExpiresAt, let expiry = ApplePushDisplayTokenStore.parseExpiry(raw),
+                      expiry > now() else { throw ApplePushOrderedError.invalidReceipt }
+            }
+            try journal.accept(response, for: intent, now: now())
+            // Disabled/removed current receipts never install credentials,
+            // even if an invalid server response includes one.
+            let token = response.enabled && !response.removed ? response.displayToken : nil
+            try await storeDisplay(token, expiry: token == nil ? nil : response.displayTokenExpiresAt, intent: intent)
+            try journal.markDisplayApplied(intent)
+        } catch {
+            let conflict: Bool
+            switch error {
+            case APIv2Error.problem(let problem): conflict = problem.status == 409
+            case APIv2Error.httpStatus(let status): conflict = status == 409
+            case ApplePushOrderedError.invalidReceipt: conflict = true
+            default: conflict = false
+            }
+            if conflict, try journal.isCurrent(intent) {
+                try journal.requireReconciliation(intent)
+                try await storeDisplay(nil, expiry: nil, intent: intent)
+            }
+            throw error
+        }
+    }
+
+    private func storeDisplay(_ token: String?, expiry: String?, intent: ApplePushOrderedIntent) async throws {
+        let display = self.display
+        let auth = intent.authority.auth
+        let effect = journal.credentialEffect(for: intent, clearing: token == nil) {
+            guard display.store(token, expiresAt: expiry, serverId: auth.account.serverId) else { throw ApplePushOrderedError.persistence }
+        }
+        try await tokens.withCurrentOrdinaryAuthority(auth, operation: effect)
+    }
+
 }
 
 @MainActor
@@ -166,15 +401,7 @@ final class ApplePushRegistrationCoordinator {
     )
 
     private var lastDeviceToken: Data?
-    private var inFlightFingerprint: String?
-    private var lastSuccessfulFingerprint: String?
-    private var endpointUnsupportedForContext: String?
-    /// Fingerprint the server last answered without a display token, and
-    /// when. Time-bounded rather than process-lifetime so a server upgrade
-    /// is noticed by a long-resident app.
-    private var displayTokenUnavailable: (fingerprint: String, at: Date)?
-    private static let displayTokenUnavailableRetryInterval: TimeInterval = 6 * 60 * 60
-    private let displayTokenStore = ApplePushDisplayTokenStore()
+    private let ordered = ApplePushOrderedRegistration()
 
     private init() {}
 
@@ -216,93 +443,21 @@ final class ApplePushRegistrationCoordinator {
     }
 
     func registerCurrentDeviceTokenIfPossible() async {
-        guard AuthService.shared.hasServer, AuthService.shared.hasProfile else {
-            return
-        }
-        guard let lastDeviceToken else {
-            return
-        }
-        // The cached token can outlive the user's permission: if they revoke
-        // notification authorization in Settings, a later foreground or
-        // profile switch must not re-upload the token for the new context.
+        guard let lastDeviceToken,
+              let owner = await TokenStore.shared.captureDurableAccountAuth(), owner.request.profileId != nil else { return }
+        let request = makeRegistrationRequest(deviceToken: lastDeviceToken)
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral:
-            break
-        default:
-            return
+        case .authorized, .provisional, .ephemeral: break
+        default: return
         }
-
-        let request = makeRegistrationRequest(deviceToken: lastDeviceToken)
-        let fingerprint = registrationFingerprint(for: request)
-        guard fingerprint != inFlightFingerprint,
-              fingerprint != endpointUnsupportedForContext else {
-            return
-        }
-        // Registration is normally deduplicated per fingerprint for the
-        // process lifetime. The display token is the exception: a session
-        // sign-out clears it (TokenStore) without changing the fingerprint,
-        // it expires on its own schedule, and a server upgrade starts
-        // returning one for an unchanged registration. Re-register while the
-        // slot is empty or near expiry so the extension keeps a live
-        // credential without waiting for a token or profile change.
-        if fingerprint == lastSuccessfulFingerprint {
-            if displayTokenStore.hasCurrentToken() { return }
-            if let unavailable = displayTokenUnavailable,
-               unavailable.fingerprint == fingerprint,
-               Date().timeIntervalSince(unavailable.at) < Self.displayTokenUnavailableRetryInterval {
-                return
-            }
-        }
-
-        inFlightFingerprint = fingerprint
-        defer { inFlightFingerprint = nil }
-
-        // Snapshot the identity the registration is for. The response may
-        // land after a sign-out, server switch, or profile change has already
-        // cleared the display-token slot for the new context; writing the
-        // old context's token into it would resurrect a revoked credential.
-        let identityBefore = await Self.currentIdentity()
-
         do {
-            let response: ApplePushRegistrationResponse = try await HTTPClient.shared.post(
-                ApplePushRegistrationWire.endpoint,
-                body: request
-            )
-            guard await Self.currentIdentity() == identityBefore else {
-                Self.logger.info("Discarding Apple push registration response: identity changed while in flight")
-                return
-            }
-            lastSuccessfulFingerprint = fingerprint
-            endpointUnsupportedForContext = nil
-            // Always store, even when nil: a server downgrade or a profile
-            // switch to an older server must not leave a token issued for a
-            // different profile in the extension's slot.
-            let storedDisplayToken = displayTokenStore.store(
-                response.displayToken,
-                expiresAt: response.displayTokenExpiresAt,
-                serverId: identityBefore?.account.serverId ?? ""
-            )
-            // Older servers return none; back off for this context for a while.
-            displayTokenUnavailable = response.displayToken == nil ? (fingerprint, Date()) : nil
-            Self.logger.info("Registered APNs token with Silo server_device_id=\(response.serverDeviceId, privacy: .private) enabled=\(response.enabled, privacy: .public) displayToken=\(response.displayToken != nil, privacy: .public) stored=\(storedDisplayToken, privacy: .public)")
-        } catch HTTPError.http(let statusCode, _) where statusCode == 404 || statusCode == 405 {
-            endpointUnsupportedForContext = fingerprint
-            Self.logger.info("Apple push device endpoint is not available on this Silo server yet")
+            // Requires migrated storage and guarded writers on every serving
+            // node. The local capability is not a fleet rollout receipt.
+            try await ordered.register(body: request, auth: owner.request)
         } catch {
-            Self.logger.error("Apple push device registration failed: \(String(describing: error), privacy: .public)")
+            Self.logger.info("Ordered Apple registration was not completed; retained intent requires retry or reconciliation")
         }
-    }
-
-    /// The account (server + credential generation) and profile a
-    /// registration belongs to. Any change, including a sign-out and
-    /// sign-in to the same server, produces a different value.
-    private static func currentIdentity() async -> ApplePushRegistrationIdentity? {
-        guard let account = await TokenStore.shared.refreshAccountIdentity() else { return nil }
-        return ApplePushRegistrationIdentity(
-            account: account,
-            profileID: await TokenStore.shared.getProfileId() ?? ""
-        )
     }
 
     private func makeRegistrationRequest(deviceToken: Data) -> ApplePushRegistrationRequest {
@@ -315,17 +470,5 @@ final class ApplePushRegistrationCoordinator {
         )
     }
 
-    private func registrationFingerprint(for request: ApplePushRegistrationRequest) -> String {
-        [
-            ServerRegistry.shared.activeServerId ?? "",
-            AuthService.shared.profileId ?? "",
-            request.deviceId,
-            request.apnsToken,
-            request.apnsEnvironment,
-            request.apnsTopic,
-            request.pushMode
-        ]
-        .joined(separator: "|")
-    }
 }
 #endif

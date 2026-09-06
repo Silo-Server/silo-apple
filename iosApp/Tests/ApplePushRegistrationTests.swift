@@ -4,6 +4,216 @@ import XCTest
 @testable import Silo
 
 final class ApplePushRegistrationTests: XCTestCase {
+    @MainActor
+    private func orderedFixture(barrier: (@Sendable (TokenStore) async -> Void)? = nil) async throws -> (APIv2Client, TokenStore, SharedKeychain, ApplePushDisplayTokenStore) {
+        let name = "AppleOrderedTests.\(UUID())"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let keychain = SharedKeychain(service: name, accessGroup: nil)
+        let tokens = TokenStore(keychain: keychain, defaults: defaults)
+        await tokens.switchActiveServer(serverId: "synthetic")
+        await tokens.setServerUrl("https://push.example")
+        try await tokens.installAccountSession(accessToken: "access", refreshToken: "refresh", accountID: "1")
+        await tokens.setProfileId("profile")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppleOrderedProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokens,
+            requestCaptureBarrier: { await barrier?(tokens) })
+        AppleOrderedProtocol.reset()
+        addTeardownBlock {
+            suite.removePersistentDomain(forName: name)
+            keychain.delete("apple-push-ordered-intents-v1")
+            keychain.delete(SharedStorage.applePushDisplayTokenAccount)
+            AppleOrderedProtocol.reset()
+        }
+        return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens, keychain,
+                ApplePushDisplayTokenStore(keychain: keychain, defaults: defaults))
+    }
+
+    private var orderedBody: ApplePushRegistrationRequest {
+        ApplePushRegistrationRequest(deviceId: "installation", apnsToken: String(repeating: "ab", count: 32),
+            apnsEnvironment: "sandbox", apnsTopic: "org.siloserver.silo", pushMode: "private_push")
+    }
+
+    private func orderedReceipt(generation: Int = 1, enabled: Bool = true, removed: Bool = false, token: String = "display") -> String {
+        #"{"generation":"GEN","id":"registration","server_device_id":"device","push_mode":"private_push","enabled":ENABLED,"removed":REMOVED,"display_token":"TOKEN","display_token_expires_at":"2099-01-01T00:00:00Z"}"#
+            .replacingOccurrences(of: "GEN", with: String(generation))
+            .replacingOccurrences(of: "ENABLED", with: String(enabled))
+            .replacingOccurrences(of: "REMOVED", with: String(removed))
+            .replacingOccurrences(of: "TOKEN", with: token)
+    }
+
+    @MainActor
+    func testOrderedJournalPersistsOriginalCommandAndAdvancesOnlyNewIntent() async throws {
+        let (_, tokens, keychain, _) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let journal = ApplePushRegistrationJournal(keychain: keychain)
+        let first = try journal.prepare(body: orderedBody, auth: auth)
+        let recovered = ApplePushRegistrationJournal(keychain: keychain)
+        let rotation = CapturedOrdinaryRequestAuth(account: auth.account, credentialOwner: auth.credentialOwner,
+            accessToken: "rotated", profileId: auth.profileId, profileToken: auth.profileToken)
+        let renewed = try recovered.prepare(body: orderedBody, auth: rotation)
+        XCTAssertEqual(renewed.generation, 1)
+        XCTAssertEqual(renewed.authority, first.authority)
+        XCTAssertEqual(renewed.installationKey, first.installationKey)
+        XCTAssertEqual(renewed.installationKey.count, 43)
+        await tokens.setProfileId("new-profile")
+        let nextAuth = await tokens.captureOrdinaryRequestAuth()
+        let next = try recovered.prepare(body: orderedBody, auth: XCTUnwrap(nextAuth))
+        XCTAssertEqual(next.generation, 2)
+        XCTAssertEqual(next.installationKey, first.installationKey)
+        XCTAssertEqual(first.authority.profileID, "profile")
+        XCTAssertFalse(try recovered.isCurrent(first))
+        XCTAssertTrue(try recovered.isCurrent(next))
+    }
+
+    @MainActor
+    func testOrderedRegistrationSuccessAndRenewalReuseExactPersistedWire() async throws {
+        let (api, tokens, keychain, display) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        AppleOrderedProtocol.reply(200, orderedReceipt())
+        let journal = ApplePushRegistrationJournal(keychain: keychain)
+        let engine = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: journal, display: display)
+        try await engine.register(body: orderedBody, auth: auth)
+        XCTAssertEqual(keychain.get(SharedStorage.applePushDisplayTokenAccount), "display")
+        let count = AppleOrderedProtocol.requests().count
+        try await engine.register(body: orderedBody, auth: auth)
+        XCTAssertEqual(AppleOrderedProtocol.requests().count, count)
+        XCTAssertTrue(display.store(nil, expiresAt: nil, serverId: "synthetic"))
+        let restarted = ApplePushOrderedRegistration(api: api, tokens: tokens,
+            journal: ApplePushRegistrationJournal(keychain: keychain), display: display)
+        try await restarted.register(body: orderedBody, auth: auth)
+        let writes = AppleOrderedProtocol.requests().filter { $0.0.httpMethod == "POST" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes[0].0.url?.path, "/api/v2/devices/push/apple")
+        XCTAssertEqual(writes[0].0.value(forHTTPHeaderField: "X-Push-Generation"), "1")
+        XCTAssertEqual(writes[0].0.value(forHTTPHeaderField: "X-Push-Installation-Key"), writes[1].0.value(forHTTPHeaderField: "X-Push-Installation-Key"))
+        XCTAssertEqual(writes[0].1, writes[1].1)
+        XCTAssertEqual(try journal.latest()?.generation, 1)
+    }
+
+    @MainActor
+    func testOrderedDisabledRemovedAndConflictNeverStoreCredentialOrRebase() async throws {
+        for outcome in ["disabled", "removed", "conflict", "mismatch"] {
+            let (api, tokens, keychain, display) = try await orderedFixture()
+            let captured = await tokens.captureOrdinaryRequestAuth()
+            let auth = try XCTUnwrap(captured)
+            display.store("old", expiresAt: "2099-01-01T00:00:00Z", serverId: "synthetic")
+            let journal = ApplePushRegistrationJournal(keychain: keychain)
+            let engine = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: journal, display: display)
+            if outcome == "conflict" { AppleOrderedProtocol.reply(409, "{}") }
+            else { AppleOrderedProtocol.reply(200, orderedReceipt(generation: outcome == "mismatch" ? 2 : 1,
+                enabled: outcome != "disabled", removed: outcome == "removed", token: "must-not-store")) }
+            do { try await engine.register(body: orderedBody, auth: auth) }
+            catch { XCTAssertTrue(outcome == "conflict" || outcome == "mismatch") }
+            XCTAssertNil(keychain.get(SharedStorage.applePushDisplayTokenAccount))
+            let count = AppleOrderedProtocol.requests().count
+            try? await engine.register(body: orderedBody, auth: auth)
+            XCTAssertEqual(AppleOrderedProtocol.requests().count, count)
+            XCTAssertEqual(try journal.latest()?.generation, 1)
+        }
+    }
+
+    @MainActor
+    func testOrderedPersistenceFailureAndCaptureReplacementSendNothing() async throws {
+        let (api, tokens, keychain, display) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let failed = ApplePushRegistrationJournal(keychain: keychain, writer: { _ in false })
+        let engine = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: failed, display: display)
+        do { try await engine.register(body: orderedBody, auth: auth); XCTFail("Persistence must precede dispatch") }
+        catch ApplePushOrderedError.persistence { }
+        XCTAssertTrue(AppleOrderedProtocol.requests().isEmpty)
+        let (blockedAPI, blockedTokens, blockedKeychain, blockedDisplay) = try await orderedFixture(barrier: { await $0.setProfileToken("replacement") })
+        let original = await blockedTokens.captureOrdinaryRequestAuth()
+        let blocked = ApplePushOrderedRegistration(api: blockedAPI, tokens: blockedTokens,
+            journal: ApplePushRegistrationJournal(keychain: blockedKeychain), display: blockedDisplay)
+        do { try await blocked.register(body: orderedBody, auth: XCTUnwrap(original)); XCTFail("PIN rebound") }
+        catch HTTPError.requestIdentityChanged { }
+        XCTAssertTrue(AppleOrderedProtocol.requests().isEmpty)
+    }
+
+    @MainActor
+    func testOrderedUncertainAnd401RetriesKeepGenerationAndNeverAuthReplay() async throws {
+        for status in [500, 401] {
+            let (api, tokens, keychain, display) = try await orderedFixture()
+            let captured = await tokens.captureOrdinaryRequestAuth()
+            let auth = try XCTUnwrap(captured)
+            let journal = ApplePushRegistrationJournal(keychain: keychain)
+            let engine = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: journal, display: display)
+            AppleOrderedProtocol.reply(status, "{}")
+            do { try await engine.register(body: orderedBody, auth: auth); XCTFail("Expected failure") } catch { }
+            XCTAssertEqual(AppleOrderedProtocol.requests().filter { $0.0.httpMethod == "POST" }.count, 1)
+            XCTAssertFalse(AppleOrderedProtocol.requests().contains { $0.0.url?.path.contains("auth/refresh") == true })
+            AppleOrderedProtocol.reply(200, orderedReceipt())
+            try await engine.register(body: orderedBody, auth: auth)
+            let writes = AppleOrderedProtocol.requests().filter { $0.0.httpMethod == "POST" }
+            XCTAssertEqual(writes.count, 2)
+            XCTAssertEqual(writes[0].0.value(forHTTPHeaderField: "X-Push-Generation"), writes[1].0.value(forHTTPHeaderField: "X-Push-Generation"))
+            XCTAssertEqual(writes[0].1, writes[1].1)
+        }
+    }
+
+    @MainActor
+    func testOrderedDisplayWriteFailureCannotDeduplicateAgainstOldCurrentToken() async throws {
+        let (api, tokens, keychain, baseDisplay) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        baseDisplay.store("old-current-token", expiresAt: "2099-01-01T00:00:00Z", serverId: "synthetic")
+        var failingDisplay = baseDisplay
+        failingDisplay.writeToken = { _ in false }
+        let journal = ApplePushRegistrationJournal(keychain: keychain)
+        AppleOrderedProtocol.reply(200, orderedReceipt(token: "new-token"))
+        let failed = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: journal, display: failingDisplay)
+        do { try await failed.register(body: orderedBody, auth: auth); XCTFail("Expected display write failure") }
+        catch ApplePushOrderedError.persistence { }
+        XCTAssertEqual(try journal.latest()?.displayApplied, false)
+        XCTAssertEqual(keychain.get(SharedStorage.applePushDisplayTokenAccount), "old-current-token")
+        let restarted = ApplePushOrderedRegistration(api: api, tokens: tokens,
+            journal: ApplePushRegistrationJournal(keychain: keychain), display: baseDisplay)
+        try await restarted.register(body: orderedBody, auth: auth)
+        XCTAssertEqual(keychain.get(SharedStorage.applePushDisplayTokenAccount), "new-token")
+        XCTAssertEqual(try journal.latest()?.displayApplied, true)
+        let writes = AppleOrderedProtocol.requests().filter { $0.0.httpMethod == "POST" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes.map { $0.0.value(forHTTPHeaderField: "X-Push-Generation") }, ["1", "1"])
+    }
+
+    @MainActor
+    func testOrderedLateReceiptAndAtomicStorageRejectOldIntentOrPIN() async throws {
+        let (api, tokens, keychain, display) = try await orderedFixture()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        let journal = ApplePushRegistrationJournal(keychain: keychain)
+        let engine = ApplePushOrderedRegistration(api: api, tokens: tokens, journal: journal, display: display)
+        AppleOrderedProtocol.reply(200, orderedReceipt(token: "old"))
+        let held = expectation(description: "old Apple POST held")
+        AppleOrderedProtocol.holdNextPost { held.fulfill() }
+        let old = Task { try await engine.register(body: orderedBody, auth: auth) }
+        await fulfillment(of: [held], timeout: 2)
+        let oldIntent = try XCTUnwrap(journal.latest())
+        let newBody = ApplePushRegistrationRequest(deviceId: orderedBody.deviceId, apnsToken: String(repeating: "cd", count: 32),
+            apnsEnvironment: "sandbox", apnsTopic: orderedBody.apnsTopic, pushMode: "private_push")
+        AppleOrderedProtocol.reply(200, orderedReceipt(generation: 2, token: "new"))
+        try await engine.register(body: newBody, auth: auth)
+        AppleOrderedProtocol.release()
+        try await old.value
+        XCTAssertEqual(keychain.get(SharedStorage.applePushDisplayTokenAccount), "new")
+        let staleEffect = journal.credentialEffect(for: oldIntent, clearing: false) {
+            XCTFail("Stale journal must not reach credential effect")
+        }
+        do { try await tokens.withCurrentOrdinaryAuthority(auth, operation: staleEffect); XCTFail("Old intent accepted") }
+        catch ApplePushOrderedError.conflict { }
+        await tokens.setProfileToken("replacement")
+        do {
+            try await tokens.withCurrentOrdinaryAuthority(auth) { XCTFail("Old PIN must not store credentials") }
+            XCTFail("Old PIN accepted")
+        } catch HTTPError.requestIdentityChanged { }
+        XCTAssertEqual(keychain.get(SharedStorage.applePushDisplayTokenAccount), "new")
+    }
+
     func testTokenHexEncodesToLowercasePaddedHex() {
         let data = Data([0x00, 0x01, 0x0f, 0x10, 0xab, 0xff])
 
@@ -257,4 +467,48 @@ final class ApplePushRegistrationTests: XCTestCase {
         data.append(Data([0x00, 0x01, 0x02]))
         return data
     }
+}
+
+private final class AppleOrderedProtocol: URLProtocol {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var response = (200, "{}")
+    nonisolated(unsafe) private static var calls: [(URLRequest, Data?)] = []
+    nonisolated(unsafe) private static var hold: (() -> Void)?
+    nonisolated(unsafe) private static var pending: (() -> Void)?
+    static func reset() { lock.withLock { response = (200, "{}"); calls = []; hold = nil; pending = nil } }
+    static func reply(_ status: Int, _ body: String) { lock.withLock { response = (status, body) } }
+    static func requests() -> [(URLRequest, Data?)] { lock.withLock { calls } }
+    static func holdNextPost(_ notify: @escaping () -> Void) { lock.withLock { hold = notify } }
+    static func release() { let send = lock.withLock { let send = pending; pending = nil; return send }; send?() }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var body = request.httpBody
+        if body == nil, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var data = Data(); var bytes = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&bytes, maxLength: bytes.count)
+                if count <= 0 { break }
+                data.append(bytes, count: count)
+            }
+            body = data
+        }
+        let reply = Self.lock.withLock {
+            Self.calls.append((request, body))
+            return request.httpMethod == "GET" ? (200, #"{"revision":"ordered_apple_v1","registration_available":true}"#) : Self.response
+        }
+        let send = { [self] in
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: reply.0, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(reply.1.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        let notify = Self.lock.withLock { () -> (() -> Void)? in
+            guard request.httpMethod == "POST", let notify = Self.hold else { return nil }
+            Self.hold = nil; Self.pending = send
+            return notify
+        }
+        if let notify { notify() } else { send() }
+    }
+    override func stopLoading() { }
 }

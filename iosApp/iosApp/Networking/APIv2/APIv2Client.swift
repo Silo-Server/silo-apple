@@ -1376,6 +1376,47 @@ struct APIv2Client: Sendable {
     }
     #endif
 
+    #if os(iOS)
+    struct ApplePushCapability: Decodable {
+        let revision: String
+        let registrationAvailable: Bool
+    }
+
+    func applePushRegistrationCapability(auth: CapturedOrdinaryRequestAuth) async throws -> ApplePushCapability {
+        let data = try await applePushRequest(method: "GET", path: "/api/v2/devices/push/apple/capabilities", auth: auth)
+        return try HTTPClient.makeJSONDecoder().decode(ApplePushCapability.self, from: data)
+    }
+
+    func registerApplePush(intent: ApplePushOrderedIntent) async throws -> ApplePushRegistrationResponse {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = .sortedKeys
+        let body = try encoder.encode(intent.body)
+        let data = try await applePushRequest(method: "POST", path: ApplePushRegistrationWire.endpoint,
+            body: body, headers: ["X-Push-Installation-Key": intent.installationKey, "X-Push-Generation": String(intent.generation)],
+            auth: intent.authority.auth)
+        return try HTTPClient.makeJSONDecoder().decode(ApplePushRegistrationResponse.self, from: data)
+    }
+
+    private func applePushRequest(method: String, path: String, body: Data? = nil, headers: [String: String] = [:],
+                                  auth: CapturedOrdinaryRequestAuth) async throws -> Data {
+        try await gate()
+        guard case .persistentServer = auth.credentialOwner, let profile = auth.profileId, !profile.isEmpty else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: method, path: path, body: body, headers: headers,
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else { throw HTTPError.requestIdentityChanged }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return raw.data
+    }
+    #endif
+
     // MARK: Internals
 
     /// Refuses relative-URL (active-session) operations while the active
