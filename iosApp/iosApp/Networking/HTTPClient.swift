@@ -437,7 +437,7 @@ actor HTTPClient {
             )
 
             if response.statusCode == 401,
-               shouldAttemptRefresh(path: path),
+               shouldAttemptRefresh(path: path, method: method),
                await refreshScopedTokens(
                    auth: auth,
                    expected: requestIdentity,
@@ -494,7 +494,7 @@ actor HTTPClient {
                     )
                     #endif
                 }
-            } else if response.statusCode == 401, shouldAttemptRefresh(path: path) {
+            } else if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
                 // Refresh was eligible but declined (wrong credential owner,
                 // no refresh token, dispatch blocked). `shouldAttemptRefresh`
                 // is re-checked so a 401 from `/auth/login` — an ordinary wrong
@@ -968,7 +968,7 @@ actor HTTPClient {
             dispatchRevision: dispatchRevision
         )
 
-        if response.statusCode == 401, shouldAttemptRefresh(path: path) {
+        if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
             if let capturedAuth,
                let refreshedAuth = await refreshTokens(
                    expected: capturedAuth,
@@ -1702,12 +1702,13 @@ actor HTTPClient {
         ].contains(path)
     }
 
-    private func shouldAttemptRefresh(path: String) -> Bool {
+    private func shouldAttemptRefresh(path: String, method: String) -> Bool {
         // Matches the guard in AuthInterceptorImpl.kt:96.
         let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
         return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
             && path != "/api/v2/subtitles/download"
             && path != "/api/v2/downloads/subscriptions"
+            && !(path == "/api/v2/profiles" && method == "POST")
             && path != diagnosticsUploads
             && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
     }

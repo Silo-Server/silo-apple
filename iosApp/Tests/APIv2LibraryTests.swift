@@ -23,6 +23,53 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    private func profileBody() throws -> Data {
+        try APIv2FixtureTestSupport.data(named: "update_profile_ok", bundleClass: Self.self)
+    }
+
+    func testHouseholdListBeforeSelectionAndCreateStringLibraries() async throws {
+        let (api, tokens) = try await fixture()
+        let row = try profileBody()
+        LibraryReadProtocol.enqueue([Data("{\"items\":[\(String(decoding: row, as: UTF8.self))]}".utf8)])
+        let profiles = try await api.householdProfiles()
+        XCTAssertEqual(profiles.first?.id, "p-owner")
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.value(forHTTPHeaderField: "X-Profile-Id") ?? "", "")
+        await tokens.setProfileId("manager")
+        LibraryReadProtocol.status = 201
+        LibraryReadProtocol.enqueue([row])
+        _ = try await api.createHouseholdProfile(CreateProfileRequestBody(name: "Reader", avatar: nil, pin: nil,
+            isChild: false, maxContentRating: nil, libraryRestrictionsEnabled: true, allowedLibraryIds: [7]))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: LibraryReadProtocol.lastBody()) as? [String: Any])
+        XCTAssertEqual(body["allowed_library_ids"] as? [String], ["7"])
+        XCTAssertNil(body["pin"]); XCTAssertNil(body["avatar"])
+        XCTAssertEqual(LibraryReadProtocol.requests().last?.url?.path, "/api/v2/profiles")
+    }
+
+    func testHouseholdCreate401IsSingleSend() async throws {
+        let (api, _) = try await fixture()
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data(#"{"detail":"Rejected"}"#.utf8)])
+        do {
+            _ = try await api.createHouseholdProfile(CreateProfileRequestBody(name: "Reader", avatar: nil, pin: nil,
+                isChild: false, maxContentRating: nil, libraryRestrictionsEnabled: false, allowedLibraryIds: []))
+            XCTFail("accepted401")
+        } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testHouseholdPINWrongAndStaleProofNeverPersist() async throws {
+        let (api, tokens) = try await fixture()
+        LibraryReadProtocol.enqueue([Data(#"{"valid":false,"expires_at":null}"#.utf8),
+            Data(#"{"valid":true,"profile_token":"proof","expires_at":null}"#.utf8)])
+        let wrong = try await api.verifyHouseholdPIN(id: "target", pin: "wrong")
+        XCTAssertFalse(wrong.valid)
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("replacement") }
+        do { _ = try await api.verifyHouseholdPIN(id: "target", pin: "1234"); XCTFail("stale proof") } catch {}
+        let auth = await tokens.captureOrdinaryRequestAuth()
+        XCTAssertNil(auth?.profileToken)
+        XCTAssertTrue(LibraryReadProtocol.requests().allSatisfy { $0.url?.path == "/api/v2/profiles/target/verify-pin" })
+    }
+
     private func subtitleRequest() throws -> SubtitleDownloadBody {
         let result = try HTTPClient.makeJSONDecoder().decode(SubtitleSearchResult.self,
             from: Data(#"{"id":"opaque+/=01","provider":"provider","language":"en","format":"untrusted","release_name":"release"}"#.utf8))

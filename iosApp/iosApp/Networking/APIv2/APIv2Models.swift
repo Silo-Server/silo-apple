@@ -350,3 +350,22 @@ struct APIv2ProblemError: Decodable, Hashable, Sendable {
     let code: String
     let detail: String
 }
+
+struct APIv2ProfileCreate: Encodable {
+    let name: String
+    let avatar: String?
+    let pin: String?
+    let isChild: Bool?
+    let maxContentRating: String?
+    let libraryRestrictionsEnabled: Bool
+    let allowedLibraryIds: [String]
+}
+
+extension APIv2Profile {
+    var asUserProfile: UserProfile {
+        UserProfile(id: id, name: name, avatarEmoji: avatar.isEmpty ? nil : avatar,
+            avatarImageUrl: avatarUrl, hasPin: hasPin, isChild: isChild, isPrimary: isPrimary,
+            subtitleLanguage: subtitleLanguage, subtitleMode: subtitleMode,
+            showForcedSubtitles: showForcedSubtitles, preferredMetadataLanguage: preferredMetadataLanguage)
+    }
+}

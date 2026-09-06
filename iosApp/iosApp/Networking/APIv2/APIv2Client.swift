@@ -194,6 +194,51 @@ struct APIv2Client: Sendable {
         return try wire.subtitle.playerValue(mediaFileID: body.mediaFileId)
     }
 
+    private func householdRequest<T: Decodable>(_ method: String, path: String, body: Data? = nil, status: Int) async throws -> T {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let identity = auth.profileId.map {
+            HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+                profileId: $0, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        }
+        let response = try await mapErrors {
+            try await http.requestData(method: method, path: path, body: body,
+                headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == auth.profileId, current.profileToken == auth.profileToken else {
+            throw HTTPError.requestIdentityChanged
+        }
+        guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
+    }
+
+    func householdProfiles() async throws -> [UserProfile] {
+        let collection: APIv2CatalogReadCollection<APIv2Profile> = try await householdRequest("GET", path: "/api/v2/profiles", status: 200)
+        let rows = try collection.completeItems()
+        guard Set(rows.map(\.id)).count == rows.count else { throw APIv2Error.incompleteCollection }
+        return rows.map(\.asUserProfile)
+    }
+
+    func createHouseholdProfile(_ body: CreateProfileRequestBody) async throws -> UserProfile {
+        guard body.allowedLibraryIds.allSatisfy({ $0 > 0 }) else { throw APIv2Error.invalidCatalogQuery }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let wire = APIv2ProfileCreate(name: body.name, avatar: body.avatar, pin: body.pin,
+            isChild: body.isChild, maxContentRating: body.maxContentRating,
+            libraryRestrictionsEnabled: body.libraryRestrictionsEnabled, allowedLibraryIds: body.allowedLibraryIds.map(String.init))
+        let row: APIv2Profile = try await householdRequest("POST", path: "/api/v2/profiles", body: encoder.encode(wire), status: 201)
+        return row.asUserProfile
+    }
+
+    func verifyHouseholdPIN(id: String, pin: String) async throws -> VerifyPinResponse {
+        guard !id.isEmpty, id != ".", id != "..", let segment = id.addingPercentEncoding(withAllowedCharacters:
+            CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else { throw APIv2Error.invalidCatalogQuery }
+        let data = try JSONEncoder().encode(VerifyPinRequest(pin: pin))
+        return try await householdRequest("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data, status: 200)
+    }
+
     func myRequests() async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }

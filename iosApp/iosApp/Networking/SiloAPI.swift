@@ -452,8 +452,7 @@ actor SiloAPI {
     // --- Profiles ---
 
     func listProfiles() async throws -> [UserProfile] {
-        let response: ProfilesResponse = try await http.get("/api/v1/profiles")
-        return response.profiles.map(\.asUserProfile)
+        try await v2.householdProfiles()
     }
 
     /// Verifies a protected profile without mutating process-wide identity.
@@ -466,10 +465,7 @@ actor SiloAPI {
         // with 400. Mirrors `ProfileSelectionViewModel.onProfileTapped` on
         // Android, which skips the verify call when `hasPin` is false.
         if let pin, !pin.isEmpty {
-            let response: VerifyPinResponse = try await http.post(
-                "/api/v1/profiles/\(profileId)/verify-pin",
-                body: VerifyPinRequest(pin: pin)
-            )
+            let response = try await v2.verifyHouseholdPIN(id: profileId, pin: pin)
             guard response.valid else {
                 throw APIError.httpError(statusCode: 401)
             }
@@ -487,9 +483,8 @@ actor SiloAPI {
         libraryRestrictionsEnabled: Bool = false,
         allowedLibraryIds: [Int] = []
     ) async throws -> UserProfile {
-        let profile: Profile = try await http.post(
-            "/api/v1/profiles",
-            body: CreateProfileRequestBody(
+        return try await v2.createHouseholdProfile(
+            CreateProfileRequestBody(
                 name: name,
                 avatar: avatarEmoji,
                 pin: pin,
@@ -499,7 +494,6 @@ actor SiloAPI {
                 allowedLibraryIds: allowedLibraryIds
             )
         )
-        return profile.asUserProfile
     }
 
     /// Patch a profile. Send only the fields you want to change — the
