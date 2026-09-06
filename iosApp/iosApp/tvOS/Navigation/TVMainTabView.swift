@@ -556,7 +556,7 @@ struct TVMainTabView: View {
             .allowsHitTesting(isActive)
             .accessibilityHidden(!isActive)
             .animation(
-                reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeOpenDuration),
+                reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.topMenuPanelOpenDuration),
                 value: isActive
             )
             .onExitCommand { closePanel() }

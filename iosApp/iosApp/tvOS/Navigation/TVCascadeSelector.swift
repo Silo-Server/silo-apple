@@ -193,8 +193,6 @@ struct TVCascadeSelector: View {
             panelHeader(type.librariesHeader)
 
             libraryRows
-
-            panelFooter
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: SiloTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -272,8 +270,6 @@ struct TVCascadeSelector: View {
                     sectionRow(pill, in: library)
                 }
             }
-
-            panelFooter
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: SiloTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -370,33 +366,6 @@ struct TVCascadeSelector: View {
             .accessibilityHidden(true)
     }
 
-    private var panelFooter: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Rectangle()
-                .fill(Color.siloDivider)
-                .frame(height: 1)
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-
-            Text(footerCaption)
-                .font(.system(size: SiloTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-                .tracking(1.2)
-                .foregroundStyle(Color.white.opacity(0.34))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var footerCaption: String {
-        isSingleLibrary
-            ? "Press opens the section · Menu closes"
-            : "Press opens the library · → jumps to a section · Menu closes"
-    }
-
     // MARK: - Focus plumbing
 
     private func applyEntryGeneration(_ generation: Int) {
@@ -421,9 +390,6 @@ struct TVCascadeSelector: View {
     }
 
     private func handleFocusChange(_ newValue: Focus?) {
-        if newValue != nil, entersPanel {
-            onPanelFocusChanged(true)
-        }
         guard let newValue else { return }
         switch newValue {
         case .library(let id):
@@ -532,18 +498,15 @@ struct TVCascadeSelector: View {
 
     private func moveToLibrary(_ libraryId: Int) {
         flyoutFollowTask?.cancel()
-        flyoutAnchorId = libraryId
-        onPanelFocusChanged(true)
+        // Highlight immediately; handleFocusChange moves the flyout only
+        // after the user rests on this row.
         focus = .library(libraryId)
-        claimPanelFocus()
     }
 
     private func moveToSection(libraryId: Int, pill: TVLibraryPill) {
         flyoutFollowTask?.cancel()
         flyoutAnchorId = libraryId
-        onPanelFocusChanged(true)
         focus = .section(libraryId, pill)
-        claimPanelFocus()
     }
 
     private func commitFocusedSelection() {
@@ -581,8 +544,6 @@ private struct TVCascadeLibraryRowLabel: View {
     let trailingGlyph: String
     let isFocused: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: systemImage)
@@ -607,8 +568,8 @@ private struct TVCascadeLibraryRowLabel: View {
                 .fill(isFocused ? Color.white : Color.clear)
         )
         .focusEffectDisabled()
-        // Reduce Motion snaps the cascade row inversion (§4.2 acceptance).
-        .animation(reduceMotion ? nil : SiloTheme.springAnimation, value: isFocused)
+        // Row selection should read immediately as the remote moves.
+        .animation(nil, value: isFocused)
     }
 
     private var foreground: Color {
@@ -622,8 +583,6 @@ private struct TVCascadeSectionRowLabel: View {
     let title: String
     let systemImage: String
     let isFocused: Bool
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 12) {
@@ -645,8 +604,8 @@ private struct TVCascadeSectionRowLabel: View {
                 .fill(isFocused ? Color.white : Color.clear)
         )
         .focusEffectDisabled()
-        // Reduce Motion snaps the flyout row inversion (§4.2 acceptance).
-        .animation(reduceMotion ? nil : SiloTheme.springAnimation, value: isFocused)
+        // Row selection should read immediately as the remote moves.
+        .animation(nil, value: isFocused)
     }
 }
 

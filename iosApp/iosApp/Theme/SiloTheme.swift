@@ -163,6 +163,8 @@ struct SiloTheme {
         static let cascadeOpenScale: CGFloat = 0.96
         /// Cascade panel scale/fade duration (§4.2, 180 ms).
         static let cascadeOpenDuration: Double = 0.18
+        /// Top-menu panels settle quickly after the focus dwell.
+        static let topMenuPanelOpenDuration: Double = 0.12
         /// Scrim fade duration behind the cascade (§4.2, 150 ms).
         static let cascadeScrimDuration: Double = 0.15
 
