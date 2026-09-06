@@ -223,8 +223,10 @@ actor SiloAPI {
 
     // --- Catalog ---
 
-    func catalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation = .get) async throws -> APIv2CatalogResult {
-        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+    func catalogPage(query: APIv2CatalogQuery, operation: APIv2CatalogOperation = .get,
+                     auth suppliedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2CatalogResult {
+        let captured = await tokenStore.captureOrdinaryRequestAuth()
+        guard let auth = suppliedAuth ?? captured else {
             throw HTTPError.requestIdentityChanged
         }
         var query = query

@@ -101,13 +101,11 @@ struct TVLibraryGridView: View {
         .animation(.easeOut(duration: 0.18), value: openPanel)
         .siloBackground()
         .task {
-            if viewModel.items.isEmpty {
-                await viewModel.loadInitial()
-            }
+            await viewModel.loadInitial()
             await viewModel.loadFacetsIfNeeded()
         }
         .onAppear { noteShellFocusRequest(focusRequest) }
-        .onDisappear { viewModel.cancelPosterPrefetch() }
+        .onDisappear { viewModel.cancel() }
         .onChange(of: focusRequest) { _, request in noteShellFocusRequest(request) }
     }
 

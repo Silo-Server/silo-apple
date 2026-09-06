@@ -1,4 +1,3 @@
-#if os(tvOS)
 import Foundation
 import Observation
 import Nuke
@@ -31,6 +30,21 @@ final class TVLibraryGridViewModel {
 
     // MARK: - Private state
 
+    struct DisplayedRead: Equatable {
+        let libraryId: Int
+        let filterKey: String
+        let auth: CapturedOrdinaryRequestAuth
+    }
+
+    private struct CachedPage {
+        let owner: DisplayedRead
+        let response: CatalogResponse
+    }
+
+    private(set) var displayedRead: DisplayedRead?
+    private let api: SiloAPI
+    private let tokens: TokenStore
+    private let authorityCheck: (CapturedOrdinaryRequestAuth) async -> Bool
     private let libraryId: Int
     /// Media family — picks the sort/facet vocabulary in the panels.
     let mediaType: BrowseMediaType
@@ -54,7 +68,12 @@ final class TVLibraryGridViewModel {
     )
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none) {
+    init(libraryId: Int, libraryType: String, initialFilter: CatalogFilterState = .none,
+         api: SiloAPI = .shared, tokens: TokenStore = .shared,
+         authorityCheck: ((CapturedOrdinaryRequestAuth) async -> Bool)? = nil) {
+        self.api = api
+        self.tokens = tokens
+        self.authorityCheck = authorityCheck ?? { await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: $0) != nil }
         self.libraryId = libraryId
         self.mediaType = BrowseMediaType.from(libraryType: libraryType)
         self.sendsType = SiloMediaType.isSeries(libraryType) || SiloMediaType.isMovieLibrary(libraryType)
@@ -68,20 +87,34 @@ final class TVLibraryGridViewModel {
             self.filter = initialFilter
         }
         facets = FacetLoader.shared.cachedFacets(libraryId: libraryId)
-        hydratePage1FromCache()
     }
 
     private var currentCacheKey: String {
         CacheKey.tvLibrary(libraryId: libraryId, filterKey: filter.cacheKeyFragment)
     }
 
-    private func hydratePage1FromCache() {
+    private func hydratePage1FromCache(owner: DisplayedRead) {
         guard items.isEmpty,
-              let cached: CatalogResponse = ResponseCache.shared.get(currentCacheKey) else {
-            return
-        }
-        items = cached.items
+              let cached: CachedPage = ResponseCache.shared.get(currentCacheKey),
+              cached.owner == owner else { return }
+        items = cached.response.items
+        displayedRead = owner
         hasMore = false
+    }
+
+    private func clearDisplayedRows() {
+        items = []
+        displayedRead = nil
+        continuation = nil
+        hasMore = false
+        cancelPosterPrefetch()
+    }
+
+    func cancel() {
+        generation += 1
+        clearDisplayedRows()
+        isLoading = false
+        isRefreshing = false
     }
 
     // MARK: - Public API
@@ -189,61 +222,91 @@ final class TVLibraryGridViewModel {
     // MARK: - Fetch logic
 
     private func reload() async {
-        // A cache-backed reload can preserve the grid's row identities and
-        // visibility. Cancel old URLs without discarding that geometry.
         stopPosterPrefetchRequests()
         generation += 1
-        items = []
         continuation = nil
-        hasMore = true
+        hasMore = false
         error = nil
-        hydratePage1FromCache()
-        refreshPosterPrefetch()
         await fetchPage(reset: true)
     }
 
     private func fetchPage(reset: Bool) async {
         let myGeneration = generation
-        if reset, !items.isEmpty {
-            isRefreshing = true
-        } else {
-            isLoading = true
-        }
+        let requestedFilter = filter
+        let filterKey = requestedFilter.cacheKeyFragment
+        let cacheKey = currentCacheKey
+        // Reserve paging before the first await; a second Load More cannot
+        // issue this continuation concurrently.
+        isLoading = true
+        isRefreshing = reset && !items.isEmpty
         defer {
             if myGeneration == generation {
                 isLoading = false
                 isRefreshing = false
             }
         }
-
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        guard myGeneration == generation, !Task.isCancelled else { return }
+        guard let auth = captured, let profile = auth.profileId, !profile.isEmpty else {
+            clearDisplayedRows()
+            error = ErrorState(HTTPError.requestIdentityChanged)
+            return
+        }
+        let owner = DisplayedRead(libraryId: libraryId, filterKey: filterKey, auth: auth)
+        if displayedRead != owner {
+            clearDisplayedRows()
+            if !reset {
+                error = ErrorState(HTTPError.requestIdentityChanged)
+                return
+            }
+        }
+        if reset {
+            let current = await authorityCheck(auth)
+            guard myGeneration == generation, !Task.isCancelled else { return }
+            guard current else {
+                clearDisplayedRows()
+                error = ErrorState(HTTPError.requestIdentityChanged)
+                return
+            }
+            hydratePage1FromCache(owner: owner)
+            refreshPosterPrefetch()
+        }
+        let cursor = continuation
         do {
             let result: APIv2CatalogResult
-            if !reset, let continuation {
-                result = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
+            if !reset {
+                guard let cursor, cursor.auth == auth else { throw HTTPError.requestIdentityChanged }
+                result = try await api.v2.nextCatalogPage(cursor)
             } else {
-                let query = CatalogQueryBuilder.build(filter, libraryId: libraryId, mediaType: mediaType, limit: pageSize, includeType: sendsType)
-                result = try await SiloAPI.shared.catalogPage(query: query)
+                let query = CatalogQueryBuilder.build(requestedFilter, libraryId: libraryId, mediaType: mediaType, limit: pageSize, includeType: sendsType)
+                result = try await api.catalogPage(query: query, auth: auth)
             }
+            let current = await authorityCheck(auth)
+            guard myGeneration == generation, !Task.isCancelled else { return }
+            guard current, result.auth == auth else { throw HTTPError.requestIdentityChanged }
             let response = CatalogResponse(catalogPage: result.value)
-
-            // Discard if another reload superseded us while we awaited.
-            guard myGeneration == generation else { return }
-
             if reset {
                 items = response.items
-                ResponseCache.shared.set(response, for: currentCacheKey)
+                ResponseCache.shared.set(CachedPage(owner: owner, response: response), for: cacheKey)
             } else {
                 items.append(contentsOf: response.items)
             }
+            displayedRead = owner
             continuation = result.continuation
             hasMore = result.continuation != nil
+            error = nil
             refreshPosterPrefetch()
         } catch {
-            guard myGeneration == generation else { return }
-            self.error = ErrorState(error)
+            guard myGeneration == generation, !Task.isCancelled else { return }
+            let current = await authorityCheck(auth)
+            guard myGeneration == generation, !Task.isCancelled else { return }
+            if !current { clearDisplayedRows() }
+            self.error = ErrorState(current ? error : HTTPError.requestIdentityChanged)
+            continuation = nil
             hasMore = false
         }
     }
+
 }
 
 // MARK: - Safe subscript
@@ -256,4 +319,3 @@ private extension Array {
         return self[lower..<upper]
     }
 }
-#endif

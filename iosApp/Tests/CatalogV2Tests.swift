@@ -80,6 +80,92 @@ final class CatalogV2Tests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testTVGridWarmCacheAndFailureRetainOnlyDisplayedOwner() async throws {
+        for replacement in ["same", "pin", "profile"] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let facade = SiloAPI(tokenStore: tokens, v2: api)
+            let library = Int.random(in: 100000...999999)
+            let cacheKey = CacheKey.tvLibrary(libraryId: library, filterKey: CatalogFilterState.none.cacheKeyFragment)
+            defer { ResponseCache.shared.remove(cacheKey) }
+            let model = TVLibraryGridViewModel(libraryId: library, libraryType: "movie", api: facade, tokens: tokens)
+            XCTAssertTrue(model.items.isEmpty)
+            CatalogProtocol.reply(200, tvGridPage)
+            await model.loadInitial()
+            XCTAssertEqual(model.items.map(\.contentId), ["movie:one"])
+            let original = try XCTUnwrap(model.displayedRead)
+            XCTAssertEqual(original.libraryId, library)
+            XCTAssertEqual(original.filterKey, CatalogFilterState.none.cacheKeyFragment)
+
+            CatalogProtocol.reply(500, "{}")
+            let received = expectation(description: "warm refresh held")
+            CatalogProtocol.hold { received.fulfill() }
+            let refresh = Task { await model.loadInitial() }
+            await fulfillment(of: [received], timeout: 2)
+            XCTAssertEqual(model.items.map(\.contentId), ["movie:one"])
+            if replacement == "pin" { await tokens.setProfileToken("replacement") }
+            if replacement == "profile" { await tokens.setProfileId("replacement") }
+            CatalogProtocol.release()
+            await refresh.value
+            XCTAssertNotNil(model.error)
+            XCTAssertFalse(model.hasMore)
+            XCTAssertEqual(model.items.isEmpty, replacement != "same")
+            XCTAssertEqual(model.displayedRead, replacement == "same" ? original : nil)
+
+            let cached = TVLibraryGridViewModel(libraryId: library, libraryType: "movie", api: facade, tokens: tokens)
+            XCTAssertTrue(cached.items.isEmpty, "Initializer must not hydrate an unverified owner")
+            await cached.loadInitial() // 500 may retain only an exactly owned warm cache.
+            XCTAssertEqual(cached.items.isEmpty, replacement != "same")
+            XCTAssertEqual(cached.displayedRead, replacement == "same" ? original : nil)
+        }
+    }
+
+    @MainActor
+    func testTVGridSuspendedAuthorityCannotPublishOrClearReplacementRun() async throws {
+        for status in [200, 500] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let facade = SiloAPI(tokenStore: tokens, v2: api)
+            let gate = TVGridReadCheckGate()
+            let library = Int.random(in: 100000...999999)
+            let cacheKey = CacheKey.tvLibrary(libraryId: library, filterKey: CatalogFilterState.none.cacheKeyFragment)
+            defer { ResponseCache.shared.remove(cacheKey) }
+            let model = TVLibraryGridViewModel(libraryId: library, libraryType: "movie", api: facade, tokens: tokens,
+                authorityCheck: { auth in
+                    let current = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+                    await gate.suspendIfArmed()
+                    return current
+                })
+            CatalogProtocol.reply(200, tvGridPage)
+            await model.loadInitial()
+            let held = expectation(description: "old run authority check suspended")
+            await gate.arm(skipping: 1, held: held) // Skip initial cache admission; hold publication/failure.
+            CatalogProtocol.reply(status, status == 200 ? tvGridPage : "{}")
+            let old = Task { await model.loadInitial() }
+            await fulfillment(of: [held], timeout: 2)
+            model.cancel()
+            await tokens.setProfileToken("new-owner")
+            CatalogProtocol.reply(200, tvGridPage.replacingOccurrences(of: "movie:one", with: "movie:replacement"))
+            await model.loadInitial()
+            let owner = try XCTUnwrap(model.displayedRead)
+            await gate.release()
+            await old.value
+            XCTAssertEqual(model.items.map(\.contentId), ["movie:replacement"])
+            XCTAssertEqual(model.displayedRead, owner)
+            XCTAssertNil(model.error)
+            XCTAssertFalse(model.isLoading)
+            XCTAssertFalse(model.isRefreshing)
+            model.cancel()
+            XCTAssertTrue(model.items.isEmpty)
+            XCTAssertNil(model.displayedRead)
+        }
+    }
+
+    private var tvGridPage: String {
+        #"{"items":[{"content_id":"movie:one","type":"movie","title":"One","genres":[],"keywords":[],"status":"matched"}],"page":{"has_more":false},"total":1,"total_exact":true,"window_cursor":"window"}"#
+    }
+
     private func playableDetail(fileID: String = "41") throws -> String {
         var body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailJSON.utf8)) as? [String: Any])
         body["type"] = "audiobook"
@@ -582,4 +668,30 @@ final class CatalogProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private actor TVGridReadCheckGate {
+    private var skip = 0
+    private var held: XCTestExpectation?
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func arm(skipping: Int, held: XCTestExpectation) {
+        skip = skipping
+        self.held = held
+    }
+
+    func suspendIfArmed() async {
+        guard let held else { return }
+        if skip > 0 { skip -= 1; return }
+        self.held = nil
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            held.fulfill()
+        }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
 }
