@@ -1745,6 +1745,7 @@ actor HTTPClient {
             && path != "/api/v2/onboarding/progress"
             && path != "/api/v2/subtitles/ai/translate"
             && !(path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/translate-description"))
+            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/trailers/refresh"))
             && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
             && !(path == "/api/v2/profiles" && method == "POST")
             && !(path == "/api/v2/downloads" && method == "POST")

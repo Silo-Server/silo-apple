@@ -24,6 +24,72 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testTrailerRefreshStatusPairsAndNoReplay() async throws {
+        let (v2, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        for (code, status) in [(202, "queued"), (200, "cooldown"), (200, "disabled")] {
+            LibraryReadProtocol.status = code
+            LibraryReadProtocol.enqueue([Data("{\"status\":\"\(status)\"}".utf8)])
+            let value = try await v2.refreshTrailers(id: "movie/a?b", auth: auth)
+            XCTAssertEqual(value.status, status)
+        }
+        XCTAssertEqual(LibraryReadProtocol.requests().first?.url?.absoluteString,
+                       "https://libraries.example/api/v2/catalog/items/movie%2Fa%3Fb/trailers/refresh")
+        for (code, status) in [(200, "queued"), (202, "disabled"), (202, "unknown"), (401, "queued"), (429, "queued")] {
+            LibraryReadProtocol.status = code
+            LibraryReadProtocol.enqueue([Data("{\"status\":\"\(status)\"}".utf8)])
+            let count = LibraryReadProtocol.requests().count
+            do { _ = try await v2.refreshTrailers(id: "movie", auth: auth); XCTFail("invalid acknowledgement") } catch {}
+            XCTAssertEqual(LibraryReadProtocol.requests().count, count + 1)
+        }
+        XCTAssertTrue(LibraryReadProtocol.requests().allSatisfy { $0.httpMethod == "POST" })
+        XCTAssertTrue(LibraryReadProtocol.lastBody().isEmpty)
+    }
+
+    func testTrailerRefreshPinsAuthorityBeforeDispatchAndAfterReply() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("new") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        do { _ = try await v2.refreshTrailers(id: "movie", auth: auth); XCTFail("PIN rebound") } catch {}
+        do { _ = try await v2.trailerItem(id: "movie", imageSize: nil, auth: auth); XCTFail("poll rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.status = 202
+        LibraryReadProtocol.enqueue([Data(#"{"status":"queued"}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { _ = try await v2.refreshTrailers(id: "movie", auth: XCTUnwrap(current)); XCTFail("late receipt") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testTrailerCancelledAuthorityCheckCannotPublishIntoReplacement() async throws {
+        let old = expectation(description: "old suspended")
+        let new = expectation(description: "replacement suspended")
+        let gate = MetadataAuthorityGate(passFirst: false, old: old, new: new)
+        var sends = 0
+        let coordinator = TrailerFetchCoordinator(request: {
+            sends += 1
+            return TrailerRefreshResponse(status: "disabled", nextAllowedAt: nil)
+        }, fetchDetail: { throw URLError(.badServerResponse) }, matchesAuthority: { await gate.check() })
+        coordinator.start(baseline: nil)
+        await fulfillment(of: [old], timeout: 2)
+        let oldTask = try XCTUnwrap(coordinator.taskForTesting)
+        coordinator.stop()
+        coordinator.start(baseline: nil)
+        await fulfillment(of: [new], timeout: 2)
+        let newTask = try XCTUnwrap(coordinator.taskForTesting)
+        await gate.releaseOld(false)
+        await oldTask.value
+        XCTAssertEqual(coordinator.phase, .requesting)
+        XCTAssertEqual(sends, 0)
+        coordinator.stop()
+        await gate.releaseNew()
+        await newTask.value
+        XCTAssertEqual(sends, 0)
+    }
+
     func testViewerPersonRefreshExact202AndSingleSend() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

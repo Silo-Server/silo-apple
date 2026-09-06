@@ -484,35 +484,23 @@ class ItemDetailViewModel {
         #endif
     }
 
-    /// Adopt a detail payload the caller already has in hand, taking the
-    /// same path a `loadDetail` response would — enrichment, cache write,
-    /// watched flag, season/episode structure — minus the catalog fetch that
-    /// produced it and the favorite/watchlist round trips, which nothing
-    /// about a background refresh invalidates.
-    ///
-    /// Enrichment failing is not fatal here: it returns the payload
-    /// untouched, so the new trailers still render.
-    ///
-    /// Claiming a generation is what stops an entry `loadDetail` that is
-    /// still suspended in enrichment from landing its older, trailer-less
-    /// payload on top of this one afterwards.
-    private func apply(
-        item: ItemDetail,
-        contentId: String,
-        preserveSeasonSelection: Bool
-    ) async {
-        let generation = beginDetailWrite()
-        guard let enriched = await adoptDetail(
-            item,
-            contentId: contentId,
-            generation: generation
-        ) else { return }
-        isWatched = enriched.userData?.played ?? false
-        await loadRelatedStructure(
-            for: enriched,
-            contentId: contentId,
-            preserveSeasonSelection: preserveSeasonSelection
-        )
+    /// Publish the detail already observed under the trailer run's authority.
+    /// Keep cached playback metadata and the displayed season structure.
+    /// Claim a generation so older enrichment cannot replace the new trailers.
+    private func applyTrailerDetail(item: ItemDetail, contentId: String) {
+        // Publish the authorized observation without scheduling fresh reads.
+        // Existing season selection/structure remains on screen unchanged.
+        _ = beginDetailWrite()
+        let projected: ItemDetail
+        if supportsPlaybackMetadata(item),
+           let cached: WatchDetail = ResponseCache.shared.get(CacheKey.itemWatchDetail(contentId)) {
+            projected = applyingPlaybackMetadata(cached, to: item)
+        } else {
+            projected = item
+        }
+        detail = projected
+        ResponseCache.shared.set(projected, for: CacheKey.itemDetail(contentId))
+        isWatched = projected.userData?.played ?? false
     }
 
     /// Paint every cached fragment the screen knows how to render so a
@@ -731,16 +719,22 @@ class ItemDetailViewModel {
         // capturing it here, so a view model that gets reused for another
         // item can never address the old one — and the pin makes them fail
         // outright rather than quietly switch items mid-run.
+        // The screen captures its owner before exposing selectable detail.
+        // Read that pinned snapshot, never current TokenStore authority.
         let coordinator = TrailerFetchCoordinator(
             request: { [weak self] in
                 let contentId = try self?.pinnedTrailerFetchContentId()
-                guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
-                return try await SiloAPI.shared.requestTrailersRefresh(contentId: contentId)
+                guard let contentId, let auth = self?.trackPreferenceAuth else { throw ItemDetailViewModelError.noItemLoaded }
+                return try await SiloAPI.shared.requestTrailersRefresh(contentId: contentId, auth: auth)
             },
             fetchDetail: { [weak self] in
                 let contentId = try self?.pinnedTrailerFetchContentId()
-                guard let contentId else { throw ItemDetailViewModelError.noItemLoaded }
-                return try await SiloAPI.shared.itemDetail(contentId: contentId)
+                guard let contentId, let auth = self?.trackPreferenceAuth else { throw ItemDetailViewModelError.noItemLoaded }
+                return try await SiloAPI.shared.trailerItemDetail(contentId: contentId, auth: auth)
+            },
+            matchesAuthority: { [weak self] in
+                guard let auth = self?.trackPreferenceAuth else { return false }
+                return await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
             }
         )
         trailerFetchStorage = coordinator
@@ -768,7 +762,7 @@ class ItemDetailViewModel {
     ///   cannot render remote (YouTube) cards — tvOS with no YouTube app
     ///   installed. iOS and macOS always can, so they leave it at true.
     func startTrailerFetch(remoteVideosDisplayable: Bool = true) {
-        guard let contentId = detail?.contentId, supportsTrailerFetch else { return }
+        guard let contentId = detail?.contentId, supportsTrailerFetch, trackPreferenceAuth != nil else { return }
         trailerFetchContentId = contentId
         trailerFetch.start(
             baseline: detail,
@@ -781,21 +775,11 @@ class ItemDetailViewModel {
             // even though the run has reported success. This lands while the
             // page is on screen, so the season the user is browsing must
             // survive it.
-            guard found.contentId == contentId else {
-                // Shouldn't happen (the run is pinned to one id), but a
-                // mismatched payload must never be written under this id.
-                await self.loadDetail(
-                    contentId: contentId,
-                    preserveSeasonSelection: true,
-                    coalescesMetadataRequests: false
-                )
-                return
-            }
-            await self.apply(
-                item: found,
-                contentId: contentId,
-                preserveSeasonSelection: true
-            )
+            guard found.contentId == contentId, self.detail?.contentId == contentId,
+                  let auth = self.trackPreferenceAuth else { return }
+            let mayApply = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            guard mayApply, !Task.isCancelled, self.detail?.contentId == contentId else { return }
+            self.applyTrailerDetail(item: found, contentId: contentId)
         }
     }
 

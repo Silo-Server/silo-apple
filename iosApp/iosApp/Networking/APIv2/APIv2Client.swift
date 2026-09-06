@@ -617,6 +617,47 @@ struct APIv2Client: Sendable {
 
     // MARK: Catalog detail and hierarchy reads
 
+    func refreshTrailers(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> TrailerRefreshResponse {
+        let raw = try await trailerRequest(id: id, refresh: true, auth: auth)
+        let response = try HTTPClient.makeJSONDecoder().decode(TrailerRefreshResponse.self, from: raw.data)
+        guard (raw.statusCode == 202 && response.status == "queued") ||
+              (raw.statusCode == 200 && ["cooldown", "disabled"].contains(response.status)) else {
+            throw APIv2Error.incompleteCatalogRead
+        }
+        return response
+    }
+
+    func trailerItem(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
+        let raw = try await trailerRequest(id: id, refresh: false, imageSize: imageSize, auth: auth)
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let item = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.CatalogItemDetail.self, from: raw.data)
+        guard item.contentId == id else { throw APIv2Error.incompleteCatalogRead }
+        return item
+    }
+
+    private func trailerRequest(id: String, refresh: Bool, imageSize: String? = nil,
+                                auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let path = "/api/v2/catalog/items/\(try catalogPathSegment(id))" + (refresh ? "/trailers/refresh" : "")
+        let raw = try await mapErrors {
+            try await http.requestData(method: refresh ? "POST" : "GET", path: path,
+                query: refresh ? [:] : catalogReadScope(libraryId: nil, imageSize: imageSize),
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        return raw
+    }
+
     func catalogItem(id: String, libraryId: String? = nil, fileId: String? = nil,
                      imageSize: String? = nil) async throws -> APIv2CatalogRead.CatalogItemDetail {
         var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)

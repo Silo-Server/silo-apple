@@ -89,14 +89,11 @@ final class TrailerFetchCoordinator {
 
     /// Gap between detail re-fetches once the refresh is queued.
     static let defaultPollInterval: Duration = .seconds(3)
-    /// Hard cap on the poll loop. Matches the server's own hard cap on an
-    /// on-demand refresh (`metadataOnDemandRefreshTimeout`, 2 minutes), so
-    /// the client stops looking exactly when the job it is waiting for can
-    /// no longer produce anything.
+    /// Observation window for the poll loop. This bounds local waiting;
+    /// it is not a server completion or provider cancellation guarantee.
     static let defaultWindowSeconds: TimeInterval = 120
     /// Consecutive polls in which nothing about the item changed after which
-    /// the refresh is treated as settled — the server ran and this is all it
-    /// found. Any observed change (new artwork, a rewritten overview, a
+    /// observation stops without claiming the server finished. Any observed change (new artwork, a rewritten overview, a
     /// rating) resets the counter, because it means the refresh is still
     /// landing writes and the videos may yet follow.
     static let defaultSettledPollCount = 5
@@ -127,6 +124,8 @@ final class TrailerFetchCoordinator {
     /// `@MainActor` on both closures so a caller can read main-actor state
     /// (the owning view model's current `contentId`) inside them without
     /// hopping; the awaited work itself still happens on the API actor.
+    private let matchesAuthority: @MainActor () async -> Bool
+    var taskForTesting: Task<Void, Never>? { task }
     private let request: @MainActor () async throws -> TrailerRefreshResponse
     private let fetchDetail: @MainActor () async throws -> ItemDetail
     private let pollInterval: Duration
@@ -154,8 +153,10 @@ final class TrailerFetchCoordinator {
         pollInterval: Duration? = nil,
         windowSeconds: TimeInterval? = nil,
         settledPollCount: Int? = nil,
-        minimumObservationSeconds: TimeInterval? = nil
+        minimumObservationSeconds: TimeInterval? = nil,
+        matchesAuthority: @MainActor @escaping () async -> Bool = { true }
     ) {
+        self.matchesAuthority = matchesAuthority
         self.request = request
         self.fetchDetail = fetchDetail
         self.pollInterval = pollInterval ?? Self.defaultPollInterval
@@ -306,6 +307,9 @@ final class TrailerFetchCoordinator {
             }
         }
 
+        let mayRequest = await matchesAuthority()
+        guard isCurrentRun(runID) else { return }
+        guard mayRequest else { phase = .requestFailed(rateLimited: false); return }
         let response: TrailerRefreshResponse
         do {
             response = try await request()
@@ -315,12 +319,16 @@ final class TrailerFetchCoordinator {
             // have consumed the weekly slot before the connection died, so
             // this must not be reported as "No trailers found" — the next
             // tap would contradict it with "checked recently".
-            let rateLimited = (error as? HTTPError)?.statusCode == 429
+            let rateLimited: Bool
+            if case APIv2Error.problem(let problem) = error { rateLimited = problem.status == 429 }
+            else { rateLimited = (error as? HTTPError)?.statusCode == 429 }
             Self.logger.debug("trailerFetchRequestFailed rateLimited=\(rateLimited, privacy: .public)")
             phase = .requestFailed(rateLimited: rateLimited)
             return
         }
+        let mayAccept = await matchesAuthority()
         guard isCurrentRun(runID) else { return }
+        guard mayAccept else { phase = .requestFailed(rateLimited: false); return }
 
         switch response.status {
         case "queued":
@@ -377,12 +385,17 @@ final class TrailerFetchCoordinator {
             }
             guard isCurrentRun(runID) else { return }
 
+            let mayRead = await matchesAuthority()
+            guard isCurrentRun(runID) else { return }
+            guard mayRead else { phase = .requestFailed(rateLimited: false); return }
             guard let detail = try? await fetchDetail() else {
                 // A transient fetch failure says nothing about the refresh;
                 // don't let it advance the settle counter.
                 continue
             }
+            let mayPublish = await matchesAuthority()
             guard isCurrentRun(runID) else { return }
+            guard mayPublish else { phase = .requestFailed(rateLimited: false); return }
 
             switch Self.outcome(
                 detail: detail,

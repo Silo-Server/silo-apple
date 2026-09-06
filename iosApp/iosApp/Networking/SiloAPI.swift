@@ -290,8 +290,13 @@ actor SiloAPI {
     ///
     /// There is no job id: observe completion by re-fetching item detail
     /// until `videos` / `extras` change — see ``TrailerFetchCoordinator``.
-    func requestTrailersRefresh(contentId: String) async throws -> TrailerRefreshResponse {
-        try await http.post("/api/v1/items/\(contentId)/trailers/refresh")
+    func requestTrailersRefresh(contentId: String, auth: CapturedOrdinaryRequestAuth) async throws -> TrailerRefreshResponse {
+        try await v2.refreshTrailers(id: contentId, auth: auth)
+    }
+
+    func trailerItemDetail(contentId: String, auth: CapturedOrdinaryRequestAuth) async throws -> ItemDetail {
+        try await ItemDetail(catalog: v2.trailerItem(id: contentId,
+            imageSize: await imageSizeQuery["image_size"], auth: auth))
     }
 
     // --- Libraries ---
