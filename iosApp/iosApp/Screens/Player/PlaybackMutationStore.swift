@@ -38,7 +38,17 @@ struct StoredPlaybackMutationSession: Codable, Sendable {
     enum StopState: String, Codable { case none, pending, draining, terminal }
 }
 
+struct StoredPlaybackStart: Codable, Sendable {
+    let id: UUID
+    let authority: PlaybackMutationAuthority
+    let attemptID: String
+    let body: Data
+    var response: Data?
+    var finished = false
+}
+
 private struct PlaybackMutationStoreFile: Codable {
+    var starts: [UUID: StoredPlaybackStart]?
     var version = 1
     var sessions: [UUID: StoredPlaybackMutationSession] = [:]
 }
@@ -160,6 +170,42 @@ actor PlaybackMutationStore {
         session.historyID = receipt.historyId ?? session.historyID
         file.sessions[id] = session
         try persist(file)
+    }
+
+    func prepareStart(authority: PlaybackMutationAuthority, attemptID: String, body: Data) throws -> StoredPlaybackStart {
+        var file = try read()
+        if let existing = file.starts?.values.first(where: { $0.authority == authority && !$0.finished }) {
+            guard existing.attemptID == attemptID, existing.body == body else { throw PlaybackSequencedError.pendingStart }
+            return existing
+        }
+        let start = StoredPlaybackStart(id: UUID(), authority: authority, attemptID: attemptID, body: body)
+        if file.starts == nil { file.starts = [:] }
+        file.starts?[start.id] = start
+        try persist(file)
+        return start
+    }
+
+    func acknowledgeStart(_ id: UUID, authority: PlaybackMutationAuthority, response: Data?, finished: Bool) throws {
+        var file = try read()
+        guard var start = file.starts?[id], start.authority == authority else { throw PlaybackSequencedError.authorityChanged }
+        if start.finished { return }
+        start.response = response ?? start.response
+        start.finished = finished
+        file.starts?[id] = start
+        try persist(file)
+    }
+
+    func hasUnresolvedStart(auth: CapturedDurableAccountAuth) throws -> Bool {
+        let current = try PlaybackMutationAuthority(auth: auth, installationID: nil)
+        return try read().starts?.values.contains {
+            !$0.finished && $0.authority.serverID == current.serverID && $0.authority.origin == current.origin &&
+            $0.authority.accountID == current.accountID && $0.authority.accountEpoch == current.accountEpoch &&
+            $0.authority.profileID == current.profileID
+        } ?? false
+    }
+
+    func pendingStarts(authority: PlaybackMutationAuthority) throws -> [StoredPlaybackStart] {
+        try read().starts?.values.filter { $0.authority == authority && !$0.finished } ?? []
     }
 
     func pendingStops(authority: PlaybackMutationAuthority, afterRestart: Bool) throws -> [StoredPlaybackMutationSession] {

@@ -427,8 +427,11 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> StartedAudioSession {
-        let capturedPlaybackAuth = await TokenStore.shared.captureDurableAccountAuth()
-        try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
+        let startAuth = try await mutationCoordinator.captureStartAuth()
+        let capturedPlaybackAuth = startAuth.durable
+        let initialCapability = startAuth.capability
+        let usesV2 = initialCapability.state != "not_configured"
+        if !usesV2 { try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3() }
         guard let profileId = await TokenStore.shared.getProfileId(),
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
@@ -465,23 +468,34 @@ final class AudioPlayerViewModel {
         )
         let response: PlaybackV3DecisionResponse
         do {
-            response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
+            if usesV2 {
+                response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
+            } else {
+                response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
+            }
         } catch let error as HTTPError {
             guard case .network = error else { throw error }
             // Preserve the logical attempt identity across an ambiguous
             // transport retry so the server replays instead of double-starting.
-            response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
+            if usesV2 {
+                response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
+            } else {
+                response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
+            }
         }
 
-        if response.serverFeatures.contains(PlaybackSequencedContract.feature),
+        if usesV2 || response.serverFeatures.contains(PlaybackSequencedContract.feature),
            let id = PlaybackSessionBridge.allocatedSessionId(in: response) {
             sequencedSessionIDs.insert(id)
-            guard let capturedPlaybackAuth else { throw PlaybackSequencedError.authorityChanged }
-            try await mutationCoordinator.register(sessionID: id, features: response.serverFeatures, auth: capturedPlaybackAuth)
+            if !usesV2 {
+                guard let capturedPlaybackAuth else { throw PlaybackSequencedError.authorityChanged }
+                try await mutationCoordinator.register(sessionID: id, features: response.serverFeatures, auth: capturedPlaybackAuth)
+            }
         }
         switch response.validatedForApple() {
         case .terminal(let terminal):
             Task {
+                guard !usesV2 else { return }
                 await PlaybackSessionBridge.reportTerminalStart(
                     playbackAttemptId: playbackAttemptId,
                     snapshot: snapshot,

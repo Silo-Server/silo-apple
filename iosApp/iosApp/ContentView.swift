@@ -63,7 +63,7 @@ struct ContentView: View {
         .safeAreaInset(edge: .top) {
             if router.authState == .authenticated && !PlaybackStopNotices.shared.pending.isEmpty {
                 HStack {
-                    Text("Playback stop is still pending.")
+                    Text("A playback request is still pending.")
                     Button("Retry") { Task { await PlaybackMutationCoordinator.shared.retryPendingStops() } }
                 }
                 .font(.callout)
@@ -221,6 +221,7 @@ struct ContentView: View {
         }
         #endif
         .task(id: router.authState) {
+            if router.authState == .authenticated { await PlaybackMutationCoordinator.shared.restorePending() }
             if router.authState != .authenticated {
                 playDeepLinkTask?.cancel()
                 playDeepLinkTask = nil
@@ -326,6 +327,7 @@ struct ContentView: View {
             }
         }
         .task(id: serverRegistry.activeProfileId) {
+            if router.authState == .authenticated { await PlaybackMutationCoordinator.shared.restorePending() }
             #if os(iOS) || os(tvOS)
             diagnosticsModel.reset()
             #endif

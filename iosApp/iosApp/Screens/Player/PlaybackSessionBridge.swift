@@ -507,8 +507,9 @@ actor PlaybackSessionBridge {
 
     private func registerSequencedAllocation(_ response: PlaybackV3DecisionResponse,
                                              auth: CapturedDurableAccountAuth?) async throws {
-        guard response.serverFeatures.contains(PlaybackSequencedContract.feature),
-              let id = Self.allocatedSessionId(in: response) else { return }
+        guard let id = Self.allocatedSessionId(in: response) else { return }
+        if await mutationCoordinator.usesV2(id) { sequencedSessionIDs.insert(id); return }
+        guard response.serverFeatures.contains(PlaybackSequencedContract.feature) else { return }
         sequencedSessionIDs.insert(id)
         do {
             guard let auth else { throw PlaybackSequencedError.authorityChanged }
@@ -1006,11 +1007,14 @@ actor PlaybackSessionBridge {
         audioTrackIndex: Int?,
         subtitleCombinedIndex: Int?
     ) async throws -> StagedProtocolV3Start {
-        let capturedPlaybackAuth = await TokenStore.shared.captureDurableAccountAuth()
-        let capability = try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
+        let startAuth = try await mutationCoordinator.captureStartAuth()
+        let capturedPlaybackAuth = startAuth.durable
+        let initialCapability = startAuth.capability
+        let usesV2 = initialCapability.state != "not_configured"
+        let capability = usesV2 ? nil : try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
         // Optional opt-in: on a server that never advertises it the token is
         // simply absent and the attempt stays entirely on the API origin.
-        let requestsAuthorizedMediaOrigins = capability.authorizedMediaOrigins
+        let requestsAuthorizedMediaOrigins = capability?.authorizedMediaOrigins ?? false
 
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
@@ -1052,14 +1056,16 @@ actor PlaybackSessionBridge {
         // allocated if the caller has already walked away.
         let response = try await PlaybackCancellationShield.run {
             do {
-                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
+                if usesV2 { return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability) }
+                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
             } catch let error as HTTPError {
                 guard case .network = error else { throw error }
                 // Reuse the exact request and playback_attempt_id so an
                 // ambiguous first response cannot allocate a second logical
                 // attempt. Retried inside the shield so the reclaim path below
                 // sees the final outcome, not the ambiguous one.
-                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: capturedPlaybackAuth?.request)
+                if usesV2 { return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability) }
+                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
             }
         } reclaim: { [self] abandoned in
             guard let orphaned = Self.allocatedSessionId(in: abandoned) else { return }
@@ -1072,6 +1078,7 @@ actor PlaybackSessionBridge {
         switch response.validatedForApple() {
         case .terminal(let terminal):
             Task {
+                guard !usesV2 else { return }
                 await Self.reportTerminalStart(
                     playbackAttemptId: playbackAttemptId,
                     snapshot: snapshot,
@@ -1354,6 +1361,10 @@ actor PlaybackSessionBridge {
         guard var active = activeProtocolV3,
               let currentSessionId = sessionId else {
             return nil
+        }
+        guard !(await mutationCoordinator.usesV2(currentSessionId)) else {
+            throw PlaybackV3TerminalFailure(reason: "replan_unavailable",
+                message: "This playback route does not support changing the plan during playback.", retryable: false)
         }
         // Resolved after the guard because the intent mapping depends on what
         // the server advertised for this attempt.
@@ -1771,6 +1782,7 @@ actor PlaybackSessionBridge {
         fallbackReason: String?,
         diagnostics: [String: String]
     ) async {
+        guard !(await mutationCoordinator.usesV2(sessionId)) else { return }
         let event = PlaybackV3RouteEvent(
             protocolVersion: PlaybackProtocolV3.version,
             playbackAttemptId: active.playbackAttemptId,

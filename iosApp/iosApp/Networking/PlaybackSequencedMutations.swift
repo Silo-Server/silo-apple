@@ -76,9 +76,10 @@ struct PlaybackSequencedStopReceipt: Decodable, Sendable {
 }
 
 enum PlaybackSequencedError: LocalizedError {
-    case invalidSample, invalidResponse, invalidSession, authorityChanged
+    case invalidSample, invalidResponse, invalidSession, authorityChanged, pendingStart
     var errorDescription: String? {
         switch self {
+        case .pendingStart: return "A previous playback start is unresolved. Retry it before starting another item."
         case .invalidSample: return "Playback progress could not be recorded."
         case .invalidResponse: return "The server returned an invalid playback response."
         case .invalidSession: return "This playback session is no longer available."
@@ -89,17 +90,17 @@ enum PlaybackSequencedError: LocalizedError {
 
 extension SiloAPI {
     func reportSequencedPlaybackProgress(sessionID: String, sample: PlaybackSequencedSample,
-                                        auth: CapturedOrdinaryRequestAuth) async throws -> PlaybackSequencedProgressReceipt {
+                                        auth: CapturedOrdinaryRequestAuth, installationID: String? = nil) async throws -> PlaybackSequencedProgressReceipt {
         let response = try await playbackMutation(method: "POST", sessionID: sessionID, suffix: "/progress",
-            body: Self.playbackMutationBody(sample), auth: auth)
+            body: Self.playbackMutationBody(sample), auth: auth, installationID: installationID)
         guard response.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
         return try JSONDecoder().decode(PlaybackSequencedProgressReceipt.self, from: response.data)
     }
 
     func stopSequencedPlayback(sessionID: String, stop: PlaybackSequencedStop,
-                              auth: CapturedOrdinaryRequestAuth) async throws -> PlaybackSequencedStopReceipt {
+                              auth: CapturedOrdinaryRequestAuth, installationID: String? = nil) async throws -> PlaybackSequencedStopReceipt {
         let response = try await playbackMutation(method: "DELETE", sessionID: sessionID, suffix: "",
-            body: Self.playbackMutationBody(stop), auth: auth)
+            body: Self.playbackMutationBody(stop), auth: auth, installationID: installationID)
         let receipt = try JSONDecoder().decode(PlaybackSequencedStopReceipt.self, from: response.data)
         guard receipt.stopId == stop.stopID,
               (response.statusCode == 202 && receipt.outcome == .draining) ||
@@ -116,9 +117,15 @@ extension SiloAPI {
     }
 
     private func playbackMutation(method: String, sessionID: String, suffix: String, body: Data,
-                                  auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+                                  auth: CapturedOrdinaryRequestAuth, installationID: String?) async throws -> HTTPRawResponse {
         guard !sessionID.isEmpty, sessionID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
             throw PlaybackSequencedError.invalidSession
+        }
+        if let installationID {
+            var object = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            object["installation_id"] = installationID
+            return try await v2.playbackRequest(method: method, suffix: "/\(sessionID)\(suffix)",
+                body: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), auth: auth)
         }
         guard let profileID = auth.profileId, !profileID.isEmpty else { throw PlaybackSequencedError.authorityChanged }
         let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,

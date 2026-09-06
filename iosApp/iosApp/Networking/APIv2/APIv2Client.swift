@@ -608,6 +608,26 @@ struct APIv2Client: Sendable {
         guard response.statusCode == 204 else { throw APIv2Error.incompleteAuthResponse }
     }
 
+    // MARK: Initial playback
+
+    func playbackRequest(method: String, suffix: String, body: Data? = nil,
+                         auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        return try await mapErrors {
+            try await http.requestData(method: method, path: "/api/v2/playback" + suffix, body: body,
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+    }
+
+    func playbackCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackCapabilities {
+        let raw = try await playbackRequest(method: "GET", suffix: "/capabilities", auth: auth)
+        guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackCapabilities.self, from: raw.data)
+    }
+
     // MARK: Internals
 
     /// Refuses relative-URL (active-session) operations while the active

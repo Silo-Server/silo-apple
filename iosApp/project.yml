@@ -371,6 +371,24 @@ targets:
         buildPhase: resources
       - path: Tests/Fixtures/APIv2/validation_failed_body.json
         buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_capability_available.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_capability_unconfigured.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_installation_changed.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_invalid_protocol.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_progress_applied.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_progress_stale.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_start_opaque_ids.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_stop_completed.json
+        buildPhase: resources
+      - path: Tests/Fixtures/APIv2/playback_stop_draining.json
+        buildPhase: resources
       - path: Tests/Fixtures/APIv2/SOURCE
         buildPhase: none
     dependencies:
