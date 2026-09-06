@@ -1380,23 +1380,43 @@ class ItemDetailViewModel {
     }
 
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
+        guard !watchedMutationPending, let auth = trackPreferenceAuth else { return false }
+        let generation = detailGeneration
+        let displayedItem = detail?.contentId
+        let seriesId = seriesContentId
+        let seasonNumber = selectedSeason?.seasonNumber
+        let episodeIds = Set(episodes.map(\.contentId))
+        guard contentId == displayedItem || episodeIds.contains(contentId) else { return false }
+        watchedMutationPending = true
+        defer { watchedMutationPending = false }
+        func isCurrent() async -> Bool {
+            let current = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+            return current && !Task.isCancelled && generation == detailGeneration
+                && displayedItem == detail?.contentId && seriesId == seriesContentId
+                && seasonNumber == selectedSeason?.seasonNumber
+                && episodeIds == Set(episodes.map(\.contentId))
+        }
+        guard await isCurrent() else { return false }
         do {
-            try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
-            if contentId == detail?.contentId {
-                isWatched = played
-            }
-            invalidateRelatedCaches(
-                contentId: contentId,
-                seriesId: seriesContentId,
-                seasonNumber: selectedSeason?.seasonNumber
-            )
-            if let seriesId = seriesContentId, let seasonNumber = selectedSeason?.seasonNumber {
-                await loadEpisodes(
-                    seriesId: seriesId,
-                    seasonNumber: seasonNumber,
-                    refreshFavoriteStates: false,
-                    coalescesMetadataRequest: false
-                )
+            try await SiloAPI.shared.setWatched(contentId: contentId, played: played, auth: auth)
+            guard await isCurrent() else { return false }
+            if contentId == displayedItem { isWatched = played }
+            invalidateRelatedCaches(contentId: contentId, seriesId: seriesId, seasonNumber: seasonNumber)
+            if let seriesId, let seasonNumber {
+                // The existing refresh follows the accepted write, but never
+                // joins an unscoped metadata flight or hydrates an old cache.
+                episodeLoadGeneration += 1
+                let refreshGeneration = episodeLoadGeneration
+                let response = try? await SiloAPI.shared.episodes(seriesId: seriesId, seasonNumber: seasonNumber, auth: auth)
+                guard await isCurrent(), refreshGeneration == episodeLoadGeneration else { return false }
+                isLoadingEpisodes = false
+                if let response {
+                    let sorted = response.episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+                    episodesBySeason[seasonNumber] = sorted
+                    episodes = sorted
+                    loadedSeasonNumber = seasonNumber
+                    isLoadingEpisodes = false
+                }
             }
             return true
         } catch {

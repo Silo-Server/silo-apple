@@ -946,6 +946,32 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
+    func catalogEpisodes(seriesId: String, seasonNumber: Int, imageSize: String?,
+                         auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Episode] {
+        try await gate()
+        guard seasonNumber >= 0 else { throw APIv2Error.invalidCatalogQuery }
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons/\(seasonNumber)/episodes"
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: path,
+                query: catalogReadScope(libraryId: nil, imageSize: imageSize),
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        let response = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<APIv2CatalogRead.Episode>.self, from: raw.data)
+        return try response.completeItems()
+    }
+
     func refreshPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> PersonRefreshQueuedResponse {
         let response = try await personRequest(id: id, method: "POST", auth: auth)
         guard response.statusCode == 202 else { throw APIv2Error.httpStatus(response.statusCode) }

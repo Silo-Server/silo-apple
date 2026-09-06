@@ -239,6 +239,12 @@ actor SiloAPI {
         return try SeasonsResponse(catalog: items)
     }
 
+    func episodes(seriesId: String, seasonNumber: Int, auth: CapturedOrdinaryRequestAuth) async throws -> EpisodesResponse {
+        let items = try await v2.catalogEpisodes(seriesId: seriesId, seasonNumber: seasonNumber,
+            imageSize: await imageSizeQuery["image_size"], auth: auth)
+        return try EpisodesResponse(catalog: items)
+    }
+
     func episodes(seriesId: String, seasonNumber: Int) async throws -> EpisodesResponse {
         let items = try await v2.catalogEpisodes(seriesId: seriesId, seasonNumber: seasonNumber,
                                                  imageSize: await imageSizeQuery["image_size"])

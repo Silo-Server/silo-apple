@@ -24,6 +24,23 @@ final class APIv2LibraryTests: XCTestCase {
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
     }
 
+    func testEpisodeWatchedRefreshKeepsOriginalAuthorityAndSeasonZero() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("replacement") })
+        await tokens.setProfileId("profile")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        do { _ = try await v2.catalogEpisodes(seriesId: "series/a?b", seasonNumber: 0, imageSize: nil, auth: auth); XCTFail("authority rebound") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+        let current = await tokens.captureOrdinaryRequestAuth()
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":false}}"#.utf8)])
+        let result = try await v2.catalogEpisodes(seriesId: "series/a?b", seasonNumber: 0, imageSize: nil, auth: XCTUnwrap(current))
+        XCTAssertTrue(result.isEmpty)
+        XCTAssertEqual(LibraryReadProtocol.requests().last?.url?.absoluteString, "https://libraries.example/api/v2/catalog/series/series%2Fa%3Fb/seasons/0/episodes")
+        LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":false}}"#.utf8)])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("foreign") }
+        do { _ = try await v2.catalogEpisodes(seriesId: "series", seasonNumber: 0, imageSize: nil, auth: XCTUnwrap(current)); XCTFail("foreign receipt") } catch {}
+    }
+
     func testHomeFavoriteReceiptInvalidationAndForeignRefusal() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")
