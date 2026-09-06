@@ -53,6 +53,8 @@ struct TVMediaCard: View {
     }
 
     @FocusState private var isFocused: Bool
+    @State private var searchActionRun: UUID?
+    @Environment(\.catalogSearchModel) private var searchModel
     @State private var cardActionRun: UUID?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
@@ -81,6 +83,9 @@ struct TVMediaCard: View {
             }
         }
         .frame(width: resolvedCardWidth)
+        .onChange(of: searchModel?.displayedRead) { _, _ in resetPersonalOverrides() }
+        .onChange(of: searchModel?.cardGeneration) { _, _ in resetPersonalOverrides() }
+        .onChange(of: searchModel.map { ObjectIdentifier($0) }) { _, _ in resetPersonalOverrides() }
         .onChange(of: userState) { _, _ in resetPersonalOverrides() }
         .onChange(of: contentId) { _, _ in resetPersonalOverrides() }
         .onChange(of: libraryCardContext?.libraryId) { _, _ in resetPersonalOverrides() }
@@ -114,6 +119,7 @@ struct TVMediaCard: View {
     }
 
     private func resetPersonalOverrides() {
+        searchActionRun = nil
         cardActionRun = nil
         favoriteOverride = nil
         watchlistOverride = nil
@@ -140,7 +146,24 @@ struct TVMediaCard: View {
         }
     }
 
+    private func toggleSearchMembership(_ target: APIv2PersonalListKind, model: SearchViewModel) {
+        guard let contentId, searchActionRun == nil else { return }
+        let included = target == .favorites ? !isFavorite : !isInWatchlist
+        guard let action = model.prepareCardAction(contentId: contentId, target: target, included: included) else { return }
+        searchActionRun = action.id
+        if target == .favorites { favoriteOverride = included } else { watchlistOverride = included }
+        Task { @MainActor in
+            let result = await model.performCardAction(action)
+            guard searchActionRun == action.id, searchModel === model, self.contentId == contentId else { return }
+            searchActionRun = nil
+            if result != true {
+                if target == .favorites { favoriteOverride = nil } else { watchlistOverride = nil }
+            }
+        }
+    }
+
     private func togglePersonalFavorite() {
+        if let searchModel { toggleSearchMembership(.favorites, model: searchModel); return }
         if let libraryCardContext {
             toggleLibraryMembership(.favorites, context: libraryCardContext)
             return
@@ -159,6 +182,7 @@ struct TVMediaCard: View {
     }
 
     private func togglePersonalWatchlist() {
+        if let searchModel { toggleSearchMembership(.watchlist, model: searchModel); return }
         if let libraryCardContext {
             toggleLibraryMembership(.watchlist, context: libraryCardContext)
             return

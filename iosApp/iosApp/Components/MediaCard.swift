@@ -113,6 +113,8 @@ struct MediaCard: View {
     @State private var homeFavoritePending = false
     @State private var homeWatchlistRun: UUID?
     @State private var homeWatchlistPending = false
+    @State private var searchActionRun: UUID?
+    @Environment(\.catalogSearchModel) private var searchModel
     @Environment(\.savedPersonalListModel) private var savedList
     @State private var savedListActionRun: UUID?
     @State private var watchlistOverride: Bool?
@@ -182,7 +184,11 @@ struct MediaCard: View {
         ) {
             posterImage
         }
-        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction(); resetSearchAction() }
+        .onChange(of: searchModel?.displayedRead) { _, _ in resetSearchAction() }
+        .onChange(of: searchModel?.cardGeneration) { _, _ in resetSearchAction() }
+        .onChange(of: searchModel.map { ObjectIdentifier($0) }) { _, _ in resetSearchAction() }
+        .onDisappear { if searchModel != nil { resetSearchAction() } }
         .onChange(of: savedList?.cardGeneration) { _, _ in resetSavedListAction() }
         .onChange(of: savedList?.displayedAuth) { _, _ in resetSavedListAction() }
         .onChange(of: homeOwner) { _, _ in resetHomePersonalActions() }
@@ -192,6 +198,7 @@ struct MediaCard: View {
             resetLibraryPersonalActions()
             resetHomePersonalActions()
             resetSavedListAction()
+            resetSearchAction()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -206,7 +213,11 @@ struct MediaCard: View {
                 iosCardButton
             }
         }
-        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction() }
+        .onChange(of: contentId) { _, _ in resetLibraryPersonalActions(); resetHomePersonalActions(); resetSavedListAction(); resetSearchAction() }
+        .onChange(of: searchModel?.displayedRead) { _, _ in resetSearchAction() }
+        .onChange(of: searchModel?.cardGeneration) { _, _ in resetSearchAction() }
+        .onChange(of: searchModel.map { ObjectIdentifier($0) }) { _, _ in resetSearchAction() }
+        .onDisappear { if searchModel != nil { resetSearchAction() } }
         .onChange(of: savedList?.cardGeneration) { _, _ in resetSavedListAction() }
         .onChange(of: savedList?.displayedAuth) { _, _ in resetSavedListAction() }
         .onChange(of: homeOwner) { _, _ in resetHomePersonalActions() }
@@ -216,6 +227,7 @@ struct MediaCard: View {
             resetLibraryPersonalActions()
             resetHomePersonalActions()
             resetSavedListAction()
+            resetSearchAction()
             playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
@@ -317,6 +329,7 @@ struct MediaCard: View {
     }
 
     private func togglePersonalFavorite() {
+        if let searchModel { toggleSearchMembership(.favorites, model: searchModel); return }
         guard let contentId else { return }
         if let savedList {
             toggleSavedList(contentId: contentId, target: .favorites, included: !isFavorite, model: savedList)
@@ -342,6 +355,28 @@ struct MediaCard: View {
                 )
             } else {
                 favoriteOverride = !newValue // Revert on failure
+            }
+        }
+    }
+
+    private func resetSearchAction() {
+        searchActionRun = nil
+        favoriteOverride = nil
+        watchlistOverride = nil
+    }
+
+    private func toggleSearchMembership(_ target: APIv2PersonalListKind, model: SearchViewModel) {
+        guard let contentId, searchActionRun == nil else { return }
+        let included = target == .favorites ? !isFavorite : !isInWatchlist
+        guard let action = model.prepareCardAction(contentId: contentId, target: target, included: included) else { return }
+        searchActionRun = action.id
+        if target == .favorites { favoriteOverride = included } else { watchlistOverride = included }
+        Task { @MainActor in
+            let result = await model.performCardAction(action)
+            guard searchActionRun == action.id, searchModel === model, self.contentId == contentId else { return }
+            searchActionRun = nil
+            if result != true {
+                if target == .favorites { favoriteOverride = nil } else { watchlistOverride = nil }
             }
         }
     }
@@ -477,6 +512,7 @@ struct MediaCard: View {
     }
 
     private func togglePersonalWatchlist() {
+        if let searchModel { toggleSearchMembership(.watchlist, model: searchModel); return }
         guard let contentId else { return }
         if let savedList {
             toggleSavedList(contentId: contentId, target: .watchlist, included: !isInWatchlist, model: savedList)

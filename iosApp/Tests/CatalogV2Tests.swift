@@ -266,6 +266,155 @@ final class CatalogV2Tests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testSearchFeaturePinsCapabilityAndClearsForeignContinuationFailure() async throws {
+        let (blockedAPI, blockedTokens) = try await client(captureBarrier: { await $0.setProfileToken("replacement") })
+        let blocked = SearchViewModel(api: blockedAPI, tokens: blockedTokens)
+        blocked.query = "one"
+        await blocked.performSearch()
+        XCTAssertTrue(CatalogProtocol.requests().isEmpty)
+        XCTAssertNil(blocked.displayedRead)
+        XCTAssertNotNil(blocked.error)
+        for replacement in [false, true] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let model = SearchViewModel(api: api, tokens: tokens)
+            model.query = "one"
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await model.performSearch()
+            let owner = try XCTUnwrap(model.displayedRead)
+            CatalogProtocol.reply(500, "{}")
+            let held = expectation(description: "search continuation held")
+            CatalogProtocol.hold { held.fulfill() }
+            let pending = Task { await model.loadMore() }
+            await fulfillment(of: [held], timeout: 2)
+            if replacement { await tokens.setProfileToken("replacement") }
+            CatalogProtocol.release()
+            await pending.value
+            XCTAssertEqual(model.results.isEmpty, replacement)
+            XCTAssertEqual(model.displayedRead, replacement ? nil : owner)
+            XCTAssertFalse(model.hasMore)
+            XCTAssertNotNil(model.error)
+        }
+    }
+
+    @MainActor
+    func testSearchFeatureFourWritesPreserveSiblingsCursorAndSingleSendFailures() async throws {
+        let (api, tokens) = try await client()
+        let model = SearchViewModel(api: api, tokens: tokens)
+        model.query = "one"
+        CatalogProtocol.reply(200, tvGridActionPage)
+        await model.performSearch()
+        XCTAssertNil(model.prepareCardAction(contentId: "missing", target: .favorites, included: true))
+        let operations: [(APIv2PersonalListKind, Bool)] = [(.favorites, true), (.watchlist, true), (.favorites, false), (.watchlist, false)]
+        var favorite = false
+        var watchlist = false
+        for (target, included) in operations {
+            let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: included))
+            XCTAssertNil(model.prepareCardAction(contentId: "movie:one", target: target, included: !included))
+            CatalogProtocol.reply(204, "")
+            let accepted = await model.performCardAction(action)
+            XCTAssertEqual(accepted, true)
+            if target == .favorites { favorite = included } else { watchlist = included }
+            XCTAssertEqual(model.results.first?.userState, MediaItemUserState(played: true, isFavorite: favorite, inWatchlist: watchlist))
+            XCTAssertTrue(model.hasMore)
+        }
+        let writes = CatalogProtocol.requests().filter { $0.0.httpMethod != "GET" }
+        XCTAssertEqual(writes.map { $0.0.httpMethod }, ["PUT", "PUT", "DELETE", "DELETE"])
+        XCTAssertEqual(writes.map { $0.0.url?.path }, ["/api/v2/favorites/movie:one", "/api/v2/watchlist/movie:one", "/api/v2/favorites/movie:one", "/api/v2/watchlist/movie:one"])
+        for target in [APIv2PersonalListKind.favorites, .watchlist] {
+            for status in [401, 500] {
+                let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true))
+                let count = CatalogProtocol.requests().count
+                CatalogProtocol.reply(status, "{}")
+                let accepted = await model.performCardAction(action)
+                XCTAssertEqual(accepted, false)
+                XCTAssertEqual(CatalogProtocol.requests().count, count + 1)
+                XCTAssertEqual(model.results.first?.userState, MediaItemUserState(played: true))
+            }
+        }
+        CatalogProtocol.reply(200, terminal)
+        await model.loadMore()
+        let url = try XCTUnwrap(CatalogProtocol.requests().last?.0.url)
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "cursor" })?.value, "card-original-cursor")
+        XCTAssertEqual(model.results.count, 1)
+    }
+
+    @MainActor
+    func testSearchFeaturePreparedOwnerAndQueryChangeRefuseWritesAndLateReceipt() async throws {
+        for target in [APIv2PersonalListKind.favorites, .watchlist] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let model = SearchViewModel(api: api, tokens: tokens)
+            model.query = "one"
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await model.performSearch()
+            let old = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true))
+            await tokens.setProfileToken("replacement")
+            let count = CatalogProtocol.requests().count
+            let refused = await model.performCardAction(old)
+            XCTAssertNil(refused)
+            XCTAssertEqual(CatalogProtocol.requests().count, count)
+            await model.performSearch()
+            let changedQuery = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true))
+            model.query = "two"
+            XCTAssertNil(model.prepareCardAction(contentId: "movie:one", target: target, included: true))
+            let queryRefused = await model.performCardAction(changedQuery)
+            XCTAssertNil(queryRefused)
+            await model.performSearch()
+            let action = try XCTUnwrap(model.prepareCardAction(contentId: "movie:one", target: target, included: true))
+            CatalogProtocol.reply(204, "")
+            let held = expectation(description: "search card receipt held")
+            CatalogProtocol.hold { held.fulfill() }
+            let pending = Task { await model.performCardAction(action) }
+            await fulfillment(of: [held], timeout: 2)
+            CatalogProtocol.allowNewRequests()
+            model.query = "three"
+            CatalogProtocol.reply(200, tvGridActionPage)
+            await model.performSearch()
+            CatalogProtocol.release()
+            let stale = await pending.value
+            XCTAssertNil(stale)
+            XCTAssertEqual(model.displayedRead?.query, "three")
+            XCTAssertEqual(model.results.first?.userState, MediaItemUserState(played: true))
+        }
+    }
+
+    @MainActor
+    func testSearchFeatureSuspendedAuthorityCannotPublishReplacementQuery() async throws {
+        for status in [200, 500] {
+            CatalogProtocol.reset()
+            let (api, tokens) = try await client()
+            let gate = TVGridReadCheckGate()
+            let model = SearchViewModel(api: api, tokens: tokens, authorityCheck: { auth in
+                let current = await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+                await gate.suspendIfArmed()
+                return current
+            })
+            model.query = "old"
+            CatalogProtocol.reply(status, status == 200 ? tvGridActionPage : "{}")
+            let held = expectation(description: "old search authority suspended")
+            await gate.arm(skipping: 0, held: held)
+            let old = Task { await model.performSearch() }
+            await fulfillment(of: [held], timeout: 2)
+            model.query = "new"
+            CatalogProtocol.reply(200, tvGridActionPage.replacingOccurrences(of: "movie:one", with: "movie:new"))
+            await model.performSearch()
+            await gate.release()
+            await old.value
+            XCTAssertEqual(model.results.map(\.contentId), ["movie:new"])
+            XCTAssertEqual(model.displayedRead?.query, "new")
+            XCTAssertNil(model.error)
+            XCTAssertFalse(model.isSearching)
+            model.cancel()
+            XCTAssertTrue(model.results.isEmpty)
+            XCTAssertNil(model.displayedRead)
+            await model.performSearch() // Re-entry uses retained query with a fresh owner/read.
+            XCTAssertEqual(model.displayedRead?.query, "new")
+            XCTAssertEqual(model.results.map(\.contentId), ["movie:new"])
+        }
+    }
+
     private var tvGridActionPage: String {
         tvGridPage.replacingOccurrences(of: "\"status\":\"matched\"", with: "\"status\":\"matched\",\"user_state\":{\"played\":true,\"is_favorite\":false,\"in_watchlist\":false}")
             .replacingOccurrences(of: "\"has_more\":false", with: "\"has_more\":true,\"next_cursor\":\"card-original-cursor\"")
@@ -508,8 +657,8 @@ final class CatalogV2Tests: XCTestCase {
 
     @MainActor
     func testSearchPreservesResultsAndRequiresReloadAfterCursorFailure() async throws {
-        let (api, _) = try await client()
-        let model = SearchViewModel(api: api)
+        let (api, tokens) = try await client()
+        let model = SearchViewModel(api: api, tokens: tokens)
         model.query = "example"
         CatalogProtocol.reply(200, #"{"items":[{"content_id":"one","type":"movie","title":"One"}],"page":{"has_more":true,"next_cursor":"next"},"total":10000,"total_exact":false,"window_cursor":"w","search_diagnostics":{"provider":"search","mode":"semantic","semantic_used":true,"result_window_limit":250}}"#)
         await model.performSearch()
@@ -533,9 +682,9 @@ final class CatalogV2Tests: XCTestCase {
 
     @MainActor
     func testSearchCapabilityDenialPreventsCatalogDispatch() async throws {
-        let (api, _) = try await client()
+        let (api, tokens) = try await client()
         CatalogProtocol.denySearch()
-        let model = SearchViewModel(api: api)
+        let model = SearchViewModel(api: api, tokens: tokens)
         model.query = "example"
         await model.performSearch()
         XCTAssertNotNil(model.error)

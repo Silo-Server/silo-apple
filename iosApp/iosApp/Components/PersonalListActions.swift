@@ -1,5 +1,9 @@
 import SwiftUI
 
+private struct CatalogSearchModelKey: EnvironmentKey {
+    static let defaultValue: SearchViewModel? = nil
+}
+
 private struct SavedPersonalListModelKey: EnvironmentKey {
     static let defaultValue: PersonalListViewModel? = nil
 }
@@ -27,6 +31,11 @@ private struct HomePersonalListAuthKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    var catalogSearchModel: SearchViewModel? {
+        get { self[CatalogSearchModelKey.self] }
+        set { self[CatalogSearchModelKey.self] = newValue }
+    }
+
     var savedPersonalListModel: PersonalListViewModel? {
         get { self[SavedPersonalListModelKey.self] }
         set { self[SavedPersonalListModelKey.self] = newValue }

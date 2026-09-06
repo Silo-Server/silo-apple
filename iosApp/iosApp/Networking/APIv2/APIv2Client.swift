@@ -619,8 +619,24 @@ struct APIv2Client: Sendable {
         return try await requestGet("/api/v2/catalog/filters", query: query)
     }
 
-    func catalogSearchCapabilities() async throws -> APIv2CatalogSearchCapabilities {
-        try await requestGet("/api/v2/catalog/search/capabilities")
+    func catalogSearchCapabilities(auth suppliedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2CatalogSearchCapabilities {
+        try await gate()
+        let captured = await tokenStore.captureOrdinaryRequestAuth()
+        guard let auth = suppliedAuth ?? captured, let profile = auth.profileId else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/catalog/search/capabilities",
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogSearchCapabilities.self, from: raw.data)
     }
 
     func libraryCollectionTab(libraryId: String) async throws -> APIv2LibraryCollectionTab {
