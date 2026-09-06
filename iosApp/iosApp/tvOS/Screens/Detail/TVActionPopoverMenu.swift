@@ -19,7 +19,7 @@ struct TVActionPopoverItem: Identifiable, Equatable {
 /// after confirming a Version/Audio/Subtitle choice.
 ///
 /// The popover is one composite focus item (docs/tvos-focus.md): the panel
-/// itself is the only focusable, rows are passive labels, and d-pad up/down
+/// uses one transparent native Button, rows are passive labels, and d-pad up/down
 /// moves an internal highlight. Select commits the highlighted row; Menu/Back
 /// closes. Both hand focus straight back to the trigger, so the next d-pad
 /// press lands on the row with no system animation to wait out.
@@ -56,12 +56,35 @@ struct TVActionPopoverMenu: View {
         .overlay(Self.shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
         .shadow(color: .black.opacity(0.45), radius: 32, y: 18)
         .contentShape(Self.shape)
-        .focusable(true)
-        .focused($panelFocused)
-        .focusEffectDisabled()
-        .onMoveCommand(perform: handleMove)
-        .onTapGesture(perform: commitHighlighted)
-        .onExitCommand(perform: onClose)
+        .accessibilityHidden(true)
+        .overlay {
+            // The original surface owns layout and appearance. A transparent
+            // native Button owns activation and focus without styling the rows.
+            Button(action: commitHighlighted) {
+                Color.clear.contentShape(Self.shape)
+            }
+            .buttonStyle(TVPopoverActivationButtonStyle())
+            .focused($panelFocused)
+            .focusEffectDisabled()
+            .onMoveCommand(perform: handleMove)
+            .onExitCommand(perform: onClose)
+            // VoiceOver: the composite is one adjustable button. Its value is
+            // the highlighted row (what Select will commit), swipe up/down moves
+            // the highlight, and activate commits it. Rows stay hidden so the
+            // cursor cannot land on a label that does not react to Select.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+            .accessibilityValue(highlightedAccessibilityValue)
+            .accessibilityAddTraits([.isButton, .updatesFrequently])
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: moveHighlight(by: 1)
+                case .decrement: moveHighlight(by: -1)
+                @unknown default: break
+                }
+            }
+            .accessibilityAction(.escape, onClose)
+        }
         .background(
             TVActionPopoverMenuPressCatcher(onExit: onClose)
                 .frame(width: 0, height: 0)
@@ -86,23 +109,6 @@ struct TVActionPopoverMenu: View {
             // engine not having moved yet.
             if didClaimFocus { onClose() }
         }
-        // VoiceOver: the composite is one adjustable button. Its value is
-        // the highlighted row (what Select will commit), swipe up/down moves
-        // the highlight, and activate commits it. Rows stay hidden so the
-        // cursor cannot land on a label that does not react to Select.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue(highlightedAccessibilityValue)
-        .accessibilityAddTraits([.isButton, .updatesFrequently])
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: moveHighlight(by: 1)
-            case .decrement: moveHighlight(by: -1)
-            @unknown default: break
-            }
-        }
-        .accessibilityAction(.default, commitHighlighted)
-        .accessibilityAction(.escape, onClose)
     }
 
     private var highlightedAccessibilityValue: String {
@@ -208,6 +214,13 @@ struct TVActionPopoverMenu: View {
         guard let item = items.first(where: { $0.id == highlightedId }),
               item.isEnabled else { return }
         onSelect(item)
+    }
+}
+
+/// No system padding, tint, scale, or focus decoration on the invisible host.
+private struct TVPopoverActivationButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
 }
 
