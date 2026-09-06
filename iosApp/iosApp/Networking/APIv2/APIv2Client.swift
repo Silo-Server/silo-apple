@@ -167,6 +167,31 @@ struct APIv2Client: Sendable {
         return try await mapErrors { try await http.post(path, body: body, timeout: timeout) }
     }
 
+    /// Acknowledges a cancellation request; completion may already have won.
+    func cancelSubtitleJob(id: String) async throws {
+        guard let value = Int64(id), value > 0, String(value) == id else {
+            throw APIv2Error.invalidSubtitleResponse
+        }
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = auth.profileId.map {
+            HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+                profileId: $0, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        }
+        let response = try await mapErrors {
+            try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/jobs/\(id)/cancel",
+                headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(), current.account == auth.account,
+              current.profileId == auth.profileId, current.profileToken == auth.profileToken else {
+            throw HTTPError.requestIdentityChanged
+        }
+        guard response.statusCode == 204, response.data.isEmpty else { throw APIv2Error.invalidSubtitleResponse }
+    }
+
     /// Provider download has no durable replay receipt, including after401.
     func downloadSubtitle(_ body: SubtitleDownloadBody, expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DownloadedSubtitle {
         try await gate()

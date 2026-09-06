@@ -71,7 +71,7 @@ actor SiloAI {
 
     /// Request cancellation of a running job (204, no body).
     func cancelSubtitleJob(id: String) async throws {
-        try await http.postVoid("/api/v1/subtitles/ai/jobs/\(id)/cancel")
+        try await v2.cancelSubtitleJob(id: id)
     }
 
     /// Downloaded subtitle tracks for a media file. Used to locate the

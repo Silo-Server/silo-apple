@@ -76,6 +76,34 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
     }
 
+    func testSubtitleCancellationUsesExactIDAndEmpty204() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        try await SiloAI(v2: api).cancelSubtitleJob(id: "9223372036854775807")
+        let request = try XCTUnwrap(LibraryReadProtocol.requests().last)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/api/v2/subtitles/ai/jobs/9223372036854775807/cancel")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Profile-Id"), "profile")
+        XCTAssertNil(request.httpBody)
+        do { try await api.cancelSubtitleJob(id: "1/cancel"); XCTFail("invalid ID") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
+    func testSubtitleCancellationRejectsUnexpectedStatusAndStaleProfile() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 200
+        LibraryReadProtocol.enqueue([Data()])
+        do { try await api.cancelSubtitleJob(id: "1"); XCTFail("unexpected200") } catch {}
+        LibraryReadProtocol.status = 204
+        LibraryReadProtocol.enqueue([Data()])
+        LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("other") }
+        do { try await api.cancelSubtitleJob(id: "1"); XCTFail("stale profile") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
+    }
+
     func testManagedCreation401NeverReplays() async throws {
         let (api, tokens) = try await fixture()
         await tokens.setProfileId("profile")
