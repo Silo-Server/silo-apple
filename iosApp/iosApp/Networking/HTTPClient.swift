@@ -413,7 +413,8 @@ actor HTTPClient {
         timeout: HTTPTimeout = .standard,
         requestIdentity: HTTPRequestIdentity? = nil,
         acceptedStatuses: Set<Int> = [],
-        expectedAccount: RefreshAccountIdentity? = nil
+        expectedAccount: RefreshAccountIdentity? = nil,
+        expectedAuth: CapturedOrdinaryRequestAuth? = nil
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -422,6 +423,10 @@ actor HTTPClient {
             }
             var auth = try await tokenStore.captureRequestAuth(expected: requestIdentity)
             if let expectedAccount, auth.account != expectedAccount { throw HTTPError.requestIdentityChanged }
+            if let expectedAuth {
+                guard auth.account == expectedAuth.account, auth.profileId == expectedAuth.profileId,
+                      auth.profileToken == expectedAuth.profileToken else { throw HTTPError.requestIdentityChanged }
+            }
             var request = try scopedRequest(
                 method: method,
                 path: path,
@@ -456,6 +461,9 @@ actor HTTPClient {
                 if let refreshedAuth = try? await tokenStore.captureRequestAuth(
                     expected: requestIdentity
                 ),
+                   (expectedAuth == nil || (refreshedAuth.account == expectedAuth?.account
+                       && refreshedAuth.profileId == expectedAuth?.profileId
+                       && refreshedAuth.profileToken == expectedAuth?.profileToken)),
                    refreshedAuth.account == originalAuth.account,
                    refreshedAuth.credentialOwner == originalAuth.credentialOwner,
                    refreshedAuth.accessToken != nil,
@@ -528,7 +536,8 @@ actor HTTPClient {
             additionalHeaders: headers,
             quietStatuses: quietStatuses,
             timeout: timeout,
-            expectedAccount: expectedAccount
+            expectedAccount: expectedAccount,
+            expectedAuth: expectedAuth
         ) { serverUrl in
             var request = try self.buildRequest(
                 serverUrl: serverUrl,
@@ -950,6 +959,7 @@ actor HTTPClient {
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout,
         expectedAccount: RefreshAccountIdentity? = nil,
+        expectedAuth: CapturedOrdinaryRequestAuth? = nil,
         makeRequest: (String) throws -> URLRequest
     ) async throws -> (Data, HTTPURLResponse) {
         let dispatchRevision = try captureRequestDispatchRevision()
@@ -960,6 +970,11 @@ actor HTTPClient {
         if let expectedAccount,
            capturedAuth?.account != expectedAccount {
             throw HTTPError.requestIdentityChanged
+        }
+        if let expectedAuth {
+            guard let capturedAuth, capturedAuth.account == expectedAuth.account,
+                  capturedAuth.profileId == expectedAuth.profileId,
+                  capturedAuth.profileToken == expectedAuth.profileToken else { throw HTTPError.requestIdentityChanged }
         }
         let serverUrl = if let capturedAuth {
             capturedAuth.account.serverURL
@@ -990,6 +1005,9 @@ actor HTTPClient {
                    expected: capturedAuth,
                    dispatchRevision: dispatchRevision
                ),
+               (expectedAuth == nil || (refreshedAuth.account == expectedAuth?.account
+                   && refreshedAuth.profileId == expectedAuth?.profileId
+                   && refreshedAuth.profileToken == expectedAuth?.profileToken)),
                refreshedAuth.accessToken != nil,
                await tokenStore.currentOrdinaryRequestAuth(
                    matchingIdentityOf: refreshedAuth

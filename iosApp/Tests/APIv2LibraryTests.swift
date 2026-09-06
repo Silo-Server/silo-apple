@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class APIv2LibraryTests: XCTestCase {
-    private func fixture() async throws -> (APIv2Client, TokenStore) {
+    private func fixture(captureBarrier: (@Sendable (TokenStore) async -> Void)? = nil) async throws -> (APIv2Client, TokenStore) {
         let name = "APIv2LibraryTests.\(UUID())"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         let defaults = SharedDefaults(suite: suite, standard: suite)
@@ -14,7 +14,8 @@ final class APIv2LibraryTests: XCTestCase {
         try await tokens.installAccountSession(accessToken: "access", refreshToken: "refresh", accountID: "1")
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [LibraryReadProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokens)
+        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokens,
+            requestCaptureBarrier: { await captureBarrier?(tokens) })
         LibraryReadProtocol.reset()
         addTeardownBlock {
             suite.removePersistentDomain(forName: name)
@@ -160,6 +161,28 @@ final class APIv2LibraryTests: XCTestCase {
         }
         XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
     }
+    func testSubtitleCreationRejectsPINReplacementAtHTTPCapture() async throws {
+        let (v2, tokens) = try await fixture(captureBarrier: { await $0.setProfileToken("proof-b") })
+        await tokens.setProfileId("profile")
+        await tokens.setProfileToken("proof-a")
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        do { _ = try await api.translateSubtitle(subtitleCreateBody(), auth: auth); XCTFail("replacement PIN dispatched") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+    }
+
+    func testSubtitleCreationPinsAbsentProfileAndPINAtHTTPCapture() async throws {
+        let (v2, _) = try await fixture(captureBarrier: {
+            await $0.setProfileId("new-profile")
+            await $0.setProfileToken("new-proof")
+        })
+        let api = SiloAI(v2: v2)
+        let auth = try await api.captureCreationAuthority()
+        XCTAssertNil(auth.profileId); XCTAssertNil(auth.profileToken)
+        do { _ = try await api.translateSubtitle(subtitleCreateBody(), auth: auth); XCTFail("absent authority replaced") } catch {}
+        XCTAssertTrue(LibraryReadProtocol.requests().isEmpty)
+    }
+
     func testSubtitleCreationRejectsChangedProfileBeforeAndAfterDispatch() async throws {
         let (v2, tokens) = try await fixture()
         await tokens.setProfileId("profile")

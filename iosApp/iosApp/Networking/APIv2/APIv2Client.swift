@@ -246,7 +246,7 @@ struct APIv2Client: Sendable {
         let raw = try await mapErrors {
             try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/translate", body: encoder.encode(body),
                 headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                requestIdentity: identity, expectedAccount: auth.account)
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
         }
         let after = try await subtitleCreateAuthority()
         guard after.account == auth.account, after.profileId == auth.profileId,
