@@ -23,6 +23,26 @@ final class DownloadOwnershipTests: XCTestCase {
         XCTAssertEqual(final.downloads.subscriptions, [saved])
     }
 
+    func testCreationRetainsExactReplacementIDAndRevision() async throws {
+        let (store, _, _, _) = try await harness()
+        let state = try await store.openLocal(legacyData: nil, permitMigration: true)
+        let row = try HTTPClient.makeJSONDecoder().decode(ServerDownloadRow.self,
+            from: Data(#"{"id":"exact-entry","content_id":"movie","media_file_id":42,"revision":3,"quality":"original","status":"ready"}"#.utf8))
+        let local = try await store.applyLocal(.registered([row], .init()), generation: state.ownerGeneration)
+        let record = try XCTUnwrap(local.downloads.records["exact-entry"])
+        let request = CreateDownloadRequest(contentId: "movie", episodeId: nil, fileId: 42, quality: "1mbps", series: nil, seasonNumber: nil, caps: nil)
+        let body = try DownloadCreateV2Body(request, existing: record, batchID: nil)
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(body)) as? [String: Any])
+        XCTAssertEqual(fields["expected_download_id"] as? String, "exact-entry")
+        XCTAssertEqual(fields["expected_revision"] as? Int, 3)
+        XCTAssertEqual(fields["media_file_id"] as? String, "42")
+        XCTAssertEqual(fields["quality"] as? String, "1mbps")
+        XCTAssertNil(fields["expected_entries"])
+        let absent = try DownloadCreateV2Body(request, existing: nil, batchID: nil)
+        XCTAssertEqual(absent.expectedRevision, 0); XCTAssertNil(absent.expectedDownloadId)
+    }
+
     func testStatusEventsSurviveRestartAndOldAcknowledgmentCannotClearCompletion() async throws {
         let (store, authority, root, _) = try await harness()
         let state = try await store.openLocal(legacyData: nil, permitMigration: true)

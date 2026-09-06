@@ -8,15 +8,7 @@ extension SiloAPI {
 
     // Registry reads, status reports and deletion use DownloadManager ownership.
 
-    /// Register a managed download. Returns one row for a single item, or
-    /// every batch member for a series/season request.
-    func createDownload(_ request: CreateDownloadRequest) async throws -> [ServerDownloadRow] {
-        let response: CreateDownloadResponse = try await http.post(
-            "/api/v1/downloads",
-            body: request
-        )
-        return response.downloads
-    }
+    // Managed creation uses DownloadManager captured ownership.
 
     // Subscription lifecycle uses DownloadManager captured ownership.
 
@@ -55,26 +47,6 @@ extension SiloAPI {
 }
 
 // MARK: - Request/response helpers
-
-/// `POST /api/v1/downloads` returns either a bare row (single item) or a
-/// `{ "downloads": [...] }` batch. This decodes both into a row list.
-struct CreateDownloadResponse: Decodable, Sendable {
-    let downloads: [ServerDownloadRow]
-
-    private enum CodingKeys: String, CodingKey {
-        case downloads
-    }
-
-    init(from decoder: Decoder) throws {
-        if let keyed = try? decoder.container(keyedBy: CodingKeys.self),
-           let rows = try? keyed.decode([ServerDownloadRow].self, forKey: .downloads) {
-            self.downloads = rows
-            return
-        }
-        let single = try ServerDownloadRow(from: decoder)
-        self.downloads = [single]
-    }
-}
 
 /// Per-item result envelope from `POST /api/v1/sync/progress` (§5.1).
 struct SyncProgressResultsResponse: Codable, Sendable {

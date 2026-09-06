@@ -76,6 +76,17 @@ final class APIv2LibraryTests: XCTestCase {
         XCTAssertEqual(LibraryReadProtocol.requests().count, 2)
     }
 
+    func testManagedCreation401NeverReplays() async throws {
+        let (api, tokens) = try await fixture()
+        await tokens.setProfileId("profile")
+        LibraryReadProtocol.status = 401
+        LibraryReadProtocol.enqueue([Data(#"{"detail":"Rejected"}"#.utf8)])
+        let body = try DownloadCreateV2Body(CreateDownloadRequest(contentId: "movie", episodeId: nil, fileId: 42,
+            quality: "original", series: nil, seasonNumber: nil, caps: nil), existing: nil, batchID: nil)
+        do { let _: DownloadCreateV2Page = try await api.requestPost("/api/v2/downloads", body: body); XCTFail("accepted401") } catch {}
+        XCTAssertEqual(LibraryReadProtocol.requests().count, 1)
+    }
+
     private func profileBody() throws -> Data {
         try APIv2FixtureTestSupport.data(named: "update_profile_ok", bundleClass: Self.self)
     }

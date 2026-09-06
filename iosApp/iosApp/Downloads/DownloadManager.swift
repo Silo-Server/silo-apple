@@ -127,6 +127,8 @@ final class DownloadManager {
     /// to the manager (rather than one button) so a detail rebuild cannot make
     /// the preparing indicator disappear during registration.
     private(set) var pendingRegistrationContentIds: Set<String> = []
+    private(set) var lastRegistrationSkipped: [DownloadCreateSkipped] = []
+
     /// Each pending id owns a unique token. An older request may finish after
     /// sign-out and reactivation, but its defer must never clear a newer
     /// request for the same content id.
@@ -457,6 +459,7 @@ final class DownloadManager {
         pendingResumeIDs.removeAll()
         startingIDs.removeAll()
         pendingRegistrationTokens.removeAll()
+        lastRegistrationSkipped = []
         pendingRegistrationContentIds.removeAll()
         registrationScopeGeneration &+= 1
         scopeServerId = ""
@@ -575,14 +578,31 @@ final class DownloadManager {
             caps: DownloadCaps.current()
         )
         let handle = try requireOwner()
-        let response: CreateDownloadResponse = try await self.request("POST", "/api/v1/downloads", body: encode(request), owner: handle)
-        let rows = response.downloads
+        let existing = isBatch ? nil : file.records.values.first { $0.contentId == contentId && $0.episodeId == episodeId }
+        let body = try DownloadCreateV2Body(request, existing: existing, batchID: isBatch ? UUID().uuidString : nil)
+        let encoded = try encode(body)
+        let result: DownloadCreateV2Result
+        do {
+            result = try await DownloadCreationV2.collect(body: body, deviceID: AppleDeviceIdentity.current.id) { cursor in
+                var query = ["limit": "100"]
+                if let cursor { query["cursor"] = cursor }
+                return try await self.request("POST", "/api/v2/downloads", body: encoded, query: query,
+                    expectedStatus: 202, owner: handle)
+            }
+        } catch {
+            // Earlier pages or a lost response may already have registered rows.
+            // Read the registry; never resend or rewrite this creation's guards.
+            if (try? await verified(handle)) != nil { await reconcileWithServer(triggerPipeline: true) }
+            throw error
+        }
+        let rows = result.rows
         guard capturedScopeGeneration == registrationScopeGeneration,
               capturedServerId == scopeServerId,
               capturedProfileId == scopeProfileId else {
             throw DownloadError.scopeChangedDuringRegistration
         }
-        guard !rows.isEmpty else { throw DownloadError.emptyRegistrationResponse }
+        lastRegistrationSkipped = result.skipped
+        if rows.isEmpty { return }
         try await command(.registered(rows, DownloadRegistrationDisplay(title: rows.count == 1 ? displayTitle : nil,
             subtitle: rows.count == 1 ? displaySubtitle : nil, type: type, seriesID: seriesId,
             posterThumbhash: rows.count == 1 ? posterThumbhash : nil)), owner: handle)

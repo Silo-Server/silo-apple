@@ -34,6 +34,39 @@ final class DownloadRegistryV2Tests: XCTestCase {
         XCTAssertEqual(try DownloadSubscriptionV2.validator("\"opaque-validator\""), "\"opaque-validator\"")
     }
 
+    func testCreationEmptySkippedPageContinuesWithoutChangingBatch() async throws {
+        let request = CreateDownloadRequest(contentId: "movie", episodeId: nil, fileId: nil, quality: "original", series: true, seasonNumber: 0, caps: nil)
+        let body = try DownloadCreateV2Body(request, existing: nil, batchID: "batch")
+        var cursors: [String?] = []
+        let result = try await DownloadCreationV2.collect(body: body, deviceID: "device-one") { cursor in
+            cursors.append(cursor)
+            if cursor == nil {
+                return DownloadCreateV2Page(items: [], skipped: [DownloadCreateSkipped(episodeId: "skipped", reason: "no_file")],
+                    page: APIv2Page(nextCursor: "opaque+/=", hasMore: true), batchId: "batch")
+            }
+            return try DownloadCreateV2Page(items: [entry()], skipped: [], page: APIv2Page(nextCursor: nil, hasMore: false), batchId: "batch")
+        }
+        XCTAssertEqual(cursors, [nil, "opaque+/="])
+        XCTAssertEqual(result.rows.count, 1); XCTAssertEqual(result.skipped.first?.episodeId, "skipped")
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(body)) as? [String: Any])
+        XCTAssertEqual(encoded["batch_id"] as? String, "batch"); XCTAssertEqual(encoded["season_number"] as? Int, 0)
+        XCTAssertNil(encoded["expected_entries"]); XCTAssertNil(encoded["expected_revision"])
+    }
+
+    func testCreationPartialFailureNeverReturnsPrefixOrRetries() async throws {
+        let body = try DownloadCreateV2Body(CreateDownloadRequest(contentId: "movie", episodeId: nil, fileId: nil, quality: "original", series: true, seasonNumber: nil, caps: nil), existing: nil, batchID: "batch")
+        var calls = 0
+        do {
+            _ = try await DownloadCreationV2.collect(body: body, deviceID: "device-one") { _ in
+                calls += 1
+                if calls == 2 { throw URLError(.networkConnectionLost) }
+                return try DownloadCreateV2Page(items: [entry()], skipped: [], page: APIv2Page(nextCursor: "next", hasMore: true), batchId: "batch")
+            }
+            XCTFail("partial collection")
+        } catch { XCTAssertEqual(calls, 2) }
+    }
+
     private func fixture(_ name: String) throws -> Data {
         try APIv2FixtureTestSupport.data(named: name, bundleClass: Self.self)
     }

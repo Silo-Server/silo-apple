@@ -214,3 +214,85 @@ enum DownloadSubscriptionV2 {
         throw DownloadOwnershipError.incompleteAction
     }
 }
+
+struct DownloadCreateV2Body: Encodable, Sendable {
+    let contentId: String
+    let episodeId: String?
+    let mediaFileId: String?
+    let quality: String
+    let series: Bool
+    let seasonNumber: Int?
+    let caps: DownloadCaps?
+    let expectedRevision: Int?
+    let expectedDownloadId: String?
+    let batchId: String?
+
+    init(_ request: CreateDownloadRequest, existing: DownloadRecord?, batchID: String?) throws {
+        guard request.fileId == nil || request.fileId! > 0 else { throw DownloadOwnershipError.incompleteAction }
+        contentId = request.contentId; episodeId = request.episodeId
+        mediaFileId = request.fileId.map(String.init); quality = request.quality
+        series = request.series == true; seasonNumber = request.seasonNumber; caps = request.caps
+        batchId = series ? batchID : nil
+        if series {
+            guard batchID?.isEmpty == false else { throw DownloadOwnershipError.incompleteAction }
+            expectedRevision = nil; expectedDownloadId = nil
+        } else if let existing {
+            guard existing.contentId == contentId, existing.episodeId == episodeId,
+                  let revision = existing.revision, revision > 0 else { throw DownloadOwnershipError.incompleteAction }
+            expectedRevision = revision; expectedDownloadId = existing.id
+        } else {
+            expectedRevision = 0; expectedDownloadId = nil
+        }
+    }
+}
+struct DownloadCreateSkipped: Decodable, Sendable {
+    let episodeId: String
+    let reason: String
+}
+struct DownloadCreateV2Page: Decodable, Sendable {
+    let items: [APIv2DownloadEntry]
+    let skipped: [DownloadCreateSkipped]
+    let page: APIv2Page
+    let batchId: String?
+}
+struct DownloadCreateV2Result {
+    let rows: [ServerDownloadRow]
+    let skipped: [DownloadCreateSkipped]
+}
+enum DownloadCreationV2 {
+    static func collect(body: DownloadCreateV2Body, deviceID: String,
+                        fetch: (String?) async throws -> DownloadCreateV2Page) async throws -> DownloadCreateV2Result {
+        var cursor: String?
+        var cursors = Set<String>()
+        var ids = Set<String>()
+        var rows: [ServerDownloadRow] = []
+        var skipped: [DownloadCreateSkipped] = []
+        for _ in 0..<1000 {
+            let response = try await fetch(cursor)
+            guard response.items.count <= 100, response.skipped.count <= 100,
+                  response.batchId == body.batchId else { throw DownloadOwnershipError.incompleteAction }
+            for item in response.items {
+                guard item.deviceId == deviceID, item.contentId == body.contentId,
+                      body.series || item.episodeId == body.episodeId,
+                      body.mediaFileId == nil || item.mediaFileId == body.mediaFileId,
+                      ids.insert(item.id).inserted else { throw DownloadOwnershipError.wrongAuthority }
+                rows.append(try ServerDownloadRow(v2: item))
+            }
+            skipped.append(contentsOf: response.skipped)
+            if !body.series {
+                guard response.items.count == 1, response.skipped.isEmpty, !response.page.hasMore else {
+                    throw DownloadOwnershipError.incompleteAction
+                }
+            }
+            guard response.page.hasMore else {
+                guard response.page.nextCursor?.isEmpty != false else { throw DownloadOwnershipError.incompleteAction }
+                return DownloadCreateV2Result(rows: rows, skipped: skipped)
+            }
+            guard let next = response.page.nextCursor, !next.isEmpty, cursors.insert(next).inserted else {
+                throw DownloadOwnershipError.incompleteAction
+            }
+            cursor = next
+        }
+        throw DownloadOwnershipError.incompleteAction
+    }
+}
