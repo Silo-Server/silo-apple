@@ -82,6 +82,63 @@ final class SeriesSeasonSelectionTests: XCTestCase {
         XCTAssertEqual(destinations, ["s2e1"])
     }
 
+    func testInitialHierarchyFailureClearsEpisodeLoading() async {
+        let model = ItemDetailViewModel()
+        model.isLoadingEpisodes = true
+
+        await model.loadSeasons(seriesId: "hierarchy-failure", fetchSeasons: { _ in
+            throw URLError(.notConnectedToInternet)
+        })
+
+        XCTAssertFalse(model.isLoadingEpisodes)
+        XCTAssertTrue(model.episodes.isEmpty)
+    }
+
+    func testEmptyInitialHierarchyClearsEpisodeLoading() async throws {
+        let model = ItemDetailViewModel()
+        model.isLoadingEpisodes = true
+        let empty = try JSONDecoder().decode(SeasonsResponse.self, from: Data("{\"seasons\":[]}".utf8))
+
+        await model.loadSeasons(seriesId: "empty-hierarchy", fetchSeasons: { _ in empty })
+
+        XCTAssertFalse(model.isLoadingEpisodes)
+        XCTAssertNil(model.selectedSeason)
+    }
+
+    func testBackgroundHierarchyFailureDoesNotClearEpisodeLoading() async {
+        let model = ItemDetailViewModel()
+        model.isLoadingEpisodes = true
+
+        await model.loadSeasons(seriesId: "background-hierarchy", autoSelectInitial: false, fetchSeasons: { _ in
+            throw URLError(.notConnectedToInternet)
+        })
+
+        XCTAssertTrue(model.isLoadingEpisodes)
+    }
+
+    func testOldHierarchyFailureDoesNotClearNewerEpisodeLoading() async throws {
+        let model = ItemDetailViewModel()
+        let detail = try JSONDecoder().decode(ItemDetail.self, from: Data(
+            "{\"contentId\":\"superseded-hierarchy\",\"type\":\"series\",\"title\":\"Synthetic series\"}".utf8
+        ))
+        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(detail.contentId))
+        defer { ResponseCache.shared.removeAll(withPrefix: "item:superseded-hierarchy") }
+        model.hydrateFromCache(contentId: detail.contentId)
+        model.isLoadingEpisodes = true
+        let newerSeason = try season(2)
+        model.episodesBySeason[2] = []
+
+        await model.loadSeasons(seriesId: "superseded-hierarchy", fetchSeasons: { _ in
+            await model.selectSeason(newerSeason)
+            // A newer selection owns the loading indicator from this point.
+            await MainActor.run { model.isLoadingEpisodes = true }
+            throw URLError(.notConnectedToInternet)
+        })
+
+        XCTAssertTrue(model.isLoadingEpisodes)
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 2)
+    }
+
     private func season(_ number: Int) throws -> Season {
         try JSONDecoder().decode(Season.self, from: Data(
             "{\"contentId\":\"season-\(number)\",\"seasonNumber\":\(number)}".utf8

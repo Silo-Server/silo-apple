@@ -898,12 +898,24 @@ class ItemDetailViewModel {
     func loadSeasons(
         seriesId: String,
         autoSelectInitial: Bool = true,
-        coalescesMetadataRequest: Bool = true
+        coalescesMetadataRequest: Bool = true,
+        fetchSeasons: (@Sendable (String) async throws -> SeasonsResponse)? = nil
     ) async {
         let selectionGeneration = episodeLoadGeneration
+        defer {
+            // Cold episode routes start loading before hierarchy resolution.
+            // Failure or an empty hierarchy must end that initial wait, but
+            // must not clear a newer selection or a parallel episode refresh.
+            if autoSelectInitial, selectionGeneration == episodeLoadGeneration,
+               isLoadingEpisodes {
+                isLoadingEpisodes = false
+            }
+        }
         do {
             let response: SeasonsResponse
-            if coalescesMetadataRequest {
+            if let fetchSeasons {
+                response = try await fetchSeasons(seriesId)
+            } else if coalescesMetadataRequest {
                 response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId)
             } else {
                 response = try await SiloAPI.shared.seasons(seriesId: seriesId)
