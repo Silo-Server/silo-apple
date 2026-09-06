@@ -46,17 +46,17 @@ final class ApplePushRegistrationTests: XCTestCase {
     }
 
     func testNotificationSyncQueryIncludesLimitAndOptionalCursor() {
-        XCTAssertEqual(ApplePushNotificationSyncWire.query(since: nil), ["limit": "50"])
-        XCTAssertEqual(ApplePushNotificationSyncWire.query(since: "cursor"), [
+        XCTAssertEqual(ApplePushNotificationSyncWire.query(cursor: nil), ["limit": "50"])
+        XCTAssertEqual(ApplePushNotificationSyncWire.query(cursor: "cursor"), [
             "limit": "50",
-            "since": "cursor"
+            "cursor": "cursor"
         ])
     }
 
     func testNotificationSyncResponseDecodesSnakeCasePayload() throws {
         let json = """
         {
-          "notifications": [
+          "items": [
             {
               "id": "delivery-1",
               "type": "new_episode",
@@ -67,7 +67,9 @@ final class ApplePushRegistrationTests: XCTestCase {
               "read_at": null
             }
           ],
-          "next_cursor": "cursor-1",
+          "page": {"has_more": false},
+          "sync_cursor": "cursor-1",
+          "initial_snapshot": true,
           "unread_count": 3
         }
         """.data(using: .utf8)!
@@ -78,12 +80,12 @@ final class ApplePushRegistrationTests: XCTestCase {
 
         let response = try decoder.decode(ApplePushNotificationSyncResponse.self, from: json)
 
-        XCTAssertEqual(response.notifications.count, 1)
-        XCTAssertEqual(response.notifications.first?.id, "delivery-1")
-        XCTAssertEqual(response.notifications.first?.profileId, "profile-1")
-        XCTAssertNotNil(response.notifications.first?.createdAt)
-        XCTAssertNil(response.notifications.first?.readAt)
-        XCTAssertEqual(response.nextCursor, "cursor-1")
+        XCTAssertEqual(response.items.count, 1)
+        XCTAssertEqual(response.items.first?.id, "delivery-1")
+        XCTAssertEqual(response.items.first?.profileId, "profile-1")
+        XCTAssertNotNil(response.items.first?.createdAt)
+        XCTAssertNil(response.items.first?.readAt)
+        XCTAssertEqual(response.syncCursor, "cursor-1")
         XCTAssertEqual(response.unreadCount, 3)
     }
 

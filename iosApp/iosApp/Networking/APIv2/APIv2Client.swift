@@ -5,6 +5,7 @@ enum APIv2Error: LocalizedError, Sendable {
     /// The connected server is v1-only (see `APIv2Probe`). Pilot operations
     /// are refused rather than routed to a v1 path.
     case serverUpdateRequired
+    case invalidNotificationContinuation
     case incompleteAuthResponse
     case incompleteRequestList
     case missingCollectionVersion
@@ -25,6 +26,7 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .invalidNotificationContinuation: return "The notification sync could not be continued. Try again."
         case .incompleteAuthResponse: return "The server returned an incomplete sign-in response. Start sign-in again."
         case .invalidPersonalListQuery:
             return "The personal list request is not valid."
@@ -627,6 +629,36 @@ struct APIv2Client: Sendable {
         guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
         return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackCapabilities.self, from: raw.data)
     }
+
+    #if os(iOS)
+    func notificationSync(cursor: String?, auth: CapturedOrdinaryRequestAuth) async throws -> ApplePushNotificationSyncResponse {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: ApplePushNotificationSyncWire.endpoint,
+                query: ApplePushNotificationSyncWire.query(cursor: cursor),
+                requestIdentity: identity, expectedAccount: auth.account)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let page = try HTTPClient.makeJSONDecoder().decode(ApplePushNotificationSyncResponse.self, from: raw.data)
+        guard raw.statusCode == 200, !page.syncCursor.isEmpty, page.unreadCount >= 0,
+              page.items.count <= ApplePushNotificationSyncWire.defaultLimit,
+              page.items.allSatisfy({ !$0.id.isEmpty && $0.profileId == profile }),
+              Set(page.items.map(\.id)).count == page.items.count,
+              page.initialSnapshot == (cursor == nil),
+              page.page.hasMore ? (page.page.nextCursor == page.syncCursor && page.syncCursor != cursor && !page.items.isEmpty) : page.page.nextCursor == nil else {
+            throw APIv2Error.invalidNotificationContinuation
+        }
+        return page
+    }
+    #endif
 
     // MARK: Internals
 
