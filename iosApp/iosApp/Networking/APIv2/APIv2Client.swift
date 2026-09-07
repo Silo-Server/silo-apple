@@ -1336,8 +1336,28 @@ struct APIv2Client: Sendable {
             profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
         return try await mapErrors {
             try await http.requestData(method: method, path: "/api/v2/playback" + suffix, body: body,
-                requestIdentity: identity, expectedAccount: auth.account)
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
         }
+    }
+
+    func playbackControlRequest(sessionID: String, installationID: String,
+                                auth: CapturedOrdinaryRequestAuth) async throws -> URLRequest {
+        guard UUID(uuidString: sessionID) != nil else { throw PlaybackSequencedError.invalidSession }
+        let capabilityRaw = try await playbackRequest(method: "GET", suffix: "/sessions/control/capabilities", auth: auth)
+        let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlCapabilities.self, from: capabilityRaw.data)
+        guard capabilityRaw.statusCode == 200, capability.available, capability.ownerLeaseAdmission,
+              capability.protocol == "silo.playback-control.v2" else { throw PlaybackSequencedError.invalidResponse }
+        struct Body: Encodable { let installationId: String }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let raw = try await playbackRequest(method: "POST", suffix: "/sessions/\(sessionID)/control/ws-ticket",
+            body: encoder.encode(Body(installationId: installationID)), auth: auth)
+        guard raw.statusCode == 200,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw PlaybackSequencedError.authorityChanged
+        }
+        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: raw.data)
+        return try ticket.request(serverURL: auth.account.serverURL, sessionID: sessionID)
     }
 
     func playbackCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackCapabilities {

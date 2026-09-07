@@ -201,3 +201,37 @@ struct APIv2PlaybackCapabilities: Decodable {
         return installationId
     }
 }
+
+/// Delegated credential for one owner-bound control handshake; never persisted.
+struct APIv2PlaybackControlTicket: Decodable {
+    let ticket: String
+    let expiresIn: Int
+    let maxConnectionSeconds: Int
+    let `protocol`: String
+
+    func request(serverURL: String, sessionID: String) throws -> URLRequest {
+        let safeTicket = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        guard `protocol` == "silo.playback-control.v2", expiresIn > 0, maxConnectionSeconds > 0,
+              !ticket.isEmpty, ticket.unicodeScalars.allSatisfy(safeTicket.contains),
+              UUID(uuidString: sessionID) != nil,
+              var url = URLComponents(string: serverURL),
+              ["http", "https"].contains(url.scheme), url.host != nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw PlaybackSequencedError.invalidResponse
+        }
+        url.scheme = url.scheme == "https" ? "wss" : "ws"
+        url.percentEncodedPath = url.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .split(separator: "/").map { "/" + $0 }.joined()
+            + "/api/v2/playback/sessions/\(sessionID)/control/ws"
+        guard let resolved = url.url else { throw PlaybackSequencedError.invalidResponse }
+        var request = URLRequest(url: resolved)
+        request.setValue("\(`protocol`), silo.ticket.\(ticket)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        return request
+    }
+}
+
+struct APIv2PlaybackControlCapabilities: Decodable {
+    let available: Bool
+    let `protocol`: String
+    let ownerLeaseAdmission: Bool
+}

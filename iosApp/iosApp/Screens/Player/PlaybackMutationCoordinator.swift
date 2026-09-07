@@ -184,6 +184,38 @@ actor PlaybackMutationCoordinator {
 
     func handles(_ sessionID: String) -> Bool { contexts[sessionID] != nil }
 
+    struct ControlBinding: Sendable {
+        let sessionID: String
+        let authority: PlaybackMutationAuthority
+        let auth: CapturedOrdinaryRequestAuth
+    }
+
+    func controlBinding(sessionID: String) async throws -> ControlBinding {
+        guard let context = contexts[sessionID], context.authority.installationID != nil,
+              stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        let auth = try await currentAuth(context.authority)
+        let binding = ControlBinding(sessionID: sessionID, authority: context.authority, auth: auth)
+        try await validateControlBinding(binding)
+        return binding
+    }
+
+    func validateControlBinding(_ binding: ControlBinding) async throws {
+        guard let context = contexts[binding.sessionID], context.authority == binding.authority,
+              stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        _ = try await currentAuth(binding.authority)
+        guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: binding.auth) != nil,
+              stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.authorityChanged }
+    }
+
+    func controlRequest(_ binding: ControlBinding) async throws -> URLRequest {
+        try await validateControlBinding(binding)
+        guard let installation = binding.authority.installationID else { throw PlaybackSequencedError.invalidSession }
+        let request = try await api.v2.playbackControlRequest(sessionID: binding.sessionID,
+            installationID: installation, auth: binding.auth)
+        try await validateControlBinding(binding)
+        return request
+    }
+
     private func currentAuth(_ authority: PlaybackMutationAuthority) async throws -> CapturedOrdinaryRequestAuth {
         guard let current = await tokens.captureDurableAccountAuth(),
               try PlaybackMutationAuthority(auth: current, installationID: authority.installationID) == authority else {

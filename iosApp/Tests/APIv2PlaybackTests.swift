@@ -221,6 +221,48 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.httpMethod == "POST" })
     }
 
+    func testControlTicketBindsExactSessionInstallationAndCapturedAuthority() async throws {
+        let (owner, tokens, auth, _, _) = try await fixture()
+        let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(response.sessionId)
+        let binding = try await owner.controlBinding(sessionID: id)
+        let socket = try await owner.controlRequest(binding)
+        XCTAssertEqual(socket.url?.absoluteString, "wss://playback.example/api/v2/playback/sessions/\(id)/control/ws")
+        XCTAssertNil(socket.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(socket.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "silo.playback-control.v2, silo.ticket.single-use-proof")
+        let sent = try XCTUnwrap(V2PlaybackProtocol.requests().last { $0.0.url!.path.hasSuffix("/ws-ticket") })
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: sent.1) as? [String: String])
+        XCTAssertEqual(body, ["installation_id": try capability().requireAvailable()])
+        XCTAssertEqual(sent.0.value(forHTTPHeaderField: "X-Profile-Id"), "profile")
+        _ = await tokens.setProfileToken("different-proof")
+        do { _ = try await owner.controlRequest(binding); XCTFail("Changed PIN authority must fence control") } catch {}
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url!.path.hasSuffix("/ws-ticket") }.count, 1)
+    }
+
+    func testRejectedControlTicketDoesNotRefreshReplayOrUseV1() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let binding = try await owner.controlBinding(sessionID: XCTUnwrap(response.sessionId))
+        V2PlaybackProtocol.controlStatus(401)
+        do { _ = try await owner.controlRequest(binding); XCTFail() } catch {}
+        let requests = V2PlaybackProtocol.requests()
+        XCTAssertEqual(requests.filter { $0.0.url!.path.hasSuffix("/ws-ticket") }.count, 1)
+        XCTAssertFalse(requests.contains { $0.0.url!.path.contains("/api/v1/") || $0.0.url!.path.hasSuffix("/auth/refresh") })
+    }
+
+    func testControlTicketRejectsProtocolInjectionAndForeignAuthorityURL() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        for ticket in ["bad,header", "bad\r\nheader", ""] {
+            XCTAssertThrowsError(try APIv2PlaybackControlTicket(ticket: ticket, expiresIn: 30,
+                maxConnectionSeconds: 60, protocol: "silo.playback-control.v2").request(serverURL: "https://playback.example", sessionID: id))
+        }
+        let ticket = APIv2PlaybackControlTicket(ticket: "proof", expiresIn: 30, maxConnectionSeconds: 60, protocol: "silo.playback-control.v2")
+        XCTAssertThrowsError(try ticket.request(serverURL: "https://user@playback.example", sessionID: id))
+        XCTAssertThrowsError(try ticket.request(serverURL: "https://playback.example", sessionID: "../other"))
+        XCTAssertEqual(try ticket.request(serverURL: "https://playback.example/base/", sessionID: id).url?.path,
+            "/base/api/v2/playback/sessions/\(id)/control/ws")
+    }
+
     func testV2ProgressCarriesInstallationAndRetainsExactUncertainSample() async throws {
         let (owner, _, auth, _, _) = try await fixture()
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
@@ -264,6 +306,8 @@ private final class V2PlaybackProtocol: URLProtocol {
     nonisolated(unsafe) private static var rejection: Data?
     nonisolated(unsafe) private static var progressFailure = false
     nonisolated(unsafe) private static var stopCode = 200
+    nonisolated(unsafe) private static var controlCode = 200
+    static func controlStatus(_ value: Int) { lock.withLock { controlCode = value } }
     nonisolated(unsafe) private static var captured: [(URLRequest, Data)] = []
     static func configure(capability: Data, decision: Data) { lock.withLock { Self.capability = capability; Self.decision = decision } }
     static func rejectStart(_ value: Data?) { lock.withLock { rejection = value } }
@@ -271,7 +315,7 @@ private final class V2PlaybackProtocol: URLProtocol {
     static func startFails(_ value: Bool) { lock.withLock { failStart = value } }
     static func stopStatus(_ value: Int) { lock.withLock { stopCode = value } }
     static func requests() -> [(URLRequest, Data)] { lock.withLock { captured } }
-    static func reset() { lock.withLock { captured = []; startHook = nil; failStart = false; stopCode = 200; rejection = nil; progressFailure = false } }
+    static func reset() { lock.withLock { captured = []; startHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; progressFailure = false } }
     static func changeInstallation() { lock.withLock {
         var value = try! JSONSerialization.jsonObject(with: capability) as! [String: Any]
         value["installation_id"] = "different-installation"
@@ -293,7 +337,12 @@ private final class V2PlaybackProtocol: URLProtocol {
         let state = Self.lock.withLock { Self.captured.append((request, body)); return (Self.capability, Self.decision, Self.failStart, Self.stopCode, Self.rejection, Self.progressFailure) }
         var status = 200
         let output: Data
-        if request.url!.path.hasSuffix("/capabilities") { output = state.0 }
+        if request.url!.path.hasSuffix("/control/capabilities") {
+            output = Data(#"{"available":true,"protocol":"silo.playback-control.v2","owner_lease_admission":true}"#.utf8)
+        } else if request.url!.path.hasSuffix("/ws-ticket") {
+            status = Self.lock.withLock { Self.controlCode }
+            output = Data(#"{"ticket":"single-use-proof","expires_in":30,"max_connection_seconds":14400,"protocol":"silo.playback-control.v2"}"#.utf8)
+        } else if request.url!.path.hasSuffix("/capabilities") { output = state.0 }
         else if request.url!.path.hasSuffix("/start") {
             let hook = Self.lock.withLock { let hook = Self.startHook; Self.startHook = nil; return hook }
             hook?()

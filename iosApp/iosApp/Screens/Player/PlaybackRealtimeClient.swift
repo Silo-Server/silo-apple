@@ -13,6 +13,7 @@ actor PlaybackRealtimeClient {
     private let commandHandler: CommandHandler
     private let eventHandler: EventHandler?
     private let session: URLSession
+    private let mutationCoordinator: PlaybackMutationCoordinator
     private let encoder = JSONEncoder()
     private let reconnectDelaysNanos: [UInt64] = [
         500_000_000,
@@ -53,10 +54,12 @@ actor PlaybackRealtimeClient {
 
     init(
         session: URLSession = .shared,
+        mutationCoordinator: PlaybackMutationCoordinator = .shared,
         commandHandler: @escaping CommandHandler,
         eventHandler: EventHandler? = nil
     ) {
         self.session = session
+        self.mutationCoordinator = mutationCoordinator
         self.commandHandler = commandHandler
         self.eventHandler = eventHandler
     }
@@ -95,13 +98,21 @@ actor PlaybackRealtimeClient {
     }
 
     private func runConnectionLoop(sessionId: String, generation: Int) async {
+        let binding: PlaybackMutationCoordinator.ControlBinding
+        do { binding = try await mutationCoordinator.controlBinding(sessionID: sessionId) }
+        catch {
+            guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
+            setRealtimeUnavailable(true)
+            return
+        }
         var attempt = 0
         var consecutiveFailures = 0
 
         while isCurrentBinding(sessionId: sessionId, generation: generation) {
             do {
-                let request = try await makeRequest(sessionId: sessionId)
+                let request = try await mutationCoordinator.controlRequest(binding)
                 try Task.checkCancellation()
+                guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
 
                 let socket = session.webSocketTask(with: request)
                 self.socket = socket
@@ -113,7 +124,7 @@ actor PlaybackRealtimeClient {
                 consecutiveFailures = 0
                 setRealtimeConnected(true)
                 setRealtimeUnavailable(false)
-                try await receiveLoop(on: socket, sessionId: sessionId, generation: generation)
+                try await receiveLoop(on: socket, sessionId: sessionId, generation: generation, binding: binding)
             } catch is CancellationError {
                 break
             } catch {
@@ -215,10 +226,13 @@ actor PlaybackRealtimeClient {
     private func receiveLoop(
         on socket: URLSessionWebSocketTask,
         sessionId: String,
-        generation: Int
+        generation: Int,
+        binding: PlaybackMutationCoordinator.ControlBinding
     ) async throws {
         while isCurrentBinding(sessionId: sessionId, generation: generation) {
             let message = try await socket.receive()
+            try await mutationCoordinator.validateControlBinding(binding)
+            guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
             guard let data = decodeInboundMessageData(message) else { continue }
             guard let inbound = parsePlaybackRealtimeInboundMessage(data) else { continue }
 
@@ -242,7 +256,11 @@ actor PlaybackRealtimeClient {
                 )
 
                 do {
+                    try await mutationCoordinator.validateControlBinding(binding)
+                    guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
                     try await commandHandler(command)
+                    try await mutationCoordinator.validateControlBinding(binding)
+                    guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
                     try await send(
                         makePlaybackRealtimeResult(
                             sessionId: sessionId,
@@ -274,44 +292,6 @@ actor PlaybackRealtimeClient {
                 }
             }
         }
-    }
-
-    private func makeRequest(sessionId: String) async throws -> URLRequest {
-        let serverUrl = await SiloAPI.shared.currentServerUrl()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !serverUrl.isEmpty else {
-            throw PlaybackRealtimeTransportError.serverUrlNotConfigured
-        }
-
-        guard var components = URLComponents(string: serverUrl) else {
-            throw PlaybackRealtimeTransportError.invalidServerURL(serverUrl)
-        }
-
-        let normalizedPath = "/api/v1/playback/sessions/\(sessionId)/control/ws"
-        let basePath = components.percentEncodedPath
-        let trimmedBase = basePath.hasSuffix("/") ? String(basePath.dropLast()) : basePath
-        components.percentEncodedPath = trimmedBase + normalizedPath
-
-        switch components.scheme?.lowercased() {
-        case "https":
-            components.scheme = "wss"
-        case "http":
-            components.scheme = "ws"
-        default:
-            break
-        }
-
-        guard let url = components.url else {
-            throw PlaybackRealtimeTransportError.invalidServerURL(serverUrl)
-        }
-
-        var request = URLRequest(url: url)
-        if let token = await SiloAPI.shared.currentAccessToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        } else {
-            throw PlaybackRealtimeTransportError.missingAccessToken
-        }
-        return request
     }
 
     private func send<T: Encodable>(

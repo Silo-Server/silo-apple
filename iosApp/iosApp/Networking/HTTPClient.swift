@@ -1740,6 +1740,7 @@ actor HTTPClient {
         // Matches the guard in AuthInterceptorImpl.kt:96.
         let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
         return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
+            && !(method == "POST" && path.hasPrefix("/api/v2/playback/sessions/") && path.hasSuffix("/control/ws-ticket"))
             && path != "/api/v2/subtitles/download"
             && !(method == "POST" && path == "/api/v2/devices/push/apple")
             && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watchlist/"))
