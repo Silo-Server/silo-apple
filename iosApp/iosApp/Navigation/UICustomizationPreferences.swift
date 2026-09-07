@@ -386,76 +386,6 @@ extension UICustomizationTransport {
     }
 }
 
-final class SiloUICustomizationTransport: UICustomizationTransport {
-    private let api: SiloAPI
-
-    init(api: SiloAPI = .shared) {
-        self.api = api
-    }
-
-    func contractCapabilities(
-        requestIdentity: HTTPRequestIdentity
-    ) async -> SettingsCapabilitiesResult {
-        await api.getContractCapabilities(requestIdentity: requestIdentity)
-    }
-
-    func effectiveValues(
-        keys: [SettingKey],
-        requestIdentity: HTTPRequestIdentity
-    ) async throws -> EffectiveSettingValuesResponse {
-        try await api.getEffectiveValues(
-            keys: keys,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        mutationId: String,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        _ = try await api.putNavigationShortcutItem(
-            item,
-            present: present,
-            mutationId: mutationId,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
-    }
-
-    func putValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        value: SettingJSONValue,
-        mutationId: String,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        _ = try await api.putValue(
-            key: key,
-            scope: scope,
-            value: value,
-            mutationId: mutationId,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
-    }
-
-    func deleteValue(
-        key: SettingKey,
-        scope: SettingScopeIdentity,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        try await api.deleteValue(
-            key: key,
-            scope: scope,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
-    }
-}
-
 enum UICustomizationCapabilityState: Equatable, Sendable {
     case checking
     case supported
@@ -529,7 +459,12 @@ final class UICustomizationPreferences {
         supportProjection.projectsCachedValues ? storedCardPresentationSource : nil
     }
 
-    var allowsEditing: Bool { capabilityState.allowsEditing }
+    var allowsEditing: Bool {
+        guard capabilityState.allowsEditing else { return false }
+        guard let production = transport as? SiloUICustomizationTransport else { return true }
+        guard let identity = requestIdentity(), let authority = production.authority(for: identity) else { return false }
+        return projectionAuthority == authority
+    }
     var capabilityMessage: String? { capabilityState.userMessage }
 
     @ObservationIgnored private let defaults: SharedDefaults
@@ -543,6 +478,7 @@ final class UICustomizationPreferences {
     @ObservationIgnored private var syncErrorsByKey: [String: String] = [:]
     @ObservationIgnored private var shortcutSyncErrorsByIdentity: [String: String] = [:]
     @ObservationIgnored private var refreshSyncErrorMessage: String?
+    private var projectionAuthority: SettingsMutationAuthority?
     @ObservationIgnored private var loadedCacheKey: String?
     @ObservationIgnored private var pendingSyncWrites: [String: PendingSyncWrite] = [:]
     @ObservationIgnored private var pendingShortcutOperations: [String: PendingShortcutOperation] = [:]
@@ -553,13 +489,14 @@ final class UICustomizationPreferences {
     private struct OperationContext {
         let cacheKey: String
         let requestIdentity: HTTPRequestIdentity
+        var authority: SettingsMutationAuthority? = nil
     }
 
     private struct PendingSyncWrite: Codable {
         let value: SettingJSONValue
-        /// The settings API requires one stable idempotency key for the whole
-        /// lifetime of a retry. A new user edit replaces this record and gets
-        /// a new mutation id; connectivity retries reuse the existing one.
+        /// Local identity for this authored value. Production links it to one
+        /// durable v2 envelope; it is not a server replay header. Historical
+        /// injected transports retain their original retry contract.
         let mutationId: String
     }
 
@@ -581,7 +518,7 @@ final class UICustomizationPreferences {
         /// Original catalog position used to restore a definitively rejected
         /// removal without replacing unrelated optimistic shortcut edits.
         let shortcutIndex: Int?
-        /// Stable for every retry of this exact desired-presence operation.
+        /// Local identity for this exact desired-presence operation.
         let mutationId: String
         /// Preserves user intent order across identities after a restart.
         let sequence: UInt64
@@ -656,7 +593,7 @@ final class UICustomizationPreferences {
     private struct PendingDelete: Codable {
         let scope: SettingScope
         /// A local operation identity prevents an older queued DELETE from
-        /// clearing a newer same-scope reset that still needs to be replayed.
+        /// clearing a newer same-scope reset awaiting its own receipt.
         let operationId: String
 
         private enum CodingKeys: String, CodingKey {
@@ -750,6 +687,7 @@ final class UICustomizationPreferences {
 
         switch capabilities {
         case .available(let capabilities) where capabilities.supportsUICustomizationRevision:
+            if transport is SiloUICustomizationTransport { loadCache(for: targetCacheKey) }
             capabilityState = .supported
             supportProjection = .supported
             saveCache(for: targetCacheKey)
@@ -794,6 +732,7 @@ final class UICustomizationPreferences {
             }
 
             if decodedEveryValue {
+                projectionAuthority = (transport as? SiloUICustomizationTransport)?.authority(for: identity)
                 clearReconciledSyncErrors()
             } else {
                 refreshSyncErrorMessage = nil
@@ -955,6 +894,13 @@ final class UICustomizationPreferences {
             mutationId: newSettingMutationId(),
             sequence: nextShortcutOperationSequence
         )
+        do {
+            try (transport as? SiloUICustomizationTransport)?.prepareShortcut(id: operation.mutationId,
+                item: item, present: isPinned, identity: context.requestIdentity)
+        } catch {
+            setSyncError("This change could not be saved. Try it again.", for: .navShortcuts)
+            return
+        }
         pendingShortcutOperations[item.id] = operation
         reconcilePendingShortcutPlacementError()
 
@@ -1037,7 +983,7 @@ final class UICustomizationPreferences {
         Task { @MainActor [weak self] in
             await deletes?.value
             guard let self,
-                  self.contextIsCurrent(context),
+                  await self.contextIsCurrent(context),
                   self.syncErrorsByKey.isEmpty else { return }
             await self.refresh()
         }
@@ -1060,7 +1006,7 @@ final class UICustomizationPreferences {
         Task { @MainActor [weak self] in
             await delete?.value
             guard let self,
-                  self.contextIsCurrent(context),
+                  await self.contextIsCurrent(context),
                   self.syncErrorsByKey[SettingKey.uiCardPresentation.rawValue] == nil else { return }
             await self.refresh()
         }
@@ -1084,6 +1030,13 @@ final class UICustomizationPreferences {
             value: encodedValue,
             mutationId: newSettingMutationId()
         )
+        do {
+            try (transport as? SiloUICustomizationTransport)?.prepareValue(id: pendingWrite.mutationId,
+                key: key, scope: scope, value: encodedValue, identity: context.requestIdentity)
+        } catch {
+            setSyncError("This change could not be saved. Try it again.", for: key)
+            return false
+        }
         pendingSyncWrites[key.rawValue] = pendingWrite
         saveCache(for: context.cacheKey)
         enqueuePersist(
@@ -1109,7 +1062,7 @@ final class UICustomizationPreferences {
             await previousSave?.value
             guard let self else { return }
             defer { self.completeSave() }
-            guard contextIsCurrent(context) else { return }
+            guard await contextIsCurrent(context) else { return }
             do {
                 try await transport.putValue(
                     key: key,
@@ -1118,17 +1071,16 @@ final class UICustomizationPreferences {
                     mutationId: write.mutationId,
                     requestIdentity: context.requestIdentity
                 )
-                guard contextIsCurrent(context) else { return }
+                guard await contextIsCurrent(context) else { return }
                 if pendingSyncWrites[key.rawValue]?.mutationId == write.mutationId {
                     pendingSyncWrites.removeValue(forKey: key.rawValue)
                     saveCache(for: context.cacheKey)
                 }
                 setSyncError(nil, for: key)
             } catch {
-                guard contextIsCurrent(context) else { return }
-                // Keep the optimistic cache. A later refresh or another edit
-                // retries against the server without making the app unusable
-                // while offline.
+                guard await contextIsCurrent(context) else { return }
+                // Keep the optimistic cache. The production journal permits
+                // only prepared commands to dispatch and holds unknown outcomes.
                 setSyncError(Self.message(for: error), for: key)
             }
         }
@@ -1147,7 +1099,7 @@ final class UICustomizationPreferences {
             await previousSave?.value
             guard let self else { return }
             defer { self.completeSave() }
-            guard contextIsCurrent(context) else { return }
+            guard await contextIsCurrent(context) else { return }
             do {
                 try await transport.putShortcutItem(
                     operation.item,
@@ -1155,24 +1107,36 @@ final class UICustomizationPreferences {
                     mutationId: operation.mutationId,
                     requestIdentity: context.requestIdentity
                 )
-                guard contextIsCurrent(context) else { return }
+                guard await contextIsCurrent(context) else { return }
                 let identity = operation.item.id
                 if let currentOperation = pendingShortcutOperations[identity],
                    currentOperation.mutationId == operation.mutationId {
                     pendingShortcutOperations.removeValue(forKey: identity)
                     shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
                     reconcilePendingShortcutPlacementError()
+                    let priorMenu = storedPrimaryMenu
+                    let priorSource = storedPrimaryMenuSource
+                    let priorOperations = pendingShortcutOperations
                     let didPersistMenu = persistPrimaryMenuAfterShortcutAcceptance(
                         currentOperation,
                         context: context
                     )
                     if !didPersistMenu {
+                        if transport is SiloUICustomizationTransport, currentOperation.updatesPrimaryMenu,
+                           syncErrorsByKey[SettingKey.navPrimaryMenu.rawValue] != nil {
+                            // The shortcut receipt is durable, but its dependent
+                            // menu intent must survive failure to publish the next envelope.
+                            storedPrimaryMenu = priorMenu
+                            storedPrimaryMenuSource = priorSource
+                            pendingShortcutOperations = priorOperations
+                            pendingShortcutOperations[identity] = currentOperation
+                        }
                         saveCache(for: context.cacheKey)
                     }
                     updateSyncErrorMessage()
                 }
             } catch {
-                guard contextIsCurrent(context) else { return }
+                guard await contextIsCurrent(context) else { return }
                 let identity = operation.item.id
                 guard pendingShortcutOperations[identity]?.mutationId == operation.mutationId else {
                     return
@@ -1188,7 +1152,7 @@ final class UICustomizationPreferences {
                     reconcilePendingShortcutPlacementError()
                     saveCache(for: context.cacheKey)
                     Task { @MainActor [weak self] in
-                        guard let self, self.contextIsCurrent(context) else { return }
+                        guard let self, await self.contextIsCurrent(context) else { return }
                         await self.refresh()
                     }
                 }
@@ -1301,6 +1265,13 @@ final class UICustomizationPreferences {
             pendingSyncWrites.removeValue(forKey: key.rawValue)
         }
         let pendingDelete = PendingDelete(scope: scope.scope)
+        do {
+            try (transport as? SiloUICustomizationTransport)?.prepareValue(id: pendingDelete.operationId,
+                key: key, scope: scope, value: nil, identity: context.requestIdentity)
+        } catch {
+            setSyncError("This change could not be saved. Try it again.", for: key)
+            return
+        }
         pendingDeletes[Self.deleteIdentity(key: key, scope: scope.scope)] = pendingDelete
         saveCache(for: context.cacheKey)
         enqueueDelete(
@@ -1325,14 +1296,14 @@ final class UICustomizationPreferences {
             await previousSave?.value
             guard let self else { return }
             defer { self.completeSave() }
-            guard contextIsCurrent(context) else { return }
+            guard await contextIsCurrent(context) else { return }
             do {
-                try await transport.deleteValue(
-                    key: key,
-                    scope: scope,
-                    requestIdentity: context.requestIdentity
-                )
-                guard contextIsCurrent(context) else { return }
+                if let production = transport as? SiloUICustomizationTransport {
+                    try await production.send(id: pendingDelete.operationId, identity: context.requestIdentity)
+                } else {
+                    try await transport.deleteValue(key: key, scope: scope, requestIdentity: context.requestIdentity)
+                }
+                guard await contextIsCurrent(context) else { return }
                 await finishAcceptedDelete(
                     key: key,
                     scope: scope,
@@ -1340,7 +1311,7 @@ final class UICustomizationPreferences {
                     context: context
                 )
             } catch {
-                guard contextIsCurrent(context) else { return }
+                guard await contextIsCurrent(context) else { return }
                 if case .noValueAtScope = SettingsAPIError.from(error) {
                     await finishAcceptedDelete(
                         key: key,
@@ -1353,7 +1324,8 @@ final class UICustomizationPreferences {
                     guard pendingDeletes[identity]?.operationId == pendingDelete.operationId else {
                         return
                     }
-                    setSyncError("Could not reset this setting to its inherited value.", for: key)
+                    setSyncError(transport is SiloUICustomizationTransport ? Self.message(for: error)
+                        : "Could not reset this setting to its inherited value.", for: key)
                 }
             }
         }
@@ -1385,7 +1357,7 @@ final class UICustomizationPreferences {
                 keys: [key],
                 requestIdentity: context.requestIdentity
             )
-            guard contextIsCurrent(context),
+            guard await contextIsCurrent(context),
                   pendingDeletes[identity]?.operationId == pendingDelete.operationId else { return }
             guard let row = response.byKey[key] else {
                 setSyncError(Self.missingEffectiveValueMessage, for: key)
@@ -1395,7 +1367,7 @@ final class UICustomizationPreferences {
             pendingDeletes.removeValue(forKey: identity)
             saveCache(for: context.cacheKey)
         } catch {
-            guard contextIsCurrent(context),
+            guard await contextIsCurrent(context),
                   pendingDeletes[identity]?.operationId == pendingDelete.operationId else { return }
             setSyncError(Self.message(for: error), for: key)
         }
@@ -1444,9 +1416,9 @@ final class UICustomizationPreferences {
         }
     }
 
-    /// Durable optimistic writes are replayed before reading effective values.
-    /// Otherwise an online refresh after an offline edit would replace the
-    /// user's cached choice with the server's older value before retrying it.
+    /// Reconcile saved commands before reading effective values. Production
+    /// dispatches exact prepared envelopes once and holds uncertain commands,
+    /// so a read cannot replace an unresolved optimistic choice.
     private func drainPendingWrites(
         targetCacheKey: String?,
         requestIdentity: HTTPRequestIdentity,
@@ -1462,7 +1434,8 @@ final class UICustomizationPreferences {
         guard let targetCacheKey else { return false }
         let context = OperationContext(
             cacheKey: targetCacheKey,
-            requestIdentity: requestIdentity
+            requestIdentity: requestIdentity,
+            authority: (transport as? SiloUICustomizationTransport)?.authority(for: requestIdentity)
         )
         let deletes = pendingDeletes.sorted(by: { $0.key < $1.key })
         let pendingShortcuts = pendingShortcutOperations.values.sorted {
@@ -1530,6 +1503,7 @@ final class UICustomizationPreferences {
             loadedCacheKey = key
             clearSyncErrors()
         }
+        projectionAuthority = nil
         storedPrimaryMenu = nil
         storedShortcuts = .empty
         storedCardPresentation = .standard
@@ -1541,8 +1515,11 @@ final class UICustomizationPreferences {
         pendingShortcutPlacementBlockedIds = []
         pendingDeletes = [:]
         nextShortcutOperationSequence = 0
+        let production = transport as? SiloUICustomizationTransport
+        let storageKey = key.flatMap { production?.storageKey(for: $0) }
+        let isLegacyProjection = production != nil && (storageKey.flatMap { defaults.data(forKey: $0) } == nil)
         guard let key,
-              let data = defaults.data(forKey: key),
+              let data = defaults.data(forKey: storageKey ?? key) ?? defaults.data(forKey: key),
               let cached = try? SettingsWireCoding.makeDecoder().decode(Cache.self, from: data)
         else { return }
         storedPrimaryMenu = cached.primaryMenu?.isValid == true ? cached.primaryMenu : nil
@@ -1551,6 +1528,8 @@ final class UICustomizationPreferences {
         storedPrimaryMenuSource = cached.primaryMenuSource
         storedCardPresentationSource = cached.cardPresentationSource
         supportProjection = cached.supportProjection ?? .unknown
+        if isLegacyProjection { return }
+        if let identity = requestIdentity() { projectionAuthority = production?.authority(for: identity) }
         pendingSyncWrites = cached.pendingSyncWrites ?? [:]
         // Whole-document shortcut retries predate the atomic endpoint and
         // cannot be safely replayed without reintroducing lost updates.
@@ -1587,7 +1566,11 @@ final class UICustomizationPreferences {
                 pendingDeletes: pendingDeletes.isEmpty ? nil : pendingDeletes
               ))
         else { return }
-        defaults.set(data, forKey: key)
+        if let production = transport as? SiloUICustomizationTransport {
+            guard let identity = requestIdentity(), projectionAuthority == production.authority(for: identity),
+                  projectionAuthority != nil, let storageKey = production.storageKey(for: key) else { return }
+            defaults.set(data, forKey: storageKey)
+        } else { defaults.set(data, forKey: key) }
     }
 
     /// Writes are serialized, but a later successful setting must not erase a
@@ -1625,7 +1608,10 @@ final class UICustomizationPreferences {
         let shortcutMessage = shortcutSyncErrorsByIdentity
             .sorted { $0.key < $1.key }
             .first?.value
-        syncErrorMessage = refreshSyncErrorMessage
+        let heldIssue = requestIdentity().flatMap {
+            (transport as? SiloUICustomizationTransport)?.heldIssue(identity: $0)
+        }
+        syncErrorMessage = refreshSyncErrorMessage ?? heldIssue
             ?? Self.keys.lazy.compactMap { key in
                 self.syncErrorsByKey[key.rawValue]
                     ?? (key == .navShortcuts ? shortcutMessage : nil)
@@ -1636,12 +1622,17 @@ final class UICustomizationPreferences {
         guard allowsEditing,
               let targetCacheKey = cacheKey(),
               let identity = capturedIdentity(for: targetCacheKey) else { return nil }
-        return OperationContext(cacheKey: targetCacheKey, requestIdentity: identity)
+        let authority = (transport as? SiloUICustomizationTransport)?.authority(for: identity)
+        guard !(transport is SiloUICustomizationTransport) || authority != nil else { return nil }
+        return OperationContext(cacheKey: targetCacheKey, requestIdentity: identity, authority: authority)
     }
 
-    private func contextIsCurrent(_ context: OperationContext) -> Bool {
-        cacheKey() == context.cacheKey
+    private func contextIsCurrent(_ context: OperationContext) async -> Bool {
+        if let production = transport as? SiloUICustomizationTransport,
+           !(await production.isCurrent(context.authority)) { return false }
+        return cacheKey() == context.cacheKey
             && capturedIdentity(for: context.cacheKey) == context.requestIdentity
+            && context.authority == (transport as? SiloUICustomizationTransport)?.authority(for: context.requestIdentity)
     }
 
     private func capturedIdentity(for targetCacheKey: String?) -> HTTPRequestIdentity? {
@@ -1768,6 +1759,7 @@ final class UICustomizationPreferences {
     }
 
     private static func message(for error: Error) -> String {
+        if let hold = error as? SettingsMutationHold { return hold.localizedDescription }
         switch SettingsAPIError.from(error) {
         case .serverUpgradeRequired, .unknownSetting:
             return "Update this Silo server to sync interface preferences."

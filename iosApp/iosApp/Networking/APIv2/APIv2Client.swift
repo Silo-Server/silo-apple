@@ -193,8 +193,10 @@ struct APIv2Client: Sendable {
 
     func dispatchSettingCommand(_ command: SettingsMutationCommand, auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()
+        let shortcut = command.key == SettingKey.navShortcuts.rawValue
+            && command.path == "/api/v2/settings/values/nav.shortcuts/item" && command.method == "PUT"
         guard ["PUT", "DELETE"].contains(command.method),
-              command.path == "/api/v2/settings/values/\(command.key)",
+              shortcut || command.path == "/api/v2/settings/values/\(command.key)",
               auth.profileId == command.authority.profileID,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
@@ -214,9 +216,10 @@ struct APIv2Client: Sendable {
         } else {
             let receipt = try SettingsWireCoding.makeDecoder().decode(StoredSettingValue.self, from: response.data)
             guard response.statusCode == 200, receipt.key == command.key,
-                  receipt.scope.rawValue == command.query["scope"], receipt.revision > 0,
+                  receipt.scope.rawValue == (shortcut ? "profile" : command.query["scope"]), receipt.revision > 0,
                   receipt.profileId == command.authority.profileID,
-                  (receipt.scope != .profileDevice || receipt.deviceId == command.authority.deviceID) else {
+                  (receipt.scope != .profileDevice || receipt.deviceId == command.authority.deviceID),
+                  (receipt.scope != .profileClient || receipt.clientFamily == command.authority.clientFamily) else {
                 throw SettingsMutationHold.uncertain
             }
         }
