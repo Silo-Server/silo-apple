@@ -141,12 +141,17 @@ struct MediaRow: View {
         lastAppliedFocusRequest = request
         focusRestorationGeneration += 1
         let generation = focusRestorationGeneration
+        // A recycled row can retain this value after UIKit drops its focus.
+        // Clear it so reselecting the same entry card produces a fresh claim.
+        focusedItemId = nil
         // Scroll to the requested card first, claim a turn later: a row parked
         // deep in its strip can keep that card unmounted (LazyHStack) or clipped, and
         // the focus engine silently drops @FocusState writes to views it
         // can't focus. The instant scroll mounts/unclips the card; the
         // deferred write then lands on a focusable target.
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.slowDuration)) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             proxy.scrollTo(targetItem.id, anchor: .center)
         }
         DispatchQueue.main.async {
@@ -158,10 +163,9 @@ struct MediaRow: View {
     /// Write the claim, then verify it actually stuck and re-assert if not.
     /// A single write races two things that both win by coming later: the
     /// engine's remembered-focus repair after the top bar resigns, and the
-    /// geometric re-repairs it makes while the feed's scroll-to-top slides
-    /// rows (and their cards) under whatever it had focused. @FocusState
-    /// reflects *actual* focus, so a rejected/overridden write reads back as
-    /// a different value — retry until the scroll settles and ours is last.
+    /// layout that mounts the requested card after scrolling. @FocusState
+    /// reflects actual focus, so a rejected write reads back as a different
+    /// value. Restoration ownership cancels retries when focus leaves the row.
     private func claimRequestedItemFocus(
         _ targetItem: SectionItem,
         generation: Int,
@@ -173,8 +177,7 @@ struct MediaRow: View {
         focusedItemId = targetItem.contentId
         lastFocusedItemId = targetItem.contentId
         onItemFocus?(targetItem)
-        // Window must outlast the ~300ms animated ride home plus the engine's
-        // settling repairs, or the last mid-flight repair wins after all.
+        // Allow a bounded window for lazy layout and the engine's entry repair.
         guard attempt < 8 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             guard generation == focusRestorationGeneration,
