@@ -321,6 +321,66 @@ enum APIv2CatalogRead {
         let videoTracks: [VideoTrack]?
     }
 
+    struct WatchMarker: Decodable {
+        let startSeconds: Double
+        let endSeconds: Double
+    }
+
+    struct WatchFileVersion: Decodable {
+        let addedAt: Date
+        let audioTracks: [AudioTrack]?
+        let bitrate: Int64
+        let chapters: [VersionChapter]?
+        let codecAudio: String
+        let codecVideo: String
+        let container: String
+        let credits: WatchMarker?
+        let durationSeconds: Int64
+        var duration: Int64 { durationSeconds }
+        let editionKey: String?
+        let editionRaw: String?
+        let effectiveAudioLanguage: String?
+        let effectiveAudioTrackIndex: Int64?
+        let fileId: String
+        let fileName: String?
+        let filePath: String?
+        let fileSize: Int64
+        let hdr: Bool
+        let intro: WatchMarker?
+        let multiEpisodeEnd: Int64?
+        let multiEpisodeStart: Int64?
+        let presentationGroupKey: String?
+        let presentationKind: String?
+        let presentationPartIndex: Int64?
+        let presentationPartTotal: Int64?
+        let preview: WatchMarker?
+        let recap: WatchMarker?
+        let resolution: String
+        let subtitleTracks: [VersionSubtitleTrack]?
+        let videoTracks: [VideoTrack]?
+    }
+
+    struct WatchDetail: Decodable {
+        let contentId: String
+        let type: String
+        let title: String
+        let year: Int?
+        let overview: String?
+        let versions: [WatchFileVersion]
+        let subtitles: [SubtitleInfo]
+        let intro: WatchMarker?
+        let credits: WatchMarker?
+        let userData: WatchRollup?
+        let seriesId: String?
+        let seriesTitle: String?
+        let seasonNumber: Int?
+        let episodeNumber: Int?
+        let effectiveSubtitleLanguage: String?
+        let effectiveSubtitleMode: String?
+        let effectiveShowForcedSubtitles: Bool?
+        let effectiveSubtitleTrackSignature: WatchSubtitleSignature?
+    }
+
     struct ItemExtraInfo: Decodable {
         let contentId: String
         let durationSeconds: Int64?

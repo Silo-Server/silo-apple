@@ -1360,6 +1360,26 @@ struct APIv2Client: Sendable {
         return try ticket.request(serverURL: auth.account.serverURL, sessionID: sessionID)
     }
 
+    func watchDetail(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let raw = try await mapErrors {
+            try await http.requestData(method: "GET", path: "/api/v2/watch/\(try catalogPathSegment(id))",
+                query: imageSize.map { ["image_size": $0] } ?? [:], requestIdentity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try WatchDetail(v2: HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.WatchDetail.self, from: raw.data))
+    }
+
     func playbackCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackCapabilities {
         let raw = try await playbackRequest(method: "GET", suffix: "/capabilities", auth: auth)
         guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }

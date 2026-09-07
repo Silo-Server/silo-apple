@@ -327,6 +327,19 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.url!.path.contains("/api/v1/") })
     }
 
+    func testWatchStateProjectionKeepsStringIDsDurationAndMarkers() async throws {
+        let (_, _, auth, api, _) = try await fixture()
+        let watch = try await api.v2.watchDetail(id: "movie:fixture", imageSize: "small", auth: auth.request)
+        XCTAssertEqual(watch.versions.first?.fileId, 42)
+        XCTAssertEqual(watch.versions.first?.duration, 10200)
+        XCTAssertEqual(watch.versions.first?.intro?.end, 90)
+        XCTAssertEqual(watch.credits?.start, 10000)
+        XCTAssertEqual(watch.userData?.lastFileId, 42)
+        let sent = try XCTUnwrap(V2PlaybackProtocol.requests().last)
+        XCTAssertEqual(sent.0.url?.path, "/api/v2/watch/movie:fixture")
+        XCTAssertEqual(sent.0.value(forHTTPHeaderField: "X-Profile-Id"), "profile")
+    }
+
     func testV2ProgressCarriesInstallationAndRetainsExactUncertainSample() async throws {
         let (owner, _, auth, _, _) = try await fixture()
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
@@ -401,7 +414,9 @@ private final class V2PlaybackProtocol: URLProtocol {
         let state = Self.lock.withLock { Self.captured.append((request, body)); return (Self.capability, Self.decision, Self.failStart, Self.stopCode, Self.rejection, Self.progressFailure) }
         var status = 200
         let output: Data
-        if request.url!.path.hasSuffix("/control/capabilities") {
+        if request.url!.path.hasPrefix("/api/v2/watch/") {
+            output = Data(#"{"content_id":"movie:fixture","type":"movie","title":"Fixture","versions":[{"file_id":"42","resolution":"1080p","codec_video":"h264","codec_audio":"aac","hdr":false,"container":"mkv","file_size":1024,"duration_seconds":10200,"bitrate":8000000,"added_at":"2026-01-02T03:04:05.000Z","intro":{"start_seconds":0,"end_seconds":90}}],"subtitles":[],"credits":{"start_seconds":10000,"end_seconds":10200},"user_data":{"position_seconds":1325.5,"duration_seconds":10200,"watched_count":0,"unplayed_count":0,"in_progress_count":1,"played":false,"last_file_id":"42"}}"#.utf8)
+        } else if request.url!.path.hasSuffix("/control/capabilities") {
             output = Data(#"{"available":true,"protocol":"silo.playback-control.v2","owner_lease_admission":true}"#.utf8)
         } else if request.url!.path.hasSuffix("/ws-ticket") {
             status = Self.lock.withLock { Self.controlCode }

@@ -197,6 +197,66 @@ extension FileVersion {
     }
 }
 
+extension FileVersion {
+    init(watch value: APIv2CatalogRead.WatchFileVersion) throws {
+        self.fileId = try catalogLegacyID(value.fileId)
+        self.fileName = value.fileName
+        self.resolution = value.resolution
+        self.codecVideo = value.codecVideo
+        self.codecAudio = value.codecAudio
+        self.hdr = value.hdr
+        self.container = value.container
+        self.fileSize = value.fileSize
+        self.duration = Double(value.duration)
+        self.bitrate = try catalogLegacyInt(value.bitrate)
+        self.videoTracks = try value.videoTracks.map { try $0.map { try VideoTrack(catalog: $0) } }
+        self.audioTracks = try value.audioTracks.map { try $0.map { try AudioTrack(catalog: $0) } }
+        self.subtitleTracks = try value.subtitleTracks.map { try $0.map { try SubtitleTrack(catalog: $0) } }
+        self.chapters = try value.chapters.map { try $0.map { try VersionChapter(catalog: $0) } }
+        self.intro = try value.intro.map { try TimeRange(watch: $0) }
+        self.credits = try value.credits.map { try TimeRange(watch: $0) }
+        self.presentationKind = value.presentationKind
+        self.presentationGroupKey = value.presentationGroupKey
+        self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
+        self.presentationPartTotal = try value.presentationPartTotal.map { try catalogLegacyInt($0) }
+        self.editionRaw = value.editionRaw
+        self.editionKey = value.editionKey
+        self.edition = nil
+        self.effectiveAudioTrackIndex = try value.effectiveAudioTrackIndex.map { try catalogLegacyInt($0) }
+        self.effectiveAudioLanguage = value.effectiveAudioLanguage
+    }
+}
+
+extension WatchDetail {
+    init(v2 value: APIv2CatalogRead.WatchDetail) throws {
+        contentId = value.contentId
+        type = value.type
+        title = value.title
+        year = value.year
+        overview = value.overview
+        versions = try value.versions.map { try FileVersion(watch: $0) }
+        subtitles = try value.subtitles.map { try SubtitleInfoBasic(catalog: $0) }
+        intro = value.intro.map { TimeRange(watch: $0) }
+        credits = value.credits.map { TimeRange(watch: $0) }
+        userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
+        seriesId = value.seriesId
+        seriesTitle = value.seriesTitle
+        seasonNumber = value.seasonNumber
+        episodeNumber = value.episodeNumber
+        effectiveSubtitleLanguage = value.effectiveSubtitleLanguage
+        effectiveSubtitleMode = value.effectiveSubtitleMode
+        effectiveShowForcedSubtitles = value.effectiveShowForcedSubtitles
+        effectiveSubtitleTrackSignature = try value.effectiveSubtitleTrackSignature.map { try SubtitleTrackSignature(catalog: $0) }
+    }
+}
+
+extension TimeRange {
+    init(watch value: APIv2CatalogRead.WatchMarker) {
+        start = value.startSeconds
+        end = value.endSeconds
+    }
+}
+
 extension SubtitleInfoBasic {
     init(catalog value: APIv2CatalogRead.SubtitleInfo) throws {
         self.source = value.source

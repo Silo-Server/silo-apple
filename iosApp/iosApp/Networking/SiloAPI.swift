@@ -263,7 +263,8 @@ actor SiloAPI {
     }
 
     func watchDetail(contentId: String) async throws -> WatchDetail {
-        try await http.get("/api/v1/watch/\(contentId)", query: await imageSizeQuery)
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        return try await v2.watchDetail(id: contentId, imageSize: await imageSizeQuery["image_size"], auth: auth)
     }
 
     func person(id: Int) async throws -> Person {
