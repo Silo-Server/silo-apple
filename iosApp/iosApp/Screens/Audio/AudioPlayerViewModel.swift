@@ -742,16 +742,9 @@ final class AudioPlayerViewModel {
         session: PlaybackSessionResponse,
         additionalHeaders: [String: String]
     ) async -> StreamRequest? {
-        let serverURL = await SiloAPI.shared.currentServerUrl()
-        let accessToken = await SiloAPI.shared.currentAccessToken()
-        return StreamRequest.resolve(
-            rawURL: session.streamUrl,
-            serverURL: serverURL,
-            additionalHeaders: additionalHeaders,
-            accessToken: accessToken,
-            requiresHeaderAuthenticatedMedia: true,
-            apiV2SessionId: session.sessionId
-        )
+        return try? await mutationCoordinator.streamRequest(sessionID: session.sessionId,
+            rawURL: session.streamUrl, additionalHeaders: additionalHeaders,
+            requiresHeaderAuthenticatedMedia: true)
     }
 
     private func resolvedURL(_ raw: String?) async -> URL? {

@@ -6557,21 +6557,16 @@ class PlayerViewModel {
         requiresHeaderAuthenticatedMedia: Bool = false,
         allowsAuthorizedMediaOrigins: Bool = false
     ) async -> StreamRequest? {
-        let serverUrl = await SiloAPI.shared.currentServerUrl()
-        let token = await SiloAPI.shared.currentAccessToken()
-        return StreamRequest.resolve(
-            rawURL: session.streamUrl,
-            serverURL: serverUrl,
+        if session.streamUrl.hasPrefix("file://") {
+            return StreamRequest.resolve(rawURL: session.streamUrl, serverURL: "",
+                additionalHeaders: [:], accessToken: nil,
+                requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia)
+        }
+        return try? await PlaybackMutationCoordinator.shared.streamRequest(
+            sessionID: session.sessionId, rawURL: session.streamUrl,
             additionalHeaders: additionalHeaders,
-            accessToken: token,
             requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
-            // The caller knows the attempt's session, so a proxy URL naming a
-            // different one is rejected rather than trusted.
-            authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins
-                ? session.sessionId
-                : nil,
-            apiV2SessionId: session.sessionId
-        )
+            allowsAuthorizedMediaOrigins: allowsAuthorizedMediaOrigins)
     }
 
     /// Turns a server-supplied URL (absolute or API-relative) into an absolute URL.

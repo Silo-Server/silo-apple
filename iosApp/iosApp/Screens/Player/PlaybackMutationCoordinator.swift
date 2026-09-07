@@ -257,6 +257,22 @@ actor PlaybackMutationCoordinator {
               stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.authorityChanged }
     }
 
+    /// Media resolution shares the durable session fence with control. It must
+    /// never pick a server or credential from a later account selection.
+    func streamRequest(sessionID: String, rawURL: String, additionalHeaders: [String: String],
+                       requiresHeaderAuthenticatedMedia: Bool,
+                       allowsAuthorizedMediaOrigins: Bool = false) async throws -> StreamRequest {
+        let binding = try await controlBinding(sessionID: sessionID)
+        guard let request = StreamRequest.resolve(rawURL: rawURL,
+            serverURL: binding.auth.account.serverURL, additionalHeaders: additionalHeaders,
+            accessToken: binding.auth.accessToken,
+            requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
+            authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins ? sessionID : nil,
+            apiV2SessionId: sessionID) else { throw PlaybackSequencedError.invalidSession }
+        try await validateControlBinding(binding)
+        return request
+    }
+
     func controlRequest(_ binding: ControlBinding) async throws -> URLRequest {
         try await validateControlBinding(binding)
         guard let installation = binding.authority.installationID else { throw PlaybackSequencedError.invalidSession }

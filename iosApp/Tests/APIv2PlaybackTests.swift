@@ -239,6 +239,23 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url!.path.hasSuffix("/ws-ticket") }.count, 1)
     }
 
+    func testMediaResolutionUsesSessionAuthorityAndRejectsAccountSwitch() async throws {
+        let (owner, tokens, auth, _, _) = try await fixture()
+        let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(response.sessionId)
+        let raw = "/api/v2/stream/\(id)?st=opaque-proof"
+        let media = try await owner.streamRequest(sessionID: id, rawURL: raw,
+            additionalHeaders: [:], requiresHeaderAuthenticatedMedia: true)
+        XCTAssertEqual(media.url.host, "playback.example")
+        try await tokens.installAccountSession(accessToken: "other", refreshToken: "other", accountID: "2")
+        await tokens.setProfileId("profile")
+        do {
+            _ = try await owner.streamRequest(sessionID: id, rawURL: raw,
+                additionalHeaders: [:], requiresHeaderAuthenticatedMedia: true)
+            XCTFail("A later account must not resolve the previous session's stream")
+        } catch PlaybackSequencedError.authorityChanged {} catch { XCTFail("\(error)") }
+    }
+
     func testRejectedControlTicketDoesNotRefreshReplayOrUseV1() async throws {
         let (owner, _, auth, _, _) = try await fixture()
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
