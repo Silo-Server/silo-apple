@@ -48,6 +48,10 @@ struct TVLibraryCollectionsView: View {
                 claimContentFocusIfReady()
             }
         }
+        .onChange(of: isTopMenuFocused) { _, menuOwnsFocus in
+            if menuOwnsFocus { hasPendingFocusClaim = false }
+        }
+        .onDisappear { hasPendingFocusClaim = false }
     }
 
     @ViewBuilder
@@ -170,12 +174,12 @@ struct TVLibraryCollectionsView: View {
     }
 
     private func claimContentFocusIfReady() {
-        guard collectionSections.contains(where: { !$0.collections.isEmpty }) else {
-            hasPendingFocusClaim = true
+        guard !isTopMenuFocused else {
+            hasPendingFocusClaim = false
             return
         }
-        if isTopMenuFocused {
-            hasPendingFocusClaim = false
+        guard collectionSections.contains(where: { !$0.collections.isEmpty }) else {
+            hasPendingFocusClaim = true
             return
         }
         hasPendingFocusClaim = false
