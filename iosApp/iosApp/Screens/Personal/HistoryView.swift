@@ -27,6 +27,7 @@ struct HistoryView: View {
                 )
             }
         }
+        .environment(\.catalogMembershipModel, viewModel.membership)
         .siloPageBackground()
         .navigationTitle("History")
         .siloNavigationTitleDisplayMode(.large)

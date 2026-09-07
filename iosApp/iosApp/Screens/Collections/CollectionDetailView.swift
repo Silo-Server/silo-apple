@@ -4,9 +4,10 @@ import SwiftUI
 struct CollectionDetailView: View {
     let collectionId: String
 
-    @State private var items: [BrowseItem] = []
-    @State private var isLoading = false
-    @State private var error: ErrorState?
+    @State private var viewModel = CollectionDetailViewModel()
+    private var items: [BrowseItem] { viewModel.items }
+    private var isLoading: Bool { viewModel.isLoading }
+    private var error: ErrorState? { viewModel.membership.error ?? viewModel.error }
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(AppRouter.self) private var router
@@ -41,10 +42,11 @@ struct CollectionDetailView: View {
                 )
             }
         }
+        .environment(\.catalogMembershipModel, viewModel.membership)
         .siloPageBackground()
         .navigationTitle("Collection")
         .siloNavigationTitleDisplayMode(.large)
-        .task {
+        .task(id: collectionId) {
             await loadItems()
         }
         .refreshable {
@@ -64,7 +66,7 @@ struct CollectionDetailView: View {
                         posterUrl: item.posterUrl ?? "",
                         thumbhash: item.posterThumbhash,
                         year: item.year,
-                        userState: item.userState,
+                        userState: viewModel.membership.userState(for: item.contentId),
                         overlayData: OverlayData.from(item),
                         action: {
                             router.navigate(to: .itemDetail(browseItem: item))
@@ -122,26 +124,6 @@ struct CollectionDetailView: View {
     }
 
     private func loadItems() async {
-        // Hydrate from cache so a return visit paints the previous grid
-        // instantly while the silent revalidate runs.
-        let cacheKey = CacheKey.collectionItems(collectionId)
-        if items.isEmpty,
-           let cached: CatalogResponse = ResponseCache.shared.get(cacheKey) {
-            items = cached.items
-        }
-        if items.isEmpty {
-            isLoading = true
-        }
-        error = nil
-        do {
-            let response: CatalogResponse = try await SiloAPI.shared.collectionItems(
-                collectionId: collectionId
-            )
-            ResponseCache.shared.set(response, for: cacheKey)
-            items = response.items
-        } catch let err {
-            self.error = ErrorState(err)
-        }
-        isLoading = false
+        await viewModel.load(collectionId: collectionId)
     }
 }

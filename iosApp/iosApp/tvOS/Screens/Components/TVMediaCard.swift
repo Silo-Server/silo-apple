@@ -105,7 +105,8 @@ struct TVMediaCard: View {
     // MARK: - Favorite / watchlist context actions
 
     private var hasPersonalActions: Bool {
-        contentId != nil && userState != nil
+        contentId != nil && userState != nil && (catalogModel?.displayedRead != nil
+            || searchModel?.displayedRead != nil || libraryCardContext?.model.displayedRead != nil)
     }
 
     private var isFavorite: Bool {
@@ -198,17 +199,6 @@ struct TVMediaCard: View {
             toggleLibraryMembership(.favorites, context: libraryCardContext)
             return
         }
-        guard let contentId else { return }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        favoriteOverride = newValue
-        Task {
-            if await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) == false {
-                favoriteOverride = !newValue // Revert on failure
-            }
-        }
     }
 
     private func togglePersonalWatchlist() {
@@ -217,17 +207,6 @@ struct TVMediaCard: View {
         if let libraryCardContext {
             toggleLibraryMembership(.watchlist, context: libraryCardContext)
             return
-        }
-        guard let contentId else { return }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
-            if await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            ) == false {
-                watchlistOverride = !newValue // Revert on failure
-            }
         }
     }
 

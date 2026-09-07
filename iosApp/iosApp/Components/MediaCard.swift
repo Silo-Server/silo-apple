@@ -320,7 +320,9 @@ struct MediaCard: View {
     /// user state) get the favorite/watchlist menu — thumbnails without
     /// user state (people, collections, discover results) don't.
     private var hasPersonalActions: Bool {
-        contentId != nil && userState != nil
+        contentId != nil && userState != nil && (catalogModel?.displayedRead != nil
+            || searchModel?.displayedRead != nil || savedList?.displayedAuth != nil
+            || (isHomeSurface && homeOwner != nil) || libraryOwner?.auth != nil)
     }
 
     private var isFavorite: Bool {
@@ -355,20 +357,6 @@ struct MediaCard: View {
         if let owner = libraryOwner {
             toggleLibraryFavorite(contentId: contentId, owner: owner)
             return
-        }
-        let newValue = !isFavorite
-        let watchlist = isInWatchlist
-        favoriteOverride = newValue
-        Task {
-            if await PersonalListSync.setFavorite(
-                contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
-            ) {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
-                )
-            } else {
-                favoriteOverride = !newValue // Revert on failure
-            }
         }
     }
 
@@ -561,20 +549,6 @@ struct MediaCard: View {
         if let owner = libraryOwner {
             toggleLibraryWatchlist(contentId: contentId, owner: owner)
             return
-        }
-        let newValue = !isInWatchlist
-        let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
-            if await PersonalListSync.setWatchlist(
-                contentId: contentId, isFavorite: favorite, inWatchlist: newValue
-            ) {
-                onUserStateChanged?(
-                    MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
-                )
-            } else {
-                watchlistOverride = !newValue // Revert on failure
-            }
         }
     }
 

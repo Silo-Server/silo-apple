@@ -660,13 +660,12 @@ struct LibraryCollectionDetailView: View {
     let title: String?
     let kind: LibraryCollectionKind?
 
-    @State private var items: [BrowseItem] = []
-    @State private var isLoading = false
-    @State private var error: ErrorState?
-    @State private var hasMore = true
-    @State private var totalItems: Int?
-    @State private var continuation: APIv2CatalogContinuation?
-    @State private var generation = 0
+    @State private var viewModel = CollectionDetailViewModel()
+    private var items: [BrowseItem] { viewModel.items }
+    private var isLoading: Bool { viewModel.isLoading }
+    private var error: ErrorState? { viewModel.membership.error ?? viewModel.error }
+    private var hasMore: Bool { viewModel.hasMore }
+    private var totalItems: Int? { viewModel.totalItems }
 
     @Environment(AppRouter.self) private var router
 
@@ -688,6 +687,7 @@ struct LibraryCollectionDetailView: View {
                 )
             }
         }
+        .environment(\.catalogMembershipModel, viewModel.membership)
         .siloPageBackground()
         .navigationTitle(title ?? "Collection")
         .siloNavigationTitleDisplayMode(.large)
@@ -743,65 +743,11 @@ struct LibraryCollectionDetailView: View {
     }
 
     private func loadItems(reset: Bool) async {
-        guard reset || !isLoading else { return }
-        if reset { generation += 1 }
-        let requestGeneration = generation
-        if reset {
-            // Surface the cached page-1 snapshot instantly so the grid
-            // doesn't blank out while the network call runs.
-            if items.isEmpty,
-               let cached: CatalogResponse = ResponseCache.shared.get(
-                   CacheKey.collectionItems(collectionId)
-               ) {
-                items = cached.items
-                hasMore = cached.hasMore ?? false
-                totalItems = cached.totalExact == false ? nil : cached.total
-                hasMore = false
-            } else {
-                items = []
-                hasMore = true
-                totalItems = nil
-                continuation = nil
-            }
-        }
-        if reset {
-            hasMore = true
-            continuation = nil
-        }
-        guard hasMore else { return }
-
-        isLoading = true
-        defer { if requestGeneration == generation { isLoading = false } }
-        error = nil
-
-        do {
-            let page: APIv2CatalogResult
-            if !reset, let continuation {
-                page = try await SiloAPI.shared.v2.nextCatalogPage(continuation)
-            } else {
-                var query = APIv2CatalogQuery()
-                query.source = (kind ?? .regular).catalogSource
-                query.collectionId = collectionId
-                if kind != .userCollections { query.libraryId = String(libraryId) }
-                query.limit = min(pageSize, 100)
-                page = try await SiloAPI.shared.catalogPage(query: query)
-            }
-            guard requestGeneration == generation, !Task.isCancelled else { return }
-            let response = CatalogResponse(catalogPage: page.value)
-            if reset {
-                items = response.items
-                ResponseCache.shared.set(response, for: CacheKey.collectionItems(collectionId))
-            } else {
-                items.append(contentsOf: response.items)
-            }
-            totalItems = response.totalExact == false ? nil : response.total
-            hasMore = response.hasMore ?? false
-            continuation = page.continuation
-        } catch let err {
-            guard requestGeneration == generation, !Task.isCancelled else { return }
-            hasMore = false
-            error = ErrorState(err)
-        }
-
+        var query = APIv2CatalogQuery()
+        query.source = (kind ?? .regular).catalogSource
+        query.collectionId = collectionId
+        if kind != .userCollections { query.libraryId = String(libraryId) }
+        query.limit = min(pageSize, 100)
+        await viewModel.loadCatalog(query: query, reset: reset)
     }
 }

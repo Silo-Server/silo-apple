@@ -36,6 +36,15 @@ struct RecommendationsView: View {
 
     var body: some View {
         rootLayout
+            .overlay(alignment: .bottom) {
+                if let error = viewModel.membership.error {
+                    Text(error.message).font(.caption).padding(8).background(.regularMaterial)
+                }
+            }
+            .environment(\.catalogMembershipModel, viewModel.membership)
+            .environment(\.sectionReadOwner, viewModel.displayedAuth.map {
+                SectionReadOwner(auth: $0, cacheKey: CacheKey.recommendations)
+            })
             .task {
                 await viewModel.loadRecommendations()
             }

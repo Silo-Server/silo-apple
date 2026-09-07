@@ -54,6 +54,27 @@ struct SectionRow: View {
     @Environment(AppRouter.self) private var router
     #endif
 
+    @Environment(\.libraryCardAuthority) private var libraryOwner
+    @Environment(\.sectionReadOwner) private var sectionOwner
+    @State private var watchedActions = SectionWatchedActions()
+
+    private var readOwner: SectionReadOwner? {
+        if let sectionOwner { return sectionOwner }
+        guard let libraryOwner, let auth = libraryOwner.auth else { return nil }
+        return SectionReadOwner(auth: auth, cacheKey: CacheKey.librarySections(libraryOwner.libraryId))
+    }
+
+    private var watchedHandler: ((SectionItem, Bool) async -> Bool)? {
+        // Existing Home callbacks already capture their model's displayed owner.
+        if let onSetWatched { return onSetWatched }
+        guard let owner = readOwner else { return nil }
+        let contentIDs = Set(section.items.map(\.contentId))
+        return { item, played in
+            guard contentIDs.contains(item.contentId) else { return false }
+            return await watchedActions.setWatched(contentId: item.contentId, played: played, owner: owner)
+        }
+    }
+
     private var isContinueWatching: Bool {
         section.isContinueWatchingSection
     }
@@ -119,9 +140,7 @@ struct SectionRow: View {
             onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
             onOpenContextDetail: nil,
             showsPlayInContextMenu: isContinueWatching,
-            onSetWatched: { item, played in
-                await setWatched(item, played: played)
-            },
+            onSetWatched: watchedHandler,
             onMoveUp: onMoveUp,
             onItemFocus: onItemFocus,
             cardWidth: cardWidth,
@@ -129,6 +148,13 @@ struct SectionRow: View {
             onMoveDown: onMoveDown,
             focusRestorationOwner: focusRestorationOwner
         )
+        .id(watchedActions.generation)
+        .onChange(of: readOwner, initial: true) { _, owner in watchedActions.display(owner) }
+        .overlay(alignment: .bottom) {
+            if let message = watchedActions.errorMessage {
+                Text(message).font(.caption).padding(8).background(.regularMaterial)
+            }
+        }
         #if !os(tvOS)
         .environment(
             \.itemDetailBrowseSource,
@@ -172,27 +198,6 @@ struct SectionRow: View {
         }
         #endif
         onItemTap(contentId, item)
-    }
-
-    /// Home injects a model-owned mutation so its membership-driven rows and
-    /// cache update immediately. Shared SectionRow callers retain the original
-    /// direct API behavior when no owning model provides an action.
-    private func setWatched(_ item: SectionItem, played: Bool) async -> Bool {
-        if let onSetWatched {
-            return await onSetWatched(item, played)
-        }
-
-        do {
-            try await SiloAPI.shared.setWatched(
-                contentId: item.contentId,
-                played: played
-            )
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
-            return true
-        } catch {
-            print("[SectionRow] Failed to update watched state for \(item.contentId): \(error)")
-            return false
-        }
     }
 
 }
