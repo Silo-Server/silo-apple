@@ -9,19 +9,19 @@ final class ServerIdentityResolverTests: XCTestCase {
 
     func testPrefersNativeBrandingName() async {
         ServerIdentityStubProtocol.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":"  Home Silo  "}"#),
+            "/api/v2/theme/branding": (200, #"{"server_name":"  Home Silo  "}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"StreamApp"}"#),
         ])
 
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertEqual(name, "Home Silo")
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding", "/api/v1/theme/branding"])
+        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding"])
     }
 
     func testFallsBackToHealthForOlderServer() async {
         ServerIdentityStubProtocol.configure([
-            "/api/v1/theme/branding": (404, #"{"error":"not_found"}"#),
+            "/api/v2/theme/branding": (404, #"{"error":"not_found"}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Legacy Home"}"#),
         ])
 
@@ -30,13 +30,13 @@ final class ServerIdentityResolverTests: XCTestCase {
         XCTAssertEqual(name, "Legacy Home")
         XCTAssertEqual(
             ServerIdentityStubProtocol.requestedPaths(),
-            ["/api/v2/theme/branding", "/api/v1/theme/branding", "/api/v1/health"]
+            ["/api/v2/theme/branding", "/api/v1/health"]
         )
     }
 
     func testBlankBrandingNameFallsBackToHealth() async {
         ServerIdentityStubProtocol.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":"  "}"#),
+            "/api/v2/theme/branding": (200, #"{"server_name":"  "}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Fallback"}"#),
         ])
 
@@ -47,26 +47,26 @@ final class ServerIdentityResolverTests: XCTestCase {
 
     func testBrandingFailureDoesNotFallBackToHealth() async {
         ServerIdentityStubProtocol.configure([
-            "/api/v1/theme/branding": (500, #"{"error":"unavailable"}"#),
+            "/api/v2/theme/branding": (500, #"{"error":"unavailable"}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Compat Name"}"#),
         ])
 
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertNil(name)
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding", "/api/v1/theme/branding"])
+        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding"])
     }
 
     func testBrandingDecodeFailureDoesNotFallBackToHealth() async {
         ServerIdentityStubProtocol.configure([
-            "/api/v1/theme/branding": (200, #"{"server_name":42}"#),
+            "/api/v2/theme/branding": (200, #"{"server_name":42}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Compat Name"}"#),
         ])
 
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertNil(name)
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding", "/api/v1/theme/branding"])
+        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v2/theme/branding"])
     }
 
     func testStaleActiveServerResponseDoesNotRenameRegistryEntries() async {

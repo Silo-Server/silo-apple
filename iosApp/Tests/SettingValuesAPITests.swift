@@ -452,7 +452,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testGetContractCapabilitiesReportsUpgradeRequiredOnABare404() async throws {
         SettingsStubProtocol.reset(mode: .serverTooOld)
-        let api = await makeStubbedAPI()
+        let api = await makeStubbedAPI(authenticated: true)
 
         let result = await api.getContractCapabilities()
         XCTAssertEqual(result, .serverUpgradeRequired)
@@ -461,7 +461,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testGetContractCapabilitiesReturnsCapabilitiesOnACurrentServer() async throws {
         SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
+        let api = await makeStubbedAPI(authenticated: true)
 
         guard case .available(let capabilities) = await api.getContractCapabilities() else {
             return XCTFail("a current server must report capabilities")
@@ -473,7 +473,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testGetContractCapabilitiesRequiresTheServersRevisionToBeCurrent() async throws {
         SettingsStubProtocol.reset(mode: .olderContractRevision)
-        let api = await makeStubbedAPI()
+        let api = await makeStubbedAPI(authenticated: true)
 
         let result = await api.getContractCapabilities()
         XCTAssertEqual(result, .serverUpgradeRequired)
@@ -567,7 +567,7 @@ final class SettingValuesAPITests: XCTestCase {
         do {
             _ = try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 requestIdentity: captured
             )
             XCTFail("a captured server/profile request must fail rather than follow the new session")
@@ -607,12 +607,12 @@ final class SettingValuesAPITests: XCTestCase {
         let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
         async let first = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             requestIdentity: identity
         )
         async let second = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             requestIdentity: identity
         )
 
@@ -622,7 +622,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(secondResponse.statusCode, 200)
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
@@ -669,13 +669,13 @@ final class SettingValuesAPITests: XCTestCase {
 
         async let scoped = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: identity
         )
         async let ordinary = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
@@ -685,7 +685,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(ordinaryResponse.statusCode, 200)
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 4)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 4)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertEqual(accessToken, "placeholder")
@@ -742,13 +742,13 @@ final class SettingValuesAPITests: XCTestCase {
 
         async let scoped: HTTPRawResponse = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: identity
         )
         async let ordinary: HTTPRawResponse = http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
@@ -773,7 +773,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
         let accessToken = await tokenStore.getAccessToken()
         let refreshToken = await tokenStore.getRefreshToken()
         XCTAssertNil(accessToken)
@@ -797,13 +797,13 @@ final class SettingValuesAPITests: XCTestCase {
             SettingsStubProtocol.reset(mode: .mixedRefreshScopedTransientFailure(status: status))
             async let scoped: HTTPRawResponse = harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 headers: ["X-Test-Refresh-Flow": "scoped"],
                 requestIdentity: harness.identity
             )
             async let ordinary: HTTPRawResponse = harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 headers: ["X-Test-Refresh-Flow": "ordinary"]
             )
 
@@ -822,7 +822,7 @@ final class SettingValuesAPITests: XCTestCase {
 
             let state = SettingsStubProtocol.state()
             XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-            XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+            XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
             let accessToken = await harness.tokenStore.getAccessToken()
             let refreshToken = await harness.tokenStore.getRefreshToken()
             XCTAssertEqual(accessToken, "fake", "HTTP \(status) must preserve the access token")
@@ -835,7 +835,7 @@ final class SettingValuesAPITests: XCTestCase {
         SettingsStubProtocol.reset(mode: .mixedRefreshScopedWins)
         let retried = try await harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: harness.identity
         )
@@ -865,13 +865,13 @@ final class SettingValuesAPITests: XCTestCase {
 
         async let scoped: HTTPRawResponse = harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: harness.identity
         )
         async let ordinary: HTTPRawResponse = harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "ordinary"]
         )
 
@@ -924,7 +924,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -955,7 +955,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshToken, "sample")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
@@ -965,7 +965,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -993,7 +993,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshToken, "redacted")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testScopedUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
@@ -1003,7 +1003,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 requestIdentity: harness.identity
             )
         }
@@ -1032,7 +1032,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshToken, "redacted")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotRetryAfterProfileSwitch() async throws {
@@ -1043,7 +1043,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -1063,7 +1063,7 @@ final class SettingValuesAPITests: XCTestCase {
         }
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
         XCTAssertEqual(state.lastRequest?.header("X-Profile-Id"), "profile-a")
         XCTAssertEqual(state.lastRequest?.header("X-Profile-Token"), "decoy-token")
     }
@@ -1076,7 +1076,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -1109,7 +1109,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(current?.refreshToken, "sample")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryUnauthorizedResponseCannotCrossFromTemporaryIntoPersistentCredentials() async throws {
@@ -1131,7 +1131,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryUnauthorized() else {
@@ -1154,7 +1154,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(refreshToken, "dummy")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"] ?? 0, 0)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testRejectedTemporaryGenerationRefreshesAndExpiresOnlyOnce() async throws {
@@ -1189,7 +1189,7 @@ final class SettingValuesAPITests: XCTestCase {
             do {
                 _ = try await harness.http.requestData(
                     method: "GET",
-                    path: "/api/v1/settings/contract/capabilities"
+                    path: "/api/v2/settings/contract/capabilities"
                 )
                 XCTFail("temporary 401 wave \(wave) must remain unauthorized")
             } catch {
@@ -1199,7 +1199,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
         XCTAssertEqual(expiryCount.value, 1)
         let current = await harness.tokenStore.getTemporaryScope()
         XCTAssertEqual(current?.credentialGenerationID, temporary.credentialGenerationID)
@@ -1257,7 +1257,7 @@ final class SettingValuesAPITests: XCTestCase {
         do {
             _ = try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 requestIdentity: harness.identity
             )
             XCTFail("the scoped temporary request must remain unauthorized")
@@ -1267,7 +1267,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
         XCTAssertEqual(temporaryExpiryCount.value, 1)
         XCTAssertEqual(persistentExpiryCount.value, 0)
         XCTAssertEqual(expiryEvents.values, [SessionExpiryEvent(
@@ -1297,7 +1297,7 @@ final class SettingValuesAPITests: XCTestCase {
 
         let response = try await harness.http.requestData(
             method: "GET",
-            path: "/api/v1/settings/contract/capabilities",
+            path: "/api/v2/settings/contract/capabilities",
             headers: ["X-Test-Refresh-Flow": "scoped"],
             requestIdentity: harness.identity
         )
@@ -1316,7 +1316,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(persistentRefresh, "dummy")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 2)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 2)
     }
 
     func testPersistentExpiryEventIsRejectedAfterSameServerSessionReplacement() async throws {
@@ -1556,7 +1556,7 @@ final class SettingValuesAPITests: XCTestCase {
             await http.cancelInFlightRequests()
             return try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
 
@@ -1568,7 +1568,7 @@ final class SettingValuesAPITests: XCTestCase {
             "replacement cancellation must queue instead of overlapping the old enumeration"
         )
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"] ?? 0,
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
             0,
             "replacement work must not start while an old cancellation can still enumerate it"
         )
@@ -1579,7 +1579,7 @@ final class SettingValuesAPITests: XCTestCase {
             return XCTFail("replacement cancellation pass did not start after the old pass")
         }
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"] ?? 0,
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
             0
         )
         await barrier.release(pass: 2)
@@ -1587,7 +1587,7 @@ final class SettingValuesAPITests: XCTestCase {
         let response = try await replacement.value
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"],
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"],
             1
         )
     }
@@ -1607,7 +1607,7 @@ final class SettingValuesAPITests: XCTestCase {
         let request = Task {
             try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
+                path: "/api/v2/settings/contract/capabilities",
                 headers: ["X-Test-Refresh-Flow": "scoped"],
                 requestIdentity: harness.identity
             )
@@ -1635,7 +1635,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(replacementRefresh, "redacted")
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testCancelledTemporaryReplacementRestoresPriorOwnerGeneration() async throws {
@@ -1713,7 +1713,7 @@ final class SettingValuesAPITests: XCTestCase {
         do {
             _ = try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
             XCTFail("dispatch must remain closed between cancellation snapshots")
         } catch HTTPError.requestIdentityChanged {
@@ -1722,7 +1722,7 @@ final class SettingValuesAPITests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"] ?? 0,
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"] ?? 0,
             0
         )
         await barrier.release(pass: 1)
@@ -1829,7 +1829,7 @@ final class SettingValuesAPITests: XCTestCase {
         let request = Task {
             try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForCancellationPass(barrier, count: 1) else {
@@ -1872,7 +1872,7 @@ final class SettingValuesAPITests: XCTestCase {
         let request = Task {
             try await http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForCancellationPass(barrier, count: 1) else {
@@ -1894,7 +1894,7 @@ final class SettingValuesAPITests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
         XCTAssertEqual(
-            SettingsStubProtocol.state().requestCounts["/api/v1/settings/contract/capabilities"],
+            SettingsStubProtocol.state().requestCounts["/api/v2/settings/contract/capabilities"],
             1
         )
     }
@@ -2024,7 +2024,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryRefresh() else {
@@ -2054,7 +2054,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(sessionExpiredCount.value, 0)
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testOrdinaryRefreshLateSuccessCannotRestoreSignedOutSession() async throws {
@@ -2073,7 +2073,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryRefresh() else {
@@ -2113,7 +2113,7 @@ final class SettingValuesAPITests: XCTestCase {
         let requestTask = Task {
             try await harness.http.requestData(
                 method: "GET",
-                path: "/api/v1/settings/contract/capabilities"
+                path: "/api/v2/settings/contract/capabilities"
             )
         }
         guard await waitForPendingOrdinaryRefresh() else {
@@ -2140,7 +2140,7 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(sessionExpiredCount.value, 0)
         let state = SettingsStubProtocol.state()
         XCTAssertEqual(state.requestCounts["/api/v2/auth/refresh"], 1)
-        XCTAssertEqual(state.requestCounts["/api/v1/settings/contract/capabilities"], 1)
+        XCTAssertEqual(state.requestCounts["/api/v2/settings/contract/capabilities"], 1)
     }
 
     func testScopedRefreshPersistsServerAccountRotationAcrossProfileChange() async throws {
@@ -2503,7 +2503,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     /// A SiloAPI whose HTTPClient talks to SettingsStubProtocol, with a
     /// TokenStore isolated to this test.
-    private func makeStubbedAPI(profileId: String? = SettingValuesAPITests.stubProfileId) async -> SiloAPI {
+    private func makeStubbedAPI(profileId: String? = SettingValuesAPITests.stubProfileId, authenticated: Bool = false) async -> SiloAPI {
         let suiteName = "settings-values-tests-\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
         addTeardownBlock {
@@ -2513,7 +2513,11 @@ final class SettingValuesAPITests: XCTestCase {
             keychain: SharedKeychain(service: "SettingValuesAPITests.\(UUID().uuidString)", accessGroup: nil),
             defaults: SharedDefaults(suite: suite, standard: suite)
         )
+        if authenticated { await tokenStore.switchActiveServer(serverId: "settings-test") }
         await tokenStore.setServerUrl("http://settings-test.invalid")
+        if authenticated {
+            try? await tokenStore.installAccountSession(accessToken: "test-access", refreshToken: "test-refresh", accountID: "1")
+        }
         await tokenStore.setProfileId(profileId)
 
         let config = URLSessionConfiguration.ephemeral
@@ -2803,7 +2807,7 @@ final class SettingsStubProtocol: URLProtocol {
         }
         if mode == .temporaryRefreshRejected {
             switch (recorded.method, recorded.path) {
-            case ("GET", "/api/v1/settings/contract/capabilities"):
+            case ("GET", "/api/v2/settings/contract/capabilities"):
                 respond(status: 401, body: #"{"error":"unauthorized"}"#)
             case ("POST", "/api/v2/auth/refresh"):
                 respond(status: 401, body: #"{"error":"invalid_token"}"#)
@@ -2819,7 +2823,7 @@ final class SettingsStubProtocol: URLProtocol {
                     status: 200,
                     body: #"{"access_token":"placeholder","refresh_token":"redacted","expires_in":3600}"#
                 )
-            case ("GET", "/api/v1/settings/contract/capabilities"):
+            case ("GET", "/api/v2/settings/contract/capabilities"):
                 if recorded.header("Authorization") == "Bearer placeholder" {
                     respond(
                         status: 200,
@@ -2883,7 +2887,7 @@ final class SettingsStubProtocol: URLProtocol {
         switch (recorded.method, recorded.path) {
         case ("GET", "/api/v1/health"):
             respond(status: 200, body: #"{"status":"ok","server_name":"Candidate"}"#)
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             respond(status: 200, body: """
             {"api_version":1,"revision":\(responseRevision),"contract_etag":"\\"etag\\"","definition_count":48,
              "scopes":["account","profile","profile_device","profile_library","profile_series"],
@@ -2961,7 +2965,7 @@ final class SettingsStubProtocol: URLProtocol {
         holdRefreshForExplicitRelease: Bool = false
     ) {
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             if recorded.header("Authorization") == "Bearer placeholder" {
                 respond(
                     status: 200,
@@ -3018,7 +3022,7 @@ final class SettingsStubProtocol: URLProtocol {
 
     private func handleOrdinaryDelayedRefresh(_ recorded: RecordedRequest) {
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             if ["Bearer placeholder", "Bearer newer-access"].contains(
                 recorded.header("Authorization")
             ) {
@@ -3047,7 +3051,7 @@ final class SettingsStubProtocol: URLProtocol {
 
     private func handleOrdinaryUnauthorizedDelayed(_ recorded: RecordedRequest) {
         switch (recorded.method, recorded.path) {
-        case ("GET", "/api/v1/settings/contract/capabilities"):
+        case ("GET", "/api/v2/settings/contract/capabilities"):
             let unauthorizedWasReleased: Bool
             Self.lock.lock()
             unauthorizedWasReleased = Self.ordinaryUnauthorizedReleased

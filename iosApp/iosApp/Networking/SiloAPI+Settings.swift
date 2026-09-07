@@ -38,20 +38,16 @@ extension SiloAPI {
         requestIdentity: HTTPRequestIdentity? = nil
     ) async -> SettingsCapabilitiesResult {
         do {
-            let response = try await http.requestData(
-                method: "GET",
-                path: "/api/v1/settings/contract/capabilities",
-                // A 404 here is the documented "server is too old" signal, not
-                // a failure worth logging as one.
-                quietStatuses: [404],
-                requestIdentity: requestIdentity
-            )
+            let data = try await v2.settingsRead("/api/v2/settings/contract/capabilities",
+                expectedIdentity: requestIdentity)
             let capabilities = try SettingsWireCoding.makeDecoder()
-                .decode(SettingsContractCapabilities.self, from: response.data)
+                .decode(SettingsContractCapabilities.self, from: data)
             guard !capabilities.contractIsAheadOfServer else {
                 return .serverUpgradeRequired
             }
             return .available(capabilities)
+        } catch APIv2Error.httpStatus(404) {
+            return .serverUpgradeRequired
         } catch {
             let mapped = SettingsAPIError.from(error)
             return mapped == .serverUpgradeRequired ? .serverUpgradeRequired : .failed(mapped)

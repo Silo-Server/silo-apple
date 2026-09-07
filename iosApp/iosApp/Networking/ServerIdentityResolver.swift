@@ -14,26 +14,15 @@ struct ServerIdentityResolver {
     }
 
     func fetchServerName(serverURL: String) async -> String? {
-        // Discovery runs before login/active-server negotiation, using only
-        // the explicit candidate URL. Only a missing v2 route permits v1.
-        for path in ["/api/v2/theme/branding", "/api/v1/theme/branding"] {
-            do {
-                let branding: ServerBrandingStatus = try await httpClient.getUnauthenticated(
-                    serverURL: serverURL,
-                    path: path,
-                    quietStatuses: [404]
-                )
-                if let name = Self.usableName(branding.serverName) {
-                    return name
-                }
-                // A supported but blank branding response keeps the existing
-                // health-name fallback; it does not retry branding over v1.
-                break
-            } catch HTTPError.http(let statusCode, _) where statusCode == 404 {
-                continue
-            } catch {
-                return nil
-            }
+        // Discovery uses only the explicit candidate URL before login.
+        do {
+            let branding: ServerBrandingStatus = try await httpClient.getUnauthenticated(
+                serverURL: serverURL, path: "/api/v2/theme/branding", quietStatuses: [404])
+            if let name = Self.usableName(branding.serverName) { return name }
+        } catch HTTPError.http(let statusCode, _) where statusCode == 404 {
+            // Health remains the deliberately retained discovery endpoint.
+        } catch {
+            return nil
         }
 
         if let health: HealthStatus = try? await httpClient.getUnauthenticated(
