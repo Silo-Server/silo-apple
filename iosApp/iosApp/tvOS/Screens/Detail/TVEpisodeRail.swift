@@ -67,12 +67,60 @@ struct TVEpisodeRail: View {
     }
     @State private var pendingEdge: PendingEdge?
     @State private var appliedScrollRequest = 0
+    @State private var needsRebasedSelection = false
     @State private var scrollGeneration = 0
     @State private var scrollViewport = ScrollViewport()
 
-    private final class ScrollViewport {
+    private final class ScrollViewport: NSObject {
         weak var scrollView: UIScrollView?
         var correctionTarget: CGFloat?
+        private var seasonMotion: SeriesSeasonScroll?
+        private var displayLink: CADisplayLink?
+        private var onSeasonScrollEnd: ((CGFloat) -> Void)?
+
+        func scrollToSeason(_ offset: CGFloat, onEnd: @escaping (CGFloat) -> Void) {
+            stopSeasonScroll()
+            guard let scrollView else { onEnd(offset); return }
+            seasonMotion = SeriesSeasonScroll(
+                startOffset: scrollView.contentOffset.x,
+                targetOffset: offset,
+                startedAt: CACurrentMediaTime()
+            )
+            onSeasonScrollEnd = onEnd
+            let link = CADisplayLink(target: self, selector: #selector(advanceSeasonScroll))
+            displayLink = link
+            link.add(to: .main, forMode: .common)
+        }
+
+        /// Page eviction changes the coordinate origin, not the animation's
+        /// progress. Shift both endpoints without restarting its clock.
+        func rebaseSeasonScroll(by shift: CGFloat) -> Bool {
+            guard seasonMotion != nil, let scrollView else { return false }
+            seasonMotion?.rebase(by: shift)
+            scrollView.setContentOffset(
+                CGPoint(x: scrollView.contentOffset.x + shift, y: scrollView.contentOffset.y),
+                animated: false
+            )
+            return true
+        }
+
+        @objc private func advanceSeasonScroll(_ link: CADisplayLink) {
+            guard let seasonMotion, let scrollView else { stopSeasonScroll(); return }
+            let offset = seasonMotion.offset(at: link.timestamp)
+            // Advance the actual viewport each frame so the lazy row lays out
+            // intermediate cards. There is no second native settling animation.
+            scrollView.setContentOffset(CGPoint(x: offset, y: scrollView.contentOffset.y), animated: false)
+            if seasonMotion.isComplete(at: link.timestamp) { stopSeasonScroll() }
+        }
+
+        func stopSeasonScroll() {
+            displayLink?.invalidate()
+            displayLink = nil
+            seasonMotion = nil
+            let onEnd = onSeasonScrollEnd
+            onSeasonScrollEnd = nil
+            if let offset = scrollView?.contentOffset.x { onEnd?(offset) }
+        }
     }
 
     @FocusState private var focusedCardId: String?
@@ -164,15 +212,35 @@ struct TVEpisodeRail: View {
                        let index = episodes.firstIndex(where: { $0.contentId == scrollTargetContentId }) {
                         appliedScrollRequest = scrollRequest
                         pendingEdge = nil
-                        anchorFocusedSelection(at: index, viewportWidth: geometry.size.width)
-                    } else {
-                        seedAnchoredSelection(
-                            viewportWidth: geometry.size.width,
-                            targetContentId: anchoredFocusedContentId ?? anchoredContentId,
-                            animated: true
-                        )
+                        anchoredContentId = episodes[index].contentId
+                        scrollToSelectedSeason(at: index, viewportWidth: geometry.size.width)
+                    } else if needsRebasedSelection {
+                        // Finish any interrupted one-card movement in the new
+                        // coordinates, after the nonanimated rebase has mounted.
+                        seedAnchoredSelection(viewportWidth: geometry.size.width, animated: true)
                     }
-                    completePendingEdge(viewportWidth: geometry.size.width)
+                    needsRebasedSelection = false
+                    completePendingEdge()
+                }
+                .onChange(of: episodeIdentityKey) { oldIds, newIds in
+                    // Paging changes coordinates, not the user's selection.
+                    // Preserve the visible position when seasons are prepended
+                    // or evicted; appends must not restart an ongoing card slide.
+                    // Do this even when a season-pill jump is pending: its
+                    // destination uses the new coordinates, so its starting
+                    // viewport must be rebased before the task animates it.
+                    guard let id = anchoredFocusedContentId ?? anchoredContentId,
+                          let oldIndex = oldIds.firstIndex(of: id),
+                          let newIndex = newIds.firstIndex(of: id),
+                          oldIndex != newIndex else { return }
+                    let shift = CGFloat(newIndex - oldIndex) * (anchoredCardWidth + cardSpacing)
+                    let offset = scrollViewport.scrollView?.contentOffset.x ?? 0
+                    if scrollViewport.rebaseSeasonScroll(by: shift) {
+                        synchronizeScrollPosition(to: max(0, offset + shift))
+                    } else {
+                        moveAnchoredScroll(toOffset: max(0, offset + shift), animated: false)
+                        needsRebasedSelection = true
+                    }
                 }
                 .onChange(of: currentContentId) { _, _ in
                     // The season chip owns an explicit animated request.
@@ -241,11 +309,13 @@ struct TVEpisodeRail: View {
         .onChange(of: isSelectingSeason) { _, ownsFocus in
             if !ownsFocus {
                 scrollGeneration &+= 1
+                scrollViewport.stopSeasonScroll()
                 cancelNativeScrollCorrection()
             }
         }
         .onDisappear {
             scrollGeneration &+= 1
+            scrollViewport.stopSeasonScroll()
             cancelNativeScrollCorrection()
             scrollViewport.scrollView = nil
             pendingEdge = nil
@@ -412,12 +482,11 @@ struct TVEpisodeRail: View {
         request()
     }
 
-    private func completePendingEdge(viewportWidth: CGFloat) {
+    private func completePendingEdge() {
         guard let pendingEdge, anchoredFocusedContentId == pendingEdge.contentId,
               let index = episodes.firstIndex(where: { $0.contentId == pendingEdge.contentId }),
               episodes.indices.contains(index + pendingEdge.direction) else { return }
         let target = episodes[index + pendingEdge.direction].contentId
-        seedAnchoredSelection(viewportWidth: viewportWidth, targetContentId: target)
         // The user's boundary press owns this handoff. Cancel it if another
         // card or region took focus while the missing season was loading.
         DispatchQueue.main.async {
@@ -443,11 +512,39 @@ struct TVEpisodeRail: View {
         }
     }
 
+    private func synchronizeScrollPosition(to offset: CGFloat) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            anchoredScrollPosition.scrollTo(x: offset)
+        }
+    }
+
+    private func scrollToSelectedSeason(at index: Int, viewportWidth: CGFloat) {
+        guard !reduceMotion, scrollViewport.scrollView != nil else {
+            moveAnchoredScroll(to: index, viewportWidth: viewportWidth, animated: false)
+            return
+        }
+        scrollGeneration &+= 1
+        cancelNativeScrollCorrection()
+        scrollViewport.scrollToSeason(
+            anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            onEnd: { synchronizeScrollPosition(to: $0) }
+        )
+    }
+
     private func moveAnchoredScroll(to index: Int, viewportWidth: CGFloat, animated: Bool) {
+        moveAnchoredScroll(
+            toOffset: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            animated: animated
+        )
+    }
+
+    private func moveAnchoredScroll(toOffset targetOffset: CGFloat, animated: Bool) {
+        scrollViewport.stopSeasonScroll()
         scrollGeneration &+= 1
         let generation = scrollGeneration
         cancelNativeScrollCorrection()
-        let targetOffset = anchoredContentOffset(for: index, viewportWidth: viewportWidth)
         let animation: Animation = animated && !reduceMotion
             ? .easeOut(duration: 0.30)
             : .linear(duration: 0)
@@ -461,10 +558,10 @@ struct TVEpisodeRail: View {
             guard generation == scrollGeneration,
                   let scrollView = scrollViewport.scrollView,
                   abs(scrollView.contentOffset.x - targetOffset) > 0.5 else { return }
-            scrollViewport.correctionTarget = reduceMotion ? nil : targetOffset
+            scrollViewport.correctionTarget = animated && !reduceMotion ? targetOffset : nil
             scrollView.setContentOffset(
                 CGPoint(x: targetOffset, y: scrollView.contentOffset.y),
-                animated: !reduceMotion
+                animated: animated && !reduceMotion
             )
         }
     }
