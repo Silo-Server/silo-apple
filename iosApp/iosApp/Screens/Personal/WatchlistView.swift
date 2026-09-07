@@ -188,7 +188,7 @@ struct WatchlistView: View {
             .padding(.top, usesTVTopMenu ? TVTopMenuLayout.contentTopInset : SiloTheme.smallPadding)
             .padding(.bottom, SiloTheme.safePadding)
         }
-        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: applyFocusRequest))
+        .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: applyFocusRequest))
     }
 
     /// Keep the final poster width stable even when the global poster-size

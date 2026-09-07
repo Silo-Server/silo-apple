@@ -37,7 +37,7 @@ struct TVLibraryCollectionsView: View {
             }
             .padding(.bottom, SiloTheme.largePadding)
         }
-        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: noteShellFocusRequest))
+        .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: noteShellFocusRequest))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             guard collectionSections.isEmpty else { return }
@@ -174,7 +174,7 @@ struct TVLibraryCollectionsView: View {
             hasPendingFocusClaim = true
             return
         }
-        if hasPendingFocusClaim, isTopMenuFocused {
+        if isTopMenuFocused {
             hasPendingFocusClaim = false
             return
         }

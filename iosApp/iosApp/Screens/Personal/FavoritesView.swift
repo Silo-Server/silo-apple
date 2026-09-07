@@ -383,7 +383,7 @@ struct FavoritesView: View {
             .padding(.top, usesTVTopMenu ? TVTopMenuLayout.contentTopInset : 20)
             .padding(.bottom, SiloTheme.safePadding)
         }
-        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: applyFocusRequest))
+        .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: applyFocusRequest))
     }
 
     private var sectionSelector: some View {

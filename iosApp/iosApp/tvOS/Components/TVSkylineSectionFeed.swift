@@ -130,7 +130,7 @@ struct TVSkylineSectionFeed: View {
             .onScrollPhaseChange { _, phase in
                 marqueeModel.setBackdropDeferred(phase != .idle)
             }
-            .modifier(TVMenuEntryScroll(request: lastAppliedRequest, onReady: claimEntryFocus))
+            .modifier(TVMenuEntryScroll(request: lastAppliedRequest, isTopMenuFocused: isTopMenuFocused, onReady: claimEntryFocus))
             .frame(width: proxy.size.width, height: visibleBandHeight, alignment: .topLeading)
             .clipped()
             .padding(.top, bandTop)

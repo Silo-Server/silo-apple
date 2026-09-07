@@ -195,7 +195,7 @@ struct TVLibraryGridView: View {
             }
             .padding(.bottom, 48)
         }
-        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: noteShellFocusRequest))
+        .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: noteShellFocusRequest))
     }
 
     // MARK: - Focus routing

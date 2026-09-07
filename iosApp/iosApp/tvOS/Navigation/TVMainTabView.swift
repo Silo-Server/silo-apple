@@ -385,6 +385,12 @@ struct TVMainTabView: View {
         }
     }
 
+    /// The bar and an entered panel both own chrome focus. Native bar-focus
+    /// telemetry can be false during those handoffs, so use shell ownership.
+    private var menuOwnsFocus: Bool {
+        !isTopMenuFocusSuppressed || panelEntersFocus
+    }
+
     @ViewBuilder
     private var selectedRootContent: some View {
         switch selectedRoot {
@@ -392,13 +398,13 @@ struct TVMainTabView: View {
             HomeView(
                 homeFocusRequest: contentFocusRequest,
                 detailReturnFocusRequest: detailReturnFocusRequest,
-                isTopMenuFocused: isTopMenuFocused,
+                isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
         case .recommendations:
             RecommendationsView(
                 focusRequest: contentFocusRequest,
-                isTopMenuFocused: isTopMenuFocused,
+                isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
         case .libraryType(let type):
@@ -409,7 +415,7 @@ struct TVMainTabView: View {
                 activeLibrary: active,
                 selectedPill: pillSelection(for: type),
                 focusRequest: contentFocusRequest,
-                isTopMenuFocused: isTopMenuFocused,
+                isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
             // Re-create the tab body when the type changes so per-type
@@ -425,7 +431,7 @@ struct TVMainTabView: View {
                     activeLibrary: library,
                     selectedPill: shortcutPillSelection(for: libraryId, categoryType: type),
                     focusRequest: contentFocusRequest,
-                    isTopMenuFocused: isTopMenuFocused,
+                    isTopMenuFocused: menuOwnsFocus,
                     onTopMenuFocusRequest: { focusTopMenuIfVisible() }
                 )
                 .id(library.id)
@@ -440,6 +446,7 @@ struct TVMainTabView: View {
         case .calendar:
             CalendarView(
                 focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
         }
@@ -453,7 +460,7 @@ struct TVMainTabView: View {
                 showsNavigationTitle: false,
                 usesTVTopMenu: true,
                 focusRequest: contentFocusRequest,
-                isTopMenuFocused: isTopMenuFocused,
+                isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
         case .favorites:
@@ -461,7 +468,7 @@ struct TVMainTabView: View {
                 showsNavigationTitle: false,
                 usesTVTopMenu: true,
                 focusRequest: contentFocusRequest,
-                isTopMenuFocused: isTopMenuFocused,
+                isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
         }

@@ -8,6 +8,7 @@ struct CalendarView: View {
     /// changes (the Calendar root was selected), focus is pushed onto
     /// the filter bar so the screen never opens with a dead remote.
     var focusRequest: Int = 0
+    var isTopMenuFocused: Bool = false
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = CalendarViewModel()
@@ -228,7 +229,7 @@ struct CalendarView: View {
                 .padding(.top, TVTopMenuLayout.contentTopInset)
                 .padding(.bottom, SiloTheme.largePadding)
             }
-            .modifier(TVMenuEntryScroll(request: focusRequest) { entryFocusRequest = $0 })
+            .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused) { entryFocusRequest = $0 })
         }
     }
     #endif

@@ -150,6 +150,11 @@ focus lets intermediate rows take focus and cancel the entry row's
 restoration ownership. Keep page identity and loaded data stable;
 a menu selection only resets scrolling and entry focus.
 
+If Menu/Back returns ownership to the bar or a panel before the entry request
+finishes, cancel that request. Do not replay it when menu focus clears; the
+next deliberate page selection provides a new request. Cancel on disappearance
+as well, so queued layout callbacks cannot focus a page that has been left.
+
 Returning from a card's detail page still restores the launching card. Ordinary
 Up/Down navigation remains owned by the native focus engine.
 
