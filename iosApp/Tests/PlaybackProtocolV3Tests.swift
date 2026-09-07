@@ -2100,6 +2100,39 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(source.durationSeconds)
     }
 
+    func testV2SameRouteRecoveryPreservesAttemptWithoutSeekFeature() throws {
+        let original = makePlan()
+        let recovered = makePlan(playerStart: 42)
+        for operation in [PlaybackProtocolV3.ReplanOperation.failureRecovery,
+                          PlaybackProtocolV3.ReplanOperation.seekFailureRecovery] {
+            XCTAssertTrue(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+                usesV2: true, currentSessionID: "same-session", nextSessionID: "same-session",
+                current: original, next: recovered, attemptedKeys: [original.planAttemptKey],
+                responseFeatures: [PlaybackProtocolV3.headerAuthenticatedMediaFeature]))
+        }
+    }
+
+    func testSameRouteRecoveryRejectsChangedIdentityAndKeepsLegacyLoopFence() throws {
+        let original = makePlan()
+        let operation = PlaybackProtocolV3.ReplanOperation.failureRecovery
+        for next in [makePlan(planId: "other-plan"), makePlan(planAttemptKey: "other-key"),
+                     makePlan(videoCodec: "hevc"), makePlan(selectedAudioIndex: 1)] {
+            XCTAssertThrowsError(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+                usesV2: true, currentSessionID: "same", nextSessionID: "same",
+                current: original, next: next, attemptedKeys: [original.planAttemptKey], responseFeatures: []))
+        }
+        XCTAssertThrowsError(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+            usesV2: true, currentSessionID: "same", nextSessionID: "other",
+            current: original, next: original, attemptedKeys: [], responseFeatures: []))
+        XCTAssertThrowsError(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+            usesV2: false, currentSessionID: "same", nextSessionID: "same",
+            current: original, next: original, attemptedKeys: [original.planAttemptKey], responseFeatures: []))
+        XCTAssertFalse(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+            usesV2: false, currentSessionID: "same", nextSessionID: "next",
+            current: original, next: makePlan(planAttemptKey: "untried"),
+            attemptedKeys: [original.planAttemptKey], responseFeatures: []))
+    }
+
     private var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase

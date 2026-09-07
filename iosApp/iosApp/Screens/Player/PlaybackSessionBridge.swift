@@ -1334,6 +1334,47 @@ actor PlaybackSessionBridge {
         }
     }
 
+    static func isV2SameRouteRecovery(operation: String, usesV2: Bool) -> Bool {
+        usesV2 && [PlaybackProtocolV3.ReplanOperation.failureRecovery,
+                   PlaybackProtocolV3.ReplanOperation.seekFailureRecovery,
+                   PlaybackProtocolV3.ReplanOperation.seekReanchor].contains(operation)
+    }
+
+    /// Returns whether a validated replan retains the current route attempt.
+    static func replanPreservesAttempt(operation: String, usesV2: Bool,
+        currentSessionID: String, nextSessionID: String,
+        current: PlaybackV3Plan, next: PlaybackV3Plan,
+        attemptedKeys: [String], responseFeatures: [String]) throws -> Bool {
+        let isSeekReanchor = operation == PlaybackProtocolV3.ReplanOperation.seekReanchor
+        let v2SameRoute = isV2SameRouteRecovery(operation: operation, usesV2: usesV2)
+        let preservesRoute = isSeekReanchor || v2SameRoute
+        guard preservesRoute || !attemptedKeys.contains(next.planAttemptKey) else {
+            throw PlaybackV3TerminalFailure(reason: "replan_loop_detected",
+                message: "The server returned a protocol V3 plan that already failed on this output route.", retryable: false)
+        }
+        if preservesRoute {
+            guard currentSessionID == nextSessionID,
+                  (v2SameRoute || responseFeatures.contains(PlaybackProtocolV3.seekReanchorFeature)),
+                  (!v2SameRoute || (next.planId == current.planId
+                    && next.effectiveMediaFileId == current.effectiveMediaFileId
+                    && next.requestedMediaFileId == current.requestedMediaFileId
+                    && next.source == current.source
+                    && next.stream.protocol == current.stream.protocol
+                    && next.stream.container == current.stream.container)),
+                  next.planAttemptKey == current.planAttemptKey,
+                  next.delivery == current.delivery,
+                  next.effectiveRecipe == current.effectiveRecipe,
+                  next.selectedTracks == current.selectedTracks,
+                  next.transformations == current.transformations,
+                  next.appliedQuirks == current.appliedQuirks,
+                  next.runtimeCorrections == current.runtimeCorrections else {
+                throw PlaybackV3TerminalFailure(reason: "invalid_seek_reanchor_response",
+                    message: "The server changed the route or playback intent during a V3 seek re-anchor.", retryable: false)
+            }
+        }
+        return preservesRoute
+    }
+
     func replanProtocolV3(
         watchDetail: WatchDetail,
         position: Double,
@@ -1380,17 +1421,19 @@ actor PlaybackSessionBridge {
             || operation == PlaybackProtocolV3.ReplanOperation.outputChange
         let invalidatesIntent = isIntent || classification == "output_route_changed"
         let isSeekReanchor = operation == PlaybackProtocolV3.ReplanOperation.seekReanchor
+        let usesV2 = await mutationCoordinator.usesV2(currentSessionId)
+        let preservesRoute = isSeekReanchor || Self.isV2SameRouteRecovery(operation: operation, usesV2: usesV2)
         if isSeekReanchor,
            !active.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
             return nil
         }
-        let attemptedKeys = isSeekReanchor
+        let attemptedKeys = preservesRoute
             ? active.attemptedPlanKeys
             : invalidatesIntent
             ? []
             : Array(Set(active.attemptedPlanKeys + [active.planAttemptKey])).sorted()
         let selectedFileId = active.plan.effectiveMediaFileId
-        let selectedAudio = (isSeekReanchor ? nil : audioTrackIndex).flatMap { index in
+        let selectedAudio = (preservesRoute ? nil : audioTrackIndex).flatMap { index in
             guard index >= 0 else { return nil }
             return PlaybackV3TrackIdentity(
                 id: protocolV3TrackId(fileId: selectedFileId, kind: "audio", index: index),
@@ -1398,7 +1441,7 @@ actor PlaybackSessionBridge {
             )
         } ?? active.plan.selectedTracks.audio
         let selectedSubtitle: PlaybackV3TrackIdentity? = {
-            if isSeekReanchor { return active.plan.selectedTracks.subtitle }
+            if preservesRoute { return active.plan.selectedTracks.subtitle }
             if classification == "subtitle_track_changed" {
                 return subtitleTrackIndex.flatMap { index in
                     guard index >= 0 else { return nil }
@@ -1583,24 +1626,20 @@ actor PlaybackSessionBridge {
                 throw error
             }
             let nextKey = nextPlan.planAttemptKey
-            guard isSeekReanchor || !attemptedKeys.contains(nextKey) else {
+            let preservesAttempt: Bool
+            do {
+                preservesAttempt = try Self.replanPreservesAttempt(operation: operation,
+                    usesV2: usesV2,
+                    currentSessionID: currentSessionId, nextSessionID: nextSessionId,
+                    current: active.plan, next: nextPlan, attemptedKeys: attemptedKeys,
+                    responseFeatures: response.serverFeatures)
+            } catch let failure as PlaybackV3TerminalFailure {
                 if nextSessionId != currentSessionId {
-                    await retireAbandonedSession(
-                        nextSessionId,
-                        reason: "replan_loop_detected"
-                    )
+                    await retireAbandonedSession(nextSessionId, reason: failure.reason)
                 }
-                await emitProtocolV3Terminal(
-                    active: active,
-                    sessionId: currentSessionId,
-                    reason: "replan_loop_detected",
-                    message: "The server returned a protocol V3 plan that already failed on this output route."
-                )
-                throw PlaybackV3TerminalFailure(
-                    reason: "replan_loop_detected",
-                    message: "The server returned a protocol V3 plan that already failed on this output route.",
-                    retryable: false
-                )
+                await emitProtocolV3Terminal(active: active, sessionId: currentSessionId,
+                    reason: failure.reason, message: failure.message)
+                throw failure
             }
             guard let selectedVersion = watchDetail.versions.first(where: {
                 $0.fileId == nextPlan.effectiveMediaFileId
@@ -1629,29 +1668,7 @@ actor PlaybackSessionBridge {
                 selectedVersion: selectedVersion,
                 serverFeatures: response.serverFeatures
             )
-            if isSeekReanchor {
-                guard nextSessionId == currentSessionId,
-                      response.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature),
-                      nextKey == active.planAttemptKey,
-                      nextPlan.delivery == active.plan.delivery,
-                      nextPlan.effectiveRecipe == active.plan.effectiveRecipe,
-                      nextPlan.selectedTracks == active.plan.selectedTracks,
-                      nextPlan.transformations == active.plan.transformations,
-                      nextPlan.appliedQuirks == active.plan.appliedQuirks,
-                      nextPlan.runtimeCorrections == active.plan.runtimeCorrections else {
-                    await emitProtocolV3Terminal(
-                        active: active,
-                        sessionId: currentSessionId,
-                        reason: "invalid_seek_reanchor_response",
-                        message: "The server changed the route or playback intent during a V3 seek re-anchor."
-                    )
-                    throw PlaybackV3TerminalFailure(
-                        reason: "invalid_seek_reanchor_response",
-                        message: "The server changed the route or playback intent during a V3 seek re-anchor.",
-                        retryable: false
-                    )
-                }
-            } else {
+            if !preservesAttempt {
                 active.planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
                 active.planAttemptKey = nextKey
                 active.attemptedPlanKeys = attemptedKeys + [nextKey]
