@@ -206,23 +206,18 @@ final class DownloadManager {
     }
 
     func absoluteMediaURL(for record: DownloadRecord) -> URL? {
-        guard let filename = record.mediaFilename, !scopeServerId.isEmpty else { return nil }
-        return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
-            downloadId: record.id,
-            filename: filename
-        )
+        guard let filename = record.mediaFilename else { return nil }
+        return absoluteFileURL(for: record, filename: filename)
     }
 
     func absoluteFileURL(for record: DownloadRecord, filename: String) -> URL? {
-        guard !scopeServerId.isEmpty else { return nil }
-        return DownloadFilePaths.fileURL(
-            serverId: scopeServerId,
-            profileId: scopeProfileId,
-            downloadId: record.id,
-            filename: filename
-        )
+        guard let owner, file.records[record.id] != nil,
+              !filename.isEmpty, URL(fileURLWithPath: filename).lastPathComponent == filename,
+              !record.id.isEmpty, URL(fileURLWithPath: record.id).lastPathComponent == record.id else { return nil }
+        let root = owner.assets.root.standardizedFileURL
+        let directory = root.appendingPathComponent(record.id, isDirectory: true).standardizedFileURL
+        guard directory.deletingLastPathComponent() == root else { return nil }
+        return directory.appendingPathComponent(filename)
     }
 
     func localProgress(forMediaItemId mediaItemId: String) -> LocalProgressEntry? {
@@ -392,7 +387,6 @@ final class DownloadManager {
 
     func activateScopeIfNeeded() async -> Bool {
         if let owner, (try? await verified(owner)) != nil { return true }
-        guard permitOwnershipTransfer, rootOverride != nil else { return false }
         if let activationTask { return await activationTask.value }
         let attempt = UUID()
         activationID = attempt
@@ -403,9 +397,12 @@ final class DownloadManager {
                 guard activationID == attempt else { throw DownloadOwnershipError.stale }
                 try Task.checkCancellation()
                 let authority = try DownloadLocalAuthority(auth)
-                let root = rootOverride ?? DownloadFilePaths.scopeDirectory(serverId: authority.serverID, profileId: authority.profileID)
+                // Explicit migration remains confined to injected test roots. Production
+                // opens a fresh namespace keyed by the exact durable account authority.
+                let testingMigration = permitOwnershipTransfer && rootOverride != nil
+                let root = try testingMigration ? rootOverride! : DownloadFilePaths.ownedScopeDirectory(authority: authority, rootOverride: rootOverride)
                 let store = ProgressBootstrapStore(localRoot: root, authority: authority)
-                let state = try await store.openLocal(legacyData: nil, permitMigration: permitOwnershipTransfer)
+                let state = try await testingMigration ? store.openLocal(legacyData: nil, permitMigration: true) : store.openFreshLocal()
                 guard let current = await captureAuthority(),
                       try DownloadLocalAuthority(current) == authority, current.request.account == auth.request.account else {
                     throw DownloadOwnershipError.wrongAuthority

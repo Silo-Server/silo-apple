@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import OSLog
 
 /// On-disk layout for offline downloads. Everything lives under
@@ -36,6 +37,17 @@ enum DownloadFilePaths {
         let root = base.appendingPathComponent(rootFolderName, isDirectory: true)
         ensureDirectory(root, excludeFromBackup: true)
         return root
+    }
+
+    /// New v2 downloads live outside the legacy namespace. Every credential epoch
+    /// owns a distinct root; signing in again never adopts an earlier queue or asset.
+    static func ownedScopeDirectory(authority: DownloadLocalAuthority, rootOverride: URL? = nil) throws -> URL {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let key = SHA256.hash(data: try encoder.encode(authority)).map { String(format: "%02x", $0) }.joined()
+        let base = rootOverride ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SiloDownloadsV2", isDirectory: true)
+        return base.appendingPathComponent(key, isDirectory: true)
     }
 
     static func scopeDirectory(serverId: String, profileId: String) -> URL {

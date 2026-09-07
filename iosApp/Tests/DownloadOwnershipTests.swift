@@ -3,6 +3,67 @@ import XCTest
 @testable import Silo
 
 final class DownloadOwnershipTests: XCTestCase {
+    @MainActor
+    func testProductionActivationUsesFreshAuthorityRootAndPreservesLegacyBytes() async throws {
+        let (_, authority, root, tokens) = try await harness()
+        let legacy = Data("existing queue bytes must remain untouched".utf8)
+        let legacyURL = root.appendingPathComponent("store.json")
+        try legacy.write(to: legacyURL)
+        let manager = DownloadManager(rootOverride: root, tokenStore: tokens,
+            captureAuthority: { await tokens.captureDurableAccountAuth() })
+        let activated = await manager.activateScopeIfNeeded()
+        XCTAssertTrue(activated)
+        let ownedRoot = try DownloadFilePaths.ownedScopeDirectory(authority: authority, rootOverride: root)
+        let store = ProgressBootstrapStore(localRoot: ownedRoot, authority: authority)
+        let state = try await store.localSnapshot()
+        XCTAssertTrue(state.downloads.records.isEmpty)
+        XCTAssertTrue(state.downloads.progressQueue.isEmpty)
+        XCTAssertTrue(state.quarantinedLegacy.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: legacyURL), legacy)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("assets/ownership.json").path))
+        manager.clearForSignOut()
+        let restarted = DownloadManager(rootOverride: root, tokenStore: tokens,
+            captureAuthority: { await tokens.captureDurableAccountAuth() })
+        let reopened = await restarted.activateScopeIfNeeded()
+        XCTAssertTrue(reopened)
+        let after = try await store.localSnapshot()
+        XCTAssertEqual(after.ownerGeneration, state.ownerGeneration)
+        restarted.clearForSignOut()
+    }
+
+    @MainActor
+    func testNewAccountEpochCannotAdoptPreviousProductionQueue() async throws {
+        let (_, authority, root, tokens) = try await harness()
+        let originalRoot = try DownloadFilePaths.ownedScopeDirectory(authority: authority, rootOverride: root)
+        let old = ProgressBootstrapStore(localRoot: originalRoot, authority: authority)
+        let initial = try await old.openFreshLocal()
+        _ = try await old.applyLocal(.registered([row()], .init()), generation: initial.ownerGeneration)
+        let stateURL = originalRoot.appendingPathComponent("authorities/\(authority.accountEpoch.uuidString)/state.json")
+        let before = try Data(contentsOf: stateURL)
+        try await tokens.installAccountSession(accessToken: "new-access", refreshToken: "new-refresh", accountID: "1")
+        await tokens.setProfileId("profile")
+        let manager = DownloadManager(rootOverride: root, tokenStore: tokens,
+            captureAuthority: { await tokens.captureDurableAccountAuth() })
+        let activated = await manager.activateScopeIfNeeded()
+        XCTAssertTrue(activated)
+        XCTAssertNil(manager.record(id: "download"))
+        let captured = await tokens.captureDurableAccountAuth()
+        let current = try DownloadLocalAuthority(XCTUnwrap(captured))
+        XCTAssertNotEqual(try DownloadFilePaths.ownedScopeDirectory(authority: current, rootOverride: root), originalRoot)
+        XCTAssertEqual(try Data(contentsOf: stateURL), before)
+        manager.clearForSignOut()
+    }
+
+    func testFreshLocalRefusesLegacyBytesInsideItsNamespace() async throws {
+        let (store, _, root, _) = try await harness()
+        let data = Data("legacy with unknown owner".utf8)
+        let url = root.appendingPathComponent("store.json")
+        try data.write(to: url)
+        do { _ = try await store.openFreshLocal(); XCTFail("Must not claim legacy storage") }
+        catch DownloadOwnershipError.disabled {} catch { XCTFail("\(error)") }
+        XCTAssertEqual(try Data(contentsOf: url), data)
+    }
+
     func testSubscriptionValidatorSurvivesRestartAndStaleCollectionCannotOverwriteEdit() async throws {
         let (store, authority, root, _) = try await harness()
         let state = try await store.openLocal(legacyData: nil, permitMigration: true)

@@ -380,6 +380,36 @@ enum DownloadAssetKind: Sendable {
 }
 
 extension ProgressBootstrapStore {
+    /// Open only this exact owner's v2 namespace. Legacy bytes are never read,
+    /// imported, marked transferred, removed, or converted to a dispatchable queue.
+    func openFreshLocal() throws -> DownloadLocalState {
+        guard let authority = localAuthority, let assets = localAssets else { throw DownloadOwnershipError.wrongAuthority }
+        return try assets.withLock {
+            guard !FileManager.default.fileExists(atPath: assets.root.appendingPathComponent("store.json").path) else {
+                throw DownloadOwnershipError.disabled
+            }
+            let value: DownloadLocalState
+            if FileManager.default.fileExists(atPath: url.path) {
+                value = try loadLocal()
+                guard value.quarantinedLegacy.isEmpty, value.bootstrapArchive == nil else { throw DownloadOwnershipError.disabled }
+            } else {
+                value = DownloadLocalState(authority: authority, ownerGeneration: UUID(), revision: 0,
+                    downloads: .empty, quarantinedLegacy: Data(), leases: [:], transfers: [:], serverProgress: [:],
+                    pending: [:], committed: nil, installationID: nil)
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try write(JSONEncoder().encode(value), url)
+            }
+            let markerURL = url.deletingLastPathComponent().appendingPathComponent("owner.json")
+            if !FileManager.default.fileExists(atPath: markerURL.path) {
+                let marker = DownloadLocalMarker(version: 1, authority: authority, ownerGeneration: value.ownerGeneration)
+                try write(JSONEncoder().encode(marker), markerURL)
+            }
+            _ = try localSnapshot()
+            try assets.recoverLocked(authority: authority)
+            return value
+        }
+    }
+
     /// The runtime migration switch remains off until independent review. Only callers
     /// with an explicitly authorized synthetic/root activation enter this boundary.
     func openLocal(legacyData: Data?, permitMigration: Bool) throws -> DownloadLocalState {
