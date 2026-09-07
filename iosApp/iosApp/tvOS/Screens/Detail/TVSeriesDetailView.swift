@@ -254,8 +254,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var modeFocusAppearanceTask: Task<Void, Never>?
     @State private var presentedFocusedModeId: String?
     /// Optimistic watched state per season id while a tab's context-menu
-    /// mutation is in flight. Cleared when refreshed season payloads arrive.
-    @State private var seasonPlayedOverrides: [String: Bool] = [:]
+    /// mutation is in flight, keyed to the request that set it so an older
+    /// completion cannot clear a newer value.
+    @State private var seasonPlayedOverrides: [String: SeasonWatchedOverride] = [:]
     @State private var seasonTransitionInFlight = false
     @State private var seasonTransitionTargetId: String?
     @State private var seasonTransitionGeneration = 0
@@ -572,10 +573,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 selectedModeId,
                 priority: .userInitiated
             )
-            .onChange(of: seasons) { _, _ in
-                // Refreshed payloads carry the server's answer; drop any
-                // optimistic tab state so a rejected change cannot linger.
-                seasonPlayedOverrides = [:]
+            .onChange(of: seasons) { _, refreshed in
+                // A refreshed season carries the server's answer for itself
+                // only; a pending mutation on another season keeps its
+                // optimistic state.
+                for season in refreshed where seasonPlayedOverrides[season.id]?.played == season.userData?.played {
+                    seasonPlayedOverrides[season.id] = nil
+                }
             }
             .onChange(of: selectedModeId) { _, newId in
                 // A click activates immediately, before the focus-paint dwell
@@ -1265,18 +1269,21 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private func isSeasonPlayed(_ season: Season) -> Bool {
-        seasonPlayedOverrides[season.id] ?? (season.userData?.played ?? false)
+        seasonPlayedOverrides[season.id]?.played ?? (season.userData?.played ?? false)
     }
 
     /// Long-press menu on a season tab. Mirrors the episode rail: flip the
-    /// local state immediately, then roll back only if the server refuses.
+    /// local state immediately, then roll back only if the server refuses
+    /// and no newer request for this season has started since.
     @ViewBuilder
     private func seasonContextActions(for season: Season) -> some View {
         Button {
             let played = !isSeasonPlayed(season)
-            seasonPlayedOverrides[season.id] = played
+            let request = UUID()
+            seasonPlayedOverrides[season.id] = SeasonWatchedOverride(played: played, request: request)
             Task {
-                if await onSetSeasonWatched(season, played) == false {
+                if await onSetSeasonWatched(season, played) == false,
+                   seasonPlayedOverrides[season.id]?.request == request {
                     seasonPlayedOverrides[season.id] = nil
                 }
             }

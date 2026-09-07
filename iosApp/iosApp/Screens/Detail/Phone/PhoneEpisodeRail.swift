@@ -106,6 +106,7 @@ private struct PhoneEpisodeCard: View {
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
+    @State private var isMutatingWatched = false
 
     private var isPlayed: Bool {
         playedOverride ?? (episode.userData?.played == true)
@@ -158,7 +159,8 @@ private struct PhoneEpisodeCard: View {
             isPlayed: isPlayed,
             onPlay: onPlay,
             onSetWatched: onSetWatched,
-            playedOverride: $playedOverride
+            playedOverride: $playedOverride,
+            isMutatingWatched: $isMutatingWatched
         )
     }
 

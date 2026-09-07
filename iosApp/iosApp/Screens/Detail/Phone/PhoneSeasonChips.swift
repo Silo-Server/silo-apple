@@ -16,7 +16,7 @@ struct PhoneSeasonChips: View {
     var onSetWatched: ((Season, Bool) async -> Bool)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var playedOverrides: [String: Bool] = [:]
+    @State private var playedOverrides: [String: SeasonWatchedOverride] = [:]
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -36,16 +36,19 @@ struct PhoneSeasonChips: View {
             .onChange(of: selected?.id) { _, newId in
                 scrollToSelection(newId, using: proxy, animated: !reduceMotion)
             }
-            .onChange(of: seasons) { _, _ in
-                // Refreshed payloads carry the server's answer; drop any
-                // optimistic chip state so a rejected change cannot linger.
-                playedOverrides = [:]
+            .onChange(of: seasons) { _, refreshed in
+                // A refreshed season carries the server's answer for itself
+                // only; a pending mutation on another season keeps its
+                // optimistic state.
+                for season in refreshed where playedOverrides[season.id]?.played == season.userData?.played {
+                    playedOverrides[season.id] = nil
+                }
             }
         }
     }
 
     private func isPlayed(_ season: Season) -> Bool {
-        playedOverrides[season.id] ?? (season.userData?.played ?? false)
+        playedOverrides[season.id]?.played ?? (season.userData?.played ?? false)
     }
 
     @ViewBuilder
@@ -53,9 +56,11 @@ struct PhoneSeasonChips: View {
         if let onSetWatched {
             Button {
                 let played = !isPlayed(season)
-                playedOverrides[season.id] = played
+                let request = UUID()
+                playedOverrides[season.id] = SeasonWatchedOverride(played: played, request: request)
                 Task { @MainActor in
-                    if await onSetWatched(season, played) == false {
+                    if await onSetWatched(season, played) == false,
+                       playedOverrides[season.id]?.request == request {
                         playedOverrides[season.id] = nil
                     }
                 }

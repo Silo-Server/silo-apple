@@ -12,6 +12,7 @@ struct PhoneEpisodeListRow: View {
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @State private var playedOverride: Bool?
+    @State private var isMutatingWatched = false
 
     private let thumbnailWidth: CGFloat = 168
     private var thumbnailHeight: CGFloat { thumbnailWidth * 9 / 16 }
@@ -80,7 +81,8 @@ struct PhoneEpisodeListRow: View {
             isPlayed: isPlayed,
             onPlay: onPlay,
             onSetWatched: onSetWatched,
-            playedOverride: $playedOverride
+            playedOverride: $playedOverride,
+            isMutatingWatched: $isMutatingWatched
         )
     }
 

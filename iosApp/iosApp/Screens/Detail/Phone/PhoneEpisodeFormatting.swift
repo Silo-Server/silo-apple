@@ -62,6 +62,9 @@ struct PhoneEpisodeContextActions: View {
     let onPlay: (() -> Void)?
     let onSetWatched: ((Bool) async -> Bool)?
     @Binding var playedOverride: Bool?
+    /// One request at a time per card. A second toggle while the first is in
+    /// flight could reach the server in either order.
+    @Binding var isMutatingWatched: Bool
 
     var body: some View {
         if let onPlay {
@@ -75,12 +78,15 @@ struct PhoneEpisodeContextActions: View {
 
         if let onSetWatched {
             Button {
+                guard !isMutatingWatched else { return }
                 let played = !isPlayed
+                isMutatingWatched = true
                 Task { @MainActor in
                     playedOverride = played
                     if await onSetWatched(played) == false {
                         playedOverride = nil
                     }
+                    isMutatingWatched = false
                 }
             } label: {
                 Label(
@@ -88,6 +94,7 @@ struct PhoneEpisodeContextActions: View {
                     systemImage: isPlayed ? "circle" : "checkmark.circle"
                 )
             }
+            .disabled(isMutatingWatched)
         }
     }
 }
