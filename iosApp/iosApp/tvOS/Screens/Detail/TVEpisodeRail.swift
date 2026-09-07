@@ -67,59 +67,79 @@ struct TVEpisodeRail: View {
     }
     @State private var pendingEdge: PendingEdge?
     @State private var appliedScrollRequest = 0
-    @State private var needsRebasedSelection = false
-    @State private var scrollGeneration = 0
     @State private var scrollViewport = ScrollViewport()
 
+    /// Own the actual viewport for both card moves and season jumps. Binding a
+    /// second SwiftUI ScrollPosition replays its stale point when pages change.
     private final class ScrollViewport: NSObject {
         weak var scrollView: UIScrollView?
-        var correctionTarget: CGFloat?
-        private var seasonMotion: SeriesSeasonScroll?
+        private var intendedOffset: CGFloat?
+        private var maximumOffset: CGFloat = 0
+        private var motion: SeriesSeasonScroll?
         private var displayLink: CADisplayLink?
-        private var onSeasonScrollEnd: ((CGFloat) -> Void)?
 
-        func scrollToSeason(_ offset: CGFloat, onEnd: @escaping (CGFloat) -> Void) {
-            stopSeasonScroll()
-            guard let scrollView else { onEnd(offset); return }
-            seasonMotion = SeriesSeasonScroll(
+        func attach(_ scrollView: UIScrollView) {
+            guard self.scrollView !== scrollView else { return }
+            self.scrollView = scrollView
+            if let intendedOffset { setOffset(intendedOffset) }
+        }
+
+        func move(to offset: CGFloat, maximumOffset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
+            self.maximumOffset = maximumOffset
+            stopScroll()
+            guard let scrollView else { setOffset(offset); return }
+            guard let timing else { setOffset(offset); return }
+            motion = SeriesSeasonScroll(
                 startOffset: scrollView.contentOffset.x,
                 targetOffset: offset,
-                startedAt: CACurrentMediaTime()
+                startedAt: CACurrentMediaTime(),
+                timing: timing
             )
-            onSeasonScrollEnd = onEnd
-            let link = CADisplayLink(target: self, selector: #selector(advanceSeasonScroll))
+            let link = CADisplayLink(target: self, selector: #selector(advanceScroll))
             displayLink = link
             link.add(to: .main, forMode: .common)
         }
 
-        /// Page eviction changes the coordinate origin, not the animation's
-        /// progress. Shift both endpoints without restarting its clock.
-        func rebaseSeasonScroll(by shift: CGFloat) -> Bool {
-            guard seasonMotion != nil, let scrollView else { return false }
-            seasonMotion?.rebase(by: shift)
+        /// Page changes shift coordinates, including any in-flight card move,
+        /// without starting another animation or changing its completion time.
+        func rebase(by shift: CGFloat, maximumOffset: CGFloat) {
+            self.maximumOffset = maximumOffset
+            motion?.rebase(by: shift)
+            if let offset = intendedOffset ?? scrollView?.contentOffset.x {
+                setOffset(offset + shift)
+            }
+        }
+
+        private func setOffset(_ offset: CGFloat) {
+            // Use the new model geometry; UIScrollView.contentSize can still
+            // describe the old lazy page during insertion or eviction.
+            let offset = SeriesSeasonScroll.clampedOffset(offset, maximumOffset: maximumOffset)
+            intendedOffset = offset
+            guard let scrollView else { return }
             scrollView.setContentOffset(
-                CGPoint(x: scrollView.contentOffset.x + shift, y: scrollView.contentOffset.y),
-                animated: false
+                CGPoint(x: offset, y: scrollView.contentOffset.y), animated: false
             )
-            return true
         }
 
-        @objc private func advanceSeasonScroll(_ link: CADisplayLink) {
-            guard let seasonMotion, let scrollView else { stopSeasonScroll(); return }
-            let offset = seasonMotion.offset(at: link.timestamp)
-            // Advance the actual viewport each frame so the lazy row lays out
-            // intermediate cards. There is no second native settling animation.
-            scrollView.setContentOffset(CGPoint(x: offset, y: scrollView.contentOffset.y), animated: false)
-            if seasonMotion.isComplete(at: link.timestamp) { stopSeasonScroll() }
+        /// Lazy layout can restore its previous content offset after a page
+        /// insertion. This composite owns scrolling, so reconcile that layout
+        /// write with the latest frame instead of starting a settling animation.
+        func reconcileOffset() {
+            guard let intendedOffset, let scrollView,
+                  abs(scrollView.contentOffset.x - intendedOffset) > 0.5 else { return }
+            setOffset(intendedOffset)
         }
 
-        func stopSeasonScroll() {
+        @objc private func advanceScroll(_ link: CADisplayLink) {
+            guard let motion, scrollView != nil else { stopScroll(); return }
+            setOffset(motion.offset(at: link.timestamp))
+            if motion.isComplete(at: link.timestamp) { stopScroll() }
+        }
+
+        func stopScroll() {
             displayLink?.invalidate()
             displayLink = nil
-            seasonMotion = nil
-            let onEnd = onSeasonScrollEnd
-            onSeasonScrollEnd = nil
-            if let offset = scrollView?.contentOffset.x { onEnd?(offset) }
+            motion = nil
         }
     }
 
@@ -128,7 +148,6 @@ struct TVEpisodeRail: View {
     @State private var anchoredFocusedContentId: String?
     @Namespace private var anchoredFocusScope
     @State private var anchoredContentId: String?
-    @State private var anchoredScrollPosition = ScrollPosition(x: 0)
     @State private var anchoredPlayedOverrides: [String: Bool] = [:]
     @State private var anchoredFavoriteOverrides: [String: Bool] = [:]
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -214,12 +233,7 @@ struct TVEpisodeRail: View {
                         pendingEdge = nil
                         anchoredContentId = episodes[index].contentId
                         scrollToSelectedSeason(at: index, viewportWidth: geometry.size.width)
-                    } else if needsRebasedSelection {
-                        // Finish any interrupted one-card movement in the new
-                        // coordinates, after the nonanimated rebase has mounted.
-                        seedAnchoredSelection(viewportWidth: geometry.size.width, animated: true)
                     }
-                    needsRebasedSelection = false
                     completePendingEdge()
                 }
                 .onChange(of: episodeIdentityKey) { oldIds, newIds in
@@ -229,18 +243,22 @@ struct TVEpisodeRail: View {
                     // Do this even when a season-pill jump is pending: its
                     // destination uses the new coordinates, so its starting
                     // viewport must be rebased before the task animates it.
-                    guard let id = anchoredFocusedContentId ?? anchoredContentId,
-                          let oldIndex = oldIds.firstIndex(of: id),
-                          let newIndex = newIds.firstIndex(of: id),
-                          oldIndex != newIndex else { return }
-                    let shift = CGFloat(newIndex - oldIndex) * (anchoredCardWidth + cardSpacing)
-                    let offset = scrollViewport.scrollView?.contentOffset.x ?? 0
-                    if scrollViewport.rebaseSeasonScroll(by: shift) {
-                        synchronizeScrollPosition(to: max(0, offset + shift))
+                    let id = anchoredFocusedContentId ?? anchoredContentId
+                    let oldIndex = id.flatMap { oldIds.firstIndex(of: $0) }
+                    let newIndex = id.flatMap { newIds.firstIndex(of: $0) }
+                    let shift: CGFloat
+                    if let oldIndex, let newIndex {
+                        shift = CGFloat(newIndex - oldIndex) * (anchoredCardWidth + cardSpacing)
                     } else {
-                        moveAnchoredScroll(toOffset: max(0, offset + shift), animated: false)
-                        needsRebasedSelection = true
+                        shift = 0
                     }
+                    // Even a tail-only eviction can shrink the valid range.
+                    scrollViewport.rebase(
+                        by: shift,
+                        maximumOffset: anchoredContentOffset(
+                            for: episodes.count - 1, viewportWidth: geometry.size.width
+                        )
+                    )
                 }
                 .onChange(of: currentContentId) { _, _ in
                     // The season chip owns an explicit animated request.
@@ -308,15 +326,11 @@ struct TVEpisodeRail: View {
         }
         .onChange(of: isSelectingSeason) { _, ownsFocus in
             if !ownsFocus {
-                scrollGeneration &+= 1
-                scrollViewport.stopSeasonScroll()
-                cancelNativeScrollCorrection()
+                scrollViewport.stopScroll()
             }
         }
         .onDisappear {
-            scrollGeneration &+= 1
-            scrollViewport.stopSeasonScroll()
-            cancelNativeScrollCorrection()
+            scrollViewport.stopScroll()
             scrollViewport.scrollView = nil
             pendingEdge = nil
             onFocusedEpisodeChange?(nil)
@@ -333,7 +347,7 @@ struct TVEpisodeRail: View {
             }
             .scrollTargetLayout()
             .background {
-                TVDetailScrollViewResolver { scrollViewport.scrollView = $0 }
+                TVDetailScrollViewResolver { scrollViewport.attach($0) }
             }
             // Preserve the existing crop, hover clearance and trailing boundary.
             .padding(.leading, EpisodeHomeHoverMetrics.leadingInset(for: anchoredCardWidth))
@@ -343,13 +357,10 @@ struct TVEpisodeRail: View {
             )
             .padding(.vertical, 12)
         }
-        .scrollPosition($anchoredScrollPosition)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.x
-        } action: { _, offset in
-            if let target = scrollViewport.correctionTarget, abs(offset - target) <= 0.5 {
-                scrollViewport.correctionTarget = nil
-            }
+        } action: { _, _ in
+            scrollViewport.reconcileOffset()
         }
         .frame(
             width: viewportWidth,
@@ -504,66 +515,20 @@ struct TVEpisodeRail: View {
         moveAnchoredScroll(to: index, viewportWidth: viewportWidth, animated: true)
     }
 
-    private func cancelNativeScrollCorrection() {
-        guard scrollViewport.correctionTarget != nil else { return }
-        scrollViewport.correctionTarget = nil
-        if let scrollView = scrollViewport.scrollView {
-            scrollView.setContentOffset(scrollView.contentOffset, animated: false)
-        }
-    }
-
-    private func synchronizeScrollPosition(to offset: CGFloat) {
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            anchoredScrollPosition.scrollTo(x: offset)
-        }
-    }
-
     private func scrollToSelectedSeason(at index: Int, viewportWidth: CGFloat) {
-        guard !reduceMotion, scrollViewport.scrollView != nil else {
-            moveAnchoredScroll(to: index, viewportWidth: viewportWidth, animated: false)
-            return
-        }
-        scrollGeneration &+= 1
-        cancelNativeScrollCorrection()
-        scrollViewport.scrollToSeason(
-            anchoredContentOffset(for: index, viewportWidth: viewportWidth),
-            onEnd: { synchronizeScrollPosition(to: $0) }
+        scrollViewport.move(
+            to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
+            timing: reduceMotion ? nil : .season
         )
     }
 
     private func moveAnchoredScroll(to index: Int, viewportWidth: CGFloat, animated: Bool) {
-        moveAnchoredScroll(
-            toOffset: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
-            animated: animated
+        scrollViewport.move(
+            to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
+            timing: animated && !reduceMotion ? .episode : nil
         )
-    }
-
-    private func moveAnchoredScroll(toOffset targetOffset: CGFloat, animated: Bool) {
-        scrollViewport.stopSeasonScroll()
-        scrollGeneration &+= 1
-        let generation = scrollGeneration
-        cancelNativeScrollCorrection()
-        let animation: Animation = animated && !reduceMotion
-            ? .easeOut(duration: 0.30)
-            : .linear(duration: 0)
-        withAnimation(animation, completionCriteria: .removed) {
-            anchoredScrollPosition.scrollTo(x: targetOffset)
-        } completion: {
-            // Dispatching a scroll is not proof it reached the destination.
-            // A replaced animation or lazy layout can leave the viewport at
-            // an intermediate season. Only the latest completed trip may
-            // settle it, after SwiftUI has removed that animation.
-            guard generation == scrollGeneration,
-                  let scrollView = scrollViewport.scrollView,
-                  abs(scrollView.contentOffset.x - targetOffset) > 0.5 else { return }
-            scrollViewport.correctionTarget = animated && !reduceMotion ? targetOffset : nil
-            scrollView.setContentOffset(
-                CGPoint(x: targetOffset, y: scrollView.contentOffset.y),
-                animated: animated && !reduceMotion
-            )
-        }
     }
 
     private func anchoredIsPlayed(_ episode: EpisodeListItem) -> Bool {
