@@ -168,6 +168,53 @@ final class ReadOwnedCallerTests: XCTestCase {
         XCTAssertEqual(ReadOwnedProtocol.requests().count, 2)
     }
 
+    func testRecommendationAcceptedFlagsSurviveHeldFailedRefreshAndReconcileFreshRead() async throws {
+        let (api, tokens) = try await harness()
+        StartupContentPrefetcher.resetProfileScopedPrefetches()
+        ResponseCache.shared.remove(CacheKey.recommendations)
+        defer {
+            StartupContentPrefetcher.resetProfileScopedPrefetches()
+            ResponseCache.shared.remove(CacheKey.recommendations)
+        }
+        let model = RecommendationsViewModel(api: SiloAPI(tokenStore: tokens, v2: api), tokens: tokens)
+        let response = #"{"items":[{"type":"popular","title":"Popular","items":[{"content_id":"movie:one","type":"movie","title":"One","user_state":{"played":true,"is_favorite":false,"in_watchlist":false}}]}]}"#
+        ReadOwnedProtocol.replies([(200, response)])
+        await model.loadRecommendations()
+        ReadOwnedProtocol.replies([(204, ""), (204, "")])
+        for target in [APIv2PersonalListKind.favorites, .watchlist] {
+            let action = try XCTUnwrap(model.membership.prepareCardAction(contentId: "movie:one", target: target, included: true))
+            let result = await model.membership.performCardAction(action)
+            XCTAssertEqual(result, true)
+        }
+        let accepted = try XCTUnwrap(model.membership.userState(for: "movie:one"))
+        XCTAssertTrue(accepted.isFavorite && accepted.inWatchlist && accepted.played)
+        let generation = model.membership.cardGeneration
+        let received = expectation(description: "refresh held after accepted membership")
+        ReadOwnedProtocol.replies([(503, "{}")]); ReadOwnedProtocol.hold { received.fulfill() }
+        let refresh = Task { await model.refresh() }
+        await fulfillment(of: [received], timeout: 2)
+        XCTAssertEqual(model.membership.userState(for: "movie:one"), accepted)
+        XCTAssertEqual(model.membership.cardGeneration, generation, "Repainting old sections must not reset card overrides")
+        ReadOwnedProtocol.release()
+        await refresh.value
+        XCTAssertNotNil(model.error)
+        XCTAssertEqual(model.membership.userState(for: "movie:one"), accepted)
+        XCTAssertEqual(model.membership.cardGeneration, generation)
+
+        // A genuinely new validated response may reconcile both flags and played state.
+        let fresh = response.replacingOccurrences(of: #""in_watchlist":false"#, with: #""in_watchlist":true"#)
+            .replacingOccurrences(of: #""played":true"#, with: #""played":false"#)
+        ReadOwnedProtocol.replies([(200, fresh)])
+        await model.refresh()
+        XCTAssertNil(model.error)
+        let reconciled = try XCTUnwrap(model.membership.userState(for: "movie:one"))
+        XCTAssertFalse(reconciled.isFavorite)
+        XCTAssertTrue(reconciled.inWatchlist)
+        XCTAssertFalse(reconciled.played)
+        XCTAssertGreaterThan(model.membership.cardGeneration, generation)
+        XCTAssertEqual(ReadOwnedProtocol.requests().count, 5)
+    }
+
     func testLibraryAndHistoryPagesKeepDisplayedOwnerAndMembership() async throws {
         for source in ["library_collection", "history"] {
             let (api, tokens) = try await harness()
