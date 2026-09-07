@@ -39,6 +39,11 @@ Try the latest beta builds of the iOS and tvOS apps:
 - `fastlane/` - iOS/tvOS release automation
 - `docs/tvos-player/` - Apple TV playback notes
 
+## Native API contracts
+
+- [API v2 ownership and request authority](docs/native-api-v2.md)
+- [Bound audiobook timelines and recovery](docs/bound-audiobook-playback.md)
+
 ## Prerequisites
 
 - Xcode 26+
