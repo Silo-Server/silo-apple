@@ -191,6 +191,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let activeEpisodeContentId: String?
     let episodeFavoriteStates: [String: Bool]
     let isLoadingEpisodes: Bool
+    let hierarchyError: String?
+    let onRetryHierarchy: () async -> Void
     let selectedNextUpFileId: Int?
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
@@ -225,6 +227,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @FocusState private var showActionRowFocused: Bool
     @FocusState private var focusedModeId: String?
     @State private var isShowingSeriesOverview = true
+    @State private var userNavigated = false
+    @State private var hierarchyRetryTask: Task<Void, Never>?
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
     @State private var episodeRailFocusRequest = 0
     @State private var episodeRailFocusTarget: String?
@@ -290,6 +294,21 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 .tvActionPopoverHost()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIFocusSystem.didUpdateNotification)) { notification in
+            // Automatic fallback has no heading. Observe native movement; do
+            // not intercept remote presses or infer intent from focus alone.
+            guard let context = notification.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey]
+                    as? UIFocusUpdateContext,
+                  let scrollView = pageScrollCoordinator.scrollView else { return }
+            let previouslyInPage = context.previouslyFocusedView?.isDescendant(of: scrollView) == true
+            let nextInPage = context.nextFocusedView?.isDescendant(of: scrollView) == true
+            let directionalMove = !context.focusHeading.isEmpty && (previouslyInPage || nextInPage)
+            // Selecting the automatically focused synopsis can open a modal
+            // without any directional movement. That interaction also wins.
+            let leftPage = previouslyInPage && context.nextFocusedView != nil && !nextInPage
+            guard directionalMove || leftPage else { return }
+            userNavigated = true
+        }
         .onAppear {
             if activeEpisodeContentId != nil {
                 isShowingSeriesOverview = false
@@ -301,6 +320,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             }
         }
         .onDisappear {
+            userNavigated = true
+            hierarchyRetryTask?.cancel()
+            hierarchyRetryTask = nil
             modeActivationTask?.cancel()
             modeActivationTask = nil
             modeFocusAppearanceTask?.cancel()
@@ -349,6 +371,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                 showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles ?? false
             ),
+            showsPlaybackSummary: isLoadingEpisodes || playbackEpisode != nil,
             backdropHeight: TVDetailLayout.heroHeight,
             // The hero shares the standard height and title inset with Movie
             // so the first viewport bottoms out on the episode rail: the season
@@ -425,17 +448,22 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             playTitle: playbackEpisode.map(showPlayTitle(for:)),
             playSubtitle: nil,
             onPlay: {
+                userNavigated = true
                 guard let episode = playbackEpisode else { return }
                 onPlayEpisode(episode.contentId, selectedFileId(for: episode), false)
             },
             onStartOver: playbackEpisode?.userData?.isInProgress == true
                 ? {
+                    userNavigated = true
                     guard let episode = playbackEpisode else { return }
                     onPlayEpisode(episode.contentId, selectedFileId(for: episode), true)
                 }
                 : nil,
             inWatchlist: inWatchlist,
-            onToggleWatchlist: onToggleWatchlist,
+            onToggleWatchlist: {
+                userNavigated = true
+                onToggleWatchlist()
+            },
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
@@ -443,6 +471,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             rowFocused: $showActionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
+            isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
+            allowsInitialPlayFocus: !userNavigated,
+            tracksInitialFocusNavigation: true,
             playbackSelectors: {
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves
@@ -479,8 +510,33 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
 
     private var episodeExperience: some View {
         VStack(alignment: .leading, spacing: 14) {
-            modeRow
+            if seasons.isEmpty {
+                HStack(spacing: 12) {
+                    ForEach(0..<4) { _ in
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(.white.opacity(0.10))
+                            .frame(width: 170, height: 48)
+                    }
+                }
+                .frame(height: 60)
+                .opacity(isLoadingEpisodes ? 1 : 0)
+                .accessibilityHidden(!isLoadingEpisodes)
+                .accessibilityLabel("Loading seasons")
+            } else {
+                modeRow
+            }
             episodeBody
+            if let hierarchyError, !episodeWindow.episodes.isEmpty {
+                HStack {
+                    Text(hierarchyError)
+                    Button("Retry") {
+                        userNavigated = true
+                        hierarchyRetryTask?.cancel()
+                        hierarchyRetryTask = Task { await onRetryHierarchy() }
+                    }
+                }
+                .font(.system(size: 18))
+            }
             if carouselLoadFailed {
                 Text("Couldn't load more episodes. Press again to retry.")
                     .font(.system(size: 18))
@@ -505,7 +561,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                             title: seasonLabel(season),
                             isSelected: selectedModeId == season.id,
                             rendersFocusedAppearance: presentedFocusedModeId == season.id,
-                            action: { activateSeason(season) }
+                            action: {
+                                userNavigated = true
+                                activateSeason(season)
+                            }
                         )
                         .id(season.id)
                         .focused($focusedModeId, equals: season.id)
@@ -655,7 +714,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @ViewBuilder
     private var episodeBody: some View {
         let carouselEpisodes = episodeWindow.episodes
-        if isLoadingEpisodes && carouselEpisodes.isEmpty {
+        if let hierarchyError, carouselEpisodes.isEmpty {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(hierarchyError)
+                    .font(.system(size: 22))
+                Button("Retry") {
+                    userNavigated = true
+                    hierarchyRetryTask?.cancel()
+                    hierarchyRetryTask = Task { await onRetryHierarchy() }
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: episodeRailReservedHeight, alignment: .topLeading)
+            .focusSection()
+        } else if isLoadingEpisodes && carouselEpisodes.isEmpty {
             TVEpisodeRailPlaceholder(
                 cardWidth: SiloTheme.thumbnailCardWidth
                     * uiCustomization.cardPresentation.posterSize.scale,

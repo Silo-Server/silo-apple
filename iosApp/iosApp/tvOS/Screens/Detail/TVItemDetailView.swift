@@ -87,6 +87,7 @@ struct TVItemDetailView: View {
             viewModel.resumeTrailerFetchIfNeeded()
         }
         .onDisappear {
+            viewModel.cancelDetailLoading()
             Self.focusLogger.debug("itemDetail.disappear contentId=\(contentId, privacy: .public) pathDepth=\(router.path.count, privacy: .public)")
             viewModel.cancelDeferredEpisodeFavoriteStateRefresh()
             // The coordinator's poll is not owned by `.task`, so it would
@@ -413,7 +414,9 @@ struct TVItemDetailView: View {
                 },
                 activeEpisodeContentId: activeSeriesEpisodeContentId,
                 episodeFavoriteStates: viewModel.episodeFavoriteStates,
-                isLoadingEpisodes: viewModel.isLoadingEpisodes,
+                isLoadingEpisodes: viewModel.isLoadingSeriesHierarchy,
+                hierarchyError: viewModel.seriesLoadErrorMessage,
+                onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,

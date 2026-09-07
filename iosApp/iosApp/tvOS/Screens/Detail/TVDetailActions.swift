@@ -484,6 +484,9 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     /// Series reserves one compact width across Play/Resume episode labels.
     /// Movies leave this nil so short labels use their natural pill width.
     var primaryButtonWidth: CGFloat? = nil
+    var isPlaybackLoading = false
+    var allowsInitialPlayFocus = true
+    var tracksInitialFocusNavigation = false
     @ViewBuilder let playbackSelectors: () -> PlaybackSelectors
     @ViewBuilder let moreMenu: () -> MoreMenu
 
@@ -500,7 +503,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 actionSlot {
                     TVPrimaryPillButton(
                         icon: "play.fill",
-                        title: playTitle ?? "Play",
+                        title: playTitle ?? (isPlaybackLoading ? "Loading episodes…" : "Play"),
                         subtitle: playSubtitle,
                         stabilizesFocusMotion: stabilizesFocusMotion,
                         fixedWidth: primaryButtonWidth,
@@ -570,6 +573,12 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 return
             }
         }
+        .onChange(of: allowsInitialPlayFocus) { _, allowed in
+            if !allowed {
+                didResetInitialPlayFocus = true
+                cancelInitialPlayFocusRetry()
+            }
+        }
         .onChange(of: playbackSelectorsFocused) { _, isFocused in
             if isFocused {
                 focusedAction = .playbackSelectors
@@ -579,7 +588,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         }
         .task(id: focusResetKey) {
             cancelInitialPlayFocusRetry()
-            didResetInitialPlayFocus = false
+            didResetInitialPlayFocus = !allowsInitialPlayFocus
             initialFocusSeasonKey = seasonKey
             await Task.yield()
             guard playTitle != nil else { return }
@@ -616,7 +625,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     }
 
     private func resetInitialPlayFocus() {
-        guard !didResetInitialPlayFocus else { return }
+        guard allowsInitialPlayFocus, !didResetInitialPlayFocus else { return }
         if case .season = initialFocusScope {
             guard let seasonKey else { return }
             if initialFocusSeasonKey == nil {
@@ -633,21 +642,21 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 if playFocused.wrappedValue { return }
 
                 if attempt > 0 {
-                    if let focusedNow = actionFocus.wrappedValue,
+                    if !tracksInitialFocusNavigation, let focusedNow = actionFocus.wrappedValue,
                        focusedNow != .play {
                         return
                     }
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     if Task.isCancelled { return }
                     if playFocused.wrappedValue { return }
-                    if let focusedNow = actionFocus.wrappedValue,
+                    if !tracksInitialFocusNavigation, let focusedNow = actionFocus.wrappedValue,
                        focusedNow != .play {
                         return
                     }
                 }
                 resetFocus(in: focusNamespace)
                 await Task.yield()
-                if attempt > 0,
+                if attempt > 0, !tracksInitialFocusNavigation,
                    let focusedNow = actionFocus.wrappedValue,
                    focusedNow != .play {
                     return
