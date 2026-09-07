@@ -1290,43 +1290,64 @@ class ItemDetailViewModel {
     }
 
     /// Series overview action: mutate the season currently selected in the
-    /// pill row, not the whole series. The server already fans a season
+    /// pill row, not the whole series.
+    func toggleSelectedSeasonWatched() async {
+        guard let selectedSeason else { return }
+        _ = await setSeasonWatched(
+            selectedSeason,
+            played: !(selectedSeason.userData?.played ?? false)
+        )
+    }
+
+    /// Mark one season watched or unwatched. The server already fans a season
     /// mutation out to its episodes; refreshing the season + episode payloads
     /// keeps every checkmark and next-up calculation consistent afterward.
-    func toggleSelectedSeasonWatched() async {
-        guard let selectedSeason,
-              let seriesId = seriesContentId else { return }
-
-        let played = !(selectedSeason.userData?.played ?? false)
+    /// Works for any season, so chip context menus can target a season that
+    /// is not the selected page. Returns false when the server rejected the
+    /// change so callers can roll back an optimistic UI state.
+    func setSeasonWatched(_ season: Season, played: Bool) async -> Bool {
+        guard let seriesId = seriesContentId else { return false }
         do {
             try await SiloAPI.shared.setWatched(
-                contentId: selectedSeason.contentId,
+                contentId: season.contentId,
                 played: played
             )
-            invalidateRelatedCaches(
-                contentId: selectedSeason.contentId,
-                seriesId: seriesId,
-                seasonNumber: selectedSeason.seasonNumber
-            )
-
-            await loadSeasons(
-                seriesId: seriesId,
-                autoSelectInitial: false,
-                coalescesMetadataRequest: false
-            )
-            if let refreshed = seasons.first(where: {
-                $0.contentId == selectedSeason.contentId
-                    || $0.seasonNumber == selectedSeason.seasonNumber
-            }) {
-                await selectSeason(
-                    refreshed,
-                    forceRefresh: true,
-                    coalescesMetadataRequest: false
-                )
-            }
         } catch {
             // Leave the server-provided state untouched on failure.
+            return false
         }
+        invalidateRelatedCaches(
+            contentId: season.contentId,
+            seriesId: seriesId,
+            seasonNumber: season.seasonNumber
+        )
+
+        await loadSeasons(
+            seriesId: seriesId,
+            autoSelectInitial: false,
+            coalescesMetadataRequest: false
+        )
+        let refreshed = seasons.first(where: {
+            $0.contentId == season.contentId
+                || $0.seasonNumber == season.seasonNumber
+        }) ?? season
+        if selectedSeason?.seasonNumber == refreshed.seasonNumber {
+            await selectSeason(
+                refreshed,
+                forceRefresh: true,
+                coalescesMetadataRequest: false
+            )
+        } else {
+            // Refresh the route-scoped page for a non-selected season so a
+            // later chip tap or page swipe paints the new checkmarks.
+            await loadEpisodes(
+                seriesId: seriesId,
+                seasonNumber: refreshed.seasonNumber,
+                refreshFavoriteStates: false,
+                coalescesMetadataRequest: false
+            )
+        }
+        return true
     }
 
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
@@ -1347,11 +1368,29 @@ class ItemDetailViewModel {
                     refreshFavoriteStates: false,
                     coalescesMetadataRequest: false
                 )
+                // A single episode can complete or reopen its season, so the
+                // season-level watched state must follow.
+                await refreshSelectedSeasonUserData(seriesId: seriesId)
             }
             return true
         } catch {
             return false
         }
+    }
+
+    /// Reload the season list and re-point `selectedSeason` at its refreshed
+    /// payload without changing the selection or reloading its episodes.
+    private func refreshSelectedSeasonUserData(seriesId: String) async {
+        let selectedId = selectedSeason?.contentId
+        await loadSeasons(
+            seriesId: seriesId,
+            autoSelectInitial: false,
+            coalescesMetadataRequest: false
+        )
+        guard let selectedId,
+              let refreshed = seasons.first(where: { $0.contentId == selectedId }),
+              refreshed != selectedSeason else { return }
+        selectedSeason = refreshed
     }
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> Bool {

@@ -9,28 +9,31 @@ struct PhoneEpisodeListRow: View {
     let isCurrent: Bool
     let onSelect: () -> Void
     let onPlay: (() -> Void)?
+    var onSetWatched: ((Bool) async -> Bool)? = nil
+
+    @State private var playedOverride: Bool?
 
     private let thumbnailWidth: CGFloat = 168
     private var thumbnailHeight: CGFloat { thumbnailWidth * 9 / 16 }
 
+    private var isPlayed: Bool {
+        playedOverride ?? (episode.userData?.played == true)
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Button(action: onSelect) {
-                HStack(alignment: .top, spacing: 14) {
-                    thumbnail
-                    metadata
+            Group {
+                if onPlay != nil || onSetWatched != nil {
+                    rowButton.contextMenu { contextActions }
+                } else {
+                    rowButton
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                PhoneEpisodeFormatting.accessibilityDescription(
-                    for: episode,
-                    isCurrent: isCurrent
-                )
-            )
+            // Refreshed payloads carry the server's answer; drop the
+            // optimistic state so a rejected change cannot linger.
+            .onChange(of: episode.userData) { _, _ in
+                playedOverride = nil
+            }
 
             if let onPlay {
                 Button(action: onPlay) {
@@ -52,6 +55,35 @@ struct PhoneEpisodeListRow: View {
         }
     }
 
+    private var rowButton: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .top, spacing: 14) {
+                thumbnail
+                metadata
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            PhoneEpisodeFormatting.accessibilityDescription(
+                for: episode,
+                isCurrent: isCurrent
+            )
+        )
+    }
+
+    private var contextActions: some View {
+        PhoneEpisodeContextActions(
+            episode: episode,
+            isPlayed: isPlayed,
+            onPlay: onPlay,
+            onSetWatched: onSetWatched,
+            playedOverride: $playedOverride
+        )
+    }
+
     private var thumbnail: some View {
         ZStack(alignment: .bottom) {
             AsyncImageView(
@@ -64,7 +96,7 @@ struct PhoneEpisodeListRow: View {
             .clipped()
             .accessibilityHidden(true)
 
-            if episode.userData?.played == true {
+            if isPlayed {
                 Color.black.opacity(0.3)
             }
 
@@ -80,7 +112,7 @@ struct PhoneEpisodeListRow: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if episode.userData?.played == true {
+            if isPlayed {
                 Image(systemName: "checkmark")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.black)

@@ -9,6 +9,9 @@ struct PhoneEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
     var onPlay: ((String) -> Void)? = nil
+    /// Optional long-press action. Returns false when the server rejected the
+    /// change so the card can drop its optimistic watched state.
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
     var captionStyleOverride: CardCaptionStyle? = nil
@@ -38,6 +41,9 @@ struct PhoneEpisodeRail: View {
                         onSelect: { onSelect(episode.contentId) },
                         onPlay: onPlay.map { play in
                             { play(episode.contentId) }
+                        },
+                        onSetWatched: onSetWatched.map { setWatched in
+                            { played in await setWatched(episode.contentId, played) }
                         }
                     )
                     .id(episode.contentId)
@@ -97,15 +103,28 @@ private struct PhoneEpisodeCard: View {
     let captionStyle: CardCaptionStyle
     let onSelect: () -> Void
     let onPlay: (() -> Void)?
+    var onSetWatched: ((Bool) async -> Bool)? = nil
+
+    @State private var playedOverride: Bool?
+
+    private var isPlayed: Bool {
+        playedOverride ?? (episode.userData?.played == true)
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
-            Button(action: onSelect) {
-                cardContent
+            Group {
+                if onPlay != nil || onSetWatched != nil {
+                    cardButton.contextMenu { contextActions }
+                } else {
+                    cardButton
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(accessibilityDescription)
+            // Refreshed payloads carry the server's answer; drop the
+            // optimistic state so a rejected change cannot linger.
+            .onChange(of: episode.userData) { _, _ in
+                playedOverride = nil
+            }
 
             if let onPlay {
                 Button(action: onPlay) {
@@ -122,6 +141,25 @@ private struct PhoneEpisodeCard: View {
                 )
             }
         }
+    }
+
+    private var cardButton: some View {
+        Button(action: onSelect) {
+            cardContent
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private var contextActions: some View {
+        PhoneEpisodeContextActions(
+            episode: episode,
+            isPlayed: isPlayed,
+            onPlay: onPlay,
+            onSetWatched: onSetWatched,
+            playedOverride: $playedOverride
+        )
     }
 
     private var cardContent: some View {
@@ -194,12 +232,12 @@ private struct PhoneEpisodeCard: View {
             .frame(width: cardWidth, height: stillHeight)
             .clipped()
 
-            if episode.userData?.played == true {
+            if isPlayed {
                 Color.black.opacity(0.32)
                     .frame(width: cardWidth, height: stillHeight)
             }
 
-            if episode.userData?.played == true {
+            if isPlayed {
                 VStack {
                     HStack {
                         Spacer()

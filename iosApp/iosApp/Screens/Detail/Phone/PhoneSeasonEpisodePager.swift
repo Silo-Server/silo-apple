@@ -12,6 +12,7 @@ struct PhoneSeasonEpisodePager: View {
     let onSelectSeason: (Season) -> Void
     let onSelectEpisode: (String) -> Void
     var onPlayEpisode: ((String) -> Void)? = nil
+    var onSetEpisodeWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
     var showsSeasonSelector = true
@@ -40,6 +41,7 @@ struct PhoneSeasonEpisodePager: View {
                             usesExpandedList: true,
                             onSelect: onSelectEpisode,
                             onPlay: onPlayEpisode,
+                            onSetWatched: onSetEpisodeWatched,
                             currentContentId: currentContentId,
                             selectsCenteredEpisode: selectsCenteredEpisode
                         )

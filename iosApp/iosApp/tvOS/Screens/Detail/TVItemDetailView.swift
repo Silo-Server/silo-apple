@@ -496,6 +496,9 @@ struct TVItemDetailView: View {
                 onSetEpisodeWatched: { id, played in
                     await viewModel.setEpisodeWatched(contentId: id, played: played)
                 },
+                onSetSeasonWatched: { season, played in
+                    await viewModel.setSeasonWatched(season, played: played)
+                },
                 onSetEpisodeFavorite: { id, isFavorite in
                     await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
                 },

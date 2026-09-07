@@ -13,6 +13,8 @@ struct PhoneSeasonEpisodeBrowser: View {
     let onSelectSeason: (Season) -> Void
     let onSelectEpisode: (String) -> Void
     var onPlayEpisode: ((String) -> Void)? = nil
+    /// Optional long-press watched toggle for episode cards and rows.
+    var onSetEpisodeWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
     /// Some detail layouts place the selector before their Episodes heading
@@ -54,6 +56,7 @@ struct PhoneSeasonEpisodeBrowser: View {
                     onSelectSeason: onSelectSeason,
                     onSelectEpisode: onSelectEpisode,
                     onPlayEpisode: onPlayEpisode,
+                    onSetEpisodeWatched: onSetEpisodeWatched,
                     currentContentId: currentContentId,
                     selectsCenteredEpisode: selectsCenteredEpisode,
                     showsSeasonSelector: showsSeasonSelector,
@@ -75,6 +78,7 @@ struct PhoneSeasonEpisodeBrowser: View {
                         usesExpandedList: usesExpandedList,
                         onSelect: onSelectEpisode,
                         onPlay: onPlayEpisode,
+                        onSetWatched: onSetEpisodeWatched,
                         currentContentId: currentContentId,
                         selectsCenteredEpisode: selectsCenteredEpisode,
                         captionStyleOverride: episodeCaptionStyleOverride

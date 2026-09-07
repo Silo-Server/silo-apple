@@ -8,6 +8,7 @@ struct PhoneEpisodePage: View {
     let usesExpandedList: Bool
     let onSelect: (String) -> Void
     var onPlay: ((String) -> Void)? = nil
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
     var captionStyleOverride: CardCaptionStyle? = nil
@@ -37,6 +38,7 @@ struct PhoneEpisodePage: View {
                     episodes: episodes,
                     onSelect: onSelect,
                     onPlay: onPlay,
+                    onSetWatched: onSetWatched,
                     currentContentId: currentContentId
                 )
             } else {
@@ -44,6 +46,7 @@ struct PhoneEpisodePage: View {
                     episodes: episodes,
                     onSelect: onSelect,
                     onPlay: onPlay,
+                    onSetWatched: onSetWatched,
                     currentContentId: currentContentId,
                     selectsCenteredEpisode: selectsCenteredEpisode,
                     captionStyleOverride: captionStyleOverride

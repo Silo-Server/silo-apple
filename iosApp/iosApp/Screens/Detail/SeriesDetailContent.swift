@@ -32,6 +32,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Long-press actions on a season chip and on an episode card. Both
+    /// return false when the server rejected the change so the control can
+    /// drop its optimistic state.
+    let onSetSeasonWatched: (_ season: Season, _ played: Bool) async -> Bool
+    let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -421,7 +426,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 PhoneSeasonChips(
                     seasons: seasons,
                     selected: selectedSeason,
-                    onSelect: handleSeasonSelection
+                    onSelect: handleSeasonSelection,
+                    onSetWatched: onSetSeasonWatched
                 )
             }
 
@@ -445,6 +451,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     }) else { return }
                     handlePlayTap(for: episode)
                 },
+                onSetEpisodeWatched: onSetEpisodeWatched,
                 currentContentId: nextUpEpisode?.contentId,
                 selectsCenteredEpisode: true,
                 showsSeasonSelector: false,

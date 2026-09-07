@@ -1,5 +1,5 @@
 #if !os(tvOS)
-import Foundation
+import SwiftUI
 
 /// Shared display formatting for the compact episode rail and expanded iPad
 /// rows. Keeping these labels in one seam prevents the two adaptive layouts
@@ -50,6 +50,45 @@ enum PhoneEpisodeFormatting {
             return "\(minutes / 60)h \(minutes % 60)m"
         }
         return "\(minutes)m"
+    }
+}
+
+/// Long-press menu shared by the compact episode card and the expanded iPad
+/// row: Play, then the watched toggle. Mirrors the tvOS episode rail. The
+/// caller flips its optimistic state first and rolls back only on failure.
+struct PhoneEpisodeContextActions: View {
+    let episode: EpisodeListItem
+    let isPlayed: Bool
+    let onPlay: (() -> Void)?
+    let onSetWatched: ((Bool) async -> Bool)?
+    @Binding var playedOverride: Bool?
+
+    var body: some View {
+        if let onPlay {
+            Button(action: onPlay) {
+                Label(
+                    "Play S\(episode.seasonNumber):E\(episode.episodeNumber)",
+                    systemImage: "play.fill"
+                )
+            }
+        }
+
+        if let onSetWatched {
+            Button {
+                let played = !isPlayed
+                Task { @MainActor in
+                    playedOverride = played
+                    if await onSetWatched(played) == false {
+                        playedOverride = nil
+                    }
+                }
+            } label: {
+                Label(
+                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
+                    systemImage: isPlayed ? "circle" : "checkmark.circle"
+                )
+            }
+        }
     }
 }
 #endif

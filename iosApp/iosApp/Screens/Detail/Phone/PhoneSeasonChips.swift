@@ -9,8 +9,14 @@ struct PhoneSeasonChips: View {
     let seasons: [Season]
     let selected: Season?
     let onSelect: (Season) -> Void
+    /// Optional long-press action. When set, every chip offers
+    /// "Mark <Season> Watched/Unwatched" for its own season. Returns false
+    /// when the server rejected the change so the chip drops its optimistic
+    /// state.
+    var onSetWatched: ((Season, Bool) async -> Bool)? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var playedOverrides: [String: Bool] = [:]
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -30,6 +36,39 @@ struct PhoneSeasonChips: View {
             .onChange(of: selected?.id) { _, newId in
                 scrollToSelection(newId, using: proxy, animated: !reduceMotion)
             }
+            .onChange(of: seasons) { _, _ in
+                // Refreshed payloads carry the server's answer; drop any
+                // optimistic chip state so a rejected change cannot linger.
+                playedOverrides = [:]
+            }
+        }
+    }
+
+    private func isPlayed(_ season: Season) -> Bool {
+        playedOverrides[season.id] ?? (season.userData?.played ?? false)
+    }
+
+    @ViewBuilder
+    private func contextActions(for season: Season) -> some View {
+        if let onSetWatched {
+            Button {
+                let played = !isPlayed(season)
+                playedOverrides[season.id] = played
+                Task { @MainActor in
+                    if await onSetWatched(season, played) == false {
+                        playedOverrides[season.id] = nil
+                    }
+                }
+            } label: {
+                // Always say "Season N" here even when the chip shows a custom
+                // title such as "Series 2"; the action names the watched target.
+                Label(
+                    isPlayed(season)
+                        ? "Mark \(season.downloadDisplayName) as Unwatched"
+                        : "Mark \(season.downloadDisplayName) as Watched",
+                    systemImage: isPlayed(season) ? "circle" : "checkmark.circle"
+                )
+            }
         }
     }
 
@@ -48,7 +87,17 @@ struct PhoneSeasonChips: View {
         }
     }
 
+    @ViewBuilder
     private func chip(for season: Season) -> some View {
+        if onSetWatched != nil {
+            chipButton(for: season)
+                .contextMenu { contextActions(for: season) }
+        } else {
+            chipButton(for: season)
+        }
+    }
+
+    private func chipButton(for season: Season) -> some View {
         let isSelected = selected?.id == season.id
         return Button {
             onSelect(season)

@@ -224,6 +224,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let onActivateEpisode: (_ contentId: String?) -> Void
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
+    /// Long-press action on a season tab. Targets that tab's season, which
+    /// need not be the selected page. Returns false when the server rejected
+    /// the change so the tab can drop its optimistic state.
+    let onSetSeasonWatched: (_ season: Season, _ played: Bool) async -> Bool
     let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
@@ -249,6 +253,9 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var modeActivationTask: Task<Void, Never>?
     @State private var modeFocusAppearanceTask: Task<Void, Never>?
     @State private var presentedFocusedModeId: String?
+    /// Optimistic watched state per season id while a tab's context-menu
+    /// mutation is in flight. Cleared when refreshed season payloads arrive.
+    @State private var seasonPlayedOverrides: [String: Bool] = [:]
     @State private var seasonTransitionInFlight = false
     @State private var seasonTransitionTargetId: String?
     @State private var seasonTransitionGeneration = 0
@@ -552,6 +559,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         )
                         .id(season.id)
                         .focused($focusedModeId, equals: season.id)
+                        .contextMenu { seasonContextActions(for: season) }
                     }
                 }
                 .padding(.vertical, 4)
@@ -564,6 +572,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 selectedModeId,
                 priority: .userInitiated
             )
+            .onChange(of: seasons) { _, _ in
+                // Refreshed payloads carry the server's answer; drop any
+                // optimistic tab state so a rejected change cannot linger.
+                seasonPlayedOverrides = [:]
+            }
             .onChange(of: selectedModeId) { _, newId in
                 // A click activates immediately, before the focus-paint dwell
                 // finishes. Promote that one focused tab without allowing an
@@ -1249,6 +1262,34 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         if let title = season.title, !title.isEmpty { return title }
         if season.seasonNumber == 0 { return "Specials" }
         return "Season \(season.seasonNumber)"
+    }
+
+    private func isSeasonPlayed(_ season: Season) -> Bool {
+        seasonPlayedOverrides[season.id] ?? (season.userData?.played ?? false)
+    }
+
+    /// Long-press menu on a season tab. Mirrors the episode rail: flip the
+    /// local state immediately, then roll back only if the server refuses.
+    @ViewBuilder
+    private func seasonContextActions(for season: Season) -> some View {
+        Button {
+            let played = !isSeasonPlayed(season)
+            seasonPlayedOverrides[season.id] = played
+            Task {
+                if await onSetSeasonWatched(season, played) == false {
+                    seasonPlayedOverrides[season.id] = nil
+                }
+            }
+        } label: {
+            // Always say "Season N" here even when the tab shows a custom
+            // title such as "Series 2"; the action names the watched target.
+            Label(
+                isSeasonPlayed(season)
+                    ? "Mark \(season.downloadDisplayName) as Unwatched"
+                    : "Mark \(season.downloadDisplayName) as Watched",
+                systemImage: isSeasonPlayed(season) ? "circle" : "checkmark.circle"
+            )
+        }
     }
 
     private func runtimeLabel(_ minutes: Int) -> String {

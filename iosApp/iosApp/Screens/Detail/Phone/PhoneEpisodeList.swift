@@ -31,6 +31,7 @@ struct PhoneEpisodeList: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
     var onPlay: ((String) -> Void)? = nil
+    var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var currentContentId: String? = nil
 
     @State private var availableWidth: CGFloat = 0
@@ -77,6 +78,9 @@ struct PhoneEpisodeList: View {
             onSelect: { onSelect(episode.contentId) },
             onPlay: onPlay.map { play in
                 { play(episode.contentId) }
+            },
+            onSetWatched: onSetWatched.map { setWatched in
+                { played in await setWatched(episode.contentId, played) }
             }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
