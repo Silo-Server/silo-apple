@@ -191,6 +191,37 @@ struct APIv2Client: Sendable {
         return response.data
     }
 
+    func dispatchSettingCommand(_ command: SettingsMutationCommand, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await gate()
+        guard ["PUT", "DELETE"].contains(command.method),
+              command.path == "/api/v2/settings/values/\(command.key)",
+              auth.profileId == command.authority.profileID,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let identity = HTTPRequestIdentity(serverId: command.authority.serverID, serverURL: command.authority.origin,
+            profileId: command.authority.profileID, clientFamily: command.authority.clientFamily)
+        let response = try await mapErrors {
+            try await http.requestData(method: command.method, path: command.path, query: command.query,
+                body: command.body, headers: ["X-Silo-Device-Id": command.authority.deviceID],
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        if command.method == "DELETE" {
+            guard response.statusCode == 204 else { throw SettingsMutationHold.uncertain }
+        } else {
+            let receipt = try SettingsWireCoding.makeDecoder().decode(StoredSettingValue.self, from: response.data)
+            guard response.statusCode == 200, receipt.key == command.key,
+                  receipt.scope.rawValue == command.query["scope"], receipt.revision > 0,
+                  receipt.profileId == command.authority.profileID,
+                  (receipt.scope != .profileDevice || receipt.deviceId == command.authority.deviceID) else {
+                throw SettingsMutationHold.uncertain
+            }
+        }
+    }
+
     func metadataAIStatus() async throws -> MetadataAIStatus {
         let data = try await settingsRead("/api/v2/capabilities/metadata-ai", profileRequired: true)
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2MetadataAICapability.self, from: data)

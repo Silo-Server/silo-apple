@@ -16,6 +16,11 @@ struct PlaybackSettingsView: View {
             )
             .settingsPageHeaderRow()
 
+            if let issue = PlayerSettings.shared.remoteSaveIssue {
+                Section {
+                    Text(issue).foregroundStyle(.secondary)
+                }
+            }
             streamingSection
             behaviorSection
             resetSection

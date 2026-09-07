@@ -11,6 +11,9 @@ struct TVPlaybackSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let issue = PlayerSettings.shared.remoteSaveIssue {
+                Text(issue).font(.caption).foregroundStyle(.secondary)
+            }
             streamingSection
             episodesSection
             resetSection

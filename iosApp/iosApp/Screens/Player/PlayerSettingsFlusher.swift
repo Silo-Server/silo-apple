@@ -2,9 +2,9 @@
 //  PlayerSettingsFlusher.swift
 //  Silo (iOS + tvOS + macOS)
 //
-//  Debounced writer for the player's device-scoped settings, speaking the
-//  canonical settings API (`PUT`/`DELETE /api/v1/settings/values/{key}` at
-//  scope `profile_device`).
+//  Device-scoped settings facade. Production delegates new commands to
+//  PlayerSettingsV2Queue; the legacy queue machinery below remains available
+//  to injected transports and never restores production queues into v2.
 //
 //  Failure handling is the point of this type, not an afterthought. The
 //  inline flusher this replaces dropped nothing on purpose but also retried
@@ -332,6 +332,10 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private let debounce: Duration
     private let retryPolicy: RetryPolicy
     private let journal: PlayerSettingsWriteJournal?
+    private let v2Queue: PlayerSettingsV2Queue?
+
+    var permitsLegacyImport: Bool { v2Queue == nil }
+    var saveIssue: String? { v2Queue?.issue }
 
     private let lock = NSLock()
     private var pending: [SettingKey: PendingSettingWrite] = [:]
@@ -363,12 +367,14 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         debounce: Duration = PlayerSettingsFlusher.defaultDebounce,
         retryPolicy: RetryPolicy = .default,
         journal: PlayerSettingsWriteJournal? = nil,
-        flushesOnBackground: Bool = false
+        flushesOnBackground: Bool = false,
+        v2Queue: PlayerSettingsV2Queue? = nil
     ) {
         self.transport = transport
         self.debounce = debounce
         self.retryPolicy = retryPolicy
         self.journal = journal
+        self.v2Queue = v2Queue
         // Anything the last run left queued is replayed by the first flush,
         // carrying the mutation ids it was persisted with.
         if let journal {
@@ -387,8 +393,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         // and nothing is written to the shared preferences domain.
         self.init(
             transport: SiloPlayerSettingsTransport(),
-            journal: UserDefaultsSettingsWriteJournal(),
-            flushesOnBackground: true
+            journal: nil,
+            flushesOnBackground: true,
+            v2Queue: PlayerSettingsV2Queue()
         )
     }
 
@@ -462,7 +469,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// has one seam to fake in tests, and so the read and the writes cannot
     /// drift onto different transports.
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
-        try await transport.effectiveValues(keys: keys)
+        if let v2Queue { return try await v2Queue.read(keys: keys) }
+        return try await transport.effectiveValues(keys: keys)
     }
 
     /// Re-read the journal and adopt anything it still owes.
@@ -516,6 +524,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     }
 
     var hasPendingWrites: Bool {
+        if let v2Queue { return v2Queue.hasPending }
         lock.lock()
         defer { lock.unlock() }
         return !pending.isEmpty || !inFlight.isEmpty || isDraining
@@ -533,6 +542,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Queue one device-scoped write, restarting the debounce window.
     func enqueue(_ key: SettingKey, value: SettingJSONValue) {
+        if let v2Queue { v2Queue.enqueue(key, operation: .set(value)); return }
         schedule(key) { existing, scopeIdentifier, profileId in
             // Re-enqueueing the identical value keeps the pending op *and* its
             // mutation id: it is the same logical write, and the server treats
@@ -551,6 +561,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Queue clearing this device's value, so the setting inherits again.
     func enqueueDelete(_ key: SettingKey) {
+        if let v2Queue { v2Queue.enqueue(key, operation: .delete); return }
         schedule(key) { existing, scopeIdentifier, profileId in
             if case .delete = existing?.operation {
                 return existing
@@ -628,6 +639,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Re-entrant calls coalesce: a second caller waits for the drain already
     /// running rather than issuing the same writes twice.
     func flushNow() async {
+        if let v2Queue { await v2Queue.flush(); return }
         let claimed = lock.withLock {
             debounceTask?.cancel()
             debounceTask = nil

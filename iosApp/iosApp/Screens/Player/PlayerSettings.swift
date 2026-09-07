@@ -478,6 +478,7 @@ final class PlayerSettings {
     /// Debounced writer for the canonical settings API. Owns the queue, the
     /// mutation ids and the retry schedule; see PlayerSettingsFlusher.swift.
     private let flusher: PlayerSettingsFlusher
+    var remoteSaveIssue: String? { flusher.saveIssue }
 
     /// Designated initializer, non-private so tests can build an instance with
     /// an isolated `UserDefaults` and a fake transport rather than reaching for
@@ -634,7 +635,7 @@ final class PlayerSettings {
             let effectiveByKey = response.byKey
             applyEffectiveSettings(effectiveByKey)
 
-            if let scopeID, !isMigrationComplete(for: scopeID) {
+            if flusher.permitsLegacyImport, let scopeID, !isMigrationComplete(for: scopeID) {
                 let imported = await importLegacySettingsIfNeeded(
                     scopeID: scopeID,
                     legacySnapshot: legacySnapshot,
