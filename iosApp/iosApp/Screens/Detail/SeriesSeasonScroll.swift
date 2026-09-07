@@ -1,20 +1,29 @@
 import Foundation
 
-/// One continuous season-pill scroll, including changes to the loaded row's origin.
+/// One continuous episode-rail scroll, including changes to the loaded row's origin.
 struct SeriesSeasonScroll {
     private(set) var startOffset: CGFloat
     private(set) var targetOffset: CGFloat
     let startedAt: TimeInterval
-    static let duration: TimeInterval = 0.45
+    enum Timing {
+        case season
+        case episode
+
+        var duration: TimeInterval { self == .season ? 0.45 : 0.30 }
+    }
+
+    var timing: Timing = .season
 
     func offset(at time: TimeInterval) -> CGFloat {
-        let progress = min(1, max(0, (time - startedAt) / Self.duration))
-        let eased = progress * progress * (3 - 2 * progress)
+        let progress = min(1, max(0, (time - startedAt) / timing.duration))
+        let eased = timing == .season
+            ? progress * progress * (3 - 2 * progress)
+            : 1 - pow(1 - progress, 3)
         return startOffset + (targetOffset - startOffset) * eased
     }
 
     func isComplete(at time: TimeInterval) -> Bool {
-        time >= startedAt + Self.duration
+        time >= startedAt + timing.duration
     }
 
     mutating func rebase(by shift: CGFloat) {
