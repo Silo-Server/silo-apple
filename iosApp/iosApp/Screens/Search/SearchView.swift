@@ -65,6 +65,17 @@ struct SearchView: View {
         .task {
             await focusSearchField()
         }
+        // Opening a result presents a sheet, and Play then covers it with the
+        // player. UIKit resigns the search field for the sheet, but SwiftUI
+        // still holds the focus binding as true, so it re-asserts focus and
+        // brings the keyboard back once the cover tears down. Release focus
+        // when a presentation begins so returning lands on the results.
+        .onChange(of: router.presentedItemDetail?.id) { _, presentedID in
+            if presentedID != nil { isSearchFieldFocused = false }
+        }
+        .onChange(of: router.presentedPlayer?.id) { _, presentedID in
+            if presentedID != nil { isSearchFieldFocused = false }
+        }
         #endif
         .onChange(of: viewModel.query) { _, _ in
             viewModel.onQueryChanged()
