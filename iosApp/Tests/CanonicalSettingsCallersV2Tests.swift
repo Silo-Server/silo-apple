@@ -35,6 +35,105 @@ final class CanonicalSettingsCallersV2Tests: XCTestCase {
         return Harness(api: api, tokens: tokens, journal: SettingsMutationJournal(url: url), url: url, defaults: defaults)
     }
 
+    func testJournaledProfile401DoesNotRefreshAndReplay() async throws {
+        let h = try await harness()
+        let adapter = OnboardingSettingsV2Transport(api: h.api, tokens: h.tokens, profileJournal: h.journal)
+        _ = try await adapter.onboardingFlow(surface: "phone")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            APIv2FixtureTestSupport.data(named: "update_profile_ok", bundleClass: Self.self)) as? [String: Any])
+        object["id"] = "profile"
+        CanonicalSettingsCallerProtocol.setPatchReply(try JSONSerialization.data(withJSONObject: object))
+        CanonicalSettingsCallerProtocol.enableSuccessfulRefreshAfterProfile401()
+        var body = UpdateProfileBody(); body.subtitleLanguage = "de"
+        do { try await adapter.updateProfile(profileId: "profile", body: body); XCTFail("A 401 must retain uncertainty") } catch {}
+        XCTAssertEqual(CanonicalSettingsCallerProtocol.requests().filter { $0.httpMethod == "PATCH" }.count, 1)
+        XCTAssertFalse(CanonicalSettingsCallerProtocol.requests().contains { $0.url!.path.hasSuffix("/auth/refresh") })
+        XCTAssertEqual(try h.journal.snapshot().first?.state, .uncertain)
+    }
+
+    func testCanonicalUncertaintyBlocksMirroredProfilePatch() async throws {
+        let h = try await harness()
+        let canonical = CanonicalProfileSettingsV2(api: h.api, tokens: h.tokens, journal: h.journal)
+        let owner = try await canonical.capture()
+        let adapter = OnboardingSettingsV2Transport(api: h.api, tokens: h.tokens, journal: h.journal, profileJournal: h.journal)
+        _ = try await adapter.onboardingFlow(surface: "phone")
+        CanonicalSettingsCallerProtocol.setStatus(503)
+        do { try await canonical.write(key: .playbackSubtitleLanguage, value: .string("fr"), owner: owner); XCTFail() } catch {}
+        let original = try XCTUnwrap(h.journal.snapshot().first)
+        var body = UpdateProfileBody(); body.subtitleLanguage = "de"
+        do { try await adapter.updateProfile(profileId: "profile", body: body); XCTFail() } catch {}
+        XCTAssertEqual(try h.journal.snapshot().first, original)
+        XCTAssertFalse(CanonicalSettingsCallerProtocol.requests().contains { $0.httpMethod == "PATCH" })
+    }
+
+    func testProfilePatchUncertaintyBlocksMirroredCanonicalPut() async throws {
+        let h = try await harness()
+        let canonical = CanonicalProfileSettingsV2(api: h.api, tokens: h.tokens, journal: h.journal)
+        let owner = try await canonical.capture()
+        let adapter = OnboardingSettingsV2Transport(api: h.api, tokens: h.tokens, journal: h.journal, profileJournal: h.journal)
+        _ = try await adapter.onboardingFlow(surface: "phone")
+        CanonicalSettingsCallerProtocol.setStatus(503)
+        var body = UpdateProfileBody(); body.subtitleLanguage = "de"
+        do { try await adapter.updateProfile(profileId: "profile", body: body); XCTFail() } catch {}
+        let original = try XCTUnwrap(h.journal.snapshot().first)
+        do { try await canonical.write(key: .playbackSubtitleLanguage, value: .string("fr"), owner: owner); XCTFail() } catch {}
+        XCTAssertEqual(try h.journal.snapshot().first, original)
+        XCTAssertFalse(CanonicalSettingsCallerProtocol.requests().contains { $0.httpMethod == "PUT" })
+    }
+
+    func testRetainedOldProfileJournalBlocksFreshAliasesWithoutRewritingBytes() async throws {
+        let h = try await harness()
+        let captured = await h.tokens.captureDurableAccountAuth()
+        let owner = try XCTUnwrap(captured)
+        let oldURL = h.url.deletingLastPathComponent().appendingPathComponent("old-profile.json")
+        let old = SettingsMutationJournal(url: oldURL)
+        let command = SettingsMutationCommand(id: UUID(), authority: try SettingsMutationAuthority(owner),
+            key: "onboarding.profile", method: "PATCH", path: "/api/v2/profiles/profile", query: [:],
+            body: Data(#"{ "subtitle_language" : "de" }"#.utf8), state: .uncertain)
+        try old.append(command)
+        let originalBytes = try Data(contentsOf: oldURL)
+        let shared = SettingsMutationJournal(url: h.url, retainedProfileJournalURL: oldURL)
+        let canonical = CanonicalProfileSettingsV2(api: h.api, tokens: h.tokens, journal: shared)
+        do { _ = try await canonical.read([.playbackSubtitleLanguage], owner: owner); XCTFail() } catch {}
+        do { try await canonical.write(key: .playbackSubtitleLanguage, value: .string("fr"), owner: owner); XCTFail() } catch {}
+        let adapter = OnboardingSettingsV2Transport(api: h.api, tokens: h.tokens, journal: shared)
+        _ = try await adapter.onboardingFlow(surface: "phone")
+        var body = UpdateProfileBody(); body.subtitleLanguage = "es"
+        do { try await adapter.updateProfile(profileId: "profile", body: body); XCTFail() } catch {}
+        XCTAssertEqual(try Data(contentsOf: oldURL), originalBytes)
+        XCTAssertEqual(try old.snapshot(), [command])
+        XCTAssertFalse(CanonicalSettingsCallerProtocol.requests().contains { $0.httpMethod == "PUT" || $0.httpMethod == "PATCH" })
+    }
+
+    func testProfileSemanticTargetsMatchServerMirrorAndPreserveScope() async throws {
+        let h = try await harness()
+        let captured = await h.tokens.captureDurableAccountAuth()
+        let owner = try SettingsMutationAuthority(XCTUnwrap(captured))
+        func patch(_ body: String) -> SettingsMutationCommand {
+            SettingsMutationCommand(id: UUID(), authority: owner, key: "onboarding.profile", method: "PATCH",
+                path: "/api/v2/profiles/profile", query: [:], body: Data(body.utf8), state: .uncertain)
+        }
+        func setting(_ key: String, scope: String = "profile") -> SettingsMutationCommand {
+            SettingsMutationCommand(id: UUID(), authority: owner, key: key, method: "DELETE",
+                path: "/api/v2/settings/values/\(key)", query: ["scope": scope], body: nil, state: .prepared)
+        }
+        let skip = patch(#"{"auto_skip_intro":true}"#)
+        XCTAssertTrue(skip.sameTarget(as: setting("playback.intro_skip_mode")))
+        XCTAssertTrue(setting("playback.intro_skip_mode").sameTarget(as: skip))
+        XCTAssertFalse(skip.sameTarget(as: setting("playback.intro_skip_mode", scope: "profile_device")))
+        XCTAssertFalse(patch(#"{"quality_preference":"1080p"}"#).sameTarget(as: setting("playback.preferred_quality")))
+        XCTAssertTrue(patch(#"{"preferred_metadata_language":"de"}"#).sameTarget(as: setting("catalog.metadata_language")))
+        XCTAssertFalse(patch(#"{"subtitle_mode":"auto"}"#).sameTarget(as: setting("playback.subtitle_language")))
+    }
+
+    func testOrdinarySettingsReadStillRefreshesAfter401() async throws {
+        let h = try await harness()
+        CanonicalSettingsCallerProtocol.enableSuccessfulReadRefresh()
+        _ = try await h.api.getEffectiveValues(keys: [.playbackSubtitleLanguage])
+        XCTAssertEqual(CanonicalSettingsCallerProtocol.requests().filter { $0.httpMethod == "GET" }.count, 2)
+        XCTAssertEqual(CanonicalSettingsCallerProtocol.requests().filter { $0.url!.path.hasSuffix("/auth/refresh") }.count, 1)
+    }
+
     func testPlayerAndOnboardingShareSymmetricUncertaintyBarrier() async throws {
         let h = try await harness()
         let queue = PlayerSettingsV2Queue(api: h.api, tokens: h.tokens, defaults: h.defaults, journal: h.journal)
@@ -272,13 +371,17 @@ private final class CanonicalSettingsCallerProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var recorded: [URLRequest] = []
     private static var status = 200
+    private static var read401Refresh = false
+    static func enableSuccessfulReadRefresh() { lock.withLock { read401Refresh = true } }
+    private static var profile401Refresh = false
+    static func enableSuccessfulRefreshAfterProfile401() { lock.withLock { profile401Refresh = true } }
     private static var patchReply: Data?
     private static var beforeResponse: (@Sendable () -> Void)?
     private static var readResponse: (@Sendable () -> Void)?
     static func beforeReadResponse(_ action: @escaping @Sendable () -> Void) { lock.withLock { readResponse = action } }
     static func setPatchReply(_ data: Data) { lock.withLock { patchReply = data } }
     static func beforeMutationResponse(_ action: @escaping @Sendable () -> Void) { lock.withLock { beforeResponse = action } }
-    static func reset() { lock.withLock { recorded = []; status = 200; patchReply = nil; beforeResponse = nil; readResponse = nil } }
+    static func reset() { lock.withLock { recorded = []; status = 200; profile401Refresh = false; read401Refresh = false; patchReply = nil; beforeResponse = nil; readResponse = nil } }
     static func setStatus(_ code: Int) { lock.withLock { status = code } }
     static func requests() -> [URLRequest] { lock.withLock { recorded } }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -288,7 +391,9 @@ private final class CanonicalSettingsCallerProtocol: URLProtocol {
         let path = request.url!.path
         let code: Int
         let body: Data
-        if request.httpMethod == "GET" {
+        if request.httpMethod == "GET", Self.lock.withLock({ Self.read401Refresh && Self.recorded.filter { $0.httpMethod == "GET" }.count == 1 }) {
+            code = 401; body = Data("{}".utf8)
+        } else if request.httpMethod == "GET" {
             code = 200
             if path.hasSuffix("/onboarding/flow") {
                 body = Data(#"{"version":1,"tour_id":"tour","steps":[]}"#.utf8)
@@ -299,6 +404,10 @@ private final class CanonicalSettingsCallerProtocol: URLProtocol {
             } else {
                 body = Data("{\"items\":[],\"page\":{\"has_more\":false},\"revision\":\(SettingKey.revision)}".utf8)
             }
+        } else if path.hasSuffix("/auth/refresh"), Self.lock.withLock({ Self.profile401Refresh || Self.read401Refresh }) {
+            code = 200; body = Data(#"{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}"#.utf8)
+        } else if request.httpMethod == "PATCH", Self.lock.withLock({ Self.profile401Refresh && Self.recorded.filter { $0.httpMethod == "PATCH" }.count == 1 }) {
+            code = 401; body = Data("{}".utf8)
         } else if status != 200 { code = status; body = Data("{}".utf8) }
         else if request.httpMethod == "PATCH", let reply = Self.lock.withLock({ Self.patchReply }) { code = 200; body = reply }
         else if request.httpMethod == "DELETE" { code = 204; body = Data() }

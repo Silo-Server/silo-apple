@@ -3,9 +3,6 @@ import Foundation
 #if !os(tvOS)
 /// Binds setting choices to the owner that loaded the flow, before suspension.
 final class OnboardingSettingsV2Transport: OnboardingTourAPI, @unchecked Sendable {
-    private static let profileJournal = SettingsMutationJournal(url: FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("SettingsV2/onboarding-profile-commands.json"))
     private let api: SiloAPI
     private let settings: CanonicalProfileSettingsV2
     private let journal: SettingsMutationJournal
@@ -16,7 +13,7 @@ final class OnboardingSettingsV2Transport: OnboardingTourAPI, @unchecked Sendabl
          journal: SettingsMutationJournal? = nil, profileJournal: SettingsMutationJournal? = nil) {
         self.api = api
         settings = CanonicalProfileSettingsV2(api: api, tokens: tokens, journal: journal)
-        self.journal = profileJournal ?? Self.profileJournal
+        self.journal = profileJournal ?? journal ?? SettingsMutationJournal.sharedCanonical
     }
 
     func onboardingFlow(surface: String) async throws -> OnboardingFlow {

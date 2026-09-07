@@ -1755,6 +1755,10 @@ actor HTTPClient {
             && !(method == "POST" && path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/trailers/refresh"))
             && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
             && !(path == "/api/v2/profiles" && method == "POST")
+            // A journaled own-profile PATCH has one dispatch, even when a
+            // refresh could obtain another bearer for the same account.
+            && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")
+                && path.split(separator: "/").count == 4)
             && !(path == "/api/v2/downloads" && method == "POST")
             && path != diagnosticsUploads
             && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))

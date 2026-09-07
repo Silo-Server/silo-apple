@@ -60,8 +60,60 @@ struct SettingsMutationCommand: Codable, Equatable, Sendable {
     var state: State
 
     func sameTarget(as other: Self) -> Bool {
-        authority.sameDurableOwner(as: other.authority) && path == other.path
-            && targetQuery == other.targetQuery
+        authority.sameDurableOwner(as: other.authority)
+            && semanticTargets.contains { target in other.semanticTargets.contains(target) }
+    }
+
+    private struct Target: Equatable {
+        let path: String
+        let query: [String: String]
+    }
+
+    /// Server profile fields mirror into canonical profile rows. These names
+    /// are barriers only: the stored PATCH/PUT bodies are never converted.
+    private static let profileSettingAliases: [String: String] = [
+        "language": "playback.audio_language",
+        "subtitle_language": "playback.subtitle_language",
+        "preferred_metadata_language": "catalog.metadata_language",
+        "subtitle_mode": "playback.subtitle_mode",
+        "show_forced_subtitles": "playback.show_forced_subtitles",
+        "auto_skip_intro": "playback.auto_skip_intro",
+        "auto_skip_credits": "playback.auto_skip_credits",
+        "auto_skip_recap": "playback.auto_skip_recap",
+        "auto_play_next_preview": "playback.auto_play_next_preview",
+    ]
+
+    private static func mirroredKeys(_ key: String) -> [String] {
+        // The accepted server's MirrorKey applies to writes and deletes at
+        // the same scope. quality_preference deliberately has no alias.
+        switch key {
+        case "playback.auto_skip_intro", "playback.intro_skip_mode":
+            return ["playback.auto_skip_intro", "playback.intro_skip_mode"]
+        default: return [key]
+        }
+    }
+
+    private var semanticTargets: [Target] {
+        var targets = [Target(path: path, query: targetQuery)]
+        if method == "PATCH", path == "/api/v2/profiles/\(authority.profileID)" {
+            let fields = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            // An unreadable retained patch is held conservatively for the
+            // actual mirrored fields, without changing or dispatching it.
+            for (field, key) in Self.profileSettingAliases where fields == nil || fields?[field] != nil {
+                targets += Self.mirroredKeys(key).map {
+                    Target(path: "/api/v2/settings/values/\($0)", query: ["scope": "profile"])
+                }
+            }
+        } else if path == "/api/v2/settings/values/\(key)" {
+            targets += Self.mirroredKeys(key).map {
+                Target(path: "/api/v2/settings/values/\($0)", query: targetQuery)
+            }
+        }
+        return targets
+    }
+
+    func affectsSetting(_ key: String) -> Bool {
+        semanticTargets.contains { $0.path == "/api/v2/settings/values/\(key)" }
     }
 
     /// The old explicit own-device query and the declared header address one
@@ -94,15 +146,20 @@ final class SettingsMutationJournal: @unchecked Sendable {
     /// file and lock. Existing records retain their original bytes and owner.
     static let sharedCanonical = SettingsMutationJournal(url: FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("SettingsV2/player-commands.json"))
+        .appendingPathComponent("SettingsV2/player-commands.json"),
+        retainedProfileJournalURL: FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SettingsV2/onboarding-profile-commands.json"))
     private let lock = NSLock()
     private let url: URL
+    private let retainedProfileJournalURL: URL?
     private let write: @Sendable (Data, URL) throws -> Void
 
-    init(url: URL, write: @escaping @Sendable (Data, URL) throws -> Void = { data, url in
+    init(url: URL, retainedProfileJournalURL: URL? = nil, write: @escaping @Sendable (Data, URL) throws -> Void = { data, url in
         try data.write(to: url, options: .atomic)
     }) {
         self.url = url
+        self.retainedProfileJournalURL = retainedProfileJournalURL
         self.write = write
     }
 
@@ -128,12 +185,23 @@ final class SettingsMutationJournal: @unchecked Sendable {
 
     func snapshot() throws -> [SettingsMutationCommand] { try lock.withLock { try load() } }
 
+    /// The previous profile-only journal is a read-only barrier. Records are
+    /// neither moved into this file nor made eligible for dispatch.
+    func retainedProfileCommands() throws -> [SettingsMutationCommand] {
+        guard let retainedProfileJournalURL,
+              FileManager.default.fileExists(atPath: retainedProfileJournalURL.path) else { return [] }
+        return try JSONDecoder().decode([SettingsMutationCommand].self, from: Data(contentsOf: retainedProfileJournalURL))
+    }
+
     func claim(_ id: UUID) throws -> SettingsMutationCommand {
         try lock.withLock {
             var commands = try load()
             guard let index = commands.firstIndex(where: { $0.id == id }) else { throw SettingsMutationHold.uncertain }
             if commands[index].state == .legacyHeld { throw SettingsMutationHold.legacy }
             guard commands[index].state == .prepared,
+                  !(try retainedProfileCommands()).contains(where: {
+                      $0.state != .applied && $0.sameTarget(as: commands[index])
+                  }),
                   !commands[..<index].contains(where: { $0.state != .applied && $0.sameTarget(as: commands[index]) }) else {
                 throw SettingsMutationHold.uncertain
             }
@@ -280,7 +348,8 @@ final class PlayerSettingsV2Queue: @unchecked Sendable {
 
     private func flush(authority: SettingsMutationAuthority) async {
         do {
-            for command in try journal.snapshot() where command.authority.sameDurableOwner(as: authority) && command.state == .prepared {
+            for command in try journal.snapshot() where command.authority.sameDurableOwner(as: authority)
+                && command.state == .prepared && command.path.hasPrefix("/api/v2/settings/values/") {
                 do { try await dispatcher.send(command.id) }
                 catch { setIssue(error.localizedDescription, for: authority) }
             }

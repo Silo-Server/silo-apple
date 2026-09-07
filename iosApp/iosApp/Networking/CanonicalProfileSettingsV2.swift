@@ -37,8 +37,10 @@ final class CanonicalProfileSettingsV2: @unchecked Sendable {
         try await requireCurrent(owner)
         let authority = try SettingsMutationAuthority(owner)
         let requested = Set(keys.map(\.rawValue))
-        if let held = try journal.snapshot().first(where: {
-            $0.authority.sameDurableOwner(as: authority) && requested.contains($0.key) && $0.state != .applied
+        let commands = try journal.snapshot() + journal.retainedProfileCommands()
+        if let held = commands.first(where: { command in
+            command.authority.sameDurableOwner(as: authority) && command.state != .applied
+                && requested.contains(where: command.affectsSetting)
         }) { throw held.state == .legacyHeld ? SettingsMutationHold.legacy : SettingsMutationHold.uncertain }
         let response = try await api.getEffectiveValues(keys: keys, profileId: authority.profileID,
             requestIdentity: HTTPRequestIdentity(serverId: authority.serverID, serverURL: authority.origin,
