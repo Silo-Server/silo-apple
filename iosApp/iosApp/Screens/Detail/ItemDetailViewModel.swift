@@ -52,13 +52,21 @@ class ItemDetailViewModel {
     ) async {
         guard let seriesId = seriesContentId else { return }
         if seasonsLoadState == .failed || selectedSeason == nil {
+            let hadSelection = selectedSeason != nil
+            let selectionGeneration = episodeLoadGeneration
             await loadSeasons(
                 seriesId: seriesId,
-                autoSelectInitial: selectedSeason == nil,
+                autoSelectInitial: !hadSelection,
                 fetchSeasons: fetchSeasons,
                 fetchEpisodes: fetchEpisodes
             )
-        } else if let target = seasons.first(where: { $0.seasonNumber == failedEpisodeSeasonNumber })
+            // A cold retry already loads its episode page. A warm retry may
+            // need to recover both failures, unless the user selected elsewhere.
+            guard hadSelection, !Task.isCancelled, seasonsLoadState == .loaded,
+                  selectionGeneration == episodeLoadGeneration else { return }
+        }
+        if episodesLoadFailed,
+           let target = seasons.first(where: { $0.seasonNumber == failedEpisodeSeasonNumber })
                     ?? selectedSeason {
             await selectSeason(target, forceRefresh: true, fetchEpisodes: fetchEpisodes)
         }

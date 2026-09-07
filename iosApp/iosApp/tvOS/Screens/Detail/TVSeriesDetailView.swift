@@ -448,17 +448,22 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             playTitle: playbackEpisode.map(showPlayTitle(for:)),
             playSubtitle: nil,
             onPlay: {
+                userNavigated = true
                 guard let episode = playbackEpisode else { return }
                 onPlayEpisode(episode.contentId, selectedFileId(for: episode), false)
             },
             onStartOver: playbackEpisode?.userData?.isInProgress == true
                 ? {
+                    userNavigated = true
                     guard let episode = playbackEpisode else { return }
                     onPlayEpisode(episode.contentId, selectedFileId(for: episode), true)
                 }
                 : nil,
             inWatchlist: inWatchlist,
-            onToggleWatchlist: onToggleWatchlist,
+            onToggleWatchlist: {
+                userNavigated = true
+                onToggleWatchlist()
+            },
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
@@ -556,7 +561,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                             title: seasonLabel(season),
                             isSelected: selectedModeId == season.id,
                             rendersFocusedAppearance: presentedFocusedModeId == season.id,
-                            action: { activateSeason(season) }
+                            action: {
+                                userNavigated = true
+                                activateSeason(season)
+                            }
                         )
                         .id(season.id)
                         .focused($focusedModeId, equals: season.id)

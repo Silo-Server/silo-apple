@@ -325,6 +325,28 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
         XCTAssertEqual(result, 42)
     }
 
+    func testOneRetryRecoversBothContinueWatchingHierarchyFailures() async throws {
+        let model = ItemDetailViewModel()
+        model.seasons = try seasons([1]).seasons
+        model.selectedSeason = model.seasons[0]
+        defer { clearCache() }
+        await model.loadContinueWatchingStructure(
+            contentId: seriesId, seasonNumber: 1,
+            fetchSeasons: { _ in throw URLError(.timedOut) },
+            fetchEpisodes: { _, _ in throw URLError(.timedOut) })
+        XCTAssertEqual(model.seasonsLoadState, .failed)
+        XCTAssertTrue(model.episodesLoadFailed)
+        await model.retrySeriesHierarchy(
+            fetchSeasons: { _ in try self.seasons([1]) },
+            fetchEpisodes: { _, number in
+                XCTAssertEqual(number, 1)
+                return try self.episodes([])
+            })
+        XCTAssertNil(model.seriesLoadErrorMessage)
+        XCTAssertFalse(model.isLoadingSeriesHierarchy)
+        XCTAssertEqual(model.episodesBySeason[1], [])
+    }
+
     private func clearCache() {
         ResponseCache.shared.remove(CacheKey.itemSeasons(seriesId))
         ResponseCache.shared.remove(CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: 1))
