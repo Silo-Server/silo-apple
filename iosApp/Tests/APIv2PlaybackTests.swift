@@ -92,12 +92,12 @@ final class APIv2PlaybackTests: XCTestCase {
         return (PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: []), tokens, auth, api, store)
     }
 
-    private func boundContract() throws -> (APIv2PlaybackCapabilities, APIv2ProgressTimeline, PlaybackV3StartRequest) {
+    private func boundContract(attempt: String = "audio:bound", digest: String = String(repeating: "a", count: 64)) throws -> (APIv2PlaybackCapabilities, APIv2ProgressTimeline, PlaybackV3StartRequest) {
         var caps = try XCTUnwrap(JSONSerialization.jsonObject(with: fixtureData("playback_capability_available")) as? [String: Any])
         caps["features"] = (caps["features"] as? [String] ?? []) + [APIv2PlaybackManifest.feature]
         let capData = try JSONSerialization.data(withJSONObject: caps)
         let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackCapabilities.self, from: capData)
-        let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64),
+        let binding = APIv2ProgressTimeline(timelineId: digest,
             mediaItemId: "book", fileId: "42", partOffsetSeconds: 60, partDurationSeconds: 30, durationSeconds: 90)
         var decision = try XCTUnwrap(JSONSerialization.jsonObject(with: fixtureData("playback_start_opaque_ids")) as? [String: Any])
         decision["server_features"] = (decision["server_features"] as? [String] ?? []) + [APIv2PlaybackManifest.feature]
@@ -107,12 +107,79 @@ final class APIv2PlaybackTests: XCTestCase {
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         let start = PlaybackV3StartRequest(protocolVersion: 3,
             clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures + [APIv2PlaybackManifest.feature],
-            fileId: 42, profileId: "profile", playbackAttemptId: "audio:bound", qualityPreference: "auto",
+            fileId: 42, profileId: "profile", playbackAttemptId: attempt, qualityPreference: "auto",
             subtitleFidelityPreference: "preserve", progressPersistence: "client_bound", startPosition: 12,
             audioTrackId: nil, audioTrackIndex: nil, subtitleTrackId: nil, subtitleTrackIndex: nil,
             metered: false, bandwidthEstimateKbps: nil, bandwidthCapKbps: nil,
             clientCapabilities: snapshot.capabilities, clientPlaybackContext: snapshot.context, timelineId: binding.timelineId)
         return (capability, binding, start)
+    }
+
+    private func timelineRefusal(retryable: Bool = false) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["protocol_version": 3,
+            "server_features": [PlaybackProtocolV3.planFeature, PlaybackSequencedContract.feature],
+            "outcome": "adaptation_unavailable", "terminal": ["reason": "client_timeline_changed",
+                "message": "Timeline changed. Start a new playback request.", "retryable": retryable]])
+    }
+
+    func testMalformedTimelineTerminalCannotSettleOriginalAttempt() async throws {
+        let (owner, _, auth, _, store) = try await fixture()
+        let (capability, binding, start) = try boundContract()
+        // A retryable mismatch is not the accepted retained refusal contract.
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"),
+            decision: try timelineRefusal(retryable: true))
+        do { _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding); XCTFail() } catch {}
+        let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability.requireAvailable())
+        let pending = try await store.pendingStarts(authority: authority)
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertNotNil(pending.first?.response)
+    }
+
+    func testLostTimelineRefusalSettlesOnlyExactReplayThenAllowsNewExplicitManifest() async throws {
+        let (owner, _, auth, _, store) = try await fixture()
+        let (capability, binding, start) = try boundContract()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: try timelineRefusal())
+        V2PlaybackProtocol.startFails(true)
+        do { _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding); XCTFail() } catch {}
+        V2PlaybackProtocol.startFails(false)
+        let (_, nextBinding, next) = try boundContract(attempt: "audio:new-explicit", digest: String(repeating: "b", count: 64))
+        do { _ = try await owner.startV2(request: next, auth: auth, capability: capability, progressTimeline: nextBinding); XCTFail() } catch {}
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: try timelineRefusal())
+        await owner.retryPendingStops()
+        let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability.requireAvailable())
+        let pending = try await store.pendingStarts(authority: authority)
+        XCTAssertTrue(pending.isEmpty)
+        let replay = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(replay.count, 2)
+        XCTAssertEqual(replay[0].1, replay[1].1)
+        XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" && $0.0.url?.path.contains("/timelines/") != true })
+        // Only this explicit caller obtains a new snapshot and creates a new attempt.
+        _ = try boundContract(attempt: "audio:new-explicit", digest: String(repeating: "b", count: 64))
+        let manifest = try await owner.discoverTimeline(fileID: 42, itemID: "book", auth: auth, capability: capability)
+        XCTAssertEqual(manifest.timelineId, nextBinding.timelineId)
+        let response = try await owner.startV2(request: next, auth: auth, capability: capability, progressTimeline: nextBinding)
+        XCTAssertNotNil(response.sessionId ?? response.playbackPlan?.sessionId)
+    }
+
+    func testInterim409And503RemainUncertainWithoutFreshAttemptDispatch() async throws {
+        let (owner, _, auth, _, store) = try await fixture()
+        let (capability, binding, start) = try boundContract()
+        for status in [409, 503] {
+            var problem = try XCTUnwrap(JSONSerialization.jsonObject(with: fixtureData("playback_installation_changed")) as? [String: Any])
+            problem["status"] = status
+            problem["code"] = "timeline_changed"
+            V2PlaybackProtocol.rejectStart(try JSONSerialization.data(withJSONObject: problem), status: status)
+            do { _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding); XCTFail() } catch {}
+        }
+        let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability.requireAvailable())
+        let pending = try await store.pendingStarts(authority: authority)
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertNil(pending.first?.response)
+        let (_, nextBinding, next) = try boundContract(attempt: "audio:must-not-dispatch")
+        do { _ = try await owner.startV2(request: next, auth: auth, capability: capability, progressTimeline: nextBinding); XCTFail() } catch {}
+        let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertEqual(starts[0].1, starts[1].1)
     }
 
     func testBoundDiscoveryUsesInstallationAndCapturedProfile() async throws {
@@ -518,18 +585,19 @@ private final class V2PlaybackProtocol: URLProtocol {
     static func beforeNextStart(_ hook: @escaping @Sendable () -> Void) { lock.withLock { startHook = hook } }
     nonisolated(unsafe) private static var failStart = false
     nonisolated(unsafe) private static var rejection: Data?
+    nonisolated(unsafe) private static var rejectionCode = 422
     nonisolated(unsafe) private static var progressFailure = false
     nonisolated(unsafe) private static var stopCode = 200
     nonisolated(unsafe) private static var controlCode = 200
     static func controlStatus(_ value: Int) { lock.withLock { controlCode = value } }
     nonisolated(unsafe) private static var captured: [(URLRequest, Data)] = []
     static func configure(capability: Data, decision: Data) { lock.withLock { Self.capability = capability; Self.decision = decision } }
-    static func rejectStart(_ value: Data?) { lock.withLock { rejection = value } }
+    static func rejectStart(_ value: Data?, status: Int = 422) { lock.withLock { rejection = value; rejectionCode = status } }
     static func failProgress(_ value: Bool) { lock.withLock { progressFailure = value } }
     static func startFails(_ value: Bool) { lock.withLock { failStart = value } }
     static func stopStatus(_ value: Int) { lock.withLock { stopCode = value } }
     static func requests() -> [(URLRequest, Data)] { lock.withLock { captured } }
-    static func reset() { lock.withLock { captured = []; startHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; progressFailure = false } }
+    static func reset() { lock.withLock { captured = []; startHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
     static func changeInstallation() { lock.withLock {
         var value = try! JSONSerialization.jsonObject(with: capability) as! [String: Any]
         value["installation_id"] = "different-installation"
@@ -548,7 +616,7 @@ private final class V2PlaybackProtocol: URLProtocol {
                 body.append(buffer, count: count)
             }
         }
-        let state = Self.lock.withLock { Self.captured.append((request, body)); return (Self.capability, Self.decision, Self.failStart, Self.stopCode, Self.rejection, Self.progressFailure) }
+        let state = Self.lock.withLock { Self.captured.append((request, body)); return (Self.capability, Self.decision, Self.failStart, Self.stopCode, Self.rejection, Self.progressFailure, Self.rejectionCode) }
         var status = 200
         let output: Data
         if request.url!.path.hasPrefix("/api/v2/watch/") {
@@ -568,8 +636,10 @@ private final class V2PlaybackProtocol: URLProtocol {
             output = try! JSONSerialization.data(withJSONObject: ["event_id": input["event_id"]!, "outcome": "accepted"])
         } else if request.url!.path.contains("/timelines/") {
             let caps = try! JSONSerialization.jsonObject(with: state.0) as! [String: Any]
+            let decision = (try? JSONSerialization.jsonObject(with: state.1)) as? [String: Any]
+            let digest = (decision?["progress_timeline"] as? [String: Any])?["timeline_id"] as? String ?? String(repeating: "a", count: 64)
             output = try! JSONSerialization.data(withJSONObject: ["installation_id": caps["installation_id"]!,
-                "timeline_id": String(repeating: "a", count: 64), "media_item_id": "book", "edition_id": "edition",
+                "timeline_id": digest, "media_item_id": "book", "edition_id": "edition",
                 "duration_seconds": 90, "parts": [["file_id": "43", "offset_seconds": 0, "duration_seconds": 60],
                     ["file_id": "42", "offset_seconds": 60, "duration_seconds": 30]]])
         } else if request.url!.path.hasSuffix("/capabilities") { output = state.0 }
@@ -577,7 +647,7 @@ private final class V2PlaybackProtocol: URLProtocol {
             let hook = Self.lock.withLock { let hook = Self.startHook; Self.startHook = nil; return hook }
             hook?()
             if state.2 { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
-            status = state.4 == nil ? 201 : 422; output = state.4 ?? state.1
+            status = state.4 == nil ? 201 : state.6; output = state.4 ?? state.1
         } else {
             if state.5 && request.httpMethod == "POST" { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
             let input = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]

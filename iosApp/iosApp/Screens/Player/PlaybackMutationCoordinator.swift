@@ -158,6 +158,19 @@ actor PlaybackMutationCoordinator {
         }
         _ = try await currentAuth(start.authority)
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: data)
+        if start.progressTimeline != nil,
+           wire.outcome == "adaptation_unavailable" || wire.terminal?.reason == "client_timeline_changed" {
+            // Only a retained ordinary START decision can settle the original
+            // bound attempt. HTTP errors (including 409) never reach this path.
+            guard wire.protocolVersion == PlaybackProtocolV3.version,
+                  wire.serverFeatures.contains(PlaybackProtocolV3.planFeature),
+                  wire.outcome == "adaptation_unavailable",
+                  wire.sessionId == nil, wire.playbackPlan == nil, wire.progressTimeline == nil,
+                  let terminal = wire.terminal, !terminal.reason.isEmpty,
+                  terminal.reason != "client_timeline_changed" || !terminal.retryable else {
+                throw PlaybackSequencedError.invalidResponse
+            }
+        }
         let sessionID = wire.sessionId ?? wire.playbackPlan?.sessionId
         if let sessionID {
             guard wire.progressTimeline == start.progressTimeline else { throw PlaybackSequencedError.invalidResponse }
