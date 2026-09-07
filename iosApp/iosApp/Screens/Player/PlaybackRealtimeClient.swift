@@ -255,43 +255,46 @@ actor PlaybackRealtimeClient {
                     on: socket
                 )
 
-                do {
-                    try await mutationCoordinator.validateControlBinding(binding)
-                    guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
-                    try await commandHandler(command)
-                    try await mutationCoordinator.validateControlBinding(binding)
-                    guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
-                    try await send(
-                        makePlaybackRealtimeResult(
-                            sessionId: sessionId,
-                            commandId: command.commandId,
-                            status: .completed
-                        ),
-                        on: socket
-                    )
-                } catch let error as PlaybackRealtimeCommandExecutionError {
-                    try await send(
-                        makePlaybackRealtimeResult(
-                            sessionId: sessionId,
-                            commandId: command.commandId,
-                            status: .rejected,
-                            error: error.rejectionReason
-                        ),
-                        on: socket
-                    )
-                } catch {
-                    try await send(
-                        makePlaybackRealtimeResult(
-                            sessionId: sessionId,
-                            commandId: command.commandId,
-                            status: .rejected,
-                            error: PlaybackRealtimeCommandExecutionError.commandFailed.rejectionReason
-                        ),
-                        on: socket
-                    )
-                }
+                try await Self.executeCommand(command, handler: commandHandler, validate: {
+                    try await self.mutationCoordinator.validateControlBinding(binding)
+                    guard await self.isCurrentBinding(sessionId: sessionId, generation: generation) else {
+                        throw CancellationError()
+                    }
+                }, sendResult: { result in try await self.send(result, on: socket) })
             }
         }
+    }
+
+    /// Keep the command result boundary testable without opening a socket.
+    @MainActor
+    static func executeCommand(_ command: PlaybackRealtimeCommandEnvelope,
+                               handler: CommandHandler,
+                               validate: () async throws -> Void,
+                               sendResult: (PlaybackRealtimeResultEnvelope) async throws -> Void) async throws {
+        try Task.checkCancellation()
+        try await validate()
+        let result: PlaybackRealtimeResultEnvelope
+        do {
+            try await handler(command)
+            result = makePlaybackRealtimeResult(sessionId: command.sessionId,
+                commandId: command.commandId, status: .completed)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as PlaybackSequencedError {
+            throw error
+        } catch let error as PlaybackRealtimeCommandExecutionError {
+            result = makePlaybackRealtimeResult(sessionId: command.sessionId,
+                commandId: command.commandId, status: .rejected, error: error.rejectionReason)
+        } catch {
+            result = makePlaybackRealtimeResult(sessionId: command.sessionId,
+                commandId: command.commandId, status: .rejected,
+                error: PlaybackRealtimeCommandExecutionError.commandFailed.rejectionReason)
+        }
+        // Completion and rejection have the same authority boundary. A failed
+        // fence or send must never become another write on the stale socket.
+        try Task.checkCancellation()
+        try await validate()
+        try await sendResult(result)
     }
 
     private func send<T: Encodable>(

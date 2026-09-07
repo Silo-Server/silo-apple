@@ -239,6 +239,31 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url!.path.hasSuffix("/ws-ticket") }.count, 1)
     }
 
+    func testSuspendedControlHandlerCannotSendResultAfterAuthorityChanges() async throws {
+        for handlerRejects in [false, true] {
+            let (owner, tokens, auth, _, _) = try await fixture()
+            let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
+            let binding = try await owner.controlBinding(sessionID: XCTUnwrap(response.sessionId))
+            let command = try JSONDecoder().decode(PlaybackRealtimeCommandEnvelope.self, from: Data(
+                "{\"type\":\"command\",\"command_id\":\"one\",\"session_id\":\"\(binding.sessionID)\",\"name\":\"pause\"}".utf8))
+            let entered = expectation(description: "handler suspended")
+            var continuation: CheckedContinuation<Void, Never>?
+            var frames: [PlaybackRealtimeResultEnvelope] = []
+            let task = Task {
+                try await PlaybackRealtimeClient.executeCommand(command, handler: { _ in
+                    await withCheckedContinuation { continuation = $0; entered.fulfill() }
+                    if handlerRejects { throw PlaybackRealtimeCommandExecutionError.commandFailed }
+                }, validate: { try await owner.validateControlBinding(binding) },
+                    sendResult: { frames.append($0) })
+            }
+            await fulfillment(of: [entered], timeout: 2)
+            await tokens.setProfileId("another-profile")
+            continuation?.resume()
+            do { try await task.value; XCTFail("Owner rejection must propagate") } catch {}
+            XCTAssertTrue(frames.isEmpty, "No completed or rejected result may leave the stale socket")
+        }
+    }
+
     func testMediaResolutionUsesSessionAuthorityAndRejectsAccountSwitch() async throws {
         let (owner, tokens, auth, _, _) = try await fixture()
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
