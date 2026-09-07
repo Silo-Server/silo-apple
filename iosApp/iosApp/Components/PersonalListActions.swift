@@ -36,10 +36,12 @@ private struct SavedPersonalListModelKey: EnvironmentKey {
     static let defaultValue: PersonalListViewModel? = nil
 }
 
+#if os(tvOS)
 struct TVLibraryCardContext {
     let libraryId: Int
     let model: TVLibraryGridViewModel
 }
+#endif
 
 struct LibraryCardAuthority: Equatable {
     let libraryId: Int
