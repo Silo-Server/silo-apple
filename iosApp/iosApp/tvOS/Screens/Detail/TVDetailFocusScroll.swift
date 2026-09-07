@@ -11,11 +11,12 @@ extension View {
     /// misframe — focus lands straight on the tall episode card and the
     /// engine's reveal produces the deep centered framing natively.
     ///
-    /// Any scroll we issue races the engine's own reveal, which is *deferred
-    /// while d-pad input streams in* and can land late and clobber a single
-    /// write. So both triggers re-assert their target across a window long
-    /// enough to outlast the deferred reveal; every assert re-checks that the
-    /// triggering row still owns focus so a stale one can never yank the page.
+    /// The season and action rows re-assert their target to outlast native
+    /// reveals deferred by repeated d-pad input. Browse and recommendation
+    /// entry use one scroll request: repeating an animated centering request
+    /// can interrupt the reveal already in flight and cause a visible hitch.
+    /// Every request re-checks focus before running so an old request cannot
+    /// pull the page back after the user moves on.
     ///
     /// Returning up to the Play / Start Over / circle-button row restores the
     /// page-entry framing (hero pinned to the top) the same way.
@@ -90,10 +91,9 @@ private struct DetailFocusScrollModifier: ViewModifier {
     /// write is clobbered, then sparse late ones to outlast the engine's
     /// input-deferred reveal after rapid d-pad sequences.
     private static let assertDelays: [Double] = [0.02, 0.15, 0.45, 0.8, 1.1]
-    /// Series row-to-row moves share one fixed viewport. A single write owns
-    /// entry into that viewport; a delayed duplicate can fire after a later
-    /// focus move and is visible as a page bounce.
-    private static let browseAssertDelays: [Double] = [0]
+    /// Browse and recommendation entry must not restart their animation with
+    /// delayed corrections, including while moving laterally within the rail.
+    private static let singleAssertDelays: [Double] = [0]
 
     func body(content: Content) -> some View {
         // Mirror focus into the shared state on every render so in-flight
@@ -150,13 +150,13 @@ private struct DetailFocusScrollModifier: ViewModifier {
     /// Re-assert the scroll target across the delay window. Every assert
     /// re-checks that the triggering region still owns focus (and that no
     /// newer trigger superseded it) so a stale assert can never yank the page
-    /// after the user moves on. Asserts are idempotent — same target, so
-    /// whichever one lands last just holds the position.
+    /// after the user moves on. Browse and recommendation entry use only the
+    /// immediate request so their reveal can finish without being retargeted.
     private func assertScroll(to id: String, anchor: UnitPoint, while region: Region) {
         state.generation &+= 1
         let generation = state.generation
-        let delays = region == .browse
-            ? Self.browseAssertDelays
+        let delays = region == .browse || region == .similarRail
+            ? Self.singleAssertDelays
             : Self.assertDelays
         for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [state] in
