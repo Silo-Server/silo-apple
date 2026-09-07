@@ -146,12 +146,22 @@ struct StreamRequest {
         guard media || subtitle else { return nil }
         var names = Set<String>()
         var reference: String?
+        var subtitleIdentity: String?
         for item in items {
             guard names.insert(item.name).inserted, let value = item.value, !value.isEmpty else { return nil }
             switch item.name {
             case "st": reference = value
-            case "file_id", "downloaded_subtitle_id":
+            case "file_id":
                 guard subtitle, Self.isNonNegativeInteger(value) else { return nil }
+            case "downloaded_subtitle_id", "embedded_stream_index":
+                guard subtitle, subtitleIdentity == nil, Self.isNonNegativeInteger(value) else { return nil }
+                subtitleIdentity = item.name
+            case "external_subtitle_key":
+                // The server issues a 64-character hexadecimal opaque identity.
+                // Validate its wire shape without interpreting or rebuilding it.
+                guard subtitle, subtitleIdentity == nil, value.utf8.count == 64,
+                      value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
+                subtitleIdentity = item.name
             default: return nil
             }
         }

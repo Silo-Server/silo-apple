@@ -267,6 +267,38 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    func testV2SubtitleStableIdentityPinsKeepExactIssuedBytes() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let externalKey = String(repeating: "ab", count: 32)
+        for tail in ["2.ass?file_id=42&embedded_stream_index=7&st=opaque%2Bproof",
+                     "2/fonts?embedded_stream_index=0&file_id=42&st=opaque",
+                     "0.vtt?external_subtitle_key=\(externalKey)&st=opaque&file_id=42",
+                     "0/fonts?st=opaque&file_id=42&external_subtitle_key=%61\(externalKey.dropFirst())"] {
+            let raw = "/api/v2/stream/\(id)/subtitles/" + tail
+            let result = try XCTUnwrap(StreamRequest.resolve(rawURL: raw, serverURL: "https://server.example",
+                additionalHeaders: [:], accessToken: "owner", requiresHeaderAuthenticatedMedia: true, apiV2SessionId: id))
+            XCTAssertEqual(result.url.absoluteString, "https://server.example" + raw)
+        }
+    }
+
+    func testV2SubtitlePinsRejectConflictsAndCannotQualifyMediaPaths() {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let key = String(repeating: "ab", count: 32)
+        for query in ["embedded_stream_index=", "embedded_stream_index=-1", "embedded_stream_index=1.5",
+                      "embedded_stream_index=1&embedded_stream_index=2",
+                      "external_subtitle_key=invalid", "external_subtitle_key=\(key)&external_subtitle_key=\(key)",
+                      "embedded_stream_index=1&external_subtitle_key=\(key)",
+                      "embedded_stream_index=1&downloaded_subtitle_id=2",
+                      "external_subtitle_key=\(key)&downloaded_subtitle_id=2"] {
+            XCTAssertNil(StreamRequest.v2ExecutorReference(
+                rawURL: "/api/v2/stream/\(id)/subtitles/0.vtt?st=proof&" + query, sessionID: id))
+        }
+        for query in ["embedded_stream_index=1", "external_subtitle_key=\(key)"] {
+            XCTAssertNil(StreamRequest.v2ExecutorReference(
+                rawURL: "/api/v2/stream/\(id)?st=proof&" + query, sessionID: id))
+        }
+    }
+
     func testV2SubtitleAndFontsRequireExactSessionAndExecutorReference() throws {
         let id = "11111111-1111-4111-8111-111111111111"
         for tail in ["2.vtt?st=opaque%2Bproof&file_id=42&downloaded_subtitle_id=7", "2/fonts?st=opaque&file_id=42"] {
