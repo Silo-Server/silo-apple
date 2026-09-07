@@ -67,7 +67,7 @@ actor PlaybackMutationCoordinator {
         if try await store.hasUnresolvedStart(auth: auth) { throw PlaybackSequencedError.pendingStart }
     }
 
-    /// Legacy playback can use temporary credentials; durable journals cannot.
+    /// Starting playback requires the configured v2 contract and a durable owner.
     func captureStartAuth() async throws -> (request: CapturedOrdinaryRequestAuth,
                                              durable: CapturedDurableAccountAuth?,
                                              capability: APIv2PlaybackCapabilities) {
@@ -80,13 +80,9 @@ actor PlaybackMutationCoordinator {
         guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: request) != nil else {
             throw PlaybackSequencedError.authorityChanged
         }
-        if capability.state == "not_configured" {
-            if let durable { try await requireResolvedStartBeforeLegacy(auth: durable) }
-        } else {
-            _ = try capability.requireAvailable()
-            guard let durable else { throw PlaybackSequencedError.authorityChanged }
-            _ = try await currentAuth(PlaybackMutationAuthority(auth: durable, installationID: capability.requireAvailable()))
-        }
+        let installation = try capability.requireAvailable()
+        guard let durable else { throw PlaybackSequencedError.authorityChanged }
+        _ = try await currentAuth(PlaybackMutationAuthority(auth: durable, installationID: installation))
         return (request, durable, capability)
     }
 

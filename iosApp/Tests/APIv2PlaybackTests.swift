@@ -199,30 +199,26 @@ final class APIv2PlaybackTests: XCTestCase {
         try await owner.requireResolvedStartBeforeLegacy(auth: auth)
     }
 
-    func testTemporaryAuthUsesUnconfiguredLegacyButCannotStartV2() async throws {
-        let (owner, tokens, _, api, _) = try await fixture()
+    func testUnconfiguredPlaybackStopsBeforeAnyStartTransport() async throws {
+        let (owner, _, _, _, _) = try await fixture()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_unconfigured"),
+            decision: try fixtureData("playback_start_opaque_ids"))
+        do { _ = try await owner.captureStartAuth(); XCTFail("Unconfigured playback must not start") }
+        catch let failure as PlaybackV3TerminalFailure {
+            XCTAssertEqual(failure.reason, "playback_not_configured")
+            XCTAssertTrue(failure.message.contains("not configured"))
+        }
+        XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod == "GET" && $0.0.url!.path.hasPrefix("/api/v2/") })
+    }
+
+    func testTemporaryAuthCannotFabricateDurableV2Owner() async throws {
+        let (owner, tokens, _, _, _) = try await fixture()
         await tokens.beginTemporaryScope(TemporaryAuthScope(serverId: "server", serverURL: "https://playback.example",
             accessToken: "temporary", refreshToken: "temporary-refresh", profileId: "profile", profileToken: "proof",
             controllerDeviceId: "controller", expiresAt: Date().addingTimeInterval(60)))
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let legacyDecision = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self,
-            from: fixtureData("playback_start_opaque_ids")).legacy()
-        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_unconfigured"),
-            decision: try encoder.encode(legacyDecision))
-        let captured = try await owner.captureStartAuth()
-        XCTAssertNil(captured.durable)
-        XCTAssertEqual(captured.request.credentialOwner, .temporary)
-        XCTAssertEqual(captured.capability.state, "not_configured")
-        _ = try await api.startPlaybackV3(request: request(), auth: captured.request)
-        let legacy = try XCTUnwrap(V2PlaybackProtocol.requests().last)
-        XCTAssertFalse(legacy.0.url!.path.hasPrefix("/api/v2/"))
-        XCTAssertEqual(legacy.0.value(forHTTPHeaderField: "Authorization"), "Bearer temporary")
-        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"),
-            decision: try fixtureData("playback_start_opaque_ids"))
         do { _ = try await owner.captureStartAuth(); XCTFail() }
         catch PlaybackSequencedError.authorityChanged {} catch { XCTFail("\(error)") }
-        XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.url?.path == "/api/v2/playback/start" })
+        XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.httpMethod == "POST" })
     }
 
     func testV2ProgressCarriesInstallationAndRetainsExactUncertainSample() async throws {

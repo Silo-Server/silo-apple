@@ -430,8 +430,6 @@ final class AudioPlayerViewModel {
         let startAuth = try await mutationCoordinator.captureStartAuth()
         let capturedPlaybackAuth = startAuth.durable
         let initialCapability = startAuth.capability
-        let usesV2 = initialCapability.state != "not_configured"
-        if !usesV2 { try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3() }
         guard let profileId = await TokenStore.shared.getProfileId(),
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
@@ -468,40 +466,19 @@ final class AudioPlayerViewModel {
         )
         let response: PlaybackV3DecisionResponse
         do {
-            if usesV2 {
-                response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
-            } else {
-                response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
-            }
+            response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
         } catch let error as HTTPError {
             guard case .network = error else { throw error }
             // Preserve the logical attempt identity across an ambiguous
             // transport retry so the server replays instead of double-starting.
-            if usesV2 {
-                response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
-            } else {
-                response = try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
-            }
+            response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
         }
 
-        if usesV2 || response.serverFeatures.contains(PlaybackSequencedContract.feature),
-           let id = PlaybackSessionBridge.allocatedSessionId(in: response) {
+        if let id = PlaybackSessionBridge.allocatedSessionId(in: response) {
             sequencedSessionIDs.insert(id)
-            if !usesV2 {
-                guard let capturedPlaybackAuth else { throw PlaybackSequencedError.authorityChanged }
-                try await mutationCoordinator.register(sessionID: id, features: response.serverFeatures, auth: capturedPlaybackAuth)
-            }
         }
         switch response.validatedForApple() {
         case .terminal(let terminal):
-            Task {
-                guard !usesV2 else { return }
-                await PlaybackSessionBridge.reportTerminalStart(
-                    playbackAttemptId: playbackAttemptId,
-                    snapshot: snapshot,
-                    terminal: terminal
-                )
-            }
             throw PlaybackV3TerminalFailure(
                 reason: terminal.reason,
                 message: terminal.message,

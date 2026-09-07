@@ -182,6 +182,16 @@ struct APIv2PlaybackCapabilities: Decodable {
     let deliveries: [String]
 
     func requireAvailable() throws -> String {
+        if state == "not_configured" {
+            throw PlaybackV3TerminalFailure(reason: "playback_not_configured",
+                message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
+                retryable: false)
+        }
+        if state == "unsupported" {
+            throw PlaybackV3TerminalFailure(reason: "playback_unsupported",
+                message: "This server does not support API v2 playback. Update the server to start watching.",
+                retryable: false)
+        }
         guard state == "available", allowed, protocolVersions.contains(3),
               features.contains(PlaybackSequencedContract.feature),
               let installationId, !installationId.isEmpty else {

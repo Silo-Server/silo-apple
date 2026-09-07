@@ -1010,11 +1010,8 @@ actor PlaybackSessionBridge {
         let startAuth = try await mutationCoordinator.captureStartAuth()
         let capturedPlaybackAuth = startAuth.durable
         let initialCapability = startAuth.capability
-        let usesV2 = initialCapability.state != "not_configured"
-        let capability = usesV2 ? nil : try await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
-        // Optional opt-in: on a server that never advertises it the token is
-        // simply absent and the attempt stays entirely on the API origin.
-        let requestsAuthorizedMediaOrigins = capability?.authorizedMediaOrigins ?? false
+        // Distributed v2 egress is not advertised by the current initial-flow contract.
+        let requestsAuthorizedMediaOrigins = false
 
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
@@ -1056,16 +1053,14 @@ actor PlaybackSessionBridge {
         // allocated if the caller has already walked away.
         let response = try await PlaybackCancellationShield.run {
             do {
-                if usesV2 { return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability) }
-                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
+                return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
             } catch let error as HTTPError {
                 guard case .network = error else { throw error }
                 // Reuse the exact request and playback_attempt_id so an
                 // ambiguous first response cannot allocate a second logical
                 // attempt. Retried inside the shield so the reclaim path below
                 // sees the final outcome, not the ambiguous one.
-                if usesV2 { return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability) }
-                return try await SiloAPI.shared.startPlaybackV3(request: request, auth: startAuth.request)
+                return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
             }
         } reclaim: { [self] abandoned in
             guard let orphaned = Self.allocatedSessionId(in: abandoned) else { return }
@@ -1077,14 +1072,6 @@ actor PlaybackSessionBridge {
 
         switch response.validatedForApple() {
         case .terminal(let terminal):
-            Task {
-                guard !usesV2 else { return }
-                await Self.reportTerminalStart(
-                    playbackAttemptId: playbackAttemptId,
-                    snapshot: snapshot,
-                    terminal: terminal
-                )
-            }
             throw PlaybackV3TerminalFailure(
                 reason: terminal.reason,
                 message: terminal.message,
