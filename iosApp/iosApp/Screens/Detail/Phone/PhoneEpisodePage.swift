@@ -69,7 +69,7 @@ struct PhoneEpisodePage: View {
 /// Compact season-loading placeholder with the exact artwork/caption rhythm of
 /// the real episode rail. It is intentionally static—no shimmer, blur, or
 /// timer—so it stays cheap while artwork and playback metadata are decoding.
-private struct PhoneEpisodeRailSkeleton: View {
+struct PhoneEpisodeRailSkeleton: View {
     var captionStyleOverride: CardCaptionStyle? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
 

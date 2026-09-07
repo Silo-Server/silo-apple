@@ -142,8 +142,11 @@ final class DetailDismissalNavigationTests: XCTestCase {
 
         let posterModel = ItemDetailViewModel()
         posterModel.hydrateFromCache(contentId: detail.contentId)
-        XCTAssertNil(posterModel.selectedSeason, "Poster initialization must remain unchanged")
-        XCTAssertTrue(posterModel.episodes.isEmpty)
+        // Ordinary poster entry now hydrates the same cached hierarchy using
+        // its normal initial-season policy, instead of painting an empty rail.
+        XCTAssertEqual(posterModel.selectedSeason?.seasonNumber, 3)
+        XCTAssertEqual(posterModel.episodes.map(\.episodeNumber), [1, 2])
+        XCTAssertFalse(posterModel.isLoadingSeriesHierarchy)
     }
 
     func testContinueWatchingRequestsBothResourcesBeforeEitherResponseReturns() async throws {

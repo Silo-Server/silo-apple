@@ -321,6 +321,7 @@ private struct ItemDetailPhoneContent: View {
             seedSubtitleOverrideIfNeeded()
         }
         .onDisappear {
+            viewModel.cancelDetailLoading()
             // The trailer poll isn't owned by `.task`, so it would otherwise
             // keep running (and retaining the view model) after the route
             // pops. Same reasoning as `PersonDetailView.stopMetadataRefresh`.
@@ -644,7 +645,9 @@ private struct ItemDetailPhoneContent: View {
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
                 episodesBySeason: viewModel.episodesBySeason,
-                isLoadingEpisodes: viewModel.isLoadingEpisodes,
+                isLoadingEpisodes: viewModel.isLoadingSeriesHierarchy,
+                hierarchyError: viewModel.seriesLoadErrorMessage,
+                onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },
                 selectedNextUpFileId: preferredNextUpFileId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,

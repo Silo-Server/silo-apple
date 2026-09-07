@@ -17,6 +17,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let episodes: [EpisodeListItem]
     let episodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
+    let hierarchyError: String?
+    let onRetryHierarchy: () async -> Void
     let selectedNextUpFileId: Int?
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
@@ -56,6 +58,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var hierarchyRetryTask: Task<Void, Never>?
     @State private var pendingResumeEpisode: EpisodeListItem?
     private struct PendingEpisodePlayRequest: Equatable {
         let seasonNumber: Int?
@@ -101,8 +104,17 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             guard let episode = pendingResumeEpisode else { return }
             onPlayEpisode(episode.contentId, playbackFileId(for: episode), true)
         }
+        .onDisappear {
+            hierarchyRetryTask?.cancel()
+            hierarchyRetryTask = nil
+            pendingEpisodePlayRequest = nil
+        }
+        .onChange(of: hierarchyError) { _, error in
+            if error != nil { pendingEpisodePlayRequest = nil }
+        }
         .onChange(of: nextUpEpisode?.contentId) { _, contentID in
-            guard let request = pendingEpisodePlayRequest, contentID != nil,
+            guard hierarchyError == nil,
+                  let request = pendingEpisodePlayRequest, contentID != nil,
                   let episode = nextUpEpisode else { return }
             if let requestedSeason = request.seasonNumber,
                episode.seasonNumber != requestedSeason {
@@ -149,9 +161,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             belowOverview: {
                 VStack(spacing: 14) {
                     belowOverview()
-                    if nextUpEpisode != nil {
-                        playbackSelectorSlot
-                    }
+                    playbackSelectorSlot
+                        .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
+                        .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
                 }
             }
         )
@@ -162,10 +174,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: nextUpEpisode.map(playButtonLabel) ?? "Play",
+                title: nextUpEpisode.map(playButtonLabel)
+                    ?? (isLoadingEpisodes ? "Loading episodes…" : "Play"),
                 action: handlePrimaryPlayTap,
                 fullWidth: true
             )
+            .disabled(nextUpEpisode == nil && !isLoadingEpisodes)
 
             PhoneLabeledActionRow {
                 PhoneLabeledAction(
@@ -417,7 +431,20 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private var episodesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if !seasons.isEmpty {
+            if seasons.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(0..<3) { _ in
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(.secondary.opacity(0.12))
+                            .frame(width: 100, height: 36)
+                    }
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, SiloTheme.safePadding)
+                .opacity(isLoadingEpisodes ? 1 : 0)
+                .accessibilityHidden(!isLoadingEpisodes)
+                .accessibilityLabel("Loading seasons")
+            } else {
                 PhoneSeasonChips(
                     seasons: seasons,
                     selected: selectedSeason,
@@ -431,26 +458,50 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
             .padding(.horizontal, SiloTheme.safePadding)
 
-            PhoneSeasonEpisodeBrowser(
-                seasons: seasons,
-                selectedSeason: selectedSeason,
-                episodes: episodes,
-                episodesBySeason: episodesBySeason,
-                isLoadingEpisodes: isLoadingEpisodes,
-                onSelectSeason: handleSeasonSelection,
-                onSelectEpisode: handleEpisodeSelection,
-                onPlayEpisode: { contentId in
-                    guard let episode = episodes.first(where: {
-                        $0.contentId == contentId
-                    }) else { return }
-                    handlePlayTap(for: episode)
-                },
-                currentContentId: nextUpEpisode?.contentId,
-                selectsCenteredEpisode: true,
-                showsSeasonSelector: false,
-                forcesEpisodeCarousel: true,
-                episodeCaptionStyleOverride: .titleMetadata
-            )
+            ZStack(alignment: .topLeading) {
+                PhoneEpisodeRailSkeleton(captionStyleOverride: .titleMetadata)
+                    .hidden()
+                VStack(alignment: .leading, spacing: 14) {
+                    if let hierarchyError {
+                        HStack {
+                            Text(hierarchyError)
+                            Button("Retry") {
+                                pendingEpisodePlayRequest = nil
+                                hierarchyRetryTask?.cancel()
+                                hierarchyRetryTask = Task { await onRetryHierarchy() }
+                            }
+                        }
+                        .padding(.horizontal, SiloTheme.safePadding)
+                    }
+
+                    if hierarchyError == nil && !isLoadingEpisodes && seasons.isEmpty {
+                        Text("No episodes available")
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, SiloTheme.safePadding)
+                    } else if hierarchyError == nil || !episodes.isEmpty {
+                        PhoneSeasonEpisodeBrowser(
+                            seasons: seasons,
+                            selectedSeason: selectedSeason,
+                            episodes: episodes,
+                            episodesBySeason: episodesBySeason,
+                            isLoadingEpisodes: isLoadingEpisodes,
+                            onSelectSeason: handleSeasonSelection,
+                            onSelectEpisode: handleEpisodeSelection,
+                            onPlayEpisode: { contentId in
+                                guard let episode = episodes.first(where: {
+                                    $0.contentId == contentId
+                                }) else { return }
+                                handlePlayTap(for: episode)
+                            },
+                            currentContentId: nextUpEpisode?.contentId,
+                            selectsCenteredEpisode: true,
+                            showsSeasonSelector: false,
+                            forcesEpisodeCarousel: true,
+                            episodeCaptionStyleOverride: .titleMetadata
+                        )
+                    }
+                }
+            }
         }
     }
 
