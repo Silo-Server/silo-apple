@@ -34,6 +34,15 @@ struct SettingsMutationAuthority: Codable, Equatable, Sendable {
         self.clientFamily = clientFamily
     }
 
+    /// Credential generations and profile proofs are transport snapshots, not
+    /// durable queue ownership. A cold TokenStore must still see this target's
+    /// unresolved commands under the same persisted account epoch.
+    func sameDurableOwner(as other: Self) -> Bool {
+        serverID == other.serverID && origin == other.origin && accountID == other.accountID
+            && accountEpoch == other.accountEpoch && profileID == other.profileID
+            && deviceID == other.deviceID && clientFamily == other.clientFamily
+    }
+
     var legacyPlayerScope: String {
         Data("\(origin)|\(profileID)|\(deviceID)".utf8).base64EncodedString()
     }
@@ -51,7 +60,18 @@ struct SettingsMutationCommand: Codable, Equatable, Sendable {
     var state: State
 
     func sameTarget(as other: Self) -> Bool {
-        authority == other.authority && path == other.path && query == other.query
+        authority.sameDurableOwner(as: other.authority) && path == other.path
+            && targetQuery == other.targetQuery
+    }
+
+    /// The old explicit own-device query and the declared header address one
+    /// target. Normalize only for barriers; stored wire bytes never change.
+    private var targetQuery: [String: String] {
+        var target = query
+        if target["scope"] == "profile_device", target["device_id"] == nil {
+            target["device_id"] = authority.deviceID
+        }
+        return target
     }
 }
 
@@ -143,11 +163,15 @@ actor SettingsMutationDispatcher {
     func send(_ id: UUID) async throws {
         guard let saved = try journal.snapshot().first(where: { $0.id == id }),
               let auth = await tokens.captureDurableAccountAuth(),
-              try SettingsMutationAuthority(auth) == saved.authority else { throw HTTPError.requestIdentityChanged }
+              try SettingsMutationAuthority(auth).sameDurableOwner(as: saved.authority),
+              try SettingsMutationAuthority(auth).profileProofHash == saved.authority.profileProofHash else {
+            throw HTTPError.requestIdentityChanged
+        }
         let sent = try journal.claim(id)
         try await api.v2.dispatchSettingCommand(sent, auth: auth.request)
-        guard let current = await tokens.captureDurableAccountAuth(),
-              try SettingsMutationAuthority(current) == sent.authority else { throw HTTPError.requestIdentityChanged }
+        guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth.request) != nil,
+              let current = await tokens.captureDurableAccountAuth(),
+              try SettingsMutationAuthority(current).sameDurableOwner(as: sent.authority) else { throw HTTPError.requestIdentityChanged }
         try journal.acknowledge(sent)
     }
 }
@@ -178,7 +202,7 @@ final class PlayerSettingsV2Queue: @unchecked Sendable {
     var issue: String? { lock.withLock { lastIssue } }
     var hasPending: Bool {
         guard let auth = lock.withLock({ displayedAuth }), let authority = try? SettingsMutationAuthority(auth) else { return false }
-        return (try? journal.snapshot().contains { $0.authority == authority && $0.state != .applied }) ?? true
+        return (try? journal.snapshot().contains { $0.authority.sameDurableOwner(as: authority) && $0.state != .applied }) ?? true
     }
 
     func read(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
@@ -192,7 +216,7 @@ final class PlayerSettingsV2Queue: @unchecked Sendable {
               try SettingsMutationAuthority(current) == authority else { throw HTTPError.requestIdentityChanged }
         lock.withLock { displayedAuth = auth }
         // Do not project an ambiguous server read over an optimistic queued edit.
-        let outstanding = try journal.snapshot().filter { $0.authority == authority && $0.state != .applied }
+        let outstanding = try journal.snapshot().filter { $0.authority.sameDurableOwner(as: authority) && $0.state != .applied }
         if !outstanding.isEmpty {
             let hold: SettingsMutationHold = outstanding.contains { $0.state == .legacyHeld } ? .legacy : .uncertain
             setIssue(hold.localizedDescription, for: authority)
@@ -218,7 +242,7 @@ final class PlayerSettingsV2Queue: @unchecked Sendable {
             let held = legacyBlocks(key, authority: authority)
             let command = SettingsMutationCommand(id: UUID(), authority: authority, key: key.rawValue,
                 method: method, path: "/api/v2/settings/values/\(key.rawValue)",
-                query: ["scope": "profile_device", "device_id": authority.deviceID], body: body,
+                query: ["scope": "profile_device"], body: body,
                 state: held ? .legacyHeld : .prepared)
             try journal.append(command)
             if held { setIssue(SettingsMutationHold.legacy.localizedDescription, for: authority) }
@@ -253,7 +277,7 @@ final class PlayerSettingsV2Queue: @unchecked Sendable {
 
     private func flush(authority: SettingsMutationAuthority) async {
         do {
-            for command in try journal.snapshot() where command.authority == authority && command.state == .prepared {
+            for command in try journal.snapshot() where command.authority.sameDurableOwner(as: authority) && command.state == .prepared {
                 do { try await dispatcher.send(command.id) }
                 catch { setIssue(error.localizedDescription, for: authority) }
             }

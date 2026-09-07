@@ -29,6 +29,102 @@ final class SettingsMutationJournalTests: XCTestCase {
         return (PlayerSettingsV2Queue(api: api, tokens: tokens, defaults: defaults, journal: journal), journal, tokens, defaults, url)
     }
 
+    private func restart(defaults: UserDefaults, url: URL) async throws -> (PlayerSettingsV2Queue, TokenStore) {
+        let name = url.deletingLastPathComponent().lastPathComponent
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: defaults, standard: defaults))
+        await tokens.switchActiveServer(serverId: "server")
+        await tokens.setServerUrl("https://settings.example")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SettingsMutationProtocol.self]
+        let http = HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokens)
+        let api = SiloAPI(http: http, tokenStore: tokens,
+            v2: APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }))
+        return (PlayerSettingsV2Queue(api: api, tokens: tokens, defaults: defaults,
+            journal: SettingsMutationJournal(url: url)), tokens)
+    }
+
+    func testColdTokenStoreRetainsUncertaintyBarrierAndOriginalCommand() async throws {
+        let (queue, journal, tokens, defaults, url) = try await harness()
+        _ = try await queue.read(keys: [.playbackAutoSkipIntro])
+        SettingsMutationProtocol.setStatus(503)
+        queue.enqueue(.playbackAutoSkipIntro, operation: .set(.bool(true)))
+        await queue.flush()
+        let original = try XCTUnwrap(journal.snapshot().first)
+        let oldAuth = await tokens.captureDurableAccountAuth()
+        let (coldQueue, coldTokens) = try await restart(defaults: defaults, url: url)
+        let newAuth = await coldTokens.captureDurableAccountAuth()
+        XCTAssertEqual(oldAuth?.accountEpoch, newAuth?.accountEpoch)
+        XCTAssertNotEqual(oldAuth?.request.account.credentialGenerationID, newAuth?.request.account.credentialGenerationID)
+        SettingsMutationProtocol.setStatus(200)
+        do { _ = try await coldQueue.read(keys: [.playbackAutoSkipIntro]); XCTFail("Uncertain target must remain held") } catch {}
+        coldQueue.enqueue(.playbackAutoSkipIntro, operation: .set(.bool(false)))
+        await coldQueue.flush()
+        XCTAssertEqual(SettingsMutationProtocol.requests().filter { $0.httpMethod == "PUT" }.count, 1)
+        XCTAssertEqual(try journal.snapshot().first, original)
+        XCTAssertTrue(coldQueue.hasPending)
+    }
+
+    func testColdTokenStoreDispatchesPreparedEnvelopeWithoutChangingOriginalOwner() async throws {
+        let (_, journal, tokens, defaults, url) = try await harness()
+        let captured = await tokens.captureDurableAccountAuth()
+        let authority = try SettingsMutationAuthority(XCTUnwrap(captured))
+        let prepared = SettingsMutationCommand(id: UUID(), authority: authority, key: SettingKey.playbackAutoSkipIntro.rawValue,
+            method: "PUT", path: "/api/v2/settings/values/\(SettingKey.playbackAutoSkipIntro.rawValue)",
+            query: ["scope": "profile_device"], body: Data(#"{"value":true}"#.utf8), state: .prepared)
+        try journal.append(prepared)
+        let (coldQueue, _) = try await restart(defaults: defaults, url: url)
+        _ = try await coldQueue.read(keys: [.playbackAutoSkipIntro])
+        let saved = try XCTUnwrap(journal.snapshot().first)
+        XCTAssertEqual(saved.state, .applied)
+        XCTAssertEqual(saved.authority, prepared.authority)
+        XCTAssertEqual(saved.body, prepared.body)
+        XCTAssertEqual(saved.query, prepared.query)
+        XCTAssertEqual(SettingsMutationProtocol.requests().filter { $0.httpMethod == "PUT" }.count, 1)
+    }
+
+    func testChangedProfileProofCannotAdoptPreparedCommand() async throws {
+        let (queue, journal, tokens, _, _) = try await harness()
+        _ = try await queue.read(keys: [.playbackAutoSkipIntro])
+        queue.enqueue(.playbackAutoSkipIntro, operation: .set(.bool(true)))
+        let prepared = try XCTUnwrap(journal.snapshot().first)
+        _ = await tokens.setProfileToken("replacement-profile-proof")
+        await queue.flush()
+        XCTAssertEqual(try journal.snapshot().first, prepared)
+        XCTAssertTrue(SettingsMutationProtocol.requests().allSatisfy { $0.httpMethod == "GET" })
+    }
+
+    func testOldExplicitDeviceCommandStillBlocksNewHeaderOnlyTargetWithoutReencoding() async throws {
+        let (queue, journal, tokens, _, _) = try await harness()
+        let captured = await tokens.captureDurableAccountAuth()
+        let authority = try SettingsMutationAuthority(XCTUnwrap(captured))
+        let old = SettingsMutationCommand(id: UUID(), authority: authority, key: SettingKey.playbackAutoSkipIntro.rawValue,
+            method: "PUT", path: "/api/v2/settings/values/\(SettingKey.playbackAutoSkipIntro.rawValue)",
+            query: ["scope": "profile_device", "device_id": authority.deviceID],
+            body: Data(#"{ "value" : true }"#.utf8), state: .uncertain)
+        try journal.append(old)
+        do { _ = try await queue.read(keys: [.playbackAutoSkipIntro]); XCTFail() } catch {}
+        queue.enqueue(.playbackAutoSkipIntro, operation: .set(.bool(false)))
+        await queue.flush()
+        XCTAssertEqual(try journal.snapshot().first, old)
+        XCTAssertEqual(try journal.snapshot().last?.query, ["scope": "profile_device"])
+        XCTAssertFalse(SettingsMutationProtocol.requests().contains { $0.httpMethod == "PUT" })
+    }
+
+    func testOwnFirstDeviceWriteUsesDeclaredHeaderNotExplicitRegistryTarget() async throws {
+        let (queue, journal, _, _, _) = try await harness()
+        _ = try await queue.read(keys: [.playbackAutoSkipIntro])
+        // The accepted seam rejects explicit query targets before lazy registration.
+        SettingsMutationProtocol.rejectUnregisteredExplicitDevice()
+        queue.enqueue(.playbackAutoSkipIntro, operation: .set(.bool(true)))
+        await queue.flush()
+        let sent = try XCTUnwrap(SettingsMutationProtocol.requests().first { $0.httpMethod == "PUT" })
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "X-Silo-Device-Id"), AppleDeviceIdentity.current.id)
+        XCTAssertEqual(URLComponents(url: try XCTUnwrap(sent.url), resolvingAgainstBaseURL: false)?.queryItems,
+            [URLQueryItem(name: "scope", value: "profile_device")])
+        XCTAssertEqual(try journal.snapshot().first?.state, .applied)
+    }
+
     func testFreshProductionWritesUseExactV2EnvelopeAndDoNotReplay() async throws {
         let (queue, journal, _, _, url) = try await harness()
         _ = try await queue.read(keys: [.playbackAutoSkipIntro])
@@ -168,7 +264,9 @@ private final class SettingsMutationProtocol: URLProtocol, @unchecked Sendable {
     private static var recorded: [URLRequest] = []
     private static var status = 200
     private static var receiptProfile = "profile"
-    static func reset() { lock.withLock { recorded = []; status = 200; receiptProfile = "profile" } }
+    private static var rejectExplicitDevice = false
+    static func rejectUnregisteredExplicitDevice() { lock.withLock { rejectExplicitDevice = true } }
+    static func reset() { lock.withLock { recorded = []; status = 200; receiptProfile = "profile"; rejectExplicitDevice = false } }
     static func setReceiptProfile(_ value: String) { lock.withLock { receiptProfile = value } }
     static func setStatus(_ value: Int) { lock.withLock { status = value } }
     static func requests() -> [URLRequest] { lock.withLock { recorded } }
@@ -181,6 +279,9 @@ private final class SettingsMutationProtocol: URLProtocol, @unchecked Sendable {
         if request.httpMethod == "GET" {
             code = 200
             body = Data("{\"items\":[],\"page\":{\"has_more\":false},\"revision\":\(SettingKey.revision)}".utf8)
+        } else if Self.lock.withLock({ Self.rejectExplicitDevice }),
+                  URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "device_id" }) == true {
+            code = 404; body = Data("{}".utf8)
         } else if status != 200 {
             code = status; body = Data("{}".utf8)
         } else if request.httpMethod == "DELETE" {
