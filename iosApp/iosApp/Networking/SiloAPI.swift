@@ -254,9 +254,14 @@ actor SiloAPI {
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
-        try await http.get(
+        var query = await imageSizeQuery
+        #if os(tvOS)
+        // tvOS season selectors display labels and do not use season posters.
+        query["include_artwork"] = "false"
+        #endif
+        return try await http.get(
             "/api/v1/catalog/series/\(seriesId)/seasons",
-            query: await imageSizeQuery
+            query: query
         )
     }
 
