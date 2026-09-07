@@ -257,6 +257,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     /// mutation is in flight, keyed to the request that set it so an older
     /// completion cannot clear a newer value.
     @State private var seasonPlayedOverrides: [String: SeasonWatchedOverride] = [:]
+    /// Seasons with a watched mutation in flight; the menu ignores repeats.
+    @State private var mutatingSeasonIds: Set<String> = []
     @State private var seasonTransitionInFlight = false
     @State private var seasonTransitionTargetId: String?
     @State private var seasonTransitionGeneration = 0
@@ -1278,14 +1280,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @ViewBuilder
     private func seasonContextActions(for season: Season) -> some View {
         Button {
+            // One request per season at a time: a second toggle while the
+            // first is in flight could reach the server in either order.
+            guard !mutatingSeasonIds.contains(season.id) else { return }
             let played = !isSeasonPlayed(season)
             let request = UUID()
             seasonPlayedOverrides[season.id] = SeasonWatchedOverride(played: played, request: request)
+            mutatingSeasonIds.insert(season.id)
             Task {
                 if await onSetSeasonWatched(season, played) == false,
                    seasonPlayedOverrides[season.id]?.request == request {
                     seasonPlayedOverrides[season.id] = nil
                 }
+                mutatingSeasonIds.remove(season.id)
             }
         } label: {
             // Always say "Season N" here even when the tab shows a custom
@@ -1297,6 +1304,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 systemImage: isSeasonPlayed(season) ? "circle" : "checkmark.circle"
             )
         }
+        .disabled(mutatingSeasonIds.contains(season.id))
     }
 
     private func runtimeLabel(_ minutes: Int) -> String {

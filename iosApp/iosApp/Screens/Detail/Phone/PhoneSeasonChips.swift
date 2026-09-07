@@ -17,6 +17,8 @@ struct PhoneSeasonChips: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var playedOverrides: [String: SeasonWatchedOverride] = [:]
+    /// Seasons with a watched mutation in flight; the menu ignores repeats.
+    @State private var mutatingSeasonIds: Set<String> = []
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -55,14 +57,19 @@ struct PhoneSeasonChips: View {
     private func contextActions(for season: Season) -> some View {
         if let onSetWatched {
             Button {
+                // One request per season at a time: a second toggle while the
+                // first is in flight could reach the server in either order.
+                guard !mutatingSeasonIds.contains(season.id) else { return }
                 let played = !isPlayed(season)
                 let request = UUID()
                 playedOverrides[season.id] = SeasonWatchedOverride(played: played, request: request)
+                mutatingSeasonIds.insert(season.id)
                 Task { @MainActor in
                     if await onSetWatched(season, played) == false,
                        playedOverrides[season.id]?.request == request {
                         playedOverrides[season.id] = nil
                     }
+                    mutatingSeasonIds.remove(season.id)
                 }
             } label: {
                 // Always say "Season N" here even when the chip shows a custom
@@ -74,6 +81,7 @@ struct PhoneSeasonChips: View {
                     systemImage: isPlayed(season) ? "circle" : "checkmark.circle"
                 )
             }
+            .disabled(mutatingSeasonIds.contains(season.id))
         }
     }
 

@@ -1307,9 +1307,9 @@ class ItemDetailViewModel {
     /// change so callers can roll back an optimistic UI state.
     func setSeasonWatched(_ season: Season, played: Bool) async -> Bool {
         guard let seriesId = seriesContentId else { return false }
-        // The route can change while the request is in flight. Nothing below
-        // may publish into a detail that replaced this one.
-        let routeGeneration = detailGeneration
+        // The route can change while the request is in flight. Caches are
+        // invalidated regardless; only route-scoped UI publication is skipped.
+        let route = watchedMutationRoute()
         do {
             try await SiloAPI.shared.setWatched(
                 contentId: season.contentId,
@@ -1324,10 +1324,10 @@ class ItemDetailViewModel {
             seriesId: seriesId,
             seasonNumber: season.seasonNumber
         )
-        guard routeGeneration == detailGeneration else { return true }
+        guard route == watchedMutationRoute() else { return true }
 
-        await refreshSeasonList(seriesId: seriesId, routeGeneration: routeGeneration)
-        guard routeGeneration == detailGeneration else { return true }
+        await refreshSeasonList(seriesId: seriesId, route: route)
+        guard route == watchedMutationRoute() else { return true }
         let refreshed = seasons.first(where: {
             $0.contentId == season.contentId
                 || $0.seasonNumber == season.seasonNumber
@@ -1346,29 +1346,34 @@ class ItemDetailViewModel {
             await refreshCachedEpisodePage(
                 seriesId: seriesId,
                 seasonNumber: refreshed.seasonNumber,
-                routeGeneration: routeGeneration
+                route: route
             )
         }
         return true
     }
 
     func setEpisodeWatched(contentId: String, played: Bool) async -> Bool {
-        let routeGeneration = detailGeneration
+        let route = watchedMutationRoute()
+        // Captured up front: the caches to invalidate belong to the route that
+        // issued the mutation, even if the user has left it by the time the
+        // server answers.
+        let seriesId = seriesContentId
+        let seasonNumber = selectedSeason?.seasonNumber
         do {
             try await SiloAPI.shared.setWatched(contentId: contentId, played: played)
         } catch {
             return false
         }
-        guard routeGeneration == detailGeneration else { return true }
+        invalidateRelatedCaches(
+            contentId: contentId,
+            seriesId: seriesId,
+            seasonNumber: seasonNumber
+        )
+        guard route == watchedMutationRoute() else { return true }
         if contentId == detail?.contentId {
             isWatched = played
         }
-        invalidateRelatedCaches(
-            contentId: contentId,
-            seriesId: seriesContentId,
-            seasonNumber: selectedSeason?.seasonNumber
-        )
-        if let seriesId = seriesContentId, let seasonNumber = selectedSeason?.seasonNumber {
+        if let seriesId, let seasonNumber = selectedSeason?.seasonNumber {
             await loadEpisodes(
                 seriesId: seriesId,
                 seasonNumber: seasonNumber,
@@ -1377,17 +1382,29 @@ class ItemDetailViewModel {
             )
             // A single episode can complete or reopen its season, so the
             // season-level watched state must follow.
-            await refreshSelectedSeasonUserData(seriesId: seriesId, routeGeneration: routeGeneration)
+            await refreshSelectedSeasonUserData(seriesId: seriesId, route: route)
         }
         return true
     }
 
+    /// Identity of the detail route a watched mutation started on. Unlike
+    /// `detailGeneration`, which advances on every metadata write to the
+    /// same page, this changes only when the page shows a different item.
+    private struct WatchedMutationRoute: Equatable {
+        let contentId: String?
+        let seriesId: String?
+    }
+
+    private func watchedMutationRoute() -> WatchedMutationRoute {
+        WatchedMutationRoute(contentId: detail?.contentId, seriesId: seriesContentId)
+    }
+
     /// Reload the season list and re-point `selectedSeason` at its refreshed
     /// payload without changing the selection or reloading its episodes.
-    private func refreshSelectedSeasonUserData(seriesId: String, routeGeneration: Int) async {
+    private func refreshSelectedSeasonUserData(seriesId: String, route: WatchedMutationRoute) async {
         let selectedId = selectedSeason?.contentId
-        await refreshSeasonList(seriesId: seriesId, routeGeneration: routeGeneration)
-        guard routeGeneration == detailGeneration,
+        await refreshSeasonList(seriesId: seriesId, route: route)
+        guard route == watchedMutationRoute(),
               let selectedId,
               let refreshed = seasons.first(where: { $0.contentId == selectedId }),
               refreshed != selectedSeason else { return }
@@ -1396,23 +1413,23 @@ class ItemDetailViewModel {
 
     /// Fresh season list for a watched mutation. Publishes only while the
     /// route that started the mutation is still on screen.
-    private func refreshSeasonList(seriesId: String, routeGeneration: Int) async {
+    private func refreshSeasonList(seriesId: String, route: WatchedMutationRoute) async {
         guard let response = try? await SiloAPI.shared.seasons(seriesId: seriesId) else { return }
         ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId))
-        guard routeGeneration == detailGeneration, seriesContentId == seriesId else { return }
+        guard route == watchedMutationRoute() else { return }
         seasons = response.seasons.sortedForDisplay()
     }
 
     /// Refresh one non-selected season's cached page in the background. It
     /// deliberately stays outside `loadEpisodes`, whose shared generation and
     /// loading flag belong to the selected page.
-    private func refreshCachedEpisodePage(seriesId: String, seasonNumber: Int, routeGeneration: Int) async {
+    private func refreshCachedEpisodePage(seriesId: String, seasonNumber: Int, route: WatchedMutationRoute) async {
         guard let response = try? await SiloAPI.shared.episodes(
             seriesId: seriesId,
             seasonNumber: seasonNumber
         ) else { return }
         ResponseCache.shared.set(response, for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber))
-        guard routeGeneration == detailGeneration, seriesContentId == seriesId else { return }
+        guard route == watchedMutationRoute() else { return }
         let sorted = response.episodes.sorted(by: { $0.episodeNumber < $1.episodeNumber })
         episodesBySeason[seasonNumber] = sorted
         if selectedSeason?.seasonNumber == seasonNumber {
