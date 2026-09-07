@@ -67,6 +67,7 @@ struct TVEpisodeRail: View {
     }
     @State private var pendingEdge: PendingEdge?
     @State private var appliedScrollRequest = 0
+    @State private var needsRebasedSelection = false
     @State private var scrollGeneration = 0
     @State private var scrollViewport = ScrollViewport()
 
@@ -165,14 +166,27 @@ struct TVEpisodeRail: View {
                         appliedScrollRequest = scrollRequest
                         pendingEdge = nil
                         anchorFocusedSelection(at: index, viewportWidth: geometry.size.width)
-                    } else {
-                        seedAnchoredSelection(
-                            viewportWidth: geometry.size.width,
-                            targetContentId: anchoredFocusedContentId ?? anchoredContentId,
-                            animated: true
-                        )
+                    } else if needsRebasedSelection {
+                        // Finish any interrupted one-card movement in the new
+                        // coordinates, after the nonanimated rebase has mounted.
+                        seedAnchoredSelection(viewportWidth: geometry.size.width, animated: true)
                     }
-                    completePendingEdge(viewportWidth: geometry.size.width)
+                    needsRebasedSelection = false
+                    completePendingEdge()
+                }
+                .onChange(of: episodeIdentityKey) { oldIds, newIds in
+                    // Paging changes coordinates, not the user's selection.
+                    // Preserve the visible position when seasons are prepended
+                    // or evicted; appends must not restart an ongoing card slide.
+                    guard scrollRequest == appliedScrollRequest,
+                          let id = anchoredFocusedContentId ?? anchoredContentId,
+                          let oldIndex = oldIds.firstIndex(of: id),
+                          let newIndex = newIds.firstIndex(of: id),
+                          oldIndex != newIndex else { return }
+                    let shift = CGFloat(newIndex - oldIndex) * (anchoredCardWidth + cardSpacing)
+                    let offset = scrollViewport.scrollView?.contentOffset.x ?? 0
+                    moveAnchoredScroll(toOffset: max(0, offset + shift), animated: false)
+                    needsRebasedSelection = true
                 }
                 .onChange(of: currentContentId) { _, _ in
                     // The season chip owns an explicit animated request.
@@ -412,12 +426,11 @@ struct TVEpisodeRail: View {
         request()
     }
 
-    private func completePendingEdge(viewportWidth: CGFloat) {
+    private func completePendingEdge() {
         guard let pendingEdge, anchoredFocusedContentId == pendingEdge.contentId,
               let index = episodes.firstIndex(where: { $0.contentId == pendingEdge.contentId }),
               episodes.indices.contains(index + pendingEdge.direction) else { return }
         let target = episodes[index + pendingEdge.direction].contentId
-        seedAnchoredSelection(viewportWidth: viewportWidth, targetContentId: target)
         // The user's boundary press owns this handoff. Cancel it if another
         // card or region took focus while the missing season was loading.
         DispatchQueue.main.async {
@@ -444,10 +457,16 @@ struct TVEpisodeRail: View {
     }
 
     private func moveAnchoredScroll(to index: Int, viewportWidth: CGFloat, animated: Bool) {
+        moveAnchoredScroll(
+            toOffset: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            animated: animated
+        )
+    }
+
+    private func moveAnchoredScroll(toOffset targetOffset: CGFloat, animated: Bool) {
         scrollGeneration &+= 1
         let generation = scrollGeneration
         cancelNativeScrollCorrection()
-        let targetOffset = anchoredContentOffset(for: index, viewportWidth: viewportWidth)
         let animation: Animation = animated && !reduceMotion
             ? .easeOut(duration: 0.30)
             : .linear(duration: 0)
@@ -461,10 +480,10 @@ struct TVEpisodeRail: View {
             guard generation == scrollGeneration,
                   let scrollView = scrollViewport.scrollView,
                   abs(scrollView.contentOffset.x - targetOffset) > 0.5 else { return }
-            scrollViewport.correctionTarget = reduceMotion ? nil : targetOffset
+            scrollViewport.correctionTarget = animated && !reduceMotion ? targetOffset : nil
             scrollView.setContentOffset(
                 CGPoint(x: targetOffset, y: scrollView.contentOffset.y),
-                animated: !reduceMotion
+                animated: animated && !reduceMotion
             )
         }
     }
