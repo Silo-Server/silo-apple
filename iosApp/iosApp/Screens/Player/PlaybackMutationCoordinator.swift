@@ -20,6 +20,7 @@ actor PlaybackMutationCoordinator {
         let recordID: UUID
         let sessionID: String
         let authority: PlaybackMutationAuthority
+        let attemptID: String?
     }
     private let api: SiloAPI
     private let tokens: TokenStore
@@ -49,7 +50,7 @@ actor PlaybackMutationCoordinator {
     }
 
     func register(sessionID: String, features: [String], auth: CapturedDurableAccountAuth,
-                  installationID: String? = nil) async throws {
+                  installationID: String? = nil, attemptID: String? = nil) async throws {
         guard features.contains(PlaybackSequencedContract.feature) else { return }
         let authority = try PlaybackMutationAuthority(auth: auth, installationID: installationID)
         _ = try await currentAuth(authority)
@@ -60,7 +61,8 @@ actor PlaybackMutationCoordinator {
         if let existing = contexts[sessionID], existing.authority != authority {
             throw PlaybackSequencedError.authorityChanged
         }
-        contexts[sessionID] = Context(recordID: saved.id, sessionID: sessionID, authority: authority)
+        contexts[sessionID] = Context(recordID: saved.id, sessionID: sessionID, authority: authority,
+            attemptID: attemptID ?? contexts[sessionID]?.attemptID)
     }
 
     func requireResolvedStartBeforeLegacy(auth: CapturedDurableAccountAuth) async throws {
@@ -140,7 +142,7 @@ actor PlaybackMutationCoordinator {
                 throw PlaybackSequencedError.authorityChanged
             }
             try await register(sessionID: sessionID, features: [PlaybackSequencedContract.feature], auth: durable,
-                installationID: start.authority.installationID)
+                installationID: start.authority.installationID, attemptID: start.attemptID)
             if retire { _ = try await stop(sessionID: sessionID, position: nil, isPaused: true) }
         } else if wire.outcome != "adaptation_unavailable" { throw PlaybackSequencedError.invalidResponse }
         // A known session is now independently journaled, even if local plan
@@ -183,6 +185,54 @@ actor PlaybackMutationCoordinator {
     func usesV2(_ sessionID: String) -> Bool { contexts[sessionID]?.authority.installationID != nil }
 
     func handles(_ sessionID: String) -> Bool { contexts[sessionID] != nil }
+
+    func replan(sessionID: String, request: PlaybackV3ReplanRequest) async throws -> PlaybackV3DecisionResponse {
+        guard let context = contexts[sessionID], let installation = context.authority.installationID,
+              context.attemptID == request.playbackAttemptId, stopIntents[context.recordID] == nil else {
+            throw PlaybackSequencedError.authorityChanged
+        }
+        guard ["seek_reanchor", "seek_failure_recovery", "failure_recovery"].contains(request.operation) else {
+            throw PlaybackV3TerminalFailure(reason: "capability_unsupported",
+                message: "This server does not support changing playback tracks, quality or output during API v2 playback.", retryable: false)
+        }
+        let auth = try await currentAuth(context.authority)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.sortedKeys]
+        let body = try encoder.encode(APIv2PlaybackReplanBody(installationID: installation, request: request))
+        let saved = try await store.prepareReplan(sessionID: sessionID, authority: context.authority,
+            requestID: request.replanRequestId, body: body)
+        _ = try await currentAuth(context.authority)
+        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        let raw = try await api.v2.playbackRequest(method: "POST", suffix: "/\(sessionID)/replan", body: saved.body, auth: auth)
+        guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
+        _ = try await currentAuth(context.authority)
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: raw.data)
+        guard (wire.sessionId ?? wire.playbackPlan?.sessionId) == sessionID else { throw PlaybackSequencedError.invalidResponse }
+        let response = try wire.legacy()
+        try await store.acknowledgeReplan(saved, response: raw.data)
+        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        return response
+    }
+
+    /// Diagnostics have one dispatch and never drive a playback mutation retry.
+    func reportRouteEvent(_ event: PlaybackV3RouteEvent) async throws {
+        guard let sessionID = event.sessionId, let context = contexts[sessionID],
+              context.attemptID == event.playbackAttemptId, let installation = context.authority.installationID else {
+            throw PlaybackSequencedError.authorityChanged
+        }
+        let auth = try await currentAuth(context.authority)
+        let eventID = UUID().uuidString.lowercased()
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let body = try encoder.encode(APIv2PlaybackRouteEventBody(installationID: installation, eventID: eventID, event: event))
+        let raw = try await api.v2.playbackRequest(method: "POST", suffix: "/route-events", body: body, auth: auth)
+        _ = try await currentAuth(context.authority)
+        let receipt = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackRouteEventReceipt.self, from: raw.data)
+        guard raw.statusCode == 202, receipt.eventId == eventID, receipt.outcome == "accepted" else {
+            throw PlaybackSequencedError.invalidResponse
+        }
+    }
 
     struct ControlBinding: Sendable {
         let sessionID: String

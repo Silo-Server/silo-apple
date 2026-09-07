@@ -47,8 +47,18 @@ struct StoredPlaybackStart: Codable, Sendable {
     var finished = false
 }
 
+struct StoredPlaybackReplan: Codable, Sendable {
+    let id: UUID
+    let sessionID: String
+    let authority: PlaybackMutationAuthority
+    let requestID: String
+    let body: Data
+    var response: Data?
+}
+
 private struct PlaybackMutationStoreFile: Codable {
     var starts: [UUID: StoredPlaybackStart]?
+    var replans: [UUID: StoredPlaybackReplan]?
     var version = 1
     var sessions: [UUID: StoredPlaybackMutationSession] = [:]
 }
@@ -169,6 +179,33 @@ actor PlaybackMutationStore {
         }
         session.historyID = receipt.historyId ?? session.historyID
         file.sessions[id] = session
+        try persist(file)
+    }
+
+    /// An uncertain replan is retained, never replayed or rebased by a later player callback.
+    func prepareReplan(sessionID: String, authority: PlaybackMutationAuthority,
+                       requestID: String, body: Data) throws -> StoredPlaybackReplan {
+        var file = try read()
+        guard !(file.replans?.values.contains {
+            $0.sessionID == sessionID && $0.authority == authority && ($0.response == nil || $0.requestID == requestID)
+        } ?? false) else {
+            throw PlaybackV3TerminalFailure(reason: "replan_pending",
+                message: "A playback change could not be confirmed. Close this player before starting again.", retryable: false)
+        }
+        let replan = StoredPlaybackReplan(id: UUID(), sessionID: sessionID, authority: authority,
+            requestID: requestID, body: body)
+        if file.replans == nil { file.replans = [:] }
+        file.replans?[replan.id] = replan
+        try persist(file)
+        return replan
+    }
+
+    func acknowledgeReplan(_ replan: StoredPlaybackReplan, response: Data) throws {
+        var file = try read()
+        guard var saved = file.replans?[replan.id], saved.authority == replan.authority,
+              saved.body == replan.body, saved.response == nil else { throw PlaybackSequencedError.authorityChanged }
+        saved.response = response
+        file.replans?[replan.id] = saved
         try persist(file)
     }
 

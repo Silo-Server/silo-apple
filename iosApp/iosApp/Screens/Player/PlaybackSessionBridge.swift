@@ -1349,10 +1349,6 @@ actor PlaybackSessionBridge {
               let currentSessionId = sessionId else {
             return nil
         }
-        guard !(await mutationCoordinator.usesV2(currentSessionId)) else {
-            throw PlaybackV3TerminalFailure(reason: "replan_unavailable",
-                message: "This playback route does not support changing the plan during playback.", retryable: false)
-        }
         // Resolved after the guard because the intent mapping depends on what
         // the server advertised for this attempt.
         let operation = operation ?? Self.replanOperation(
@@ -1510,10 +1506,7 @@ actor PlaybackSessionBridge {
             clientCapabilities: active.snapshot.capabilities,
             clientPlaybackContext: active.snapshot.context
         )
-        let response = try await SiloAPI.shared.replanPlaybackV3(
-            sessionId: currentSessionId,
-            request: request
-        )
+        let response = try await mutationCoordinator.replan(sessionID: currentSessionId, request: request)
         let validatedResponse = response.validatedForApple()
         guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
             discardStaleProtocolV3Response(validatedResponse)
@@ -1769,7 +1762,6 @@ actor PlaybackSessionBridge {
         fallbackReason: String?,
         diagnostics: [String: String]
     ) async {
-        guard !(await mutationCoordinator.usesV2(sessionId)) else { return }
         let event = PlaybackV3RouteEvent(
             protocolVersion: PlaybackProtocolV3.version,
             playbackAttemptId: active.playbackAttemptId,
@@ -1786,7 +1778,7 @@ actor PlaybackSessionBridge {
             diagnostics: diagnostics
         )
         do {
-            try await SiloAPI.shared.reportPlaybackRouteEventV3(event)
+            try await mutationCoordinator.reportRouteEvent(event)
         } catch {
             logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(MediaLogRedactor.sanitize(error), privacy: .public)")
         }

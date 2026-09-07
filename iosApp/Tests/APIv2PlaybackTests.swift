@@ -263,6 +263,70 @@ final class APIv2PlaybackTests: XCTestCase {
             "/base/api/v2/playback/sessions/\(id)/control/ws")
     }
 
+    private func replanRequest(id: String = "apple-replan:one", operation: String = "seek_reanchor") throws -> PlaybackV3ReplanRequest {
+        let start = request()
+        let decision = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: fixtureData("playback_start_opaque_ids"))
+        let plan = try XCTUnwrap(decision.playbackPlan)
+        return PlaybackV3ReplanRequest(protocolVersion: 3, clientFeatures: [], operation: operation,
+            playbackAttemptId: start.playbackAttemptId, replanRequestId: id,
+            failedPlanId: plan.planId, planAttemptId: "apple-plan:one", planAttemptKey: plan.planAttemptKey,
+            attemptedPlanKeys: [plan.planAttemptKey], attemptCount: 1, qualityPreference: "auto", positionSeconds: 120,
+            metered: false, bandwidthEstimateKbps: nil, bandwidthCapKbps: nil, selectedTracks: plan.selectedTracks,
+            failure: nil, localMutations: [], clientCapabilities: start.clientCapabilities,
+            clientPlaybackContext: start.clientPlaybackContext)
+    }
+
+    func testReplanUsesV2AndPreservesServerPlanAndClientAttemptIdentities() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let started = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(started.sessionId)
+        let input = try replanRequest()
+        _ = try await owner.replan(sessionID: id, request: input)
+        let sent = try XCTUnwrap(V2PlaybackProtocol.requests().last { $0.0.url!.path.hasSuffix("/replan") })
+        XCTAssertEqual(sent.0.url!.path, "/api/v2/playback/\(id)/replan")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: sent.1) as? [String: Any])
+        XCTAssertEqual(body["installation_id"] as? String, try capability().requireAvailable())
+        XCTAssertEqual(body["replan_request_id"] as? String, input.replanRequestId)
+        XCTAssertEqual(body["playback_attempt_id"] as? String, input.playbackAttemptId)
+        XCTAssertEqual(body["plan_attempt_key"] as? String, input.planAttemptKey)
+        do { _ = try await owner.replan(sessionID: id, request: replanRequest(operation: "quality_change")); XCTFail() }
+        catch let failure as PlaybackV3TerminalFailure { XCTAssertEqual(failure.reason, "capability_unsupported") }
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url!.path.hasSuffix("/replan") }.count, 1)
+    }
+
+    func testUncertainReplanCannotReplayOrRebaseAfterCoordinatorRestart() async throws {
+        let (owner, tokens, auth, api, store) = try await fixture()
+        let started = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(started.sessionId)
+        V2PlaybackProtocol.failProgress(true)
+        do { _ = try await owner.replan(sessionID: id, request: replanRequest()); XCTFail() } catch {}
+        V2PlaybackProtocol.failProgress(false)
+        let restarted = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
+        try await restarted.register(sessionID: id, features: [PlaybackSequencedContract.feature], auth: auth,
+            installationID: capability().requireAvailable(), attemptID: request().playbackAttemptId)
+        do { _ = try await restarted.replan(sessionID: id, request: replanRequest(id: "apple-replan:different")); XCTFail() }
+        catch let failure as PlaybackV3TerminalFailure { XCTAssertEqual(failure.reason, "replan_pending") }
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url!.path.hasSuffix("/replan") }.count, 1)
+    }
+
+    func testRouteEventIsOneV2DispatchWithMatchingReceipt() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let started = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let event = PlaybackV3RouteEvent(protocolVersion: 3, playbackAttemptId: request().playbackAttemptId,
+            sessionId: started.sessionId, planId: nil, planAttemptId: nil, planAttemptKey: nil, event: "first_frame",
+            failureClassification: nil, fallbackReason: nil, appliedQuirkIds: [], quirkRegistryRevision: nil,
+            outputContextId: nil, diagnostics: [:])
+        try await owner.reportRouteEvent(event)
+        let sent = try XCTUnwrap(V2PlaybackProtocol.requests().last { $0.0.url!.path.hasSuffix("/route-events") })
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: sent.1) as? [String: Any])
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(body["event_id"] as? String)))
+        XCTAssertEqual(body["installation_id"] as? String, try capability().requireAvailable())
+        V2PlaybackProtocol.failProgress(true)
+        do { try await owner.reportRouteEvent(event); XCTFail() } catch {}
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url!.path.hasSuffix("/route-events") }.count, 2)
+        XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.url!.path.contains("/api/v1/") })
+    }
+
     func testV2ProgressCarriesInstallationAndRetainsExactUncertainSample() async throws {
         let (owner, _, auth, _, _) = try await fixture()
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
@@ -342,6 +406,14 @@ private final class V2PlaybackProtocol: URLProtocol {
         } else if request.url!.path.hasSuffix("/ws-ticket") {
             status = Self.lock.withLock { Self.controlCode }
             output = Data(#"{"ticket":"single-use-proof","expires_in":30,"max_connection_seconds":14400,"protocol":"silo.playback-control.v2"}"#.utf8)
+        } else if request.url!.path.hasSuffix("/replan") {
+            if state.5 { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
+            output = state.1
+        } else if request.url!.path.hasSuffix("/route-events") {
+            if state.5 { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
+            let input = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
+            status = 202
+            output = try! JSONSerialization.data(withJSONObject: ["event_id": input["event_id"]!, "outcome": "accepted"])
         } else if request.url!.path.hasSuffix("/capabilities") { output = state.0 }
         else if request.url!.path.hasSuffix("/start") {
             let hook = Self.lock.withLock { let hook = Self.startHook; Self.startHook = nil; return hook }

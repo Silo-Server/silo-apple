@@ -235,3 +235,32 @@ struct APIv2PlaybackControlCapabilities: Decodable {
     let `protocol`: String
     let ownerLeaseAdmission: Bool
 }
+
+struct APIv2PlaybackReplanBody: Encodable {
+    let installationID: String
+    let request: PlaybackV3ReplanRequest
+    private enum CodingKeys: String, CodingKey { case installationID = "installation_id" }
+    func encode(to encoder: Encoder) throws {
+        try request.encode(to: encoder)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(installationID, forKey: .installationID)
+    }
+}
+
+struct APIv2PlaybackRouteEventBody: Encodable {
+    let installationID: String
+    let eventID: String
+    let event: PlaybackV3RouteEvent
+    private enum CodingKeys: String, CodingKey { case installationID = "installation_id", eventID = "event_id" }
+    func encode(to encoder: Encoder) throws {
+        try event.encode(to: encoder)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(installationID, forKey: .installationID)
+        try values.encode(eventID, forKey: .eventID)
+    }
+}
+
+struct APIv2PlaybackRouteEventReceipt: Decodable {
+    let eventId: String
+    let outcome: String
+}
