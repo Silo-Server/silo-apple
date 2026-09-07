@@ -379,13 +379,21 @@ extension DownloadedSubtitle {
     ///   resolved.
     func synthesizedDescriptor(
         sessionId: String,
+        executorReference: String,
         baseTrackCount: Int,
         position: Int,
         resolveURL: (String) -> URL?
     ) -> SidecarSubtitleDescriptor? {
+        guard UUID(uuidString: sessionId) != nil, !executorReference.isEmpty,
+              baseTrackCount >= 0, position >= 0, baseTrackCount <= Int.max - position,
+              mediaFileId > 0, id > 0 else { return nil }
         let combinedIndex = baseTrackCount + position
-        let path = "/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
-        guard let url = resolveURL(path) else { return nil }
+        var path = URLComponents()
+        path.path = "/api/v2/stream/\(sessionId)/subtitles/\(combinedIndex)\(streamURLExtension)"
+        path.queryItems = [URLQueryItem(name: "st", value: executorReference),
+            URLQueryItem(name: "file_id", value: String(mediaFileId)),
+            URLQueryItem(name: "downloaded_subtitle_id", value: String(id))]
+        guard let relative = path.string, let url = resolveURL(relative) else { return nil }
         let label = releaseName.isEmpty
             ? (provider.isEmpty ? language : provider)
             : (provider.isEmpty ? releaseName : "\(releaseName) (\(provider))")

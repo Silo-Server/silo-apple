@@ -331,14 +331,15 @@ final class AIModelDecodingTests: XCTestCase {
         )
         // 3 existing non-downloaded tracks (max combined index 2) → base 3.
         let descriptor = sub.synthesizedDescriptor(
-            sessionId: "sess-1",
+            sessionId: "11111111-1111-4111-8111-111111111111",
+            executorReference: "signed-proof",
             baseTrackCount: 3,
             position: 0,
             resolveURL: { path in URL(string: "https://host\(path)") }
         )
         XCTAssertNotNil(descriptor)
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/stream/sess-1/subtitles/3.vtt")
+        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/11111111-1111-4111-8111-111111111111/subtitles/3.vtt?st=signed-proof&file_id=42&downloaded_subtitle_id=77")
         XCTAssertTrue(descriptor?.source == "downloaded")
         XCTAssertTrue(descriptor?.codec == "subrip")
         XCTAssertTrue(descriptor?.language == "es")
@@ -349,16 +350,17 @@ final class AIModelDecodingTests: XCTestCase {
     /// and ASS/SSA keep the raw `.ass` extension.
     func testSynthesizedDescriptorPositionAndAssExt() {
         let sub = DownloadedSubtitle(
-            id: 88, provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
+            id: 88, mediaFileId: 42, provider: "subdl", language: "de", format: "ass", releaseName: "Show.S01E01"
         )
         let descriptor = sub.synthesizedDescriptor(
-            sessionId: "sess-9",
+            sessionId: "11111111-1111-4111-8111-111111111111",
+            executorReference: "signed-proof",
             baseTrackCount: 2,
             position: 1,
             resolveURL: { path in URL(string: "https://host\(path)") }
         )
         XCTAssertTrue(descriptor?.index == 3)
-        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/stream/sess-9/subtitles/3.ass")
+        XCTAssertTrue(descriptor?.url.absoluteString == "https://host/api/v2/stream/11111111-1111-4111-8111-111111111111/subtitles/3.ass?st=signed-proof&file_id=42&downloaded_subtitle_id=88")
     }
 
     /// PGS maps to `.sup`; an unresolvable URL yields `nil` (no track).
@@ -366,7 +368,7 @@ final class AIModelDecodingTests: XCTestCase {
         let pgs = DownloadedSubtitle(id: 1, provider: "p", format: "pgs", releaseName: "r")
         XCTAssertTrue(pgs.streamURLExtension == ".sup")
         let nilDescriptor = pgs.synthesizedDescriptor(
-            sessionId: "s", baseTrackCount: 0, position: 0, resolveURL: { (_: String) -> URL? in nil }
+            sessionId: "11111111-1111-4111-8111-111111111111", executorReference: "signed-proof", baseTrackCount: 0, position: 0, resolveURL: { (_: String) -> URL? in nil }
         )
         XCTAssertNil(nilDescriptor)
     }

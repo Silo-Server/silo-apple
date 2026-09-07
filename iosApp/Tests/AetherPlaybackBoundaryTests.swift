@@ -267,6 +267,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    func testV2SubtitleAndFontsRequireExactSessionAndExecutorReference() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        for tail in ["2.vtt?st=opaque%2Bproof&file_id=42&downloaded_subtitle_id=7", "2/fonts?st=opaque&file_id=42"] {
+            let raw = "/api/v2/stream/\(id)/subtitles/" + tail
+            let result = try XCTUnwrap(StreamRequest.resolve(rawURL: raw, serverURL: "https://server.example",
+                additionalHeaders: [:], accessToken: "owner", requiresHeaderAuthenticatedMedia: true, apiV2SessionId: id))
+            XCTAssertEqual(result.url.absoluteString, "https://server.example" + raw)
+            XCTAssertEqual(result.headers["Authorization"], "Bearer owner")
+        }
+        for tail in ["2.vtt", "2.vtt?st=", "2.vtt?st=a&st=b", "2.vtt?st=a&token=b",
+                     "2.vtt?st=a&file_id=-1", "2.vtt?st=a&file_id=1&file_id=2", "../2.vtt?st=a", "2.vtt?st=a#fragment", ""] {
+            XCTAssertNil(StreamRequest.resolve(rawURL: "/api/v2/stream/\(id)/subtitles/" + tail,
+                serverURL: "https://server.example", additionalHeaders: [:], accessToken: "owner",
+                requiresHeaderAuthenticatedMedia: true, apiV2SessionId: id))
+        }
+        XCTAssertNil(StreamRequest.resolve(rawURL: "/api/v2/stream/22222222-2222-4222-8222-222222222222/subtitles/2.vtt?st=a",
+            serverURL: "https://server.example", additionalHeaders: [:], accessToken: "owner",
+            requiresHeaderAuthenticatedMedia: true, apiV2SessionId: id))
+    }
+
     func testHeaderAuthenticatedStreamAcceptsSubtitleArtifactIdentifiers() throws {
         for raw in [
             "/stream/session-1/subtitles/2.vtt?file_id=631745",

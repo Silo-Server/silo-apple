@@ -2755,7 +2755,8 @@ class PlayerViewModel {
                         serverURL: streamRequest.serverUrl,
                         additionalHeaders: [:],
                         accessToken: nil,
-                        requiresHeaderAuthenticatedMedia: true
+                        requiresHeaderAuthenticatedMedia: true,
+                        apiV2SessionId: prepared.session.sessionId
                     )?.url
                 },
                 apiOriginURL: URL(string: streamRequest.serverUrl),
@@ -5525,6 +5526,7 @@ class PlayerViewModel {
             guard let context = makeSubtitleHandoffContext(),
                   let descriptor = downloaded[position].synthesizedDescriptor(
                       sessionId: context.sessionId,
+                      executorReference: context.executorReference,
                       baseTrackCount: context.baseTrackCount,
                       position: position,
                       resolveURL: context.resolveURL
@@ -5566,15 +5568,20 @@ class PlayerViewModel {
             return nil
         }
         let serverUrl = resolvedServerUrl
-        guard let inventory = activePreparedProtocolV3?.plan.subtitle.inventory else {
+        guard let plan = activePreparedProtocolV3?.plan,
+              let reference = StreamRequest.v2ExecutorReference(rawURL: plan.stream.url, sessionID: sessionId) else {
             Self.logger.warning("[AI-SUB] no V3 subtitle inventory for subtitle handoff")
             return nil
         }
-        let baseTrackCount = Self.protocolV3DownloadedSubtitleBaseTrackCount(inventory)
+        let baseTrackCount = Self.protocolV3DownloadedSubtitleBaseTrackCount(plan.subtitle.inventory)
         return SubtitleAIController.HandoffContext(
             sessionId: sessionId,
+            executorReference: reference,
             baseTrackCount: baseTrackCount,
-            resolveURL: { [weak self] path in self?.resolveServerUrl(path, serverUrl: serverUrl) }
+            resolveURL: { path in
+                StreamRequest.resolve(rawURL: path, serverURL: serverUrl, additionalHeaders: [:], accessToken: nil,
+                    requiresHeaderAuthenticatedMedia: true, apiV2SessionId: sessionId)?.url
+            }
         )
     }
 

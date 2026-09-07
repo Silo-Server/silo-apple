@@ -153,6 +153,7 @@ final class SubtitleAIController {
     /// URL against the active server base.
     struct HandoffContext {
         let sessionId: String
+        let executorReference: String
         let baseTrackCount: Int
         let resolveURL: (String) -> URL?
     }
@@ -690,6 +691,7 @@ final class SubtitleAIController {
 
             guard let descriptor = downloaded[position].synthesizedDescriptor(
                 sessionId: context.sessionId,
+                executorReference: context.executorReference,
                 baseTrackCount: context.baseTrackCount,
                 position: position,
                 resolveURL: context.resolveURL

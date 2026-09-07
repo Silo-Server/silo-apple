@@ -117,7 +117,8 @@ final class SubtitleAIControllerTests: XCTestCase {
             liveCoordinator: coordinator,
             handoffContext: {
                 SubtitleAIController.HandoffContext(
-                    sessionId: "sess-1",
+                    sessionId: "11111111-1111-4111-8111-111111111111",
+                    executorReference: "signed-proof",
                     baseTrackCount: 3,
                     resolveURL: { path in URL(string: "https://host\(path)") }
                 )

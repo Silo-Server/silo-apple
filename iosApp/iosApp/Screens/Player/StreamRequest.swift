@@ -76,15 +76,7 @@ struct StreamRequest {
             isAuthorizedMediaOrigin = true
         } else if requiresHeaderAuthenticatedMedia, raw.hasPrefix("/api/v2/") {
             guard let sessionId = apiV2SessionId,
-                  UUID(uuidString: sessionId) != nil,
-                  let components = URLComponents(string: raw),
-                  components.fragment == nil,
-                  ["/api/v2/stream/\(sessionId)",
-                   "/api/v2/playback/transcode/\(sessionId)/master.m3u8"].contains(components.percentEncodedPath),
-                  let items = components.queryItems,
-                  items.count == 1,
-                  items[0].name == "st",
-                  let signature = items[0].value, !signature.isEmpty,
+                  Self.v2ExecutorReference(rawURL: raw, sessionID: sessionId) != nil,
                   let resolved = URL(string: normalizedServer + raw) else { return nil }
             // Validate without rebuilding the server-issued path or query.
             // The signed executor reference is opaque and bound to this session.
@@ -131,6 +123,39 @@ struct StreamRequest {
             headers["Authorization"] = "Bearer \(accessToken)"
         }
         return StreamRequest(url: resolvedURL, headers: headers, serverUrl: normalizedServer)
+    }
+
+    /// The executor reference is opaque. Accept only a bound v2 media or subtitle path;
+    /// preserve the server-issued bytes rather than interpreting or signing the reference.
+    static func v2ExecutorReference(rawURL: String, sessionID: String) -> String? {
+        guard UUID(uuidString: sessionID) != nil,
+              let url = URLComponents(string: rawURL), url.scheme == nil, url.host == nil,
+              url.fragment == nil, let items = url.queryItems else { return nil }
+        let path = url.percentEncodedPath
+        let media = ["/api/v2/stream/\(sessionID)", "/api/v2/playback/transcode/\(sessionID)/master.m3u8"].contains(path)
+        let subtitlePrefix = "/api/v2/stream/\(sessionID)/subtitles/"
+        let subtitle: Bool
+        if path.hasPrefix(subtitlePrefix) {
+            let tail = String(path.dropFirst(subtitlePrefix.count))
+            let track = tail.hasSuffix("/fonts") ? String(tail.dropLast(6)) : tail
+            guard !track.isEmpty else { return nil }
+            let parts = track.split(separator: ".", omittingEmptySubsequences: false)
+            subtitle = (parts.count == 1 || (parts.count == 2 && ["vtt", "ass", "ssa", "srt", "sup"].contains(String(parts[1]))))
+                && Self.isNonNegativeInteger(String(parts[0]))
+        } else { subtitle = false }
+        guard media || subtitle else { return nil }
+        var names = Set<String>()
+        var reference: String?
+        for item in items {
+            guard names.insert(item.name).inserted, let value = item.value, !value.isEmpty else { return nil }
+            switch item.name {
+            case "st": reference = value
+            case "file_id", "downloaded_subtitle_id":
+                guard subtitle, Self.isNonNegativeInteger(value) else { return nil }
+            default: return nil
+            }
+        }
+        return reference
     }
 
     /// The absolute form `authorized_media_origins_v1` permits. The server may
