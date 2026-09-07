@@ -1364,13 +1364,13 @@ struct APIv2Client: Sendable {
     // MARK: Initial playback
 
     func playbackRequest(method: String, suffix: String, body: Data? = nil,
-                         auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+                         auth: CapturedOrdinaryRequestAuth, query: [String: String] = [:]) async throws -> HTTPRawResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
         let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
             profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
         return try await mapErrors {
-            try await http.requestData(method: method, path: "/api/v2/playback" + suffix, body: body,
+            try await http.requestData(method: method, path: "/api/v2/playback" + suffix, query: query, body: body,
                 requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
         }
     }

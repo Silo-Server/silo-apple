@@ -14,6 +14,10 @@ final class AudioPlayerViewModel {
 
     private let mutationCoordinator = PlaybackMutationCoordinator.shared
     private var sequencedSessionIDs: Set<String> = []
+    private var manifest: APIv2PlaybackManifest?
+    private var manifestAuth: CapturedDurableAccountAuth?
+    private var manifestCapability: APIv2PlaybackCapabilities?
+    private var transitioning = false
     private let engine = AetherAudioPlaybackController()
     private let nowPlaying = AudioNowPlayingCoordinator()
     private var syncTask: Task<Void, Never>?
@@ -108,16 +112,25 @@ final class AudioPlayerViewModel {
                 await closePlayback()
             }
             guard generation == startGeneration else { return }
-            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
+            let captured = try await mutationCoordinator.captureStartAuth()
+            guard let owner = captured.durable else { throw PlaybackSequencedError.authorityChanged }
+            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId, auth: captured.request)
             guard generation == startGeneration else {
                 // A newer start() superseded this request while the
                 // item-detail load was in flight; abandon it so the older,
                 // slower response cannot overwrite the newer book's context.
                 return
             }
-            guard let context = AudiobookPlaybackContext(detail: detail) else {
+            guard let anchor = AudiobookPlaybackContext.audioParts(of: detail).first else {
                 throw APIError.unsupportedMedia("No playable audio track is available.")
             }
+            let manifest = try await mutationCoordinator.discoverTimeline(fileID: anchor.fileId,
+                itemID: contentId, auth: owner, capability: captured.capability)
+            guard generation == startGeneration else { return }
+            let context = try AudiobookPlaybackContext(detail: detail, manifest: manifest)
+            self.manifest = manifest
+            manifestAuth = owner
+            manifestCapability = captured.capability
             self.context = context
             duration = context.totalDurationSeconds
             currentTime = clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds))
@@ -142,7 +155,7 @@ final class AudioPlayerViewModel {
     }
 
     func play() {
-        guard context != nil else { return }
+        guard context != nil, activeSession != nil, !transitioning else { return }
         engine.setRate(playbackRate, shouldResume: true)
         pushNowPlaying()
     }
@@ -200,7 +213,7 @@ final class AudioPlayerViewModel {
 
     func setPlaybackRate(_ rate: Double) {
         playbackRate = min(max(rate, 0.5), 3.0)
-        engine.setRate(playbackRate, shouldResume: isPlaying)
+        engine.setRate(playbackRate, shouldResume: isPlaying && activeSession != nil && !transitioning)
         pushNowPlaying()
     }
 
@@ -217,7 +230,9 @@ final class AudioPlayerViewModel {
         let closedContext = context
         let closedSession = activeSession
         let position = currentTime
-        let total = duration
+        let localPosition = closedContext?.tracks.first(where: { $0.index == activeTrackIndex }).map {
+            AudioPlaybackTimeline.localTime(for: position, in: $0)
+        }
         loadingEngineEpoch = nil
         activeEngineEpoch = nil
         engine.stop()
@@ -234,22 +249,13 @@ final class AudioPlayerViewModel {
         currentTime = 0
         duration = 0
         palette = .fallback
-        if let closedContext {
-            do {
-                try await SiloAPI.shared.syncProgress(
-                    mediaItemId: closedContext.contentId,
-                    position: position,
-                    duration: total,
-                    forceOverwrite: true
-                )
-            } catch {
-                logger.warning(
-                    "final audiobook sync failed for \(closedContext.contentId, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
-                )
-            }
-        }
+        manifest = nil
+        manifestAuth = nil
+        manifestCapability = nil
         if let closedSession {
-            await stopPlaybackSession(closedSession, reason: "audio player closed")
+            do {
+                try await stopAllocatedSession(id: closedSession.sessionId, position: localPosition)
+            } catch { handlePlaybackError(error) }
         }
     }
 
@@ -276,6 +282,9 @@ final class AudioPlayerViewModel {
     }
 
     private func loadTrack(at globalTime: Double, autoplay: Bool) async throws {
+        guard !transitioning else { throw PlaybackSequencedError.invalidSession }
+        transitioning = true
+        defer { transitioning = false }
         guard let context,
               let index = AudioPlaybackTimeline.trackIndex(at: globalTime, tracks: context.tracks),
               let track = context.tracks.first(where: { $0.index == index }) else {
@@ -303,17 +312,21 @@ final class AudioPlayerViewModel {
         }
 
         if requiresNewSession {
-            // Keep the committed session/epoch installed while the next part
-            // is negotiated. A start failure occurs before Aether is touched,
-            // so the current part can remain the active truth instead of being
-            // retired speculatively.
-            let priorSession = activeSession
-            let started: StartedAudioSession
-            do {
-                started = try await startSession(for: track, localTime: localTime)
-            } catch {
-                throw error
+            // A successor may allocate only after the old part's exact terminal
+            // receipt. Unknown stop leaves the durable barrier in place.
+            if let priorSession = activeSession {
+                engine.pause()
+                let priorTrack = context.tracks.first { $0.index == activeTrackIndex }
+                let finalPosition = priorTrack.map { AudioPlaybackTimeline.localTime(for: currentTime, in: $0) }
+                activeSession = nil
+                activeTrackIndex = nil
+                activeTimeline = nil
+                activeEngineEpoch = nil
+                engine.stop()
+                try await stopAllocatedSession(id: priorSession.sessionId, position: finalPosition)
+                try requireCurrentLoad(generation)
             }
+            let started = try await startSession(for: track, localTime: localTime)
             var candidateEngineEpoch: AetherAudioPlaybackController.LoadEpoch?
             do {
                 try requireCurrentLoad(generation)
@@ -353,15 +366,6 @@ final class AudioPlayerViewModel {
                             forPlayerTime: started.session.position
                         )
                 didLoadNewTrack = true
-                if let priorSession,
-                   priorSession.sessionId != started.session.sessionId {
-                    Task { [weak self] in
-                        await self?.stopPlaybackSession(
-                            priorSession,
-                            reason: "successor audio track committed"
-                        )
-                    }
-                }
             } catch {
                 if let candidateEngineEpoch,
                    engine.activeLoadEpoch == candidateEngineEpoch {
@@ -374,27 +378,6 @@ final class AudioPlayerViewModel {
                     started.session,
                     reason: "candidate audio load did not become active"
                 )
-                // `AetherEngine.load` replaces the prior media before it probes
-                // the candidate, so once `beginLoad()` has run the old engine
-                // epoch can no longer resume and its session must be retired.
-                // Before that point the prior Aether load is untouched: if a
-                // newer seek superseded this one it is still playing against
-                // `priorSession`, so leave that session alive and let the newer
-                // load own it. Only when this load is still the current one —
-                // and therefore tears the player down below — does the prior
-                // session have to be released here.
-                let candidateReplacedEngineMedia = candidateEngineEpoch != nil
-                let failureTearsDownPlayer = generation == loadGeneration
-                if let priorSession,
-                   priorSession.sessionId != started.session.sessionId,
-                   candidateReplacedEngineMedia || failureTearsDownPlayer {
-                    await stopPlaybackSession(
-                        priorSession,
-                        reason: candidateReplacedEngineMedia
-                            ? "audio successor load failed after replacing prior media"
-                            : "audio successor load failed before touching prior media"
-                    )
-                }
                 resetEngineAfterLoadFailure(ifCurrent: generation)
                 throw error
             }
@@ -427,32 +410,23 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> StartedAudioSession {
-        let startAuth = try await mutationCoordinator.captureStartAuth()
-        let capturedPlaybackAuth = startAuth.durable
-        let initialCapability = startAuth.capability
-        guard let profileId = await TokenStore.shared.getProfileId(),
-              !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw PlaybackV3TerminalFailure(
-                reason: "profile_required",
-                message: "Select a profile before starting playback.",
-                retryable: false
-            )
+        guard let manifest, let capturedPlaybackAuth = manifestAuth,
+              let initialCapability = manifestCapability,
+              let profileId = capturedPlaybackAuth.request.profileId else {
+            throw PlaybackSequencedError.authorityChanged
         }
-
+        let binding = try manifest.binding(fileID: track.fileId)
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         let playbackAttemptId = "apple-audio:\(UUID().uuidString.lowercased())"
-        // Audiobook resume is a whole-item timeline stitched across files.
-        // The server keeps session-local progress for liveness, while the
-        // client owns durable resume/history through /sync/progress.
         let request = PlaybackV3StartRequest(
             protocolVersion: PlaybackProtocolV3.version,
-            clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures,
+            clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures + [APIv2PlaybackManifest.feature],
             fileId: track.fileId,
             profileId: profileId,
             playbackAttemptId: playbackAttemptId,
             qualityPreference: ApplePlaybackQuality.autoId,
             subtitleFidelityPreference: "preserve",
-            progressPersistence: "client",
+            progressPersistence: "client_bound",
             startPosition: localTime.isFinite ? max(0, localTime) : 0,
             audioTrackId: nil,
             audioTrackIndex: nil,
@@ -462,17 +436,11 @@ final class AudioPlayerViewModel {
             bandwidthEstimateKbps: nil,
             bandwidthCapKbps: nil,
             clientCapabilities: snapshot.capabilities,
-            clientPlaybackContext: snapshot.context
+            clientPlaybackContext: snapshot.context,
+            timelineId: manifest.timelineId
         )
-        let response: PlaybackV3DecisionResponse
-        do {
-            response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
-        } catch let error as HTTPError {
-            guard case .network = error else { throw error }
-            // Preserve the logical attempt identity across an ambiguous
-            // transport retry so the server replays instead of double-starting.
-            response = try await mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
-        }
+        let response = try await mutationCoordinator.startV2(request: request,
+            auth: capturedPlaybackAuth, capability: initialCapability, progressTimeline: binding)
 
         if let id = PlaybackSessionBridge.allocatedSessionId(in: response) {
             sequencedSessionIDs.insert(id)
@@ -552,12 +520,13 @@ final class AudioPlayerViewModel {
         }
     }
 
-    private func stopAllocatedSession(id: String) async throws {
-        if sequencedSessionIDs.contains(id) {
-            // Whole-book progress has its separate sink; stopping without a
-            // final local sample uses the last acknowledged file-local sample.
-            _ = try await mutationCoordinator.stop(sessionID: id, position: nil, isPaused: true)
-        } else { try await SiloAPI.shared.stopPlayback(sessionId: id) }
+    private func stopAllocatedSession(id: String, position: Double? = nil) async throws {
+        guard sequencedSessionIDs.contains(id),
+              try await mutationCoordinator.stop(sessionID: id, position: position, isPaused: true) else {
+            throw PlaybackV3TerminalFailure(reason: "audiobook_stop_unresolved",
+                message: "The previous audiobook part has not confirmed its stop. Resolve pending playback before starting another part.",
+                retryable: false)
+        }
     }
 
     private func stopPlaybackSession(
@@ -638,9 +607,8 @@ final class AudioPlayerViewModel {
         guard let context,
               let activeTrackIndex,
               let current = context.tracks.first(where: { $0.index == activeTrackIndex }) else { return }
-        let nextStart = current.startOffsetSeconds + current.durationSeconds + 0.01
-        if AudioPlaybackTimeline.trackIndex(at: nextStart, tracks: context.tracks) != activeTrackIndex,
-           nextStart < duration {
+        if let next = context.tracks.first(where: { $0.index == current.index + 1 }) {
+            let nextStart = next.startOffsetSeconds
             do {
                 try await loadTrack(at: nextStart, autoplay: true)
             } catch is CancellationError {
@@ -651,7 +619,11 @@ final class AudioPlayerViewModel {
         } else {
             currentTime = duration
             pushNowPlaying()
-            await syncNow()
+            if let session = activeSession {
+                activeSession = nil
+                do { try await stopAllocatedSession(id: session.sessionId, position: current.durationSeconds) }
+                catch { handlePlaybackError(error) }
+            }
         }
     }
 
@@ -666,46 +638,15 @@ final class AudioPlayerViewModel {
         }
     }
 
-    /// Two progress sinks, mirroring the web player: the playback session
-    /// gets the file-local position (admin activity + session keepalive;
-    /// never persisted because the session started with
-    /// `disable_progress_persistence`), and `/sync/progress` gets the
-    /// whole-book position that powers resume and Continue Listening.
+    /// The server maps this bound part-local sample to durable item progress.
     private func syncNow() async {
-        guard let context else { return }
-        if let session = activeSession,
-           let activeTrackIndex,
-           let track = context.tracks.first(where: { $0.index == activeTrackIndex }) {
-            do {
-                if sequencedSessionIDs.contains(session.sessionId) {
-                    try await mutationCoordinator.report(sessionID: session.sessionId,
-                        position: AudioPlaybackTimeline.localTime(for: currentTime, in: track), isPaused: !isPlaying)
-                } else {
-                    try await SiloAPI.shared.reportPlaybackProgress(
-                        sessionId: session.sessionId,
-                        report: ProgressReport(
-                            position: AudioPlaybackTimeline.localTime(for: currentTime, in: track),
-                            isPaused: !isPlaying
-                        )
-                    )
-                }
-            } catch {
-                logger.warning(
-                    "reportPlaybackProgress failed for session \(session.sessionId, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
-                )
-            }
-        }
+        guard !transitioning, let context, let session = activeSession,
+              let track = context.tracks.first(where: { $0.index == activeTrackIndex }) else { return }
         do {
-            try await SiloAPI.shared.syncProgress(
-                mediaItemId: context.contentId,
-                position: currentTime,
-                duration: duration,
-                forceOverwrite: true
-            )
+            try await mutationCoordinator.report(sessionID: session.sessionId,
+                position: AudioPlaybackTimeline.localTime(for: currentTime, in: track), isPaused: !isPlaying)
         } catch {
-            logger.warning(
-                "syncProgress failed for \(context.contentId, privacy: .public) at \(self.currentTime, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
-            )
+            logger.warning("Audiobook progress remains unresolved: \(MediaLogRedactor.sanitize(error), privacy: .public)")
         }
     }
 

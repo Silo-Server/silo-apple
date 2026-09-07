@@ -38,6 +38,7 @@ actor PlaybackMutationCoordinator {
     }
     private var stopIntents: [UUID: StopIntent] = [:]
     private var draining: Set<UUID> = []
+    private var restoredBoundSessions: Set<UUID> = []
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared, store: PlaybackMutationStore = .shared,
          retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(5), .seconds(5), .seconds(5), .seconds(5)],
@@ -50,11 +51,11 @@ actor PlaybackMutationCoordinator {
     }
 
     func register(sessionID: String, features: [String], auth: CapturedDurableAccountAuth,
-                  installationID: String? = nil, attemptID: String? = nil) async throws {
+                  installationID: String? = nil, attemptID: String? = nil, progressTimeline: APIv2ProgressTimeline? = nil) async throws {
         guard features.contains(PlaybackSequencedContract.feature) else { return }
         let authority = try PlaybackMutationAuthority(auth: auth, installationID: installationID)
         _ = try await currentAuth(authority)
-        let saved = try await store.register(sessionID: sessionID, authority: authority)
+        let saved = try await store.register(sessionID: sessionID, authority: authority, progressTimeline: progressTimeline)
         _ = try await currentAuth(authority)
         // A bare server session ID must never retarget an older bridge's
         // delayed callback to another account/profile/origin in this process.
@@ -88,18 +89,40 @@ actor PlaybackMutationCoordinator {
         return (request, durable, capability)
     }
 
+    func discoverTimeline(fileID: Int, itemID: String, auth: CapturedDurableAccountAuth,
+                          capability: APIv2PlaybackCapabilities) async throws -> APIv2PlaybackManifest {
+        guard capability.features.contains(APIv2PlaybackManifest.feature) else {
+            throw PlaybackV3TerminalFailure(reason: "bound_timeline_unsupported",
+                message: "Update the server to play audiobooks with API v2.", retryable: false)
+        }
+        let installation = try capability.requireAvailable()
+        let authority = try PlaybackMutationAuthority(auth: auth, installationID: installation)
+        let requestAuth = try await currentAuth(authority)
+        let manifest = try await api.v2.playbackManifest(fileID: fileID, installationID: installation,
+            itemID: itemID, auth: requestAuth)
+        _ = try await currentAuth(authority)
+        return manifest
+    }
+
     func startV2(request: PlaybackV3StartRequest, auth: CapturedDurableAccountAuth?,
-                 capability: APIv2PlaybackCapabilities) async throws -> PlaybackV3DecisionResponse {
+                 capability: APIv2PlaybackCapabilities, progressTimeline: APIv2ProgressTimeline? = nil) async throws -> PlaybackV3DecisionResponse {
         guard let auth else { throw PlaybackSequencedError.authorityChanged }
         let installation = try capability.requireAvailable()
         let authority = try PlaybackMutationAuthority(auth: auth, installationID: installation)
         guard request.profileId == authority.profileID else { throw PlaybackSequencedError.authorityChanged }
         _ = try await currentAuth(authority)
+        if request.progressPersistence == "client_bound" {
+            guard capability.features.contains(APIv2PlaybackManifest.feature),
+                  let progressTimeline, request.timelineId == progressTimeline.timelineId,
+                  String(request.fileId) == progressTimeline.fileId else { throw PlaybackSequencedError.invalidResponse }
+            try progressTimeline.validate()
+            try await store.requireTerminalBoundSessions(authority: authority)
+        } else if progressTimeline != nil || request.timelineId != nil { throw PlaybackSequencedError.invalidResponse }
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = [.sortedKeys]
         let body = try encoder.encode(APIv2PlaybackStartBody(request, installationID: installation))
-        let start = try await store.prepareStart(authority: authority, attemptID: request.playbackAttemptId, body: body)
+        let start = try await store.prepareStart(authority: authority, attemptID: request.playbackAttemptId, body: body, progressTimeline: progressTimeline)
         guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
         unresolvedStarts[start.id] = start
         await PlaybackStopNotices.shared.setPending(start.id, true)
@@ -137,12 +160,17 @@ actor PlaybackMutationCoordinator {
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: data)
         let sessionID = wire.sessionId ?? wire.playbackPlan?.sessionId
         if let sessionID {
+            guard wire.progressTimeline == start.progressTimeline else { throw PlaybackSequencedError.invalidResponse }
+            if let binding = start.progressTimeline {
+                guard wire.serverFeatures.contains(APIv2PlaybackManifest.feature),
+                      wire.playbackPlan?.effectiveMediaFileId == binding.fileId else { throw PlaybackSequencedError.invalidResponse }
+            }
             guard let durable = await tokens.captureDurableAccountAuth(),
                   try PlaybackMutationAuthority(auth: durable, installationID: start.authority.installationID) == start.authority else {
                 throw PlaybackSequencedError.authorityChanged
             }
             try await register(sessionID: sessionID, features: [PlaybackSequencedContract.feature], auth: durable,
-                installationID: start.authority.installationID, attemptID: start.attemptID)
+                installationID: start.authority.installationID, attemptID: start.attemptID, progressTimeline: start.progressTimeline)
             if retire { _ = try await stop(sessionID: sessionID, position: nil, isPaused: true) }
         } else if wire.outcome != "adaptation_unavailable" { throw PlaybackSequencedError.invalidResponse }
         // A known session is now independently journaled, even if local plan
@@ -175,8 +203,14 @@ actor PlaybackMutationCoordinator {
                 }
             }
             for session in try await store.pendingStops(authority: authority, afterRestart: true) {
+                // A live player or resolving allocation owns its session. Only
+                // an abandoned bound session gets an explicit stop-recovery notice.
+                if session.stop == nil {
+                    guard contexts[session.sessionID] == nil, resolvingStarts.isEmpty else { continue }
+                    restoredBoundSessions.insert(session.id)
+                }
                 try await register(sessionID: session.sessionID, features: [PlaybackSequencedContract.feature], auth: auth,
-                    installationID: authority.installationID)
+                    installationID: authority.installationID, progressTimeline: session.progressTimeline)
                 await PlaybackStopNotices.shared.setPending(session.id, true)
             }
         } catch { /* Unknown or changed authority remains quarantined. */ }
@@ -368,7 +402,7 @@ actor PlaybackMutationCoordinator {
         }
         for context in Array(contexts.values) {
             guard !justResolved.contains(context.sessionID) else { continue }
-            if stopIntents[context.recordID] != nil {
+            if stopIntents[context.recordID] != nil || restoredBoundSessions.contains(context.recordID) {
                 _ = try? await stop(sessionID: context.sessionID, position: nil, isPaused: true)
                 continue
             }

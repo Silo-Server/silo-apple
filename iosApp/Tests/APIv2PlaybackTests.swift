@@ -92,6 +92,101 @@ final class APIv2PlaybackTests: XCTestCase {
         return (PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: []), tokens, auth, api, store)
     }
 
+    private func boundContract() throws -> (APIv2PlaybackCapabilities, APIv2ProgressTimeline, PlaybackV3StartRequest) {
+        var caps = try XCTUnwrap(JSONSerialization.jsonObject(with: fixtureData("playback_capability_available")) as? [String: Any])
+        caps["features"] = (caps["features"] as? [String] ?? []) + [APIv2PlaybackManifest.feature]
+        let capData = try JSONSerialization.data(withJSONObject: caps)
+        let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackCapabilities.self, from: capData)
+        let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64),
+            mediaItemId: "book", fileId: "42", partOffsetSeconds: 60, partDurationSeconds: 30, durationSeconds: 90)
+        var decision = try XCTUnwrap(JSONSerialization.jsonObject(with: fixtureData("playback_start_opaque_ids")) as? [String: Any])
+        decision["server_features"] = (decision["server_features"] as? [String] ?? []) + [APIv2PlaybackManifest.feature]
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
+        decision["progress_timeline"] = try JSONSerialization.jsonObject(with: encoder.encode(binding))
+        V2PlaybackProtocol.configure(capability: capData, decision: try JSONSerialization.data(withJSONObject: decision))
+        let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
+        let start = PlaybackV3StartRequest(protocolVersion: 3,
+            clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures + [APIv2PlaybackManifest.feature],
+            fileId: 42, profileId: "profile", playbackAttemptId: "audio:bound", qualityPreference: "auto",
+            subtitleFidelityPreference: "preserve", progressPersistence: "client_bound", startPosition: 12,
+            audioTrackId: nil, audioTrackIndex: nil, subtitleTrackId: nil, subtitleTrackIndex: nil,
+            metered: false, bandwidthEstimateKbps: nil, bandwidthCapKbps: nil,
+            clientCapabilities: snapshot.capabilities, clientPlaybackContext: snapshot.context, timelineId: binding.timelineId)
+        return (capability, binding, start)
+    }
+
+    func testBoundDiscoveryUsesInstallationAndCapturedProfile() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let (capability, binding, _) = try boundContract()
+        let result = try await owner.discoverTimeline(fileID: 42, itemID: "book", auth: auth, capability: capability)
+        XCTAssertEqual(result.timelineId, binding.timelineId)
+        XCTAssertEqual(result.parts.map(\.fileId), [43.description, 42.description])
+        let read = try XCTUnwrap(V2PlaybackProtocol.requests().first { $0.0.url?.path.contains("/timelines/") == true })
+        XCTAssertEqual(read.0.httpMethod, "GET")
+        XCTAssertEqual(URLComponents(url: try XCTUnwrap(read.0.url), resolvingAgainstBaseURL: false)?.queryItems,
+            [URLQueryItem(name: "installation_id", value: try capability.requireAvailable())])
+        XCTAssertEqual(read.0.value(forHTTPHeaderField: "X-Profile-Id"), "profile")
+    }
+
+    func testBoundStartPersistsExactDigestAndStopMustTerminalizeBeforeNextAttempt() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let (capability, binding, start) = try boundContract()
+        let response = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding)
+        XCTAssertEqual(response.progressTimeline, binding)
+        let id = try XCTUnwrap(response.sessionId ?? response.playbackPlan?.sessionId)
+        V2PlaybackProtocol.stopStatus(202)
+        let stopped = try await owner.stop(sessionID: id, position: nil, isPaused: true)
+        XCTAssertFalse(stopped)
+        do {
+            _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding)
+            XCTFail("Draining part must hold successor")
+        } catch {}
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }.count, 1)
+        V2PlaybackProtocol.stopStatus(200)
+        let terminal = try await owner.stop(sessionID: id, position: 29, isPaused: false)
+        XCTAssertTrue(terminal)
+        let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: starts[0].1) as? [String: Any])
+        XCTAssertEqual(body["progress_persistence"] as? String, "client_bound")
+        XCTAssertEqual(body["timeline_id"] as? String, binding.timelineId)
+        XCTAssertEqual(body["start_position"] as? Double, 12)
+        let stops = V2PlaybackProtocol.requests().filter { $0.0.httpMethod == "DELETE" }
+        XCTAssertEqual(stops[0].1, stops[1].1)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: stops[0].1) as? [String: Any])?["timeline_id"] as? String, binding.timelineId)
+        XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.url?.path.contains("/api/v1") == true })
+    }
+
+    func testRestoredBoundSessionRequiresExplicitStopAndLiveOwnerIsNotRetired() async throws {
+        let (owner, tokens, auth, api, store) = try await fixture()
+        let (capability, binding, start) = try boundContract()
+        _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding)
+        await owner.restorePending()
+        await owner.retryPendingStops()
+        XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" })
+        let restored = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
+        await restored.restorePending()
+        XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" })
+        await restored.retryPendingStops()
+        let stop = try XCTUnwrap(V2PlaybackProtocol.requests().first { $0.0.httpMethod == "DELETE" })
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: stop.1) as? [String: Any])
+        XCTAssertEqual(body["timeline_id"] as? String, binding.timelineId)
+        XCTAssertNil(body["position"])
+    }
+
+    func testBoundStartMismatchRetainsExactUncertainIntentWithoutNewDispatch() async throws {
+        let (owner, _, auth, _, store) = try await fixture()
+        let (capability, binding, start) = try boundContract()
+        let wrong = APIv2ProgressTimeline(timelineId: binding.timelineId, mediaItemId: "book", fileId: "42",
+            partOffsetSeconds: 0, partDurationSeconds: 30, durationSeconds: 90)
+        do { _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: wrong); XCTFail() } catch {}
+        let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability.requireAvailable())
+        let pending = try await store.pendingStarts(authority: authority)
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.progressTimeline, wrong)
+        do { _ = try await owner.startV2(request: start, auth: auth, capability: capability, progressTimeline: binding); XCTFail() } catch {}
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }.count, 1)
+    }
+
     func testUncertainStartRestartBlocksNewAttemptAndExplicitRetryStopsWithoutAutoplay() async throws {
         let (owner, tokens, auth, api, store) = try await fixture()
         V2PlaybackProtocol.startFails(true)
@@ -471,6 +566,12 @@ private final class V2PlaybackProtocol: URLProtocol {
             let input = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
             status = 202
             output = try! JSONSerialization.data(withJSONObject: ["event_id": input["event_id"]!, "outcome": "accepted"])
+        } else if request.url!.path.contains("/timelines/") {
+            let caps = try! JSONSerialization.jsonObject(with: state.0) as! [String: Any]
+            output = try! JSONSerialization.data(withJSONObject: ["installation_id": caps["installation_id"]!,
+                "timeline_id": String(repeating: "a", count: 64), "media_item_id": "book", "edition_id": "edition",
+                "duration_seconds": 90, "parts": [["file_id": "43", "offset_seconds": 0, "duration_seconds": 60],
+                    ["file_id": "42", "offset_seconds": 60, "duration_seconds": 30]]])
         } else if request.url!.path.hasSuffix("/capabilities") { output = state.0 }
         else if request.url!.path.hasSuffix("/start") {
             let hook = Self.lock.withLock { let hook = Self.startHook; Self.startHook = nil; return hook }

@@ -9,42 +9,51 @@ struct PlaybackSequencedSample: Codable, Equatable, Sendable {
     let sequence: Int64
     let position: Double
     let isPaused: Bool
+    let timelineId: String?
+    let itemPosition: Double?
 
-    init(sequence: Int64, position: Double, isPaused: Bool) throws {
+    init(sequence: Int64, position: Double, isPaused: Bool, timelineId: String? = nil, itemPosition: Double? = nil) throws {
         guard sequence > 0, position.isFinite, position >= 0 else { throw PlaybackSequencedError.invalidSample }
         self.sequence = sequence
         self.position = position
         self.isPaused = isPaused
+        self.timelineId = timelineId
+        self.itemPosition = itemPosition
     }
 
-    enum CodingKeys: String, CodingKey { case sequence, position, isPaused = "is_paused" }
+    enum CodingKeys: String, CodingKey { case sequence, position, isPaused = "is_paused", timelineId = "timeline_id", itemPosition = "item_position" }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(sequence: values.decode(Int64.self, forKey: .sequence),
-            position: values.decode(Double.self, forKey: .position), isPaused: values.decode(Bool.self, forKey: .isPaused))
+            position: values.decode(Double.self, forKey: .position), isPaused: values.decode(Bool.self, forKey: .isPaused),
+            timelineId: values.decodeIfPresent(String.self, forKey: .timelineId),
+            itemPosition: values.decodeIfPresent(Double.self, forKey: .itemPosition))
     }
 }
 
 struct PlaybackSequencedStop: Codable, Equatable, Sendable {
     let stopID: UUID
     let sample: PlaybackSequencedSample?
+    let timelineId: String?
 
-    enum CodingKeys: String, CodingKey { case stopID = "stop_id", sequence, position, isPaused = "is_paused" }
+    enum CodingKeys: String, CodingKey { case stopID = "stop_id", sequence, position, isPaused = "is_paused", timelineId = "timeline_id" }
 
-    init(stopID: UUID, sample: PlaybackSequencedSample?) {
+    init(stopID: UUID, sample: PlaybackSequencedSample?, timelineId: String? = nil) {
         self.stopID = stopID
         self.sample = sample
+        self.timelineId = timelineId ?? sample?.timelineId
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        timelineId = try values.decodeIfPresent(String.self, forKey: .timelineId)
         stopID = try values.decode(UUID.self, forKey: .stopID)
         let sequence = try values.decodeIfPresent(Int64.self, forKey: .sequence)
         let position = try values.decodeIfPresent(Double.self, forKey: .position)
         let paused = try values.decodeIfPresent(Bool.self, forKey: .isPaused)
         if let sequence, let position, let paused {
-            sample = try PlaybackSequencedSample(sequence: sequence, position: position, isPaused: paused)
+            sample = try PlaybackSequencedSample(sequence: sequence, position: position, isPaused: paused, timelineId: timelineId)
         } else if sequence == nil && position == nil && paused == nil { sample = nil }
         else { throw PlaybackSequencedError.invalidSample }
     }
@@ -52,6 +61,7 @@ struct PlaybackSequencedStop: Codable, Equatable, Sendable {
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(stopID.uuidString.lowercased(), forKey: .stopID)
+        try values.encodeIfPresent(timelineId, forKey: .timelineId)
         if let sample {
             try values.encode(sample.sequence, forKey: .sequence)
             try values.encode(sample.position, forKey: .position)

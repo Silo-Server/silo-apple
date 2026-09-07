@@ -1,8 +1,6 @@
 import Foundation
 
-/// One audio part of a book on the whole-book timeline. Built client-side
-/// from `ItemDetail.versions`; the server's playback API only knows about
-/// individual files, so the global offsets exist purely in the client.
+/// One audio part of a book. Active playback uses server-issued offsets and durations.
 struct AudioPlaybackTrack: Identifiable, Hashable {
     let index: Int
     let fileId: Int
@@ -36,6 +34,38 @@ struct AudiobookPlaybackContext {
     let resumePositionSeconds: Double
     let tracks: [AudioPlaybackTrack]
     let chapters: [AudioPlaybackChapter]
+
+    init(detail: ItemDetail, manifest: APIv2PlaybackManifest) throws {
+        guard manifest.mediaItemId == detail.contentId else { throw PlaybackSequencedError.invalidResponse }
+        var tracks: [AudioPlaybackTrack] = []
+        var chapters: [AudioPlaybackChapter] = []
+        for (index, part) in manifest.parts.enumerated() {
+            guard let fileID = Int(part.fileId) else { throw PlaybackSequencedError.invalidResponse }
+            let metadata = detail.versions?.first { $0.fileId == fileID }
+                ?? FileVersion(fileId: fileID, fileName: nil, resolution: nil, codecVideo: nil,
+                    codecAudio: nil, hdr: nil, container: nil, fileSize: nil, duration: nil,
+                    bitrate: nil, videoTracks: nil, audioTracks: nil, subtitleTracks: nil, chapters: nil)
+            tracks.append(AudioPlaybackTrack(index: index, fileId: fileID, fileName: metadata.fileName,
+                version: metadata, durationSeconds: part.durationSeconds, startOffsetSeconds: part.offsetSeconds))
+            for chapter in metadata.chapters ?? [] where chapter.startSeconds.isFinite
+                && chapter.startSeconds >= 0 && chapter.startSeconds < part.durationSeconds {
+                chapters.append(AudioPlaybackChapter(index: chapter.index, title: chapter.title,
+                    startSeconds: part.offsetSeconds + chapter.startSeconds,
+                    endSeconds: chapter.endSeconds.flatMap {
+                        $0.isFinite && $0 >= chapter.startSeconds && $0 <= part.durationSeconds ? part.offsetSeconds + $0 : nil
+                    }, trackIndex: index))
+            }
+        }
+        contentId = detail.contentId
+        title = detail.title
+        subtitle = detail.audiobook?.authors.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ").nonEmpty
+        posterUrl = detail.posterUrl
+        totalDurationSeconds = manifest.durationSeconds
+        let resume = detail.userData?.positionSeconds ?? 0
+        resumePositionSeconds = resume.isFinite ? min(max(0, resume), manifest.durationSeconds) : 0
+        self.tracks = tracks
+        self.chapters = chapters.sorted { $0.startSeconds < $1.startSeconds }
+    }
 
     init?(detail: ItemDetail) {
         let parts = Self.audioParts(of: detail)
@@ -85,9 +115,8 @@ struct AudiobookPlaybackContext {
         self.chapters = chapters.sorted { $0.startSeconds < $1.startSeconds }
     }
 
-    /// The playable audio parts of an audiobook detail, in book order.
-    /// Shared with the detail screen so the "Parts"/"Chapters" lists there
-    /// match the player's timeline exactly.
+    /// Detail presentation and the edition anchor for discovery. This ordering
+    /// does not authorize active playback offsets or part transitions.
     static func audioParts(of detail: ItemDetail) -> [FileVersion] {
         (detail.versions ?? [])
             .filter { version in

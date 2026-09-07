@@ -19,6 +19,69 @@ final class PlaybackMutationStoreTests: XCTestCase {
         return (PlaybackMutationStore(url: url), authority, url, tokens)
     }
 
+    func testBoundReceiptKeepsUncertaintyUntilExactTimelineMappingMatches() async throws {
+        let (store, authority, url, _) = try await fixture(installation: "installation")
+        let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64),
+            mediaItemId: "book", fileId: "42", partOffsetSeconds: 60, partDurationSeconds: 30, durationSeconds: 90)
+        let session = try await store.register(sessionID: "bound", authority: authority, progressTimeline: binding)
+        let sent = try await store.prepareProgress(session.id, authority: authority, position: 0, isPaused: true)
+        XCTAssertEqual(sent.timelineId, binding.timelineId)
+        XCTAssertNil(sent.itemPosition)
+        let restarted = PlaybackMutationStore(url: url)
+        for (digest, global) in [(String(repeating: "b", count: 64), 60.0), (binding.timelineId, 0.0)] {
+            let accepted = try PlaybackSequencedSample(sequence: sent.sequence, position: 0, isPaused: true,
+                timelineId: digest, itemPosition: global)
+            do {
+                try await restarted.acknowledgeProgress(session.id, authority: authority, sent: sent,
+                    receipt: PlaybackSequencedProgressReceipt(outcome: .applied, accepted: accepted))
+                XCTFail("Foreign receipt must not clear pending progress")
+            } catch {}
+            let saved = try await restarted.session(session.id, authority: authority)
+            XCTAssertEqual(saved.pendingProgress, sent)
+        }
+        let accepted = try PlaybackSequencedSample(sequence: sent.sequence, position: 0, isPaused: true,
+            timelineId: binding.timelineId, itemPosition: 60)
+        try await restarted.acknowledgeProgress(session.id, authority: authority, sent: sent,
+            receipt: PlaybackSequencedProgressReceipt(outcome: .applied, accepted: accepted))
+        let saved = try await restarted.session(session.id, authority: authority)
+        XCTAssertNil(saved.pendingProgress)
+        XCTAssertEqual(saved.accepted?.itemPosition, 60)
+    }
+
+    func testBoundStopWithoutSampleRetainsDigestAndBlocksSuccessorUntilTerminalAcrossRestart() async throws {
+        let (store, authority, url, _) = try await fixture(installation: "installation")
+        let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64),
+            mediaItemId: "book", fileId: "42", partOffsetSeconds: 0, partDurationSeconds: 30, durationSeconds: 90)
+        let session = try await store.register(sessionID: "bound", authority: authority, progressTimeline: binding)
+        let stop = try await store.prepareStop(session.id, authority: authority, position: nil, isPaused: true)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: SiloAPI.playbackMutationBody(stop)) as? [String: Any])
+        XCTAssertEqual(body["timeline_id"] as? String, binding.timelineId)
+        XCTAssertNil(body["position"])
+        let restarted = PlaybackMutationStore(url: url)
+        do { try await restarted.requireTerminalBoundSessions(authority: authority); XCTFail() } catch {}
+        let retry = try await restarted.prepareStop(session.id, authority: authority, position: 29, isPaused: false)
+        XCTAssertEqual(try SiloAPI.playbackMutationBody(stop), try SiloAPI.playbackMutationBody(retry))
+        try await restarted.acknowledgeStop(session.id, authority: authority, sent: stop,
+            receipt: PlaybackSequencedStopReceipt(outcome: .draining, stopId: stop.stopID, accepted: nil, historyId: nil))
+        do { try await restarted.requireTerminalBoundSessions(authority: authority); XCTFail() } catch {}
+        try await restarted.acknowledgeStop(session.id, authority: authority, sent: stop,
+            receipt: PlaybackSequencedStopReceipt(outcome: .stopped, stopId: stop.stopID, accepted: nil, historyId: nil))
+        try await restarted.requireTerminalBoundSessions(authority: authority)
+    }
+
+    func testBoundMappingCannotBeAttachedToLegacySession() async throws {
+        let (store, authority, url, _) = try await fixture(installation: "installation")
+        _ = try await store.register(sessionID: "legacy", authority: authority)
+        let original = try Data(contentsOf: url)
+        let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64),
+            mediaItemId: "book", fileId: "42", partOffsetSeconds: 0, partDurationSeconds: 30, durationSeconds: 30)
+        do {
+            _ = try await store.register(sessionID: "legacy", authority: authority, progressTimeline: binding)
+            XCTFail("Existing authority cannot acquire an inferred timeline")
+        } catch {}
+        XCTAssertEqual(original, try Data(contentsOf: url))
+    }
+
     func testBackwardSampleAndUncertainRetryPreserveExactSequenceAndBody() async throws {
         let (store, authority, _, _) = try await fixture()
         let session = try await store.register(sessionID: "session", authority: authority)

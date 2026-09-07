@@ -270,9 +270,9 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let playbackAttemptId: String
     let qualityPreference: String
     let subtitleFidelityPreference: String
-    /// `client` keeps session-local progress reporting active while leaving
-    /// durable resume/history ownership to the client (audiobook timeline).
-    /// Omission is the normal server-owned policy.
+    /// `client_bound` uses a server-issued whole-item timeline with local samples.
+    /// Omission is the normal server-owned policy. Historical `client` requests
+    /// remain decodable without acquiring a new timeline.
     let progressPersistence: String?
     let startPosition: Double?
     let audioTrackId: String?
@@ -284,6 +284,7 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let bandwidthCapKbps: Int?
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
+    var timelineId: String? = nil
 }
 
 struct PlaybackV3TrackIdentity: Codable, Equatable {
@@ -587,6 +588,7 @@ struct PlaybackV3DecisionResponse: Codable, Equatable {
     let sessionId: String?
     let playbackPlan: PlaybackV3Plan?
     let terminal: PlaybackV3Terminal?
+    var progressTimeline: APIv2ProgressTimeline? = nil
 }
 
 struct PlaybackV3CapabilityResponse: Codable, Equatable {

@@ -9,6 +9,7 @@ struct APIv2PlaybackStartBody: Codable {
     let playbackAttemptId: String
     let qualityPreference: String
     let subtitleFidelityPreference: String
+    let timelineId: String?
     let progressPersistence: String?
     let startPosition: Double?
     let audioTrackId: String?
@@ -30,6 +31,7 @@ struct APIv2PlaybackStartBody: Codable {
         playbackAttemptId = request.playbackAttemptId
         qualityPreference = request.qualityPreference
         subtitleFidelityPreference = request.subtitleFidelityPreference
+        timelineId = request.timelineId
         progressPersistence = request.progressPersistence
         startPosition = request.startPosition
         audioTrackId = request.audioTrackId
@@ -151,6 +153,7 @@ struct APIv2PlaybackDecision: Codable {
     let sessionId: String?
     let playbackPlan: APIv2PlaybackPlan?
     let terminal: PlaybackV3Terminal?
+    var progressTimeline: APIv2ProgressTimeline? = nil
 
     func legacy() throws -> PlaybackV3DecisionResponse {
         PlaybackV3DecisionResponse(
@@ -159,7 +162,7 @@ struct APIv2PlaybackDecision: Codable {
             outcome: outcome,
             sessionId: sessionId,
             playbackPlan: try playbackPlan?.legacy(),
-            terminal: terminal)
+            terminal: terminal, progressTimeline: progressTimeline)
     }
 }
 
