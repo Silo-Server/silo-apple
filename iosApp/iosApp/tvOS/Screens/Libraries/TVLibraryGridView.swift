@@ -106,9 +106,7 @@ struct TVLibraryGridView: View {
             }
             await viewModel.loadFacetsIfNeeded()
         }
-        .onAppear { noteShellFocusRequest(focusRequest) }
         .onDisappear { viewModel.cancelPosterPrefetch() }
-        .onChange(of: focusRequest) { _, request in noteShellFocusRequest(request) }
     }
 
     @ViewBuilder
@@ -197,6 +195,7 @@ struct TVLibraryGridView: View {
             }
             .padding(.bottom, 48)
         }
+        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: noteShellFocusRequest))
     }
 
     // MARK: - Focus routing

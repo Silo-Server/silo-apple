@@ -37,13 +37,12 @@ struct TVLibraryCollectionsView: View {
             }
             .padding(.bottom, SiloTheme.largePadding)
         }
+        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: noteShellFocusRequest))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             guard collectionSections.isEmpty else { return }
             await loadCollections()
         }
-        .onAppear { noteShellFocusRequest(focusRequest) }
-        .onChange(of: focusRequest) { _, request in noteShellFocusRequest(request) }
         .onChange(of: collectionSections.isEmpty) { _, isEmpty in
             if !isEmpty, hasPendingFocusClaim {
                 claimContentFocusIfReady()

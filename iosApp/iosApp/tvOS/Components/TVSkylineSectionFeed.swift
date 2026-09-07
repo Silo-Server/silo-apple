@@ -39,12 +39,6 @@ struct TVSkylineSectionFeed: View {
     /// Token handed only to row 1 when the shell explicitly enters content.
     /// It is never changed during ordinary row-to-row navigation.
     @State private var contentFocusToken = 0
-    /// Snaps the row band back to the first section before a focus claim.
-    /// The band clips rows outside the viewport, and tvOS refuses to focus a
-    /// clipped view — so when entry focus fires while the user is parked on a
-    /// lower row (e.g. re-clicking the current tab in the top menu), the first
-    /// card's claim silently no-ops unless the band is scrolled home first.
-    @State private var entryScrollToken = 0
     /// Entry tokens that arrived before any row mounted — sections load
     /// async, so the initial hand-down would land on nothing.
     @State private var pendingFocusRequest: Int?
@@ -52,8 +46,6 @@ struct TVSkylineSectionFeed: View {
     /// The row that owns card focus or its context-menu dismissal flow. Unlike
     /// the marquee preview, this is cleared when focus moves into chrome.
     @State private var focusRestorationOwnerSectionId: String?
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -113,43 +105,32 @@ struct TVSkylineSectionFeed: View {
                 visibleBandHeight - SiloTheme.Skyline.rowBandBottomInset
             )
 
-            ScrollViewReader { scrollProxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    // Bound the live view graph to nearby rows. Keeping the
-                    // entire feed mounted makes focus and scroll transactions
-                    // traverse offscreen card, image, and button subgraphs.
-                    // The native scroll container loads directional targets;
-                    // its viewport uses the corrected layout frames above.
-                    LazyVStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
-                        ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                            featuredRow(section, isFirstRow: index == 0)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .id(section.id)
-                        }
-                    }
-                    .scrollTargetLayout()
-                    // Allows the final row to top-align like every prior row,
-                    // with a blank preview area underneath instead of clamping.
-                    .padding(.bottom, trailingPreviewPadding)
-                }
-                .scrollTargetBehavior(.viewAligned)
-                // Row changes animate the band; the marquee holds its backdrop
-                // swap until the scroll settles so the two never composite in
-                // the same frames.
-                .onScrollPhaseChange { _, phase in
-                    marqueeModel.setBackdropDeferred(phase != .idle)
-                }
-                // Animated ride home; the first card's focus claim is
-                // re-asserted by MediaRow until the scroll settles, so the
-                // animation can't lose the claim to mid-flight focus repairs.
-                .onChange(of: entryScrollToken) { _, _ in
-                    if let firstId = sections.first?.id {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.slowDuration)) {
-                            scrollProxy.scrollTo(firstId, anchor: .top)
-                        }
+            ScrollView(.vertical, showsIndicators: false) {
+                // Bound the live view graph to nearby rows. Keeping the
+                // entire feed mounted makes focus and scroll transactions
+                // traverse offscreen card, image, and button subgraphs.
+                // The native scroll container loads directional targets;
+                // its viewport uses the corrected layout frames above.
+                LazyVStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
+                    ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                        featuredRow(section, isFirstRow: index == 0)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .id(section.id)
                     }
                 }
+                .scrollTargetLayout()
+                // Allows the final row to top-align like every prior row,
+                // with a blank preview area underneath instead of clamping.
+                .padding(.bottom, trailingPreviewPadding)
             }
+            .scrollTargetBehavior(.viewAligned)
+            // Row changes animate the band; the marquee holds its backdrop
+            // swap until the scroll settles so the two never composite in
+            // the same frames.
+            .onScrollPhaseChange { _, phase in
+                marqueeModel.setBackdropDeferred(phase != .idle)
+            }
+            .modifier(TVMenuEntryScroll(request: lastAppliedRequest, onReady: claimEntryFocus))
             .frame(width: proxy.size.width, height: visibleBandHeight, alignment: .topLeading)
             .clipped()
             .padding(.top, bandTop)
@@ -225,17 +206,14 @@ struct TVSkylineSectionFeed: View {
         if isTopMenuFocused { return }
         guard request != lastAppliedRequest else { return }
         lastAppliedRequest = request
-        guard let firstSectionId = sections.first?.id else { return }
+    }
+
+    private func claimEntryFocus(_ request: Int) {
+        guard !isTopMenuFocused,
+              lastAppliedRequest == request,
+              let firstSectionId = sections.first?.id else { return }
         focusRestorationOwnerSectionId = firstSectionId
-        // Scroll the band home first, then claim on the next turn: the claim
-        // is a @FocusState write on the first row's first card, which the
-        // engine drops while that card is still clipped out of the viewport.
-        entryScrollToken += 1
-        DispatchQueue.main.async {
-            guard !isTopMenuFocused,
-                  sections.first?.id == firstSectionId else { return }
-            contentFocusToken += 1
-        }
+        contentFocusToken += 1
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {

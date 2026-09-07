@@ -307,8 +307,6 @@ struct FavoritesView: View {
             await loadFavorites()
         }
         #if os(tvOS)
-        .onAppear { applyFocusRequest(focusRequest) }
-        .onChange(of: focusRequest) { _, request in applyFocusRequest(request) }
         .onChange(of: items.map(\.contentId)) { _, _ in applyFocusRequest(focusRequest) }
         #endif
     }
@@ -385,6 +383,7 @@ struct FavoritesView: View {
             .padding(.top, usesTVTopMenu ? TVTopMenuLayout.contentTopInset : 20)
             .padding(.bottom, SiloTheme.safePadding)
         }
+        .modifier(TVMenuEntryScroll(request: focusRequest, onReady: applyFocusRequest))
     }
 
     private var sectionSelector: some View {

@@ -13,6 +13,7 @@ struct CalendarView: View {
     @State private var viewModel = CalendarViewModel()
     @Environment(AppRouter.self) private var router
     #if os(tvOS)
+    @State private var entryFocusRequest = 0
     /// Focus hand-off for day selection: picking a day in the week strip
     /// scrolls to that day's shelf and kicks focus onto its first card.
     @State private var shelfFocusRequest = 0
@@ -199,7 +200,7 @@ struct CalendarView: View {
                         CalendarFilterBar(
                             selected: viewModel.filter,
                             onSelect: { viewModel.select(filter: $0) },
-                            focusRequest: focusRequest,
+                            focusRequest: entryFocusRequest,
                             onMoveUp: onTopMenuFocusRequest
                         )
 
@@ -227,6 +228,7 @@ struct CalendarView: View {
                 .padding(.top, TVTopMenuLayout.contentTopInset)
                 .padding(.bottom, SiloTheme.largePadding)
             }
+            .modifier(TVMenuEntryScroll(request: focusRequest) { entryFocusRequest = $0 })
         }
     }
     #endif

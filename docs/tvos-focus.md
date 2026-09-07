@@ -136,6 +136,23 @@ When closing a panel, choose the next owner explicitly:
 - Selecting a panel row closes, updates route/scope state, and then hands focus
   to the destination content.
 
+## Selecting a Page from the Top Menu
+
+Selecting Home, another tab, or a panel destination enters the page at its
+first row or top control, including when reselecting the current page after
+Menu/Back. Reset the vertical scroll position before forwarding the entry
+focus request. A row feed also resets its first row to the first card.
+
+Use `TVMenuEntryScroll` on the page's scroll view to reveal lazy entry controls
+without animation. Forward focus after scroll geometry reports the top and
+the entry row has had a layout pass. Animating a long scroll while claiming
+focus lets intermediate rows take focus and cancel the entry row's
+restoration ownership. Keep page identity and loaded data stable;
+a menu selection only resets scrolling and entry focus.
+
+Returning from a card's detail page still restores the launching card. Ordinary
+Up/Down navigation remains owned by the native focus engine.
+
 ## Debugging Checklist
 
 When tvOS focus feels random, capture logs for the ownership boundary first:
