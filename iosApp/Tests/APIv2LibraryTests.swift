@@ -317,6 +317,13 @@ final class APIv2LibraryTests: XCTestCase {
         let result = try await v2.catalogSeasons(seriesId: "series/a?b", imageSize: nil, auth: XCTUnwrap(current))
         XCTAssertTrue(result.isEmpty)
         XCTAssertEqual(LibraryReadProtocol.requests().last?.url?.absoluteString, "https://libraries.example/api/v2/catalog/series/series%2Fa%3Fb/seasons")
+        for includeArtwork in [false, true] {
+            LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":false}}"#.utf8)])
+            _ = try await v2.catalogSeasons(seriesId: "series/a?b", imageSize: nil,
+                includeArtwork: includeArtwork, auth: XCTUnwrap(current))
+            XCTAssertEqual(LibraryReadProtocol.requests().last?.url?.absoluteString,
+                "https://libraries.example/api/v2/catalog/series/series%2Fa%3Fb/seasons?include_artwork=\(includeArtwork)")
+        }
         LibraryReadProtocol.enqueue([Data(#"{"items":[],"page":{"has_more":false}}"#.utf8)])
         LibraryReadProtocol.beforeNextReply { await tokens.setProfileId("foreign") }
         do { _ = try await v2.catalogSeasons(seriesId: "series", imageSize: nil, auth: XCTUnwrap(current)); XCTFail("foreign receipt") } catch {}

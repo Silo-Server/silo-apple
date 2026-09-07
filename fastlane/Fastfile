@@ -145,9 +145,16 @@ end
 # product here. The resulting IPA is NOT installable as-is — it is meant to be
 # re-signed by the end user with their own certificate via AltStore, Sideloadly,
 # SideStore, etc. before sideloading. See docs/release/sideloading.md.
+def validate_subtitle_packaging(product)
+  script = File.expand_path("../scripts/ci/validate-subtitle-packaging.py", __dir__)
+  product_path = File.expand_path(product, File.expand_path("..", __dir__))
+  sh("python3", script, product_path)
+end
+
 def package_unsigned_ipa(archive_path:, app_name:, output_dir:, output_ipa:)
   app_path = "#{archive_path}/Products/Applications/#{app_name}.app"
   UI.user_error!("Expected app not found at #{app_path}") unless File.exist?(app_path)
+  validate_subtitle_packaging(app_path)
 
   # zip must run from output_dir so the archive root is Payload/, not an
   # absolute path. Rebuild Payload/ from scratch each run for idempotency.
@@ -203,6 +210,15 @@ def testflight_upload_config
     distribute_external: true,
     notify_external_testers: env_truthy?("TESTFLIGHT_NOTIFY_EXTERNAL_TESTERS", default: true),
   }
+end
+
+def testflight_changelog
+  changelog = ENV["TESTFLIGHT_CHANGELOG"] || `git log -1 --pretty=format:"%s"`.strip
+  source_url = ENV["SILO_RELEASE_SOURCE_URL"].to_s.strip
+  if testflight_distribution == "external" && source_url.empty?
+    UI.user_error!("Publish the matching release source archive and set SILO_RELEASE_SOURCE_URL before external TestFlight distribution.")
+  end
+  source_url.empty? ? changelog : "#{changelog}\n\nSource and rebuild instructions: #{source_url}"
 end
 
 # ── CI keychain teardown ──────────────────────────────────────────────────────
@@ -317,7 +333,7 @@ platform :ios do
     # Apple requires a "What to Test" note for every external group build.
     # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
     # falls back to the latest git commit subject when not set.
-    changelog       = ENV["TESTFLIGHT_CHANGELOG"] || `git log -1 --pretty=format:"%s"`.strip
+    changelog       = testflight_changelog
     ios_app_dir     = File.expand_path("../iosApp", __dir__)
     UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
 
@@ -406,6 +422,8 @@ platform :ios do
       }
     )
 
+    validate_subtitle_packaging("build/ios/Silo.ipa")
+
     upload_to_testflight(
       api_key:                 api_key,
       app_identifier:          app_id,
@@ -437,7 +455,7 @@ platform :ios do
     # Apple requires a "What to Test" note for every external group build.
     # Set TESTFLIGHT_CHANGELOG in CI variables for an explicit note;
     # falls back to the latest git commit subject when not set.
-    changelog       = ENV["TESTFLIGHT_CHANGELOG"] || `git log -1 --pretty=format:"%s"`.strip
+    changelog       = testflight_changelog
     ios_app_dir     = File.expand_path("../iosApp", __dir__)
     UI.message("TestFlight distribution: #{testflight_upload[:distribution]}")
 
@@ -526,6 +544,8 @@ platform :ios do
         }
       }
     )
+
+    validate_subtitle_packaging("build/tvos/SiloTV.ipa")
 
     upload_to_testflight(
       api_key:                 api_key,

@@ -89,6 +89,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// reserves a stable slot while an episode's playback detail is loading,
     /// so changing carousel focus never moves the persistent action row.
     let playbackSummary: TVPlaybackSelectionSummary
+    var showsPlaybackSummary = true
     /// A compact editorial header can retain the standard Movie backdrop
     /// geometry independently of its own layout height. Nil keeps both heights
     /// coupled, which is the default behavior for every other detail page.
@@ -242,6 +243,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             editorialPrimaryInformationColumn
             creditBlock
             TVPlaybackSelectionSummaryView(summary: playbackSummary)
+                .opacity(showsPlaybackSummary ? 1 : 0)
+                .accessibilityHidden(!showsPlaybackSummary)
         }
         .frame(maxWidth: editorialContentWidth, alignment: .leading)
     }
@@ -264,6 +267,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         VStack(alignment: .leading, spacing: creditSummarySpacing) {
             creditBlock
             TVPlaybackSelectionSummaryView(summary: playbackSummary)
+                .opacity(showsPlaybackSummary ? 1 : 0)
+                .accessibilityHidden(!showsPlaybackSummary)
                 .frame(
                     height: playbackSummaryReservedHeight,
                     alignment: .topLeading

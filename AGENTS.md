@@ -24,13 +24,17 @@ repo.
 ## Build, Test, and Development Commands
 
 - `cd iosApp && xcodegen generate` regenerates `Silo.xcodeproj` from `project.yml`; do this after target or source layout changes.
-- `cd iosApp && xcodebuild build -project Silo.xcodeproj -scheme Silo -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO` builds iOS without local signing.
+- Use the `mac-builder` skill's local simulator helper for iOS/tvOS build, boot,
+  install, launch, and verification. Reuse the task's established simulator and
+  preserve signing and keychain entitlements for authenticated runs.
 - Use scheme `SiloTV` with a tvOS simulator destination for tvOS builds.
 - Use scheme `SiloMac` with `platform=macOS` for macOS builds.
 
-Those commands assume a local Xcode. When developing from a Linux host, every Apple toolchain
-operation runs on the remote `mac-builder` Mac instead — read the `mac-builder` skill first, and
-`docs/mac-builder.md` for setup and background.
+Follow `mac-builder` host routing for local and remote builds. Simulator boot and
+reasonable build recovery are part of an authorized run; ask only for an ambiguous
+target or a change that would lose protected state. Unsigned compilation with
+`CODE_SIGNING_ALLOWED=NO` is compile-only evidence; do not install that artifact
+for an authenticated run. See `docs/mac-builder.md` for setup and background.
 
 ## Coding Style & Naming Conventions
 
@@ -43,7 +47,11 @@ manual directional focus mutation.
 
 ## Testing Guidelines
 
-Apple tests use XCTest under `iosApp/Tests/`. Do not add tests for small changes or UI changes unless requested. For shared logic changes, add focused tests only for critical or high-risk behavior.
+Apple tests use XCTest under `iosApp/Tests/`. Add focused regression tests when
+they meaningfully protect changed behavior; use rendered checks for visual changes.
+Avoid tests that only mirror wording or implementation. Run relevant checks while
+iterating and complete repository-required gates at their stated milestone.
+Broaden or repeat testing only for new changes, failures, or unresolved risks.
 
 ## Writing
 
@@ -70,8 +78,8 @@ including the exact model identifier, agent harness, and any other AI tooling.
 Include repository-required issue links, validation evidence, risks, and
 follow-up work.
 
-- Keep one concern per pull request. If an honest description needs the word
-  "also," split the work.
+- Keep one concern per pull request. Split changes that solve independent
+  problems or can be reviewed and shipped separately.
 - Include before-and-after images for UI changes. Include a short video when
   motion or timing matters.
 - Upload pull request evidence to GitHub. Never commit PR-only assets such as

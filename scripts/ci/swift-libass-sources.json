@@ -1,0 +1,45 @@
+{
+  "swift_libass_revision": "6513c488e377a26c06db327fb2acfc2653a041d5",
+  "builder": {
+    "repository": "https://github.com/mihai8804858/ffmpeg-kit",
+    "revision": "a1898a49b6405228a708103e6347f987452bcc21"
+  },
+  "libraries": [
+    {
+      "name": "fontconfig",
+      "repository": "https://github.com/arthenica/fontconfig",
+      "tag": "2.15.0",
+      "revision": "72b9a48f57de6204d99ce1c217b5609ee92ece9b"
+    },
+    {
+      "name": "freetype",
+      "repository": "https://github.com/arthenica/freetype2",
+      "tag": "VER-2-13-2",
+      "revision": "920c5502cc3ddda88f6c7d85ee834ac611bb11cc"
+    },
+    {
+      "name": "fribidi",
+      "repository": "https://github.com/arthenica/fribidi",
+      "tag": "v1.0.14",
+      "revision": "bca04dc3cd3af85a9d9220c430737333634d622a"
+    },
+    {
+      "name": "harfbuzz",
+      "repository": "https://github.com/arthenica/harfbuzz",
+      "tag": "8.5.0",
+      "revision": "30485ee8c3d43c553afb9d78b9924cb71c8d2f19"
+    },
+    {
+      "name": "libpng",
+      "repository": "https://github.com/arthenica/libpng",
+      "tag": "v1.6.43",
+      "revision": "ed217e3e601d8e462f7fd1e04bed43ac42212429"
+    },
+    {
+      "name": "libass",
+      "repository": "https://github.com/libass/libass",
+      "tag": "0.17.3",
+      "revision": "e46aedea0a0d17da4c4ef49d84b94a7994664ab5"
+    }
+  ]
+}

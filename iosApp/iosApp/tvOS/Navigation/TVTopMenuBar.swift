@@ -1030,8 +1030,6 @@ struct TVForYouDropdown: View {
             actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
             actionButton("Recommendations", systemImage: "sparkles", id: .recommendations, action: onRecommendations)
                 .modifier(TVDropdownBoundaryMoveHandler(onMoveUp: nil, onMoveDown: onExitToContent))
-
-            panelFooter
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: SiloTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -1051,27 +1049,6 @@ struct TVForYouDropdown: View {
             .padding(.top, 8)
             .padding(.bottom, 2)
             .accessibilityHidden(true)
-    }
-
-    private var panelFooter: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Rectangle()
-                .fill(Color.siloDivider)
-                .frame(height: 1)
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-
-            Text("Press opens the section · Menu closes")
-                .font(.system(size: SiloTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-                .tracking(1.2)
-                .foregroundStyle(Color.white.opacity(0.34))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-        }
-        .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -1228,16 +1205,6 @@ struct TVProfileDropdown: View {
             // regress existing users.
             actionButton("Switch Server", systemImage: "server.rack", id: .switchServer, action: onSwitchServer)
             actionButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", id: .signOut, isDestructive: true, action: onSignOut)
-
-            divider
-
-            Text("Press Menu to close")
-                .font(.system(size: SiloTheme.Skyline.dropdownHeaderSize, design: .monospaced))
-                .tracking(1.4)
-                .foregroundStyle(Color.white.opacity(0.38))
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
-                .accessibilityHidden(true)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: SiloTheme.Skyline.dropdownWidth, alignment: .leading)
@@ -1348,8 +1315,8 @@ private struct TVProfileMenuButtonBody: View {
             )
             .opacity(configuration.isPressed ? 0.75 : 1.0)
             .focusEffectDisabled()
-            // Reduce Motion snaps the profile-menu row inversion (§4.2).
-            .animation(reduceMotion ? nil : SiloTheme.springAnimation, value: isFocused)
+            // Match the cascade: focus feedback follows each press immediately.
+            .animation(nil, value: isFocused)
             .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
     }
 

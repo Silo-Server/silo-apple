@@ -239,14 +239,23 @@ actor SiloAPI {
         return try ItemDetail(catalog: value)
     }
 
+    private var seasonListIncludesArtwork: Bool {
+        #if os(tvOS)
+        // tvOS season selectors display labels and do not use season posters.
+        false
+        #else
+        true
+        #endif
+    }
+
     func seasons(seriesId: String, auth: CapturedOrdinaryRequestAuth) async throws -> SeasonsResponse {
         let items = try await v2.catalogSeasons(seriesId: seriesId,
-            imageSize: await imageSizeQuery["image_size"], auth: auth)
+            imageSize: await imageSizeQuery["image_size"], includeArtwork: seasonListIncludesArtwork, auth: auth)
         return try SeasonsResponse(catalog: items)
     }
 
     func seasons(seriesId: String) async throws -> SeasonsResponse {
-        let items = try await v2.catalogSeasons(seriesId: seriesId, imageSize: await imageSizeQuery["image_size"])
+        let items = try await v2.catalogSeasons(seriesId: seriesId, imageSize: await imageSizeQuery["image_size"], includeArtwork: seasonListIncludesArtwork)
         return try SeasonsResponse(catalog: items)
     }
 

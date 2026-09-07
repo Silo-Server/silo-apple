@@ -1,9 +1,8 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Android-parity playback controls for the hero action row. Each choice is a
-/// native tvOS `Menu`, so the focus engine owns lateral movement and returns
-/// focus to the same circular trigger after a selection.
+/// Playback controls for the hero action row. Each trigger opens a lightweight
+/// popover with native focusable options and restores focus after selection.
 struct TVPlaybackActionSelectors: View {
     let versions: [FileVersion]
     let currentVersion: FileVersion?

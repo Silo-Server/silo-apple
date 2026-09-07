@@ -292,6 +292,9 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             "/stream/session-1/subtitles/2.vtt?file_id=631745",
             "/stream/session-1/subtitles/2.vtt?file_id=631745&downloaded_subtitle_id=8",
             "/stream/session-1/subtitles/2/fonts?file_id=631745",
+            "/stream/session-1/subtitles/2.vtt?file_id=631745&embedded_stream_index=0",
+            "/stream/session-1/subtitles/2/fonts?file_id=631745&embedded_stream_index=3",
+            "/stream/session-1/subtitles/2.srt?file_id=631745&external_subtitle_key=" + String(repeating: "a1", count: 32),
         ] {
             let request = try XCTUnwrap(StreamRequest.resolve(
                 rawURL: raw,
@@ -314,6 +317,17 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             "/stream/session-1?file_id=631745",
             "/stream/session-1/master.m3u8?file_id=631745",
             "/playback/transcode/session-1/master.m3u8?downloaded_subtitle_id=8",
+            "/stream/session-1/master.m3u8?embedded_stream_index=0",
+            "/stream/session-1?external_subtitle_key=" + String(repeating: "a1", count: 32),
+            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=-1",
+            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=1.5",
+            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=",
+            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=999999999999999999999999",
+            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=0&embedded_stream_index=1",
+            "/stream/session-1/subtitles/2.vtt?embedded_stream_index=0&downloaded_subtitle_id=8",
+            "/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a", count: 63),
+            "/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "g", count: 64),
+            "/stream/session-1/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a", count: 64) + "&embedded_stream_index=0",
             // Unknown names stay rejected on the subtitle artifact family.
             "/stream/session-1/subtitles/2.vtt?st=legacy-secret",
             "/stream/session-1/subtitles/2.vtt?file_id=631745&token=legacy-secret",
@@ -676,6 +690,59 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(spec.aetherStartPosition, 62.0)
     }
 
+    func testServerSubtitleArtifactsReachLoadSpecThroughProductionResolver() throws {
+        let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
+            named: "decision_response", bundleClass: Self.self
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
+        )
+        let originalPlan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        let originalSubtitle = try XCTUnwrap(originalPlan["subtitle"] as? [String: Any])
+        let inventory = try XCTUnwrap(originalSubtitle["inventory"] as? [[String: Any]])
+        var testedSources = Set<String>()
+        for item in inventory where item["url"] != nil {
+            let rawURL = try XCTUnwrap(item["url"] as? String)
+            let trackID = try XCTUnwrap(item["track_id"] as? String)
+            let index = try XCTUnwrap(item["combined_index"] as? Int)
+            let format = URLComponents(string: rawURL)!.path.split(separator: ".").last.map(String.init)!
+            var subtitle = originalSubtitle
+            subtitle["mode"] = "render"
+            subtitle["track_id"] = trackID
+            subtitle["artifact"] = [
+                "url": rawURL, "format": format, "mime_type": "text/plain",
+                "timing_origin_seconds": 0,
+            ]
+            var planObject = originalPlan
+            planObject["subtitle"] = subtitle
+            var tracks = try XCTUnwrap(planObject["selected_tracks"] as? [String: Any])
+            tracks["subtitle"] = ["id": trackID, "index": index]
+            planObject["selected_tracks"] = tracks
+            var selectedObject = object
+            selectedObject["playback_plan"] = planObject
+            let response = try PlaybackV3FixtureTestSupport.decoder.decode(
+                PlaybackV3DecisionResponse.self,
+                from: JSONSerialization.data(withJSONObject: selectedObject)
+            )
+            guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+                return XCTFail("Expected fixture subtitle \(trackID) to be playable")
+            }
+            let spec = try Self.loadSpec(for: plan, sessionID: sessionID)
+            let artifact = try XCTUnwrap(spec.options.externalSubtitles.first)
+            XCTAssertEqual(artifact.url.absoluteString, "https://dev.example.test/api/v1" + rawURL)
+            XCTAssertEqual(artifact.httpHeaders?["Authorization"], "Bearer current-token")
+            if let fontURL = item["font_bundle_url"] as? String {
+                let request = try XCTUnwrap(spec.subtitleFontRequests[
+                    SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: index)])
+                XCTAssertEqual(request.url?.absoluteString, "https://dev.example.test/api/v1" + fontURL)
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer current-token")
+            }
+            testedSources.insert(try XCTUnwrap(item["source"] as? String))
+        }
+        XCTAssertTrue(testedSources.contains("embedded"))
+        XCTAssertTrue(testedSources.contains("external"))
+    }
+
     func testV3SubtitleArtifactUsesMergedCurrentRequestHeaders() throws {
         let fixtureURL = try PlaybackV3FixtureTestSupport.fixtureURL(
             named: "decision_response",
@@ -946,6 +1013,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(spec.options.externalSubtitles.first?.httpHeaders, [:])
     }
 
+    func testDirectFontBundlesUseOnlySupportedTransports() throws {
+        let media = try XCTUnwrap(URL(string: "https://dev.example.test/media/movie.mkv"))
+        for (fontURL, accepted) in [
+            ("fonts.json", true),
+            ("https://dev.example.test/fonts.json", true),
+            ("http://fonts.example.test/fonts.json", true),
+            ("file:///tmp/fonts.json", true),
+            ("ftp://fonts.example.test/fonts.json", false),
+            ("data:application/json,[]", false),
+        ] {
+            let subtitle = SubtitleUrl(index: 3, language: "eng", codec: "ass", label: "English",
+                                       source: "server", forced: false, fontBundleUrl: fontURL,
+                                       url: "movie.ass")
+            let spec = try AetherLoadSpec(directURL: media, headers: [:], startPosition: 0,
+                                          audioOnly: false, sidecars: [subtitle])
+            XCTAssertEqual(spec.subtitleFontRequests.count, accepted ? 1 : 0, fontURL)
+            XCTAssertEqual(spec.options.externalSubtitles.count, 1)
+        }
+    }
+
     /// The reproduction for the ordering mismatch: a plan whose subtitle mode
     /// is `off` declares no external track to Aether, so it must publish no
     /// alias either — even when a stale artifact and `track_id` survive on the
@@ -1142,6 +1229,60 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             },
             panelIsInHDRMode: false
         )
+    }
+
+    func testMissingEmbeddedStreamIsRejectedBeforePlanCommit() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        XCTAssertThrowsError(try controller.validateEmbeddedSubtitleSelection(11)) { error in
+            XCTAssertTrue(error is AetherPlaybackController.EmbeddedSubtitleSelectionError)
+        }
+    }
+
+    /// Opt-in local fixture: two embedded SRT tracks, with the second stream
+    /// at FFmpeg index 3 and text "Native track 2". No sidecar is registered.
+    func testOriginalHTTPSelectsExactEmbeddedSubtitleWithoutSidecar() async throws {
+        guard let rawURL = ProcessInfo.processInfo.environment["SILO_AETHER_EMBEDDED_FIXTURE_URL"],
+              let url = URL(string: rawURL) else {
+            throw XCTSkip("Set SILO_AETHER_EMBEDDED_FIXTURE_URL to the local two-track MKV fixture")
+        }
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let spec = try AetherLoadSpec(directURL: url, headers: [:], startPosition: 0, audioOnly: false)
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        let epoch = controller.beginLoad(spec)
+        try await controller.finishLoad(epoch)
+        try controller.validateEmbeddedSubtitleSelection(3)
+        controller.selectSubtitleTrack(id: 3)
+        controller.play()
+        let deadline = Date().addingTimeInterval(15)
+        while !controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }),
+              Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, 3)
+        XCTAssertTrue(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 2" }))
+        XCTAssertFalse(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 1" }))
+    }
+
+    func testMovieTimelineUsesExternalTrackStateWithoutRequiringAnAlias() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let raw = controller.engine.addExternalSubtitleTrack(
+            ExternalSubtitleTrack(url: URL(fileURLWithPath: "/tmp/unaliased-subtitle.srt")))
+        XCTAssertFalse(controller.containsSubtitle(appTrackID: Int64(raw.id)))
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: Int64(raw.id), slot: .primary))
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: Int64(raw.id), slot: .secondary))
+        controller.engine.selectSubtitleTrack(index: raw.id)
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: nil, slot: .primary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: nil, slot: .secondary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: 3, slot: .primary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(
+            appTrackID: SubtitleTrackIdSpace.makeAILiveTrackId(0), slot: .primary))
+        let alias = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 4)
+        controller.addExternalSubtitleTrack(
+            ExternalSubtitleTrack(url: URL(fileURLWithPath: "/tmp/aliased-subtitle.srt")), appTrackID: alias)
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: alias, slot: .primary))
     }
 
     func testControllerConstructsOnlyAetherEngine() throws {

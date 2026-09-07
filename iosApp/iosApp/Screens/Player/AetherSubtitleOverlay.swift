@@ -5,7 +5,10 @@ import SwiftUI
 /// It never fetches, parses, demuxes, or selects subtitle media.
 struct AetherSubtitleOverlay: View {
     let engine: AetherEngine
+    @ObservedObject var assSubtitles: ASSSubtitleSession
     let sourceTime: Double
+    let primaryUsesMovieTimeline: Bool
+    let secondaryUsesMovieTimeline: Bool
     let livePrimaryCues: [LiveSubtitleCue]
     let liveSecondaryCues: [LiveSubtitleCue]
     let appearance: SubtitleAppearance
@@ -29,8 +32,12 @@ struct AetherSubtitleOverlay: View {
         GeometryReader { geometry in
             let videoRect = displayedVideoRect(in: geometry.size)
             ZStack {
-                cueLayer(activeCues(in: primary), videoRect: videoRect, secondary: false)
-                cueLayer(activeCues(in: secondary), videoRect: videoRect, secondary: true)
+                if assSubtitles.handlesCurrentTrack {
+                    ASSSubtitleLayer(session: assSubtitles, videoRect: videoRect, delaySeconds: subtitleDelaySeconds)
+                } else {
+                    cueLayer(activeCues(in: primary, usesMovieTimeline: primaryUsesMovieTimeline), videoRect: videoRect, secondary: false)
+                }
+                cueLayer(activeCues(in: secondary, usesMovieTimeline: secondaryUsesMovieTimeline), videoRect: videoRect, secondary: true)
                 liveCueLayer(activeLiveCues(in: livePrimaryCues), videoRect: videoRect, secondary: false)
                 liveCueLayer(activeLiveCues(in: liveSecondaryCues), videoRect: videoRect, secondary: true)
             }
@@ -42,8 +49,15 @@ struct AetherSubtitleOverlay: View {
         .onReceive(engine.clock.$sourceTime) { aetherSourceTime = $0 }
     }
 
-    private func activeCues(in cues: [SubtitleCue]) -> [SubtitleCue] {
-        let renderClock = aetherSourceTime - subtitleDelaySeconds
+    static func renderClock(movieTime: Double, engineTime: Double, usesMovieTimeline: Bool, delaySeconds: Double) -> Double {
+        (usesMovieTimeline ? movieTime : engineTime) - delaySeconds
+    }
+
+    private func activeCues(in cues: [SubtitleCue], usesMovieTimeline: Bool) -> [SubtitleCue] {
+        // Complete sidecars use original movie timestamps; embedded cues use
+        // the served stream's clock, which may be rebased by a server remux.
+        let renderClock = Self.renderClock(movieTime: sourceTime, engineTime: aetherSourceTime,
+                                          usesMovieTimeline: usesMovieTimeline, delaySeconds: subtitleDelaySeconds)
         return cues.filter { $0.startTime <= renderClock && renderClock < $0.endTime }
     }
 

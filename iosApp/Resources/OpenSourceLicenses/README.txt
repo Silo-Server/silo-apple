@@ -6,11 +6,11 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5 (upstream release
-  6.67.2 plus two Silo-published patches that let the host request the
-  in-place native item handover on an episode change)
+  Revision: f8239c206097c88b53492b281af15cf906c8295b (upstream release
+  6.67.2 plus Silo patches for native item handover, subtitle renditions,
+  source timing, and primary ASS routing with normalized secondary/PiP text)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/745de1ccdc4b226adccdf18f03a28071f0e972d5
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/f8239c206097c88b53492b281af15cf906c8295b
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/6.67.2
   Rebuild: the Package.swift and source tree at that revision
 
@@ -81,3 +81,34 @@ The links above identify the exact source and rebuild inputs for this build,
 including each component's rebuild script and patches at the pinned revision.
 They are this build's corresponding-source pointer; keep them matched to the
 revisions each release actually resolves.
+
+SwiftAssRenderer, SwiftLibass, and local ASS rendering
+  SwiftAssRenderer 1.3.1 (MIT)
+  Source: https://github.com/mihai8804858/swift-ass-renderer/tree/28919f6b5ddd896d327b0283f8d97624902236e6
+  SwiftLibass 1.4.0 (MIT)
+  Source and rebuild script: https://github.com/mihai8804858/swift-libass/tree/6513c488e377a26c06db327fb2acfc2653a041d5
+  Transitive Swift packages: Combine Schedulers 1.2.2, Concurrency Extras
+  1.4.1, and Issue Reporting 2.1.0, all MIT; their notices are included.
+  libass 0.17.3: ISC
+  Fontconfig 2.15.0: permissive notices in Fontconfig.txt
+  FreeType 2.13.2: FreeType License; this product uses the FreeType project
+  FriBidi 1.0.14: LGPL-2.1-or-later
+  HarfBuzz 8.5.0: notices in HarfBuzz.txt
+  libpng 1.6.43: PNG Reference Library License
+  Complete license texts are bundled alongside this overview.
+
+  SwiftLibass ships these as static libraries and headers in XCFrameworks.
+  It does not embed separate subtitle framework bundles in the application.
+  Its upstream builder uses an unpinned ffmpeg-kit checkout. Our source archive
+  records a builder revision and native source tags matching its documented
+  versions; upstream does not publish byte-for-byte binary build provenance.
+
+  FriBidi is statically linked. App and library source, a revision
+  manifest, and instructions for rebuilding with a modified library are
+  published as Silo-source-<app-commit>.tar.gz at:
+  https://github.com/Silo-Server/silo-apple/releases
+  Tagged builds place the archive on their release; manually dispatched
+  TestFlight builds use a source-<app-commit> release. The TestFlight build's
+  What to Test notes include the exact archive URL. No original release
+  signing keys are needed to rebuild for a simulator; physical-device builds
+  use the recipient's signing identity.

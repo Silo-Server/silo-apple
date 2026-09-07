@@ -15,7 +15,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 6.67.2 + Silo handover patches | `745de1ccdc4b226adccdf18f03a28071f0e972d5` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 6.67.2 + Silo handover/subtitle patches | `f8239c206097c88b53492b281af15cf906c8295b` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.0.0 | `421e13be7061de67d91b85ac34a6b22a002b164f` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
@@ -32,17 +32,17 @@ Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
-`6.67.2` plus two commits: one lets a host request the in-place native item
-handover on a foreground episode change through `prepareForItemReplacement()`,
-and one makes the remote-HLS bypass honour that handover instead of dropping
-the item across the swap. Both modifications are published under the LGPL on
-the fork branch below, which satisfies the license's source obligation for
-modified code. The bundled
+`6.67.2` plus Silo patches for host-requested native item handover, complete
+native subtitle renditions, source timing after a media reanchor, and ASS
+subtitle routing. Raw ASS events stay on the primary local overlay; secondary
+subtitles and software PiP receive normalized text, and packaged HLS retains
+its native text rendition for PiP and AirPlay. These modifications are
+published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/745de1ccdc4b226adccdf18f03a28071f0e972d5>
-  (fork branch `silo/host-requested-item-handover`)
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/f8239c206097c88b53492b281af15cf906c8295b>
+  (fork branch `codex/silo-ass-subtitle-routing`)
 - Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/6.67.2>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
@@ -157,11 +157,9 @@ and a bounded asynchronous cache around the reference algorithm.
 
 ## Release checklist
 
-The bundled notices, license texts, and exact-revision source links above
-cover the standing LGPL obligations: this matches the adopter steps
-AetherEngine's own README asks for (embed FFmpeg dynamically, ship the license
-texts, point at the exact source). Per release, before App Store, TestFlight,
-or other external distribution:
+The dynamically embedded FFmpeg libraries and the statically linked SwiftLibass
+libraries use different rebuild paths. Before App Store, TestFlight, or other
+external distribution:
 
 1. verify the release archive embeds the FFmpegBuild libraries as separate
    dynamic frameworks and does not merge or statically link them into the app
@@ -169,4 +167,58 @@ or other external distribution:
 2. confirm the revisions in this file and in the bundled acknowledgements
    match what the release actually resolves in `Package.resolved`;
 3. if AetherEngine or any LGPL component was modified, publish the modified
-   source under its license before shipping.
+   source under its license before shipping;
+4. publish the matching `Silo-source-<app-commit>.tar.gz` archive, with the app
+   source, pinned Swift packages, SwiftLibass dependency sources, revision manifest,
+   and rebuild instructions, before distributing a binary that links SwiftLibass.
+
+## Local ASS rendering
+
+Silo uses SwiftLibass 1.4.0 for libass bindings and SwiftAssRenderer 1.3.1
+for image compositing on all three Apple clients. Both Swift packages are MIT.
+The native libraries are libass 0.17.3 (ISC), Fontconfig 2.15.0, FreeType 2.13.2
+(FreeType License), FriBidi 1.0.14 (LGPL-2.1-or-later), HarfBuzz 8.5.0, and
+libpng 1.6.43. Their full notices are bundled in `OpenSourceLicenses/`.
+This product uses the FreeType project.
+
+The native XCFrameworks contain static `.a` libraries and headers. Silo links
+the libraries without embedding subtitle framework wrappers or generated stubs.
+
+- SwiftAssRenderer source: <https://github.com/mihai8804858/swift-ass-renderer/tree/28919f6b5ddd896d327b0283f8d97624902236e6>
+- SwiftLibass source and binary artifacts: <https://github.com/mihai8804858/swift-libass/tree/6513c488e377a26c06db327fb2acfc2653a041d5>
+- Rebuild entry point: `build-libraries.sh` at that revision.
+- Transitive Swift dependencies: Combine Schedulers 1.2.2, Concurrency Extras
+  1.4.1, and Issue Reporting 2.1.0, all MIT; exact revisions are in
+  `Package.resolved` and their notices are bundled.
+- The test-only `SiloASSFixture.ttf` is an original rectangular glyph
+  generated by `iosApp/Tests/Fixtures/ASS/generate-font.py`; it is not shipped
+  in the application.
+
+### Source-based relinking
+
+FriBidi is statically linked. LGPL 2.1 section 6(a) allows the work that uses
+the library to be supplied as source code or object code so a recipient can
+modify the library and relink the application. Silo uses the source-code path;
+the app is distributed under the repository's AGPL license.
+
+The TestFlight and sideload workflows publish a source archive to GitHub
+Releases before their binary jobs run. Tag-triggered builds attach it to the
+same tag as the binary release. Manual TestFlight builds publish it under
+`source-<app-commit>` and include its URL in the build's What to Test notes.
+External local TestFlight uploads require `SILO_RELEASE_SOURCE_URL` to point
+to the matching published archive. Other distribution channels must publish
+these materials and provide their location alongside the binary as well.
+
+`scripts/ci/package-release-source.py` captures the committed app tree and
+every resolved Swift package, plus immutable snapshots of SwiftLibass's six
+native libraries recorded in `scripts/ci/swift-libass-sources.json`. The archive
+includes a pinned ffmpeg-kit builder and a local build entry point that skips
+its destructive checkout step, preserving a recipient's edits. `REBUILD.md`
+explains how to build and relink through local package overrides. Signing
+credentials and untracked configuration are excluded. `revisions.json` records
+source revisions and checksums.
+
+SwiftLibass's upstream script clones an unpinned ffmpeg-kit branch. The builder
+and native source tags recorded here match its documented prebuilt versions;
+upstream does not publish a manifest establishing byte-for-byte provenance of
+those prebuilt libraries. The supplied rebuild inputs are pinned independently.

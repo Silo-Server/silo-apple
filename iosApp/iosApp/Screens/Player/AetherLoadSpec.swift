@@ -127,6 +127,12 @@ struct AetherLoadSpec {
     /// picking "English" ends up rendering the first sidecar in the plan. Both
     /// arrays are therefore built at a single append site.
     let externalSubtitleAppTrackIDs: [Int64?]
+    /// Font bundles keyed by the same app-facing IDs as subtitle picker rows.
+    /// Requests carry only headers authorized for the bundle's origin.
+    let subtitleFontRequests: [Int64: URLRequest]
+    /// The selected native row uses the same picker ID space as sidecars,
+    /// but resolves directly to its container stream, without an external slot.
+    let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
 
     /// The bridge this app assumes for codecs Aether cannot stream-copy, when
     /// a caller does not name one.
@@ -189,6 +195,12 @@ struct AetherLoadSpec {
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         aetherStartPosition = timeline.aetherStartPosition
         self.audioSourceStreamIndex = audioSourceStreamIndex
+        subtitleFontRequests = Dictionary(uniqueKeysWithValues: sidecars.compactMap { sidecar in
+            guard let value = sidecar.fontBundleUrl,
+                  let url = URL(string: value), url.isFileURL else { return nil }
+            return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), URLRequest(url: url))
+        })
+        embeddedSubtitleAlias = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -196,7 +208,7 @@ struct AetherLoadSpec {
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
             audioOnly: audioOnly,
-            preserveASSMarkup: false,
+            preserveASSMarkup: true,
             prepareNativeSubtitles: true,
             eagerNativeSubtitleReaders: true,
             nativeSubtitlePreferredLanguages: preferredSubtitleLanguages,
@@ -255,6 +267,16 @@ struct AetherLoadSpec {
         timeline = PlaybackTimelineMapper(directStartSeconds: startPosition)
         aetherStartPosition = timeline.aetherStartPosition
         audioSourceStreamIndex = nil
+        subtitleFontRequests = Dictionary(uniqueKeysWithValues: sidecars.compactMap { sidecar in
+            guard let value = sidecar.fontBundleUrl,
+                  let url = Self.resolveSidecarURL(value, relativeTo: directURL),
+                  ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+            var request = URLRequest(url: url)
+            request.allHTTPHeaderFields = Self.subtitleRequestHeaders(
+                headers, resourceURL: url, trustedOriginURLs: [directURL])
+            return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), request)
+        })
+        embeddedSubtitleAlias = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -263,7 +285,7 @@ struct AetherLoadSpec {
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
             audioOnly: audioOnly,
-            preserveASSMarkup: false,
+            preserveASSMarkup: true,
             prepareNativeSubtitles: true,
             eagerNativeSubtitleReaders: true,
             nativeSubtitlePreferredLanguages: preferredSubtitleLanguages,
@@ -295,9 +317,7 @@ struct AetherLoadSpec {
         resumeSourcePosition: Double? = nil,
         panelIsInHDRMode: Bool? = nil
     ) throws {
-        guard PlaybackProtocolV3.PlanDelivery.supported.contains(plan.delivery) else {
-            throw ValidationError.unsupportedDelivery(plan.delivery)
-        }
+        try ApplePlaybackV3PlanAdapter.validate(plan)
         let resolvedPlanSourceURL: URL?
         if let resolveURL {
             resolvedPlanSourceURL = resolveURL(plan.stream.url)
@@ -331,9 +351,10 @@ struct AetherLoadSpec {
         // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
-        if let artifact = plan.subtitle.artifact,
+        if plan.subtitle.embedded == nil,
+           let artifact = plan.subtitle.artifact,
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
-            guard abs(artifact.timingOriginSeconds - plan.timeline.timelineOffsetSeconds) < 0.001 else {
+            guard artifact.timingOriginSeconds.isFinite, abs(artifact.timingOriginSeconds) < 0.001 else {
                 throw ValidationError.unsupportedSubtitleTimingOrigin(
                     origin: artifact.timingOriginSeconds,
                     timelineOffset: plan.timeline.timelineOffsetSeconds
@@ -369,7 +390,8 @@ struct AetherLoadSpec {
                     resourceURL: artifactURL,
                     trustedOriginURLs: [sourceURL, apiOriginURL].compactMap { $0 }
                 ),
-                formatHint: artifact.format
+                formatHint: artifact.format,
+                nativeTimelineOffsetSeconds: plan.timeline.timelineOffsetSeconds
             ))
             // A declared artifact the inventory does not name has no stable
             // Silo id; leaving the slot empty keeps the arrays parallel and
@@ -393,6 +415,30 @@ struct AetherLoadSpec {
         }
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
+        if let item = plan.selectedSubtitleInventoryItem, let value = item.fontBundleUrl {
+            let url = resolveURL.map { $0(value) } ?? URL(string: value)
+            guard let url, ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
+                throw ValidationError.invalidSubtitleArtifactURL(value)
+            }
+            var request = URLRequest(url: url)
+            request.allHTTPHeaderFields = Self.subtitleRequestHeaders(
+                effectiveHeaders, resourceURL: url,
+                trustedOriginURLs: [sourceURL, apiOriginURL].compactMap { $0 }
+            )
+            subtitleFontRequests = [SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex): request]
+        } else {
+            subtitleFontRequests = [:]
+        }
+        if PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let embedded = plan.subtitle.embedded,
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            embeddedSubtitleAlias = (
+                SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex),
+                embedded.streamIndex
+            )
+        } else {
+            embeddedSubtitleAlias = nil
+        }
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
@@ -404,7 +450,7 @@ struct AetherLoadSpec {
             audioBridgeMode: audioBridgeMode,
             audioOnly: plan.effectiveRecipe.videoCodec == nil,
             nativeRemoteHLS: isServerHLS,
-            preserveASSMarkup: false,
+            preserveASSMarkup: true,
             prepareNativeSubtitles: true,
             eagerNativeSubtitleReaders: true,
             // V3 already selected one exact artifact. Language preference is

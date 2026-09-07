@@ -1,0 +1,60 @@
+name: Publish release source
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+    outputs:
+      source_url:
+        value: ${{ jobs.source.outputs.source_url }}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-source-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      source_url: ${{ steps.publish.outputs.source_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Package exact app and library sources
+        run: python3 scripts/ci/package-release-source.py "$RUNNER_TEMP/release-source"
+      - name: Publish source before distributing binaries
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # The sideload workflow may create the same tag's release first.
+            FLAGS=()
+            if [[ "$RELEASE_TAG" == source-* ]]; then FLAGS+=(--latest=false); fi
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              "${FLAGS[@]}" \
+              --notes "Release source and rebuild instructions are in the Silo-source archive." \
+              || gh release view "$RELEASE_TAG" >/dev/null
+          fi
+          IS_DRAFT="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')"
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "::error::Source release $RELEASE_TAG is a draft. Publish it before distributing binaries."
+            exit 1
+          fi
+          ASSET="Silo-source-${GITHUB_SHA}.tar.gz"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release-source/$ASSET" --clobber
+          SOURCE_URL="$(gh release view "$RELEASE_TAG" --json assets --jq ".assets[] | select(.name == \"$ASSET\") | .url")"
+          test -n "$SOURCE_URL"
+          echo "source_url=$SOURCE_URL" >> "$GITHUB_OUTPUT"

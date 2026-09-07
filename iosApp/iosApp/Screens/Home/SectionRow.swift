@@ -162,68 +162,17 @@ struct SectionRow: View {
         }
 
         #if os(tvOS)
-        if isContinueWatching {
-            let isEpisode = item.type.lowercased() == "episode"
-                || item.episodeNumber != nil
-            if isEpisode,
-               let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !seriesId.isEmpty,
-               let seasonNumber = item.seasonNumber {
-                navigateToSeriesDetail(
-                    to: seriesId,
-                    from: item,
-                    seasonNumber: seasonNumber,
-                    episodeContentId: item.contentId
-                )
-            } else {
-                onItemTap(item.contentId, item)
-            }
-            return
-        }
-
-        if SiloMediaType.isSeries(item.type) {
-            navigateToSeriesDetail(to: item.contentId, from: item)
+        let isEpisode = item.type.lowercased() == "episode" || item.episodeNumber != nil
+        if isEpisode,
+           let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !seriesId.isEmpty,
+           item.seasonNumber != nil {
+            onItemTap(seriesId, item)
             return
         }
         #endif
         onItemTap(contentId, item)
     }
-
-    #if os(tvOS)
-    /// Match Movie navigation: push the branded route seed immediately while
-    /// the existing marquee warm-up and destination request pool finish the
-    /// authoritative Series payload and hierarchy in parallel.
-    private func navigateToSeriesDetail(
-        to seriesContentId: String,
-        from item: SectionItem,
-        seasonNumber: Int? = nil,
-        episodeContentId: String? = nil
-    ) {
-        finishSeriesDetailNavigation(
-            to: seriesContentId,
-            from: item,
-            seasonNumber: seasonNumber,
-            episodeContentId: episodeContentId
-        )
-    }
-
-    private func finishSeriesDetailNavigation(
-        to seriesContentId: String,
-        from item: SectionItem,
-        seasonNumber: Int?,
-        episodeContentId: String?
-    ) {
-        if let seasonNumber, let episodeContentId {
-            TVSeriesDetailNavigationContextStore.stage(
-                seriesContentId: seriesContentId,
-                seasonNumber: seasonNumber,
-                episodeContentId: episodeContentId
-            )
-        }
-        onItemTap(seriesContentId, item)
-    }
-
-    #endif
 
     /// Home injects a model-owned mutation so its membership-driven rows and
     /// cache update immediately. Shared SectionRow callers retain the original

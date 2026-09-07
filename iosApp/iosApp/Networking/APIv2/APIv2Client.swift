@@ -958,10 +958,12 @@ struct APIv2Client: Sendable {
     }
 
     func catalogSeasons(seriesId: String, libraryId: String? = nil,
-                        imageSize: String? = nil) async throws -> [APIv2CatalogRead.Season] {
+                        imageSize: String? = nil, includeArtwork: Bool? = nil) async throws -> [APIv2CatalogRead.Season] {
+        var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
+        if let includeArtwork { query["include_artwork"] = String(includeArtwork) }
         let response: APIv2CatalogReadCollection<APIv2CatalogRead.Season> = try await catalogRead(
             "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons",
-            query: catalogReadScope(libraryId: libraryId, imageSize: imageSize))
+            query: query)
         return try response.completeItems()
     }
 
@@ -1000,7 +1002,7 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
-    func catalogSeasons(seriesId: String, imageSize: String?,
+    func catalogSeasons(seriesId: String, imageSize: String?, includeArtwork: Bool? = nil,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Season] {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -1011,9 +1013,11 @@ struct APIv2Client: Sendable {
         let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
             profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
         let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons"
+        var query = catalogReadScope(libraryId: nil, imageSize: imageSize)
+        if let includeArtwork { query["include_artwork"] = String(includeArtwork) }
         let raw = try await mapErrors {
             try await http.requestData(method: "GET", path: path,
-                query: catalogReadScope(libraryId: nil, imageSize: imageSize),
+                query: query,
                 requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
         }
         guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {

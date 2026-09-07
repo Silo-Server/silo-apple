@@ -10,6 +10,7 @@ struct ImageSizeCapabilityResponse: Codable, Equatable {
     let sizes: [String]
     let widths: [String: [String: Int]]
     let originalMaxWidthPx: Int
+    var seasonListArtworkParam: String? = nil
 }
 
 enum ImageSizeSelection {

@@ -31,6 +31,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
       "revision": "1",
       "state": "available",
       "param": "image_size",
+      "season_list_artwork_param": "include_artwork",
       "sizes": ["small", "medium", "large", "original"],
       "widths": {
         "poster": {"small": 300, "medium": 500, "large": 780},
@@ -55,6 +56,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
         let capability = try decodedCapability()
         XCTAssertEqual(capability.revision, "1")
         XCTAssertEqual(capability.param, "image_size")
+        XCTAssertEqual(capability.seasonListArtworkParam, "include_artwork")
         XCTAssertEqual(capability.sizes, ["small", "medium", "large", "original"])
         XCTAssertEqual(capability.originalMaxWidthPx, 1920)
         XCTAssertEqual(capability.widths["poster"]?["large"], 780)

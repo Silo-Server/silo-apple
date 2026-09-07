@@ -55,14 +55,15 @@ struct CachedAsyncImage: View {
                         .clipped()
                         .transition(.opacity)
                         .onAppear(perform: notifyImageLoaded)
-                } else if state.error == nil, let warmedImage {
+                } else if let warmedImage {
                     // The startup/grid prefetchers warm the memory cache under
                     // the shared card-size thumbnail key, while the request
                     // above is keyed by the exact render size — a miss for
                     // Nuke's synchronous first check. Painting the warmed
                     // decode here makes a prefetched card render finished on
                     // its first frame; it is at least as sharp as the card's
-                    // own decode, so the swap-in is invisible.
+                    // own decode, so the swap-in is invisible. Keep this
+                    // usable image even if the display-sized request fails.
                     Image(platformImage: warmedImage)
                         .resizable()
                         .aspectRatio(contentMode: contentMode)

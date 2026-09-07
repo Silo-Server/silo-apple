@@ -21,6 +21,17 @@ enum OpenSourceAcknowledgements {
         Resource(title: "LibDovi packaging — MIT", name: "LibDovi-Packaging-MIT"),
         Resource(title: "libdovi — MIT", name: "libdovi-MIT"),
         Resource(title: "Nuke and NukeUI — MIT", name: "Nuke-MIT"),
+        Resource(title: "SwiftAssRenderer — MIT", name: "SwiftAssRenderer-MIT"),
+        Resource(title: "SwiftLibass — MIT", name: "SwiftLibass-MIT"),
+        Resource(title: "Combine Schedulers — MIT", name: "combine-schedulers-MIT"),
+        Resource(title: "Concurrency Extras — MIT", name: "swift-concurrency-extras-MIT"),
+        Resource(title: "Issue Reporting — MIT", name: "swift-issue-reporting-MIT"),
+        Resource(title: "libass — ISC", name: "libass-ISC"),
+        Resource(title: "Fontconfig", name: "Fontconfig"),
+        Resource(title: "FreeType — FreeType License", name: "FreeType"),
+        Resource(title: "FriBidi — LGPL 2.1", name: "FriBidi-LGPL-2.1"),
+        Resource(title: "HarfBuzz", name: "HarfBuzz"),
+        Resource(title: "libpng", name: "libpng"),
         Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
     ]
 

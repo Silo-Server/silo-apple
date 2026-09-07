@@ -19,6 +19,7 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedClientTransformation(String)
     case invalidClientTransformation(String)
     case unsupportedRuntimeCorrection(String)
+    case invalidEmbeddedSubtitle(String)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +31,8 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
             return "The V3 plan requires an unsupported client transformation: \(value)."
         case .invalidClientTransformation(let value):
             return "The V3 client transformation cannot be executed as planned: \(value)."
+        case .invalidEmbeddedSubtitle(let value):
+            return "The embedded subtitle selection is invalid: \(value)."
         case .unsupportedRuntimeCorrection(let value):
             return "The V3 plan requires an unsupported runtime correction: \(value)."
         }
@@ -81,6 +84,25 @@ enum ApplePlaybackV3PlanAdapter {
             throw ApplePlaybackV3PlanError.invalidClientTransformation(
                 "client transformations require the original_http delivery"
             )
+        }
+        if let embedded = plan.subtitle.embedded {
+            guard plan.delivery == PlaybackProtocolV3.PlanDelivery.originalHTTP,
+                  plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.render,
+                  plan.subtitle.artifact == nil,
+                  embedded.streamIndex >= 0,
+                  embedded.streamIndex <= Int(Int32.max),
+                  let selected = plan.selectedSubtitleInventoryItem,
+                  selected.trackId == plan.subtitle.trackId,
+                  selected.trackId == plan.selectedTracks.subtitle?.id,
+                  plan.selectedTracks.subtitle?.index == nil || plan.selectedTracks.subtitle?.index == selected.combinedIndex,
+                  selected.source == "embedded",
+                  let codec = selected.codec,
+                  let container = plan.stream.container,
+                  ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(
+                    containers: [container]
+                  ).contains(where: { $0.codecs.contains(ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)) }) else {
+                throw ApplePlaybackV3PlanError.invalidEmbeddedSubtitle("unsupported source, codec, or stream identity")
+            }
         }
         if let correction = plan.runtimeCorrections.first {
             // Runtime correction tokens belonged to the removed Silo
@@ -197,7 +219,9 @@ enum ApplePlaybackV3PlanAdapter {
             : plan.selectedSubtitleCombinedIndex
         return plan.subtitle.inventory.compactMap { item in
             guard item.combinedIndex >= 0 else { return nil }
-            let ffIndex: Int? = item.source == "embedded"
+            let ffIndex: Int? = item.combinedIndex == selectedIndex && plan.subtitle.embedded != nil
+                ? plan.subtitle.embedded?.streamIndex
+                : item.source == "embedded"
                 ? version.flatMap {
                     ffmpegSubtitleStreamIndex(
                         serverCombinedIndex: item.combinedIndex,

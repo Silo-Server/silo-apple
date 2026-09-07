@@ -97,6 +97,22 @@ bar.focusedItem -> Calendar
 When this happens, stop adding press interceptors. Decide which focus model the
 control should use, then remove the other one.
 
+## Settings Pane Navigation
+
+Settings uses two native focus sections. Right from a category enters its
+first available detail control. Left from any detail row returns to that
+same category, including after scrolling or dismissing a picker. Up/Down
+continues through the controls in the current pane.
+
+Give both pane entry targets `defaultFocus` with `.userInitiated` priority.
+Do not downgrade the rail's selected-category target while the detail pane
+owns focus: doing so lets Left choose a different category by geometry.
+The outer focus scope still chooses the active pane for entry and modal
+restoration. Remember the rail's current control separately from the selected
+category so cancelling Sign Out restores Sign Out, while Left from the details
+still restores the category. Back returns to the category, then exits Settings
+to Home.
+
 ## Top Menu Ownership
 
 The top menu has three conceptual states:
@@ -119,6 +135,28 @@ When closing a panel, choose the next owner explicitly:
 - Down past the last row closes and hands focus to page content.
 - Selecting a panel row closes, updates route/scope state, and then hands focus
   to the destination content.
+
+## Selecting a Page from the Top Menu
+
+Selecting Home, another tab, or a panel destination enters the page at its
+first row or top control, including when reselecting the current page after
+Menu/Back. Reset the vertical scroll position before forwarding the entry
+focus request. A row feed also resets its first row to the first card.
+
+Use `TVMenuEntryScroll` on the page's scroll view to reveal lazy entry controls
+without animation. Forward focus after scroll geometry reports the top and
+the entry row has had a layout pass. Animating a long scroll while claiming
+focus lets intermediate rows take focus and cancel the entry row's
+restoration ownership. Keep page identity and loaded data stable;
+a menu selection only resets scrolling and entry focus.
+
+If Menu/Back returns ownership to the bar or a panel before the entry request
+finishes, cancel that request. Do not replay it when menu focus clears; the
+next deliberate page selection provides a new request. Cancel on disappearance
+as well, so queued layout callbacks cannot focus a page that has been left.
+
+Returning from a card's detail page still restores the launching card. Ordinary
+Up/Down navigation remains owned by the native focus engine.
 
 ## Debugging Checklist
 

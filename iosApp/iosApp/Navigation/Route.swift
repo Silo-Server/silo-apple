@@ -91,9 +91,16 @@ enum Route: Hashable {
 }
 
 /// Card metadata that lets tvOS paint a branded detail frame before the
-/// authoritative item response arrives. The seed is deliberately display-only:
-/// playback, personal state, selectors, and actions still wait for `ItemDetail`.
+/// authoritative item response arrives, plus the episode that opened a Series.
+/// Playback, personal state, selectors, and actions still wait for `ItemDetail`.
 struct TVItemDetailRouteSeed: Hashable {
+    struct EpisodeContext: Hashable {
+        let seriesContentId: String
+        let seasonNumber: Int
+        let episodeContentId: String
+    }
+
+    var episodeContext: EpisodeContext? = nil
     let mediaType: String
     let title: String
     let year: Int?
@@ -120,6 +127,22 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+    }
+
+    init(_ detail: ItemDetail, episodeContext: EpisodeContext) {
+        self.episodeContext = episodeContext
+        mediaType = detail.type
+        title = detail.title
+        year = detail.year
+        overview = detail.overview
+        runtime = detail.runtime
+        contentRating = detail.contentRating
+        genre = detail.genres?.first
+        logoUrl = detail.logoUrl
+        posterUrl = detail.posterUrl
+        posterThumbhash = detail.posterThumbhash
+        backdropUrl = detail.backdropUrl
+        backdropThumbhash = detail.backdropThumbhash
     }
 
     init(_ item: BrowseItem) {
@@ -169,7 +192,15 @@ struct TVItemDetailRouteSeed: Hashable {
            seriesId?.isEmpty == false,
            seriesId == contentId,
            contentId != item.contentId {
-            return TVItemDetailRouteSeed(parentSeriesFrom: item)
+            var seed = TVItemDetailRouteSeed(parentSeriesFrom: item)
+            if let seasonNumber = item.seasonNumber {
+                seed.episodeContext = EpisodeContext(
+                    seriesContentId: contentId,
+                    seasonNumber: seasonNumber,
+                    episodeContentId: item.contentId
+                )
+            }
+            return seed
         }
         return TVItemDetailRouteSeed(item)
     }

@@ -58,7 +58,13 @@ packages:
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
     url: https://github.com/Silo-Server/AetherEngine
-    revision: 745de1ccdc4b226adccdf18f03a28071f0e972d5
+    revision: f8239c206097c88b53492b281af15cf906c8295b
+  SwiftAssRenderer:
+    url: https://github.com/mihai8804858/swift-ass-renderer
+    exactVersion: 1.3.1
+  SwiftLibass:
+    url: https://github.com/mihai8804858/swift-libass
+    exactVersion: 1.4.0
   Nuke:
     url: https://github.com/kean/Nuke
     from: "13.2.0"
@@ -104,6 +110,10 @@ targets:
     dependencies:
       - package: AetherEngine
         product: AetherEngine
+      - package: SwiftAssRenderer
+        product: SwiftAssRenderer
+      - package: SwiftLibass
+        product: SwiftLibass
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -150,6 +160,10 @@ targets:
     dependencies:
       - package: AetherEngine
         product: AetherEngine
+      - package: SwiftAssRenderer
+        product: SwiftAssRenderer
+      - package: SwiftLibass
+        product: SwiftLibass
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -194,6 +208,10 @@ targets:
     dependencies:
       - package: AetherEngine
         product: AetherEngine
+      - package: SwiftAssRenderer
+        product: SwiftAssRenderer
+      - package: SwiftLibass
+        product: SwiftLibass
       - package: Nuke
         product: Nuke
       - package: Nuke
@@ -293,12 +311,20 @@ targets:
         excludes:
           # Re-declared below with an explicit build phase. Both spellings:
           # the directory itself, and everything under it.
+          - "Fixtures/ASS"
+          - "Fixtures/ASS/**"
           - "Fixtures/SettingsContract"
           - "Fixtures/SettingsContract/**"
           - "Fixtures/PlaybackV3"
           - "Fixtures/PlaybackV3/**"
           - "Fixtures/APIv2"
           - "Fixtures/APIv2/**"
+      - path: Tests/Fixtures/ASS/SiloASSFixture.ttf
+        buildPhase: resources
+      - path: Tests/Fixtures/ASS/authored.mkv
+        buildPhase: resources
+      - path: Tests/Fixtures/ASS/authored.ass
+        buildPhase: resources
       # The vendored settings contract. SettingsConformanceTests reads both
       # files out of the test bundle at runtime and fails hard when either is
       # missing, so the build phase is stated rather than left to XcodeGen's

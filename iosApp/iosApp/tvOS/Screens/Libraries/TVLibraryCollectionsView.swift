@@ -37,18 +37,21 @@ struct TVLibraryCollectionsView: View {
             }
             .padding(.bottom, SiloTheme.largePadding)
         }
+        .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: noteShellFocusRequest))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             guard collectionSections.isEmpty else { return }
             await loadCollections()
         }
-        .onAppear { noteShellFocusRequest(focusRequest) }
-        .onChange(of: focusRequest) { _, request in noteShellFocusRequest(request) }
         .onChange(of: collectionSections.isEmpty) { _, isEmpty in
             if !isEmpty, hasPendingFocusClaim {
                 claimContentFocusIfReady()
             }
         }
+        .onChange(of: isTopMenuFocused) { _, menuOwnsFocus in
+            if menuOwnsFocus { hasPendingFocusClaim = false }
+        }
+        .onDisappear { hasPendingFocusClaim = false }
     }
 
     @ViewBuilder
@@ -171,12 +174,12 @@ struct TVLibraryCollectionsView: View {
     }
 
     private func claimContentFocusIfReady() {
-        guard collectionSections.contains(where: { !$0.collections.isEmpty }) else {
-            hasPendingFocusClaim = true
+        guard !isTopMenuFocused else {
+            hasPendingFocusClaim = false
             return
         }
-        if hasPendingFocusClaim, isTopMenuFocused {
-            hasPendingFocusClaim = false
+        guard collectionSections.contains(where: { !$0.collections.isEmpty }) else {
+            hasPendingFocusClaim = true
             return
         }
         hasPendingFocusClaim = false

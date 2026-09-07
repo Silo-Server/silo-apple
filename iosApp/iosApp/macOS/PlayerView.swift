@@ -76,6 +76,8 @@ struct PlayerView: View {
 
                 if viewModel.isLoading || viewModel.isBuffering {
                     PlayerBufferingCapsule()
+                } else if viewModel.isLoadingSubtitles {
+                    PlayerBufferingCapsule(label: "Loading subtitles…")
                 }
 
                 if let notice = viewModel.activeNotice {
@@ -137,7 +139,10 @@ struct PlayerView: View {
             AetherPlayerSurface(engine: viewModel.aetherEngine)
             AetherSubtitleOverlay(
                 engine: viewModel.aetherEngine,
+                assSubtitles: viewModel.assSubtitles,
                 sourceTime: viewModel.currentTime,
+                primaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSubtitleId),
+                secondaryUsesMovieTimeline: viewModel.subtitleUsesMovieTimeline(viewModel.selectedSecondarySubtitleId, slot: .secondary),
                 livePrimaryCues: viewModel.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true
                     ? viewModel.livePrimarySubtitleCues
                     : [],

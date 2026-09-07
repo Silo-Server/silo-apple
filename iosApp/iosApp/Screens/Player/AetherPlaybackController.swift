@@ -12,6 +12,17 @@ import MediaPlayer
 /// engine observation enter the app through this one generation-fenced owner.
 @MainActor
 final class AetherPlaybackController {
+    struct EmbeddedSubtitleSelectionError: LocalizedError {
+        let streamIndex: Int
+        var errorDescription: String? { "The selected embedded subtitle is unavailable in the opened media." }
+    }
+
+    func validateEmbeddedSubtitleSelection(_ streamIndex: Int) throws {
+        guard engine.subtitleTracks.contains(where: { !$0.isExternal && $0.id == streamIndex }) else {
+            throw EmbeddedSubtitleSelectionError(streamIndex: streamIndex)
+        }
+    }
+
     struct LoadFailure: LocalizedError {
         let failure: PlaybackErrorInfo
         let underlying: Error
@@ -29,6 +40,7 @@ final class AetherPlaybackController {
         case playerTime(Double)
         case duration(Double)
         case buffering(Bool)
+        case subtitleLoading(Bool)
         case firstFrame
         case inventoryChanged
         case telemetryChanged
@@ -57,6 +69,7 @@ final class AetherPlaybackController {
     }
 
     let engine: AetherEngine
+    let assSubtitles: ASSSubtitleSession
     /// Registers this engine with the process-wide audio-session ownership
     /// registry for its lifetime. Silo runs two `AetherEngine`s (audiobooks and
     /// video); without this claim the audio controller would read itself as the
@@ -113,6 +126,7 @@ final class AetherPlaybackController {
 
     init() throws {
         engine = try AetherEngine()
+        assSubtitles = ASSSubtitleSession(engine: engine)
         aetherSessionClaim = AetherAudioSessionOwnership.Claim(engine: engine)
         #if os(iOS) || os(tvOS)
         engine.ownsVideoNowPlayingSession = true
@@ -150,12 +164,22 @@ final class AetherPlaybackController {
         activeLoadEpoch = epoch
         hasCommittedActiveLoad = false
         activeSpec = spec
+        assSubtitles.beginLoad(timelineOffset: spec.timeline.timelineOffsetSeconds)
         configureExternalPlaybackPolicy()
         refreshExternalPlaybackState()
         installDeclaredSubtitleAliases(
             spec.externalSubtitleAppTrackIDs,
             declaredTrackCount: spec.options.externalSubtitles.count
         )
+        if let alias = spec.embeddedSubtitleAlias {
+            aetherSubtitleIDByAppID[alias.appTrackID] = alias.streamIndex
+            appSubtitleIDByAetherID[alias.streamIndex] = alias.appTrackID
+        }
+        for (appID, request) in spec.subtitleFontRequests {
+            if let engineID = aetherSubtitleID(forAppID: appID) {
+                assSubtitles.registerFontRequest(request, trackID: engineID)
+            }
+        }
         didPublishFirstFrame = false
         didPublishEnd = false
         return epoch
@@ -203,6 +227,7 @@ final class AetherPlaybackController {
             throw CancellationError()
         }
         hasCommittedActiveLoad = true
+        assSubtitles.finishLoad()
         replacementExternalPlaybackPolicy = nil
         configureExternalPlaybackPolicy()
         refreshExternalPlaybackState()
@@ -372,16 +397,31 @@ final class AetherPlaybackController {
         appSubtitleIDByAetherID[id] ?? Int64(id)
     }
 
+    func subtitleUsesMovieTimeline(appTrackID: Int64?, slot: SubtitleSlot) -> Bool {
+        let engineID: Int?
+        if let appTrackID {
+            engineID = aetherSubtitleID(forAppID: appTrackID)
+        } else {
+            // Only the primary slot has an engine-published active identity.
+            engineID = slot == .primary ? engine.activeSubtitleTrackIndex : nil
+        }
+        return engine.subtitleTracks.contains { $0.id == engineID && $0.isExternal }
+    }
+
     func containsSubtitle(appTrackID: Int64) -> Bool {
         aetherSubtitleIDByAppID[appTrackID] != nil
     }
 
     @discardableResult
-    func addExternalSubtitleTrack(_ track: ExternalSubtitleTrack, appTrackID: Int64) -> Int64 {
-        if aetherSubtitleIDByAppID[appTrackID] != nil { return appTrackID }
+    func addExternalSubtitleTrack(_ track: ExternalSubtitleTrack, appTrackID: Int64, fontRequest: URLRequest? = nil) -> Int64 {
+        if let engineID = aetherSubtitleIDByAppID[appTrackID] {
+            if let fontRequest { assSubtitles.registerFontRequest(fontRequest, trackID: engineID) }
+            return appTrackID
+        }
         let registered = engine.addExternalSubtitleTrack(track)
         aetherSubtitleIDByAppID[appTrackID] = registered.id
         appSubtitleIDByAetherID[registered.id] = appTrackID
+        if let fontRequest { assSubtitles.registerFontRequest(fontRequest, trackID: registered.id) }
         return appTrackID
     }
 
@@ -424,6 +464,7 @@ final class AetherPlaybackController {
     }
 
     private func invalidateActiveLoad(preservingExternalPlaybackPolicy: Bool = false) {
+        assSubtitles.stop()
         replacementExternalPlaybackPolicy = preservingExternalPlaybackPolicy
             ? observedExternalPlaybackPlayer?.allowsExternalPlayback
             : nil
@@ -511,6 +552,11 @@ final class AetherPlaybackController {
 
         engine.$isBuffering
             .sink { [weak self] buffering in self?.publish(.buffering(buffering)) }
+            .store(in: &subscriptions)
+
+        engine.$isLoadingSubtitles
+            .removeDuplicates()
+            .sink { [weak self] loading in self?.publish(.subtitleLoading(loading)) }
             .store(in: &subscriptions)
 
         engine.$hasFirstFrameReadyForDisplay
