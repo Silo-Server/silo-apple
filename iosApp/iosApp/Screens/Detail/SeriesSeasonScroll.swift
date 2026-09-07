@@ -26,6 +26,12 @@ struct SeriesSeasonScroll {
         time >= startedAt + timing.duration
     }
 
+    /// Clamp rendered frames, not the animation endpoints, so paging keeps
+    /// the same easing and deadline even when a boundary clips the motion.
+    static func clampedOffset(_ offset: CGFloat, maximumOffset: CGFloat) -> CGFloat {
+        min(max(0, offset), max(0, maximumOffset))
+    }
+
     mutating func rebase(by shift: CGFloat) {
         startOffset += shift
         targetOffset += shift

@@ -74,6 +74,7 @@ struct TVEpisodeRail: View {
     private final class ScrollViewport: NSObject {
         weak var scrollView: UIScrollView?
         private var intendedOffset: CGFloat?
+        private var maximumOffset: CGFloat = 0
         private var motion: SeriesSeasonScroll?
         private var displayLink: CADisplayLink?
 
@@ -83,9 +84,10 @@ struct TVEpisodeRail: View {
             if let intendedOffset { setOffset(intendedOffset) }
         }
 
-        func move(to offset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
+        func move(to offset: CGFloat, maximumOffset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
+            self.maximumOffset = maximumOffset
             stopScroll()
-            guard let scrollView else { intendedOffset = offset; return }
+            guard let scrollView else { setOffset(offset); return }
             guard let timing else { setOffset(offset); return }
             motion = SeriesSeasonScroll(
                 startOffset: scrollView.contentOffset.x,
@@ -100,7 +102,8 @@ struct TVEpisodeRail: View {
 
         /// Page changes shift coordinates, including any in-flight card move,
         /// without starting another animation or changing its completion time.
-        func rebase(by shift: CGFloat) {
+        func rebase(by shift: CGFloat, maximumOffset: CGFloat) {
+            self.maximumOffset = maximumOffset
             motion?.rebase(by: shift)
             if let offset = intendedOffset ?? scrollView?.contentOffset.x {
                 setOffset(offset + shift)
@@ -108,6 +111,9 @@ struct TVEpisodeRail: View {
         }
 
         private func setOffset(_ offset: CGFloat) {
+            // Use the new model geometry; UIScrollView.contentSize can still
+            // describe the old lazy page during insertion or eviction.
+            let offset = SeriesSeasonScroll.clampedOffset(offset, maximumOffset: maximumOffset)
             intendedOffset = offset
             guard let scrollView else { return }
             scrollView.setContentOffset(
@@ -237,12 +243,22 @@ struct TVEpisodeRail: View {
                     // Do this even when a season-pill jump is pending: its
                     // destination uses the new coordinates, so its starting
                     // viewport must be rebased before the task animates it.
-                    guard let id = anchoredFocusedContentId ?? anchoredContentId,
-                          let oldIndex = oldIds.firstIndex(of: id),
-                          let newIndex = newIds.firstIndex(of: id),
-                          oldIndex != newIndex else { return }
-                    let shift = CGFloat(newIndex - oldIndex) * (anchoredCardWidth + cardSpacing)
-                    scrollViewport.rebase(by: shift)
+                    let id = anchoredFocusedContentId ?? anchoredContentId
+                    let oldIndex = id.flatMap { oldIds.firstIndex(of: $0) }
+                    let newIndex = id.flatMap { newIds.firstIndex(of: $0) }
+                    let shift: CGFloat
+                    if let oldIndex, let newIndex {
+                        shift = CGFloat(newIndex - oldIndex) * (anchoredCardWidth + cardSpacing)
+                    } else {
+                        shift = 0
+                    }
+                    // Even a tail-only eviction can shrink the valid range.
+                    scrollViewport.rebase(
+                        by: shift,
+                        maximumOffset: anchoredContentOffset(
+                            for: episodes.count - 1, viewportWidth: geometry.size.width
+                        )
+                    )
                 }
                 .onChange(of: currentContentId) { _, _ in
                     // The season chip owns an explicit animated request.
@@ -502,6 +518,7 @@ struct TVEpisodeRail: View {
     private func scrollToSelectedSeason(at index: Int, viewportWidth: CGFloat) {
         scrollViewport.move(
             to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
             timing: reduceMotion ? nil : .season
         )
     }
@@ -509,6 +526,7 @@ struct TVEpisodeRail: View {
     private func moveAnchoredScroll(to index: Int, viewportWidth: CGFloat, animated: Bool) {
         scrollViewport.move(
             to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
             timing: animated && !reduceMotion ? .episode : nil
         )
     }
