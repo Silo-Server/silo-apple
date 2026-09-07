@@ -76,6 +76,31 @@ final class UICustomizationV2Tests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: try XCTUnwrap(transport.storageKey(for: legacyKey))))
     }
 
+    func testInitialShortcutAppendFailurePreservesProjectionAndAllowsExplicitRetry() async throws {
+        let writer = InterfaceShortcutWriter()
+        let (preferences, _, journal, _, _, _, _) = try await harness(writer: writer.write)
+        await preferences.refresh()
+        let library = try HTTPClient.makeJSONDecoder().decode(Library.self,
+            from: Data(#"{"id":7,"name":"Library","type":"movie"}"#.utf8))
+        preferences.setLibraryPinned(library, isPinned: true)
+        XCTAssertFalse(preferences.isLibraryPinned(library.id))
+        XCTAssertTrue(try journal.snapshot().isEmpty)
+        XCTAssertTrue(InterfaceSettingsProtocol.mutations().isEmpty)
+        XCTAssertNotNil(preferences.syncErrorMessage)
+
+        // Storage recovery alone must allow the same explicit action, without a refresh.
+        writer.allowWrites()
+        preferences.setLibraryPinned(library, isPinned: true)
+        let original = try XCTUnwrap(journal.snapshot().first)
+        XCTAssertTrue(preferences.isLibraryPinned(library.id))
+        XCTAssertEqual(original.path, "/api/v2/settings/values/nav.shortcuts/item")
+        await preferences.refresh()
+        let writes = InterfaceSettingsProtocol.mutations()
+        XCTAssertEqual(writes.map { $0.0.url!.lastPathComponent }, ["item", "nav.primary_menu"])
+        XCTAssertEqual(writes.first?.1, original.body)
+        XCTAssertEqual(try journal.snapshot().first?.authority, original.authority)
+    }
+
     func testDependentMenuSurvivesJournalFailureWithoutReplayingAcceptedShortcut() async throws {
         let writer = InterfaceMenuWriter()
         let (preferences, _, journal, _, _, _, _) = try await harness(writer: writer.write)
@@ -254,6 +279,16 @@ private final class InterfaceMenuWriter: @unchecked Sendable {
         if lock.withLock({ fails }), String(decoding: data, as: UTF8.self).contains("nav.primary_menu") {
             throw CocoaError(.fileWriteOutOfSpace)
         }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class InterfaceShortcutWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fails = true
+    func allowWrites() { lock.withLock { fails = false } }
+    func write(_ data: Data, _ url: URL) throws {
+        if lock.withLock({ fails }) { throw CocoaError(.fileWriteOutOfSpace) }
         try data.write(to: url, options: .atomic)
     }
 }

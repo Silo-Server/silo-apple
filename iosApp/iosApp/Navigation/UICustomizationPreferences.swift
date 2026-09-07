@@ -871,13 +871,9 @@ final class UICustomizationPreferences {
             updatedMenu = normalized
         }
 
-        setSyncError(nil, for: .navShortcuts)
-        localMutationRevision += 1
         var updatedShortcuts = currentShortcuts.filter { $0.id != item.id }
         if isPinned { updatedShortcuts.append(item) }
-        storedShortcuts = Self.sanitizedShortcuts(.init(items: updatedShortcuts))
 
-        nextShortcutOperationSequence += 1
         let primaryMenuIndex = isPinned
             ? updatedMenu?.firstIndex(where: { $0.id == item.id })
             : nil
@@ -892,7 +888,7 @@ final class UICustomizationPreferences {
             },
             shortcutIndex: currentShortcuts.firstIndex(where: { $0.id == item.id }),
             mutationId: newSettingMutationId(),
-            sequence: nextShortcutOperationSequence
+            sequence: nextShortcutOperationSequence + 1
         )
         do {
             try (transport as? SiloUICustomizationTransport)?.prepareShortcut(id: operation.mutationId,
@@ -901,6 +897,12 @@ final class UICustomizationPreferences {
             setSyncError("This change could not be saved. Try it again.", for: .navShortcuts)
             return
         }
+        // Publish the optimistic projection only after its exact command is durable.
+        // A failed append leaves the original state available for an explicit retry.
+        setSyncError(nil, for: .navShortcuts)
+        localMutationRevision += 1
+        nextShortcutOperationSequence = operation.sequence
+        storedShortcuts = Self.sanitizedShortcuts(.init(items: updatedShortcuts))
         pendingShortcutOperations[item.id] = operation
         reconcilePendingShortcutPlacementError()
 
