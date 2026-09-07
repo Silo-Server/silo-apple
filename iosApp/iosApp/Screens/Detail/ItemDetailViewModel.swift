@@ -46,13 +46,21 @@ class ItemDetailViewModel {
         return nil
     }
 
-    func retrySeriesHierarchy() async {
+    func retrySeriesHierarchy(
+        fetchSeasons: (@Sendable (String) async throws -> SeasonsResponse)? = nil,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
+    ) async {
         guard let seriesId = seriesContentId else { return }
         if seasonsLoadState == .failed || selectedSeason == nil {
-            await loadSeasons(seriesId: seriesId)
+            await loadSeasons(
+                seriesId: seriesId,
+                autoSelectInitial: selectedSeason == nil,
+                fetchSeasons: fetchSeasons,
+                fetchEpisodes: fetchEpisodes
+            )
         } else if let target = seasons.first(where: { $0.seasonNumber == failedEpisodeSeasonNumber })
                     ?? selectedSeason {
-            await selectSeason(target, forceRefresh: true)
+            await selectSeason(target, forceRefresh: true, fetchEpisodes: fetchEpisodes)
         }
     }
 
@@ -623,7 +631,19 @@ class ItemDetailViewModel {
         }
         if let detail, let seriesId = seriesContentId, selectedSeason == nil {
             if detail.type == "series" {
+                #if os(iOS)
+                if let initialResumeSeasonNumber {
+                    // A stale cache cannot decide that the requested season
+                    // is missing. Wait for the authoritative hierarchy before
+                    // offering playback from a fallback season.
+                    selectedSeason = seasons.first { $0.seasonNumber == initialResumeSeasonNumber }
+                    if selectedSeason == nil { isLoadingEpisodes = true }
+                } else {
+                    selectedSeason = preferredInitialSeason(seasons: seasons)
+                }
+                #else
                 selectedSeason = preferredInitialSeason(seasons: seasons)
+                #endif
             } else if let seasonNumber = detail.seasonNumber {
                 selectedSeason = seasons.first { $0.seasonNumber == seasonNumber }
             }

@@ -277,6 +277,54 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
         XCTAssertFalse(model.isLoadingEpisodes)
     }
 
+    func testResumeEntryDoesNotPlayAnotherSeasonFromAStaleCache() throws {
+        let detail = try JSONDecoder().decode(ItemDetail.self, from: Data(
+            "{\"contentId\":\"\(seriesId)\",\"type\":\"series\",\"title\":\"Synthetic series\"}".utf8
+        ))
+        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(seriesId))
+        ResponseCache.shared.set(try seasons([1]), for: CacheKey.itemSeasons(seriesId))
+        ResponseCache.shared.set(try episodes([1]), for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: 1))
+        defer {
+            clearCache()
+            ResponseCache.shared.remove(CacheKey.itemDetail(seriesId))
+        }
+        let model = ItemDetailViewModel()
+        model.initialResumeSeasonNumber = 3
+        model.hydrateFromCache(contentId: seriesId)
+        XCTAssertNil(model.selectedSeason)
+        XCTAssertTrue(model.episodes.isEmpty)
+        XCTAssertTrue(model.isLoadingSeriesHierarchy)
+        XCTAssertEqual(model.initialResumeSeasonNumber, 3)
+    }
+
+    func testRetryOfBackgroundHierarchyFailureKeepsTheBrowsedSeason() async throws {
+        let model = ItemDetailViewModel()
+        model.seasons = try seasons([1, 2]).seasons
+        model.selectedSeason = model.seasons[1]
+        // A loaded empty page is still the selected season's authoritative page.
+        model.episodesBySeason[2] = []
+        defer { clearCache() }
+        await model.loadSeasons(seriesId: seriesId, autoSelectInitial: false,
+            fetchSeasons: { _ in throw URLError(.timedOut) })
+        XCTAssertNotNil(model.seriesLoadErrorMessage)
+        await model.retrySeriesHierarchy(
+            fetchSeasons: { _ in try self.seasons([1, 2]) },
+            fetchEpisodes: { _, _ in
+                XCTFail("A hierarchy retry must not replace the browsed episode page")
+                return try self.episodes([])
+            })
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 2)
+        XCTAssertEqual(model.episodesBySeason[2], [])
+        XCTAssertNil(model.seriesLoadErrorMessage)
+    }
+
+    func testResponseGateRetainsAnEarlyResponse() async {
+        let gate = ResponseGate<Int>()
+        await gate.finish(42)
+        let result = await gate.wait()
+        XCTAssertEqual(result, 42)
+    }
+
     private func clearCache() {
         ResponseCache.shared.remove(CacheKey.itemSeasons(seriesId))
         ResponseCache.shared.remove(CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: 1))
@@ -296,8 +344,20 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
 /// Intentionally ignores cancellation to model a coalesced response already in flight.
 private actor ResponseGate<Value: Sendable> {
     private var continuation: CheckedContinuation<Value, Never>?
+    private var pending: Value?
     func wait() async -> Value {
-        await withCheckedContinuation { continuation = $0 }
+        if let pending {
+            self.pending = nil
+            return pending
+        }
+        return await withCheckedContinuation { continuation = $0 }
     }
-    func finish(_ value: Value) { continuation?.resume(returning: value) }
+    func finish(_ value: Value) {
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(returning: value)
+        } else {
+            pending = value
+        }
+    }
 }
