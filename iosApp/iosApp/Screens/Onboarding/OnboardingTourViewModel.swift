@@ -2,14 +2,14 @@ import Foundation
 
 #if !os(tvOS)
 protocol OnboardingTourAPI: Sendable {
+    func requireCurrentFlowOwner() async throws
+    func flowSettingsOwner() async throws -> CapturedDurableAccountAuth?
     func onboardingFlow(surface: String) async throws -> OnboardingFlow
     func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws
     func setSetting(key: String, value: String) async throws
     func setDeviceSetting(key: String, value: String) async throws
 }
-
-extension SiloAPI: OnboardingTourAPI {}
 
 private enum OnboardingTourError: LocalizedError {
     case unsupportedSetting(String)
@@ -52,7 +52,7 @@ class OnboardingTourViewModel {
     private let activeProfileId: @MainActor () -> String?
 
     init(
-        api: any OnboardingTourAPI = SiloAPI.shared,
+        api: any OnboardingTourAPI = OnboardingSettingsV2Transport(),
         runtimeSettingsRefresher: (any OnboardingRuntimeSettingsRefreshing)? = nil,
         activeProfileId: @escaping @MainActor () -> String? = { AuthService.shared.profileId }
     ) {
@@ -63,11 +63,15 @@ class OnboardingTourViewModel {
     }
 
     func load(resumeStepId: String? = nil) async {
+        let serverId = ServerRegistry.shared.activeServerId
+        let profileId = activeProfileId()
         isLoading = true
         error = nil
         defer { isLoading = false }
         do {
             let flow = try await api.onboardingFlow(surface: "phone")
+            try await api.requireCurrentFlowOwner()
+            guard activeProfileId() == profileId else { throw HTTPError.requestIdentityChanged }
             writerID = flow.writerID
             needsReload = false
             currentIndex = 0
@@ -77,8 +81,6 @@ class OnboardingTourViewModel {
                 // Nothing we can show: dismiss now and persist a retry marker
                 // before posting completion so a transient failure cannot
                 // reopen an empty modal on every launch.
-                let serverId = ServerRegistry.shared.activeServerId
-                let profileId = AuthService.shared.profileId
                 if let serverId, let profileId {
                     UnrenderableOnboardingTourSuppression.set(
                         serverId: serverId,
@@ -119,6 +121,7 @@ class OnboardingTourViewModel {
     }
 
     private func saveProgress(_ request: OnboardingProgressRequest) async throws {
+        try await api.requireCurrentFlowOwner()
         var captured = request
         captured.writerID = writerID
         do { try await api.postOnboardingProgress(captured) }
@@ -231,6 +234,7 @@ class OnboardingTourViewModel {
 
         do {
             try await writeSetting(spec: spec, value: value)
+            try await api.requireCurrentFlowOwner()
             selectedValues[step.id] = value
         } catch {
             self.error = error.localizedDescription
@@ -255,13 +259,16 @@ class OnboardingTourViewModel {
               let spec = step.setting,
               let value = spec.default else { return }
         try await writeSetting(spec: spec, value: value)
+        try await api.requireCurrentFlowOwner()
         selectedValues[step.id] = value
     }
 
     private func writeSetting(spec: OnboardingSettingSpec, value: String) async throws {
+        let profileId = activeProfileId()
+        try await api.requireCurrentFlowOwner()
         switch spec.target {
         case "profile_field":
-            guard let profileId = activeProfileId() else {
+            guard let profileId else {
                 throw OnboardingTourError.missingProfile
             }
 
@@ -275,10 +282,14 @@ class OnboardingTourViewModel {
             default: throw OnboardingTourError.unsupportedSetting(spec.key)
             }
             try await api.updateProfile(profileId: profileId, body: body)
+            try await api.requireCurrentFlowOwner()
+            guard activeProfileId() == profileId else { throw HTTPError.requestIdentityChanged }
+            let owner = try await api.flowSettingsOwner()
+            try await api.requireCurrentFlowOwner()
             await runtimeSettingsRefresher.refreshAfterProfileWrite(
-                key: spec.key,
-                value: value
+                key: spec.key, value: value, owner: owner
             )
+            try await api.requireCurrentFlowOwner()
         case "setting":
             try await api.setSetting(key: spec.key, value: value)
         case "device_setting":

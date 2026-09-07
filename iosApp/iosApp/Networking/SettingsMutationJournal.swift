@@ -90,6 +90,11 @@ enum SettingsMutationHold: LocalizedError {
 /// claimed durably before HTTP, so process death cannot turn uncertainty into
 /// an automatic retry. Records are retained after receipts for identity checks.
 final class SettingsMutationJournal: @unchecked Sendable {
+    /// Canonical callers that overlap the player's targets share its existing
+    /// file and lock. Existing records retain their original bytes and owner.
+    static let sharedCanonical = SettingsMutationJournal(url: FileManager.default.urls(
+        for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("SettingsV2/player-commands.json"))
     private let lock = NSLock()
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
@@ -192,9 +197,7 @@ final class PlayerSettingsV2Queue: @unchecked Sendable {
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared, defaults: UserDefaults = .standard,
          journal: SettingsMutationJournal? = nil) {
         self.api = api; self.tokens = tokens; self.defaults = defaults
-        let journal = journal ?? SettingsMutationJournal(url: FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SettingsV2/player-commands.json"))
+        let journal = journal ?? SettingsMutationJournal.sharedCanonical
         self.journal = journal
         dispatcher = SettingsMutationDispatcher(journal: journal, tokens: tokens, api: api)
     }

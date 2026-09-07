@@ -1,24 +1,4 @@
-//
-//  ProfileSettingsWriter.swift
-//  Silo (iOS + tvOS + macOS)
-//
-//  Writes the profile-scoped preferences — subtitle language / mode / forced,
-//  metadata language — through the canonical settings API at `scope=profile`.
-//
-//  These used to travel as fields on `PUT /profiles/{id}`. The server still
-//  accepts that and mirrors the fields into the canonical rows
-//  (internal/api/handlers/profiles_settings_sync.go), so the legacy path is not
-//  broken — but it is a narrower pipe than the contract: it can only address
-//  the profile's own scope, spells "no preference" as the empty string where
-//  the contract spells it null, and validates nothing a client sends until the
-//  mirror runs. Writing the canonical keys directly is what lets a value
-//  authored here read back identically on web and Android, and what will keep
-//  working when the legacy fields are eventually retired.
-//
-//  Reads go through the same batched effective endpoint every other surface
-//  uses, so a value overridden at a library, series or device scope is reported
-//  as such rather than being silently masked by the profile row this writes.
-//
+// Profile editors write canonical v2 values through a durable owner-bound journal.
 
 import Foundation
 import OSLog
@@ -41,30 +21,27 @@ protocol ProfileSettingsTransport: AnyObject, Sendable {
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
-final class SiloProfileSettingsTransport: ProfileSettingsTransport {
-    private let api: SiloAPI
+final class SiloProfileSettingsTransport: ProfileSettingsTransport, @unchecked Sendable {
+    private let settings: CanonicalProfileSettingsV2
+    private let lock = NSLock()
+    private var owner: CapturedDurableAccountAuth?
 
-    init(api: SiloAPI = .shared) {
-        self.api = api
+    init(api: SiloAPI = .shared, tokens: TokenStore = .shared, journal: SettingsMutationJournal? = nil) {
+        settings = CanonicalProfileSettingsV2(api: api, tokens: tokens, journal: journal)
     }
 
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
-        try await api.getEffectiveValues(keys: keys)
+        let captured = try await settings.capture()
+        let response = try await settings.read(keys, owner: captured)
+        lock.withLock { owner = captured }
+        return response
     }
 
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws {
-        _ = try await api.putValue(
-            key: key,
-            scope: .profile,
-            value: value,
-            mutationId: mutationId,
-            profileId: profileId
-        )
+    func putValue(key: SettingKey, value: SettingJSONValue, mutationId: String, profileId: String?) async throws {
+        guard let captured = lock.withLock({ owner }),
+              profileId == nil || profileId == captured.request.profileId,
+              let id = UUID(uuidString: mutationId) else { throw SettingsMutationHold.noAuthority }
+        try await settings.write(key: key, value: value, owner: captured, id: id)
     }
 }
 
@@ -129,8 +106,8 @@ final class ProfileSettingsWriter: @unchecked Sendable {
 
     private let transport: ProfileSettingsTransport
 
-    /// The mutation id in flight per key and profile, so a retry of the *same*
-    /// logical write replays the server's receipt instead of applying twice.
+    /// Stable local intent identity. The production journal holds an uncertain
+    /// intent instead of sending it again.
     private struct MutationIdentity: Hashable {
         let key: SettingKey
         let profileId: String?
@@ -180,7 +157,7 @@ final class ProfileSettingsWriter: @unchecked Sendable {
 
     // MARK: - Write
 
-    /// Write one profile-scoped value, holding its mutation id across retries.
+    /// Write one profile-scoped value, retaining its local intent identity.
     ///
     /// Throws ``SettingsAPIError`` so a caller can distinguish "this server is
     /// too old" and "no profile selected" from a value the contract refused.
@@ -211,8 +188,8 @@ final class ProfileSettingsWriter: @unchecked Sendable {
                     "\(key.rawValue, privacy: .public): contract refused the profile write: \(String(describing: mapped), privacy: .public)"
                 )
             case .serverUpgradeRequired, .profileRequired, .noValueAtScope, .server, .transport:
-                // Retryable in principle: keep the id so a repeat of the same
-                // logical write replays rather than double-applies.
+                // Preserve the intent identity. The production v2 journal
+                // refuses a second dispatch after an uncertain result.
                 break
             }
             throw mapped

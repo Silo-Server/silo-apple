@@ -275,6 +275,8 @@ final class OnboardingInvitationTests: XCTestCase {
 }
 
 private actor OnboardingTourAPIStub: OnboardingTourAPI {
+    func requireCurrentFlowOwner() async throws {}
+    func flowSettingsOwner() async throws -> CapturedDurableAccountAuth? { nil }
     private var recordedWrites: [String] = []
     private var recordedEvents: [String] = []
     private var recordedProfileUpdates: [String] = []
@@ -339,7 +341,7 @@ private actor OnboardingTourAPIStub: OnboardingTourAPI {
 private final class OnboardingRuntimeSettingsRefresherStub: OnboardingRuntimeSettingsRefreshing {
     private(set) var refreshes: [String] = []
 
-    func refreshAfterProfileWrite(key: String, value: String) async {
+    func refreshAfterProfileWrite(key: String, value: String, owner: CapturedDurableAccountAuth?) async {
         refreshes.append("\(key)=\(value)")
     }
 }

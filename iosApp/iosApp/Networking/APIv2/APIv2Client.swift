@@ -154,6 +154,31 @@ struct APIv2Client: Sendable {
         return try await mapErrors { try await http.patch("/api/v2/profiles/\(id)", body: patch) }
     }
 
+    /// Onboarding may update only the profile that owned the displayed flow.
+    func updateProfile(id: String, patch: APIv2ProfilePatch,
+                       auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Profile {
+        try await gate()
+        guard id == auth.profileId,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.sortedKeys]
+        let body = try encoder.encode(patch)
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: id, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let response = try await mapErrors {
+            try await http.requestData(method: "PATCH", path: "/api/v2/profiles/\(id)", body: body,
+                requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        }
+        guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil,
+              response.statusCode == 200 else { throw HTTPError.requestIdentityChanged }
+        let profile = try HTTPClient.makeJSONDecoder().decode(APIv2Profile.self, from: response.data)
+        guard profile.id == id else { throw HTTPError.requestIdentityChanged }
+        return profile
+    }
+
     // MARK: Requests
 
     func requestGet<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
