@@ -1,6 +1,6 @@
 Source: silo-server contracts/api/v2/fixtures (plus contracts/api/v2/fixtures.schema.json)
-Server ref: apiv2
-Server commit: 0d2a7956d449f620b23308448f6f05e65af21e8f
+Server ref: HEAD
+Server commit: ba18bf1208b926b6efc764d02f6e2101c70c6765
 Vendored: 2026-09-08
 
 Selected fixtures only (see SELECTED in scripts/sync-apiv2-fixtures.sh); index.json is
