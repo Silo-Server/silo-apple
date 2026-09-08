@@ -63,7 +63,7 @@ fi
 show_head() { git -C "$SERVER" show "HEAD:$1"; }
 
 mkdir -p "$DEST"
-find "$DEST" -maxdepth 1 -name '*.json' -delete
+# Preserve client-authored fixtures in this directory; overwrite only the selected server fixtures.
 for name in "${SELECTED[@]}"; do
   show_head "$SRC_DIR/$name.json" > "$DEST/$name.json"
 done
