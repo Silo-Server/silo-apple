@@ -230,10 +230,18 @@ actor PlaybackMutationStore {
     }
 
     func prepareStart(authority: PlaybackMutationAuthority, attemptID: String, body: Data, progressTimeline: APIv2ProgressTimeline? = nil) throws -> StoredPlaybackStart {
+        try prepareStartWithDisposition(authority: authority, attemptID: attemptID, body: body,
+            progressTimeline: progressTimeline).start
+    }
+
+    /// Creation is reported atomically with persistence; callers must never
+    /// infer fresh credential authority from a missing response alone.
+    func prepareStartWithDisposition(authority: PlaybackMutationAuthority, attemptID: String,
+        body: Data, progressTimeline: APIv2ProgressTimeline? = nil) throws -> (start: StoredPlaybackStart, created: Bool) {
         var file = try read()
         if let existing = file.starts?.values.first(where: { $0.authority == authority && !$0.finished }) {
             guard existing.attemptID == attemptID, existing.body == body, existing.progressTimeline == progressTimeline else { throw PlaybackSequencedError.pendingStart }
-            return existing
+            return (existing, false)
         }
         if progressTimeline != nil {
             guard !file.sessions.values.contains(where: {
@@ -244,7 +252,7 @@ actor PlaybackMutationStore {
         if file.starts == nil { file.starts = [:] }
         file.starts?[start.id] = start
         try persist(file)
-        return start
+        return (start, true)
     }
 
     func start(_ id: UUID, authority: PlaybackMutationAuthority) throws -> StoredPlaybackStart {

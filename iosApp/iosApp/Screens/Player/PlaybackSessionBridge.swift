@@ -997,6 +997,19 @@ actor PlaybackSessionBridge {
         }
     }
 
+    /// Retry only the exact attempt inside the cancellation shield. The
+    /// coordinator retains its original ephemeral authority across uncertainty.
+    static func startV2WithNetworkRetry(coordinator: PlaybackMutationCoordinator,
+        request: PlaybackV3StartRequest, auth: CapturedDurableAccountAuth?,
+        capability: APIv2PlaybackCapabilities) async throws -> PlaybackV3DecisionResponse {
+        do {
+            return try await coordinator.startV2(request: request, auth: auth, capability: capability)
+        } catch let error as HTTPError {
+            guard case .network = error else { throw error }
+            return try await coordinator.startV2(request: request, auth: auth, capability: capability)
+        }
+    }
+
     private func stageProtocolV3Start(
         watchDetail: WatchDetail,
         selectedVersion: FileVersion,
@@ -1052,16 +1065,8 @@ actor PlaybackSessionBridge {
         // timeout. Shield the request from cancellation and retire whatever it
         // allocated if the caller has already walked away.
         let response = try await PlaybackCancellationShield.run {
-            do {
-                return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
-            } catch let error as HTTPError {
-                guard case .network = error else { throw error }
-                // Reuse the exact request and playback_attempt_id so an
-                // ambiguous first response cannot allocate a second logical
-                // attempt. Retried inside the shield so the reclaim path below
-                // sees the final outcome, not the ambiguous one.
-                return try await self.mutationCoordinator.startV2(request: request, auth: capturedPlaybackAuth, capability: initialCapability)
-            }
+            try await Self.startV2WithNetworkRetry(coordinator: self.mutationCoordinator,
+                request: request, auth: capturedPlaybackAuth, capability: initialCapability)
         } reclaim: { [self] abandoned in
             guard let orphaned = Self.allocatedSessionId(in: abandoned) else { return }
             try? await registerSequencedAllocation(abandoned, auth: capturedPlaybackAuth)

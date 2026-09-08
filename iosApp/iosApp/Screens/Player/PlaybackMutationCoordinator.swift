@@ -39,6 +39,7 @@ actor PlaybackMutationCoordinator {
         var scope: ProxyAuxiliaryScope?
     }
     /// Memory only. A restored durable response cannot recreate these credentials.
+    private var originalStartAuth: [UUID: CapturedOrdinaryRequestAuth] = [:]
     private var auxiliaryPlans: [String: AuxiliaryPlanAuthority] = [:]
     private var auxiliaryAdoptions: [String: UUID] = [:]
     private struct StopIntent {
@@ -132,7 +133,10 @@ actor PlaybackMutationCoordinator {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = [.sortedKeys]
         let body = try encoder.encode(APIv2PlaybackStartBody(request, installationID: installation))
-        let start = try await store.prepareStart(authority: authority, attemptID: request.playbackAttemptId, body: body, progressTimeline: progressTimeline)
+        let prepared = try await store.prepareStartWithDisposition(authority: authority,
+            attemptID: request.playbackAttemptId, body: body, progressTimeline: progressTimeline)
+        let start = prepared.start
+        if prepared.created { originalStartAuth[start.id] = auth.request }
         guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
         unresolvedStarts[start.id] = start
         await PlaybackStopNotices.shared.setPending(start.id, true)
@@ -144,7 +148,10 @@ actor PlaybackMutationCoordinator {
         // still owns the in-flight start and is about to begin playback.
         guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
         guard resolvingStarts.insert(start.id).inserted else { throw PlaybackSequencedError.pendingStart }
-        defer { resolvingStarts.remove(start.id) }
+        defer {
+            resolvingStarts.remove(start.id)
+            if completedStarts.contains(start.id) { originalStartAuth.removeValue(forKey: start.id) }
+        }
         // Snapshots held across actor suspension are not permission to retire
         // a start. Re-read the journal while owning this attempt's resolution.
         let start = try await store.start(start.id, authority: start.authority)
@@ -155,6 +162,12 @@ actor PlaybackMutationCoordinator {
             throw PlaybackSequencedError.invalidSession
         }
         let auth = try await currentAuth(start.authority)
+        // Autoplay recovery can reuse only this process's original snapshot.
+        // Explicit retirement may resolve uncertainty with current durable-owner
+        // credentials, but cannot grant media authority from that replay.
+        if !retire, let original = originalStartAuth[start.id], original != auth {
+            throw PlaybackSequencedError.authorityChanged
+        }
         let data: Data
         if let saved = start.response { data = saved }
         else {
@@ -204,10 +217,10 @@ actor PlaybackMutationCoordinator {
         await PlaybackStopNotices.shared.setPending(start.id, false)
         do {
             let response = try wire.legacy()
-            if let sessionID, !retire, start.response == nil {
+            if let sessionID, !retire {
                 let input = try JSONSerialization.jsonObject(with: start.body) as? [String: Any]
                 let features = input?["client_features"] as? [String] ?? []
-                try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth,
+                try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: originalStartAuth[start.id],
                     allowsAuthorizedOrigins: features.contains(PlaybackProtocolV3.authorizedMediaOriginsFeature))
             }
             return response
@@ -385,7 +398,7 @@ actor PlaybackMutationCoordinator {
     /// Called only with the response to the captured request that adopted the
     /// plan. Durable response bytes are neither decorated nor re-encoded.
     func adoptAuxiliaryAuthority(plan: PlaybackV3Plan?, sessionID: String,
-                                auth: CapturedOrdinaryRequestAuth, allowsAuthorizedOrigins: Bool = false) async throws {
+                                auth: CapturedOrdinaryRequestAuth?, allowsAuthorizedOrigins: Bool = false) async throws {
         let adoption = UUID()
         auxiliaryAdoptions[sessionID] = adoption
         auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
@@ -395,6 +408,7 @@ actor PlaybackMutationCoordinator {
             || StreamRequest.isAllowedAuthorizedMediaOriginPath(primaryPath, sessionId: sessionID)
         let auxiliaryURLs = [plan.subtitle.artifact?.url] + plan.subtitle.inventory.flatMap { [$0.url, $0.fontBundleUrl] }
         guard headerPrimary || auxiliaryURLs.compactMap({ $0 }).contains(where: StreamRequest.isHeaderAuthenticatedAuxiliaryURL) else { return }
+        guard let auth else { throw PlaybackSequencedError.authorityChanged }
         try ApplePlaybackV3PlanAdapter.validate(plan)
         guard plan.stream.headers.allSatisfy({ key, value in
             key.caseInsensitiveCompare("X-Profile-Id") != .orderedSame || value == auth.profileId

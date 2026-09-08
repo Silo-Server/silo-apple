@@ -479,6 +479,82 @@ final class APIv2PlaybackTests: XCTestCase {
         }
     }
 
+    func testBridgeLostStartCannotAdoptReplacementTokenOrProof() async throws {
+        for proof in [false, true] {
+            V2PlaybackProtocol.reset()
+            let (owner, tokens, auth, _, store) = try await fixture()
+            let (decision, id, raw) = try headerMediaDecision()
+            V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+            let refresh = await tokens.captureRefreshCredential(expected: auth.request.account)
+            let capturedRefresh = try XCTUnwrap(refresh)
+            V2PlaybackProtocol.loseNextStart {
+                if proof { _ = await tokens.setProfileToken("replacement-proof") }
+                else { _ = await tokens.saveRefreshedTokens("replacement", "replacement-refresh", replacing: capturedRefresh) }
+            }
+            do {
+                _ = try await PlaybackSessionBridge.startV2WithNetworkRetry(coordinator: owner,
+                    request: request(authorizedOrigins: true), auth: auth, capability: capability())
+                XCTFail("Lost response retry adopted replacement authority")
+            } catch {}
+            do {
+                _ = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                    requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+                XCTFail("Uncertain attempt gained usable media authority")
+            } catch {}
+            let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+            XCTAssertEqual(starts.count, 1, "Changed authority must not dispatch playback retry")
+            let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability().requireAvailable())
+            let pending = try await store.pendingStarts(authority: authority)
+            XCTAssertEqual(pending.first?.body, starts.first?.1)
+            XCTAssertNil(pending.first?.response)
+            // Explicit recovery still resolves and retires the allocation.
+            await owner.restorePending()
+            await owner.retryPendingStops()
+            let recovered = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+            XCTAssertEqual(recovered.count, 2)
+            XCTAssertEqual(recovered.last?.1, starts.first?.1)
+            XCTAssertTrue(V2PlaybackProtocol.requests().contains { $0.0.httpMethod == "DELETE" })
+        }
+    }
+
+    func testResponseLessRestoreCannotRecreateOriginalMediaAuthority() async throws {
+        let (owner, tokens, auth, api, store) = try await fixture()
+        let (decision, id, raw) = try headerMediaDecision()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+        V2PlaybackProtocol.startFails(true)
+        do { _ = try await owner.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability()); XCTFail() } catch {}
+        let original = try XCTUnwrap(V2PlaybackProtocol.requests().first { $0.0.url?.path.hasSuffix("/start") == true })
+        V2PlaybackProtocol.startFails(false)
+        let restored = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
+        await restored.restorePending()
+        do { _ = try await restored.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability()); XCTFail("Restored intent adopted process credentials") } catch {}
+        do {
+            _ = try await restored.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+            XCTFail("Restored response-less intent gained media scope")
+        } catch {}
+        let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertEqual(starts.last?.1, original.1)
+        XCTAssertTrue(V2PlaybackProtocol.requests().contains { $0.0.httpMethod == "DELETE" }, "Resolved allocation must still retire")
+    }
+
+    func testBridgeLostStartWithUnchangedAuthorityRetainsExactAttempt() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let (decision, id, raw) = try headerMediaDecision()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+        V2PlaybackProtocol.loseNextStart {}
+        _ = try await PlaybackSessionBridge.startV2WithNetworkRetry(coordinator: owner,
+            request: request(authorizedOrigins: true), auth: auth, capability: capability())
+        let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertEqual(starts.first?.1, starts.last?.1)
+        let media = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+            requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+        XCTAssertEqual(media.headers["Authorization"], "Bearer access")
+        media.proxyAuxiliaryScope?.invalidate()
+    }
+
     func testAPIOnlyAttemptCannotBePromotedByMediaCaller() async throws {
         for proxy in [false, true] {
             let (owner, _, auth, _, _) = try await fixture()
@@ -736,6 +812,8 @@ private final class V2PlaybackProtocol: URLProtocol {
     nonisolated(unsafe) private static var decision = Data()
     nonisolated(unsafe) private static var startHook: (@Sendable () -> Void)?
     static func beforeNextStart(_ hook: @escaping @Sendable () -> Void) { lock.withLock { startHook = hook } }
+    nonisolated(unsafe) private static var lostStartHook: (@Sendable () async -> Void)?
+    static func loseNextStart(_ hook: @escaping @Sendable () async -> Void) { lock.withLock { lostStartHook = hook } }
     nonisolated(unsafe) private static var failStart = false
     nonisolated(unsafe) private static var rejection: Data?
     nonisolated(unsafe) private static var rejectionCode = 422
@@ -750,7 +828,7 @@ private final class V2PlaybackProtocol: URLProtocol {
     static func startFails(_ value: Bool) { lock.withLock { failStart = value } }
     static func stopStatus(_ value: Int) { lock.withLock { stopCode = value } }
     static func requests() -> [(URLRequest, Data)] { lock.withLock { captured } }
-    static func reset() { lock.withLock { captured = []; startHook = nil; responseHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
+    static func reset() { lock.withLock { captured = []; lostStartHook = nil; startHook = nil; responseHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
     static func changeInstallation() { lock.withLock {
         var value = try! JSONSerialization.jsonObject(with: capability) as! [String: Any]
         value["installation_id"] = "different-installation"
@@ -799,6 +877,10 @@ private final class V2PlaybackProtocol: URLProtocol {
         else if request.url!.path.hasSuffix("/start") {
             let hook = Self.lock.withLock { let hook = Self.startHook; Self.startHook = nil; return hook }
             hook?()
+            if let lost = Self.lock.withLock({ let hook = Self.lostStartHook; Self.lostStartHook = nil; return hook }) {
+                Task { await lost(); client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)) }
+                return
+            }
             if state.2 { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
             status = state.4 == nil ? 201 : state.6; output = state.4 ?? state.1
         } else {
