@@ -510,7 +510,7 @@ class PlayerViewModel {
     /// elapsed-time field once every couple of seconds.
     private var lastNowPlayingPush: Date = .distantPast
 
-    private let sessionBridge = PlaybackSessionBridge()
+    private let sessionBridge: PlaybackSessionBridge
     @ObservationIgnored
     private var realtimeClient: PlaybackRealtimeClient!
     @ObservationIgnored
@@ -948,7 +948,8 @@ class PlayerViewModel {
     /// audio keep playing after this fires.
     private var foregroundExitObserverToken: NSObjectProtocol?
 
-    init() {
+    init(sessionBridge: PlaybackSessionBridge = PlaybackSessionBridge()) {
+        self.sessionBridge = sessionBridge
         do {
             aetherPlaybackController = try AetherPlaybackController()
         } catch {
@@ -3937,10 +3938,11 @@ class PlayerViewModel {
                 }
             }
 
+            var stopResolution = PlaybackSessionStopResolution.noSession
             await pendingNaturalEndProgressTask?.value
             if let snapshotPosition, snapshotPosition.isFinite, snapshotPosition >= 0 {
                 if shouldFinalizeCurrentSession {
-                    await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
+                    stopResolution = await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
                 } else {
                     await self.sessionBridge.reportProgress(position: snapshotPosition, isPaused: true)
                 }
@@ -3962,6 +3964,11 @@ class PlayerViewModel {
             do {
                 self.disposeAetherPlayback(forReplacement: true)
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                // Abandonment releases recovery, but cannot authorize this
+                // captured successor. A later explicit Play creates new intent.
+                if stopResolution == .ownerLost {
+                    throw PlaybackOwnerLossRecovery.terminalFailure
+                }
 
                 // The init kicked off `settingsRefreshTask` to fetch the
                 // server's effective device settings before playback

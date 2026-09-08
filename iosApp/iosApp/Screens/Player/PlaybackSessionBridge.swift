@@ -80,6 +80,10 @@ struct PreparedPlayback {
     }
 }
 
+enum PlaybackSessionStopResolution: Equatable, Sendable {
+    case noSession, closed, pending, ownerLost
+}
+
 enum PlaybackProgressReportResult: Equatable {
     case success
     case missingSession
@@ -376,7 +380,16 @@ actor PlaybackSessionBridge {
         category: "Playback"
     )
 
-    private let mutationCoordinator = PlaybackMutationCoordinator.shared
+    private var retiringSession: Task<PlaybackSessionStopResolution, Never>?
+    private let mutationCoordinator: PlaybackMutationCoordinator
+    private let api: SiloAPI
+    private let tokens: TokenStore
+
+    init(mutationCoordinator: PlaybackMutationCoordinator = .shared, api: SiloAPI = .shared, tokens: TokenStore = .shared) {
+        self.mutationCoordinator = mutationCoordinator
+        self.api = api
+        self.tokens = tokens
+    }
     private var sequencedSessionIDs: Set<String> = []
     private var failedSequencedRegistrations: Set<String> = []
     private var sessionId: String?
@@ -693,6 +706,7 @@ actor PlaybackSessionBridge {
     }
 
     private func adoptSession(_ session: PlaybackSessionResponse) {
+        retiringSession = nil
         sessionId = session.sessionId
         currentSession = session
         consecutiveProgressFailures = 0
@@ -735,7 +749,7 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
-        let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId)
+        let watchDetail = try await api.watchDetail(contentId: contentId)
         logger.info("Got \(watchDetail.versions.count) versions, type=\(watchDetail.type, privacy: .public)")
 
         guard !watchDetail.versions.isEmpty else {
@@ -851,7 +865,7 @@ actor PlaybackSessionBridge {
                     || (prefersLastUsedVersion
                         && selectedVersion.fileId == watchDetail.userData?.lastFileId)
             )
-        let profileId = await TokenStore.shared.getProfileId()
+        let profileId = await tokens.getProfileId()
         guard let profileId,
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
@@ -1994,11 +2008,15 @@ actor PlaybackSessionBridge {
     /// clearing it after those awaits let a second caller — teardown racing an
     /// autoplay transition — claim the same id and send a duplicate final
     /// progress report and a duplicate DELETE. Claiming the id and clearing all
-    /// session-scoped state up front makes the loser a no-op. It also stops the
+    /// session-scoped state up front makes concurrent callers share the retirement
+    /// result, including terminal abandonment. It also stops the
     /// late clears from wiping a *new* session adopted while these awaits were
     /// still in flight.
-    func stopSession(position: Double, isPaused: Bool) async {
-        guard let sid = sessionId else { return }
+    @discardableResult
+    func stopSession(position: Double, isPaused: Bool) async -> PlaybackSessionStopResolution {
+        guard let sid = sessionId else {
+            return await retiringSession?.value ?? .noSession
+        }
         let stoppingProtocolV3 = activeProtocolV3
         let supersededSessionId = pendingProtocolV3Transition?.priorSessionId
 
@@ -2010,6 +2028,16 @@ actor PlaybackSessionBridge {
         consecutiveProgressFailures = 0
         emittedOrphanedSessionWarning = false
 
+        let retirement = Task { @MainActor in
+            await self.finishStoppedSession(sid, active: stoppingProtocolV3,
+                supersededSessionId: supersededSessionId, position: position, isPaused: isPaused)
+        }
+        retiringSession = retirement
+        return await retirement.value
+    }
+
+    private func finishStoppedSession(_ sid: String, active stoppingProtocolV3: ActiveProtocolV3?,
+        supersededSessionId: String?, position: Double, isPaused: Bool) async -> PlaybackSessionStopResolution {
         if let supersededSessionId, supersededSessionId != sid {
             stopStaleSession(supersededSessionId)
         }
@@ -2042,12 +2070,15 @@ actor PlaybackSessionBridge {
         }
 
         if sequencedSessionIDs.contains(sid) {
-            do { _ = try await mutationCoordinator.stop(sessionID: sid, position: position, isPaused: isPaused) }
+            do {
+                return try await mutationCoordinator.stop(sessionID: sid, position: position, isPaused: isPaused) ? .closed : .pending
+            }
             catch let failure as PlaybackV3TerminalFailure where failure.reason == "playback_owner_lost" {
                 logger.info("Playback ended after server owner loss; pending final sample was not applied")
+                return .ownerLost
             }
             catch { logger.error("Playback stop remains pending: \(MediaLogRedactor.sanitize(error), privacy: .public)") }
-            return
+            return .pending
         }
 
         if position.isFinite, position >= 0 {
@@ -2079,6 +2110,7 @@ actor PlaybackSessionBridge {
         // Nudge the Top Shelf to re-fetch now that progress has advanced.
         TVTopShelfContentProvider.topShelfContentDidChange()
         #endif
+        return .closed
     }
 
     // MARK: - Helpers

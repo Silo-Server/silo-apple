@@ -82,8 +82,12 @@ final class PlaybackMutationStoreTests: XCTestCase {
         let saved = try await PlaybackMutationStore(url: url).session(session.id, authority: authority)
         XCTAssertNil(saved.accepted)
         XCTAssertEqual(saved.stop, stop)
+        do {
         try await store.acknowledgeStop(session.id, authority: authority, sent: stop,
             receipt: PlaybackSequencedStopReceipt(outcome: .draining, stopId: stop.stopID, accepted: nil, historyId: nil))
+            XCTFail("Abandoned AbortID rejects ordinary StopID")
+        } catch {}
+
         let stillAbandoned = try await store.session(session.id, authority: authority)
         XCTAssertEqual(stillAbandoned.stopState, .abandoned)
         let legacyID = UUID().uuidString.lowercased()
@@ -96,6 +100,32 @@ final class PlaybackMutationStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), before)
         try await store.acknowledgeStop(legacy.id, authority: authority, sent: legacyStop,
             receipt: PlaybackSequencedStopReceipt(outcome: .stopped, stopId: legacyStop.stopID, accepted: nil, historyId: nil))
+    }
+
+    func testOrdinaryStopCannotReplaceObservedAbortIDAcrossReloadOrAfterAbandonment() async throws {
+        let (store, authority, url, _) = try await fixture(installation: "installation")
+        let id = UUID().uuidString.lowercased()
+        let session = try await store.register(sessionID: id, authority: authority, attemptID: "original")
+        let stop = try await store.prepareStop(session.id, authority: authority, position: 99, isPaused: true)
+        let recoveryID = UUID().uuidString.lowercased()
+        for state in [PlaybackOwnerLossRecovery.State.draining, .aborted] {
+            let last = state == .aborted ? try PlaybackSequencedSample(sequence: 1, position: 12, isPaused: false) : nil
+            let recovery = PlaybackOwnerLossRecovery(recoveryID: recoveryID, attemptID: "original", sessionID: id,
+                state: state, reason: "owner_lost", accepted: last)
+            try await store.observeStopOwnerLoss(session.id, authority: authority, sent: stop,
+                recovery: recovery, response: JSONEncoder().encode(recovery))
+            let before = try Data(contentsOf: url)
+            let reloaded = PlaybackMutationStore(url: url)
+            for outcome in [PlaybackSequencedStopReceipt.Outcome.draining, .stopped, .replayed] {
+                do {
+                    try await reloaded.acknowledgeStop(session.id, authority: authority, sent: stop,
+                        receipt: PlaybackSequencedStopReceipt(outcome: outcome, stopId: stop.stopID,
+                            accepted: stop.sample, historyId: "not-an-abort-receipt"))
+                    XCTFail("Late ordinary receipt must not replace AbortID")
+                } catch {}
+                XCTAssertEqual(try Data(contentsOf: url), before)
+            }
+        }
     }
 
     func testBoundReceiptKeepsUncertaintyUntilExactTimelineMappingMatches() async throws {

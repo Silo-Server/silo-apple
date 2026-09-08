@@ -188,11 +188,14 @@ actor PlaybackMutationStore {
         var file = try read()
         guard var session = file.sessions[id], session.authority == authority,
               session.stop == sent, receipt.stopId == sent.stopID else { throw PlaybackSequencedError.authorityChanged }
+        // The first observed recovery commits AbortID. A late ordinary StopID
+        // cannot replace that resolution, including after a journal reload.
+        guard session.ownerLoss == nil else { throw PlaybackSequencedError.invalidResponse }
         if receipt.accepted != nil || sent.sample != nil {
             try session.progressTimeline?.validateReceipt(receipt.accepted)
         }
         // A late 202 never reopens a terminal receipt.
-        if session.stopState == .terminal || (session.stopState == .abandoned && receipt.outcome == .draining) { return }
+        if session.stopState == .terminal { return }
         session.stopState = receipt.outcome == .draining ? .draining : .terminal
         if let accepted = receipt.accepted, accepted.sequence >= (session.accepted?.sequence ?? 0) {
             session.accepted = accepted
@@ -222,7 +225,10 @@ actor PlaybackMutationStore {
         try recovery.validate(attemptID: originalAttemptID(session), sessionID: session.sessionID,
             previous: session.ownerLoss, timeline: session.progressTimeline)
         // A real matching StopID receipt already stored remains authoritative.
-        if session.stopState == .terminal { return }
+        guard session.stopState != .terminal,
+              session.ownerLoss != nil || session.stopState != .draining else {
+            throw PlaybackSequencedError.invalidResponse
+        }
         session.ownerLoss = recovery
         session.ownerLossResponse = response
         session.stopState = recovery.state == .aborted ? .abandoned : .draining

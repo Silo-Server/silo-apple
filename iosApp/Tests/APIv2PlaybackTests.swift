@@ -689,7 +689,7 @@ final class APIv2PlaybackTests: XCTestCase {
         }
     }
 
-    func testOwnerLossStopRejectsMalformedUnionAndOrdinaryStopIDWins() async throws {
+    func testOwnerLossStopRejectsMalformedUnionAndCannotSwitchToOrdinaryStopID() async throws {
         let writes = AuxiliaryJournalCapture()
         let (owner, _, auth, _, store) = try await fixture(observeJournal: writes.append)
         let started = try await owner.startV2(request: request(), auth: auth, capability: capability())
@@ -740,11 +740,76 @@ final class APIv2PlaybackTests: XCTestCase {
         ordinary["accepted"] = ["sequence": stop.sample!.sequence, "position": 99, "is_paused": true]
         V2PlaybackProtocol.ownerStopResponse(try JSONSerialization.data(withJSONObject: ordinary), status: 200)
         var continued = false
-        try await AudioPlayerViewModel.startAfterPreviousPartStop(coordinator: owner, sessionID: id, position: 0) { continued = true }
-        XCTAssertTrue(continued, "Real matching ordinary StopID retains normal continuation")
+        do { try await AudioPlayerViewModel.startAfterPreviousPartStop(coordinator: owner, sessionID: id, position: 0) { continued = true }; XCTFail() } catch {}
+        XCTAssertFalse(continued, "Observed AbortID cannot become ordinary StopID success")
         let final = try await store.session(original.id, authority: original.authority)
-        XCTAssertEqual(final.stopState, .terminal)
-        XCTAssertEqual(final.accepted?.position, 99)
+        XCTAssertEqual(final.stopState, .draining)
+        XCTAssertEqual(final.ownerLossResponse, pending)
+        XCTAssertEqual(final.accepted, original.accepted)
+        XCTAssertEqual(final.stop, original.stop)
+    }
+
+    func testVideoNextItemStopsAfterOwnerLossAndLaterExplicitPlayIsNewIntent() async throws {
+        let writes = AuxiliaryJournalCapture()
+        let (owner, tokens, _, api, _) = try await fixture(observeJournal: writes.append)
+        let (decision, _, _) = try headerMediaDecision(proxy: false)
+        var wire = try XCTUnwrap(JSONSerialization.jsonObject(with: decision) as? [String: Any])
+        wire["server_features"] = [PlaybackProtocolV3.planFeature, PlaybackProtocolV3.headerAuthenticatedMediaFeature]
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"),
+            decision: try JSONSerialization.data(withJSONObject: wire))
+        let bridge = PlaybackSessionBridge(mutationCoordinator: owner, api: api, tokens: tokens)
+        let prepared = try await bridge.startSession(contentId: "current", startFromBeginning: true)
+        _ = await bridge.commitPendingProtocolV3Transition(prepared)
+        let startBody = try XCTUnwrap(V2PlaybackProtocol.requests().first { $0.0.url?.path.hasSuffix("/start") == true })
+        let originalAttempt = try XCTUnwrap((JSONSerialization.jsonObject(with: startBody.1) as? [String: Any])?["playback_attempt_id"] as? String)
+        V2PlaybackProtocol.ownerStopResponse(try ownerLossWire(start: false, pending: false,
+            session: prepared.session.sessionId, attempt: originalAttempt), status: 200)
+        // If a forbidden successor is dispatched, return a harmless terminal
+        // decision so this regression never opens a renderer/network media URL.
+        V2PlaybackProtocol.rejectStart(Data(#"{"protocol_version":3,"server_features":["playback_plan_v3"],"outcome":"adaptation_unavailable","terminal":{"reason":"test_explicit_boundary","message":"Explicit test boundary","retryable":false}}"#.utf8), status: 201)
+        let model = PlayerViewModel(sessionBridge: bridge)
+        defer { model.cleanup() }
+        model.currentTime = 20
+        model.duration = 20
+        model.showNextUpScreen = true
+        let episode = try HTTPClient.makeJSONDecoder().decode(EpisodeListItem.self,
+            from: Data(#"{"content_id":"next","season_number":1,"episode_number":2,"title":"Next"}"#.utf8))
+        model.nextUpEpisode = PlayerNextUpEpisode(episode: episode, seriesId: "series", seriesTitle: "Series")
+        model.playNextEpisodeNow()
+        let deadline = Date().addingTimeInterval(5)
+        while model.nextUpStartError == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(model.nextUpStartError?.contains("owner was lost") == true)
+        XCTAssertFalse(model.isLoading)
+        XCTAssertFalse(model.isNextUpTransitioning)
+        XCTAssertFalse(model.isPlaying)
+        let afterAuto = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(afterAuto.count, 1, "Actual video next-item flow must not dispatch a successor")
+        let journal = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
+        XCTAssertEqual(journal.sessions.values.first?.stopState, .abandoned)
+        async let repeatedStop = bridge.stopSession(position: 20, isPaused: true)
+        async let teardownStop = bridge.stopSession(position: 20, isPaused: true)
+        let repeatedResolutions = await [repeatedStop, teardownStop]
+        XCTAssertEqual(repeatedResolutions, [.ownerLost, .ownerLost])
+        // A subsequent explicit Play, after terminal handling, may create a
+        // genuinely new identity through the same real view model and bridge.
+        model.loadAndPlay(contentId: "explicit", startFromBeginning: true)
+        let nextDeadline = Date().addingTimeInterval(5)
+        while V2PlaybackProtocol.requests().filter({ $0.0.url?.path.hasSuffix("/start") == true }).count < 2 && Date() < nextDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let afterExplicit = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(afterExplicit.count, 2)
+        let fresh = try XCTUnwrap(afterExplicit.last)
+        XCTAssertNotEqual((try JSONSerialization.jsonObject(with: fresh.1) as? [String: Any])?["playback_attempt_id"] as? String, originalAttempt)
+    }
+
+    func testOrdinaryStopBeforeRecoveryStillAllowsActualContinuation() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        var continued = false
+        try await AudioPlayerViewModel.startAfterPreviousPartStop(coordinator: owner,
+            sessionID: XCTUnwrap(response.sessionId), position: 20) { continued = true }
+        XCTAssertTrue(continued)
     }
 
     func testAPIOnlyAttemptCannotBePromotedByMediaCaller() async throws {
