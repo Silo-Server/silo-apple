@@ -555,6 +555,198 @@ final class APIv2PlaybackTests: XCTestCase {
         media.proxyAuxiliaryScope?.invalidate()
     }
 
+    private func ownerLossWire(start: Bool, pending: Bool, session: String,
+        attempt: String = "apple:stable-attempt", recovery: String = "58f24f51-e7e0-4f6a-9091-85986d2e92c5",
+        accepted: [String: Any]? = nil) throws -> Data {
+        var value: [String: Any] = ["recovery_id": recovery, "playback_attempt_id": attempt,
+            "session_id": session, "state": pending ? "draining" : "aborted", "reason": "owner_lost"]
+        if let accepted { value["accepted"] = accepted }
+        var envelope: [String: Any] = ["outcome": pending ? "draining" : (start ? "adaptation_unavailable" : "aborted"), "recovery": value]
+        if start && !pending {
+            envelope["protocol_version"] = 3
+            envelope["server_features"] = [PlaybackProtocolV3.planFeature]
+            envelope["terminal"] = ["reason": "playback_owner_lost", "retryable": false,
+                "message": "Playback ended after its server owner was lost."]
+        }
+        return try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys])
+    }
+
+    func testOwnerLossStartDrainsAcrossReloadThenTerminalWithoutMediaOrAutomaticStart() async throws {
+        let writes = AuxiliaryJournalCapture()
+        let (owner, tokens, auth, api, store) = try await fixture(observeJournal: writes.append)
+        let (_, id, raw) = try headerMediaDecision()
+        let pending = try ownerLossWire(start: true, pending: true, session: id)
+        V2PlaybackProtocol.rejectStart(pending, status: 202)
+        do { _ = try await PlaybackSessionBridge.startV2WithNetworkRetry(coordinator: owner,
+            request: request(authorizedOrigins: true), auth: auth, capability: capability()); XCTFail() } catch {}
+        let saved = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
+        let original = try XCTUnwrap(saved.starts?.values.first)
+        XCTAssertNil(original.response)
+        XCTAssertEqual(original.ownerLossResponse, pending)
+        XCTAssertFalse(original.finished)
+        let reloaded = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
+        await reloaded.restorePending()
+        do { _ = try await reloaded.startV2(request: request(attempt: "fresh"), auth: auth, capability: capability()); XCTFail() } catch {}
+        let terminal = try ownerLossWire(start: true, pending: false, session: id)
+        V2PlaybackProtocol.rejectStart(terminal, status: 201)
+        await reloaded.retryPendingStops()
+        let final = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
+        let settled = try XCTUnwrap(final.starts?[original.id])
+        XCTAssertEqual(settled.body, original.body)
+        XCTAssertNil(settled.response)
+        XCTAssertEqual(settled.ownerLossResponse, terminal)
+        XCTAssertTrue(settled.finished)
+        XCTAssertNil(settled.ownerLoss?.accepted)
+        XCTAssertTrue(final.sessions.isEmpty, "No playable session registration from abandonment")
+        let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertEqual(starts.first?.1, starts.last?.1)
+        do { _ = try await reloaded.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability()); XCTFail("Finished identity reused as fresh intent") } catch {}
+        XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }.count, 2)
+        do { _ = try await reloaded.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+            requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true); XCTFail() } catch {}
+        V2PlaybackProtocol.rejectStart(nil)
+        _ = try await reloaded.startV2(request: request(attempt: "new-explicit"), auth: auth, capability: capability())
+    }
+
+    func testOwnerLossStopPersistsLastAndHaltsActualNextPartContinuationAcrossReload() async throws {
+        let writes = AuxiliaryJournalCapture()
+        let (owner, tokens, auth, api, store) = try await fixture(observeJournal: writes.append)
+        let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(response.sessionId)
+        V2PlaybackProtocol.ownerStopResponse(try ownerLossWire(start: false, pending: true, session: id), status: 202)
+        let pending = try await owner.stop(sessionID: id, position: 99, isPaused: true)
+        XCTAssertFalse(pending)
+        let snapshot = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
+        let original = try XCTUnwrap(snapshot.sessions.values.first)
+        let restored = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
+        await restored.restorePending()
+        let terminal = try ownerLossWire(start: false, pending: false, session: id,
+            accepted: ["sequence": 1, "position": 12.5, "is_paused": false])
+        V2PlaybackProtocol.ownerStopResponse(terminal, status: 200)
+        var allocations = 0
+        for _ in 0..<2 {
+            do {
+                _ = try await AudioPlayerViewModel.startAfterPreviousPartStop(coordinator: restored, sessionID: id, position: 120) {
+                    allocations += 1
+                    return try await restored.startV2(request: self.request(attempt: "automatic-next-part"), auth: auth, capability: self.capability())
+                }
+                XCTFail("Abandonment cannot satisfy the audiobook STOP continuation")
+            } catch let failure as PlaybackV3TerminalFailure { XCTAssertEqual(failure.reason, "playback_owner_lost") }
+        }
+        XCTAssertEqual(allocations, 0)
+        let settled = try await store.session(original.id, authority: original.authority)
+        XCTAssertEqual(settled.stop, original.stop)
+        XCTAssertEqual(settled.stopState, .abandoned)
+        XCTAssertEqual(settled.accepted?.position, 12.5)
+        XCTAssertNil(settled.historyID)
+        XCTAssertEqual(settled.ownerLossResponse, terminal)
+        let stops = V2PlaybackProtocol.requests().filter { $0.0.httpMethod == "DELETE" }
+        XCTAssertEqual(stops.count, 2)
+        XCTAssertEqual(stops.first?.1, stops.last?.1)
+        let notices = await PlaybackStopNotices.shared.pending
+        XCTAssertFalse(notices.contains(original.id))
+        // A genuinely new explicit START is legal only after terminal abandonment.
+        _ = try await restored.startV2(request: request(attempt: "explicit-after-abandonment"), auth: auth, capability: capability())
+    }
+
+    func testOwnerLossMalformedOrChangedIdentityNeverSettlesPendingStart() async throws {
+        let writes = AuxiliaryJournalCapture()
+        let (owner, _, auth, _, store) = try await fixture(observeJournal: writes.append)
+        let (_, id, _) = try headerMediaDecision()
+        let pending = try ownerLossWire(start: true, pending: true, session: id)
+        V2PlaybackProtocol.rejectStart(pending, status: 202)
+        do { _ = try await owner.startV2(request: request(), auth: auth, capability: capability()); XCTFail() } catch {}
+        let before = try XCTUnwrap(writes.data.last)
+        let record = try XCTUnwrap(JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: before).starts?.values.first)
+        let base = try JSONSerialization.jsonObject(with: ownerLossWire(start: true, pending: false, session: id)) as! [String: Any]
+        var malformed: [(Data, Int)] = []
+        for key in ["recovery_id", "playback_attempt_id", "session_id", "state", "reason"] {
+            var value = base; var recovery = value["recovery"] as! [String: Any]; recovery.removeValue(forKey: key); value["recovery"] = recovery
+            malformed.append((try JSONSerialization.data(withJSONObject: value), 201))
+        }
+        for key in ["recovery_id", "playback_attempt_id", "session_id"] {
+            var value = base; var recovery = value["recovery"] as! [String: Any]; recovery[key] = UUID().uuidString; value["recovery"] = recovery
+            malformed.append((try JSONSerialization.data(withJSONObject: value), 201))
+        }
+        for key in ["playback_plan", "session_id", "progress_timeline"] {
+            var value = base; value[key] = NSNull(); malformed.append((try JSONSerialization.data(withJSONObject: value), 201))
+        }
+        let invalidRetryable: [Any] = [0, true, "false"]
+        for invalid in invalidRetryable {
+            var value = base; var terminal = value["terminal"] as! [String: Any]
+            terminal["retryable"] = invalid; value["terminal"] = terminal
+            malformed.append((try JSONSerialization.data(withJSONObject: value), 201))
+        }
+        malformed.append((try JSONSerialization.data(withJSONObject: base), 202))
+        for (data, status) in malformed {
+            V2PlaybackProtocol.rejectStart(data, status: status)
+            do { _ = try await owner.startV2(request: request(), auth: auth, capability: capability()); XCTFail("Malformed recovery settled") } catch {}
+            let saved = try await store.start(record.id, authority: record.authority)
+            XCTAssertFalse(saved.finished)
+            XCTAssertEqual(saved.ownerLossResponse, pending)
+            XCTAssertEqual(saved.body, record.body)
+        }
+    }
+
+    func testOwnerLossStopRejectsMalformedUnionAndOrdinaryStopIDWins() async throws {
+        let writes = AuxiliaryJournalCapture()
+        let (owner, _, auth, _, store) = try await fixture(observeJournal: writes.append)
+        let started = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(started.sessionId)
+        let pending = try ownerLossWire(start: false, pending: true, session: id)
+        V2PlaybackProtocol.ownerStopResponse(pending, status: 202)
+        let incomplete = try await owner.stop(sessionID: id, position: 99, isPaused: true)
+        XCTAssertFalse(incomplete)
+        let snapshot = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
+        let original = try XCTUnwrap(snapshot.sessions.values.first)
+        let base = try JSONSerialization.jsonObject(with: ownerLossWire(start: false, pending: false, session: id)) as! [String: Any]
+        var malformed: [(Data, Int)] = []
+        for key in ["recovery_id", "playback_attempt_id", "session_id", "state", "reason"] {
+            var value = base; var recovery = value["recovery"] as! [String: Any]; recovery.removeValue(forKey: key); value["recovery"] = recovery
+            malformed.append((try JSONSerialization.data(withJSONObject: value), 200))
+        }
+        for (key, replacement) in [("recovery_id", UUID().uuidString), ("playback_attempt_id", "wrong"),
+            ("session_id", UUID().uuidString), ("state", "unknown"), ("reason", "source_withdrawn")] {
+            var value = base; var recovery = value["recovery"] as! [String: Any]; recovery[key] = replacement; value["recovery"] = recovery
+            malformed.append((try JSONSerialization.data(withJSONObject: value), 200))
+        }
+        for key in ["playback_plan", "session_id", "progress_timeline", "history_id", "accepted"] {
+            var value = base; value[key] = NSNull(); malformed.append((try JSONSerialization.data(withJSONObject: value), 200))
+        }
+        let invalidSamples: [[String: Any]] = [["sequence": 0, "position": 2, "is_paused": false],
+            ["sequence": 1, "position": -1, "is_paused": false], ["sequence": 1, "position": 2],
+            ["sequence": 1, "position": 2, "is_paused": false, "timeline_id": "foreign", "item_position": 2]]
+        for sample in invalidSamples {
+            var value = base; var recovery = value["recovery"] as! [String: Any]; recovery["accepted"] = sample; value["recovery"] = recovery
+            malformed.append((try JSONSerialization.data(withJSONObject: value), 200))
+        }
+        malformed.append((try JSONSerialization.data(withJSONObject: base), 202))
+        malformed.append((try ownerLossWire(start: false, pending: true, session: id,
+            accepted: ["sequence": 1, "position": 2, "is_paused": false]), 202))
+        for (bytes, status) in malformed {
+            V2PlaybackProtocol.ownerStopResponse(bytes, status: status)
+            let done = try await owner.stop(sessionID: id, position: 1, isPaused: false)
+            XCTAssertFalse(done)
+            let saved = try await store.session(original.id, authority: original.authority)
+            XCTAssertEqual(saved.stop, original.stop)
+            XCTAssertEqual(saved.ownerLossResponse, pending)
+            XCTAssertEqual(saved.stopState, .draining)
+        }
+        let stop = try XCTUnwrap(original.stop)
+        var ordinary = base
+        ordinary["stop_id"] = stop.stopID.uuidString.lowercased()
+        ordinary["outcome"] = "stopped"
+        ordinary["accepted"] = ["sequence": stop.sample!.sequence, "position": 99, "is_paused": true]
+        V2PlaybackProtocol.ownerStopResponse(try JSONSerialization.data(withJSONObject: ordinary), status: 200)
+        var continued = false
+        try await AudioPlayerViewModel.startAfterPreviousPartStop(coordinator: owner, sessionID: id, position: 0) { continued = true }
+        XCTAssertTrue(continued, "Real matching ordinary StopID retains normal continuation")
+        let final = try await store.session(original.id, authority: original.authority)
+        XCTAssertEqual(final.stopState, .terminal)
+        XCTAssertEqual(final.accepted?.position, 99)
+    }
+
     func testAPIOnlyAttemptCannotBePromotedByMediaCaller() async throws {
         for proxy in [false, true] {
             let (owner, _, auth, _, _) = try await fixture()
@@ -818,6 +1010,8 @@ private final class V2PlaybackProtocol: URLProtocol {
     nonisolated(unsafe) private static var rejection: Data?
     nonisolated(unsafe) private static var rejectionCode = 422
     nonisolated(unsafe) private static var progressFailure = false
+    nonisolated(unsafe) private static var stopBody: Data?
+    static func ownerStopResponse(_ data: Data?, status: Int) { lock.withLock { stopBody = data; stopCode = status } }
     nonisolated(unsafe) private static var stopCode = 200
     nonisolated(unsafe) private static var controlCode = 200
     static func controlStatus(_ value: Int) { lock.withLock { controlCode = value } }
@@ -828,7 +1022,7 @@ private final class V2PlaybackProtocol: URLProtocol {
     static func startFails(_ value: Bool) { lock.withLock { failStart = value } }
     static func stopStatus(_ value: Int) { lock.withLock { stopCode = value } }
     static func requests() -> [(URLRequest, Data)] { lock.withLock { captured } }
-    static func reset() { lock.withLock { captured = []; lostStartHook = nil; startHook = nil; responseHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
+    static func reset() { lock.withLock { captured = []; lostStartHook = nil; startHook = nil; responseHook = nil; failStart = false; stopBody = nil; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
     static func changeInstallation() { lock.withLock {
         var value = try! JSONSerialization.jsonObject(with: capability) as! [String: Any]
         value["installation_id"] = "different-installation"
@@ -888,7 +1082,7 @@ private final class V2PlaybackProtocol: URLProtocol {
             let input = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
             if request.httpMethod == "DELETE" {
                 status = state.3
-                output = try! JSONSerialization.data(withJSONObject: ["outcome": status == 202 ? "draining" : "stopped", "stop_id": input["stop_id"] ?? ""])
+                output = Self.lock.withLock { Self.stopBody } ?? (try! JSONSerialization.data(withJSONObject: ["outcome": status == 202 ? "draining" : "stopped", "stop_id": input["stop_id"] ?? ""]))
             } else { output = try! JSONSerialization.data(withJSONObject: ["outcome": "applied", "accepted": input]) }
         }
         let hook = Self.lock.withLock { let hook = Self.responseHook; Self.responseHook = nil; return hook }
@@ -927,4 +1121,5 @@ private final class AuxiliaryJournalCapture: @unchecked Sendable {
 
 private struct AuxiliaryJournalSnapshot: Decodable {
     let starts: [UUID: StoredPlaybackStart]?
+    let sessions: [UUID: StoredPlaybackMutationSession]
 }

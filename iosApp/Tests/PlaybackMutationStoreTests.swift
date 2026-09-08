@@ -19,6 +19,85 @@ final class PlaybackMutationStoreTests: XCTestCase {
         return (PlaybackMutationStore(url: url), authority, url, tokens)
     }
 
+    func testOwnerLossBoundLastSurvivesJournalReloadWithoutApplyingQueuedFinalSample() async throws {
+        let (store, authority, url, _) = try await fixture(installation: "installation")
+        let sessionID = UUID().uuidString.lowercased()
+        let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64), mediaItemId: "book",
+            fileId: "42", partOffsetSeconds: 60, partDurationSeconds: 30, durationSeconds: 90)
+        let session = try await store.register(sessionID: sessionID, authority: authority, progressTimeline: binding, attemptID: "original")
+        let pendingProgress = try await store.prepareProgress(session.id, authority: authority, position: 20, isPaused: false)
+        let stop = try await store.prepareStop(session.id, authority: authority, position: 29, isPaused: true)
+        let recoveryID = UUID().uuidString.lowercased()
+        func recovery(_ accepted: PlaybackSequencedSample?, state: PlaybackOwnerLossRecovery.State = .aborted) -> PlaybackOwnerLossRecovery {
+            PlaybackOwnerLossRecovery(recoveryID: recoveryID, attemptID: "original", sessionID: sessionID,
+                state: state, reason: "owner_lost", accepted: accepted)
+        }
+        let draining = recovery(nil, state: .draining)
+        try await store.observeStopOwnerLoss(session.id, authority: authority, sent: stop, recovery: draining,
+            response: JSONEncoder().encode(draining))
+        let restored = PlaybackMutationStore(url: url)
+        let before = try Data(contentsOf: url)
+        for sample in [
+            try PlaybackSequencedSample(sequence: 1, position: 5, isPaused: false),
+            try PlaybackSequencedSample(sequence: 1, position: 5, isPaused: false, timelineId: binding.timelineId, itemPosition: 5),
+            try PlaybackSequencedSample(sequence: 1, position: 31, isPaused: false, timelineId: binding.timelineId, itemPosition: 91),
+            try PlaybackSequencedSample(sequence: 1, position: 5, isPaused: false, timelineId: String(repeating: "b", count: 64), itemPosition: 65)
+        ] {
+            do { try await restored.observeStopOwnerLoss(session.id, authority: authority, sent: stop,
+                recovery: recovery(sample), response: Data()); XCTFail() } catch {}
+            XCTAssertEqual(try Data(contentsOf: url), before)
+        }
+        let last = try PlaybackSequencedSample(sequence: 1, position: 5, isPaused: false, timelineId: binding.timelineId, itemPosition: 65)
+        let terminal = recovery(last)
+        let bytes = try JSONEncoder().encode(terminal)
+        try await restored.observeStopOwnerLoss(session.id, authority: authority, sent: stop, recovery: terminal, response: bytes)
+        try await restored.acknowledgeProgress(session.id, authority: authority, sent: pendingProgress,
+            receipt: PlaybackSequencedProgressReceipt(outcome: .applied,
+                accepted: try PlaybackSequencedSample(sequence: 3, position: 29, isPaused: true,
+                    timelineId: binding.timelineId, itemPosition: 89)))
+        let reloaded = PlaybackMutationStore(url: url)
+        let saved = try await reloaded.session(session.id, authority: authority)
+        XCTAssertEqual(saved.stopState, .abandoned)
+        XCTAssertEqual(saved.stop, stop)
+        XCTAssertEqual(saved.pendingProgress, pendingProgress)
+        XCTAssertEqual(saved.accepted, last)
+        XCTAssertEqual(saved.ownerLossResponse, bytes)
+        XCTAssertNil(saved.historyID)
+        try await reloaded.requireTerminalBoundSessions(authority: authority)
+        let pending = try await reloaded.pendingStops(authority: authority, afterRestart: true)
+        XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testOwnerLossWithoutLastClearsAcceptedProjectionAndLegacyAttemptCannotBind() async throws {
+        let (store, authority, url, _) = try await fixture(installation: "installation")
+        let sessionID = UUID().uuidString.lowercased()
+        let session = try await store.register(sessionID: sessionID, authority: authority, attemptID: "original")
+        let sample = try await store.prepareProgress(session.id, authority: authority, position: 9, isPaused: false)
+        try await store.acknowledgeProgress(session.id, authority: authority, sent: sample,
+            receipt: PlaybackSequencedProgressReceipt(outcome: .applied, accepted: sample))
+        let stop = try await store.prepareStop(session.id, authority: authority, position: 99, isPaused: true)
+        let recovery = PlaybackOwnerLossRecovery(recoveryID: UUID().uuidString, attemptID: "original", sessionID: sessionID,
+            state: .aborted, reason: "owner_lost", accepted: nil)
+        try await store.observeStopOwnerLoss(session.id, authority: authority, sent: stop, recovery: recovery, response: Data())
+        let saved = try await PlaybackMutationStore(url: url).session(session.id, authority: authority)
+        XCTAssertNil(saved.accepted)
+        XCTAssertEqual(saved.stop, stop)
+        try await store.acknowledgeStop(session.id, authority: authority, sent: stop,
+            receipt: PlaybackSequencedStopReceipt(outcome: .draining, stopId: stop.stopID, accepted: nil, historyId: nil))
+        let stillAbandoned = try await store.session(session.id, authority: authority)
+        XCTAssertEqual(stillAbandoned.stopState, .abandoned)
+        let legacyID = UUID().uuidString.lowercased()
+        let legacy = try await store.register(sessionID: legacyID, authority: authority)
+        let legacyStop = try await store.prepareStop(legacy.id, authority: authority, position: nil, isPaused: true)
+        let before = try Data(contentsOf: url)
+        do { try await store.observeStopOwnerLoss(legacy.id, authority: authority, sent: legacyStop,
+            recovery: PlaybackOwnerLossRecovery(recoveryID: UUID().uuidString, attemptID: "guessed", sessionID: legacyID,
+                state: .aborted, reason: "owner_lost", accepted: nil), response: Data()); XCTFail() } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        try await store.acknowledgeStop(legacy.id, authority: authority, sent: legacyStop,
+            receipt: PlaybackSequencedStopReceipt(outcome: .stopped, stopId: legacyStop.stopID, accepted: nil, historyId: nil))
+    }
+
     func testBoundReceiptKeepsUncertaintyUntilExactTimelineMappingMatches() async throws {
         let (store, authority, url, _) = try await fixture(installation: "installation")
         let binding = APIv2ProgressTimeline(timelineId: String(repeating: "a", count: 64),

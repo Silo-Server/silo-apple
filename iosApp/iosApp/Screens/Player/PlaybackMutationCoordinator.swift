@@ -66,7 +66,7 @@ actor PlaybackMutationCoordinator {
         guard features.contains(PlaybackSequencedContract.feature) else { return }
         let authority = try PlaybackMutationAuthority(auth: auth, installationID: installationID)
         _ = try await currentAuth(authority)
-        let saved = try await store.register(sessionID: sessionID, authority: authority, progressTimeline: progressTimeline)
+        let saved = try await store.register(sessionID: sessionID, authority: authority, progressTimeline: progressTimeline, attemptID: attemptID)
         _ = try await currentAuth(authority)
         // A bare server session ID must never retarget an older bridge's
         // delayed callback to another account/profile/origin in this process.
@@ -74,7 +74,7 @@ actor PlaybackMutationCoordinator {
             throw PlaybackSequencedError.authorityChanged
         }
         contexts[sessionID] = Context(recordID: saved.id, sessionID: sessionID, authority: authority,
-            attemptID: attemptID ?? contexts[sessionID]?.attemptID)
+            attemptID: try await store.originalAttemptID(saved) ?? contexts[sessionID]?.attemptID)
     }
 
     func requireResolvedStartBeforeLegacy(auth: CapturedDurableAccountAuth) async throws {
@@ -175,7 +175,18 @@ actor PlaybackMutationCoordinator {
             // dispatch of this attempt never allocated a session. Retain the
             // journal until an authoritative replay resolves that allocation.
             let response = try await api.v2.playbackRequest(method: "POST", suffix: "/start", body: start.body, auth: auth)
-            guard response.statusCode == 201 else { throw PlaybackSequencedError.invalidResponse }
+            _ = try await currentAuth(start.authority)
+            if let recovery = try PlaybackOwnerLossRecovery.decode(response.data, status: response.statusCode, start: true) {
+                try await store.observeStartOwnerLoss(start.id, authority: start.authority, recovery: recovery, response: response.data)
+                if recovery.state == .draining { throw PlaybackSequencedError.pendingStart }
+                completedStarts.insert(start.id)
+                unresolvedStarts.removeValue(forKey: start.id)
+                await PlaybackStopNotices.shared.setPending(start.id, false)
+                // A terminal decision has no renderer/session adoption. Original
+                // body and any historical response remain unchanged in the journal.
+                return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: response.data).legacy()
+            }
+            guard start.ownerLoss == nil, response.statusCode == 201 else { throw PlaybackSequencedError.invalidResponse }
             data = response.data
             try await store.acknowledgeStart(start.id, authority: start.authority, response: data, finished: false)
         }
@@ -498,8 +509,9 @@ actor PlaybackMutationCoordinator {
         // may leave this coordinator until that same intent is persisted.
         let stop = try await store.persistStop(context.recordID, authority: context.authority, stop: intent.proposed!)
         let saved = try await store.session(context.recordID, authority: context.authority)
-        if saved.stopState == .terminal {
+        if saved.stopState.isTerminal {
             await PlaybackStopNotices.shared.setPending(context.recordID, false)
+            if saved.stopState == .abandoned { throw PlaybackOwnerLossRecovery.terminalFailure }
             return true
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(30))
@@ -507,14 +519,28 @@ actor PlaybackMutationCoordinator {
             do {
                 try Task.checkCancellation()
                 let auth = try await currentAuth(context.authority)
-                let receipt = try await api.stopSequencedPlayback(sessionID: context.sessionID, stop: stop, auth: auth, installationID: context.authority.installationID)
+                let resolution = try await api.resolveSequencedPlaybackStop(sessionID: context.sessionID, stop: stop,
+                    auth: auth, installationID: context.authority.installationID)
                 _ = try await currentAuth(context.authority)
-                try await store.acknowledgeStop(context.recordID, authority: context.authority, sent: stop, receipt: receipt)
-                if receipt.outcome != .draining {
-                    await PlaybackStopNotices.shared.setPending(context.recordID, false)
-                    return true
+                switch resolution {
+                case .ordinary(let receipt):
+                    try await store.acknowledgeStop(context.recordID, authority: context.authority, sent: stop, receipt: receipt)
+                    if receipt.outcome != .draining {
+                        await PlaybackStopNotices.shared.setPending(context.recordID, false)
+                        return true
+                    }
+                case .ownerLost(let recovery, let response):
+                    try await store.observeStopOwnerLoss(context.recordID, authority: context.authority, sent: stop,
+                        recovery: recovery, response: response)
+                    if recovery.state == .aborted {
+                        await PlaybackStopNotices.shared.setPending(context.recordID, false)
+                        // Do not let a pending final sample or an automatic bound
+                        // part transition interpret abandonment as its STOP success.
+                        throw PlaybackOwnerLossRecovery.terminalFailure
+                    }
                 }
-            } catch PlaybackSequencedError.authorityChanged { return false }
+            } catch let error as PlaybackV3TerminalFailure where error.reason == "playback_owner_lost" { throw error }
+            catch PlaybackSequencedError.authorityChanged { return false }
             catch HTTPError.requestIdentityChanged { return false }
             catch HTTPError.http(let code, _) where [400, 401, 403, 404, 409, 422].contains(code) { return false }
             catch APIv2Error.problem(let problem) where [400, 401, 403, 404, 409, 422].contains(problem.status) { return false }
@@ -542,7 +568,7 @@ actor PlaybackMutationCoordinator {
                 continue
             }
             guard let session = try? await store.session(context.recordID, authority: context.authority),
-                  session.stop != nil, session.stopState != .terminal else { continue }
+                  session.stop != nil, !session.stopState.isTerminal else { continue }
             _ = try? await stop(sessionID: context.sessionID, position: nil, isPaused: true)
         }
     }

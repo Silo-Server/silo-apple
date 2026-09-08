@@ -314,19 +314,24 @@ final class AudioPlayerViewModel {
         if requiresNewSession {
             // A successor may allocate only after the old part's exact terminal
             // receipt. Unknown stop leaves the durable barrier in place.
-            if let priorSession = activeSession {
+            let priorSession = activeSession
+            var finalPosition: Double?
+            if let priorSession {
+                guard sequencedSessionIDs.contains(priorSession.sessionId) else { throw PlaybackSequencedError.invalidSession }
                 engine.pause()
                 let priorTrack = context.tracks.first { $0.index == activeTrackIndex }
-                let finalPosition = priorTrack.map { AudioPlaybackTimeline.localTime(for: currentTime, in: $0) }
+                finalPosition = priorTrack.map { AudioPlaybackTimeline.localTime(for: currentTime, in: $0) }
                 activeSession = nil
                 activeTrackIndex = nil
                 activeTimeline = nil
                 activeEngineEpoch = nil
                 engine.stop()
-                try await stopAllocatedSession(id: priorSession.sessionId, position: finalPosition)
-                try requireCurrentLoad(generation)
             }
-            let started = try await startSession(for: track, localTime: localTime)
+            let started = try await Self.startAfterPreviousPartStop(coordinator: mutationCoordinator,
+                sessionID: priorSession?.sessionId, position: finalPosition) {
+                try self.requireCurrentLoad(generation)
+                return try await self.startSession(for: track, localTime: localTime)
+            }
             var candidateEngineEpoch: AetherAudioPlaybackController.LoadEpoch?
             do {
                 try requireCurrentLoad(generation)
@@ -518,6 +523,20 @@ final class AudioPlayerViewModel {
         guard !Task.isCancelled, generation == loadGeneration, context != nil else {
             throw CancellationError()
         }
+    }
+
+    /// The actual next-part/cross-part allocation boundary. Terminal owner loss
+    /// throws through this caller; only an ordinary successful STOP continues.
+    static func startAfterPreviousPartStop<T>(coordinator: PlaybackMutationCoordinator,
+        sessionID: String?, position: Double?, startNext: () async throws -> T) async throws -> T {
+        if let sessionID {
+            guard try await coordinator.stop(sessionID: sessionID, position: position, isPaused: true) else {
+                throw PlaybackV3TerminalFailure(reason: "audiobook_stop_unresolved",
+                    message: "The previous audiobook part has not confirmed its stop. Resolve pending playback before starting another part.",
+                    retryable: false)
+            }
+        }
+        return try await startNext()
     }
 
     private func stopAllocatedSession(id: String, position: Double? = nil) async throws {

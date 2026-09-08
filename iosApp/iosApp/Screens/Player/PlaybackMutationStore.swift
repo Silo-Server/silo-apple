@@ -30,13 +30,17 @@ struct StoredPlaybackMutationSession: Codable, Sendable {
     let sessionID: String
     let authority: PlaybackMutationAuthority
     var progressTimeline: APIv2ProgressTimeline? = nil
+    var attemptID: String? = nil
+    var ownerLoss: PlaybackOwnerLossRecovery? = nil
+    var ownerLossResponse: Data? = nil
     var allocatedSequence: Int64 = 0
     var pendingProgress: PlaybackSequencedSample?
     var accepted: PlaybackSequencedSample?
     var stop: PlaybackSequencedStop?
     var stopState: StopState = .none
     var historyID: String?
-    enum StopState: String, Codable { case none, pending, draining, terminal }
+    enum StopState: String, Codable { case none, pending, draining, terminal, abandoned
+        var isTerminal: Bool { self == .terminal || self == .abandoned } }
 }
 
 struct StoredPlaybackStart: Codable, Sendable {
@@ -46,6 +50,8 @@ struct StoredPlaybackStart: Codable, Sendable {
     let body: Data
     var response: Data?
     var progressTimeline: APIv2ProgressTimeline? = nil
+    var ownerLoss: PlaybackOwnerLossRecovery? = nil
+    var ownerLossResponse: Data? = nil
     var finished = false
 }
 
@@ -93,7 +99,7 @@ actor PlaybackMutationStore {
         try write(JSONEncoder().encode(file), url)
     }
 
-    func register(sessionID: String, authority: PlaybackMutationAuthority, progressTimeline: APIv2ProgressTimeline? = nil) throws -> StoredPlaybackMutationSession {
+    func register(sessionID: String, authority: PlaybackMutationAuthority, progressTimeline: APIv2ProgressTimeline? = nil, attemptID: String? = nil) throws -> StoredPlaybackMutationSession {
         var file = try read()
         if let existing = file.sessions.values.first(where: { $0.sessionID == sessionID && $0.authority == authority }) {
             guard existing.progressTimeline == progressTimeline else { throw PlaybackSequencedError.invalidResponse }
@@ -101,7 +107,7 @@ actor PlaybackMutationStore {
         }
         try progressTimeline?.validate()
         guard !sessionID.isEmpty else { throw PlaybackSequencedError.invalidSession }
-        let session = StoredPlaybackMutationSession(id: UUID(), sessionID: sessionID, authority: authority, progressTimeline: progressTimeline)
+        let session = StoredPlaybackMutationSession(id: UUID(), sessionID: sessionID, authority: authority, progressTimeline: progressTimeline, attemptID: attemptID)
         file.sessions[session.id] = session
         try persist(file)
         return session
@@ -116,7 +122,7 @@ actor PlaybackMutationStore {
                          isPaused: Bool) throws -> PlaybackSequencedSample {
         var file = try read()
         guard var session = file.sessions[id], session.authority == authority else { throw PlaybackSequencedError.authorityChanged }
-        guard session.stop == nil else { throw PlaybackSequencedError.invalidSession }
+        guard session.stop == nil, !session.stopState.isTerminal else { throw PlaybackSequencedError.invalidSession }
         // An uncertain sample is retried exactly before a newer logical sample.
         if let pending = session.pendingProgress { return pending }
         guard session.allocatedSequence < Int64.max else { throw PlaybackSequencedError.invalidSample }
@@ -134,6 +140,7 @@ actor PlaybackMutationStore {
                              receipt: PlaybackSequencedProgressReceipt) throws {
         var file = try read()
         guard var session = file.sessions[id], session.authority == authority else { throw PlaybackSequencedError.authorityChanged }
+        if session.stopState == .abandoned { return }
         try session.progressTimeline?.validateReceipt(receipt.accepted)
         if session.pendingProgress == sent { session.pendingProgress = nil }
         if let accepted = receipt.accepted, accepted.sequence >= (session.accepted?.sequence ?? 0) {
@@ -185,7 +192,7 @@ actor PlaybackMutationStore {
             try session.progressTimeline?.validateReceipt(receipt.accepted)
         }
         // A late 202 never reopens a terminal receipt.
-        if session.stopState == .terminal { return }
+        if session.stopState == .terminal || (session.stopState == .abandoned && receipt.outcome == .draining) { return }
         session.stopState = receipt.outcome == .draining ? .draining : .terminal
         if let accepted = receipt.accepted, accepted.sequence >= (session.accepted?.sequence ?? 0) {
             session.accepted = accepted
@@ -193,6 +200,57 @@ actor PlaybackMutationStore {
         }
         session.historyID = receipt.historyId ?? session.historyID
         file.sessions[id] = session
+        try persist(file)
+    }
+
+    /// Old sessions may obtain the attempt only from their exact durable START
+    /// record. No ambient plan, login or first-observation binding is permitted.
+    func originalAttemptID(_ session: StoredPlaybackMutationSession) throws -> String? {
+        if let attempt = session.attemptID { return attempt }
+        return try read().starts?.values.first(where: { start in
+            guard start.authority == session.authority, let data = start.response,
+                  let decision = try? HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: data) else { return false }
+            return (decision.sessionId ?? decision.playbackPlan?.sessionId) == session.sessionID
+        })?.attemptID
+    }
+
+    func observeStopOwnerLoss(_ id: UUID, authority: PlaybackMutationAuthority, sent: PlaybackSequencedStop,
+        recovery: PlaybackOwnerLossRecovery, response: Data) throws {
+        var file = try read()
+        guard var session = file.sessions[id], session.authority == authority, authority.installationID != nil,
+              session.stop == sent else { throw PlaybackSequencedError.authorityChanged }
+        try recovery.validate(attemptID: originalAttemptID(session), sessionID: session.sessionID,
+            previous: session.ownerLoss, timeline: session.progressTimeline)
+        // A real matching StopID receipt already stored remains authoritative.
+        if session.stopState == .terminal { return }
+        session.ownerLoss = recovery
+        session.ownerLossResponse = response
+        session.stopState = recovery.state == .aborted ? .abandoned : .draining
+        if recovery.state == .aborted {
+            session.accepted = recovery.accepted
+            session.historyID = nil
+        }
+        file.sessions[id] = session
+        try persist(file)
+    }
+
+    func observeStartOwnerLoss(_ id: UUID, authority: PlaybackMutationAuthority,
+        recovery: PlaybackOwnerLossRecovery, response: Data) throws {
+        var file = try read()
+        guard var start = file.starts?[id], start.authority == authority, authority.installationID != nil else {
+            throw PlaybackSequencedError.authorityChanged
+        }
+        let input = try JSONSerialization.jsonObject(with: start.body) as? [String: Any]
+        guard input?["installation_id"] as? String == authority.installationID,
+              input?["profile_id"] as? String == authority.profileID,
+              input?["playback_attempt_id"] as? String == start.attemptID else { throw PlaybackSequencedError.authorityChanged }
+        let decision = try start.response.map { try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: $0) }
+        try recovery.validate(attemptID: start.attemptID, sessionID: decision?.sessionId ?? decision?.playbackPlan?.sessionId,
+            previous: start.ownerLoss, timeline: start.progressTimeline)
+        start.ownerLoss = recovery
+        start.ownerLossResponse = response
+        start.finished = recovery.state == .aborted
+        file.starts?[id] = start
         try persist(file)
     }
 
@@ -225,7 +283,7 @@ actor PlaybackMutationStore {
 
     func requireTerminalBoundSessions(authority: PlaybackMutationAuthority) throws {
         guard !((try read()).sessions.values.contains {
-            $0.authority == authority && $0.progressTimeline != nil && $0.stopState != .terminal
+            $0.authority == authority && $0.progressTimeline != nil && $0.stopState.isTerminal == false
         }) else { throw PlaybackSequencedError.invalidSession }
     }
 
@@ -239,13 +297,19 @@ actor PlaybackMutationStore {
     func prepareStartWithDisposition(authority: PlaybackMutationAuthority, attemptID: String,
         body: Data, progressTimeline: APIv2ProgressTimeline? = nil) throws -> (start: StoredPlaybackStart, created: Bool) {
         var file = try read()
+        guard !(file.starts?.values.contains(where: {
+            $0.authority == authority && $0.attemptID == attemptID && $0.finished
+        }) ?? false) else { throw PlaybackSequencedError.invalidSession }
+        guard !file.sessions.values.contains(where: {
+            $0.authority == authority && $0.ownerLoss?.state == .draining && !$0.stopState.isTerminal
+        }) else { throw PlaybackSequencedError.pendingStart }
         if let existing = file.starts?.values.first(where: { $0.authority == authority && !$0.finished }) {
             guard existing.attemptID == attemptID, existing.body == body, existing.progressTimeline == progressTimeline else { throw PlaybackSequencedError.pendingStart }
             return (existing, false)
         }
         if progressTimeline != nil {
             guard !file.sessions.values.contains(where: {
-                $0.authority == authority && $0.progressTimeline != nil && $0.stopState != .terminal
+                $0.authority == authority && $0.progressTimeline != nil && $0.stopState.isTerminal == false
             }) else { throw PlaybackSequencedError.invalidSession }
         }
         let start = StoredPlaybackStart(id: UUID(), authority: authority, attemptID: attemptID, body: body, progressTimeline: progressTimeline)
@@ -288,7 +352,7 @@ actor PlaybackMutationStore {
     func pendingStops(authority: PlaybackMutationAuthority, afterRestart: Bool) throws -> [StoredPlaybackMutationSession] {
         guard !afterRestart || authority.installationID != nil else { return [] }
         return try read().sessions.values.filter {
-            $0.authority == authority && ($0.stop != nil || (afterRestart && $0.progressTimeline != nil)) && $0.stopState != .terminal
+            $0.authority == authority && ($0.stop != nil || (afterRestart && $0.progressTimeline != nil)) && $0.stopState.isTerminal == false
         }
     }
 }

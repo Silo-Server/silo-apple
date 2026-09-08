@@ -2043,6 +2043,9 @@ actor PlaybackSessionBridge {
 
         if sequencedSessionIDs.contains(sid) {
             do { _ = try await mutationCoordinator.stop(sessionID: sid, position: position, isPaused: isPaused) }
+            catch let failure as PlaybackV3TerminalFailure where failure.reason == "playback_owner_lost" {
+                logger.info("Playback ended after server owner loss; pending final sample was not applied")
+            }
             catch { logger.error("Playback stop remains pending: \(MediaLogRedactor.sanitize(error), privacy: .public)") }
             return
         }
