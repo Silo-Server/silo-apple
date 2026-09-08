@@ -2737,7 +2737,7 @@ class PlayerViewModel {
         let deinterlaceFieldRate: DeinterlaceFieldRate = settings.deinterlaceFieldRate == .film
             ? .frame
             : .field
-        let spec: AetherLoadSpec
+        var spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
             let audioSourceStreamIndex: Int32?
             let selectedAudioOrdinal = v3.plan.selectedTracks.audio?.index
@@ -2772,17 +2772,31 @@ class PlayerViewModel {
             } else {
                 audioSourceStreamIndex = nil
             }
+            let proxyScope = streamRequest.proxyAuxiliaryScope
+            if let proxyScope {
+                guard proxyScope.planID == v3.plan.planId, proxyScope.sessionID == prepared.session.sessionId else {
+                    throw PlaybackSequencedError.authorityChanged
+                }
+                let selectedURLs = [v3.plan.subtitle.artifact?.url, v3.plan.selectedSubtitleInventoryItem?.fontBundleUrl]
+                for raw in selectedURLs.compactMap({ $0 }) where StreamRequest.isProxyAuxiliaryURL(raw) {
+                    _ = try await proxyScope.materialize(raw)
+                    try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+                }
+                try await proxyScope.requireCurrent()
+            }
             spec = try AetherLoadSpec(
                 validating: v3.plan,
                 sessionID: prepared.session.sessionId,
                 matchContentEnabled: settings.hdrEnabled && AetherDisplayContext.matchContentEnabled,
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
-                // Subtitle artifacts, inventory sidecars and font bundles stay
-                // relative API-origin routes even when the media itself moved
-                // to a proxy, so this resolver never accepts absolute URLs.
+                // Proxy artifacts resolve only to their already downloaded
+                // exact bytes. Existing API-relative references stay opaque.
                 resolveURL: { raw in
-                    StreamRequest.resolve(
+                    if StreamRequest.isProxyAuxiliaryURL(raw) {
+                        return proxyScope?.localURL(for: raw)
+                    }
+                    return StreamRequest.resolve(
                         rawURL: raw,
                         serverURL: streamRequest.serverUrl,
                         additionalHeaders: [:],
@@ -2800,6 +2814,7 @@ class PlayerViewModel {
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 resumeSourcePosition: resumeSourcePosition
             )
+            spec.proxyAuxiliaryScope = proxyScope
         } else if streamRequest.url.isFileURL {
             let audioStreamIndex: Int32?
             if let ordinal = prepared.session.audioTrackIndex {
@@ -5819,7 +5834,7 @@ class PlayerViewModel {
         Self.logger.info(
             "[AI-SUB] registering completed subtitle index=\(descriptor.index, privacy: .public) lang=\(descriptor.language ?? "nil", privacy: .public) trackId=\(trackId, privacy: .public) autoSelect=\(autoSelect, privacy: .public)"
         )
-        aetherPlaybackController.addExternalSubtitleTrack(
+        addScopedExternalSubtitleTrack(
             ExternalSubtitleTrack(
                 url: descriptor.url,
                 name: descriptor.label,
@@ -6621,7 +6636,7 @@ class PlayerViewModel {
                   let url = resolveServerUrl(known.url, serverUrl: resolvedServerUrl) else {
                 continue
             }
-            aetherPlaybackController.addExternalSubtitleTrack(
+            addScopedExternalSubtitleTrack(
                 ExternalSubtitleTrack(
                     url: url,
                     name: known.label,
@@ -6710,7 +6725,7 @@ class PlayerViewModel {
         )
         for descriptor in descriptors {
             let appTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: descriptor.index)
-            aetherPlaybackController.addExternalSubtitleTrack(
+            addScopedExternalSubtitleTrack(
                 ExternalSubtitleTrack(
                     url: descriptor.url,
                     name: descriptor.label,
@@ -6731,6 +6746,41 @@ class PlayerViewModel {
             )
         }
         adoptAetherInventory()
+    }
+
+    /// New proxy sidecars must be delivered before registration. Aether's
+    /// existing decoder sees local bytes and cannot redirect the captured bearer.
+    private func addScopedExternalSubtitleTrack(_ track: ExternalSubtitleTrack, appTrackID: Int64,
+                                               fontRequest: URLRequest? = nil,
+                                               completion: (() -> Void)? = nil) {
+        let scope = aetherPlaybackController.activeSpec?.proxyAuxiliaryScope
+        let proxyTrack = StreamRequest.isProxyAuxiliaryURL(track.url.absoluteString)
+            || scope.map { StreamRequest.hasSameOrigin(track.url, $0.origin) } == true
+        let proxyFont = fontRequest?.url.map { url in
+            StreamRequest.isProxyAuxiliaryURL(url.absoluteString)
+                || scope.map { StreamRequest.hasSameOrigin(url, $0.origin) } == true
+        } ?? false
+        guard proxyTrack || proxyFont else {
+            aetherPlaybackController.addExternalSubtitleTrack(track, appTrackID: appTrackID, fontRequest: fontRequest)
+            completion?()
+            return
+        }
+        guard let scope, let epoch = activeAetherLoadEpoch else { return }
+        Task { @MainActor [weak self] in
+            do {
+                let delivered = try await scope.materializeTrack(track, fontRequest: fontRequest)
+                try await scope.requireCurrent()
+                guard let self, self.activeAetherLoadEpoch == epoch,
+                      self.aetherPlaybackController.activeSpec?.proxyAuxiliaryScope === scope else { return }
+                self.aetherPlaybackController.addExternalSubtitleTrack(delivered.track, appTrackID: appTrackID, fontRequest: delivered.fontRequest)
+                self.adoptAetherInventory()
+                completion?()
+            } catch {
+                // No direct-URL fallback: it would restore Aether's redirecting
+                // network path after the owned transfer was refused.
+                Self.logger.warning("Proxy subtitle delivery was refused")
+            }
+        }
     }
 
     /// Aether interprets nil subtitle headers as "inherit every media header."
@@ -6875,6 +6925,14 @@ class PlayerViewModel {
             aetherPlaybackController.selectSecondarySubtitleTrack(id: nil)
             return
         }
+        if !aetherPlaybackController.containsSubtitle(appTrackID: trackId),
+           let url = protocolV3InventorySidecarURL(for: track), StreamRequest.isProxyAuxiliaryURL(url.absoluteString) {
+            registerSecondarySubtitleWithAetherIfNeeded(track) { [weak self] in
+                guard let self, self.selectedSecondarySubtitleId == trackId else { return }
+                self.aetherPlaybackController.selectSecondarySubtitleTrack(id: trackId)
+            }
+            return
+        }
         registerSecondarySubtitleWithAetherIfNeeded(track)
         // Only a track Aether actually holds can be rendered as the secondary
         // one. Under V3 the plan mounts a single artifact, so an inventory row
@@ -6898,12 +6956,12 @@ class PlayerViewModel {
     /// The plan declares exactly one artifact, which is the primary. Every
     /// other picker row is server metadata the engine has never seen, so a
     /// dual-subtitle pick has to register its URL before it can be selected.
-    private func registerSecondarySubtitleWithAetherIfNeeded(_ track: PlayerTrack) {
+    private func registerSecondarySubtitleWithAetherIfNeeded(_ track: PlayerTrack, completion: (() -> Void)? = nil) {
         guard !aetherPlaybackController.containsSubtitle(appTrackID: track.trackId),
               let url = protocolV3InventorySidecarURL(for: track) else {
             return
         }
-        aetherPlaybackController.addExternalSubtitleTrack(
+        addScopedExternalSubtitleTrack(
             ExternalSubtitleTrack(
                 url: url,
                 name: track.title,
@@ -6915,7 +6973,14 @@ class PlayerViewModel {
                 formatHint: track.codec,
                 nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
             ),
-            appTrackID: track.trackId
+            appTrackID: track.trackId,
+            fontRequest: activePreparedProtocolV3?.plan.subtitle.inventory.first(where: { $0.combinedIndex == track.srcId })?
+                .fontBundleUrl.flatMap { resolveServerUrl($0, serverUrl: resolvedServerUrl) }.map { url in
+                    var request = URLRequest(url: url)
+                    request.allHTTPHeaderFields = aetherSubtitleRequestHeaders(for: url)
+                    return request
+                },
+            completion: completion
         )
     }
 

@@ -163,6 +163,9 @@ final class AetherPlaybackController {
         applyBackgroundPlaybackPreference()
         activeLoadEpoch = epoch
         hasCommittedActiveLoad = false
+        if activeSpec?.proxyAuxiliaryScope !== spec.proxyAuxiliaryScope {
+            activeSpec?.proxyAuxiliaryScope?.invalidate()
+        }
         activeSpec = spec
         assSubtitles.beginLoad(timelineOffset: spec.timeline.timelineOffsetSeconds)
         configureExternalPlaybackPolicy()
@@ -199,6 +202,7 @@ final class AetherPlaybackController {
         } catch is CancellationError {
             guard epoch == activeLoadEpoch else { throw CancellationError() }
             activeLoadEpoch = nil
+            activeSpec?.proxyAuxiliaryScope?.invalidate()
             activeSpec = nil
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
@@ -211,6 +215,7 @@ final class AetherPlaybackController {
             guard epoch == activeLoadEpoch else { throw CancellationError() }
             let typedFailure = engine.errorInfo
             activeLoadEpoch = nil
+            activeSpec?.proxyAuxiliaryScope?.invalidate()
             activeSpec = nil
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
@@ -474,6 +479,7 @@ final class AetherPlaybackController {
         transportRestoreTask = nil
         activeLoadEpoch = nil
         hasCommittedActiveLoad = false
+        activeSpec?.proxyAuxiliaryScope?.invalidate()
         activeSpec = nil
         configureExternalPlaybackPolicy()
         aetherSubtitleIDByAppID = [:]

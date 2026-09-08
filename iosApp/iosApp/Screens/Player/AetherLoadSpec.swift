@@ -96,6 +96,8 @@ enum AetherAuthenticationRecoveryPolicy {
 /// have to be true of the panel at spec-construction time. Passing an explicit
 /// `panelIsInHDRMode` overrides that measurement; `nil` means measure now.
 struct AetherLoadSpec {
+    /// Retains only this plan's ephemeral proxy artifact files and authority.
+    var proxyAuxiliaryScope: ProxyAuxiliaryScope? = nil
     enum ValidationError: Error, Equatable {
         case invalidStreamURL(String)
         case unsupportedDelivery(String)
@@ -329,8 +331,8 @@ struct AetherLoadSpec {
             throw ValidationError.invalidStreamURL(plan.stream.url)
         }
         let timeline = try PlaybackTimelineMapper(validating: plan.timeline)
-        // `StreamRequest` adds the current Silo bearer to the plan-provided
-        // headers. Its merged value is authoritative for both the media and
+        // `StreamRequest` supplies the captured request headers alongside the
+        // secret-free plan. Its merged value is authoritative for both the media and
         // same-origin subtitle artifacts; falling back to the wire-plan value
         // keeps the pure mapper independently usable in tests.
         let effectiveHeaders = requestHeaders ?? plan.stream.headers
@@ -380,11 +382,9 @@ struct AetherLoadSpec {
                 isForced: inventoryItem?.forced ?? false,
                 isHearingImpaired: inventoryItem?.hearingImpaired ?? false,
                 isDefault: inventoryItem?.default ?? false,
-                // Subtitle artifacts are always API-origin routes, including
-                // when `authorized_media_origins_v1` puts the media itself on a
-                // proxy. Trusting the API origin alongside the source is what
-                // keeps the bearer attached to the sidecar in that case; the
-                // artifact URL itself is still plan-validated as API-relative.
+                // Existing API artifacts retain trusted-origin headers. New
+                // proxy artifacts arrive as validated owned local files and
+                // receive an explicit empty dictionary.
                 httpHeaders: Self.subtitleRequestHeaders(
                     effectiveHeaders,
                     resourceURL: artifactURL,

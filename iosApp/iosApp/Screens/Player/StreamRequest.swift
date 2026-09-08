@@ -5,6 +5,7 @@ struct StreamRequest {
     let url: URL
     let headers: [String: String]
     let serverUrl: String
+    var proxyAuxiliaryScope: ProxyAuxiliaryScope? = nil
 
     /// Resolve the server's engine-neutral transport without allowing the
     /// user's API credential to cross an origin boundary. Header-authenticated
@@ -330,6 +331,60 @@ struct StreamRequest {
             && !segments[2].isEmpty
             && segments[3] == "subtitles"
             && !segments[4].isEmpty
+    }
+
+    /// Recognizes the new family for fail-closed dispatch. Validation below
+    /// still requires the exact issued session, origin, file and source pins.
+    static func isProxyAuxiliaryURL(_ raw: String) -> Bool {
+        guard let url = URLComponents(string: raw) else { return false }
+        return url.path.hasPrefix("/stream/v3/") && url.path.contains("/subtitles")
+    }
+
+    static func proxyAuxiliaryPins(rawURL: String, sessionID: String, origin: URL,
+                                   fileID: Int, track: Int) -> [String: String]? {
+        guard rawURL == rawURL.trimmingCharacters(in: .whitespacesAndNewlines),
+              UUID(uuidString: sessionID) != nil, fileID > 0, track >= 0,
+              let components = URLComponents(string: rawURL), let url = URL(string: rawURL),
+              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
+              hasSameOrigin(url, origin), components.user == nil, components.password == nil,
+              components.fragment == nil, !components.percentEncodedPath.contains("%"),
+              !components.percentEncodedPath.contains("\\") else { return nil }
+        let parts = components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 6 || parts.count == 7,
+              parts[0].isEmpty, parts[1] == "stream", parts[2] == "v3", parts[3] == sessionID,
+              parts[4] == "subtitles" else { return nil }
+        let fonts = parts.count == 7
+        guard !fonts || parts[6] == "fonts" else { return nil }
+        let selection = parts[5].split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard selection.count == 2 || (fonts && selection.count == 1),
+              isNonNegativeInteger(selection[0]), Int(selection[0]) == track,
+              selection.count == 1 || ["ass", "ssa", "vtt", "srt", "sup"].contains(selection[1]) else { return nil }
+        var seen = Set<String>()
+        var pins: [String: String] = [:]
+        var sourcePin = false
+        for item in components.queryItems ?? [] {
+            guard seen.insert(item.name).inserted, let value = item.value, !value.isEmpty else { return nil }
+            switch item.name {
+            case "file_id":
+                guard value == String(fileID) else { return nil }
+                pins[item.name] = value
+            case "embedded_stream_index", "downloaded_subtitle_id":
+                guard !sourcePin, isNonNegativeInteger(value),
+                      item.name != "downloaded_subtitle_id" || Int(value)! > 0 else { return nil }
+                sourcePin = true; pins[item.name] = value
+            case "external_subtitle_key":
+                guard !sourcePin, value.utf8.count == 64,
+                      value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else { return nil }
+                sourcePin = true; pins[item.name] = value
+            case "windowed":
+                guard !fonts, selection.last == "sup", ["0", "1", "false", "true"].contains(value) else { return nil }
+            case "position", "duration":
+                guard !fonts, selection.last == "sup", let number = Double(value), number.isFinite,
+                      number >= 0, item.name != "duration" || number > 0 else { return nil }
+            default: return nil
+            }
+        }
+        return pins["file_id"] != nil && sourcePin ? pins : nil
     }
 
     private static func isNonNegativeInteger(_ value: String) -> Bool {

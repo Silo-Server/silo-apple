@@ -31,6 +31,13 @@ actor PlaybackMutationCoordinator {
     private var resolvingStarts: Set<UUID> = []
     private var unresolvedStarts: [UUID: StoredPlaybackStart] = [:]
     private var contexts: [String: Context] = [:]
+    private struct AuxiliaryPlanAuthority {
+        let plan: PlaybackV3Plan
+        let auth: CapturedOrdinaryRequestAuth
+        var scope: ProxyAuxiliaryScope?
+    }
+    /// Memory only. A restored durable response cannot recreate these credentials.
+    private var auxiliaryPlans: [String: AuxiliaryPlanAuthority] = [:]
     private struct StopIntent {
         let position: Double?
         let isPaused: Bool
@@ -192,7 +199,13 @@ actor PlaybackMutationCoordinator {
         completedStarts.insert(start.id)
         unresolvedStarts.removeValue(forKey: start.id)
         await PlaybackStopNotices.shared.setPending(start.id, false)
-        do { return try wire.legacy() }
+        do {
+            let response = try wire.legacy()
+            if let sessionID, !retire, start.response == nil {
+                try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth)
+            }
+            return response
+        }
         catch {
             if let sessionID { _ = try? await stop(sessionID: sessionID, position: nil, isPaused: true) }
             throw error
@@ -259,6 +272,7 @@ actor PlaybackMutationCoordinator {
         let response = try wire.legacy()
         try await store.acknowledgeReplan(saved, response: raw.data)
         guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth)
         return response
     }
 
@@ -310,14 +324,66 @@ actor PlaybackMutationCoordinator {
                        requiresHeaderAuthenticatedMedia: Bool,
                        allowsAuthorizedMediaOrigins: Bool = false) async throws -> StreamRequest {
         let binding = try await controlBinding(sessionID: sessionID)
-        guard let request = StreamRequest.resolve(rawURL: rawURL,
+        guard var request = StreamRequest.resolve(rawURL: rawURL,
             serverURL: binding.auth.account.serverURL, additionalHeaders: additionalHeaders,
             accessToken: binding.auth.accessToken,
             requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
             authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins ? sessionID : nil,
             apiV2SessionId: sessionID) else { throw PlaybackSequencedError.invalidSession }
         try await validateControlBinding(binding)
+        if allowsAuthorizedMediaOrigins, var captured = auxiliaryPlans[sessionID] {
+            guard captured.plan.stream.url == rawURL,
+                  await auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: captured.plan.planId, auth: captured.auth) else {
+                captured.scope?.invalidate()
+                throw PlaybackSequencedError.authorityChanged
+            }
+            if captured.scope == nil {
+                let planID = captured.plan.planId
+                let originalAuth = captured.auth
+                captured.scope = try ProxyAuxiliaryScope(plan: captured.plan, sessionID: sessionID,
+                    sourceURL: request.url, auth: originalAuth, tokens: tokens) { [weak self] in
+                    await self?.auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: planID, auth: originalAuth) ?? false
+                }
+                auxiliaryPlans[sessionID] = captured
+            }
+            request.proxyAuxiliaryScope = captured.scope
+        }
         return request
+    }
+
+    /// Called only with the response to the captured request that adopted the
+    /// plan. Durable response bytes are neither decorated nor re-encoded.
+    func adoptAuxiliaryAuthority(plan: PlaybackV3Plan?, sessionID: String,
+                                auth: CapturedOrdinaryRequestAuth) async throws {
+        auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
+        guard let plan else { return }
+        let urls = [plan.subtitle.artifact?.url] + plan.subtitle.inventory.flatMap { [$0.url, $0.fontBundleUrl] }
+        guard urls.compactMap({ $0 }).contains(where: StreamRequest.isProxyAuxiliaryURL) else { return }
+        try ApplePlaybackV3PlanAdapter.validate(plan)
+        guard let context = contexts[sessionID], stopIntents[context.recordID] == nil,
+              auth.profileId == context.authority.profileID,
+              auth.account.serverId == context.authority.serverID,
+              auth.account.serverURL == context.authority.origin,
+              let owner = await tokens.captureDurableAccountAuth(), owner.request == auth,
+              try PlaybackMutationAuthority(auth: owner, installationID: context.authority.installationID) == context.authority,
+              contexts[sessionID]?.recordID == context.recordID,
+              stopIntents[context.recordID] == nil,
+              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) == auth,
+              contexts[sessionID]?.recordID == context.recordID,
+              stopIntents[context.recordID] == nil else {
+            throw PlaybackSequencedError.authorityChanged
+        }
+        auxiliaryPlans[sessionID] = AuxiliaryPlanAuthority(plan: plan, auth: auth)
+    }
+
+    private func auxiliaryAuthorityIsCurrent(sessionID: String, planID: String,
+                                            auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        guard let context = contexts[sessionID], stopIntents[context.recordID] == nil,
+              let captured = auxiliaryPlans[sessionID], captured.plan.planId == planID, captured.auth == auth,
+              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) == auth,
+              auxiliaryPlans[sessionID]?.plan.planId == planID,
+              stopIntents[context.recordID] == nil else { return false }
+        return true
     }
 
     func controlRequest(_ binding: ControlBinding) async throws -> URLRequest {
@@ -359,6 +425,7 @@ actor PlaybackMutationCoordinator {
 
     @discardableResult
     func stop(sessionID: String, position: Double?, isPaused: Bool) async throws -> Bool {
+        auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
         guard let context = contexts[sessionID] else { throw PlaybackSequencedError.invalidSession }
         if stopIntents[context.recordID] == nil {
             stopIntents[context.recordID] = StopIntent(position: position, isPaused: isPaused)
