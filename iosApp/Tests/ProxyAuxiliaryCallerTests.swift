@@ -1,5 +1,6 @@
 import AetherEngine
 import Foundation
+import Network
 import XCTest
 @testable import Silo
 
@@ -9,7 +10,7 @@ final class ProxyAuxiliaryCallerTests: XCTestCase {
     private var sidecar: String { "\(origin)/stream/v3/\(sessionID)/subtitles/1.ass?file_id=42&embedded_stream_index=0" }
     private var fonts: String { "\(origin)/stream/v3/\(sessionID)/subtitles/1/fonts?file_id=42&embedded_stream_index=0" }
 
-    private func plan(expires: String = "2030-01-01T00:00:00Z", fontURL: String? = nil) throws -> PlaybackV3Plan {
+    private func plan(expires: String = "2030-01-01T00:00:00Z", fontURL: String? = nil, requestedFile: Int = 42, effectiveFile: Int = 42, baseURL: URL? = nil, apiRoutes: Bool = false) throws -> PlaybackV3Plan {
         let url = try PlaybackV3FixtureTestSupport.fixtureURL(named: "decision_response", bundleClass: Self.self)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         var value = try XCTUnwrap(object["playback_plan"] as? [String: Any])
@@ -17,6 +18,8 @@ final class ProxyAuxiliaryCallerTests: XCTestCase {
         stream["url"] = "\(origin)/stream/v3/\(sessionID)"
         value["stream"] = stream
         value["expires_at"] = expires
+        value["requested_media_file_id"] = requestedFile
+        value["effective_media_file_id"] = effectiveFile
         value["subtitle"] = ["mode": "render", "track_id": "file:42:subtitle:1",
             "artifact": ["url": sidecar, "mime_type": "text/x-ssa", "format": "ass", "timing_origin_seconds": 0],
             "inventory": [["track_id": "file:42:subtitle:1", "combined_index": 1,
@@ -27,8 +30,10 @@ final class ProxyAuxiliaryCallerTests: XCTestCase {
         selected["subtitle"] = ["id": "file:42:subtitle:1", "index": 1]
         value["selected_tracks"] = selected
         object["playback_plan"] = value
-        let response = try PlaybackV3FixtureTestSupport.decoder.decode(PlaybackV3DecisionResponse.self,
-            from: JSONSerialization.data(withJSONObject: object))
+        var json = String(decoding: try JSONSerialization.data(withJSONObject: object, options: .withoutEscapingSlashes), as: UTF8.self)
+        if let baseURL { json = json.replacingOccurrences(of: origin.absoluteString, with: baseURL.absoluteString) }
+        if apiRoutes { json = json.replacingOccurrences(of: origin.absoluteString + "/stream/v3/", with: "/api/v2/stream/") }
+        let response = try PlaybackV3FixtureTestSupport.decoder.decode(PlaybackV3DecisionResponse.self, from: Data(json.utf8))
         guard case .playable(let plan, _) = response.validatedForApple() else { throw PlaybackSequencedError.invalidResponse }
         return plan
     }
@@ -145,9 +150,108 @@ final class ProxyAuxiliaryCallerTests: XCTestCase {
         do { _ = try await scope.materialize(sidecar + "&token=secret"); XCTFail("Unissued URL") } catch {}
         XCTAssertTrue(AuxiliaryProtocol.requests.isEmpty)
         for (status, mime) in [(401, "text/x-ssa"), (200, "text/html"), (302, "text/x-ssa")] {
+            AuxiliaryProtocol.reset()
+            let scope = try self.scope(tokens, auth)
             AuxiliaryProtocol.configure(data: Data("refused".utf8), mime: mime, status: status)
             do { _ = try await scope.materialize(sidecar); XCTFail("Invalid response \(status) \(mime)") } catch {}
             XCTAssertNil(scope.localURL(for: sidecar))
+            XCTAssertEqual(AuxiliaryProtocol.requests.count, 1)
+            do { try await scope.requireCurrent(); XCTFail("Refused credential lifetime must be invalidated") } catch {}
+        }
+    }
+
+    func testCoincidentOriginKeepsOpaqueAPIAndSignedResourcesInTheirOwnFamily() async throws {
+        let (tokens, auth) = try await fixture()
+        let scope = try scope(tokens, auth)
+        for raw in ["\(origin)/api/v2/stream/\(sessionID)/subtitles/1.ass?st=opaque&file_id=42&embedded_stream_index=0",
+                    "\(origin)/stream/subtitles/signed-token/1.ass"] {
+            let track = ExternalSubtitleTrack(url: URL(string: raw)!, httpHeaders: ["X-Existing": "existing"])
+            let request = URLRequest(url: URL(string: raw + "&font=1")!)
+            let delivered = try await scope.materializeTrack(track, fontRequest: request)
+            XCTAssertEqual(delivered.track.url, track.url)
+            XCTAssertEqual(delivered.track.httpHeaders, track.httpHeaders)
+            XCTAssertEqual(delivered.fontRequest, request)
+        }
+        XCTAssertTrue(AuxiliaryProtocol.requests.isEmpty)
+    }
+
+    func testEffectiveSourcePinsAndConcurrentDownloadsAreExact() async throws {
+        let (tokens, auth) = try await fixture()
+        let changedRequested = try scope(tokens, auth, plan: plan(requestedFile: 99))
+        AuxiliaryProtocol.configure(data: Data("[Script Info]".utf8), mime: "text/x-ssa")
+        async let first = changedRequested.materialize(sidecar)
+        async let second = changedRequested.materialize(sidecar)
+        let (one, two) = try await (first, second)
+        XCTAssertEqual(one, two)
+        XCTAssertEqual(AuxiliaryProtocol.requests.count, 1)
+        XCTAssertThrowsError(try scope(tokens, auth, plan: plan(effectiveFile: 99)))
+    }
+
+    func testAPIHeaderAuxiliaryAliasesShareOneDownloadAndKeepSignedFamilyDistinct() async throws {
+        let (tokens, auth) = try await fixture()
+        let plan = try plan(apiRoutes: true)
+        let source = URL(string: auth.account.serverURL + plan.stream.url)!
+        let scope = try ProxyAuxiliaryScope(plan: plan, sessionID: sessionID, sourceURL: source,
+            auth: auth, tokens: tokens, sessionConfiguration: {
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [AuxiliaryProtocol.self]
+                return configuration
+            }, isActive: { true })
+        defer { scope.invalidate(); AuxiliaryProtocol.reset() }
+        let raw = try XCTUnwrap(plan.subtitle.artifact?.url)
+        let absolute = auth.account.serverURL + raw
+        XCTAssertTrue(StreamRequest.isHeaderAuthenticatedAuxiliaryURL(raw))
+        XCTAssertFalse(StreamRequest.isHeaderAuthenticatedAuxiliaryURL(raw + "&st=opaque"))
+        AuxiliaryProtocol.configure(data: Data("[Script Info]".utf8), mime: "text/x-ssa")
+        async let relativeFile = scope.materialize(raw)
+        async let absoluteFile = scope.materialize(absolute)
+        let (first, second) = try await (relativeFile, absoluteFile)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(AuxiliaryProtocol.requests.count, 1)
+        XCTAssertEqual(AuxiliaryProtocol.requests.first?.url?.absoluteString, absolute)
+    }
+
+    @MainActor
+    func testControllerReplacementFailureAndStopInvalidateOnlyOwnedScope() async throws {
+        let (tokens, auth) = try await fixture()
+        let first = try scope(tokens, auth)
+        let second = try scope(tokens, auth)
+        let third = try scope(tokens, auth)
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        var spec = try AetherLoadSpec(directURL: missing, headers: [:], startPosition: 0, audioOnly: false)
+        spec.proxyAuxiliaryScope = first
+        _ = controller.beginLoad(spec)
+        spec.proxyAuxiliaryScope = second
+        let epoch = controller.beginLoad(spec)
+        do { try await first.requireCurrent(); XCTFail("Replacement must invalidate previous scope") } catch {}
+        do { try await controller.finishLoad(epoch); XCTFail("Missing owned file must fail") } catch {}
+        do { try await second.requireCurrent(); XCTFail("Failed load must invalidate scope") } catch {}
+        spec.proxyAuxiliaryScope = third
+        _ = controller.beginLoad(spec)
+        controller.stop()
+        do { try await third.requireCurrent(); XCTFail("Stop must invalidate scope") } catch {}
+    }
+
+    func testActualHTTPRedirectDoesNotDeliverCredentialsToDestination() async throws {
+        for crossOrigin in [false, true] {
+            let destination = try AuxiliaryRedirectServer()
+            let server = try AuxiliaryRedirectServer()
+            defer { server.stop(); destination.stop() }
+            let destinationPort = try await destination.readyPort()
+            let port = try await server.readyPort()
+            let base = URL(string: "http://127.0.0.1:\(port)")!
+            server.redirect(to: "http://127.0.0.1:\(crossOrigin ? destinationPort : port)/redirect-target")
+            let (tokens, auth) = try await fixture()
+            let scope = try ProxyAuxiliaryScope(plan: plan(baseURL: base), sessionID: sessionID,
+                sourceURL: base, auth: auth, tokens: tokens, isActive: { true })
+            defer { scope.invalidate() }
+            let raw = sidecar.replacingOccurrences(of: origin.absoluteString, with: base.absoluteString)
+            do { _ = try await scope.materialize(raw); XCTFail("Redirect must refuse") } catch {}
+            XCTAssertEqual(server.requestCount, 1)
+            XCTAssertEqual(destination.requestCount, 0)
+            XCTAssertNil(scope.localURL(for: raw))
         }
     }
 
@@ -191,4 +295,44 @@ private final class AuxiliaryProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+private final class AuxiliaryRedirectServer: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "AuxiliaryRedirectServer")
+    private let lock = NSLock()
+    private var target = ""
+    private var count = 0
+    var requestCount: Int { lock.withLock { count } }
+    init() throws {
+        listener = try NWListener(using: .tcp, on: .any)
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            connection.start(queue: self.queue)
+            self.receive(connection, data: Data())
+        }
+        listener.start(queue: queue)
+    }
+    func readyPort() async throws -> UInt16 {
+        for _ in 0..<100 {
+            if let port = listener.port, port.rawValue != 0 { return port.rawValue }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw URLError(.cannotConnectToHost)
+    }
+    func redirect(to target: String) { lock.withLock { self.target = target } }
+    func stop() { listener.cancel() }
+    private func receive(_ connection: NWConnection, data: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] bytes, _, complete, error in
+            guard let self else { connection.cancel(); return }
+            var request = data; if let bytes { request.append(bytes) }
+            guard String(decoding: request, as: UTF8.self).contains("\r\n\r\n") else {
+                if complete || error != nil { connection.cancel() } else { self.receive(connection, data: request) }
+                return
+            }
+            let target = self.lock.withLock { self.count += 1; return self.target }
+            let response = "HTTP/1.1 302 Found\r\nLocation: \(target)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+        }
+    }
 }

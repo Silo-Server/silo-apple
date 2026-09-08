@@ -2778,7 +2778,7 @@ class PlayerViewModel {
                     throw PlaybackSequencedError.authorityChanged
                 }
                 let selectedURLs = [v3.plan.subtitle.artifact?.url, v3.plan.selectedSubtitleInventoryItem?.fontBundleUrl]
-                for raw in selectedURLs.compactMap({ $0 }) where StreamRequest.isProxyAuxiliaryURL(raw) {
+                for raw in selectedURLs.compactMap({ $0 }) where StreamRequest.isHeaderAuthenticatedAuxiliaryURL(raw) {
                     _ = try await proxyScope.materialize(raw)
                     try requireCurrentStreamLoad(expectedStreamLoadGeneration)
                 }
@@ -2793,7 +2793,7 @@ class PlayerViewModel {
                 // Proxy artifacts resolve only to their already downloaded
                 // exact bytes. Existing API-relative references stay opaque.
                 resolveURL: { raw in
-                    if StreamRequest.isProxyAuxiliaryURL(raw) {
+                    if StreamRequest.isHeaderAuthenticatedAuxiliaryURL(raw) {
                         return proxyScope?.localURL(for: raw)
                     }
                     return StreamRequest.resolve(
@@ -6754,11 +6754,9 @@ class PlayerViewModel {
                                                fontRequest: URLRequest? = nil,
                                                completion: (() -> Void)? = nil) {
         let scope = aetherPlaybackController.activeSpec?.proxyAuxiliaryScope
-        let proxyTrack = StreamRequest.isProxyAuxiliaryURL(track.url.absoluteString)
-            || scope.map { StreamRequest.hasSameOrigin(track.url, $0.origin) } == true
+        let proxyTrack = StreamRequest.isHeaderAuthenticatedAuxiliaryURL(track.url.absoluteString)
         let proxyFont = fontRequest?.url.map { url in
-            StreamRequest.isProxyAuxiliaryURL(url.absoluteString)
-                || scope.map { StreamRequest.hasSameOrigin(url, $0.origin) } == true
+            StreamRequest.isHeaderAuthenticatedAuxiliaryURL(url.absoluteString)
         } ?? false
         guard proxyTrack || proxyFont else {
             aetherPlaybackController.addExternalSubtitleTrack(track, appTrackID: appTrackID, fontRequest: fontRequest)
@@ -6926,7 +6924,7 @@ class PlayerViewModel {
             return
         }
         if !aetherPlaybackController.containsSubtitle(appTrackID: trackId),
-           let url = protocolV3InventorySidecarURL(for: track), StreamRequest.isProxyAuxiliaryURL(url.absoluteString) {
+           let url = protocolV3InventorySidecarURL(for: track), StreamRequest.isHeaderAuthenticatedAuxiliaryURL(url.absoluteString) {
             registerSecondarySubtitleWithAetherIfNeeded(track) { [weak self] in
                 guard let self, self.selectedSecondarySubtitleId == trackId else { return }
                 self.aetherPlaybackController.selectSecondarySubtitleTrack(id: trackId)

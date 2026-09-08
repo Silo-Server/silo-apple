@@ -32,12 +32,15 @@ actor PlaybackMutationCoordinator {
     private var unresolvedStarts: [UUID: StoredPlaybackStart] = [:]
     private var contexts: [String: Context] = [:]
     private struct AuxiliaryPlanAuthority {
+        let id: UUID
         let plan: PlaybackV3Plan
         let auth: CapturedOrdinaryRequestAuth
+        let allowsAuthorizedOrigins: Bool
         var scope: ProxyAuxiliaryScope?
     }
     /// Memory only. A restored durable response cannot recreate these credentials.
     private var auxiliaryPlans: [String: AuxiliaryPlanAuthority] = [:]
+    private var auxiliaryAdoptions: [String: UUID] = [:]
     private struct StopIntent {
         let position: Double?
         let isPaused: Bool
@@ -202,7 +205,10 @@ actor PlaybackMutationCoordinator {
         do {
             let response = try wire.legacy()
             if let sessionID, !retire, start.response == nil {
-                try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth)
+                let input = try JSONSerialization.jsonObject(with: start.body) as? [String: Any]
+                let features = input?["client_features"] as? [String] ?? []
+                try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth,
+                    allowsAuthorizedOrigins: features.contains(PlaybackProtocolV3.authorizedMediaOriginsFeature))
             }
             return response
         }
@@ -255,6 +261,7 @@ actor PlaybackMutationCoordinator {
             throw PlaybackV3TerminalFailure(reason: "capability_unsupported",
                 message: "This server does not support changing playback tracks, quality or output during API v2 playback.", retryable: false)
         }
+        let allowsAuthorizedOrigins = auxiliaryPlans[sessionID]?.allowsAuthorizedOrigins ?? false
         let auth = try await currentAuth(context.authority)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -272,7 +279,8 @@ actor PlaybackMutationCoordinator {
         let response = try wire.legacy()
         try await store.acknowledgeReplan(saved, response: raw.data)
         guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
-        try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth)
+        try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth,
+            allowsAuthorizedOrigins: allowsAuthorizedOrigins)
         return response
     }
 
@@ -323,43 +331,74 @@ actor PlaybackMutationCoordinator {
     func streamRequest(sessionID: String, rawURL: String, additionalHeaders: [String: String],
                        requiresHeaderAuthenticatedMedia: Bool,
                        allowsAuthorizedMediaOrigins: Bool = false) async throws -> StreamRequest {
-        let binding = try await controlBinding(sessionID: sessionID)
-        guard var request = StreamRequest.resolve(rawURL: rawURL,
-            serverURL: binding.auth.account.serverURL, additionalHeaders: additionalHeaders,
-            accessToken: binding.auth.accessToken,
-            requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
-            authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins ? sessionID : nil,
-            apiV2SessionId: sessionID) else { throw PlaybackSequencedError.invalidSession }
-        try await validateControlBinding(binding)
-        if allowsAuthorizedMediaOrigins, var captured = auxiliaryPlans[sessionID] {
-            guard captured.plan.stream.url == rawURL,
-                  await auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: captured.plan.planId, auth: captured.auth) else {
+        if let captured = auxiliaryPlans[sessionID] {
+            guard !allowsAuthorizedMediaOrigins || captured.allowsAuthorizedOrigins else { throw PlaybackSequencedError.invalidSession }
+            guard captured.plan.stream.url == rawURL else { throw PlaybackSequencedError.invalidSession }
+            guard await auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: captured.plan.planId,
+                    auth: captured.auth, bindingID: captured.id) else {
                 captured.scope?.invalidate()
                 throw PlaybackSequencedError.authorityChanged
             }
-            if captured.scope == nil {
-                let planID = captured.plan.planId
-                let originalAuth = captured.auth
-                captured.scope = try ProxyAuxiliaryScope(plan: captured.plan, sessionID: sessionID,
-                    sourceURL: request.url, auth: originalAuth, tokens: tokens) { [weak self] in
-                    await self?.auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: planID, auth: originalAuth) ?? false
-                }
-                auxiliaryPlans[sessionID] = captured
+            // Join the immutable wire plan only with the original request authority.
+            guard var request = StreamRequest.resolve(rawURL: rawURL,
+                serverURL: captured.auth.account.serverURL,
+                additionalHeaders: ["X-Profile-Id": captured.auth.profileId ?? ""],
+                accessToken: captured.auth.accessToken,
+                requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
+                authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins ? sessionID : nil,
+                apiV2SessionId: sessionID) else { throw PlaybackSequencedError.invalidSession }
+            guard var current = auxiliaryPlans[sessionID], current.id == captured.id else {
+                throw PlaybackSequencedError.authorityChanged
             }
-            request.proxyAuxiliaryScope = captured.scope
+            if allowsAuthorizedMediaOrigins || StreamRequest.isHeaderAuthenticatedAPIPrimary(rawURL, sessionID: sessionID) {
+                if current.scope == nil {
+                    let planID = captured.plan.planId
+                    let auth = captured.auth
+                    let bindingID = captured.id
+                    current.scope = try ProxyAuxiliaryScope(plan: captured.plan, sessionID: sessionID,
+                        sourceURL: request.url, auth: auth, tokens: tokens) { [weak self] in
+                        await self?.auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: planID,
+                            auth: auth, bindingID: bindingID) ?? false
+                    }
+                    guard auxiliaryPlans[sessionID]?.id == captured.id else {
+                        current.scope?.invalidate()
+                        throw PlaybackSequencedError.authorityChanged
+                    }
+                    auxiliaryPlans[sessionID] = current
+                }
+                request.proxyAuxiliaryScope = current.scope
+            }
+            return request
         }
+        // A restored response has no ephemeral original auth for a proxy plan.
+        guard !allowsAuthorizedMediaOrigins, !StreamRequest.isHeaderAuthenticatedAPIPrimary(rawURL, sessionID: sessionID) else { throw PlaybackSequencedError.authorityChanged }
+        let binding = try await controlBinding(sessionID: sessionID)
+        guard let request = StreamRequest.resolve(rawURL: rawURL,
+            serverURL: binding.auth.account.serverURL, additionalHeaders: additionalHeaders,
+            accessToken: binding.auth.accessToken,
+            requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
+            apiV2SessionId: sessionID) else { throw PlaybackSequencedError.invalidSession }
+        try await validateControlBinding(binding)
         return request
     }
 
     /// Called only with the response to the captured request that adopted the
     /// plan. Durable response bytes are neither decorated nor re-encoded.
     func adoptAuxiliaryAuthority(plan: PlaybackV3Plan?, sessionID: String,
-                                auth: CapturedOrdinaryRequestAuth) async throws {
+                                auth: CapturedOrdinaryRequestAuth, allowsAuthorizedOrigins: Bool = false) async throws {
+        let adoption = UUID()
+        auxiliaryAdoptions[sessionID] = adoption
         auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
         guard let plan else { return }
-        let urls = [plan.subtitle.artifact?.url] + plan.subtitle.inventory.flatMap { [$0.url, $0.fontBundleUrl] }
-        guard urls.compactMap({ $0 }).contains(where: StreamRequest.isProxyAuxiliaryURL) else { return }
+        let primaryPath = URLComponents(string: plan.stream.url)?.percentEncodedPath ?? ""
+        let headerPrimary = StreamRequest.isHeaderAuthenticatedAPIPrimary(plan.stream.url, sessionID: sessionID)
+            || StreamRequest.isAllowedAuthorizedMediaOriginPath(primaryPath, sessionId: sessionID)
+        let auxiliaryURLs = [plan.subtitle.artifact?.url] + plan.subtitle.inventory.flatMap { [$0.url, $0.fontBundleUrl] }
+        guard headerPrimary || auxiliaryURLs.compactMap({ $0 }).contains(where: StreamRequest.isHeaderAuthenticatedAuxiliaryURL) else { return }
         try ApplePlaybackV3PlanAdapter.validate(plan)
+        guard plan.stream.headers.allSatisfy({ key, value in
+            key.caseInsensitiveCompare("X-Profile-Id") != .orderedSame || value == auth.profileId
+        }) else { throw PlaybackSequencedError.authorityChanged }
         guard let context = contexts[sessionID], stopIntents[context.recordID] == nil,
               auth.profileId == context.authority.profileID,
               auth.account.serverId == context.authority.serverID,
@@ -370,18 +409,19 @@ actor PlaybackMutationCoordinator {
               stopIntents[context.recordID] == nil,
               await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) == auth,
               contexts[sessionID]?.recordID == context.recordID,
-              stopIntents[context.recordID] == nil else {
+              stopIntents[context.recordID] == nil,
+              auxiliaryAdoptions[sessionID] == adoption else {
             throw PlaybackSequencedError.authorityChanged
         }
-        auxiliaryPlans[sessionID] = AuxiliaryPlanAuthority(plan: plan, auth: auth)
+        auxiliaryPlans[sessionID] = AuxiliaryPlanAuthority(id: adoption, plan: plan, auth: auth, allowsAuthorizedOrigins: allowsAuthorizedOrigins)
     }
 
     private func auxiliaryAuthorityIsCurrent(sessionID: String, planID: String,
-                                            auth: CapturedOrdinaryRequestAuth) async -> Bool {
+                                            auth: CapturedOrdinaryRequestAuth, bindingID: UUID) async -> Bool {
         guard let context = contexts[sessionID], stopIntents[context.recordID] == nil,
-              let captured = auxiliaryPlans[sessionID], captured.plan.planId == planID, captured.auth == auth,
+              let captured = auxiliaryPlans[sessionID], captured.id == bindingID, captured.plan.planId == planID, captured.auth == auth,
               await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) == auth,
-              auxiliaryPlans[sessionID]?.plan.planId == planID,
+              auxiliaryPlans[sessionID]?.id == bindingID,
               stopIntents[context.recordID] == nil else { return false }
         return true
     }
@@ -425,6 +465,7 @@ actor PlaybackMutationCoordinator {
 
     @discardableResult
     func stop(sessionID: String, position: Double?, isPaused: Bool) async throws -> Bool {
+        auxiliaryAdoptions[sessionID] = UUID()
         auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
         guard let context = contexts[sessionID] else { throw PlaybackSequencedError.invalidSession }
         if stopIntents[context.recordID] == nil {

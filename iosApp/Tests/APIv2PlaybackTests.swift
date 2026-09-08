@@ -52,9 +52,9 @@ final class APIv2PlaybackTests: XCTestCase {
             from: fixtureData("playback_capability_available"))
     }
 
-    private func request(attempt: String = "apple:stable-attempt") -> PlaybackV3StartRequest {
+    private func request(attempt: String = "apple:stable-attempt", authorizedOrigins: Bool = false) -> PlaybackV3StartRequest {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
-        return PlaybackV3StartRequest(protocolVersion: 3, clientFeatures: ApplePlaybackV3Capabilities.features,
+        return PlaybackV3StartRequest(protocolVersion: 3, clientFeatures: ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: authorizedOrigins),
             fileId: 42, profileId: "profile", playbackAttemptId: attempt, qualityPreference: "auto",
             subtitleFidelityPreference: "preserve", progressPersistence: nil, startPosition: 12.5,
             audioTrackId: "file:42:audio:0", audioTrackIndex: 0, subtitleTrackId: nil, subtitleTrackIndex: nil,
@@ -62,7 +62,7 @@ final class APIv2PlaybackTests: XCTestCase {
             clientCapabilities: snapshot.capabilities, clientPlaybackContext: snapshot.context)
     }
 
-    private func fixture(failWrites: Bool = false) async throws -> (PlaybackMutationCoordinator, TokenStore, CapturedDurableAccountAuth, SiloAPI, PlaybackMutationStore) {
+    private func fixture(failWrites: Bool = false, observeJournal: (@Sendable (Data) -> Void)? = nil) async throws -> (PlaybackMutationCoordinator, TokenStore, CapturedDurableAccountAuth, SiloAPI, PlaybackMutationStore) {
         let name = "APIv2PlaybackTests.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil), defaults: SharedDefaults(suite: defaults, standard: defaults))
@@ -81,6 +81,7 @@ final class APIv2PlaybackTests: XCTestCase {
         let store = PlaybackMutationStore(url: root.appendingPathComponent("sessions.json"), write: { data, url in
             if failWrites { throw CocoaError(.fileWriteOutOfSpace) }
             try data.write(to: url, options: .atomic)
+            observeJournal?(data)
         })
         V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"),
             decision: try fixtureData("playback_start_opaque_ids"))
@@ -426,6 +427,156 @@ final class APIv2PlaybackTests: XCTestCase {
         }
     }
 
+    private func headerMediaDecision(proxy: Bool = true, planID: String? = nil) throws -> (Data, String, String) {
+        var value = try XCTUnwrap(JSONSerialization.jsonObject(with: fixtureData("playback_start_opaque_ids")) as? [String: Any])
+        var plan = try XCTUnwrap(value["playback_plan"] as? [String: Any])
+        let session = try XCTUnwrap(value["session_id"] as? String)
+        var stream = try XCTUnwrap(plan["stream"] as? [String: Any])
+        let raw = proxy ? "https://proxy.example/stream/v3/\(session)" : "/api/v2/stream/\(session)"
+        stream["url"] = raw
+        stream["headers"] = ["X-Profile-Id": "profile"]
+        plan["stream"] = stream
+        if let planID { plan["plan_id"] = planID }
+        value["playback_plan"] = plan
+        return (try JSONSerialization.data(withJSONObject: value), session, raw)
+    }
+
+    func testOriginalHeaderAuthIsEphemeralAndCannotBeRestoredOrRotated() async throws {
+        for proxy in [false, true] {
+            let writes = AuxiliaryJournalCapture()
+            let (owner, tokens, auth, api, store) = try await fixture(observeJournal: writes.append)
+            let (decision, id, raw) = try headerMediaDecision(proxy: proxy)
+            V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+            _ = try await owner.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability())
+            async let first = owner.streamRequest(sessionID: id, rawURL: raw,
+                additionalHeaders: ["Authorization": "must-not-use", "X-Profile-Id": "wrong"],
+                requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: proxy)
+            async let second = owner.streamRequest(sessionID: id, rawURL: raw,
+                additionalHeaders: [:], requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: proxy)
+            let (media, concurrent) = try await (first, second)
+            XCTAssertTrue(media.proxyAuxiliaryScope === concurrent.proxyAuxiliaryScope)
+            XCTAssertEqual(media.headers, ["Authorization": "Bearer access", "X-Profile-Id": "profile"])
+            XCTAssertNotNil(media.proxyAuxiliaryScope)
+            XCTAssertFalse(writes.data.contains { String(decoding: $0, as: UTF8.self).contains("Bearer ") })
+            let files = try writes.data.map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] }
+            XCTAssertFalse(files.isEmpty)
+            let journal = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
+            XCTAssertEqual(journal.starts?.values.first?.response, decision, "Retain exact server response bytes with selector only")
+            let restarted = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
+            await restarted.restorePending()
+            do {
+                _ = try await restarted.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                    requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: proxy)
+                XCTFail("Persisted response cannot recreate original ephemeral credentials")
+            } catch {}
+            _ = await tokens.saveTokens(accessToken: "replacement", refreshToken: "replacement-refresh")
+            do {
+                _ = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                    requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: proxy)
+                XCTFail("Old plan must not adopt rotated token")
+            } catch {}
+            media.proxyAuxiliaryScope?.invalidate()
+        }
+    }
+
+    func testAPIOnlyAttemptCannotBePromotedByMediaCaller() async throws {
+        for proxy in [false, true] {
+            let (owner, _, auth, _, _) = try await fixture()
+            let (decision, id, raw) = try headerMediaDecision(proxy: proxy)
+            V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+            _ = try await owner.startV2(request: request(), auth: auth, capability: capability())
+            do {
+                _ = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                    requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+                XCTFail("Media caller cannot add origin negotiation to the original attempt")
+            } catch {}
+            if !proxy {
+                let media = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                    requiresHeaderAuthenticatedMedia: true)
+                XCTAssertEqual(media.headers["X-Profile-Id"], "profile")
+                XCTAssertEqual(media.url.host, "playback.example")
+                media.proxyAuxiliaryScope?.invalidate()
+            }
+        }
+    }
+
+    func testMismatchedPublishedProfileSelectorCannotAdoptMediaAuthority() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let (decision, id, raw) = try headerMediaDecision()
+        var value = try XCTUnwrap(JSONSerialization.jsonObject(with: decision) as? [String: Any])
+        var plan = try XCTUnwrap(value["playback_plan"] as? [String: Any])
+        var stream = try XCTUnwrap(plan["stream"] as? [String: Any])
+        stream["headers"] = ["x-profile-id": "another-profile"]
+        plan["stream"] = stream
+        value["playback_plan"] = plan
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"),
+            decision: try JSONSerialization.data(withJSONObject: value))
+        do {
+            _ = try await owner.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability())
+            XCTFail("Published selector cannot override captured recipe authority")
+        } catch {}
+        do {
+            _ = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+            XCTFail("Rejected selector must not leave usable media authority")
+        } catch {}
+    }
+
+    func testActualReplanAndStopInvalidateOldMediaScope() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let (decision, id, raw) = try headerMediaDecision()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+        _ = try await owner.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability())
+        let first = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+            requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+        let (next, _, _) = try headerMediaDecision(planID: "replacement-plan")
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: next)
+        _ = try await owner.replan(sessionID: id, request: replanRequest())
+        do { try await first.proxyAuxiliaryScope?.requireCurrent(); XCTFail("Old plan remains active") } catch {}
+        let second = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+            requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+        XCTAssertEqual(second.proxyAuxiliaryScope?.planID, "replacement-plan")
+        _ = try await owner.stop(sessionID: id, position: nil, isPaused: true)
+        do { try await second.proxyAuxiliaryScope?.requireCurrent(); XCTFail("Stopped plan remains active") } catch {}
+    }
+
+    func testConcurrentStopCannotBeUndoneByLateReplanAdoption() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let (decision, id, raw) = try headerMediaDecision()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+        _ = try await owner.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability())
+        let media = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+            requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+        let received = expectation(description: "replan response held")
+        let gate = PlaybackRestoreBarrier()
+        V2PlaybackProtocol.afterNextResponse { received.fulfill(); await gate.wait() }
+        let request = try replanRequest()
+        let replanning = Task { try await owner.replan(sessionID: id, request: request) }
+        await fulfillment(of: [received], timeout: 2)
+        _ = try await owner.stop(sessionID: id, position: nil, isPaused: true)
+        await gate.release()
+        do { _ = try await replanning.value; XCTFail("Late replan adopted after stop") } catch {}
+        do { try await media.proxyAuxiliaryScope?.requireCurrent(); XCTFail("Stopped scope remains valid") } catch {}
+        do {
+            _ = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+            XCTFail("Stopped session regained media authority")
+        } catch {}
+    }
+
+    func testIdentitySwitchBeforeStartResponseCannotAdoptHeaderMedia() async throws {
+        let (owner, tokens, auth, _, _) = try await fixture()
+        let (decision, id, raw) = try headerMediaDecision()
+        V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
+        V2PlaybackProtocol.afterNextResponse { await tokens.setProfileId("replacement") }
+        do { _ = try await owner.startV2(request: request(authorizedOrigins: true), auth: auth, capability: capability()); XCTFail() } catch {}
+        do {
+            _ = try await owner.streamRequest(sessionID: id, rawURL: raw, additionalHeaders: [:],
+                requiresHeaderAuthenticatedMedia: true, allowsAuthorizedMediaOrigins: true)
+            XCTFail("Foreign response adopted")
+        } catch {}
+    }
+
     func testMediaResolutionUsesSessionAuthorityAndRejectsAccountSwitch() async throws {
         let (owner, tokens, auth, _, _) = try await fixture()
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
@@ -579,6 +730,8 @@ final class APIv2PlaybackTests: XCTestCase {
 
 private final class V2PlaybackProtocol: URLProtocol {
     private static let lock = NSLock()
+    nonisolated(unsafe) private static var responseHook: (@Sendable () async -> Void)?
+    static func afterNextResponse(_ hook: @escaping @Sendable () async -> Void) { lock.withLock { responseHook = hook } }
     nonisolated(unsafe) private static var capability = Data()
     nonisolated(unsafe) private static var decision = Data()
     nonisolated(unsafe) private static var startHook: (@Sendable () -> Void)?
@@ -597,7 +750,7 @@ private final class V2PlaybackProtocol: URLProtocol {
     static func startFails(_ value: Bool) { lock.withLock { failStart = value } }
     static func stopStatus(_ value: Int) { lock.withLock { stopCode = value } }
     static func requests() -> [(URLRequest, Data)] { lock.withLock { captured } }
-    static func reset() { lock.withLock { captured = []; startHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
+    static func reset() { lock.withLock { captured = []; startHook = nil; responseHook = nil; failStart = false; stopCode = 200; controlCode = 200; rejection = nil; rejectionCode = 422; progressFailure = false } }
     static func changeInstallation() { lock.withLock {
         var value = try! JSONSerialization.jsonObject(with: capability) as! [String: Any]
         value["installation_id"] = "different-installation"
@@ -656,10 +809,15 @@ private final class V2PlaybackProtocol: URLProtocol {
                 output = try! JSONSerialization.data(withJSONObject: ["outcome": status == 202 ? "draining" : "stopped", "stop_id": input["stop_id"] ?? ""])
             } else { output = try! JSONSerialization.data(withJSONObject: ["outcome": "applied", "accepted": input]) }
         }
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status,
-            httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: output)
-        client?.urlProtocolDidFinishLoading(self)
+        let hook = Self.lock.withLock { let hook = Self.responseHook; Self.responseHook = nil; return hook }
+        let responseStatus = status
+        Task {
+            await hook?()
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: responseStatus,
+                httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: output)
+            client?.urlProtocolDidFinishLoading(self)
+        }
     }
     override func stopLoading() {}
 }
@@ -676,4 +834,15 @@ private actor PlaybackRestoreBarrier {
         continuation?.resume()
         continuation = nil
     }
+}
+
+private final class AuxiliaryJournalCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Data] = []
+    var data: [Data] { lock.withLock { values } }
+    func append(_ data: Data) { lock.withLock { values.append(data) } }
+}
+
+private struct AuxiliaryJournalSnapshot: Decodable {
+    let starts: [UUID: StoredPlaybackStart]?
 }

@@ -1010,8 +1010,8 @@ actor PlaybackSessionBridge {
         let startAuth = try await mutationCoordinator.captureStartAuth()
         let capturedPlaybackAuth = startAuth.durable
         let initialCapability = startAuth.capability
-        // Distributed v2 egress is not advertised by the current initial-flow contract.
-        let requestsAuthorizedMediaOrigins = false
+        let requestsAuthorizedMediaOrigins = initialCapability.features.contains(
+            PlaybackProtocolV3.authorizedMediaOriginsFeature)
 
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")

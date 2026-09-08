@@ -18,6 +18,7 @@ final class ProxyAuxiliaryScope: @unchecked Sendable {
     private let lock = NSLock()
     private var valid = true
     private var files: [String: URL] = [:]
+    private var downloads: [String: Task<URL, Error>] = [:]
     private var sessions: [UUID: URLSession] = [:]
     private var watcher: Task<Void, Never>?
 
@@ -47,27 +48,30 @@ final class ProxyAuxiliaryScope: @unchecked Sendable {
         var urls = Set<String>()
         for item in plan.subtitle.inventory {
             var pins: [String: String]?
-            for raw in [item.url, item.fontBundleUrl].compactMap({ $0 }) where StreamRequest.isProxyAuxiliaryURL(raw) {
+            for raw in [item.url, item.fontBundleUrl].compactMap({ $0 }) where StreamRequest.isHeaderAuthenticatedAuxiliaryURL(raw) {
                 guard let current = StreamRequest.proxyAuxiliaryPins(rawURL: raw, sessionID: sessionID,
-                    origin: sourceURL, fileID: plan.requestedMediaFileId, track: item.combinedIndex),
+                    origin: sourceURL, fileID: plan.effectiveMediaFileId, track: item.combinedIndex),
+                      Self.matchesSource(current, source: item.source),
                       pins == nil || pins == current else { throw PlaybackSequencedError.invalidResponse }
                 pins = current
                 urls.insert(raw)
+                if let absolute = URL(string: raw, relativeTo: sourceURL)?.absoluteURL.absoluteString { urls.insert(absolute) }
             }
         }
-        if let artifact = plan.subtitle.artifact, StreamRequest.isProxyAuxiliaryURL(artifact.url) {
+        if let artifact = plan.subtitle.artifact, StreamRequest.isHeaderAuthenticatedAuxiliaryURL(artifact.url) {
             guard let selected = plan.selectedSubtitleInventoryItem,
                   let pins = StreamRequest.proxyAuxiliaryPins(rawURL: artifact.url, sessionID: sessionID,
-                    origin: sourceURL, fileID: plan.requestedMediaFileId, track: selected.combinedIndex) else {
+                    origin: sourceURL, fileID: plan.effectiveMediaFileId, track: selected.combinedIndex) else {
                 throw PlaybackSequencedError.invalidResponse
             }
-            for raw in [selected.url, selected.fontBundleUrl].compactMap({ $0 }) where StreamRequest.isProxyAuxiliaryURL(raw) {
+            for raw in [selected.url, selected.fontBundleUrl].compactMap({ $0 }) where StreamRequest.isHeaderAuthenticatedAuxiliaryURL(raw) {
                 guard StreamRequest.proxyAuxiliaryPins(rawURL: raw, sessionID: sessionID, origin: sourceURL,
-                    fileID: plan.requestedMediaFileId, track: selected.combinedIndex) == pins else {
+                    fileID: plan.effectiveMediaFileId, track: selected.combinedIndex) == pins else {
                     throw PlaybackSequencedError.invalidResponse
                 }
             }
             urls.insert(artifact.url)
+            if let absolute = URL(string: artifact.url, relativeTo: sourceURL)?.absoluteURL.absoluteString { urls.insert(absolute) }
         }
         issued = urls
         watcher = Task { [weak self] in
@@ -86,6 +90,8 @@ final class ProxyAuxiliaryScope: @unchecked Sendable {
     func invalidate() {
         let activeSessions = lock.withLock { () -> [URLSession] in
             valid = false
+            downloads.values.forEach { $0.cancel() }
+            downloads.removeAll()
             files.removeAll()
             let active = Array(sessions.values)
             sessions.removeAll()
@@ -106,13 +112,37 @@ final class ProxyAuxiliaryScope: @unchecked Sendable {
         try Task.checkCancellation()
     }
 
-    func localURL(for raw: String) -> URL? { lock.withLock { valid ? files[raw] : nil } }
+    func localURL(for raw: String) -> URL? {
+        guard let key = URL(string: raw, relativeTo: origin)?.absoluteURL.absoluteString else { return nil }
+        return lock.withLock { valid ? files[key] : nil }
+    }
 
     /// Downloads exact response bytes once to an owned file. Aether receives
     /// that local URL with empty headers, so its redirect policy is irrelevant.
     func materialize(_ raw: String) async throws -> URL {
         try await requireCurrent()
-        guard issued.contains(raw), let url = URL(string: raw) else { throw PlaybackSequencedError.invalidResponse }
+        guard let key = URL(string: raw, relativeTo: origin)?.absoluteURL.absoluteString else { throw PlaybackSequencedError.invalidResponse }
+        let task = try lock.withLock { () throws -> Task<URL, Error> in
+            guard valid, issued.contains(raw) else { throw PlaybackSequencedError.invalidResponse }
+            if let task = downloads[key] { return task }
+            let task = Task { try await self.download(raw) }
+            downloads[key] = task
+            return task
+        }
+        do {
+            let result = try await task.value
+            try await requireCurrent()
+            return result
+        } catch {
+            // A refused transfer cannot be used to reacquire different credentials.
+            invalidate()
+            throw error
+        }
+    }
+
+    private func download(_ raw: String) async throws -> URL {
+        try await requireCurrent()
+        guard issued.contains(raw), let url = URL(string: raw, relativeTo: origin)?.absoluteURL else { throw PlaybackSequencedError.invalidResponse }
         if let existing = localURL(for: raw) { return existing }
         var request = URLRequest(url: url)
         request.allHTTPHeaderFields = headers
@@ -133,17 +163,17 @@ final class ProxyAuxiliaryScope: @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: temporary) }
         try await requireCurrent()
         guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-              response.url?.absoluteString == raw,
+              response.url == url,
               Self.acceptsMIME(response.mimeType, font: isFont, extension: url.pathExtension),
               let bytes = try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber,
               bytes.int64Value <= delegate.limit else { throw URLError(.badServerResponse) }
         return try lock.withLock {
             guard valid else { throw HTTPError.requestIdentityChanged }
-            if let existing = files[raw] { return existing }
+            if let existing = files[url.absoluteString] { return existing }
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let target = root.appendingPathComponent(UUID().uuidString).appendingPathExtension(isFont ? "json" : url.pathExtension)
             try FileManager.default.moveItem(at: temporary, to: target)
-            files[raw] = target
+            files[url.absoluteString] = target
             return target
         }
     }
@@ -153,17 +183,26 @@ final class ProxyAuxiliaryScope: @unchecked Sendable {
     func materializeTrack(_ track: ExternalSubtitleTrack, fontRequest: URLRequest?) async throws
         -> (track: ExternalSubtitleTrack, fontRequest: URLRequest?) {
         var delivered = track
-        if StreamRequest.isProxyAuxiliaryURL(track.url.absoluteString) || StreamRequest.hasSameOrigin(track.url, origin) {
+        if StreamRequest.isHeaderAuthenticatedAuxiliaryURL(track.url.absoluteString) {
             delivered.url = try await materialize(track.url.absoluteString)
             delivered.httpHeaders = [:]
         }
         var font = fontRequest
         if let url = fontRequest?.url,
-           StreamRequest.isProxyAuxiliaryURL(url.absoluteString) || StreamRequest.hasSameOrigin(url, origin) {
+           StreamRequest.isHeaderAuthenticatedAuxiliaryURL(url.absoluteString) {
             font = URLRequest(url: try await materialize(url.absoluteString))
         }
         try await requireCurrent()
         return (delivered, font)
+    }
+
+    private static func matchesSource(_ pins: [String: String], source: String) -> Bool {
+        switch source {
+        case "embedded": return pins["embedded_stream_index"] != nil
+        case "external": return pins["external_subtitle_key"] != nil
+        case "downloaded": return pins["downloaded_subtitle_id"] != nil
+        default: return false
+        }
     }
 
     private static func acceptsMIME(_ mime: String?, font: Bool, extension ext: String) -> Bool {
