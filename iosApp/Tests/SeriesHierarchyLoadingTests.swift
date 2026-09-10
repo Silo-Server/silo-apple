@@ -277,6 +277,9 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
         XCTAssertFalse(model.isLoadingEpisodes)
     }
 
+#if os(iOS)
+    // The stale-cache resume guard is the iOS branch of hydrateFromCache;
+    // tvOS paints the preferred season and resumes through its own path.
     func testResumeEntryDoesNotPlayAnotherSeasonFromAStaleCache() throws {
         let detail = try JSONDecoder().decode(ItemDetail.self, from: Data(
             "{\"contentId\":\"\(seriesId)\",\"type\":\"series\",\"title\":\"Synthetic series\"}".utf8
@@ -296,6 +299,7 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
         XCTAssertTrue(model.isLoadingSeriesHierarchy)
         XCTAssertEqual(model.initialResumeSeasonNumber, 3)
     }
+#endif
 
     func testRetryOfBackgroundHierarchyFailureKeepsTheBrowsedSeason() async throws {
         let model = ItemDetailViewModel()
@@ -325,6 +329,9 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
         XCTAssertEqual(result, 42)
     }
 
+#if os(iOS)
+    // loadContinueWatchingStructure is the iOS resume-only entry (#if os(iOS)
+    // in ItemDetailViewModel).
     func testOneRetryRecoversBothContinueWatchingHierarchyFailures() async throws {
         let model = ItemDetailViewModel()
         model.seasons = try seasons([1]).seasons
@@ -346,6 +353,7 @@ final class SeriesHierarchyLoadingTests: XCTestCase {
         XCTAssertFalse(model.isLoadingSeriesHierarchy)
         XCTAssertEqual(model.episodesBySeason[1], [])
     }
+#endif
 
     private func clearCache() {
         ResponseCache.shared.remove(CacheKey.itemSeasons(seriesId))
