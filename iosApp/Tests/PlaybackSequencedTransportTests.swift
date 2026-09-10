@@ -3,8 +3,9 @@ import XCTest
 @testable import Silo
 
 final class PlaybackSequencedTransportTests: XCTestCase {
-    private func fixture(writer: PlaybackTestWriter? = nil) async throws -> (PlaybackMutationCoordinator, TokenStore, CapturedDurableAccountAuth) {
-        let name = "PlaybackSequencedTransportTests.\(UUID())"
+    private func fixture(writer: PlaybackTestWriter? = nil,
+                         name: String = "PlaybackSequencedTransportTests.\(UUID())",
+                         duringWrite: ProfileSwitchDuringWrite? = nil) async throws -> (PlaybackMutationCoordinator, TokenStore, CapturedDurableAccountAuth) {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil), defaults: SharedDefaults(suite: defaults, standard: defaults))
         await tokens.switchActiveServer(serverId: "server")
@@ -19,6 +20,7 @@ final class PlaybackSequencedTransportTests: XCTestCase {
         let api = SiloAPI(http: http, tokenStore: tokens)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         let store = PlaybackMutationStore(url: root.appendingPathComponent("sessions.json"), write: { data, url in
+            duringWrite?.fire()
             if let writer { try writer.write(data, url) } else { try data.write(to: url, options: .atomic) }
         })
         addTeardownBlock {
@@ -159,6 +161,39 @@ final class PlaybackSequencedTransportTests: XCTestCase {
         XCTAssertEqual(state, .bound)
         XCTAssertTrue(SequencedPlaybackProtocol.requests().isEmpty)
     }
+
+    /// The journal write inside `register` is a suspension point, so the durable
+    /// owner can change while it runs. That must fail closed. A `.bound` session
+    /// nobody owns is worse than an unbound one: `retireAbandonedSession` takes
+    /// the bound branch, records a permanent stop intent and publishes a
+    /// pending-stop notice that every retry then refuses to clear.
+    func testDurableOwnerChangingDuringJournalWriteLeavesRegistrationFailed() async throws {
+        let name = "PlaybackSequencedTransportTests.\(UUID())"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let switcher = ProfileSwitchDuringWrite(defaults: suite, profileID: "switched")
+        let (owner, _, auth) = try await fixture(name: name, duringWrite: switcher)
+        do {
+            try await owner.register(sessionID: "session", features: [PlaybackSequencedContract.feature], auth: auth)
+            XCTFail("A durable owner change during the journal write must not bind the session")
+        } catch {}
+        // Not `.bound`, and not `.notSequenced` either: the server allocated it
+        // under the sequenced contract, so a plain DELETE stays fenced off.
+        let state = await owner.sequencedState("session")
+        XCTAssertEqual(state, .registrationFailed)
+        XCTAssertTrue(SequencedPlaybackProtocol.requests().isEmpty)
+    }
+}
+
+/// Changes the durable owner behind `TokenStore`'s back, from inside the journal
+/// write, so the change lands mid-suspension rather than between awaited calls.
+private final class ProfileSwitchDuringWrite: @unchecked Sendable {
+    private let defaults: UserDefaults
+    private let profileID: String
+    init(defaults: UserDefaults, profileID: String) {
+        self.defaults = defaults
+        self.profileID = profileID
+    }
+    func fire() { defaults.set(profileID, forKey: SharedStorage.profileIdKey) }
 }
 
 private final class SequencedPlaybackProtocol: URLProtocol {

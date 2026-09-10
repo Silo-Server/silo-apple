@@ -107,9 +107,6 @@ actor PlaybackV3CapabilityGate {
 /// Capability reporting must stay aligned with what the active AetherEngine
 /// boundary can actually execute.
 actor PlaybackSessionBridge {
-    private static let nearEndResumeSuppressionSeconds: Double = 5
-    private static let pastEndResumeClampSeconds: Double = 0.25
-
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Playback"
@@ -128,120 +125,16 @@ actor PlaybackSessionBridge {
         self.api = api
         self.tokens = tokens
     }
-    private var sessionId: String?
-    private var currentSession: PlaybackSessionResponse?
-
-    private struct ActiveProtocolV3 {
-        let playbackAttemptId: String
-        var planAttemptId: String
-        var planAttemptKey: String
-        var attemptedPlanKeys: [String]
-        var attemptCount: Int
-        var clientQualityId: String
-        /// True after the user selects an exact quality identifier advertised
-        /// by the active plan. Recovery replans must keep that identifier
-        /// instead of translating it through the local Settings ladder.
-        var usesServerQualityPreference: Bool
-        /// The independent bandwidth ceiling captured for this attempt. Every
-        /// replan must repeat it or recovery silently widens the connection.
-        var bandwidthCapKbps: Int?
-        var snapshot: ApplePlaybackV3CapabilitySnapshot
-        var serverFeatures: [String]
-        /// Attempt-sticky: the server silently restores the negotiated origin
-        /// state on a replan, so every replan repeats what the start request
-        /// negotiated. Changing it means a new attempt, not a replan.
-        let negotiatedAuthorizedMediaOrigins: Bool
-        var plan: PlaybackV3Plan
-    }
-
-    private struct ProtocolV3AttemptIdentity: Equatable {
-        let playbackAttemptId: String
-        let planAttemptId: String
-        let planAttemptKey: String
-
-        init(_ active: ActiveProtocolV3) {
-            playbackAttemptId = active.playbackAttemptId
-            planAttemptId = active.planAttemptId
-            planAttemptKey = active.planAttemptKey
-        }
-    }
-
-    private struct StagedProtocolV3Start {
-        let playbackAttemptId: String
-        let clientQualityId: String
-        let bandwidthCapKbps: Int?
-        let snapshot: ApplePlaybackV3CapabilitySnapshot
-        let serverFeatures: [String]
-        let negotiatedAuthorizedMediaOrigins: Bool
-        let plan: PlaybackV3Plan
-        let sessionId: String
-        let selectedVersion: FileVersion
-        let session: PlaybackSessionResponse
-    }
-
-    struct InitialProtocolV3SubtitleIntent: Equatable {
-        let ffmpegStreamIndex: Int?
-        let combinedIndex: Int?
-    }
-
-    struct InitialProtocolV3SubtitlePreferences: Equatable {
-        let preferredLanguage: String?
-        let additionalPreferredLanguages: [String]
-        let mode: SubtitleMode?
-        let showForced: Bool
-        let forcedOnly: Bool
-        let preferAccessibilityTracks: Bool
-        let disableWhenNoLanguageMatch: Bool
-        let trackSignature: SubtitleTrackSignature?
-    }
-
-    private var activeProtocolV3: ActiveProtocolV3?
+    /// Session, plan, and two-phase route-transition state. The bridge owns
+    /// the side effects each mutation reports back; it owns no copy of them.
+    private var transition = ProtocolV3Transition()
     private var protocolV3FirstFramePlanIds: Set<String> = []
-
-    /// A server decision is only provisional until the owning player proves
-    /// that Aether accepted the corresponding source. Keeping the prior bridge
-    /// state here prevents a cancelled/failed load from publishing a session
-    /// and plan that never became executable. A successful commit also retires
-    /// the replaced server session exactly once.
-    private struct PendingProtocolV3Transition {
-        let priorSessionId: String?
-        let priorSession: PlaybackSessionResponse?
-        let priorProtocolV3: ActiveProtocolV3?
-        let candidateSessionId: String
-        let candidatePlanId: String
-        let commitEvent: String?
-        let commitDiagnostics: [String: String]
-    }
-
-    private var pendingProtocolV3Transition: PendingProtocolV3Transition?
-
-    /// The staged transition this prepared playback came from, if it is still
-    /// the staged one. Identity is the candidate session and plan the server
-    /// issued. Whether the bridge already points at that candidate is a
-    /// separate question: commit and recovery require it, while a rollback has
-    /// to recognise a candidate the bridge never adopted.
-    private func stagedTransition(
-        matching prepared: PreparedPlayback
-    ) -> PendingProtocolV3Transition? {
-        guard let pending = pendingProtocolV3Transition,
-              pending.candidateSessionId == prepared.session.sessionId,
-              pending.candidatePlanId == prepared.protocolV3?.plan.planId else {
-            return nil
-        }
-        return pending
-    }
 
     private func isCurrentProtocolV3Attempt(
         _ expected: ProtocolV3AttemptIdentity,
         sessionId expectedSessionId: String
     ) -> Bool {
-        guard !Task.isCancelled,
-              sessionId == expectedSessionId,
-              currentSession?.sessionId == expectedSessionId,
-              let activeProtocolV3 else {
-            return false
-        }
-        return ProtocolV3AttemptIdentity(activeProtocolV3) == expected
+        !Task.isCancelled && transition.matchesAttempt(expected, sessionId: expectedSessionId)
     }
 
     private func discardStaleProtocolV3Response(
@@ -256,7 +149,7 @@ actor PlaybackSessionBridge {
         case .terminal:
             allocatedSessionId = nil
         }
-        guard let allocatedSessionId, allocatedSessionId != sessionId else { return }
+        guard let allocatedSessionId, allocatedSessionId != transition.sessionId else { return }
         stopStaleSession(allocatedSessionId)
     }
 
@@ -349,150 +242,77 @@ actor PlaybackSessionBridge {
         return PlaybackV3TerminalFailure(reason: reason, message: message, retryable: retryable)
     }
 
-    /// Records a server-issued candidate plan as pending until Aether commits
-    /// the matching load epoch, preserving the last committed state for rollback.
-    private func stageProtocolV3Transition(
-        candidateSessionId: String,
-        candidatePlanId: String,
-        commitEvent: String? = nil,
-        commitDiagnostics: [String: String] = [:]
-    ) {
-        // A newer load superseding an uncommitted candidate restores the last
-        // committed bridge state and retires the abandoned allocation first.
-        // A replan issued against that uncommitted candidate reuses its
-        // session id, so the "abandoned" allocation is the one about to be
-        // staged again; retiring it would DELETE the session the engine is
-        // about to read from and strand playback in 404 backoff.
-        rollbackAnyPendingProtocolV3Transition(retainingSessionId: candidateSessionId)
-        pendingProtocolV3Transition = PendingProtocolV3Transition(
-            priorSessionId: sessionId,
-            priorSession: currentSession,
-            priorProtocolV3: activeProtocolV3,
-            candidateSessionId: candidateSessionId,
-            candidatePlanId: candidatePlanId,
-            commitEvent: commitEvent,
-            commitDiagnostics: commitDiagnostics
-        )
+    /// Performs the server-facing work a transition mutation reported: retire
+    /// the session nothing owns any more, then emit the commit's route event.
+    private func apply(_ outcome: ProtocolV3Transition.Outcome) {
+        if let retiredSessionId = outcome.retireSessionId {
+            stopStaleSession(retiredSessionId)
+        }
+        guard let commit = outcome.commitEvent else { return }
+        // Route telemetry is best-effort and must not make this actor
+        // reentrant between committing the candidate and returning the
+        // result to its owner. Teardown or a newer load may otherwise run
+        // during the HTTP await and then be followed by stale VM work.
+        Task {
+            await emitProtocolV3Event(
+                active: commit.active,
+                sessionId: commit.sessionId,
+                event: commit.event,
+                classification: nil,
+                fallbackReason: nil,
+                diagnostics: commit.diagnostics
+            )
+        }
     }
 
     /// Commits the server decision only after Aether's load epoch commits.
     /// Returns false when a newer transition or teardown already won.
     func commitPendingProtocolV3Transition(_ prepared: PreparedPlayback) -> Bool {
-        guard let pending = stagedTransition(matching: prepared),
-              sessionId == pending.candidateSessionId,
-              activeProtocolV3?.plan.planId == pending.candidatePlanId else {
-            return false
-        }
-        pendingProtocolV3Transition = nil
-        if let priorSessionId = pending.priorSessionId,
-           priorSessionId != pending.candidateSessionId {
-            stopStaleSession(priorSessionId)
-        }
-        if let event = pending.commitEvent, let activeProtocolV3 {
-            // Route telemetry is best-effort and must not make this actor
-            // reentrant between committing the candidate and returning the
-            // result to its owner. Teardown or a newer load may otherwise run
-            // during the HTTP await and then be followed by stale VM work.
-            let committedActive = activeProtocolV3
-            let committedSessionId = pending.candidateSessionId
-            let committedDiagnostics = pending.commitDiagnostics
-            Task {
-                await emitProtocolV3Event(
-                    active: committedActive,
-                    sessionId: committedSessionId,
-                    event: event,
-                    classification: nil,
-                    fallbackReason: nil,
-                    diagnostics: committedDiagnostics
-                )
-            }
-        }
+        guard let outcome = transition.commit(prepared) else { return false }
+        apply(outcome)
         return true
     }
 
-    /// Returns the committed wire session only when it still belongs to the
-    /// exact plan the player is recovering. This lets the player rebuild the
-    /// same immutable plan with refreshed request headers without asking the
-    /// server to advance the route ladder.
+    /// See `ProtocolV3Transition.promoteForRecovery`: this reports the exact
+    /// failed candidate as the current attempt without committing execution.
+    func promotePendingProtocolV3TransitionForRecovery(
+        _ prepared: PreparedPlayback
+    ) -> Bool {
+        guard let outcome = transition.promoteForRecovery(prepared) else { return false }
+        apply(outcome)
+        return true
+    }
+
+    /// See `ProtocolV3Transition.rollback`.
+    func rollbackPendingProtocolV3Transition(_ prepared: PreparedPlayback) {
+        apply(transition.rollback(prepared))
+    }
+
+    /// See `ProtocolV3Transition.committedSession`.
     func committedProtocolV3Session(
         planId expectedPlanId: String,
         sessionId expectedSessionId: String
     ) -> PlaybackSessionResponse? {
-        guard pendingProtocolV3Transition == nil,
-              sessionId == expectedSessionId,
-              currentSession?.sessionId == expectedSessionId,
-              activeProtocolV3?.plan.planId == expectedPlanId else {
-            return nil
-        }
-        return currentSession
+        transition.committedSession(planId: expectedPlanId, sessionId: expectedSessionId)
     }
 
-    /// Promotes a candidate that Aether could not open solely so the client
-    /// can report that exact failed attempt and request the next server route.
-    /// This is not an execution commit: it emits no success event, binds no
-    /// realtime channel, and cannot report first frame. The failed candidate
-    /// nevertheless becomes the current server attempt because a V3 replan
-    /// must echo the identity of the plan that actually failed.
-    func promotePendingProtocolV3TransitionForRecovery(
-        _ prepared: PreparedPlayback
-    ) -> Bool {
-        guard let pending = stagedTransition(matching: prepared),
-              sessionId == pending.candidateSessionId,
-              activeProtocolV3?.plan.planId == pending.candidatePlanId else {
-            return false
-        }
-        pendingProtocolV3Transition = nil
-        if let priorSessionId = pending.priorSessionId,
-           priorSessionId != pending.candidateSessionId {
-            stopStaleSession(priorSessionId)
-        }
-        return true
-    }
-
-    /// Restores the last committed bridge state after an invalid URL,
-    /// cancellation, or Aether load failure and retires a distinct candidate
-    /// session. Same-session replans restore client state; the server keeps its
-    /// own immutable attempt history for the next bounded replan.
-    func rollbackPendingProtocolV3Transition(_ prepared: PreparedPlayback) {
-        guard stagedTransition(matching: prepared) != nil else { return }
-        rollbackAnyPendingProtocolV3Transition()
-    }
-
-    /// `retainingSessionId` names a session the caller is about to stage again;
-    /// it is left alive on the server instead of being retired as abandoned.
-    private func rollbackAnyPendingProtocolV3Transition(
-        retainingSessionId: String? = nil
+    /// Stages a server-issued candidate and makes it the bridge's current
+    /// attempt. The candidate stays provisional until the owning player proves
+    /// Aether accepted the matching source.
+    private func adopt(
+        active: ActiveProtocolV3,
+        session: PlaybackSessionResponse,
+        commitEvent: String? = nil,
+        commitDiagnostics: [String: String] = [:]
     ) {
-        guard let pending = pendingProtocolV3Transition else { return }
-        pendingProtocolV3Transition = nil
-        sessionId = pending.priorSessionId
-        currentSession = pending.priorSession
-        activeProtocolV3 = pending.priorProtocolV3
-        if Self.shouldRetireRolledBackCandidate(
-            candidateSessionId: pending.candidateSessionId,
-            priorSessionId: pending.priorSessionId,
-            retainingSessionId: retainingSessionId
-        ) {
-            stopStaleSession(pending.candidateSessionId)
-        }
-    }
-
-    /// A rolled-back candidate is retired only when nothing else still owns
-    /// it: not the committed prior session it replaced, and not a transition
-    /// that is about to stage the same session id again (a replan against an
-    /// uncommitted start reuses the start's session).
-    static func shouldRetireRolledBackCandidate(
-        candidateSessionId: String,
-        priorSessionId: String?,
-        retainingSessionId: String?
-    ) -> Bool {
-        candidateSessionId != priorSessionId && candidateSessionId != retainingSessionId
-    }
-
-    private func adoptSession(_ session: PlaybackSessionResponse) {
+        apply(transition.stage(
+            candidateSessionId: session.sessionId,
+            candidatePlanId: active.plan.planId,
+            commitEvent: commitEvent,
+            commitDiagnostics: commitDiagnostics
+        ))
+        transition.adopt(active: active, session: session)
         retiringSession = nil
-        sessionId = session.sessionId
-        currentSession = session
         consecutiveProgressFailures = 0
         #if os(iOS) || os(tvOS)
         // Only record the session id for later diagnostics bundling when
@@ -525,7 +345,7 @@ actor PlaybackSessionBridge {
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
         preferredProtocolV3SubtitleIndex: Int? = nil,
-        initialSubtitlePreferences: InitialProtocolV3SubtitlePreferences? = nil,
+        initialSubtitlePreferences: PlaybackContentSelection.InitialProtocolV3SubtitlePreferences? = nil,
         startFromBeginning: Bool,
         resumePosition: Double? = nil,
         allowNearEndResume: Bool = false,
@@ -540,115 +360,22 @@ actor PlaybackSessionBridge {
             throw APIError.httpError(statusCode: 404)
         }
 
-        // A mid-stream quality-change replan passes an explicit override
-        // (e.g. back to Auto) that must win over the persisted setting.
         let playerSettings = PlayerSettings.shared
-        let lastUsedQuality = prefersLastUsedVersion
-            ? normalizedQualityPreference(watchDetail.userData?.lastResolution)
-            : nil
-        let preferredQuality = preferredQualityOverride.map {
-            ApplePlaybackQuality.protocolV3QualityId($0)
-        } ?? lastUsedQuality
-            ?? normalizedQualityPreference(playerSettings.preferredQuality)
-        let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
-            qualityOverride: preferredQualityOverride,
-            fallbackBitrateKbps: playerSettings.maxBitrateKbps
-        )
-        let normalizedResumePosition: Double? = {
-            guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
-                return nil
-            }
-            return resumePosition
-        }()
-        let storedResumePosition: Double? = {
-            guard let storedResumePosition = watchDetail.userData?.positionSeconds,
-                  storedResumePosition.isFinite,
-                  storedResumePosition >= 0 else {
-                return nil
-            }
-            return storedResumePosition
-        }()
-
-        let initiallySelectedVersion: FileVersion
-        if let preferredFileId,
-           let requestedVersion = watchDetail.versions.first(where: { $0.fileId == preferredFileId }) {
-            initiallySelectedVersion = requestedVersion
-            logger.info(
-                "Using manually selected version fileId=\(requestedVersion.fileId, privacy: .public)"
-            )
-        } else if prefersLastUsedVersion,
-                  let lastFileId = watchDetail.userData?.lastFileId,
-                  let lastUsedVersion = watchDetail.versions.first(where: {
-                      $0.fileId == lastFileId
-                  }) {
-            initiallySelectedVersion = lastUsedVersion
-            logger.info(
-                "Resuming last-used version fileId=\(lastUsedVersion.fileId, privacy: .public)"
-            )
-        } else {
-            if let preferredFileId {
-                logger.warning(
-                    "Requested fileId=\(preferredFileId, privacy: .public) is unavailable; falling back to automatic selection"
-                )
-            }
-
-            initiallySelectedVersion = Self.selectVersion(
-                from: watchDetail.versions,
-                lastFileId: watchDetail.userData?.lastFileId,
-                preferredQuality: preferredQuality
-            )
-        }
-        let selectedVersion = initiallySelectedVersion
-        let resolvedAudioTrackIndex = preferredAudioTrackIndex
-            ?? selectedVersion.effectiveAudioTrackIndex
-        let selectedAudioLanguage = selectedVersion.audioTracks?.first(where: {
-            $0.index == resolvedAudioTrackIndex
-        })?.language
-        let subtitleIntent = Self.initialProtocolV3SubtitleIntent(
-            version: selectedVersion,
-            explicitFFmpegIndex: preferredSubtitleTrackIndex,
-            explicitCombinedIndex: preferredProtocolV3SubtitleIndex,
-            preferredLanguage: initialSubtitlePreferences == nil
-                ? watchDetail.effectiveSubtitleLanguage
-                : initialSubtitlePreferences?.preferredLanguage,
-            additionalPreferredLanguages: initialSubtitlePreferences?.additionalPreferredLanguages ?? [],
-            mode: initialSubtitlePreferences == nil
-                ? SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? "")
-                : initialSubtitlePreferences?.mode,
-            showForced: initialSubtitlePreferences?.showForced
-                ?? (watchDetail.effectiveShowForcedSubtitles ?? false),
-            forcedOnly: initialSubtitlePreferences?.forcedOnly ?? false,
-            preferAccessibilityTracks: initialSubtitlePreferences?.preferAccessibilityTracks ?? false,
-            disableWhenNoLanguageMatch: initialSubtitlePreferences?.disableWhenNoLanguageMatch ?? false,
-            trackSignature: initialSubtitlePreferences == nil
-                ? watchDetail.effectiveSubtitleTrackSignature
-                : initialSubtitlePreferences?.trackSignature,
-            currentAudioLanguage: selectedAudioLanguage
-        )
-        let effectiveStartPosition = resolvedStartPosition(
-            startFromBeginning: startFromBeginning,
-            explicitResumePosition: normalizedResumePosition,
-            storedResumePosition: storedResumePosition,
+        let selection = PlaybackContentSelection.resolve(
             watchDetail: watchDetail,
-            selectedVersion: selectedVersion,
-            allowNearEndResume: allowNearEndResume
+            preferredFileId: preferredFileId,
+            preferredAudioTrackIndex: preferredAudioTrackIndex,
+            preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
+            preferredProtocolV3SubtitleIndex: preferredProtocolV3SubtitleIndex,
+            initialSubtitlePreferences: initialSubtitlePreferences,
+            startFromBeginning: startFromBeginning,
+            resumePosition: resumePosition,
+            allowNearEndResume: allowNearEndResume,
+            prefersLastUsedVersion: prefersLastUsedVersion,
+            preferredQualityOverride: preferredQualityOverride,
+            settingsPreferredQuality: playerSettings.preferredQuality,
+            settingsMaxBitrateKbps: playerSettings.maxBitrateKbps
         )
-        logger.info(
-            "Selected version fileId=\(selectedVersion.fileId, privacy: .public) resolution=\(selectedVersion.resolution ?? "unknown", privacy: .public) codec=\(selectedVersion.codecVideo ?? "unknown", privacy: .public) bitrate=\(selectedVersion.bitrate ?? 0)"
-        )
-
-        // Quality preference is a server-owned planning input. An explicit
-        // override is the user's in-player choice, so preserve it verbatim
-        // instead of deriving a different rung from the selected file.
-        let resolvedQualityPreference = preferredQualityOverride != nil
-            ? preferredQuality
-            : requestedQualityPreference(
-                preferredQuality: preferredQuality,
-                selectedVersion: selectedVersion,
-                hasManualSelection: preferredFileId != nil
-                    || (prefersLastUsedVersion
-                        && selectedVersion.fileId == watchDetail.userData?.lastFileId)
-            )
         let profileId = await tokens.getProfileId()
         guard let profileId,
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -661,122 +388,10 @@ actor PlaybackSessionBridge {
         // Protocol v3 is the only playback contract. There is no legacy start
         // path to fall back to — `/api/v1/playback/start` rejects any body
         // whose `protocol_version` is not 3.
-        return try await startProtocolV3(
-            watchDetail: watchDetail,
-            selectedVersion: selectedVersion,
-            profileId: profileId,
-            qualityPreference: resolvedQualityPreference,
-            bandwidthCapKbps: bandwidthCapKbps,
-            startPosition: effectiveStartPosition,
-            // Without an explicit pick, send the server's own detail-resolved
-            // effective audio index so a movie's remembered track survives.
-            audioTrackIndex: resolvedAudioTrackIndex,
-            subtitleTrackIndex: subtitleIntent.ffmpegStreamIndex,
-            subtitleCombinedIndex: subtitleIntent.combinedIndex
-        )
-    }
-
-    /// Resolves "Auto" before the first V3 request. The player otherwise
-    /// applies the same preference resolver only after opening the file,
-    /// which can make it render a container-default/forced track while the
-    /// server still believes the authoritative plan has subtitles off.
-    static func initialProtocolV3SubtitleIntent(
-        version: FileVersion,
-        explicitFFmpegIndex: Int?,
-        explicitCombinedIndex: Int?,
-        preferredLanguage: String?,
-        additionalPreferredLanguages: [String] = [],
-        mode: SubtitleMode?,
-        showForced: Bool,
-        forcedOnly: Bool = false,
-        preferAccessibilityTracks: Bool = false,
-        disableWhenNoLanguageMatch: Bool = false,
-        trackSignature: SubtitleTrackSignature?,
-        currentAudioLanguage: String?
-    ) -> InitialProtocolV3SubtitleIntent {
-        if let explicitCombinedIndex {
-            return InitialProtocolV3SubtitleIntent(
-                ffmpegStreamIndex: explicitFFmpegIndex.flatMap { $0 >= 0 ? $0 : nil },
-                combinedIndex: explicitCombinedIndex >= 0 ? explicitCombinedIndex : nil
-            )
-        }
-        if let explicitFFmpegIndex {
-            guard explicitFFmpegIndex >= 0 else {
-                return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
-            }
-            return InitialProtocolV3SubtitleIntent(
-                ffmpegStreamIndex: explicitFFmpegIndex,
-                combinedIndex: ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
-                    ffmpegStreamIndex: explicitFFmpegIndex,
-                    in: version
-                )
-            )
-        }
-
-        let candidates = SubtitleTrackCandidates.playerTracks(from: version.subtitleTracks ?? [])
-        let resolution = SubtitleAutoResolver.resolve(.init(
-            preferredLanguage: preferredLanguage,
-            additionalPreferredLanguages: additionalPreferredLanguages,
-            mode: mode,
-            showForced: showForced,
-            forcedOnly: forcedOnly,
-            preferAccessibilityTracks: preferAccessibilityTracks,
-            disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
-            trackSignature: trackSignature,
-            availableSubtitles: candidates,
-            currentAudioLanguage: currentAudioLanguage
-        ))
-        let selected: PlayerTrack?
-        switch resolution {
-        case .select(let track):
-            selected = track
-        case .disable:
-            selected = nil
-        case .noChange:
-            // "Leave the player alone" means its demuxer keeps the media's
-            // default track; the sidecar route also promotes a forced track.
-            // Freeze that deterministic choice into the plan up front.
-            selected = candidates.first(where: { $0.isDefault })
-                ?? candidates.first(where: { $0.isForced })
-        }
-        guard let selected else {
-            return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
-        }
-        return InitialProtocolV3SubtitleIntent(
-            ffmpegStreamIndex: selected.ffIndex,
-            combinedIndex: ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
-                for: selected,
-                in: version
-            )
-        )
-    }
-
-    private func startProtocolV3(
-        watchDetail: WatchDetail,
-        selectedVersion: FileVersion,
-        profileId: String,
-        qualityPreference: String?,
-        bandwidthCapKbps: Int?,
-        startPosition: Double?,
-        audioTrackIndex: Int?,
-        subtitleTrackIndex: Int?,
-        subtitleCombinedIndex: Int? = nil
-    ) async throws -> PreparedPlayback {
-        let resolvedSubtitleCombinedIndex = subtitleCombinedIndex ?? subtitleTrackIndex.flatMap {
-            ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
-                ffmpegStreamIndex: $0,
-                in: selectedVersion
-            )
-        }
         let staged = try await stageProtocolV3Start(
             watchDetail: watchDetail,
-            selectedVersion: selectedVersion,
-            profileId: profileId,
-            qualityPreference: qualityPreference,
-            bandwidthCapKbps: bandwidthCapKbps,
-            startPosition: startPosition,
-            audioTrackIndex: audioTrackIndex,
-            subtitleCombinedIndex: resolvedSubtitleCombinedIndex
+            selection: selection,
+            profileId: profileId
         )
         return adoptProtocolV3Start(staged, watchDetail: watchDetail)
     }
@@ -797,52 +412,27 @@ actor PlaybackSessionBridge {
 
     private func stageProtocolV3Start(
         watchDetail: WatchDetail,
-        selectedVersion: FileVersion,
-        profileId: String,
-        qualityPreference: String?,
-        bandwidthCapKbps: Int?,
-        startPosition: Double?,
-        audioTrackIndex: Int?,
-        subtitleCombinedIndex: Int?
+        selection: PlaybackContentSelection.Start,
+        profileId: String
     ) async throws -> StagedProtocolV3Start {
         let startAuth = try await mutationCoordinator.captureStartAuth()
         let capturedPlaybackAuth = startAuth.durable
-        let initialCapability = startAuth.capability
-        let requestsAuthorizedMediaOrigins = initialCapability.features.contains(
+        let requestsAuthorizedMediaOrigins = startAuth.capability.features.contains(
             PlaybackProtocolV3.authorizedMediaOriginsFeature)
 
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
         let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
-        let request = PlaybackV3StartRequest(
-            protocolVersion: PlaybackProtocolV3.version,
-            clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
-                authorizedMediaOrigins: requestsAuthorizedMediaOrigins
-            ),
-            fileId: selectedVersion.fileId,
+        let request = Self.startRequest(
+            selection: selection,
             profileId: profileId,
             playbackAttemptId: playbackAttemptId,
-            qualityPreference: protocolV3QualityPreference(qualityPreference),
-            subtitleFidelityPreference: "preserve",
-            progressPersistence: nil,
-            startPosition: startPosition,
-            audioTrackId: audioTrackIndex.flatMap {
-                $0 >= 0 ? protocolV3TrackId(fileId: selectedVersion.fileId, kind: "audio", index: $0) : nil
-            },
-            audioTrackIndex: audioTrackIndex.flatMap { $0 >= 0 ? $0 : nil },
-            subtitleTrackId: subtitleCombinedIndex.flatMap {
-                $0 >= 0 ? protocolV3TrackId(fileId: selectedVersion.fileId, kind: "subtitle", index: $0) : nil
-            },
-            subtitleTrackIndex: subtitleCombinedIndex,
-            metered: false,
-            bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: bandwidthCapKbps,
-            clientCapabilities: snapshot.capabilities,
-            clientPlaybackContext: snapshot.context
+            snapshot: snapshot,
+            authorizedMediaOrigins: requestsAuthorizedMediaOrigins
         )
 
         logger.info(
-            "Starting protocol V3 attempt=\(playbackAttemptId, privacy: .public) fileId=\(selectedVersion.fileId, privacy: .public)"
+            "Starting protocol V3 attempt=\(playbackAttemptId, privacy: .public) fileId=\(selection.selectedVersion.fileId, privacy: .public)"
         )
         // Callers cancel this task on the autoplay start timeout and on player
         // dismissal. The POST allocates a server session, so cancelling it
@@ -851,7 +441,7 @@ actor PlaybackSessionBridge {
         // allocated if the caller has already walked away.
         let response = try await PlaybackCancellationShield.run {
             try await self.mutationCoordinator.startV2(request: request,
-                auth: capturedPlaybackAuth, capability: initialCapability)
+                auth: capturedPlaybackAuth, capability: startAuth.capability)
         } reclaim: { [self] abandoned in
             guard let orphaned = Self.allocatedSessionId(in: abandoned) else { return }
             try? await registerSequencedAllocation(abandoned, auth: capturedPlaybackAuth)
@@ -859,7 +449,75 @@ actor PlaybackSessionBridge {
         }
 
         try await registerSequencedAllocation(response, auth: capturedPlaybackAuth)
+        return try await adoptableStart(
+            response,
+            watchDetail: watchDetail,
+            playbackAttemptId: playbackAttemptId,
+            qualityPreference: selection.qualityPreference,
+            bandwidthCapKbps: selection.bandwidthCapKbps,
+            snapshot: snapshot,
+            requestsAuthorizedMediaOrigins: requestsAuthorizedMediaOrigins
+        )
+    }
 
+    private static func startRequest(
+        selection: PlaybackContentSelection.Start,
+        profileId: String,
+        playbackAttemptId: String,
+        snapshot: ApplePlaybackV3CapabilitySnapshot,
+        authorizedMediaOrigins: Bool
+    ) -> PlaybackV3StartRequest {
+        let fileId = selection.selectedVersion.fileId
+        let subtitleCombinedIndex = selection.subtitleCombinedIndex
+            ?? selection.subtitleTrackIndex.flatMap {
+                ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                    ffmpegStreamIndex: $0,
+                    in: selection.selectedVersion
+                )
+            }
+        return PlaybackV3StartRequest(
+            protocolVersion: PlaybackProtocolV3.version,
+            clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
+                authorizedMediaOrigins: authorizedMediaOrigins
+            ),
+            fileId: fileId,
+            profileId: profileId,
+            playbackAttemptId: playbackAttemptId,
+            qualityPreference: PlaybackContentSelection.protocolV3QualityPreference(
+                selection.qualityPreference
+            ),
+            subtitleFidelityPreference: "preserve",
+            progressPersistence: nil,
+            startPosition: selection.startPosition,
+            audioTrackId: selection.audioTrackIndex.flatMap {
+                $0 >= 0 ? PlaybackContentSelection.protocolV3TrackId(
+                    fileId: fileId, kind: "audio", index: $0) : nil
+            },
+            audioTrackIndex: selection.audioTrackIndex.flatMap { $0 >= 0 ? $0 : nil },
+            subtitleTrackId: subtitleCombinedIndex.flatMap {
+                $0 >= 0 ? PlaybackContentSelection.protocolV3TrackId(
+                    fileId: fileId, kind: "subtitle", index: $0) : nil
+            },
+            subtitleTrackIndex: subtitleCombinedIndex,
+            metered: false,
+            bandwidthEstimateKbps: nil,
+            bandwidthCapKbps: selection.bandwidthCapKbps,
+            clientCapabilities: snapshot.capabilities,
+            clientPlaybackContext: snapshot.context
+        )
+    }
+
+    /// Validates a start response into the state a start can adopt, retiring
+    /// and reporting whatever this client cannot execute.
+    private func adoptableStart(
+        _ response: PlaybackV3DecisionResponse,
+        watchDetail: WatchDetail,
+        playbackAttemptId: String,
+        qualityPreference: String?,
+        bandwidthCapKbps: Int?,
+        snapshot: ApplePlaybackV3CapabilitySnapshot,
+        requestsAuthorizedMediaOrigins: Bool
+    ) async throws -> StagedProtocolV3Start {
         switch response.validatedForApple() {
         case .terminal(let terminal):
             throw PlaybackV3TerminalFailure(
@@ -904,12 +562,6 @@ actor PlaybackSessionBridge {
                     retireReason: "start_effective_file_unavailable"
                 )
             }
-            let session = ApplePlaybackV3PlanAdapter.playbackSession(
-                plan: plan,
-                sessionId: resolvedSessionId,
-                selectedVersion: effectiveVersion,
-                serverFeatures: response.serverFeatures
-            )
             return StagedProtocolV3Start(
                 playbackAttemptId: playbackAttemptId,
                 clientQualityId: ApplePlaybackQuality.protocolV3QualityId(qualityPreference),
@@ -926,7 +578,12 @@ actor PlaybackSessionBridge {
                 plan: plan,
                 sessionId: resolvedSessionId,
                 selectedVersion: effectiveVersion,
-                session: session
+                session: ApplePlaybackV3PlanAdapter.playbackSession(
+                    plan: plan,
+                    sessionId: resolvedSessionId,
+                    selectedVersion: effectiveVersion,
+                    serverFeatures: response.serverFeatures
+                )
             )
         }
     }
@@ -935,37 +592,26 @@ actor PlaybackSessionBridge {
         _ staged: StagedProtocolV3Start,
         watchDetail: WatchDetail
     ) -> PreparedPlayback {
-        stageProtocolV3Transition(
-            candidateSessionId: staged.sessionId,
-            candidatePlanId: staged.plan.planId
-        )
         let planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
         // Attempt keys are server-owned; the client only ever echoes them.
         let planAttemptKey = staged.plan.planAttemptKey
-        activeProtocolV3 = ActiveProtocolV3(
-            playbackAttemptId: staged.playbackAttemptId,
-            planAttemptId: planAttemptId,
-            planAttemptKey: planAttemptKey,
-            attemptedPlanKeys: [planAttemptKey],
-            attemptCount: 1,
-            clientQualityId: staged.clientQualityId,
-            usesServerQualityPreference: false,
-            bandwidthCapKbps: staged.bandwidthCapKbps,
-            snapshot: staged.snapshot,
-            serverFeatures: staged.serverFeatures,
-            negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
-            plan: staged.plan
-        )
         protocolV3FirstFramePlanIds.removeAll()
-        adoptSession(staged.session)
-        let preparedV3 = PreparedPlaybackV3(
-            playbackAttemptId: staged.playbackAttemptId,
-            planAttemptId: planAttemptId,
-            planAttemptKey: planAttemptKey,
-            outputContextId: staged.snapshot.outputContextId,
-            serverFeatures: staged.serverFeatures,
-            negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
-            plan: staged.plan
+        adopt(
+            active: ActiveProtocolV3(
+                playbackAttemptId: staged.playbackAttemptId,
+                planAttemptId: planAttemptId,
+                planAttemptKey: planAttemptKey,
+                attemptedPlanKeys: [planAttemptKey],
+                attemptCount: 1,
+                clientQualityId: staged.clientQualityId,
+                usesServerQualityPreference: false,
+                bandwidthCapKbps: staged.bandwidthCapKbps,
+                snapshot: staged.snapshot,
+                serverFeatures: staged.serverFeatures,
+                negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
+                plan: staged.plan
+            ),
+            session: staged.session
         )
         logger.info(
             "Protocol V3 plan selected id=\(staged.plan.planId, privacy: .public) delivery=\(staged.plan.delivery, privacy: .public)"
@@ -978,39 +624,16 @@ actor PlaybackSessionBridge {
                 requestedQualityId: staged.clientQualityId,
                 availableQualities: staged.plan.availableQualities
             ),
-            protocolV3: preparedV3
+            protocolV3: PreparedPlaybackV3(
+                playbackAttemptId: staged.playbackAttemptId,
+                planAttemptId: planAttemptId,
+                planAttemptKey: planAttemptKey,
+                outputContextId: staged.snapshot.outputContextId,
+                serverFeatures: staged.serverFeatures,
+                negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
+                plan: staged.plan
+            )
         )
-    }
-
-    /// Maps a local failure/intent classification onto the protocol's replan
-    /// operation. A user-initiated track or quality change is an intent, not a
-    /// failure, and carries no `failure` block.
-    ///
-    /// An output-route change is an intent too: the device never rejected the
-    /// plan, the display it was chosen for did. §6 gives `output_change`
-    /// exactly that meaning — it keeps the previous route eligible, where
-    /// `failure_recovery` excludes the current plan key and so forces a
-    /// different route even when the new sink can still play it.
-    ///
-    /// That operation only exists on a server advertising `output_change_v1`;
-    /// an older one rejects it as an invalid operation, so the historical
-    /// failure-recovery spelling remains the fallback there. Omitting
-    /// `serverFeatures` means exactly that older server.
-    static func replanOperation(
-        forClassification classification: String,
-        serverFeatures: [String] = []
-    ) -> String {
-        switch classification {
-        case "audio_track_changed", "subtitle_track_changed":
-            return PlaybackProtocolV3.ReplanOperation.trackChange
-        case "quality_changed":
-            return PlaybackProtocolV3.ReplanOperation.qualityChange
-        case "output_route_changed"
-            where serverFeatures.contains(PlaybackProtocolV3.outputChangeFeature):
-            return PlaybackProtocolV3.ReplanOperation.outputChange
-        default:
-            return PlaybackProtocolV3.ReplanOperation.failureRecovery
-        }
     }
 
     /// AVAudioSession emits route-change notifications for configuration
@@ -1084,67 +707,7 @@ actor PlaybackSessionBridge {
         }
     }
 
-    static func replanFailure(
-        operation: String,
-        classification: String,
-        message: String
-    ) -> PlaybackV3Failure? {
-        switch operation {
-        case PlaybackProtocolV3.ReplanOperation.trackChange,
-             PlaybackProtocolV3.ReplanOperation.qualityChange,
-             // The server rejects an `output_change` that carries a failure:
-             // "output_change must not include failure".
-             PlaybackProtocolV3.ReplanOperation.outputChange,
-             PlaybackProtocolV3.ReplanOperation.seekReanchor:
-            return nil
-        default:
-            return PlaybackV3Failure(
-                classification: classification,
-                message: String(message.prefix(512)),
-                decoderName: nil
-            )
-        }
-    }
 
-    static func isV2SameRouteRecovery(operation: String, usesV2: Bool) -> Bool {
-        usesV2 && [PlaybackProtocolV3.ReplanOperation.failureRecovery,
-                   PlaybackProtocolV3.ReplanOperation.seekFailureRecovery,
-                   PlaybackProtocolV3.ReplanOperation.seekReanchor].contains(operation)
-    }
-
-    static func replanPreservesAttempt(operation: String, usesV2: Bool,
-        currentSessionID: String, nextSessionID: String,
-        current: PlaybackV3Plan, next: PlaybackV3Plan,
-        attemptedKeys: [String], responseFeatures: [String]) throws -> Bool {
-        let isSeekReanchor = operation == PlaybackProtocolV3.ReplanOperation.seekReanchor
-        let v2SameRoute = isV2SameRouteRecovery(operation: operation, usesV2: usesV2)
-        let preservesRoute = isSeekReanchor || v2SameRoute
-        guard preservesRoute || !attemptedKeys.contains(next.planAttemptKey) else {
-            throw PlaybackV3TerminalFailure(reason: "replan_loop_detected",
-                message: "The server returned a protocol V3 plan that already failed on this output route.", retryable: false)
-        }
-        if preservesRoute {
-            guard currentSessionID == nextSessionID,
-                  (v2SameRoute || responseFeatures.contains(PlaybackProtocolV3.seekReanchorFeature)),
-                  (!v2SameRoute || (next.planId == current.planId
-                    && next.effectiveMediaFileId == current.effectiveMediaFileId
-                    && next.requestedMediaFileId == current.requestedMediaFileId
-                    && next.source == current.source
-                    && next.stream.protocol == current.stream.protocol
-                    && next.stream.container == current.stream.container)),
-                  next.planAttemptKey == current.planAttemptKey,
-                  next.delivery == current.delivery,
-                  next.effectiveRecipe == current.effectiveRecipe,
-                  next.selectedTracks == current.selectedTracks,
-                  next.transformations == current.transformations,
-                  next.appliedQuirks == current.appliedQuirks,
-                  next.runtimeCorrections == current.runtimeCorrections else {
-                throw PlaybackV3TerminalFailure(reason: "invalid_seek_reanchor_response",
-                    message: "The server changed the route or playback intent during a V3 seek re-anchor.", retryable: false)
-            }
-        }
-        return preservesRoute
-    }
 
     func replanProtocolV3(
         watchDetail: WatchDetail,
@@ -1157,93 +720,71 @@ actor PlaybackSessionBridge {
         subtitleTrackIndex: Int? = nil,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
     ) async throws -> PreparedPlayback? {
-        guard var active = activeProtocolV3,
-              let currentSessionId = sessionId else {
+        guard var active = transition.active,
+              let currentSessionId = transition.sessionId else {
             return nil
         }
-        // Resolved after the guard because the intent mapping depends on what
-        // the server advertised for this attempt.
-        let operation = operation ?? Self.replanOperation(
-            forClassification: classification,
-            serverFeatures: active.serverFeatures
-        )
         let expectedAttempt = ProtocolV3AttemptIdentity(active)
-        guard active.attemptCount < 8 else {
+        let usesV2 = await mutationCoordinator.sequencedState(currentSessionId) == .bound
+        let decision = PlaybackReplanDecision.classify(
+            active: active,
+            classification: classification,
+            requestedOperation: operation,
+            usesV2: usesV2,
+            position: position,
+            qualityPreference: qualityPreference,
+            audioTrackIndex: audioTrackIndex,
+            subtitleTrackIndex: subtitleTrackIndex
+        )
+        if case .terminal(let exhausted) = decision {
             throw await failProtocolV3Attempt(
-                reason: "attempt_limit_reached",
-                message: "Playback recovery exhausted the protocol V3 route ladder.",
+                reason: exhausted.reason,
+                message: exhausted.message,
+                retryable: exhausted.retryable,
                 retiring: nil,
                 reporting: .init(active: active, sessionId: currentSessionId)
             )
         }
-
         if classification == "output_route_changed" {
             active.snapshot = outputRouteSnapshot ?? ApplePlaybackV3Capabilities.snapshot()
             cmpLog("[CMP-OUTPUT] phase=route_change \(active.snapshot.outputDiagnosticsLogFields)")
         }
+        guard case .request(let requestPlan) = decision else { return nil }
 
-        let isIntent = operation == PlaybackProtocolV3.ReplanOperation.trackChange
-            || operation == PlaybackProtocolV3.ReplanOperation.qualityChange
-            || operation == PlaybackProtocolV3.ReplanOperation.outputChange
-        let invalidatesIntent = isIntent || classification == "output_route_changed"
-        let isSeekReanchor = operation == PlaybackProtocolV3.ReplanOperation.seekReanchor
-        let usesV2 = await mutationCoordinator.sequencedState(currentSessionId) == .bound
-        let preservesRoute = isSeekReanchor || Self.isV2SameRouteRecovery(operation: operation, usesV2: usesV2)
-        if isSeekReanchor,
-           !active.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
-            return nil
+        announceReplanRequested(active: active, sessionId: currentSessionId,
+            requestPlan: requestPlan, classification: classification, message: message)
+        guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
+            throw CancellationError()
         }
-        let attemptedKeys = preservesRoute
-            ? active.attemptedPlanKeys
-            : invalidatesIntent
-            ? []
-            : Array(Set(active.attemptedPlanKeys + [active.planAttemptKey])).sorted()
-        let selectedFileId = active.plan.effectiveMediaFileId
-        let selectedAudio = (preservesRoute ? nil : audioTrackIndex).flatMap { index in
-            guard index >= 0 else { return nil }
-            return PlaybackV3TrackIdentity(
-                id: protocolV3TrackId(fileId: selectedFileId, kind: "audio", index: index),
-                index: index
-            )
-        } ?? active.plan.selectedTracks.audio
-        let selectedSubtitle: PlaybackV3TrackIdentity? = {
-            if preservesRoute { return active.plan.selectedTracks.subtitle }
-            if classification == "subtitle_track_changed" {
-                return subtitleTrackIndex.flatMap { index in
-                    guard index >= 0 else { return nil }
-                    return PlaybackV3TrackIdentity(
-                        id: protocolV3TrackId(fileId: selectedFileId, kind: "subtitle", index: index),
-                        index: index
-                    )
-                }
-            }
-            return active.plan.selectedTracks.subtitle
-        }()
-        let selectedTracks = PlaybackV3SelectedTracks(audio: selectedAudio, subtitle: selectedSubtitle)
-        let normalizedPosition = position.isFinite ? max(0, position) : 0
-        let qualitySelection = qualityPreference.map {
-            ApplePlaybackQuality.protocolV3Selection(
-                requestedQualityId: $0,
-                availableQualities: active.plan.availableQualities
-            )
+
+        let response = try await mutationCoordinator.replan(
+            sessionID: currentSessionId,
+            request: Self.replanRequest(active: active, requestPlan: requestPlan,
+                classification: classification, message: message)
+        )
+        let validatedResponse = response.validatedForApple()
+        guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
+            discardStaleProtocolV3Response(validatedResponse)
+            throw CancellationError()
         }
-        let requestedClientQualityId = qualitySelection?.clientQualityId
-            ?? active.clientQualityId
-        let requestedUsesServerQualityPreference = qualitySelection?.isServerOwned
-            ?? active.usesServerQualityPreference
-        let requestedQualityPreference = qualitySelection?.serverPreference
-            ?? (requestedUsesServerQualityPreference
-                ? requestedClientQualityId
-                : protocolV3QualityPreference(requestedClientQualityId))
-        let requestedBandwidthCapKbps: Int?
-        if let qualitySelection {
-            requestedBandwidthCapKbps = qualitySelection.bandwidthCapKbps
-        } else {
-            requestedBandwidthCapKbps = active.bandwidthCapKbps
-        }
-        let eventName = isSeekReanchor
-            ? "seek_reanchor_requested"
-            : (invalidatesIntent ? "plan_invalidated" : "plan_failed")
+        let accepted = try await acceptReplan(validatedResponse, response: response,
+            active: active, sessionId: currentSessionId, requestPlan: requestPlan,
+            watchDetail: watchDetail)
+        return adoptReplan(accepted, active: active, requestPlan: requestPlan,
+            watchDetail: watchDetail)
+    }
+
+    /// Records that a replan was requested, locally and on the server. Both are
+    /// best-effort: the route event must not hold the route transition on a
+    /// separate HTTP round-trip, and the immutable prior-attempt identity is
+    /// captured here so a later replan cannot change what the event names.
+    private func announceReplanRequested(
+        active: ActiveProtocolV3,
+        sessionId: String,
+        requestPlan: PlaybackReplanRequestPlan,
+        classification: String,
+        message: String
+    ) {
         #if os(iOS) || os(tvOS)
         // The server-side route event below is the authoritative record, but
         // it only exists if the report POST succeeds and it lands in the
@@ -1258,54 +799,55 @@ actor PlaybackSessionBridge {
             tag: "PlaybackSession",
             message: "protocol v3 replan requested",
             attrs: [
-                "session_id": .string(currentSessionId),
+                "session_id": .string(sessionId),
                 "reason": .string(classification),
                 "play_method": .string(active.plan.delivery),
-                "position_ms": .int(Self.diagnosticsPositionMilliseconds(normalizedPosition)),
+                "position_ms": .int(Self.diagnosticsPositionMilliseconds(requestPlan.position)),
             ]
         )
         #endif
-        // Telemetry is best-effort and must not hold the route transition on
-        // a separate HTTP round-trip. The immutable prior-attempt identity is
-        // captured here so a later replan cannot change what the event names.
         let eventActive = active
         Task {
             await emitProtocolV3Event(
                 active: eventActive,
-                sessionId: currentSessionId,
-                event: eventName,
+                sessionId: sessionId,
+                event: requestPlan.eventName,
                 classification: classification,
                 fallbackReason: nil,
                 diagnostics: ["error_cause": String(message.prefix(512))]
             )
         }
-        guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
-            throw CancellationError()
-        }
+    }
 
-        let request = PlaybackV3ReplanRequest(
+    private static func replanRequest(
+        active: ActiveProtocolV3,
+        requestPlan: PlaybackReplanRequestPlan,
+        classification: String,
+        message: String
+    ) -> PlaybackV3ReplanRequest {
+        PlaybackV3ReplanRequest(
             protocolVersion: PlaybackProtocolV3.version,
             // Sticky: a replan may neither add nor drop the negotiated origin
             // token, so it repeats the attempt's captured state verbatim.
             clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
                 authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins
             ),
-            operation: operation,
+            operation: requestPlan.operation,
             playbackAttemptId: active.playbackAttemptId,
             replanRequestId: "apple-replan:\(UUID().uuidString.lowercased())",
             failedPlanId: active.plan.planId,
             planAttemptId: active.planAttemptId,
             planAttemptKey: active.planAttemptKey,
-            attemptedPlanKeys: attemptedKeys,
-            attemptCount: invalidatesIntent ? 1 : active.attemptCount,
-            qualityPreference: requestedQualityPreference,
-            positionSeconds: normalizedPosition,
+            attemptedPlanKeys: requestPlan.attemptedPlanKeys,
+            attemptCount: requestPlan.attemptCount,
+            qualityPreference: requestPlan.qualityPreference,
+            positionSeconds: requestPlan.position,
             metered: false,
             bandwidthEstimateKbps: nil,
-            bandwidthCapKbps: requestedBandwidthCapKbps,
-            selectedTracks: selectedTracks,
-            failure: Self.replanFailure(
-                operation: operation,
+            bandwidthCapKbps: requestPlan.bandwidthCapKbps,
+            selectedTracks: requestPlan.selectedTracks,
+            failure: PlaybackReplanDecision.replanFailure(
+                operation: requestPlan.operation,
                 classification: classification,
                 message: message
             ),
@@ -1315,152 +857,181 @@ actor PlaybackSessionBridge {
             clientCapabilities: active.snapshot.capabilities,
             clientPlaybackContext: active.snapshot.context
         )
-        let response = try await mutationCoordinator.replan(sessionID: currentSessionId, request: request)
-        let validatedResponse = response.validatedForApple()
-        guard isCurrentProtocolV3Attempt(expectedAttempt, sessionId: currentSessionId) else {
-            discardStaleProtocolV3Response(validatedResponse)
-            throw CancellationError()
+    }
+
+    /// The replacement the server accepted, once every rejection path has
+    /// retired what it abandoned and reported its terminal route event.
+    private struct AcceptedReplan {
+        let plan: PlaybackV3Plan
+        let sessionId: String
+        let serverFeatures: [String]
+        let preservesAttempt: Bool
+        let selectedVersion: FileVersion
+    }
+
+    private func acceptReplan(
+        _ validated: PlaybackV3DecisionValidation,
+        response: PlaybackV3DecisionResponse,
+        active: ActiveProtocolV3,
+        sessionId currentSessionId: String,
+        requestPlan: PlaybackReplanRequestPlan,
+        watchDetail: WatchDetail
+    ) async throws -> AcceptedReplan {
+        // A rejected response allocates nothing worth keeping unless the
+        // allocation is the session still in use, which must survive.
+        func reject(
+            _ reason: String,
+            _ message: String,
+            retryable: Bool = false,
+            retiring allocated: String?,
+            retireReason: String? = nil
+        ) async -> PlaybackV3TerminalFailure {
+            await failProtocolV3Attempt(
+                reason: reason,
+                message: message,
+                retryable: retryable,
+                retiring: allocated == currentSessionId ? nil : allocated,
+                retireReason: retireReason,
+                reporting: .init(active: active, sessionId: currentSessionId)
+            )
         }
-        switch validatedResponse {
+
+        switch validated {
         case .terminal(let terminal):
-            throw await failProtocolV3Attempt(
-                reason: terminal.reason,
-                message: terminal.message,
-                retryable: terminal.retryable,
-                retiring: nil,
-                reporting: .init(active: active, sessionId: currentSessionId)
-            )
+            throw await reject(terminal.reason, terminal.message,
+                retryable: terminal.retryable, retiring: nil)
         case .incompatible(let allocatedSessionId):
-            throw await failProtocolV3Attempt(
-                reason: "invalid_replan",
-                message: "The server returned an incompatible protocol V3 replacement plan.",
-                retiring: allocatedSessionId == currentSessionId ? nil : allocatedSessionId,
-                retireReason: "incompatible_replan_response",
-                reporting: .init(active: active, sessionId: currentSessionId)
-            )
+            throw await reject("invalid_replan",
+                "The server returned an incompatible protocol V3 replacement plan.",
+                retiring: allocatedSessionId,
+                retireReason: "incompatible_replan_response")
         case .playable(let nextPlan, let nextSessionId):
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {
-                throw await failProtocolV3Attempt(
-                    reason: "server_upgrade_required",
-                    message: "The server did not preserve authenticated media transport during replanning.",
-                    retiring: nextSessionId == currentSessionId ? nil : nextSessionId,
-                    retireReason: "replan_without_header_authenticated_media",
-                    reporting: .init(active: active, sessionId: currentSessionId)
-                )
+                throw await reject("server_upgrade_required",
+                    "The server did not preserve authenticated media transport during replanning.",
+                    retiring: nextSessionId,
+                    retireReason: "replan_without_header_authenticated_media")
             }
             do {
                 try ApplePlaybackV3PlanAdapter.validate(nextPlan)
             } catch {
                 // The adapter's own error stays the thrown one; the helper's
                 // failure only describes what the terminal event reports.
-                await failProtocolV3Attempt(
-                    reason: "invalid_replan",
-                    message: error.localizedDescription,
-                    retiring: nextSessionId == currentSessionId ? nil : nextSessionId,
-                    retireReason: "unexecutable_replan_plan",
-                    reporting: .init(active: active, sessionId: currentSessionId)
-                )
+                _ = await reject("invalid_replan", error.localizedDescription,
+                    retiring: nextSessionId, retireReason: "unexecutable_replan_plan")
                 throw error
             }
-            let nextKey = nextPlan.planAttemptKey
             let preservesAttempt: Bool
             do {
-                preservesAttempt = try Self.replanPreservesAttempt(operation: operation,
-                    usesV2: usesV2,
+                preservesAttempt = try PlaybackReplanDecision.replanPreservesAttempt(
+                    operation: requestPlan.operation, usesV2: requestPlan.usesV2,
                     currentSessionID: currentSessionId, nextSessionID: nextSessionId,
-                    current: active.plan, next: nextPlan, attemptedKeys: attemptedKeys,
+                    current: active.plan, next: nextPlan,
+                    attemptedKeys: requestPlan.attemptedPlanKeys,
                     responseFeatures: response.serverFeatures)
             } catch let failure as PlaybackV3TerminalFailure {
-                throw await failProtocolV3Attempt(
-                    reason: failure.reason,
-                    message: failure.message,
-                    retryable: failure.retryable,
-                    retiring: nextSessionId == currentSessionId ? nil : nextSessionId,
-                    reporting: .init(active: active, sessionId: currentSessionId)
-                )
+                throw await reject(failure.reason, failure.message,
+                    retryable: failure.retryable, retiring: nextSessionId)
             }
             guard let selectedVersion = watchDetail.versions.first(where: {
                 $0.fileId == nextPlan.effectiveMediaFileId
             }) else {
-                throw await failProtocolV3Attempt(
-                    reason: "effective_file_unavailable",
-                    message: "The replacement plan selected an unavailable media version.",
-                    retiring: nextSessionId == currentSessionId ? nil : nextSessionId,
-                    retireReason: "replan_effective_file_unavailable",
-                    reporting: .init(active: active, sessionId: currentSessionId)
-                )
+                throw await reject("effective_file_unavailable",
+                    "The replacement plan selected an unavailable media version.",
+                    retiring: nextSessionId,
+                    retireReason: "replan_effective_file_unavailable")
             }
-            let nextSession = ApplePlaybackV3PlanAdapter.playbackSession(
-                plan: nextPlan,
-                sessionId: nextSessionId,
-                selectedVersion: selectedVersion,
-                serverFeatures: response.serverFeatures
-            )
-            if !preservesAttempt {
-                active.planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
-                active.planAttemptKey = nextKey
-                active.attemptedPlanKeys = attemptedKeys + [nextKey]
-                active.attemptCount = invalidatesIntent ? 1 : active.attemptCount + 1
-            }
-            active.serverFeatures = response.serverFeatures
-            active.plan = nextPlan
-            active.clientQualityId = requestedClientQualityId
-            active.usesServerQualityPreference = requestedUsesServerQualityPreference
-            active.bandwidthCapKbps = requestedBandwidthCapKbps
-            stageProtocolV3Transition(
-                candidateSessionId: nextSessionId,
-                candidatePlanId: nextPlan.planId,
-                commitEvent: isSeekReanchor ? "seek_reanchored" : nil,
-                // §7.5 spells the seek target `target_source_position_seconds`;
-                // `position_seconds` is not on the allowlist and was dropped.
-                commitDiagnostics: isSeekReanchor
-                    ? ["target_source_position_seconds": String(normalizedPosition)]
-                    : [:]
-            )
-            activeProtocolV3 = active
-            adoptSession(nextSession)
-            let preparedV3 = PreparedPlaybackV3(
+            return AcceptedReplan(plan: nextPlan, sessionId: nextSessionId,
+                serverFeatures: response.serverFeatures,
+                preservesAttempt: preservesAttempt, selectedVersion: selectedVersion)
+        }
+    }
+
+    private func adoptReplan(
+        _ accepted: AcceptedReplan,
+        active: ActiveProtocolV3,
+        requestPlan: PlaybackReplanRequestPlan,
+        watchDetail: WatchDetail
+    ) -> PreparedPlayback {
+        var active = active
+        let nextSession = ApplePlaybackV3PlanAdapter.playbackSession(
+            plan: accepted.plan,
+            sessionId: accepted.sessionId,
+            selectedVersion: accepted.selectedVersion,
+            serverFeatures: accepted.serverFeatures
+        )
+        if !accepted.preservesAttempt {
+            active.planAttemptId = "apple-plan:\(UUID().uuidString.lowercased())"
+            active.planAttemptKey = accepted.plan.planAttemptKey
+            active.attemptedPlanKeys = requestPlan.attemptedPlanKeys + [accepted.plan.planAttemptKey]
+            active.attemptCount = requestPlan.invalidatesIntent ? 1 : active.attemptCount + 1
+        }
+        active.serverFeatures = accepted.serverFeatures
+        active.plan = accepted.plan
+        active.clientQualityId = requestPlan.clientQualityId
+        active.usesServerQualityPreference = requestPlan.usesServerQualityPreference
+        active.bandwidthCapKbps = requestPlan.bandwidthCapKbps
+        adopt(
+            active: active,
+            session: nextSession,
+            commitEvent: requestPlan.isSeekReanchor ? "seek_reanchored" : nil,
+            // §7.5 spells the seek target `target_source_position_seconds`;
+            // `position_seconds` is not on the allowlist and was dropped.
+            commitDiagnostics: requestPlan.isSeekReanchor
+                ? ["target_source_position_seconds": String(requestPlan.position)]
+                : [:]
+        )
+        return PreparedPlayback(
+            watchDetail: watchDetail,
+            selectedVersion: accepted.selectedVersion,
+            session: nextSession,
+            activeQualityId: ApplePlaybackQuality.activeProtocolV3QualityId(
+                requestedQualityId: requestPlan.clientQualityId,
+                availableQualities: accepted.plan.availableQualities
+            ),
+            protocolV3: PreparedPlaybackV3(
                 playbackAttemptId: active.playbackAttemptId,
                 planAttemptId: active.planAttemptId,
                 planAttemptKey: active.planAttemptKey,
                 outputContextId: active.snapshot.outputContextId,
                 serverFeatures: active.serverFeatures,
                 negotiatedAuthorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins,
-                plan: nextPlan
+                plan: accepted.plan
             )
-            return PreparedPlayback(
-                watchDetail: watchDetail,
-                selectedVersion: selectedVersion,
-                session: nextSession,
-                activeQualityId: ApplePlaybackQuality.activeProtocolV3QualityId(
-                    requestedQualityId: requestedClientQualityId,
-                    availableQualities: nextPlan.availableQualities
-                ),
-                protocolV3: preparedV3
-            )
-        }
+        )
     }
 
     func reportProtocolV3PlanExecutionStarted(_ prepared: PreparedPlayback) async {
-        guard let active = activeProtocolV3,
-              let sessionId,
+        guard let active = transition.active,
+              let sessionId = transition.sessionId,
               sessionId == prepared.session.sessionId,
               active.plan.planId == prepared.protocolV3?.plan.planId else { return }
+        await emitRuntimeCorrections(active: active, sessionId: sessionId, stage: "applied")
+    }
+
+    /// One event per runtime correction the plan carries, at the stage the
+    /// caller reached.
+    ///
+    /// §7.5 retains `correction_id`/`correction_stage`; the former
+    /// `runtime_correction` key was dropped server-side, so these events
+    /// carried no correction identity at all.
+    private func emitRuntimeCorrections(
+        active: ActiveProtocolV3,
+        sessionId: String,
+        stage: String
+    ) async {
         for correction in active.plan.runtimeCorrections {
             await emitProtocolV3Event(
                 active: active,
                 sessionId: sessionId,
-                event: "runtime_correction_applied",
+                event: "runtime_correction_\(stage)",
                 classification: nil,
                 fallbackReason: nil,
-                // §7.5 retains `correction_id`/`correction_stage`; the former
-                // `runtime_correction` key was dropped server-side, so these
-                // events carried no correction identity at all.
                 diagnostics: [
                     "correction_id": correction,
-                    "correction_stage": "applied",
+                    "correction_stage": stage,
                 ]
             )
         }
@@ -1471,8 +1042,8 @@ actor PlaybackSessionBridge {
         sessionId expectedSessionId: String,
         milliseconds: Int?
     ) async {
-        guard let active = activeProtocolV3,
-              let sessionId,
+        guard let active = transition.active,
+              let sessionId = transition.sessionId,
               sessionId == expectedSessionId,
               active.plan.planId == expectedPlanId else { return }
         guard protocolV3FirstFramePlanIds.insert(active.plan.planId).inserted else { return }
@@ -1486,19 +1057,7 @@ actor PlaybackSessionBridge {
             fallbackReason: nil,
             diagnostics: diagnostics
         )
-        for correction in active.plan.runtimeCorrections {
-            await emitProtocolV3Event(
-                active: active,
-                sessionId: sessionId,
-                event: "runtime_correction_succeeded",
-                classification: nil,
-                fallbackReason: nil,
-                diagnostics: [
-                    "correction_id": correction,
-                    "correction_stage": "succeeded",
-                ]
-            )
-        }
+        await emitRuntimeCorrections(active: active, sessionId: sessionId, stage: "succeeded")
     }
 
     private func emitProtocolV3Event(
@@ -1566,55 +1125,6 @@ actor PlaybackSessionBridge {
         )
     }
 
-    private func resolvedStartPosition(
-        startFromBeginning: Bool,
-        explicitResumePosition: Double?,
-        storedResumePosition: Double?,
-        watchDetail: WatchDetail,
-        selectedVersion: FileVersion,
-        allowNearEndResume: Bool
-    ) -> Double? {
-        if startFromBeginning {
-            return 0
-        }
-
-        guard let candidatePosition = explicitResumePosition ?? storedResumePosition else {
-            return nil
-        }
-
-        let durationHint = [watchDetail.userData?.durationSeconds, selectedVersion.duration]
-            .compactMap { value -> Double? in
-                guard let value, value.isFinite, value > 0 else { return nil }
-                return value
-            }
-            .min()
-
-        guard let durationHint else {
-            return candidatePosition
-        }
-
-        if allowNearEndResume {
-            guard candidatePosition >= durationHint else {
-                return candidatePosition
-            }
-            let clampedPosition = max(0, durationHint - Self.pastEndResumeClampSeconds)
-            logger.warning(
-                "Resume position \(candidatePosition, privacy: .public) reached/passed duration hint \(durationHint, privacy: .public); clamping transient resume to \(clampedPosition, privacy: .public)"
-            )
-            return clampedPosition
-        }
-
-        let nearEndCutoff = max(0, durationHint - Self.nearEndResumeSuppressionSeconds)
-        guard candidatePosition >= nearEndCutoff else {
-            return candidatePosition
-        }
-
-        logger.info(
-            "Suppressing resume position \(candidatePosition, privacy: .public) near duration hint \(durationHint, privacy: .public); restarting from beginning"
-        )
-        return 0
-    }
-
     // MARK: - Progress Reporting
 
     /// Counts consecutive `reportProgress` failures since the last success.
@@ -1626,7 +1136,7 @@ actor PlaybackSessionBridge {
 
     @discardableResult
     func reportProgress(position: Double, isPaused: Bool) async -> PlaybackProgressReportResult {
-        guard let sid = sessionId else { return .transientFailure }
+        guard let sid = transition.sessionId else { return .transientFailure }
         guard position.isFinite, position >= 0 else { return .transientFailure }
 
         if await mutationCoordinator.sequencedState(sid) != .notSequenced {
@@ -1746,23 +1256,18 @@ actor PlaybackSessionBridge {
     /// still in flight.
     @discardableResult
     func stopSession(position: Double, isPaused: Bool) async -> PlaybackSessionStopResolution {
-        guard let sid = sessionId else {
+        guard let sid = transition.sessionId else {
             return await retiringSession?.value ?? .noSession
         }
-        let stoppingProtocolV3 = activeProtocolV3
-        let supersededSessionId = pendingProtocolV3Transition?.priorSessionId
-
-        sessionId = nil
-        currentSession = nil
-        activeProtocolV3 = nil
-        pendingProtocolV3Transition = nil
+        let stopped = transition.clear()
         protocolV3FirstFramePlanIds.removeAll()
         consecutiveProgressFailures = 0
         emittedOrphanedSessionWarning = false
 
         let retirement = Task { @MainActor in
-            await self.finishStoppedSession(sid, active: stoppingProtocolV3,
-                supersededSessionId: supersededSessionId, position: position, isPaused: isPaused)
+            await self.finishStoppedSession(sid, active: stopped.active,
+                supersededSessionId: stopped.supersededSessionId,
+                position: position, isPaused: isPaused)
         }
         retiringSession = retirement
         return await retirement.value
@@ -1860,107 +1365,6 @@ actor PlaybackSessionBridge {
             return true
         }
         return (body ?? "").contains("Playback session not found")
-    }
-
-    private func normalizedQualityPreference(_ quality: String?) -> String? {
-        let normalized = ApplePlaybackQuality.normalizeStoredId(quality)
-        return normalized == ApplePlaybackQuality.autoId ? nil : normalized
-    }
-
-    private func protocolV3QualityPreference(_ quality: String?) -> String {
-        let serverId = ApplePlaybackQuality.protocolV3QualityId(quality)
-        if ApplePlaybackQuality.settingsOptions.contains(where: { $0.id == serverId }) {
-            return AppleQualityAxes.split(serverId).resolution
-        }
-        return serverId
-    }
-
-    private func protocolV3TrackId(fileId: Int, kind: String, index: Int) -> String {
-        "file:\(fileId):\(kind):\(index)"
-    }
-
-    /// Pick the best version for the user's preferred quality. The server does
-    /// the compatibility filtering from the reported capability snapshot and
-    /// may answer with a different `effective_media_file_id`; this ranking step
-    /// only decides which version the request asks for.
-    static func selectVersion(
-        from versions: [FileVersion],
-        lastFileId: Int?,
-        preferredQuality: String?
-    ) -> FileVersion {
-        let ranked = versions.sorted {
-            score(for: $0, preferredQuality: preferredQuality) >
-                score(for: $1, preferredQuality: preferredQuality)
-        }
-
-        if let preferredQuality,
-           let matchingQuality = ranked.first(where: {
-               qualityMatches($0.resolution, preferredQuality: preferredQuality)
-           }) {
-            return matchingQuality
-        }
-
-        if let lastFileId,
-           let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
-            return lastUsed
-        }
-
-        return ranked.first ?? versions[0]
-    }
-
-    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
-        var score = resolutionRank(version.resolution) * 10
-
-        if let preferredQuality {
-            if preferredQuality == "original" {
-                score += 5
-            } else if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
-                score += 100
-            } else if resolutionRank(version.resolution) > resolutionRank(preferredQuality) {
-                score -= 50
-            }
-        }
-
-        return score
-    }
-
-    private func requestedQualityPreference(
-        preferredQuality: String?,
-        selectedVersion: FileVersion,
-        hasManualSelection: Bool
-    ) -> String? {
-        guard hasManualSelection else {
-            return preferredQuality
-        }
-
-        return selectedVersion.resolution ?? preferredQuality ?? "original"
-    }
-
-    private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
-        let versionRank = resolutionRank(resolution)
-        if preferredQuality == ApplePlaybackQuality.originalId {
-            return versionRank > 0
-        }
-        let requestedRank = resolutionRank(preferredQuality)
-        return versionRank > 0 && versionRank <= requestedRank
-    }
-
-    private static func resolutionRank(_ value: String?) -> Int {
-        guard let value = value?.lowercased() else { return 0 }
-
-        if value.contains("2160") || value.contains("4k") {
-            return 4
-        }
-        if value.contains("1080") {
-            return 3
-        }
-        if value.contains("720") {
-            return 2
-        }
-        if value.contains("480") {
-            return 1
-        }
-        return 0
     }
 
 }

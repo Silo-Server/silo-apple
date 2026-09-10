@@ -180,7 +180,7 @@ final class PlaybackProtocolV3ConformanceFixtureTests: XCTestCase {
         )
         XCTAssertNil(outputChange.request.failure)
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(
+            PlaybackReplanDecision.replanOperation(
                 forClassification: "output_route_changed",
                 serverFeatures: [
                     PlaybackProtocolV3.planFeature,

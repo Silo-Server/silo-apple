@@ -1947,6 +1947,32 @@ class PlayerViewModel {
             let priorResolvedServerUrl = self.resolvedServerUrl
             let priorPrefsForCurrentItem = self.prefsForCurrentItem
             let priorPrefsResolvedForCurrentItem = self.prefsResolvedForCurrentItem
+            // The bridge owns the prior session and plan and restores those
+            // itself. Everything captured above is player-visible state the
+            // bridge never knew about, and it still has to be restored when the
+            // replan failed before it produced a candidate the bridge could
+            // roll back — so it cannot be read back out of a bridge result.
+            let restoreReplacedUIState = {
+                guard currentStreamLoadGeneration == self.streamLoadGeneration else { return }
+                self.activePlaybackSessionId = priorActivePlaybackSessionId
+                self.currentWatchDetail = priorWatchDetail
+                self.currentSelectedVersion = priorSelectedVersion
+                self.activePreparedProtocolV3 = priorPreparedProtocolV3
+                self.lastLoadRequest = priorLastLoadRequest
+                self.pendingAudioFfIndex = priorPendingAudioFfIndex
+                self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
+                self.pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
+                self.pendingServerRenderedSubtitleTrackId = priorPendingServerRenderedSubtitleTrackId
+                self.pendingExternalSubtitles = priorPendingExternalSubtitles
+                self.knownExternalSubtitles = priorKnownExternalSubtitles
+                self.duration = priorDuration
+                self.currentTime = priorCurrentTime
+                self.activeQualityId = priorActiveQualityId
+                self.qualityOptions = priorQualityOptions
+                self.resolvedServerUrl = priorResolvedServerUrl
+                self.prefsForCurrentItem = priorPrefsForCurrentItem
+                self.prefsResolvedForCurrentItem = priorPrefsResolvedForCurrentItem
+            }
             var uncommittedPrepared: PreparedPlayback?
             var chainedLoadFailureRecovery: (position: Double, classification: String, message: String)?
             defer {
@@ -2090,26 +2116,7 @@ class PlayerViewModel {
                 if let uncommittedPrepared {
                     await self.sessionBridge.rollbackPendingProtocolV3Transition(uncommittedPrepared)
                 }
-                if currentStreamLoadGeneration == self.streamLoadGeneration {
-                    self.activePlaybackSessionId = priorActivePlaybackSessionId
-                    self.currentWatchDetail = priorWatchDetail
-                    self.currentSelectedVersion = priorSelectedVersion
-                    self.activePreparedProtocolV3 = priorPreparedProtocolV3
-                    self.lastLoadRequest = priorLastLoadRequest
-                    self.pendingAudioFfIndex = priorPendingAudioFfIndex
-                    self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
-                    self.pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
-                    self.pendingServerRenderedSubtitleTrackId = priorPendingServerRenderedSubtitleTrackId
-                    self.pendingExternalSubtitles = priorPendingExternalSubtitles
-                    self.knownExternalSubtitles = priorKnownExternalSubtitles
-                    self.duration = priorDuration
-                    self.currentTime = priorCurrentTime
-                    self.activeQualityId = priorActiveQualityId
-                    self.qualityOptions = priorQualityOptions
-                    self.resolvedServerUrl = priorResolvedServerUrl
-                    self.prefsForCurrentItem = priorPrefsForCurrentItem
-                    self.prefsResolvedForCurrentItem = priorPrefsResolvedForCurrentItem
-                }
+                restoreReplacedUIState()
                 return
             } catch {
                 let loadFailure = self.protocolV3LoadFailureRecovery(error)
@@ -2133,26 +2140,7 @@ class PlayerViewModel {
                     }
                     await self.sessionBridge.rollbackPendingProtocolV3Transition(uncommittedPrepared)
                 }
-                if currentStreamLoadGeneration == self.streamLoadGeneration {
-                    self.activePlaybackSessionId = priorActivePlaybackSessionId
-                    self.currentWatchDetail = priorWatchDetail
-                    self.currentSelectedVersion = priorSelectedVersion
-                    self.activePreparedProtocolV3 = priorPreparedProtocolV3
-                    self.lastLoadRequest = priorLastLoadRequest
-                    self.pendingAudioFfIndex = priorPendingAudioFfIndex
-                    self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
-                    self.pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
-                    self.pendingServerRenderedSubtitleTrackId = priorPendingServerRenderedSubtitleTrackId
-                    self.pendingExternalSubtitles = priorPendingExternalSubtitles
-                    self.knownExternalSubtitles = priorKnownExternalSubtitles
-                    self.duration = priorDuration
-                    self.currentTime = priorCurrentTime
-                    self.activeQualityId = priorActiveQualityId
-                    self.qualityOptions = priorQualityOptions
-                    self.resolvedServerUrl = priorResolvedServerUrl
-                    self.prefsForCurrentItem = priorPrefsForCurrentItem
-                    self.prefsResolvedForCurrentItem = priorPrefsResolvedForCurrentItem
-                }
+                restoreReplacedUIState()
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -4203,12 +4191,12 @@ class PlayerViewModel {
         allowNearEndResume: Bool,
         timeout: TimeInterval?
     ) async throws -> PreparedPlayback {
-        let initialSubtitlePreferences: PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences? = {
+        let initialSubtitlePreferences: PlaybackContentSelection.InitialProtocolV3SubtitlePreferences? = {
             guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else {
                 return nil
             }
             let preferences = systemCaptionPrefsSnapshot()
-            return PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences(
+            return PlaybackContentSelection.InitialProtocolV3SubtitlePreferences(
                 preferredLanguage: preferences.preferredLanguage,
                 additionalPreferredLanguages: preferences.additionalPreferredLanguages,
                 mode: preferences.mode,

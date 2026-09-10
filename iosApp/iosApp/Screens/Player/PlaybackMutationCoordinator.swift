@@ -29,45 +29,51 @@ enum PlaybackSequencedSessionState: Sendable, Equatable {
 actor PlaybackMutationCoordinator {
     static let shared = PlaybackMutationCoordinator()
 
-    private struct Context: Sendable {
-        let recordID: UUID
-        let sessionID: String
-        let authority: PlaybackMutationAuthority
-        let attemptID: String?
+    /// One record per start attempt. `isResolving` is a re-entrancy lock, not a
+    /// phase: it is held past the `.completed` transition, so a second caller
+    /// still sees `pendingStart` until resolution returns.
+    private struct StartAttempt {
+        enum Phase { case unresolved, completed }
+        var start: StoredPlaybackStart
+        /// Memory only. A restored durable response cannot recreate these credentials.
+        var originalAuth: CapturedOrdinaryRequestAuth?
+        var phase = Phase.unresolved
+        var isResolving = false
     }
-    private let api: SiloAPI
-    private let tokens: TokenStore
-    private let store: PlaybackMutationStore
-    private let retryDelays: [Duration]
-    private let pendingStarts: @Sendable (PlaybackMutationAuthority) async throws -> [StoredPlaybackStart]
-    private var completedStarts: Set<UUID> = []
-    private var resolvingStarts: Set<UUID> = []
-    private var unresolvedStarts: [UUID: StoredPlaybackStart] = [:]
-    private var contexts: [String: Context] = [:]
-    private struct AuxiliaryPlanAuthority {
-        let id: UUID
-        let plan: PlaybackV3Plan
-        let auth: CapturedOrdinaryRequestAuth
-        let allowsAuthorizedOrigins: Bool
-        var scope: ProxyAuxiliaryScope?
-    }
-    /// Memory only. A restored durable response cannot recreate these credentials.
-    private var originalStartAuth: [UUID: CapturedOrdinaryRequestAuth] = [:]
-    private var auxiliaryPlans: [String: AuxiliaryPlanAuthority] = [:]
-    private var auxiliaryAdoptions: [String: UUID] = [:]
     private struct StopIntent {
         let position: Double?
         let isPaused: Bool
         var proposed: PlaybackSequencedStop?
     }
-    private var stopIntents: [UUID: StopIntent] = [:]
-    private var draining: Set<UUID> = []
-    private var restoredBoundSessions: Set<UUID> = []
+    /// One record per bound session. A stop intent is never cleared once taken,
+    /// so `acceptsMutations` only falls from true to false. `auxiliary` outlives
+    /// every plan this session adopts and answers media resolution for it.
+    private struct SessionState {
+        let recordID: UUID
+        let sessionID: String
+        let authority: PlaybackMutationAuthority
+        let auxiliary: PlaybackAuxiliaryAuthority
+        var attemptID: String?
+        var stop: StopIntent?
+        var isDraining = false
+        var restoredAfterRestart = false
+        var acceptsMutations: Bool { stop == nil }
+    }
+
+    private let api: SiloAPI
+    private let tokens: TokenStore
+    private let store: PlaybackMutationStore
+    private let retryDelays: [Duration]
+    private let pendingStarts: @Sendable (PlaybackMutationAuthority) async throws -> [StoredPlaybackStart]
+    private var attempts: [UUID: StartAttempt] = [:]
+    private var sessions: [String: SessionState] = [:]
     /// Sessions the server allocated under the sequenced contract that this
-    /// process could not bind. Retained so `sequencedState` alone can keep them
-    /// out of the ordinary DELETE fallback.
+    /// process could not bind. Separate from `sessions` because a failure can
+    /// exist with no record at all, and outranks a record left by an earlier
+    /// registration whose authority has since changed.
     private var failedRegistrations: Set<String> = []
-    /// Authoritative pending-stop notices. `PlaybackStopNotices` mirrors this.
+    /// Authoritative pending-stop notices, mirrored by `PlaybackStopNotices`.
+    /// Keyed by start id *and* by session record id, so it stays its own ledger.
     private var pendingStopNotices: Set<UUID> = []
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared, store: PlaybackMutationStore = .shared,
@@ -78,6 +84,59 @@ actor PlaybackMutationCoordinator {
         self.store = store
         self.retryDelays = retryDelays
         self.pendingStarts = pendingStarts ?? { try await store.pendingStarts(authority: $0) }
+    }
+
+    /// The live record for a session that still accepts mutations: one read in
+    /// place of the former context lookup plus stop-intent membership test.
+    private func mutable(_ sessionID: String) -> SessionState? {
+        sessions[sessionID].flatMap { $0.acceptsMutations ? $0 : nil }
+    }
+
+    /// Post-suspension re-read: the same binding, still accepting mutations.
+    private func stillAccepts(_ session: SessionState) -> Bool {
+        stillAccepts(sessionID: session.sessionID, recordID: session.recordID)
+    }
+
+    private func stillAccepts(sessionID: String, recordID: UUID) -> Bool {
+        sessions[sessionID].map { $0.recordID == recordID && $0.acceptsMutations } ?? false
+    }
+
+    /// What `PlaybackAuxiliaryAuthority` is allowed to know about this actor's
+    /// session map. `owns` is the durable-owner half of the former adoption
+    /// guard: identity of the captured request auth, then the durable owner
+    /// behind it, then the same binding again across that suspension.
+    private func auxiliaryOwnership(sessionID: String, recordID: UUID) -> PlaybackAuxiliaryOwnership {
+        PlaybackAuxiliaryOwnership(
+            accepts: { [weak self] in await self?.stillAccepts(sessionID: sessionID, recordID: recordID) ?? false },
+            owns: { [weak self] auth in await self?.isDurableOwner(auth, sessionID: sessionID, recordID: recordID) ?? false })
+    }
+
+    private func isDurableOwner(_ auth: CapturedOrdinaryRequestAuth, sessionID: String, recordID: UUID) async -> Bool {
+        guard let session = sessions[sessionID], session.recordID == recordID, session.acceptsMutations,
+              auth.profileId == session.authority.profileID,
+              auth.account.serverId == session.authority.serverID,
+              auth.account.serverURL == session.authority.origin,
+              let owner = await tokens.captureDurableAccountAuth(), owner.request == auth,
+              (try? PlaybackMutationAuthority(auth: owner, installationID: session.authority.installationID)) == session.authority,
+              stillAccepts(sessionID: sessionID, recordID: recordID) else { return false }
+        return true
+    }
+
+    private var isResolvingStart: Bool { attempts.values.contains { $0.isResolving } }
+
+    /// A retired attempt is no longer replayable and no longer noticed.
+    private func completeStart(_ id: UUID) async {
+        attempts[id]?.phase = .completed
+        await publishStopNotice(id, pending: false)
+    }
+
+    /// Retained bodies stay byte-exact, so key ordering is each call site's
+    /// contract rather than a default of this helper.
+    private func encodeBody(_ body: some Encodable, sortedKeys: Bool) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        if sortedKeys { encoder.outputFormatting = [.sortedKeys] }
+        return try encoder.encode(body)
     }
 
     /// A session advertised under the sequenced contract is bound here or
@@ -91,14 +150,25 @@ actor PlaybackMutationCoordinator {
             let authority = try PlaybackMutationAuthority(auth: auth, installationID: installationID)
             _ = try await currentAuth(authority)
             let saved = try await store.register(sessionID: sessionID, authority: authority, progressTimeline: progressTimeline, attemptID: attemptID)
+            // The journal write above suspends. Re-fence so a sign-out, account
+            // switch or profile switch during it still fails closed into
+            // `failedRegistrations` instead of binding a session this process no
+            // longer owns; the check below only compares the *incoming*
+            // authority against an earlier record, not the live durable owner.
             _ = try await currentAuth(authority)
             // A bare server session ID must never retarget an older bridge's
             // delayed callback to another account/profile/origin in this process.
-            if let existing = contexts[sessionID], existing.authority != authority {
-                throw PlaybackSequencedError.authorityChanged
-            }
-            contexts[sessionID] = Context(recordID: saved.id, sessionID: sessionID, authority: authority,
-                attemptID: saved.attemptID ?? contexts[sessionID]?.attemptID)
+            let previous = sessions[sessionID]
+            if let previous, previous.authority != authority { throw PlaybackSequencedError.authorityChanged }
+            // Re-registration keeps the live record: the store returns the same
+            // durable id for one session under one authority, so stop intent,
+            // restart marking and plan adoption survive the rebind.
+            var session = previous?.recordID == saved.id ? previous!
+                : SessionState(recordID: saved.id, sessionID: sessionID, authority: authority,
+                    auxiliary: PlaybackAuxiliaryAuthority(sessionID: sessionID, tokens: tokens,
+                        ownership: auxiliaryOwnership(sessionID: sessionID, recordID: saved.id)))
+            session.attemptID = saved.attemptID ?? previous?.attemptID
+            sessions[sessionID] = session
             failedRegistrations.remove(sessionID)
         } catch {
             failedRegistrations.insert(sessionID)
@@ -106,12 +176,12 @@ actor PlaybackMutationCoordinator {
         }
     }
 
-    /// Single source of truth for "is this a v2 sequenced session".
+    /// Single source of truth for "is this a v2 sequenced session". A recorded
+    /// failure outranks a live record: an authority that changed under an
+    /// already-bound session id is still unsafe to release plainly.
     func sequencedState(_ sessionID: String) -> PlaybackSequencedSessionState {
-        // A recorded failure outranks a live context: an authority that changed
-        // under an already-bound session id is still unsafe to release plainly.
         if failedRegistrations.contains(sessionID) { return .registrationFailed }
-        return contexts[sessionID] != nil ? .bound : .notSequenced
+        return sessions[sessionID] != nil ? .bound : .notSequenced
     }
 
     /// Mirrors one pending-stop notice onto the observable projection. The
@@ -130,18 +200,16 @@ actor PlaybackMutationCoordinator {
     func captureStartAuth() async throws -> (request: CapturedOrdinaryRequestAuth,
                                              durable: CapturedDurableAccountAuth?,
                                              capability: APIv2PlaybackCapabilities) {
-        guard let request = await tokens.captureOrdinaryRequestAuth() else {
-            throw PlaybackSequencedError.authorityChanged
-        }
+        guard let request = await tokens.captureOrdinaryRequestAuth() else { throw PlaybackSequencedError.authorityChanged }
         let durable = await tokens.captureDurableAccountAuth()
         guard durable == nil || durable?.request == request else { throw PlaybackSequencedError.authorityChanged }
         let capability = try await api.v2.playbackCapabilities(auth: request)
-        guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: request) != nil else {
-            throw PlaybackSequencedError.authorityChanged
-        }
-        let installation = try capability.requireAvailable()
-        guard let durable else { throw PlaybackSequencedError.authorityChanged }
-        _ = try await currentAuth(PlaybackMutationAuthority(auth: durable, installationID: installation))
+        guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: request) != nil
+            else { throw PlaybackSequencedError.authorityChanged }
+        _ = try capability.requireAvailable()
+        // The authority itself is re-derived and re-fenced by `startV2` and
+        // `discoverTimeline`, which are the only callers that send a mutation.
+        guard durable != nil else { throw PlaybackSequencedError.authorityChanged }
         return (request, durable, capability)
     }
 
@@ -153,11 +221,9 @@ actor PlaybackMutationCoordinator {
         }
         let installation = try capability.requireAvailable()
         let authority = try PlaybackMutationAuthority(auth: auth, installationID: installation)
-        let requestAuth = try await currentAuth(authority)
-        let manifest = try await api.v2.playbackManifest(fileID: fileID, installationID: installation,
-            itemID: itemID, auth: requestAuth)
-        _ = try await currentAuth(authority)
-        return manifest
+        // A manifest read journals nothing, so the pre-dispatch fence is enough.
+        return try await api.v2.playbackManifest(fileID: fileID, installationID: installation,
+            itemID: itemID, auth: try await currentAuth(authority))
     }
 
     func startV2(request: PlaybackV3StartRequest, auth: CapturedDurableAccountAuth?,
@@ -174,29 +240,20 @@ actor PlaybackMutationCoordinator {
             try progressTimeline.validate()
             try await store.requireTerminalBoundSessions(authority: authority)
         } else if progressTimeline != nil || request.timelineId != nil { throw PlaybackSequencedError.invalidResponse }
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.sortedKeys]
-        let body = try encoder.encode(APIv2PlaybackStartBody(request, installationID: installation))
+        let body = try encodeBody(APIv2PlaybackStartBody(request, installationID: installation), sortedKeys: true)
         let prepared = try await store.prepareStartWithDisposition(authority: authority,
             attemptID: request.playbackAttemptId, body: body, progressTimeline: progressTimeline)
         let start = prepared.start
-        if prepared.created { originalStartAuth[start.id] = auth.request }
-        guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
-        unresolvedStarts[start.id] = start
+        if prepared.created { attempts[start.id, default: StartAttempt(start: start)].originalAuth = auth.request }
+        guard attempts[start.id]?.phase != .completed else { throw PlaybackSequencedError.invalidSession }
+        attempts[start.id, default: StartAttempt(start: start)].start = start
         await publishStopNotice(start.id, pending: true)
-        return try await resolveStartWithNetworkRetry(start)
-    }
-
-    /// One retry for a start whose response never arrived. Only a transport
-    /// failure is retried: the journal holds the byte-exact body and
-    /// `resolveStart` revalidates authority before it dispatches again, so the
-    /// retry either repeats the identical attempt or fails closed. Any other
-    /// error is an answer from the server and is not repeated.
-    private func resolveStartWithNetworkRetry(_ start: StoredPlaybackStart) async throws -> PlaybackV3DecisionResponse {
-        do {
-            return try await resolveStart(start, retire: false)
-        } catch let error as HTTPError {
+        // One retry for a start whose response never arrived. The journal holds
+        // the byte-exact body and `resolveStart` revalidates authority before it
+        // dispatches again, so the retry either repeats the identical attempt or
+        // fails closed. Any other error is the server's answer and is not repeated.
+        do { return try await resolveStart(start, retire: false) }
+        catch let error as HTTPError {
             guard case .network = error else { throw error }
             return try await resolveStart(start, retire: false)
         }
@@ -205,42 +262,41 @@ actor PlaybackMutationCoordinator {
     private func resolveStart(_ start: StoredPlaybackStart, retire: Bool) async throws -> PlaybackV3DecisionResponse {
         // Explicit app Retry must not retire an allocation while its player
         // still owns the in-flight start and is about to begin playback.
-        guard !completedStarts.contains(start.id) else { throw PlaybackSequencedError.invalidSession }
-        guard resolvingStarts.insert(start.id).inserted else { throw PlaybackSequencedError.pendingStart }
+        var attempt = attempts[start.id] ?? StartAttempt(start: start)
+        guard attempt.phase != .completed else { throw PlaybackSequencedError.invalidSession }
+        guard !attempt.isResolving else { throw PlaybackSequencedError.pendingStart }
+        attempt.isResolving = true
+        attempts[start.id] = attempt
         defer {
-            resolvingStarts.remove(start.id)
-            if completedStarts.contains(start.id) { originalStartAuth.removeValue(forKey: start.id) }
+            attempts[start.id]?.isResolving = false
+            if attempts[start.id]?.phase == .completed { attempts[start.id]?.originalAuth = nil }
         }
         // Snapshots held across actor suspension are not permission to retire
         // a start. Re-read the journal while owning this attempt's resolution.
         let start = try await store.start(start.id, authority: start.authority)
         guard !start.finished else {
-            completedStarts.insert(start.id)
-            unresolvedStarts.removeValue(forKey: start.id)
-            await publishStopNotice(start.id, pending: false)
+            await completeStart(start.id)
             throw PlaybackSequencedError.invalidSession
         }
         let auth = try await currentAuth(start.authority)
         // Autoplay recovery can reuse only this process's original snapshot.
         // Explicit retirement may resolve uncertainty with current durable-owner
         // credentials, but cannot grant media authority from that replay.
-        if !retire, let original = originalStartAuth[start.id], original != auth {
+        if !retire, let original = attempts[start.id]?.originalAuth, original != auth {
             throw PlaybackSequencedError.authorityChanged
         }
         let data: Data
         if let saved = start.response { data = saved }
         else {
             // A validation response does not prove that an earlier uncertain
-            // dispatch of this attempt never allocated a session. Retain the
-            // journal until an authoritative replay resolves that allocation.
+            // dispatch never allocated a session. Retain the journal until an
+            // authoritative replay resolves that allocation.
             let response = try await api.v2.playbackRequest(method: "POST", suffix: "/start", body: start.body, auth: auth)
             _ = try await currentAuth(start.authority)
             if let recovery = try PlaybackOwnerLossRecovery.decode(response.data, status: response.statusCode, start: true) {
                 try await store.observeStartOwnerLoss(start.id, authority: start.authority, recovery: recovery)
                 if recovery.state == .draining { throw PlaybackSequencedError.pendingStart }
-                completedStarts.insert(start.id)
-                unresolvedStarts.removeValue(forKey: start.id)
-                await publishStopNotice(start.id, pending: false)
+                await completeStart(start.id)
                 // A terminal decision has no renderer/session adoption. Original
                 // body and any historical response remain unchanged in the journal.
                 return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: response.data).legacy()
@@ -249,7 +305,6 @@ actor PlaybackMutationCoordinator {
             data = response.data
             try await store.acknowledgeStart(start.id, authority: start.authority, response: data, finished: false)
         }
-        _ = try await currentAuth(start.authority)
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: data)
         if start.progressTimeline != nil,
            wire.outcome == "adaptation_unavailable" || wire.terminal?.reason == "client_timeline_changed" {
@@ -282,15 +337,16 @@ actor PlaybackMutationCoordinator {
         // A known session is now independently journaled, even if local plan
         // projection fails. Explicit retry resolves uncertainty without autoplay.
         try await store.acknowledgeStart(start.id, authority: start.authority, response: data, finished: true)
-        completedStarts.insert(start.id)
-        unresolvedStarts.removeValue(forKey: start.id)
-        await publishStopNotice(start.id, pending: false)
+        await completeStart(start.id)
         do {
             let response = try wire.legacy()
             if let sessionID, !retire {
                 let input = try JSONSerialization.jsonObject(with: start.body) as? [String: Any]
                 let features = input?["client_features"] as? [String] ?? []
-                try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: originalStartAuth[start.id],
+                // The original auth outlives completion: only the `defer` above
+                // drops it from the retired attempt.
+                try await sessions[sessionID]?.auxiliary.adopt(plan: response.playbackPlan,
+                    auth: attempts[start.id]?.originalAuth,
                     allowsAuthorizedOrigins: features.contains(PlaybackProtocolV3.authorizedMediaOriginsFeature))
             }
             return response
@@ -307,80 +363,69 @@ actor PlaybackMutationCoordinator {
             guard let auth = await tokens.captureDurableAccountAuth() else { return }
             let capability = try await api.v2.playbackCapabilities(auth: auth.request)
             let authority = try PlaybackMutationAuthority(auth: auth, installationID: capability.requireAvailable())
-            _ = try await currentAuth(authority)
             for start in try await pendingStarts(authority) {
-                guard !completedStarts.contains(start.id) else { continue }
-                unresolvedStarts[start.id] = start
+                guard attempts[start.id]?.phase != .completed else { continue }
+                attempts[start.id, default: StartAttempt(start: start)].start = start
+                // Publishing suspends; a concurrent resolution may retire the attempt.
                 await publishStopNotice(start.id, pending: true)
-                if completedStarts.contains(start.id) {
-                    unresolvedStarts.removeValue(forKey: start.id)
-                    await publishStopNotice(start.id, pending: false)
-                }
+                if attempts[start.id]?.phase == .completed { await publishStopNotice(start.id, pending: false) }
             }
             for session in try await store.pendingStops(authority: authority, afterRestart: true) {
                 // A live player or resolving allocation owns its session. Only
                 // an abandoned bound session gets an explicit stop-recovery notice.
-                if session.stop == nil {
-                    guard contexts[session.sessionID] == nil, resolvingStarts.isEmpty else { continue }
-                    restoredBoundSessions.insert(session.id)
+                let abandoned = session.stop == nil
+                if abandoned {
+                    guard sessions[session.sessionID] == nil, !isResolvingStart else { continue }
                 }
                 try await register(sessionID: session.sessionID, features: [PlaybackSequencedContract.feature], auth: auth,
                     installationID: authority.installationID, attemptID: session.attemptID,
                     progressTimeline: session.progressTimeline)
+                if abandoned { sessions[session.sessionID]?.restoredAfterRestart = true }
                 await publishStopNotice(session.id, pending: true)
             }
         } catch { /* Unknown or changed authority remains quarantined. */ }
     }
 
     func replan(sessionID: String, request: PlaybackV3ReplanRequest) async throws -> PlaybackV3DecisionResponse {
-        guard let context = contexts[sessionID], let installation = context.authority.installationID,
-              context.attemptID == request.playbackAttemptId, stopIntents[context.recordID] == nil else {
-            throw PlaybackSequencedError.authorityChanged
-        }
+        guard let session = mutable(sessionID), let installation = session.authority.installationID,
+              session.attemptID == request.playbackAttemptId else { throw PlaybackSequencedError.authorityChanged }
         guard ["seek_reanchor", "seek_failure_recovery", "failure_recovery"].contains(request.operation) else {
             throw PlaybackV3TerminalFailure(reason: "capability_unsupported",
                 message: "This server does not support changing playback tracks, quality or output during API v2 playback.", retryable: false)
         }
-        let allowsAuthorizedOrigins = auxiliaryPlans[sessionID]?.allowsAuthorizedOrigins ?? false
-        let auth = try await currentAuth(context.authority)
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.outputFormatting = [.sortedKeys]
-        let body = try encoder.encode(APIv2PlaybackReplanBody(installationID: installation, request: request))
-        let saved = try await store.prepareReplan(sessionID: sessionID, authority: context.authority,
+        let allowsAuthorizedOrigins = await session.auxiliary.allowsAuthorizedOrigins
+        let auth = try await currentAuth(session.authority)
+        let body = try encodeBody(APIv2PlaybackReplanBody(installationID: installation, request: request), sortedKeys: true)
+        let saved = try await store.prepareReplan(sessionID: sessionID, authority: session.authority,
             requestID: request.replanRequestId, body: body)
-        _ = try await currentAuth(context.authority)
-        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        guard stillAccepts(session) else { throw PlaybackSequencedError.invalidSession }
         let raw = try await api.v2.playbackRequest(method: "POST", suffix: "/\(sessionID)/replan", body: saved.body, auth: auth)
         guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
-        _ = try await currentAuth(context.authority)
+        _ = try await currentAuth(session.authority)
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: raw.data)
         guard (wire.sessionId ?? wire.playbackPlan?.sessionId) == sessionID else { throw PlaybackSequencedError.invalidResponse }
         let response = try wire.legacy()
         try await store.acknowledgeReplan(saved, response: raw.data)
-        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
-        try await adoptAuxiliaryAuthority(plan: response.playbackPlan, sessionID: sessionID, auth: auth,
+        guard stillAccepts(session) else { throw PlaybackSequencedError.invalidSession }
+        try await session.auxiliary.adopt(plan: response.playbackPlan, auth: auth,
             allowsAuthorizedOrigins: allowsAuthorizedOrigins)
         return response
     }
 
     /// Diagnostics have one dispatch and never drive a playback mutation retry.
+    /// A stop intent does not silence them, so this reads the record directly.
     func reportRouteEvent(_ event: PlaybackV3RouteEvent) async throws {
-        guard let sessionID = event.sessionId, let context = contexts[sessionID],
-              context.attemptID == event.playbackAttemptId, let installation = context.authority.installationID else {
+        guard let sessionID = event.sessionId, let session = sessions[sessionID],
+              session.attemptID == event.playbackAttemptId, let installation = session.authority.installationID else {
             throw PlaybackSequencedError.authorityChanged
         }
-        let auth = try await currentAuth(context.authority)
+        let auth = try await currentAuth(session.authority)
         let eventID = UUID().uuidString.lowercased()
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let body = try encoder.encode(APIv2PlaybackRouteEventBody(installationID: installation, eventID: eventID, event: event))
+        let body = try encodeBody(APIv2PlaybackRouteEventBody(installationID: installation, eventID: eventID, event: event), sortedKeys: false)
         let raw = try await api.v2.playbackRequest(method: "POST", suffix: "/route-events", body: body, auth: auth)
-        _ = try await currentAuth(context.authority)
         let receipt = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackRouteEventReceipt.self, from: raw.data)
-        guard raw.statusCode == 202, receipt.eventId == eventID, receipt.outcome == "accepted" else {
-            throw PlaybackSequencedError.invalidResponse
-        }
+        guard raw.statusCode == 202, receipt.eventId == eventID,
+              receipt.outcome == "accepted" else { throw PlaybackSequencedError.invalidResponse }
     }
 
     struct ControlBinding: Sendable {
@@ -390,20 +435,20 @@ actor PlaybackMutationCoordinator {
     }
 
     func controlBinding(sessionID: String) async throws -> ControlBinding {
-        guard let context = contexts[sessionID], context.authority.installationID != nil,
-              stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
-        let auth = try await currentAuth(context.authority)
-        let binding = ControlBinding(sessionID: sessionID, authority: context.authority, auth: auth)
+        guard let session = mutable(sessionID),
+              session.authority.installationID != nil else { throw PlaybackSequencedError.invalidSession }
+        let binding = ControlBinding(sessionID: sessionID, authority: session.authority,
+            auth: try await currentAuth(session.authority))
         try await validateControlBinding(binding)
         return binding
     }
 
     func validateControlBinding(_ binding: ControlBinding) async throws {
-        guard let context = contexts[binding.sessionID], context.authority == binding.authority,
-              stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
+        guard let session = mutable(binding.sessionID),
+              session.authority == binding.authority else { throw PlaybackSequencedError.invalidSession }
         _ = try await currentAuth(binding.authority)
         guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: binding.auth) != nil,
-              stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.authorityChanged }
+              stillAccepts(session) else { throw PlaybackSequencedError.authorityChanged }
     }
 
     /// Media resolution shares the durable session fence with control. It must
@@ -411,43 +456,10 @@ actor PlaybackMutationCoordinator {
     func streamRequest(sessionID: String, rawURL: String, additionalHeaders: [String: String],
                        requiresHeaderAuthenticatedMedia: Bool,
                        allowsAuthorizedMediaOrigins: Bool = false) async throws -> StreamRequest {
-        if let captured = auxiliaryPlans[sessionID] {
-            guard !allowsAuthorizedMediaOrigins || captured.allowsAuthorizedOrigins else { throw PlaybackSequencedError.invalidSession }
-            guard captured.plan.stream.url == rawURL else { throw PlaybackSequencedError.invalidSession }
-            guard await auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: captured.plan.planId,
-                    auth: captured.auth, bindingID: captured.id) else {
-                captured.scope?.invalidate()
-                throw PlaybackSequencedError.authorityChanged
-            }
-            // Join the immutable wire plan only with the original request authority.
-            guard var request = StreamRequest.resolve(rawURL: rawURL,
-                serverURL: captured.auth.account.serverURL,
-                additionalHeaders: ["X-Profile-Id": captured.auth.profileId ?? ""],
-                accessToken: captured.auth.accessToken,
-                requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
-                authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins ? sessionID : nil,
-                apiV2SessionId: sessionID) else { throw PlaybackSequencedError.invalidSession }
-            guard var current = auxiliaryPlans[sessionID], current.id == captured.id else {
-                throw PlaybackSequencedError.authorityChanged
-            }
-            if allowsAuthorizedMediaOrigins || StreamRequest.isHeaderAuthenticatedAPIPrimary(rawURL, sessionID: sessionID) {
-                if current.scope == nil {
-                    let planID = captured.plan.planId
-                    let auth = captured.auth
-                    let bindingID = captured.id
-                    current.scope = try ProxyAuxiliaryScope(plan: captured.plan, sessionID: sessionID,
-                        sourceURL: request.url, auth: auth, tokens: tokens) { [weak self] in
-                        await self?.auxiliaryAuthorityIsCurrent(sessionID: sessionID, planID: planID,
-                            auth: auth, bindingID: bindingID) ?? false
-                    }
-                    guard auxiliaryPlans[sessionID]?.id == captured.id else {
-                        current.scope?.invalidate()
-                        throw PlaybackSequencedError.authorityChanged
-                    }
-                    auxiliaryPlans[sessionID] = current
-                }
-                request.proxyAuxiliaryScope = current.scope
-            }
+        if let auxiliary = sessions[sessionID]?.auxiliary,
+           let request = try await auxiliary.resolveStreamRequest(rawURL: rawURL,
+               requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
+               allowsAuthorizedMediaOrigins: allowsAuthorizedMediaOrigins) {
             return request
         }
         // A restored response has no ephemeral original auth for a proxy plan.
@@ -462,56 +474,6 @@ actor PlaybackMutationCoordinator {
         return request
     }
 
-    /// Called only with the response to the captured request that adopted the
-    /// plan. Durable response bytes are neither decorated nor re-encoded.
-    func adoptAuxiliaryAuthority(plan: PlaybackV3Plan?, sessionID: String,
-                                auth: CapturedOrdinaryRequestAuth?, allowsAuthorizedOrigins: Bool = false) async throws {
-        let adoption = UUID()
-        auxiliaryAdoptions[sessionID] = adoption
-        auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
-        guard let plan else { return }
-        let primaryPath = URLComponents(string: plan.stream.url)?.percentEncodedPath ?? ""
-        let headerPrimary = StreamRequest.isHeaderAuthenticatedAPIPrimary(plan.stream.url, sessionID: sessionID)
-            || StreamRequest.isAllowedAuthorizedMediaOriginPath(primaryPath, sessionId: sessionID)
-        let auxiliaryURLs = [plan.subtitle.artifact?.url] + plan.subtitle.inventory.flatMap { [$0.url, $0.fontBundleUrl] }
-        guard headerPrimary || auxiliaryURLs.compactMap({ $0 }).contains(where: StreamRequest.isHeaderAuthenticatedAuxiliaryURL) else { return }
-        guard let auth else { throw PlaybackSequencedError.authorityChanged }
-        try ApplePlaybackV3PlanAdapter.validate(plan)
-        guard plan.stream.headers.allSatisfy({ key, value in
-            key.caseInsensitiveCompare("X-Profile-Id") != .orderedSame || value == auth.profileId
-        }) else { throw PlaybackSequencedError.authorityChanged }
-        // The session and stop-intent re-reads below are each placed after one
-        // of the two suspension points in this guard: the durable-owner capture
-        // and the request-auth identity check. A stop intent is never cleared,
-        // so a repeat between non-suspending reads could not observe anything
-        // the next re-read misses.
-        guard let context = contexts[sessionID],
-              auth.profileId == context.authority.profileID,
-              auth.account.serverId == context.authority.serverID,
-              auth.account.serverURL == context.authority.origin,
-              let owner = await tokens.captureDurableAccountAuth(), owner.request == auth,
-              try PlaybackMutationAuthority(auth: owner, installationID: context.authority.installationID) == context.authority,
-              contexts[sessionID]?.recordID == context.recordID,
-              stopIntents[context.recordID] == nil,
-              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) == auth,
-              contexts[sessionID]?.recordID == context.recordID,
-              stopIntents[context.recordID] == nil,
-              auxiliaryAdoptions[sessionID] == adoption else {
-            throw PlaybackSequencedError.authorityChanged
-        }
-        auxiliaryPlans[sessionID] = AuxiliaryPlanAuthority(id: adoption, plan: plan, auth: auth, allowsAuthorizedOrigins: allowsAuthorizedOrigins)
-    }
-
-    private func auxiliaryAuthorityIsCurrent(sessionID: String, planID: String,
-                                            auth: CapturedOrdinaryRequestAuth, bindingID: UUID) async -> Bool {
-        guard let context = contexts[sessionID], stopIntents[context.recordID] == nil,
-              let captured = auxiliaryPlans[sessionID], captured.id == bindingID, captured.plan.planId == planID, captured.auth == auth,
-              await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: auth) == auth,
-              auxiliaryPlans[sessionID]?.id == bindingID,
-              stopIntents[context.recordID] == nil else { return false }
-        return true
-    }
-
     func controlRequest(_ binding: ControlBinding) async throws -> URLRequest {
         try await validateControlBinding(binding)
         guard let installation = binding.authority.installationID else { throw PlaybackSequencedError.invalidSession }
@@ -523,10 +485,9 @@ actor PlaybackMutationCoordinator {
 
     /// Local comparison only. The installation ID is captured once from
     /// `GET /api/v2/playback/capabilities` in `captureStartAuth` (or in
-    /// `restorePending` after a process restart) and is echoed on every
-    /// mutation. A stale installation is answered by the server with
-    /// `409 installation_changed`, so re-probing capabilities per call adds a
-    /// no-store round trip per mutation without adding a guarantee.
+    /// `restorePending` after a restart) and is echoed on every mutation. A stale
+    /// installation is answered with `409 installation_changed`, so re-probing
+    /// capabilities per call adds a round trip without adding a guarantee.
     private func currentAuth(_ authority: PlaybackMutationAuthority) async throws -> CapturedOrdinaryRequestAuth {
         guard let current = await tokens.captureDurableAccountAuth(),
               try PlaybackMutationAuthority(auth: current, installationID: authority.installationID) == authority else {
@@ -536,40 +497,43 @@ actor PlaybackMutationCoordinator {
     }
 
     func report(sessionID: String, position: Double, isPaused: Bool) async throws {
-        guard let context = contexts[sessionID] else { throw PlaybackSequencedError.invalidSession }
-        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
-        let auth = try await currentAuth(context.authority)
-        guard stopIntents[context.recordID] == nil else { throw PlaybackSequencedError.invalidSession }
-        let sample = try await store.prepareProgress(context.recordID, authority: context.authority,
+        guard let session = mutable(sessionID) else { throw PlaybackSequencedError.invalidSession }
+        let auth = try await currentAuth(session.authority)
+        guard stillAccepts(session) else { throw PlaybackSequencedError.invalidSession }
+        let sample = try await store.prepareProgress(session.recordID, authority: session.authority,
             position: position, isPaused: isPaused)
-        let receipt = try await api.reportSequencedPlaybackProgress(sessionID: sessionID, sample: sample, auth: auth, installationID: context.authority.installationID)
-        _ = try await currentAuth(context.authority)
-        try await store.acknowledgeProgress(context.recordID, authority: context.authority, sent: sample, receipt: receipt)
+        let receipt = try await api.reportSequencedPlaybackProgress(sessionID: sessionID, sample: sample, auth: auth, installationID: session.authority.installationID)
+        _ = try await currentAuth(session.authority)
+        try await store.acknowledgeProgress(session.recordID, authority: session.authority, sent: sample, receipt: receipt)
     }
 
     @discardableResult
     func stop(sessionID: String, position: Double?, isPaused: Bool) async throws -> Bool {
-        auxiliaryAdoptions[sessionID] = UUID()
-        auxiliaryPlans.removeValue(forKey: sessionID)?.scope?.invalidate()
-        guard let context = contexts[sessionID] else { throw PlaybackSequencedError.invalidSession }
-        if stopIntents[context.recordID] == nil {
-            stopIntents[context.recordID] = StopIntent(position: position, isPaused: isPaused)
+        guard var session = sessions[sessionID] else { throw PlaybackSequencedError.invalidSession }
+        let intent = session.stop ?? StopIntent(position: position, isPaused: isPaused)
+        if session.stop == nil {
+            session.stop = intent
+            sessions[sessionID] = session
         }
-        guard draining.insert(context.recordID).inserted else { return false }
-        defer { draining.remove(context.recordID) }
-        await publishStopNotice(context.recordID, pending: true)
-        var intent = stopIntents[context.recordID]!
-        if intent.proposed == nil {
-            intent.proposed = try await store.proposedStop(context.recordID, authority: context.authority,
-                position: intent.position, isPaused: intent.isPaused)
-            stopIntents[context.recordID] = intent
-        }
+        guard !session.isDraining else { return false }
+        sessions[sessionID]?.isDraining = true
+        defer { sessions[sessionID]?.isDraining = false }
+        // Stop intent and the drain lock are taken without suspending, so the
+        // plan is retired only once no other caller can still be adopting one.
+        await session.auxiliary.invalidate()
+        await publishStopNotice(session.recordID, pending: true)
         // Keep the exact UUID and sample if durable publication fails. No request
         // may leave this coordinator until that same intent is persisted.
-        let stop = try await store.persistStop(context.recordID, authority: context.authority, stop: intent.proposed!)
-        let saved = try await store.session(context.recordID, authority: context.authority)
+        let proposal: PlaybackSequencedStop
+        if let existing = intent.proposed { proposal = existing } else {
+            proposal = try await store.proposedStop(session.recordID, authority: session.authority,
+                position: intent.position, isPaused: intent.isPaused)
+        }
+        sessions[sessionID]?.stop?.proposed = proposal
+        let stop = try await store.persistStop(session.recordID, authority: session.authority, stop: proposal)
+        let saved = try await store.session(session.recordID, authority: session.authority)
         if saved.stopState.isTerminal {
-            await publishStopNotice(context.recordID, pending: false)
+            await publishStopNotice(session.recordID, pending: false)
             if saved.stopState == .abandoned { throw PlaybackOwnerLossRecovery.terminalFailure }
             return true
         }
@@ -577,22 +541,22 @@ actor PlaybackMutationCoordinator {
         for attempt in 0...retryDelays.count {
             do {
                 try Task.checkCancellation()
-                let auth = try await currentAuth(context.authority)
-                let resolution = try await api.resolveSequencedPlaybackStop(sessionID: context.sessionID, stop: stop,
-                    auth: auth, installationID: context.authority.installationID)
-                _ = try await currentAuth(context.authority)
+                let auth = try await currentAuth(session.authority)
+                let resolution = try await api.resolveSequencedPlaybackStop(sessionID: session.sessionID, stop: stop,
+                    auth: auth, installationID: session.authority.installationID)
+                _ = try await currentAuth(session.authority)
                 switch resolution {
                 case .ordinary(let receipt):
-                    try await store.acknowledgeStop(context.recordID, authority: context.authority, sent: stop, receipt: receipt)
+                    try await store.acknowledgeStop(session.recordID, authority: session.authority, sent: stop, receipt: receipt)
                     if receipt.outcome != .draining {
-                        await publishStopNotice(context.recordID, pending: false)
+                        await publishStopNotice(session.recordID, pending: false)
                         return true
                     }
                 case .ownerLost(let recovery):
-                    try await store.observeStopOwnerLoss(context.recordID, authority: context.authority, sent: stop,
+                    try await store.observeStopOwnerLoss(session.recordID, authority: session.authority, sent: stop,
                         recovery: recovery)
                     if recovery.state == .aborted {
-                        await publishStopNotice(context.recordID, pending: false)
+                        await publishStopNotice(session.recordID, pending: false)
                         // Do not let a pending final sample or an automatic bound
                         // part transition interpret abandonment as its STOP success.
                         throw PlaybackOwnerLossRecovery.terminalFailure
@@ -613,22 +577,22 @@ actor PlaybackMutationCoordinator {
     }
 
     /// Explicit same-process user retry. Unknown-installation records are never
-    /// loaded into this context map automatically after process restart.
+    /// loaded into this session map automatically after process restart.
     func retryPendingStops() async {
         var justResolved: Set<String> = []
-        for start in Array(unresolvedStarts.values) {
-            if let response = try? await resolveStart(start, retire: true),
+        for attempt in Array(attempts.values) where attempt.phase == .unresolved {
+            if let response = try? await resolveStart(attempt.start, retire: true),
                let id = response.sessionId ?? response.playbackPlan?.sessionId { justResolved.insert(id) }
         }
-        for context in Array(contexts.values) {
-            guard !justResolved.contains(context.sessionID) else { continue }
-            if stopIntents[context.recordID] != nil || restoredBoundSessions.contains(context.recordID) {
-                _ = try? await stop(sessionID: context.sessionID, position: nil, isPaused: true)
-                continue
+        for session in Array(sessions.values) {
+            guard !justResolved.contains(session.sessionID) else { continue }
+            // An intended or restart-recovered stop is retried on its own word;
+            // anything else needs a durable unfinished stop to justify a retry.
+            if session.stop == nil, !session.restoredAfterRestart {
+                guard let saved = try? await store.session(session.recordID, authority: session.authority),
+                      saved.stop != nil, !saved.stopState.isTerminal else { continue }
             }
-            guard let session = try? await store.session(context.recordID, authority: context.authority),
-                  session.stop != nil, !session.stopState.isTerminal else { continue }
-            _ = try? await stop(sessionID: context.sessionID, position: nil, isPaused: true)
+            _ = try? await stop(sessionID: session.sessionID, position: nil, isPaused: true)
         }
     }
 }

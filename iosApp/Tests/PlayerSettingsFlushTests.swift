@@ -1446,7 +1446,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let versions = [sevenTwenty, fourK]
 
         XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
+            PlaybackContentSelection.selectVersion(
                 from: versions,
                 lastFileId: sevenTwenty.fileId,
                 preferredQuality: "original"
@@ -1454,7 +1454,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
             fourK.fileId
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
+            PlaybackContentSelection.selectVersion(
                 from: versions,
                 lastFileId: sevenTwenty.fileId,
                 preferredQuality: nil

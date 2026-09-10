@@ -117,7 +117,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             offlineDownloadId: nil
         )
         XCTAssertEqual(recovery.preferredProtocolV3SubtitleIndex, 8)
-        let initialIntent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+        let initialIntent = PlaybackContentSelection.initialProtocolV3SubtitleIntent(
             version: version, explicitFFmpegIndex: recovery.preferredSubtitleTrackIndex,
             explicitCombinedIndex: recovery.preferredProtocolV3SubtitleIndex,
             preferredLanguage: nil, mode: nil, showForced: false,
@@ -157,7 +157,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             offlineDownloadId: nil, serverSubtitlesDisabled: true
         )
         XCTAssertNil(recovery.preferredProtocolV3SubtitleIndex)
-        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+        let intent = PlaybackContentSelection.initialProtocolV3SubtitleIntent(
             version: makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac"),
             explicitFFmpegIndex: recovery.preferredSubtitleTrackIndex,
             explicitCombinedIndex: recovery.preferredProtocolV3SubtitleIndex,
@@ -216,7 +216,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             offlineDownloadId: nil, serverSubtitlesDisabled: disabled
         )
         XCTAssertEqual(recovery.preferredProtocolV3SubtitleIndex, 7)
-        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+        let intent = PlaybackContentSelection.initialProtocolV3SubtitleIntent(
             version: version, explicitFFmpegIndex: recovery.preferredSubtitleTrackIndex,
             explicitCombinedIndex: recovery.preferredProtocolV3SubtitleIndex,
             preferredLanguage: nil, mode: nil, showForced: false,
@@ -480,30 +480,30 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
     func testIntentReplansCarryNoFailureAndUseNeutralOperations() throws {
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(forClassification: "audio_track_changed"),
+            PlaybackReplanDecision.replanOperation(forClassification: "audio_track_changed"),
             PlaybackProtocolV3.ReplanOperation.trackChange
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(forClassification: "subtitle_track_changed"),
+            PlaybackReplanDecision.replanOperation(forClassification: "subtitle_track_changed"),
             PlaybackProtocolV3.ReplanOperation.trackChange
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(forClassification: "quality_changed"),
+            PlaybackReplanDecision.replanOperation(forClassification: "quality_changed"),
             PlaybackProtocolV3.ReplanOperation.qualityChange
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(forClassification: "decoder_failed"),
+            PlaybackReplanDecision.replanOperation(forClassification: "decoder_failed"),
             PlaybackProtocolV3.ReplanOperation.failureRecovery
         )
         XCTAssertNil(
-            PlaybackSessionBridge.replanFailure(
+            PlaybackReplanDecision.replanFailure(
                 operation: PlaybackProtocolV3.ReplanOperation.seekReanchor,
                 classification: "seek_reanchor",
                 message: "intent"
             )
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.replanFailure(
+            PlaybackReplanDecision.replanFailure(
                 operation: PlaybackProtocolV3.ReplanOperation.failureRecovery,
                 classification: "decoder_failed",
                 message: "broken"
@@ -528,7 +528,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             PlaybackProtocolV3.outputChangeFeature
         ]
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(
+            PlaybackReplanDecision.replanOperation(
                 forClassification: "output_route_changed",
                 serverFeatures: advertised
             ),
@@ -539,7 +539,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         // server without `output_change_v1` rejects the operation outright, so
         // the historical failure-recovery spelling remains the only option.
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(
+            PlaybackReplanDecision.replanOperation(
                 forClassification: "output_route_changed",
                 serverFeatures: [PlaybackProtocolV3.planFeature]
             ),
@@ -547,7 +547,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         // The feature must never redirect an unrelated classification.
         XCTAssertEqual(
-            PlaybackSessionBridge.replanOperation(
+            PlaybackReplanDecision.replanOperation(
                 forClassification: "decoder_failed",
                 serverFeatures: advertised
             ),
@@ -561,7 +561,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         // The server rejects an `output_change` that carries a failure block.
         XCTAssertNil(
-            PlaybackSessionBridge.replanFailure(
+            PlaybackReplanDecision.replanFailure(
                 operation: PlaybackProtocolV3.ReplanOperation.outputChange,
                 classification: "output_route_changed",
                 message: "route changed"
@@ -701,7 +701,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         // allocated S1, and a caption-policy replan for S1 arrives before the
         // start commits. Rolling the start back must not DELETE S1.
         XCTAssertFalse(
-            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+            ProtocolV3Transition.shouldRetireRolledBackCandidate(
                 candidateSessionId: "S1",
                 priorSessionId: nil,
                 retainingSessionId: "S1"
@@ -709,14 +709,14 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         // A genuinely superseded candidate is still retired.
         XCTAssertTrue(
-            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+            ProtocolV3Transition.shouldRetireRolledBackCandidate(
                 candidateSessionId: "S1",
                 priorSessionId: nil,
                 retainingSessionId: "S2"
             )
         )
         XCTAssertTrue(
-            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+            ProtocolV3Transition.shouldRetireRolledBackCandidate(
                 candidateSessionId: "S1",
                 priorSessionId: "S0",
                 retainingSessionId: nil
@@ -724,7 +724,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         // The committed prior session is never the bridge's to retire here.
         XCTAssertFalse(
-            PlaybackSessionBridge.shouldRetireRolledBackCandidate(
+            ProtocolV3Transition.shouldRetireRolledBackCandidate(
                 candidateSessionId: "S0",
                 priorSessionId: "S0",
                 retainingSessionId: nil
@@ -1142,7 +1142,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 makeSubtitle(index: nil, codec: "srt", external: true, path: "b.en.srt")
             ]
         )
-        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+        let intent = PlaybackContentSelection.initialProtocolV3SubtitleIntent(
             version: version,
             explicitFFmpegIndex: nil,
             explicitCombinedIndex: nil,
@@ -1154,7 +1154,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         XCTAssertEqual(
             intent,
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: 0),
+            PlaybackContentSelection.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: 0),
             "first external English track is combined ordinal 0 and must win over the embedded one at ordinal 2"
         )
 
@@ -1179,7 +1179,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ]
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.initialProtocolV3SubtitleIntent(
                 version: version,
                 explicitFFmpegIndex: nil,
                 explicitCombinedIndex: nil,
@@ -1189,7 +1189,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 trackSignature: nil,
                 currentAudioLanguage: "ja"
             ),
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: 0, combinedIndex: 0)
+            PlaybackContentSelection.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: 0, combinedIndex: 0)
         )
     }
 
@@ -1213,7 +1213,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
 
         XCTAssertEqual(
-            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.initialProtocolV3SubtitleIntent(
                 version: version,
                 explicitFFmpegIndex: nil,
                 explicitCombinedIndex: nil,
@@ -1223,7 +1223,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 trackSignature: nil,
                 currentAudioLanguage: nil
             ),
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: 4,
                 combinedIndex: 2
             )
@@ -1245,7 +1245,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ]
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.initialProtocolV3SubtitleIntent(
                 version: accessibilityVersion,
                 explicitFFmpegIndex: nil,
                 explicitCombinedIndex: nil,
@@ -1257,13 +1257,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 trackSignature: nil,
                 currentAudioLanguage: "ja"
             ),
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: 4,
                 combinedIndex: 1
             )
         )
         XCTAssertEqual(
-            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.initialProtocolV3SubtitleIntent(
                 version: version,
                 explicitFFmpegIndex: -1,
                 explicitCombinedIndex: nil,
@@ -1273,7 +1273,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 trackSignature: nil,
                 currentAudioLanguage: nil
             ),
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(
+            PlaybackContentSelection.InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: nil,
                 combinedIndex: nil
             )
@@ -2105,7 +2105,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let recovered = makePlan(playerStart: 42)
         for operation in [PlaybackProtocolV3.ReplanOperation.failureRecovery,
                           PlaybackProtocolV3.ReplanOperation.seekFailureRecovery] {
-            XCTAssertTrue(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+            XCTAssertTrue(try PlaybackReplanDecision.replanPreservesAttempt(operation: operation,
                 usesV2: true, currentSessionID: "same-session", nextSessionID: "same-session",
                 current: original, next: recovered, attemptedKeys: [original.planAttemptKey],
                 responseFeatures: [PlaybackProtocolV3.headerAuthenticatedMediaFeature]))
@@ -2117,17 +2117,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let operation = PlaybackProtocolV3.ReplanOperation.failureRecovery
         for next in [makePlan(planId: "other-plan"), makePlan(planAttemptKey: "other-key"),
                      makePlan(videoCodec: "hevc"), makePlan(selectedAudioIndex: 1)] {
-            XCTAssertThrowsError(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+            XCTAssertThrowsError(try PlaybackReplanDecision.replanPreservesAttempt(operation: operation,
                 usesV2: true, currentSessionID: "same", nextSessionID: "same",
                 current: original, next: next, attemptedKeys: [original.planAttemptKey], responseFeatures: []))
         }
-        XCTAssertThrowsError(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+        XCTAssertThrowsError(try PlaybackReplanDecision.replanPreservesAttempt(operation: operation,
             usesV2: true, currentSessionID: "same", nextSessionID: "other",
             current: original, next: original, attemptedKeys: [], responseFeatures: []))
-        XCTAssertThrowsError(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+        XCTAssertThrowsError(try PlaybackReplanDecision.replanPreservesAttempt(operation: operation,
             usesV2: false, currentSessionID: "same", nextSessionID: "same",
             current: original, next: original, attemptedKeys: [original.planAttemptKey], responseFeatures: []))
-        XCTAssertFalse(try PlaybackSessionBridge.replanPreservesAttempt(operation: operation,
+        XCTAssertFalse(try PlaybackReplanDecision.replanPreservesAttempt(operation: operation,
             usesV2: false, currentSessionID: "same", nextSessionID: "next",
             current: original, next: makePlan(planAttemptKey: "untried"),
             attemptedKeys: [original.planAttemptKey], responseFeatures: []))
@@ -2463,5 +2463,233 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ffIndex: ffIndex,
             srcId: srcId
         )
+    }
+    // MARK: - Replan classification
+
+    private func makeActive(
+        plan: PlaybackV3Plan? = nil,
+        attemptCount: Int = 1,
+        attemptedPlanKeys: [String]? = nil,
+        serverFeatures: [String] = [],
+        clientQualityId: String = ApplePlaybackQuality.autoId,
+        usesServerQualityPreference: Bool = false,
+        bandwidthCapKbps: Int? = nil
+    ) -> ActiveProtocolV3 {
+        let plan = plan ?? makePlan(selectedSubtitleIndex: 3)
+        return ActiveProtocolV3(
+            playbackAttemptId: "apple:attempt",
+            planAttemptId: "apple-plan:attempt",
+            planAttemptKey: plan.planAttemptKey,
+            attemptedPlanKeys: attemptedPlanKeys ?? [plan.planAttemptKey],
+            attemptCount: attemptCount,
+            clientQualityId: clientQualityId,
+            usesServerQualityPreference: usesServerQualityPreference,
+            bandwidthCapKbps: bandwidthCapKbps,
+            snapshot: ApplePlaybackV3Capabilities.snapshot(),
+            serverFeatures: serverFeatures,
+            negotiatedAuthorizedMediaOrigins: false,
+            plan: plan
+        )
+    }
+
+    private func classify(
+        _ active: ActiveProtocolV3,
+        classification: String = "decoder_failed",
+        operation: String? = nil,
+        usesV2: Bool = false,
+        position: Double = 120,
+        qualityPreference: String? = nil,
+        audioTrackIndex: Int? = nil,
+        subtitleTrackIndex: Int? = nil
+    ) -> PlaybackReplanDecision {
+        PlaybackReplanDecision.classify(
+            active: active,
+            classification: classification,
+            requestedOperation: operation,
+            usesV2: usesV2,
+            position: position,
+            qualityPreference: qualityPreference,
+            audioTrackIndex: audioTrackIndex,
+            subtitleTrackIndex: subtitleTrackIndex
+        )
+    }
+
+    private func requireRequest(
+        _ decision: PlaybackReplanDecision,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> PlaybackReplanRequestPlan {
+        guard case .request(let requestPlan) = decision else {
+            XCTFail("expected a replan request, got \(decision)", file: file, line: line)
+            throw XCTSkip("no replan request")
+        }
+        return requestPlan
+    }
+
+    /// The bounded route ladder ends on the client, before another request is
+    /// sent, and it reports the exact contract reason for that dead end.
+    func testReplanClassificationStopsAtAttemptCeiling() {
+        let decision = classify(makeActive(attemptCount: 8))
+        guard case .terminal(let failure) = decision else {
+            return XCTFail("expected a terminal decision, got \(decision)")
+        }
+        XCTAssertEqual(failure.reason, "attempt_limit_reached")
+        XCTAssertEqual(
+            failure.message,
+            "Playback recovery exhausted the protocol V3 route ladder."
+        )
+        XCTAssertFalse(failure.retryable)
+    }
+
+    /// The ceiling is exclusive: the eighth attempt is still allowed to replan.
+    func testReplanClassificationAllowsFinalLadderRung() throws {
+        let requestPlan = try requireRequest(classify(makeActive(attemptCount: 7)))
+        XCTAssertEqual(requestPlan.attemptCount, 7)
+    }
+
+    /// A seek re-anchor against a server that never advertised the feature is
+    /// declined locally rather than reported as a playback failure.
+    func testReplanClassificationDeclinesUnsupportedSeekReanchor() {
+        XCTAssertEqual(
+            classify(
+                makeActive(),
+                classification: "seek_reanchor",
+                operation: PlaybackProtocolV3.ReplanOperation.seekReanchor
+            ),
+            .unsupported
+        )
+    }
+
+    func testReplanClassificationAcceptsAdvertisedSeekReanchor() throws {
+        let requestPlan = try requireRequest(classify(
+            makeActive(serverFeatures: [PlaybackProtocolV3.seekReanchorFeature]),
+            classification: "seek_reanchor",
+            operation: PlaybackProtocolV3.ReplanOperation.seekReanchor,
+            position: 61.5
+        ))
+        XCTAssertTrue(requestPlan.isSeekReanchor)
+        XCTAssertTrue(requestPlan.preservesRoute)
+        XCTAssertEqual(requestPlan.eventName, "seek_reanchor_requested")
+        XCTAssertEqual(requestPlan.position, 61.5)
+    }
+
+    /// A sequenced same-route recovery must not exclude the current plan key
+    /// or advance the ladder: the server is expected to answer with the same
+    /// route, and the client re-sends the attempt history unchanged.
+    func testReplanClassificationPreservesRouteForSequencedFailureRecovery() throws {
+        let active = makeActive(
+            attemptCount: 3,
+            attemptedPlanKeys: ["v3:opaque-fixture", "v3:older"]
+        )
+        let requestPlan = try requireRequest(classify(
+            active,
+            usesV2: true,
+            audioTrackIndex: 7,
+            subtitleTrackIndex: 9
+        ))
+        XCTAssertEqual(requestPlan.operation, PlaybackProtocolV3.ReplanOperation.failureRecovery)
+        XCTAssertTrue(requestPlan.preservesRoute)
+        XCTAssertEqual(requestPlan.attemptedPlanKeys, ["v3:opaque-fixture", "v3:older"])
+        XCTAssertEqual(requestPlan.attemptCount, 3)
+        XCTAssertEqual(requestPlan.eventName, "plan_failed")
+        // A same-route recovery repeats the plan's own tracks; it never folds
+        // in the caller's live player indices.
+        XCTAssertEqual(requestPlan.selectedTracks, active.plan.selectedTracks)
+    }
+
+    /// An unsequenced failure advances the ladder, so the failed key joins the
+    /// excluded set the server must plan around.
+    func testReplanClassificationExcludesFailedKeyWhenAdvancingLadder() throws {
+        let requestPlan = try requireRequest(classify(
+            makeActive(attemptCount: 2, attemptedPlanKeys: ["v3:older"]),
+            usesV2: false
+        ))
+        XCTAssertFalse(requestPlan.preservesRoute)
+        XCTAssertEqual(requestPlan.attemptedPlanKeys, ["v3:older", "v3:opaque-fixture"])
+        XCTAssertEqual(requestPlan.attemptCount, 2)
+        XCTAssertEqual(requestPlan.eventName, "plan_failed")
+    }
+
+    /// A user intent is not a failure: it restarts the bounded ladder and
+    /// carries the newly requested track instead of the plan's current one.
+    func testReplanClassificationRestartsLadderForTrackIntent() throws {
+        let requestPlan = try requireRequest(classify(
+            makeActive(attemptCount: 4, attemptedPlanKeys: ["v3:opaque-fixture", "v3:older"]),
+            classification: "subtitle_track_changed",
+            subtitleTrackIndex: 5
+        ))
+        XCTAssertEqual(requestPlan.operation, PlaybackProtocolV3.ReplanOperation.trackChange)
+        XCTAssertTrue(requestPlan.invalidatesIntent)
+        XCTAssertEqual(requestPlan.attemptedPlanKeys, [])
+        XCTAssertEqual(requestPlan.attemptCount, 1)
+        XCTAssertEqual(requestPlan.eventName, "plan_invalidated")
+        XCTAssertEqual(
+            requestPlan.selectedTracks.subtitle,
+            PlaybackV3TrackIdentity(id: "file:42:subtitle:5", index: 5)
+        )
+    }
+
+    /// Turning subtitles off is a negative index, which the request carries as
+    /// an absent track rather than as index -1.
+    func testReplanClassificationDropsDisabledSubtitleTrack() throws {
+        let requestPlan = try requireRequest(classify(
+            makeActive(),
+            classification: "subtitle_track_changed",
+            subtitleTrackIndex: -1
+        ))
+        XCTAssertNil(requestPlan.selectedTracks.subtitle)
+    }
+
+    /// The bandwidth ceiling captured for the attempt is repeated whenever the
+    /// caller did not ask for a different quality.
+    func testReplanClassificationRepeatsAttemptBandwidthCap() throws {
+        let requestPlan = try requireRequest(classify(
+            makeActive(clientQualityId: "1080p", bandwidthCapKbps: 6_000)
+        ))
+        XCTAssertEqual(requestPlan.bandwidthCapKbps, 6_000)
+        XCTAssertEqual(requestPlan.clientQualityId, "1080p")
+    }
+
+    /// Loop detection is what stops the ladder from re-offering a route that
+    /// already failed on this output.
+    func testReplanLoopDetectionRejectsAlreadyFailedPlanKey() {
+        let current = makePlan(planAttemptKey: "v3:first")
+        let next = makePlan(planId: "plan:second", planAttemptKey: "v3:already-failed")
+        XCTAssertThrowsError(try PlaybackReplanDecision.replanPreservesAttempt(
+            operation: PlaybackProtocolV3.ReplanOperation.failureRecovery,
+            usesV2: false,
+            currentSessionID: "session-v3",
+            nextSessionID: "session-v3",
+            current: current,
+            next: next,
+            attemptedKeys: ["v3:first", "v3:already-failed"],
+            responseFeatures: []
+        )) { error in
+            guard let failure = error as? PlaybackV3TerminalFailure else {
+                return XCTFail("expected a terminal failure, got \(error)")
+            }
+            XCTAssertEqual(failure.reason, "replan_loop_detected")
+            XCTAssertEqual(
+                failure.message,
+                "The server returned a protocol V3 plan that already failed on this output route."
+            )
+            XCTAssertFalse(failure.retryable)
+        }
+    }
+
+    /// A same-route recovery is exempt from loop detection, because the server
+    /// is required to answer it with the very key the client just reported.
+    func testReplanLoopDetectionExemptsSequencedSameRouteRecovery() throws {
+        let plan = makePlan(planAttemptKey: "v3:first")
+        XCTAssertTrue(try PlaybackReplanDecision.replanPreservesAttempt(
+            operation: PlaybackProtocolV3.ReplanOperation.failureRecovery,
+            usesV2: true,
+            currentSessionID: "session-v3",
+            nextSessionID: "session-v3",
+            current: plan,
+            next: plan,
+            attemptedKeys: ["v3:first"],
+            responseFeatures: []
+        ))
     }
 }
