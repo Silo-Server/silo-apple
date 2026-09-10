@@ -169,9 +169,10 @@ struct TVItemDetailView: View {
                 || activeWasCompleted
                 || completedEpisodeIsVisible else { return }
 
-        if let inProgress = viewModel.episodes.first(where: {
-            $0.userData?.isInProgress == true && !($0.userData?.played ?? false)
-        }) {
+        if activeSeriesEpisodeContentId == nil,
+           let inProgress = viewModel.episodes.first(where: {
+               $0.userData?.isInProgress == true && !($0.userData?.played ?? false)
+           }) {
             activeSeriesEpisodeContentId = inProgress.contentId
             return
         }
