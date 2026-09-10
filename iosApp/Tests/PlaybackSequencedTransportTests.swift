@@ -122,8 +122,41 @@ final class PlaybackSequencedTransportTests: XCTestCase {
     func testFeatureAbsentNeverRegistersSequencedOwner() async throws {
         let (owner, _, auth) = try await fixture()
         try await owner.register(sessionID: "legacy", features: [], auth: auth)
-        let handles = await owner.handles("legacy")
-        XCTAssertFalse(handles)
+        let state = await owner.sequencedState("legacy")
+        // Absent contract feature is not a failure: it stays eligible for the
+        // ordinary stop route rather than being fenced off from it.
+        XCTAssertEqual(state, .notSequenced)
+        XCTAssertTrue(SequencedPlaybackProtocol.requests().isEmpty)
+    }
+
+    func testSequencedStateSeparatesNeverRegisteredFailedAndBoundSessions() async throws {
+        let writer = PlaybackTestWriter()
+        let (owner, _, auth) = try await fixture(writer: writer)
+        var state = await owner.sequencedState("session")
+        XCTAssertEqual(state, .notSequenced)
+
+        // A durable record that cannot be written leaves the server-allocated
+        // session sequenced but unbound.
+        writer.fail(true)
+        do {
+            try await owner.register(sessionID: "session", features: [PlaybackSequencedContract.feature], auth: auth)
+            XCTFail("A journal failure must not report a bound session")
+        } catch {}
+        state = await owner.sequencedState("session")
+        XCTAssertEqual(state, .registrationFailed)
+
+        // A missing durable owner is the same fenced state, not an ordinary session.
+        do {
+            try await owner.register(sessionID: "unowned", features: [PlaybackSequencedContract.feature], auth: nil)
+            XCTFail("A registration without a durable owner must fail")
+        } catch {}
+        state = await owner.sequencedState("unowned")
+        XCTAssertEqual(state, .registrationFailed)
+
+        writer.fail(false)
+        try await owner.register(sessionID: "session", features: [PlaybackSequencedContract.feature], auth: auth)
+        state = await owner.sequencedState("session")
+        XCTAssertEqual(state, .bound)
         XCTAssertTrue(SequencedPlaybackProtocol.requests().isEmpty)
     }
 }

@@ -30,9 +30,10 @@ struct StoredPlaybackMutationSession: Codable, Sendable {
     let sessionID: String
     let authority: PlaybackMutationAuthority
     var progressTimeline: APIv2ProgressTimeline? = nil
+    /// The attempt that allocated this session. Nil only for a record written by
+    /// an older build; owner-loss recovery for such a record stays fail-closed.
     var attemptID: String? = nil
     var ownerLoss: PlaybackOwnerLossRecovery? = nil
-    var ownerLossResponse: Data? = nil
     var allocatedSequence: Int64 = 0
     var pendingProgress: PlaybackSequencedSample?
     var accepted: PlaybackSequencedSample?
@@ -51,7 +52,6 @@ struct StoredPlaybackStart: Codable, Sendable {
     var response: Data?
     var progressTimeline: APIv2ProgressTimeline? = nil
     var ownerLoss: PlaybackOwnerLossRecovery? = nil
-    var ownerLossResponse: Data? = nil
     var finished = false
 }
 
@@ -74,8 +74,13 @@ private struct PlaybackMutationStoreFile: Codable {
 /// Durable idempotency data, not authority. Callers must obtain current canonical
 /// credentials before each request. This actor never dispatches or replays traffic.
 actor PlaybackMutationStore {
-    static let shared = PlaybackMutationStore(url: FileManager.default.urls(for: .applicationSupportDirectory,
-        in: .userDomainMask)[0].appendingPathComponent("playback-mutations.json"))
+    /// tvOS rejects Application Support writes, which failed this journal before
+    /// `/api/v2/playback/start` was ever sent. `AppleStorageRoot` owns that rule.
+    static let shared: PlaybackMutationStore = {
+        AppleStorageRoot.logSelectedCategory(subsystemCategory: "PlaybackMutations")
+        return PlaybackMutationStore(
+            url: AppleStorageRoot.baseDirectory().appendingPathComponent("playback-mutations.json"))
+    }()
 
     private let url: URL
     private let write: @Sendable (Data, URL) throws -> Void
@@ -177,12 +182,6 @@ actor PlaybackMutationStore {
         return stop
     }
 
-    func prepareStop(_ id: UUID, authority: PlaybackMutationAuthority, position: Double?,
-                     isPaused: Bool) throws -> PlaybackSequencedStop {
-        let stop = try proposedStop(id, authority: authority, position: position, isPaused: isPaused)
-        return try persistStop(id, authority: authority, stop: stop)
-    }
-
     func acknowledgeStop(_ id: UUID, authority: PlaybackMutationAuthority, sent: PlaybackSequencedStop,
                          receipt: PlaybackSequencedStopReceipt) throws {
         var file = try read()
@@ -206,23 +205,16 @@ actor PlaybackMutationStore {
         try persist(file)
     }
 
-    /// Old sessions may obtain the attempt only from their exact durable START
-    /// record. No ambient plan, login or first-observation binding is permitted.
-    func originalAttemptID(_ session: StoredPlaybackMutationSession) throws -> String? {
-        if let attempt = session.attemptID { return attempt }
-        return try read().starts?.values.first(where: { start in
-            guard start.authority == session.authority, let data = start.response,
-                  let decision = try? HTTPClient.makeJSONDecoder().decode(APIv2PlaybackDecision.self, from: data) else { return false }
-            return (decision.sessionId ?? decision.playbackPlan?.sessionId) == session.sessionID
-        })?.attemptID
-    }
-
     func observeStopOwnerLoss(_ id: UUID, authority: PlaybackMutationAuthority, sent: PlaybackSequencedStop,
-        recovery: PlaybackOwnerLossRecovery, response: Data) throws {
+        recovery: PlaybackOwnerLossRecovery) throws {
         var file = try read()
         guard var session = file.sessions[id], session.authority == authority, authority.installationID != nil,
               session.stop == sent else { throw PlaybackSequencedError.authorityChanged }
-        try recovery.validate(attemptID: originalAttemptID(session), sessionID: session.sessionID,
+        // A session may obtain the attempt only from its own durable record. No
+        // ambient plan, login or first-observation binding is permitted, so a
+        // record written before the attempt was journaled can never recover.
+        guard let attemptID = session.attemptID else { throw PlaybackSequencedError.authorityChanged }
+        try recovery.validate(attemptID: attemptID, sessionID: session.sessionID,
             previous: session.ownerLoss, timeline: session.progressTimeline)
         // A real matching StopID receipt already stored remains authoritative.
         guard session.stopState != .terminal,
@@ -230,7 +222,6 @@ actor PlaybackMutationStore {
             throw PlaybackSequencedError.invalidResponse
         }
         session.ownerLoss = recovery
-        session.ownerLossResponse = response
         session.stopState = recovery.state == .aborted ? .abandoned : .draining
         if recovery.state == .aborted {
             session.accepted = recovery.accepted
@@ -241,7 +232,7 @@ actor PlaybackMutationStore {
     }
 
     func observeStartOwnerLoss(_ id: UUID, authority: PlaybackMutationAuthority,
-        recovery: PlaybackOwnerLossRecovery, response: Data) throws {
+        recovery: PlaybackOwnerLossRecovery) throws {
         var file = try read()
         guard var start = file.starts?[id], start.authority == authority, authority.installationID != nil else {
             throw PlaybackSequencedError.authorityChanged
@@ -254,7 +245,6 @@ actor PlaybackMutationStore {
         try recovery.validate(attemptID: start.attemptID, sessionID: decision?.sessionId ?? decision?.playbackPlan?.sessionId,
             previous: start.ownerLoss, timeline: start.progressTimeline)
         start.ownerLoss = recovery
-        start.ownerLossResponse = response
         start.finished = recovery.state == .aborted
         file.starts?[id] = start
         try persist(file)
@@ -291,11 +281,6 @@ actor PlaybackMutationStore {
         guard !((try read()).sessions.values.contains {
             $0.authority == authority && $0.progressTimeline != nil && $0.stopState.isTerminal == false
         }) else { throw PlaybackSequencedError.invalidSession }
-    }
-
-    func prepareStart(authority: PlaybackMutationAuthority, attemptID: String, body: Data, progressTimeline: APIv2ProgressTimeline? = nil) throws -> StoredPlaybackStart {
-        try prepareStartWithDisposition(authority: authority, attemptID: attemptID, body: body,
-            progressTimeline: progressTimeline).start
     }
 
     /// Creation is reported atomically with persistence; callers must never

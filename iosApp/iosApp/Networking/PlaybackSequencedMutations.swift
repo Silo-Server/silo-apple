@@ -164,7 +164,7 @@ struct PlaybackOwnerLossRecovery: Codable, Equatable, Sendable {
 
 enum PlaybackStopResolution: Sendable {
     case ordinary(PlaybackSequencedStopReceipt)
-    case ownerLost(PlaybackOwnerLossRecovery, Data)
+    case ownerLost(PlaybackOwnerLossRecovery)
 }
 
 enum PlaybackSequencedError: LocalizedError {
@@ -189,14 +189,6 @@ extension SiloAPI {
         return try JSONDecoder().decode(PlaybackSequencedProgressReceipt.self, from: response.data)
     }
 
-    func stopSequencedPlayback(sessionID: String, stop: PlaybackSequencedStop,
-                              auth: CapturedOrdinaryRequestAuth, installationID: String? = nil) async throws -> PlaybackSequencedStopReceipt {
-        let resolution = try await resolveSequencedPlaybackStop(sessionID: sessionID, stop: stop,
-            auth: auth, installationID: installationID)
-        guard case .ordinary(let receipt) = resolution else { throw PlaybackSequencedError.invalidResponse }
-        return receipt
-    }
-
     func resolveSequencedPlaybackStop(sessionID: String, stop: PlaybackSequencedStop,
         auth: CapturedOrdinaryRequestAuth, installationID: String?) async throws -> PlaybackStopResolution {
         let response = try await playbackMutation(method: "DELETE", sessionID: sessionID, suffix: "",
@@ -205,7 +197,7 @@ extension SiloAPI {
         if object?.keys.contains("stop_id") != true,
            let recovery = try PlaybackOwnerLossRecovery.decode(response.data, status: response.statusCode, start: false) {
             guard installationID != nil else { throw PlaybackSequencedError.authorityChanged }
-            return .ownerLost(recovery, response.data)
+            return .ownerLost(recovery)
         }
         let receipt = try JSONDecoder().decode(PlaybackSequencedStopReceipt.self, from: response.data)
         guard receipt.stopId == stop.stopID,

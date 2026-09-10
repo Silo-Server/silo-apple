@@ -6579,13 +6579,8 @@ class PlayerViewModel {
         requiresHeaderAuthenticatedMedia: Bool = false,
         allowsAuthorizedMediaOrigins: Bool = false
     ) async -> StreamRequest? {
-        if session.streamUrl.hasPrefix("file://") {
-            return StreamRequest.resolve(rawURL: session.streamUrl, serverURL: "",
-                additionalHeaders: [:], accessToken: nil,
-                requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia)
-        }
-        return try? await PlaybackMutationCoordinator.shared.streamRequest(
-            sessionID: session.sessionId, rawURL: session.streamUrl,
+        await sessionBridge.streamRequest(
+            session: session,
             additionalHeaders: additionalHeaders,
             requiresHeaderAuthenticatedMedia: requiresHeaderAuthenticatedMedia,
             allowsAuthorizedMediaOrigins: allowsAuthorizedMediaOrigins)

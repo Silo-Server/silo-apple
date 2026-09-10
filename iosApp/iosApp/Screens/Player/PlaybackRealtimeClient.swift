@@ -230,8 +230,10 @@ actor PlaybackRealtimeClient {
         binding: PlaybackMutationCoordinator.ControlBinding
     ) async throws {
         while isCurrentBinding(sessionId: sessionId, generation: generation) {
+            // The socket carries a binding this client already validated, and
+            // every command re-validates it around execution. An inbound frame
+            // by itself mutates no playback state, so it is not fenced again.
             let message = try await socket.receive()
-            try await mutationCoordinator.validateControlBinding(binding)
             guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
             guard let data = decodeInboundMessageData(message) else { continue }
             guard let inbound = parsePlaybackRealtimeInboundMessage(data) else { continue }

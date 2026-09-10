@@ -151,8 +151,10 @@ final class APIv2PlaybackTests: XCTestCase {
         let pending = try await store.pendingStarts(authority: authority)
         XCTAssertTrue(pending.isEmpty)
         let replay = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
-        XCTAssertEqual(replay.count, 2)
-        XCTAssertEqual(replay[0].1, replay[1].1)
+        // Uncertain dispatch, the coordinator's one network retry, then the
+        // explicit replay. Every one of them repeats the original body.
+        XCTAssertEqual(replay.count, 3)
+        XCTAssertEqual(Set(replay.map { $0.1 }).count, 1)
         XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" && $0.0.url?.path.contains("/timelines/") != true })
         // Only this explicit caller obtains a new snapshot and creates a new attempt.
         _ = try boundContract(attempt: "audio:new-explicit", digest: String(repeating: "b", count: 64))
@@ -271,8 +273,9 @@ final class APIv2PlaybackTests: XCTestCase {
         V2PlaybackProtocol.stopStatus(200)
         await restarted.retryPendingStops()
         let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path == "/api/v2/playback/start" }
-        XCTAssertEqual(starts.count, 2)
-        XCTAssertEqual(starts[0].1, starts[1].1)
+        // Uncertain dispatch, its one network retry, then the explicit replay.
+        XCTAssertEqual(starts.count, 3)
+        XCTAssertEqual(Set(starts.map { $0.1 }).count, 1)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: starts[0].1) as? [String: Any])
         XCTAssertEqual(body["file_id"] as? String, "42")
         XCTAssertEqual(body["audio_track_index"] as? Int, 0)
@@ -355,9 +358,10 @@ final class APIv2PlaybackTests: XCTestCase {
         V2PlaybackProtocol.rejectStart(nil)
         await owner.retryPendingStops()
         let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path == "/api/v2/playback/start" }
-        XCTAssertEqual(starts.count, 3)
-        XCTAssertEqual(starts[0].1, starts[1].1)
-        XCTAssertEqual(starts[1].1, starts[2].1)
+        // Uncertain dispatch, its one network retry, the 422 validation, then
+        // the explicit replay: four dispatches of the identical attempt body.
+        XCTAssertEqual(starts.count, 4)
+        XCTAssertEqual(Set(starts.map { $0.1 }).count, 1)
         XCTAssertEqual(V2PlaybackProtocol.requests().filter { $0.0.httpMethod == "DELETE" }.count, 1)
         try await owner.requireResolvedStartBeforeLegacy(auth: auth)
     }
@@ -492,8 +496,8 @@ final class APIv2PlaybackTests: XCTestCase {
                 else { _ = await tokens.saveRefreshedTokens("replacement", "replacement-refresh", replacing: capturedRefresh) }
             }
             do {
-                _ = try await PlaybackSessionBridge.startV2WithNetworkRetry(coordinator: owner,
-                    request: request(authorizedOrigins: true), auth: auth, capability: capability())
+                _ = try await owner.startV2(request: request(authorizedOrigins: true),
+                    auth: auth, capability: capability())
                 XCTFail("Lost response retry adopted replacement authority")
             } catch {}
             do {
@@ -534,7 +538,9 @@ final class APIv2PlaybackTests: XCTestCase {
             XCTFail("Restored response-less intent gained media scope")
         } catch {}
         let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
-        XCTAssertEqual(starts.count, 2)
+        // Uncertain dispatch, its one network retry, then the restored replay.
+        XCTAssertEqual(starts.count, 3)
+        XCTAssertEqual(Set(starts.map { $0.1 }).count, 1)
         XCTAssertEqual(starts.last?.1, original.1)
         XCTAssertTrue(V2PlaybackProtocol.requests().contains { $0.0.httpMethod == "DELETE" }, "Resolved allocation must still retire")
     }
@@ -544,8 +550,8 @@ final class APIv2PlaybackTests: XCTestCase {
         let (decision, id, raw) = try headerMediaDecision()
         V2PlaybackProtocol.configure(capability: try fixtureData("playback_capability_available"), decision: decision)
         V2PlaybackProtocol.loseNextStart {}
-        _ = try await PlaybackSessionBridge.startV2WithNetworkRetry(coordinator: owner,
-            request: request(authorizedOrigins: true), auth: auth, capability: capability())
+        _ = try await owner.startV2(request: request(authorizedOrigins: true),
+            auth: auth, capability: capability())
         let starts = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/start") == true }
         XCTAssertEqual(starts.count, 2)
         XCTAssertEqual(starts.first?.1, starts.last?.1)
@@ -577,12 +583,13 @@ final class APIv2PlaybackTests: XCTestCase {
         let (_, id, raw) = try headerMediaDecision()
         let pending = try ownerLossWire(start: true, pending: true, session: id)
         V2PlaybackProtocol.rejectStart(pending, status: 202)
-        do { _ = try await PlaybackSessionBridge.startV2WithNetworkRetry(coordinator: owner,
-            request: request(authorizedOrigins: true), auth: auth, capability: capability()); XCTFail() } catch {}
+        do { _ = try await owner.startV2(request: request(authorizedOrigins: true),
+            auth: auth, capability: capability()); XCTFail() } catch {}
         let saved = try JSONDecoder().decode(AuxiliaryJournalSnapshot.self, from: XCTUnwrap(writes.data.last))
         let original = try XCTUnwrap(saved.starts?.values.first)
         XCTAssertNil(original.response)
-        XCTAssertEqual(original.ownerLossResponse, pending)
+        XCTAssertEqual(original.ownerLoss?.state, .draining)
+        XCTAssertEqual(original.ownerLoss?.sessionID, id)
         XCTAssertFalse(original.finished)
         let reloaded = PlaybackMutationCoordinator(api: api, tokens: tokens, store: store, retryDelays: [])
         await reloaded.restorePending()
@@ -594,7 +601,8 @@ final class APIv2PlaybackTests: XCTestCase {
         let settled = try XCTUnwrap(final.starts?[original.id])
         XCTAssertEqual(settled.body, original.body)
         XCTAssertNil(settled.response)
-        XCTAssertEqual(settled.ownerLossResponse, terminal)
+        XCTAssertEqual(settled.ownerLoss?.state, .aborted)
+        XCTAssertEqual(settled.ownerLoss?.recoveryID, original.ownerLoss?.recoveryID)
         XCTAssertTrue(settled.finished)
         XCTAssertNil(settled.ownerLoss?.accepted)
         XCTAssertTrue(final.sessions.isEmpty, "No playable session registration from abandonment")
@@ -640,7 +648,7 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertEqual(settled.stopState, .abandoned)
         XCTAssertEqual(settled.accepted?.position, 12.5)
         XCTAssertNil(settled.historyID)
-        XCTAssertEqual(settled.ownerLossResponse, terminal)
+        XCTAssertEqual(settled.ownerLoss?.state, .aborted)
         let stops = V2PlaybackProtocol.requests().filter { $0.0.httpMethod == "DELETE" }
         XCTAssertEqual(stops.count, 2)
         XCTAssertEqual(stops.first?.1, stops.last?.1)
@@ -684,7 +692,8 @@ final class APIv2PlaybackTests: XCTestCase {
             do { _ = try await owner.startV2(request: request(), auth: auth, capability: capability()); XCTFail("Malformed recovery settled") } catch {}
             let saved = try await store.start(record.id, authority: record.authority)
             XCTAssertFalse(saved.finished)
-            XCTAssertEqual(saved.ownerLossResponse, pending)
+            XCTAssertEqual(saved.ownerLoss, record.ownerLoss)
+            XCTAssertEqual(saved.ownerLoss?.state, .draining)
             XCTAssertEqual(saved.body, record.body)
         }
     }
@@ -730,7 +739,7 @@ final class APIv2PlaybackTests: XCTestCase {
             XCTAssertFalse(done)
             let saved = try await store.session(original.id, authority: original.authority)
             XCTAssertEqual(saved.stop, original.stop)
-            XCTAssertEqual(saved.ownerLossResponse, pending)
+            XCTAssertEqual(saved.ownerLoss, original.ownerLoss)
             XCTAssertEqual(saved.stopState, .draining)
         }
         let stop = try XCTUnwrap(original.stop)
@@ -744,7 +753,7 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertFalse(continued, "Observed AbortID cannot become ordinary StopID success")
         let final = try await store.session(original.id, authority: original.authority)
         XCTAssertEqual(final.stopState, .draining)
-        XCTAssertEqual(final.ownerLossResponse, pending)
+        XCTAssertEqual(final.ownerLoss, original.ownerLoss)
         XCTAssertEqual(final.accepted, original.accepted)
         XCTAssertEqual(final.stop, original.stop)
     }
@@ -801,6 +810,29 @@ final class APIv2PlaybackTests: XCTestCase {
         XCTAssertEqual(afterExplicit.count, 2)
         let fresh = try XCTUnwrap(afterExplicit.last)
         XCTAssertNotEqual((try JSONSerialization.jsonObject(with: fresh.1) as? [String: Any])?["playback_attempt_id"] as? String, originalAttempt)
+    }
+
+    func testFailedSequencedRegistrationBlocksPlainDeleteFallback() async throws {
+        let (owner, tokens, auth, api, _) = try await fixture(failWrites: true)
+        let bridge = PlaybackSessionBridge(mutationCoordinator: owner, api: api, tokens: tokens)
+        do {
+            try await owner.register(sessionID: "orphan", features: [PlaybackSequencedContract.feature], auth: auth)
+            XCTFail("A journal failure must not report a bound session")
+        } catch {}
+        var state = await owner.sequencedState("orphan")
+        XCTAssertEqual(state, .registrationFailed)
+        await bridge.retireAbandonedSession("orphan", reason: "test_registration_failed")
+        XCTAssertTrue(V2PlaybackProtocol.requests().allSatisfy { $0.0.httpMethod != "DELETE" },
+            "A sequenced session with no durable stop intent must never be released by a plain DELETE")
+
+        // Contrast: a session the coordinator never sequenced still takes the
+        // ordinary retirement route.
+        state = await owner.sequencedState("ordinary")
+        XCTAssertEqual(state, .notSequenced)
+        await bridge.retireAbandonedSession("ordinary", reason: "test_not_sequenced")
+        let deletes = V2PlaybackProtocol.requests().filter { $0.0.httpMethod == "DELETE" }
+        XCTAssertEqual(deletes.count, 1)
+        XCTAssertEqual(deletes.first?.0.url?.path, "/api/v1/playback/ordinary")
     }
 
     func testOrdinaryStopBeforeRecoveryStillAllowsActualContinuation() async throws {
@@ -1051,13 +1083,47 @@ final class APIv2PlaybackTests: XCTestCase {
         let response = try await owner.startV2(request: request(), auth: auth, capability: capability())
         let id = try XCTUnwrap(response.sessionId)
         V2PlaybackProtocol.changeInstallation()
+        // The installation captured at START is echoed verbatim. A changed
+        // installation is refused by the server with 409 installation_changed;
+        // the client does not re-probe capabilities to discover it.
         do { try await owner.report(sessionID: id, position: 1, isPaused: false); XCTFail() } catch {}
-        XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.url?.path.hasSuffix("/progress") == true })
+        let progress = V2PlaybackProtocol.requests().filter { $0.0.url?.path.hasSuffix("/progress") == true }
+        XCTAssertEqual(progress.count, 1)
+        let sample = try XCTUnwrap(JSONSerialization.jsonObject(with: progress[0].1) as? [String: Any])
+        XCTAssertEqual(sample["installation_id"] as? String, try capability().requireAvailable())
+        // A changed account epoch is still a local refusal: no request leaves.
         try await tokens.installAccountSession(accessToken: "new", refreshToken: "new-refresh", accountID: "1")
         await tokens.setProfileId("profile")
         let stopped = try await owner.stop(sessionID: id, position: 2, isPaused: true)
         XCTAssertFalse(stopped)
         XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.httpMethod == "DELETE" })
+    }
+
+    func testEachMutationIsOneRequestWithoutACapabilityProbe() async throws {
+        let (owner, _, auth, _, _) = try await fixture()
+        let started = try await owner.startV2(request: request(), auth: auth, capability: capability())
+        let id = try XCTUnwrap(started.sessionId)
+
+        var before = V2PlaybackProtocol.requests().count
+        try await owner.report(sessionID: id, position: 30, isPaused: false)
+        var sent = Array(V2PlaybackProtocol.requests().dropFirst(before))
+        XCTAssertEqual(sent.map { $0.0.url?.path ?? "" }, ["/api/v2/playback/\(id)/progress"])
+        XCTAssertEqual(sent.first?.0.httpMethod, "POST")
+
+        before = V2PlaybackProtocol.requests().count
+        _ = try await owner.replan(sessionID: id, request: replanRequest())
+        sent = Array(V2PlaybackProtocol.requests().dropFirst(before))
+        XCTAssertEqual(sent.map { $0.0.url?.path ?? "" }, ["/api/v2/playback/\(id)/replan"])
+        XCTAssertEqual(sent.first?.0.httpMethod, "POST")
+
+        before = V2PlaybackProtocol.requests().count
+        let stopped = try await owner.stop(sessionID: id, position: 60, isPaused: true)
+        XCTAssertTrue(stopped)
+        sent = Array(V2PlaybackProtocol.requests().dropFirst(before))
+        XCTAssertEqual(sent.map { $0.0.url?.path ?? "" }, ["/api/v2/playback/\(id)"])
+        XCTAssertEqual(sent.first?.0.httpMethod, "DELETE")
+
+        XCTAssertFalse(V2PlaybackProtocol.requests().contains { $0.0.url?.path == "/api/v2/playback/capabilities" })
     }
 }
 
@@ -1107,6 +1173,23 @@ private final class V2PlaybackProtocol: URLProtocol {
             }
         }
         let state = Self.lock.withLock { Self.captured.append((request, body)); return (Self.capability, Self.decision, Self.failStart, Self.stopCode, Self.rejection, Self.progressFailure, Self.rejectionCode) }
+        // The server, not the client, detects a stale installation. Any mutation
+        // that echoes an installation the server no longer knows is refused with
+        // `409 installation_changed`.
+        let known = ((try? JSONSerialization.jsonObject(with: state.0)) as? [String: Any])?["installation_id"] as? String
+        if let known, let echoed = ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["installation_id"] as? String,
+           echoed != known {
+            let problem = try! JSONSerialization.data(withJSONObject: [
+                "type": "https://siloserver.org/docs/api/v2/problems/installation_changed",
+                "title": "Playback installation changed", "status": 409,
+                "detail": "Playback installation changed; refresh capabilities",
+                "instance": "urn:silo:request:0000000000000000000001da"])
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 409,
+                httpVersion: nil, headerFields: ["Content-Type": "application/problem+json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: problem)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         var status = 200
         let output: Data
         if request.url!.path.hasPrefix("/api/v2/watch/") {

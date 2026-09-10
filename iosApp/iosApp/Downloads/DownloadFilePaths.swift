@@ -2,14 +2,16 @@ import Foundation
 import CryptoKit
 import OSLog
 
-/// On-disk layout for offline downloads. Everything lives under
-/// Application Support (NOT Caches — the OS purges Caches under storage
-/// pressure and downloaded media must survive that). Paths are scoped by
+/// On-disk layout for offline downloads. Everything lives under the root
+/// `AppleStorageRoot` selects: Application Support everywhere it is writable,
+/// because the OS purges Caches under storage pressure and downloaded media
+/// should survive that. tvOS is the exception — it rejects Application Support
+/// writes outright, so there Caches is the only option. Paths are scoped by
 /// `(serverId, profileId)` so a profile or server switch is just a
 /// different directory tree with no migration.
 ///
 /// ```
-/// <AppSupport>/SiloDownloads/<serverId>/<profileId>/
+/// <StorageRoot>/SiloDownloads/<serverId>/<profileId>/
 ///   store.json
 ///   <downloadId>/
 ///     media.<ext>
@@ -30,11 +32,10 @@ enum DownloadFilePaths {
     private static let rootFolderName = "SiloDownloads"
     static let storeFileName = "store.json"
 
-    /// `<AppSupport>/SiloDownloads`, created on first use and excluded from
+    /// `<StorageRoot>/SiloDownloads`, created on first use and excluded from
     /// iCloud/iTunes backup (downloads are large and not re-uploadable).
     static func rootDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let root = base.appendingPathComponent(rootFolderName, isDirectory: true)
+        let root = AppleStorageRoot.baseDirectory().appendingPathComponent(rootFolderName, isDirectory: true)
         ensureDirectory(root, excludeFromBackup: true)
         return root
     }
@@ -45,7 +46,7 @@ enum DownloadFilePaths {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let key = SHA256.hash(data: try encoder.encode(authority)).map { String(format: "%02x", $0) }.joined()
-        let base = rootOverride ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let base = rootOverride ?? AppleStorageRoot.baseDirectory()
             .appendingPathComponent("SiloDownloadsV2", isDirectory: true)
         return base.appendingPathComponent(key, isDirectory: true)
     }

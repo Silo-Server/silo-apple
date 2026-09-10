@@ -15,8 +15,7 @@ final class SiloUICustomizationTransport: UICustomizationTransport, @unchecked S
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared, defaults: SharedDefaults = .shared,
          journal: SettingsMutationJournal? = nil) {
         self.api = api; self.tokens = tokens; self.defaults = defaults
-        let journal = journal ?? SettingsMutationJournal(url: FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let journal = journal ?? SettingsMutationJournal(url: AppleStorageRoot.baseDirectory()
             .appendingPathComponent("SettingsV2/interface-commands.json"))
         self.journal = journal
         dispatcher = SettingsMutationDispatcher(journal: journal, tokens: tokens, api: api)

@@ -13,7 +13,6 @@ final class AudioPlayerViewModel {
     }
 
     private let mutationCoordinator = PlaybackMutationCoordinator.shared
-    private var sequencedSessionIDs: Set<String> = []
     private var manifest: APIv2PlaybackManifest?
     private var manifestAuth: CapturedDurableAccountAuth?
     private var manifestCapability: APIv2PlaybackCapabilities?
@@ -317,7 +316,9 @@ final class AudioPlayerViewModel {
             let priorSession = activeSession
             var finalPosition: Double?
             if let priorSession {
-                guard sequencedSessionIDs.contains(priorSession.sessionId) else { throw PlaybackSequencedError.invalidSession }
+                guard await mutationCoordinator.sequencedState(priorSession.sessionId) == .bound else {
+                    throw PlaybackSequencedError.invalidSession
+                }
                 engine.pause()
                 let priorTrack = context.tracks.first { $0.index == activeTrackIndex }
                 finalPosition = priorTrack.map { AudioPlaybackTimeline.localTime(for: currentTime, in: $0) }
@@ -447,9 +448,6 @@ final class AudioPlayerViewModel {
         let response = try await mutationCoordinator.startV2(request: request,
             auth: capturedPlaybackAuth, capability: initialCapability, progressTimeline: binding)
 
-        if let id = PlaybackSessionBridge.allocatedSessionId(in: response) {
-            sequencedSessionIDs.insert(id)
-        }
         switch response.validatedForApple() {
         case .terminal(let terminal):
             throw PlaybackV3TerminalFailure(
@@ -540,7 +538,7 @@ final class AudioPlayerViewModel {
     }
 
     private func stopAllocatedSession(id: String, position: Double? = nil) async throws {
-        guard sequencedSessionIDs.contains(id),
+        guard await mutationCoordinator.sequencedState(id) == .bound,
               try await mutationCoordinator.stop(sessionID: id, position: position, isPaused: true) else {
             throw PlaybackV3TerminalFailure(reason: "audiobook_stop_unresolved",
                 message: "The previous audiobook part has not confirmed its stop. Resolve pending playback before starting another part.",

@@ -144,11 +144,10 @@ enum SettingsMutationHold: LocalizedError {
 final class SettingsMutationJournal: @unchecked Sendable {
     /// Canonical callers that overlap the player's targets share its existing
     /// file and lock. Existing records retain their original bytes and owner.
-    static let sharedCanonical = SettingsMutationJournal(url: FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("SettingsV2/player-commands.json"),
-        retainedProfileJournalURL: FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static let sharedCanonical = SettingsMutationJournal(
+        url: AppleStorageRoot.baseDirectory()
+            .appendingPathComponent("SettingsV2/player-commands.json"),
+        retainedProfileJournalURL: AppleStorageRoot.baseDirectory()
             .appendingPathComponent("SettingsV2/onboarding-profile-commands.json"))
     private let lock = NSLock()
     private let url: URL

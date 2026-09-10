@@ -1,17 +1,4 @@
-#if os(iOS) || os(tvOS)
-import Foundation
-
-/// tvOS devices only permit writes under Caches; the simulator does not enforce
-/// this constraint, so simulator testing cannot catch storage-root regressions.
-enum DiagnosticsStorageRoot {
-    static func baseDirectory(fileManager: FileManager) -> URL {
-#if os(tvOS)
-        let searchPathDirectory: FileManager.SearchPathDirectory = .cachesDirectory
-#else
-        let searchPathDirectory: FileManager.SearchPathDirectory = .applicationSupportDirectory
-#endif
-        return fileManager.urls(for: searchPathDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-    }
-}
-#endif
+/// Historical name for the shared platform storage rule, kept because the
+/// diagnostics writers are documented and discussed under it. The rule itself
+/// now lives in `AppleStorageRoot` so every durable writer shares one copy.
+typealias DiagnosticsStorageRoot = AppleStorageRoot
