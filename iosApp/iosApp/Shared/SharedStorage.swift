@@ -309,6 +309,22 @@ struct SharedKeychain {
         return false
     }
 
+    /// Strict reads for canonical authority. A locked/inaccessible keychain is
+    /// not an absent record and must never authorize a legacy fallback.
+    func getChecked(_ account: String) throws -> String? {
+        let configured = readResult(account: account, accessGroup: accessGroup)
+        if configured.status == errSecSuccess { return configured.value }
+        if shouldUseAppLocalFallback(for: configured.status) {
+            let fallback = readResult(account: account, accessGroup: nil)
+            guard fallback.status == errSecSuccess || fallback.status == errSecItemNotFound else {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            return fallback.value
+        }
+        guard configured.status == errSecItemNotFound else { throw CocoaError(.fileReadNoPermission) }
+        return nil
+    }
+
     func get(_ account: String) -> String? {
         let configuredRead = readResult(account: account, accessGroup: accessGroup)
         if let found = configuredRead.value {

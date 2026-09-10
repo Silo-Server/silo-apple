@@ -365,7 +365,11 @@ final class ReceiverPairingCoordinator {
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
-        await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
+        guard await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh) else {
+            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
         guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
             holding: transitionLease

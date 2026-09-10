@@ -175,10 +175,20 @@ final class AuthService: @unchecked Sendable {
             launchPreferences.clearRememberedProfile(for: serverID)
         }
         await TokenStore.shared.clearTokens()
-        await TokenStore.shared.saveTokens(
-            accessToken: accessToken,
-            refreshToken: refreshToken
-        )
+        do {
+            // v1 login responses carry no verified account id for the durable
+            // binding; the session installs unverified, exactly as
+            // `saveTokens` did, but a failed persist is reported instead of
+            // returning a "logged in" that does not survive the next launch.
+            try await TokenStore.shared.installAccountSession(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                accountID: nil
+            )
+        } catch {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            throw error
+        }
         await clearAllCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
     }

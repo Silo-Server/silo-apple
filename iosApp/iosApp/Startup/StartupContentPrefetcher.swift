@@ -250,7 +250,7 @@ enum StartupContentPrefetcher {
         switch httpError {
         case .serverUrlNotConfigured:
             return "no_server"
-        case .requestIdentityChanged:
+        case .requestIdentityChanged, .authorityChanged:
             return "identity_changed"
         case .network(let underlying):
             // A cancellation reaches here wrapped: `HTTPClient.perform` catches

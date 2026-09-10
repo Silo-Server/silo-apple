@@ -970,7 +970,10 @@ actor HTTPClient {
                ) == refreshedAuth {
                 // Rebuild from one account-owner/profile snapshot. If any of
                 // those identities changed during the shared flight, keep the
-                // original 401 instead of sending mixed credentials.
+                // original 401 instead of sending mixed credentials. This is
+                // deliberately not `withOwnerFence`: the retry must attach
+                // exactly the credential set that is current now, including
+                // the rotated access token, so the whole snapshot is compared.
                 var retry = try makeRequest(serverUrl)
                 attachOrdinaryAuthHeaders(&retry, auth: refreshedAuth)
                 Self.apply(additionalHeaders, to: &retry)
@@ -2075,6 +2078,11 @@ struct HTTPRawResponse: Sendable {
 enum HTTPError: LocalizedError, CustomStringConvertible {
     case serverUrlNotConfigured
     case requestIdentityChanged
+    /// Thrown by `TokenStore.withOwnerFence` when the account, credential
+    /// owner, profile, or profile proof that issued an operation is no longer
+    /// current when the operation is about to start or when it returns. The
+    /// response was discarded; nothing was applied to the replacement owner.
+    case authorityChanged
     case invalidURL(String)
     case invalidResponse
     case network(underlying: Error)
@@ -2088,6 +2096,8 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
             return "Server URL is not configured."
         case .requestIdentityChanged:
             return "The active server or profile changed before the request could start."
+        case .authorityChanged:
+            return "The account or profile changed while the request was in flight."
         case .invalidURL(let url):
             return "Invalid URL: \(url)"
         case .invalidResponse:
@@ -2114,6 +2124,8 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
             return "server_url_not_configured"
         case .requestIdentityChanged:
             return "request_identity_changed"
+        case .authorityChanged:
+            return "authority_changed"
         case .invalidURL:
             return "invalid_url"
         case .invalidResponse:

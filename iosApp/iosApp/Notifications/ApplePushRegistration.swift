@@ -4,7 +4,7 @@ import OSLog
 import UIKit
 import UserNotifications
 
-struct ApplePushRegistrationRequest: Encodable, Equatable {
+struct ApplePushRegistrationRequest: Encodable, Equatable, Sendable {
     let deviceId: String
     let apnsToken: String
     let apnsEnvironment: String
@@ -12,7 +12,7 @@ struct ApplePushRegistrationRequest: Encodable, Equatable {
     let pushMode: String
 }
 
-struct ApplePushRegistrationResponse: Decodable {
+struct ApplePushRegistrationResponse: Decodable, Sendable {
     let id: String
     let serverDeviceId: String
     let enabled: Bool
@@ -151,11 +151,6 @@ enum ApplePushRegistrationWire {
     }
 }
 
-struct ApplePushRegistrationIdentity: Equatable {
-    let account: RefreshAccountIdentity
-    let profileID: String
-}
-
 @MainActor
 final class ApplePushRegistrationCoordinator {
     static let shared = ApplePushRegistrationCoordinator()
@@ -258,20 +253,27 @@ final class ApplePushRegistrationCoordinator {
         inFlightFingerprint = fingerprint
         defer { inFlightFingerprint = nil }
 
-        // Snapshot the identity the registration is for. The response may
-        // land after a sign-out, server switch, or profile change has already
-        // cleared the display-token slot for the new context; writing the
-        // old context's token into it would resurrect a revoked credential.
-        let identityBefore = await Self.currentIdentity()
+        // Snapshot the owner the registration is for. The response may land
+        // after a sign-out, server switch, profile change, or PIN
+        // re-verification has already cleared the display-token slot for the
+        // new context; writing the old context's token into it would
+        // resurrect a revoked credential. `withOwnerFence` rejects the
+        // response unless the account, credential owner, profile, and profile
+        // proof are all still the ones that issued the request.
+        let tokenStore = TokenStore.shared
+        guard let owner = await tokenStore.captureOrdinaryRequestAuth() else {
+            // No resolvable account: the request could only have gone out
+            // unauthenticated and been refused.
+            Self.logger.info("Skipping Apple push registration: no account identity to register under")
+            return
+        }
 
         do {
-            let response: ApplePushRegistrationResponse = try await HTTPClient.shared.post(
-                ApplePushRegistrationWire.endpoint,
-                body: request
-            )
-            guard await Self.currentIdentity() == identityBefore else {
-                Self.logger.info("Discarding Apple push registration response: identity changed while in flight")
-                return
+            let response: ApplePushRegistrationResponse = try await tokenStore.withOwnerFence(owner) {
+                try await HTTPClient.shared.post(
+                    ApplePushRegistrationWire.endpoint,
+                    body: request
+                )
             }
             lastSuccessfulFingerprint = fingerprint
             endpointUnsupportedForContext = nil
@@ -281,28 +283,19 @@ final class ApplePushRegistrationCoordinator {
             let storedDisplayToken = displayTokenStore.store(
                 response.displayToken,
                 expiresAt: response.displayTokenExpiresAt,
-                serverId: identityBefore?.account.serverId ?? ""
+                serverId: owner.account.serverId
             )
             // Older servers return none; back off for this context for a while.
             displayTokenUnavailable = response.displayToken == nil ? (fingerprint, Date()) : nil
             Self.logger.info("Registered APNs token with Silo server_device_id=\(response.serverDeviceId, privacy: .private) enabled=\(response.enabled, privacy: .public) displayToken=\(response.displayToken != nil, privacy: .public) stored=\(storedDisplayToken, privacy: .public)")
+        } catch HTTPError.authorityChanged {
+            Self.logger.info("Discarding Apple push registration response: identity changed while in flight")
         } catch HTTPError.http(let statusCode, _) where statusCode == 404 || statusCode == 405 {
             endpointUnsupportedForContext = fingerprint
             Self.logger.info("Apple push device endpoint is not available on this Silo server yet")
         } catch {
             Self.logger.error("Apple push device registration failed: \(String(describing: error), privacy: .public)")
         }
-    }
-
-    /// The account (server + credential generation) and profile a
-    /// registration belongs to. Any change, including a sign-out and
-    /// sign-in to the same server, produces a different value.
-    private static func currentIdentity() async -> ApplePushRegistrationIdentity? {
-        guard let account = await TokenStore.shared.refreshAccountIdentity() else { return nil }
-        return ApplePushRegistrationIdentity(
-            account: account,
-            profileID: await TokenStore.shared.getProfileId() ?? ""
-        )
     }
 
     private func makeRegistrationRequest(deviceToken: Data) -> ApplePushRegistrationRequest {
