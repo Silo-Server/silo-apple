@@ -15,6 +15,7 @@ final class LanguageCanonicalizationTests: XCTestCase {
         XCTAssertEqual(LanguageCanonicalization.primary("pt-BR"), "pt")
         XCTAssertEqual(LanguageCanonicalization.primary("zh-Hant"), "zh")
         XCTAssertEqual(LanguageCanonicalization.primary("Arabic"), "ar")
+        XCTAssertEqual(LanguageCanonicalization.primary("xyz"), "xyz")
     }
 
     func testSubtitleSearchBodyEncodesCanonicalTags() throws {

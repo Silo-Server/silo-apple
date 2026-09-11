@@ -19,7 +19,13 @@ enum LanguageCanonicalization {
     }
 
     static func primary(_ value: String?) -> String? {
-        guard let tag = wireTag(value) else { return nil }
-        return tag.split(separator: "-").first.map(String.init)
+        guard let value else { return nil }
+        if let tag = wireTag(value) {
+            return tag.split(separator: "-").first.map(String.init)
+        }
+        let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-")
+        guard let first = raw.split(separator: "-").first, !first.isEmpty else { return nil }
+        return first.lowercased()
     }
 }
