@@ -144,13 +144,14 @@ struct SubtitleSearchMenu: View {
     /// menu routes on language pick) — no separate Search button.
     private func search(language: String) {
         guard downloadingId == nil, phase != .searching else { return }
-        selectedLanguage = language
-        searchedLanguage = language
+        let canonical = LanguageCanonicalization.wireTag(language) ?? language
+        selectedLanguage = canonical
+        searchedLanguage = canonical
         phase = .searching
         searchTask?.cancel()
         searchTask = Task {
             do {
-                let response = try await viewModel.searchSubtitles(languages: [language])
+                let response = try await viewModel.searchSubtitles(languages: [canonical])
                 guard !Task.isCancelled else { return }
                 results = response.results
                 warnings = response.warnings

@@ -21,6 +21,11 @@ import Foundation
 struct SubtitleSearchBody: Encodable {
     let mediaFileId: Int
     let languages: [String]
+
+    init(mediaFileId: Int, languages: [String]) {
+        self.mediaFileId = mediaFileId
+        self.languages = languages.compactMap(LanguageCanonicalization.wireTag)
+    }
 }
 
 /// One ranked hit from a provider search. `id` is provider-scoped and,

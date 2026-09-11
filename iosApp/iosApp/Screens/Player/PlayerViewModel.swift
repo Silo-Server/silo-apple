@@ -5410,8 +5410,9 @@ class PlayerViewModel {
         guard let fileId = currentSelectedVersion?.fileId else {
             throw HTTPError.invalidURL("subtitle search requires an active media file")
         }
+        let canonical = languages.compactMap(LanguageCanonicalization.wireTag)
         return try await ContinuumAI.shared.searchSubtitles(
-            SubtitleSearchBody(mediaFileId: fileId, languages: languages)
+            SubtitleSearchBody(mediaFileId: fileId, languages: canonical)
         )
     }
 

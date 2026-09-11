@@ -114,13 +114,7 @@ enum SubtitleDisplayOrder {
     /// "en" and "eng" land in the same group. Returns nil for empty /
     /// "und" so those tracks form the trailing unknown group.
     static func canonicalLanguageKey(_ code: String?) -> String? {
-        guard let trimmed = code?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else {
-            return nil
-        }
-        let normalized = trimmed.lowercased().replacingOccurrences(of: "_", with: "-")
-        let primary = normalized.split(separator: "-").first.map(String.init) ?? normalized
-        if primary.isEmpty || primary == "und" { return nil }
+        guard let primary = LanguageCanonicalization.primary(code), primary != "und" else { return nil }
         return iso639Alias[primary] ?? primary
     }
 

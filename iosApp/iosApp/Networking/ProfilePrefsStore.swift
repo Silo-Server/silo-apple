@@ -71,9 +71,9 @@ final class ProfilePrefsStore: ObservableObject {
                       ServerRegistry.shared.activeProfileId == profileId else {
                     return
                 }
-                self?.preferredSubtitleLanguage = profiles
-                    .first(where: { $0.id == profileId })?
-                    .subtitleLanguage
+                self?.preferredSubtitleLanguage = LanguageCanonicalization.wireTag(
+                    profiles.first(where: { $0.id == profileId })?.subtitleLanguage
+                )
                 self?.hasHydrated = true
             } catch {
                 // Leave state untouched; next hydrateIfNeeded() retries.
@@ -87,8 +87,7 @@ final class ProfilePrefsStore: ObservableObject {
     /// successfully saving a new subtitle-language preference so the
     /// detail ordering reflects the change immediately.
     func setPreferredSubtitleLanguage(_ language: String?) {
-        let trimmed = language?.trimmingCharacters(in: .whitespacesAndNewlines)
-        preferredSubtitleLanguage = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        preferredSubtitleLanguage = LanguageCanonicalization.wireTag(language)
         hasHydrated = true
     }
 
