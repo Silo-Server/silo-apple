@@ -162,16 +162,13 @@ struct TVItemDetailView: View {
         let activeWasCompleted = activeSeriesEpisodeContentId.map {
             event.completedContentIds.contains($0)
         } ?? false
-        let completedEpisodeIsVisible = viewModel.episodes.contains {
-            event.completedContentIds.contains($0.contentId)
-        }
         guard activeSeriesEpisodeContentId == nil
-                || activeWasCompleted
-                || completedEpisodeIsVisible else { return }
+                || activeWasCompleted else { return }
 
-        if let inProgress = viewModel.episodes.first(where: {
-            $0.userData?.isInProgress == true && !($0.userData?.played ?? false)
-        }) {
+        if activeSeriesEpisodeContentId == nil,
+           let inProgress = viewModel.episodes.first(where: {
+               $0.userData?.isInProgress == true && !($0.userData?.played ?? false)
+           }) {
             activeSeriesEpisodeContentId = inProgress.contentId
             return
         }
