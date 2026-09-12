@@ -70,6 +70,10 @@ class AppRouter {
         case needsServerSetup
         /// Server known but user is not signed in.
         case needsLogin
+        /// A remembered server responded authoritatively but cannot safely use
+        /// the restored session. Credentials remain until an explicit removal
+        /// or the existing terminal refresh-rejection path clears them.
+        case serverRecovery(ServerRecoveryReason)
         /// Signed in but no profile has been selected.
         case needsProfile
         /// Fully authenticated with an active profile.
@@ -85,6 +89,7 @@ class AppRouter {
             case .loading: return "loading"
             case .needsServerSetup: return "needsServerSetup"
             case .needsLogin: return "needsLogin"
+            case .serverRecovery(let reason): return "serverRecovery.\(reason.rawValue)"
             case .needsProfile: return "needsProfile"
             case .authenticated: return "authenticated"
             }
@@ -523,6 +528,18 @@ class AppRouter {
         path = NavigationPath()
         profileJourneyLabels = nil
         setAuthState(.needsServerSetup, reason: "resetToServerSetup")
+    }
+
+    /// Commit an auth state produced after validating a server selection.
+    /// Every previous screen belongs to the old server/session boundary.
+    func resetAfterServerResolution(to state: AuthState) {
+        recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
+        PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
+        presentedPlayer = nil
+        dismissItemDetail()
+        path = NavigationPath()
+        profileJourneyLabels = nil
+        setAuthState(state, reason: "serverResolution")
     }
 
     /// Sign out of the active server and land at the next sensible step:

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Server setup status from /api/v1/auth/setup.
-struct SetupStatus: Codable {
+struct SetupStatus: Codable, Equatable, Sendable {
     let needsSetup: Bool
 }
 

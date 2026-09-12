@@ -13,6 +13,7 @@ final class AuthService: @unchecked Sendable {
     private let serverIdentityResolver: ServerIdentityResolver
     private let serverRegistry: ServerRegistry
     private let launchPreferences: ProfileLaunchPreferences
+    private let restoredSessionValidator: RestoredSessionValidator
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -22,11 +23,13 @@ final class AuthService: @unchecked Sendable {
     init(
         serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
         serverRegistry: ServerRegistry = .shared,
-        launchPreferences: ProfileLaunchPreferences = .shared
+        launchPreferences: ProfileLaunchPreferences = .shared,
+        restoredSessionValidator: RestoredSessionValidator = .live
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
         self.launchPreferences = launchPreferences
+        self.restoredSessionValidator = restoredSessionValidator
     }
 
     // MARK: - Stored State Accessors
@@ -116,6 +119,16 @@ final class AuthService: @unchecked Sendable {
             return
         }
         serverRegistry.updateFetchedName(for: serverId, fetchedName: name)
+    }
+
+    /// Validate a Keychain-restored account without changing the remembered
+    /// server entry. Temporary failures return `indeterminate`; only the
+    /// existing HTTP refresh policy may invalidate a terminally rejected
+    /// credential while the account probe is in flight.
+    func validateRestoredSession(
+        expected: RefreshAccountIdentity
+    ) async -> RestoredSessionValidationResult {
+        await restoredSessionValidator.validate(expected: expected)
     }
 
     // MARK: - Authentication

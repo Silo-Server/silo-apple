@@ -10,6 +10,7 @@ struct ErrorView: View {
     var onRetry: (() -> Void)? = nil
     var onGoBack: (() -> Void)? = nil
     var onSignOut: (() -> Void)? = nil
+    var onManageServers: (() -> Void)? = nil
 
     @Environment(AppRouter.self) private var router
 
@@ -36,8 +37,8 @@ struct ErrorView: View {
                         .siloPrimaryButton()
                         .frame(width: 200)
                 }
-                if let secondary = secondaryAction {
-                    Button(secondary.title, action: secondary.run)
+                ForEach(Array(secondaryActions.enumerated()), id: \.offset) { _, action in
+                    Button(action.title, action: action.run)
                         .buttonStyle(.plain)
                         .foregroundColor(.siloSecondaryText)
                         .font(.siloBody)
@@ -87,14 +88,22 @@ struct ErrorView: View {
         return nil
     }
 
-    private var secondaryAction: Action? {
+    private var secondaryActions: [Action] {
+        var actions: [Action] = []
+        if let onManageServers {
+            actions.append(Action(title: "Manage Servers", run: onManageServers))
+        }
         if state.isAuthFailure {
-            return onRetry.map { Action(title: "Try Again", run: $0) }
+            if let onRetry {
+                actions.append(Action(title: "Try Again", run: onRetry))
+            }
+            return actions
         }
         if state.isNotFound, resolvedOnGoBack != nil {
-            if let onRetry { return Action(title: "Try Again", run: onRetry) }
-            return nil
+            if let onRetry {
+                actions.append(Action(title: "Try Again", run: onRetry))
+            }
         }
-        return nil
+        return actions
     }
 }
