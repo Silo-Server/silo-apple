@@ -323,6 +323,30 @@ final class DurableCommandStoreTests: XCTestCase {
         XCTAssertEqual(Set(onDisk), [uncertain.id, prepared.id], "the reaped file was written")
     }
 
+    /// A terminal record that ages past the window while the actor stays
+    /// loaded must vanish from readers without waiting for a write.
+    func testReadsHideTerminalRecordsThatExpireWhileLoaded() async throws {
+        let store = makeStore()
+        let applied = Command(payload: "applied")
+        let prepared = Command(payload: "prepared")
+        try await store.append(applied)
+        try await store.append(prepared)
+        try await store.claim(id: applied.id)
+        try await store.resolve(id: applied.id, .applied)
+        try await store.persist()
+        let before = await store.all().map(\.id)
+        XCTAssertEqual(Set(before), [applied.id, prepared.id])
+
+        clock.advance(by: DurableCommandStore<Command>.expiryInterval + 1)
+
+        let all = await store.all().map(\.id)
+        XCTAssertEqual(all, [prepared.id], "all() reaps without a persist")
+        let byID = await store.record(id: applied.id)
+        XCTAssertNil(byID, "record(id:) reaps without a persist")
+        let owned = await store.snapshot(owner: { $0.owner == "a" }).map(\.id)
+        XCTAssertEqual(owned, [prepared.id], "snapshot(owner:) reaps without a persist")
+    }
+
     func testReapingBoundaryIsExactlySevenDays() async throws {
         let store = makeStore()
         let atBoundary = Command(payload: "exactly 7 days")

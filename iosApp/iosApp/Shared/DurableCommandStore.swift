@@ -108,11 +108,13 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
     /// `persist` rewrites the file without them.
     func all() -> [Record] {
         ensureLoaded()
+        reap()
         return records
     }
 
     func record(id: UUID) -> Record? {
         ensureLoaded()
+        reap()
         return records.first { $0.id == id }
     }
 
@@ -121,6 +123,7 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
     /// guess at it.
     func snapshot(owner isOwned: @Sendable (Record.Authority) -> Bool) -> [Record] {
         ensureLoaded()
+        reap()
         return records.filter { isOwned($0.authority) }
     }
 
@@ -255,6 +258,10 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
         reap()
     }
 
+    /// Drops terminal records older than `expiryInterval`. Runs on load, on
+    /// every read, and inside `persist`, so a record that crosses the cutoff
+    /// while the actor stays alive disappears from readers at once; the file
+    /// catches up on the next persist.
     private func reap() {
         let cutoff = now().addingTimeInterval(-Self.expiryInterval)
         records.removeAll { $0.state.isTerminal && $0.updatedAt < cutoff }
