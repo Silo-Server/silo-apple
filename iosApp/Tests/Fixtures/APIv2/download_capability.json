@@ -1,0 +1,16 @@
+{
+  "revision": "cdd05485f0370970",
+  "state": "available",
+  "enabled": true,
+  "download_allowed": true,
+  "proxy_delivery": false,
+  "ordered_status": true,
+  "quality_presets": [
+    "original"
+  ],
+  "transcode_enabled": false,
+  "transcode_user_allowed": false,
+  "season_download": false,
+  "series_monitoring": false,
+  "monitoring_modes": []
+}

@@ -1,9 +1,8 @@
 Source: silo-server internal/playback/testdata/protocol_v3
-Server commit: 5afc5bdd616e4f9c304889c8cadc4c6d31fbc7b7
-Server pull request: https://github.com/Silo-Server/silo-server/pull/938
-Vendored: 2026-09-04
+Server commit: 8b9c08624767396e3c3c70390fbdfa71e21631b7
+Vendored: 2026-09-08
 
-All nine JSON files come from internal/playback/testdata/protocol_v3. Six are
+All ten JSON files come from internal/playback/testdata/protocol_v3. Seven are
 also published byte-identically under docs/design/schemas/playback-v3/v3/fixtures/valid;
 attempt_keys.json, conformance_matrix.json and subtitle_inventory.json exist only
 under testdata, so the testdata directory is the single copy source.
