@@ -3,11 +3,8 @@ import XCTest
 import zlib
 
 final class HostedDiagnosticsAPITests: XCTestCase {
-    override func tearDown() {
-        HostedDiagnosticsStubProtocol.reset()
-        SelfHostedDiagnosticsStubProtocol.reset()
-        super.tearDown()
-    }
+    private let hostedStub = HostedDiagnosticsStub()
+    private let selfHostedStub = SelfHostedDiagnosticsStub()
 
     func testDefaultCollectorSessionHasNoSharedCookiesOrCredentials() throws {
         XCTAssertEqual(
@@ -57,7 +54,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 installationToken: "hosted-installation-token"
             )
         )
-        HostedDiagnosticsStubProtocol.configure(reportID: reportID, bundle: bundle)
+        hostedStub.configure(reportID: reportID, bundle: bundle)
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -75,7 +72,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(response.state, .processing)
         XCTAssertEqual(credentialStore.saveCount, 0, "an existing installation must be reused")
 
-        let requests = HostedDiagnosticsStubProtocol.requests()
+        let requests = hostedStub.requests()
         XCTAssertEqual(requests.map(\.path), [
             "/v1/reports",
             "/v1/reports/\(reportID.uuidString.lowercased())/bundle",
@@ -124,9 +121,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             credentialStore: HostedTestCredentialStore(credential: credential)
         )
 
-        HostedDiagnosticsStubProtocol.configureDelete(reportID: reportID, statusCode: 204)
+        hostedStub.configureDelete(reportID: reportID, statusCode: 204)
         try await api.deleteReport(reportID: reportID)
-        var request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().last)
+        var request = try XCTUnwrap(hostedStub.requests().last)
         XCTAssertEqual(request.method, "DELETE")
         XCTAssertEqual(request.path, "/v1/reports/\(reportID.uuidString.lowercased())")
         XCTAssertEqual(request.authorization, "Bearer hosted-delete-token")
@@ -134,14 +131,14 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertNil(request.profileTokenHeader)
         XCTAssertNil(request.siloDeviceIDHeader)
 
-        HostedDiagnosticsStubProtocol.configureDelete(reportID: reportID, statusCode: 404)
+        hostedStub.configureDelete(reportID: reportID, statusCode: 404)
         do {
             try await api.deleteReport(reportID: reportID)
             XCTFail("A foreign/unowned report must keep the erasure intent retryable")
         } catch let error as HostedDiagnosticsAPIError {
             XCTAssertEqual(error, .http(statusCode: 404, code: "report_not_found"))
         }
-        request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().last)
+        request = try XCTUnwrap(hostedStub.requests().last)
         XCTAssertEqual(request.method, "DELETE")
         XCTAssertEqual(request.path, "/v1/reports/\(reportID.uuidString.lowercased())")
     }
@@ -149,7 +146,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     func testValidatedPutAcceptanceSurvivesInformationalStatusFailure() async throws {
         let reportID = try XCTUnwrap(UUID(uuidString: "99999999-8888-7777-6666-555555555555"))
         let bundle = Data("accepted-before-status-failure".utf8)
-        HostedDiagnosticsStubProtocol.configureStatusFailureAfterAccepted(
+        hostedStub.configureStatusFailureAfterAccepted(
             reportID: reportID,
             bundle: bundle
         )
@@ -174,7 +171,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(response.shortID, "SILO-APPLE1234")
         XCTAssertEqual(response.state, .processing)
         XCTAssertEqual(
-            HostedDiagnosticsStubProtocol.requests().last?.path,
+            hostedStub.requests().last?.path,
             "/v1/reports/\(reportID.uuidString.lowercased())"
         )
     }
@@ -183,7 +180,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let fixture = try makePendingHostedReport(label: "wrong-short-id")
         let bundle = Data("wrong-short-id-bundle".utf8)
         let reportID = fixture.report.id
-        HostedDiagnosticsStubProtocol.configurePutAcceptance(
+        hostedStub.configurePutAcceptance(
             reportID: reportID,
             bundle: bundle,
             body: #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-WRONG9999","state":"processing"}"#
@@ -193,7 +190,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
         XCTAssertEqual(error, .remoteReportIdentityMismatch)
         await assertRetryRetains(error, fixture: fixture)
-        XCTAssertFalse(HostedDiagnosticsStubProtocol.requests().contains { $0.method == "GET" })
+        XCTAssertFalse(hostedStub.requests().contains { $0.method == "GET" })
     }
 
     func testPutAcceptanceNonDurableStatesRetainPendingEvidence() async throws {
@@ -201,7 +198,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             let fixture = try makePendingHostedReport(label: "non-durable-\(state)")
             let bundle = Data("non-durable-\(state)-bundle".utf8)
             let reportID = fixture.report.id
-            HostedDiagnosticsStubProtocol.configurePutAcceptance(
+            hostedStub.configurePutAcceptance(
                 reportID: reportID,
                 bundle: bundle,
                 body: #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-APPLE1234","state":"\#(state)"}"#
@@ -212,7 +209,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             XCTAssertEqual(error, .invalidResponse, state)
             await assertRetryRetains(error, fixture: fixture, message: state)
             XCTAssertFalse(
-                HostedDiagnosticsStubProtocol.requests().contains { $0.method == "GET" },
+                hostedStub.requests().contains { $0.method == "GET" },
                 state
             )
         }
@@ -221,7 +218,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     func testMalformedPutAcceptanceRetainsPendingEvidence() async throws {
         let fixture = try makePendingHostedReport(label: "malformed-put")
         let bundle = Data("malformed-put-bundle".utf8)
-        HostedDiagnosticsStubProtocol.configurePutAcceptance(
+        hostedStub.configurePutAcceptance(
             reportID: fixture.report.id,
             bundle: bundle,
             body: #"{"report_id":broken-json"#
@@ -236,13 +233,13 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             return XCTFail("Expected malformed 202 to produce a retryable decode failure, got \(error)")
         }
         await assertRetryRetains(error, fixture: fixture)
-        XCTAssertFalse(HostedDiagnosticsStubProtocol.requests().contains { $0.method == "GET" })
+        XCTAssertFalse(hostedStub.requests().contains { $0.method == "GET" })
     }
 
     func testReadyPutAcceptanceIsDurable() async throws {
         let reportID = try XCTUnwrap(UUID(uuidString: "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa"))
         let bundle = Data("ready-put-bundle".utf8)
-        HostedDiagnosticsStubProtocol.configurePutAcceptance(
+        hostedStub.configurePutAcceptance(
             reportID: reportID,
             bundle: bundle,
             body: #"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-APPLE1234","state":"ready"}"#
@@ -314,7 +311,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let reportID = try XCTUnwrap(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
         let bundle = Data("new-installation-bundle".utf8)
         let credentialStore = HostedTestCredentialStore(credential: nil)
-        HostedDiagnosticsStubProtocol.configure(reportID: reportID, bundle: bundle)
+        hostedStub.configure(reportID: reportID, bundle: bundle)
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -335,7 +332,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 installationToken: "generated-installation-token"
             )
         )
-        let requests = HostedDiagnosticsStubProtocol.requests()
+        let requests = hostedStub.requests()
         XCTAssertEqual(requests.map(\.path).first, "/v1/installations")
         let installation = try XCTUnwrap(requests.first)
         XCTAssertEqual(installation.timeoutInterval, 10)
@@ -367,7 +364,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             session: makeSession(),
             credentialStore: credentialStore
         )
-        HostedDiagnosticsStubProtocol.configure(
+        hostedStub.configure(
             reportID: unusedReportID,
             bundle: Data()
         )
@@ -379,7 +376,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(credentials[0], credentials[1])
         XCTAssertEqual(credentialStore.saveCount, 1)
         XCTAssertEqual(
-            HostedDiagnosticsStubProtocol.requests().count {
+            hostedStub.requests().count {
                 $0.method == "POST" && $0.path == "/v1/installations"
             },
             1
@@ -395,7 +392,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 installationToken: "revoked-installation-token"
             )
         )
-        HostedDiagnosticsStubProtocol.configureInvalidTokenRecovery(
+        hostedStub.configureInvalidTokenRecovery(
             reportID: reportID,
             bundle: bundle
         )
@@ -421,7 +418,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 installationToken: "generated-installation-token"
             )
         )
-        let requests = HostedDiagnosticsStubProtocol.requests()
+        let requests = hostedStub.requests()
         XCTAssertEqual(requests.map(\.path), [
             "/v1/reports",
             "/v1/installations",
@@ -510,7 +507,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(embedded.playbackSessionIds, bundle.manifest.playbackSessionIds)
         XCTAssertEqual(embedded.logSummary, bundle.manifest.logSummary)
 
-        HostedDiagnosticsStubProtocol.configure(reportID: report.id, bundle: bundle.bundleData)
+        hostedStub.configure(reportID: report.id, bundle: bundle.bundleData)
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -528,7 +525,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
 
         let create = try XCTUnwrap(
-            HostedDiagnosticsStubProtocol.requests().first(where: { $0.path == "/v1/reports" })
+            hostedStub.requests().first(where: { $0.path == "/v1/reports" })
         )
         XCTAssertFalse(String(decoding: create.body, as: UTF8.self).contains(token))
         let envelope = try XCTUnwrap(
@@ -1319,7 +1316,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
 
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 503
         )
@@ -1344,7 +1341,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(renderedIntent.contains(fixture.report.binding.serverInstanceID))
         XCTAssertFalse(renderedIntent.contains(fixture.report.binding.accountUserID))
 
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 204
         )
@@ -1376,7 +1373,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 forceRemoteIntent: true
             )
         }
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: reports[0].id,
             statusCode: 204
         )
@@ -1399,7 +1396,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
         XCTAssertFalse(completedAll)
         XCTAssertEqual(
-            HostedDiagnosticsStubProtocol.requests().count { $0.method == "DELETE" },
+            hostedStub.requests().count { $0.method == "DELETE" },
             2
         )
         XCTAssertFalse(try fixture.store.hostedDeletionIntents().isEmpty)
@@ -1417,7 +1414,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             fixture.report,
             forceRemoteIntent: true
         )
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: selected.id,
             statusCode: 204
         )
@@ -1437,7 +1434,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(erased)
 
         let firstDelete = try XCTUnwrap(
-            HostedDiagnosticsStubProtocol.requests().first(where: { $0.method == "DELETE" })
+            hostedStub.requests().first(where: { $0.method == "DELETE" })
         )
         XCTAssertEqual(
             firstDelete.path,
@@ -1453,7 +1450,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             droppedLogLines: 0
         )
         try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 503
         )
@@ -1477,7 +1474,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testHostedUploadFenceDefersExplicitDeleteUntilNetworkHandoffSettles() async throws {
         let fixture = try makePendingHostedReport(label: "delete-during-create")
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 204
         )
@@ -1503,12 +1500,12 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertFalse(erasedWhileUploading)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
-        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+        XCTAssertTrue(hostedStub.requests().isEmpty)
 
         let erasedAfterUpload = await coordinator.endHostedUploadFence(reportID: fixture.report.id)
         XCTAssertTrue(erasedAfterUpload)
         XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
-        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
+        XCTAssertEqual(hostedStub.requests().map(\.method), ["DELETE"])
     }
 
     func testTurnOffErasesReadyHandoffAfterPendingDirectoryIsAlreadyGone() async throws {
@@ -1531,7 +1528,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         try fixture.store.recordHostedReadyAndDelete(fixture.report)
         _ = await coordinator.endHostedUploadFence(reportID: fixture.report.id)
 
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 204
         )
@@ -1539,9 +1536,9 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
         XCTAssertTrue(erased)
         XCTAssertTrue(try fixture.store.hostedDeletionIntents().isEmpty)
-        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
+        XCTAssertEqual(hostedStub.requests().map(\.method), ["DELETE"])
         XCTAssertEqual(
-            HostedDiagnosticsStubProtocol.requests().map(\.path),
+            hostedStub.requests().map(\.path),
             ["/v1/reports/\(fixture.report.id.uuidString.lowercased())"]
         )
     }
@@ -1565,7 +1562,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             try restoredStore.hostedReadyReceiptIDs(for: fixture.report.binding.binding),
             [fixture.report.id]
         )
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 204
         )
@@ -1586,7 +1583,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(erased)
         XCTAssertTrue(try restoredStore.hostedDeletionIntents().isEmpty)
         XCTAssertTrue(try restoredStore.hostedReadyReceiptIDs().isEmpty)
-        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().map(\.method), ["DELETE"])
+        XCTAssertEqual(hostedStub.requests().map(\.method), ["DELETE"])
     }
 
     func testReadyReceiptHidesEvidenceAcrossInterruptedLocalRemoval() async throws {
@@ -1639,7 +1636,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(try fixture.store.hostedDeletionIntents(), [fixture.report.id])
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
 
-        HostedDiagnosticsStubProtocol.configureDelete(
+        hostedStub.configureDelete(
             reportID: fixture.report.id,
             statusCode: 204
         )
@@ -1658,7 +1655,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(visible.isEmpty)
         let uploadDecision = await coordinator.upload(report: fixture.report)
         XCTAssertEqual(uploadDecision, .keptRetryable)
-        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+        XCTAssertTrue(hostedStub.requests().isEmpty)
     }
 
     func testMalformedDeletionIntentLedgerQuarantinesSurvivingEvidence() async throws {
@@ -1837,7 +1834,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             XCTAssertEqual(uploadDecision, .keptRetryable)
             XCTAssertFalse(drained)
             XCTAssertFalse(turnedOff)
-            XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+            XCTAssertTrue(hostedStub.requests().isEmpty)
             XCTAssertEqual(try Data(contentsOf: ledgerURL), noncanonicalData)
             XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         }
@@ -1862,7 +1859,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 let listed = await coordinator.pendingReports(for: fixture.binding)
                 XCTAssertEqual(listed.map(\.id), fixture.reports.map(\.id))
 
-                SelfHostedDiagnosticsStubProtocol.configure(
+                selfHostedStub.configure(
                     serverInstanceID: fixture.binding.serverInstanceID,
                     reportID: fixture.reports[0].id
                 )
@@ -1878,7 +1875,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 XCTAssertFalse(FileManager.default.fileExists(
                     atPath: fixture.reports[0].directoryURL.path
                 ))
-                XCTAssertEqual(SelfHostedDiagnosticsStubProtocol.requestedPaths(), [
+                XCTAssertEqual(selfHostedStub.requestedPaths(), [
                     "/api/v1/diagnostics/status",
                     "/api/v1/auth/me",
                     "/api/v1/diagnostics/reports",
@@ -1898,7 +1895,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 let remaining = await coordinator.pendingReports(for: fixture.binding)
                 XCTAssertTrue(remaining.isEmpty)
                 XCTAssertEqual(try Data(contentsOf: ledgerURL), corruptBytes)
-                XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+                XCTAssertTrue(hostedStub.requests().isEmpty)
             }
         }
     }
@@ -1941,7 +1938,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         let fixture = try makePendingHostedReport(label: "ready-history")
         let shortID = "SILO-HISTORY"
         fixture.store.markHostedProcessing(fixture.report, shortID: shortID)
-        HostedDiagnosticsStubProtocol.configureReportStatus(
+        hostedStub.configureReportStatus(
             reportID: fixture.report.id,
             shortID: shortID,
             state: .ready,
@@ -1990,7 +1987,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
         let shortID = "SILO-READY-LOCAL-FAILURE"
         fixture.store.markHostedProcessing(fixture.report, shortID: shortID)
-        HostedDiagnosticsStubProtocol.configureReportStatus(
+        hostedStub.configureReportStatus(
             reportID: fixture.report.id,
             shortID: shortID,
             state: .ready,
@@ -2047,7 +2044,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             let fixture = try makePendingHostedReport(label: "remote-\(state.rawValue)")
             let shortID = "SILO-\(state.rawValue.uppercased())"
             fixture.store.markHostedProcessing(fixture.report, shortID: shortID)
-            HostedDiagnosticsStubProtocol.configureReportStatus(
+            hostedStub.configureReportStatus(
                 reportID: fixture.report.id,
                 shortID: shortID,
                 state: state,
@@ -2103,7 +2100,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     }
 
     func testCapabilitiesArePublicAndMapCollectorIdentity() async throws {
-        HostedDiagnosticsStubProtocol.configureCapabilities()
+        hostedStub.configureCapabilities()
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -2118,7 +2115,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             HostedDiagnosticsCapabilities.pinnedCollectorID
         )
         XCTAssertEqual(capabilities.acceptedSchemaVersions, [1])
-        let request = try XCTUnwrap(HostedDiagnosticsStubProtocol.requests().first)
+        let request = try XCTUnwrap(hostedStub.requests().first)
         XCTAssertNil(request.authorization, "capability discovery must be anonymous")
         XCTAssertNil(request.cookieHeader)
         XCTAssertNil(request.profileHeader)
@@ -2127,7 +2124,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     }
 
     func testCapabilitiesRejectUnexpectedCollectorIdentityBeforeSend() async throws {
-        HostedDiagnosticsStubProtocol.configureCapabilities(
+        hostedStub.configureCapabilities(
             collectorID: "unexpected-collector"
         )
         let api = HostedDiagnosticsAPI(
@@ -2145,7 +2142,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
     }
 
     func testCapabilitiesRejectCollectorWithoutSchemaV1BeforeSend() async throws {
-        HostedDiagnosticsStubProtocol.configureCapabilities(acceptedSchemaVersions: [2])
+        hostedStub.configureCapabilities(acceptedSchemaVersions: [2])
         let api = HostedDiagnosticsAPI(
             baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
             session: makeSession(),
@@ -2162,7 +2159,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     func testCapabilitiesPreserveValidDisabledAndStorageUnavailableStatuses() async throws {
         for status in [DiagnosticsAvailabilityStatus.disabled, .storageUnavailable] {
-            HostedDiagnosticsStubProtocol.configureCapabilities(status: status)
+            hostedStub.configureCapabilities(status: status)
             let api = HostedDiagnosticsAPI(
                 baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
                 session: makeSession(),
@@ -2446,7 +2443,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertNil(restoredStore.report(id: fixture.report.id))
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
 
-        HostedDiagnosticsStubProtocol.configureReportStatus(
+        hostedStub.configureReportStatus(
             reportID: fixture.report.id,
             shortID: "SILO-QUARANTINED",
             state: .ready,
@@ -2466,7 +2463,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
         let uploadDecision = await coordinator.upload(report: processingReport)
         XCTAssertEqual(uploadDecision, .keptRetryable)
-        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+        XCTAssertTrue(hostedStub.requests().isEmpty)
 
         let retryBatch = restoredStore.prepareHostedDeletionRetries()
         XCTAssertTrue(retryBatch.reportIDs.isEmpty)
@@ -2474,7 +2471,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(retryBatch.hasCorruptLedger)
         let drained = await coordinator.retryHostedDeletions()
         XCTAssertFalse(drained)
-        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+        XCTAssertTrue(hostedStub.requests().isEmpty)
 
         let turnedOff = await coordinator.turnOffAndDelete(
             binding: fixture.report.binding.binding
@@ -2483,7 +2480,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: ledgerURL), corruptBytes)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertTrue(restoredStore.listReports(now: Date()).isEmpty)
-        XCTAssertTrue(HostedDiagnosticsStubProtocol.requests().isEmpty)
+        XCTAssertTrue(hostedStub.requests().isEmpty)
     }
 
     private func assertHostedErasureLedgerLoadFails(
@@ -2705,10 +2702,8 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             accessToken: "self-hosted-access-token",
             refreshToken: "self-hosted-refresh-token"
         )
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [SelfHostedDiagnosticsStubProtocol.self]
         let http = HTTPClient(
-            session: URLSession(configuration: configuration),
+            session: selfHostedStub.handler.makeSession(),
             tokenStore: tokenStore
         )
         let destinationStore = DiagnosticsDestinationStore(defaults: defaults)
@@ -2928,7 +2923,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
 
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [HostedDiagnosticsStubProtocol.self]
+        hostedStub.handler.install(into: configuration)
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
         configuration.urlCredentialStorage = nil
@@ -3014,7 +3009,11 @@ private final class HostedTestCredentialStore: HostedDiagnosticsCredentialStorin
     }
 }
 
-private final class HostedDiagnosticsStubProtocol: URLProtocol {
+/// The hosted collector as a mode-driven route on the shared stub. The
+/// `configure*` calls pick the scenario and start a fresh recording;
+/// `requests()` returns what the collector saw, decoded into the fields the
+/// tests assert on.
+private final class HostedDiagnosticsStub: @unchecked Sendable {
     struct CapturedRequest {
         let method: String
         let path: String
@@ -3029,6 +3028,22 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         let contentLength: String?
         let timeoutInterval: TimeInterval
         let body: Data
+
+        init(_ request: StubURLProtocol.Request) {
+            method = request.method
+            path = request.path
+            host = request.url?.host
+            authorization = request.header("Authorization")
+            profileHeader = request.header("X-Profile-Id")
+            profileTokenHeader = request.header("X-Profile-Token")
+            siloDeviceIDHeader = request.header("X-Silo-Device-Id")
+            cookieHeader = request.header("Cookie")
+            uploadToken = request.header("X-Upload-Token")
+            contentType = request.header("Content-Type")
+            contentLength = request.header("Content-Length")
+            timeoutInterval = request.underlying.timeoutInterval
+            body = request.body ?? Data()
+        }
     }
 
     private enum Mode {
@@ -3050,131 +3065,84 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
         )
     }
 
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var mode: Mode = .capabilities(
+    let handler = StubURLProtocol.Handler()
+    private let lock = NSLock()
+    private var mode: Mode = .capabilities(
         status: .available,
         collectorID: HostedDiagnosticsCapabilities.pinnedCollectorID,
         acceptedSchemaVersions: [1]
     )
-    nonisolated(unsafe) private static var captured: [CapturedRequest] = []
-    nonisolated(unsafe) private static var rejectedRevokedToken = false
+    private var rejectedRevokedToken = false
 
-    static func configure(reportID: UUID, bundle: Data) {
+    init() {
+        installRoute()
+    }
+
+    private func set(_ newMode: Mode) {
         lock.withLock {
-            mode = .upload(reportID: reportID, bundle: bundle)
-            captured = []
+            mode = newMode
             rejectedRevokedToken = false
+        }
+        handler.reset()
+        installRoute()
+    }
+
+    private func installRoute() {
+        handler.route(StubURLProtocol.any) { [self] request in
+            let (status, body) = respond(to: request)
+            return .json(body, status: status)
         }
     }
 
-    static func configureInvalidTokenRecovery(reportID: UUID, bundle: Data) {
-        lock.withLock {
-            mode = .invalidTokenRecovery(reportID: reportID, bundle: bundle)
-            captured = []
-            rejectedRevokedToken = false
-        }
+    func configure(reportID: UUID, bundle: Data) {
+        set(.upload(reportID: reportID, bundle: bundle))
     }
 
-    static func configureStatusFailureAfterAccepted(reportID: UUID, bundle: Data) {
-        lock.withLock {
-            mode = .statusFailureAfterAccepted(reportID: reportID, bundle: bundle)
-            captured = []
-            rejectedRevokedToken = false
-        }
+    func configureInvalidTokenRecovery(reportID: UUID, bundle: Data) {
+        set(.invalidTokenRecovery(reportID: reportID, bundle: bundle))
     }
 
-    static func configurePutAcceptance(reportID: UUID, bundle: Data, body: String) {
-        lock.withLock {
-            mode = .putAcceptance(reportID: reportID, bundle: bundle, body: body)
-            captured = []
-            rejectedRevokedToken = false
-        }
+    func configureStatusFailureAfterAccepted(reportID: UUID, bundle: Data) {
+        set(.statusFailureAfterAccepted(reportID: reportID, bundle: bundle))
     }
 
-    static func configureReportStatus(
+    func configurePutAcceptance(reportID: UUID, bundle: Data, body: String) {
+        set(.putAcceptance(reportID: reportID, bundle: bundle, body: body))
+    }
+
+    func configureReportStatus(
         reportID: UUID,
         shortID: String,
         state: DiagnosticsRemoteReportState,
         errorCode: String?
     ) {
-        lock.withLock {
-            mode = .reportStatus(
-                reportID: reportID,
-                shortID: shortID,
-                state: state,
-                errorCode: errorCode
-            )
-            captured = []
-            rejectedRevokedToken = false
-        }
+        set(.reportStatus(reportID: reportID, shortID: shortID, state: state, errorCode: errorCode))
     }
 
-    static func configureDelete(reportID: UUID, statusCode: Int) {
-        lock.withLock {
-            mode = .delete(reportID: reportID, statusCode: statusCode)
-            captured = []
-            rejectedRevokedToken = false
-        }
+    func configureDelete(reportID: UUID, statusCode: Int) {
+        set(.delete(reportID: reportID, statusCode: statusCode))
     }
 
-    static func configureCapabilities(
+    func configureCapabilities(
         status: DiagnosticsAvailabilityStatus = .available,
         collectorID: String = HostedDiagnosticsCapabilities.pinnedCollectorID,
         acceptedSchemaVersions: [Int] = [1]
     ) {
-        lock.withLock {
-            mode = .capabilities(
-                status: status,
-                collectorID: collectorID,
-                acceptedSchemaVersions: acceptedSchemaVersions
-            )
-            captured = []
-            rejectedRevokedToken = false
-        }
+        set(.capabilities(
+            status: status,
+            collectorID: collectorID,
+            acceptedSchemaVersions: acceptedSchemaVersions
+        ))
     }
 
-    static func requests() -> [CapturedRequest] {
-        lock.withLock { captured }
+    func requests() -> [CapturedRequest] {
+        handler.requests.map(CapturedRequest.init)
     }
 
-    static func reset() {
-        configureCapabilities()
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "collector.example"
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
-
-    override func startLoading() {
-        guard let url = request.url else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
-            return
-        }
-        let body = Self.requestBody(of: request)
-        Self.lock.withLock {
-            Self.captured.append(CapturedRequest(
-                method: request.httpMethod ?? "",
-                path: url.path,
-                host: url.host,
-                authorization: request.value(forHTTPHeaderField: "Authorization"),
-                profileHeader: request.value(forHTTPHeaderField: "X-Profile-Id"),
-                profileTokenHeader: request.value(forHTTPHeaderField: "X-Profile-Token"),
-                siloDeviceIDHeader: request.value(forHTTPHeaderField: "X-Silo-Device-Id"),
-                cookieHeader: request.value(forHTTPHeaderField: "Cookie"),
-                uploadToken: request.value(forHTTPHeaderField: "X-Upload-Token"),
-                contentType: request.value(forHTTPHeaderField: "Content-Type"),
-                contentLength: request.value(forHTTPHeaderField: "Content-Length"),
-                timeoutInterval: request.timeoutInterval,
-                body: body
-            ))
-        }
-
-        let response = Self.lock.withLock { () -> (Int, String) in
-            switch Self.mode {
+    private func respond(to request: StubURLProtocol.Request) -> (Int, String) {
+        let body = request.body ?? Data()
+        return lock.withLock { () -> (Int, String) in
+            switch mode {
             case .capabilities(let status, let collectorID, let acceptedSchemaVersions):
                 let versions = acceptedSchemaVersions.map(String.init).joined(separator: ",")
                 return (200, #"{"status":"\#(status.rawValue)","collector_id":"\#(collectorID)","accepted_schema_versions":[\#(versions)],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
@@ -3187,34 +3155,31 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
             case .upload(let reportID, let expectedBundle):
                 return Self.uploadResponse(
                     request: request,
-                    url: url,
                     body: body,
                     reportID: reportID,
                     expectedBundle: expectedBundle
                 )
             case .invalidTokenRecovery(let reportID, let expectedBundle):
-                if request.httpMethod == "POST",
-                   url.path == "/v1/reports",
-                   request.value(forHTTPHeaderField: "Authorization") == "Bearer revoked-installation-token",
-                   !Self.rejectedRevokedToken {
-                    Self.rejectedRevokedToken = true
+                if request.method == "POST",
+                   request.path == "/v1/reports",
+                   request.header("Authorization") == "Bearer revoked-installation-token",
+                   !rejectedRevokedToken {
+                    rejectedRevokedToken = true
                     return (401, #"{"error":"invalid_installation_token","message":"Installation token is invalid"}"#)
                 }
                 return Self.uploadResponse(
                     request: request,
-                    url: url,
                     body: body,
                     reportID: reportID,
                     expectedBundle: expectedBundle
                 )
             case .statusFailureAfterAccepted(let reportID, let expectedBundle):
-                if request.httpMethod == "GET",
-                   url.path == "/v1/reports/\(reportID.uuidString.lowercased())" {
+                if request.method == "GET",
+                   request.path == "/v1/reports/\(reportID.uuidString.lowercased())" {
                     return (503, #"{"error":"unavailable","message":"Try again"}"#)
                 }
                 return Self.uploadResponse(
                     request: request,
-                    url: url,
                     body: body,
                     reportID: reportID,
                     expectedBundle: expectedBundle
@@ -3222,15 +3187,14 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
             case .putAcceptance(let reportID, let expectedBundle, let responseBody):
                 return Self.uploadResponse(
                     request: request,
-                    url: url,
                     body: body,
                     reportID: reportID,
                     expectedBundle: expectedBundle,
                     putResponseBody: responseBody
                 )
             case .delete(let reportID, let statusCode):
-                guard request.httpMethod == "DELETE",
-                      url.path == "/v1/reports/\(reportID.uuidString.lowercased())" else {
+                guard request.method == "DELETE",
+                      request.path == "/v1/reports/\(reportID.uuidString.lowercased())" else {
                     return (404, #"{"error":"report_not_found"}"#)
                 }
                 if statusCode == 204 {
@@ -3242,21 +3206,17 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
                 return (statusCode, #"{"error":"unavailable"}"#)
             }
         }
-        respond(statusCode: response.0, body: response.1)
     }
 
-    override func stopLoading() {}
-
     private static func uploadResponse(
-        request: URLRequest,
-        url: URL,
+        request: StubURLProtocol.Request,
         body: Data,
         reportID: UUID,
         expectedBundle: Data,
         putResponseBody: String? = nil
     ) -> (Int, String) {
         let id = reportID.uuidString.lowercased()
-        switch (request.httpMethod, url.path) {
+        switch (request.method, request.path) {
         case ("POST", "/v1/installations"):
             return (201, #"{"installation_id":"install_apple_generated","installation_token":"generated-installation-token"}"#)
         case ("POST", "/v1/reports"):
@@ -3276,124 +3236,46 @@ private final class HostedDiagnosticsStubProtocol: URLProtocol {
             return (404, #"{"error":"not_found"}"#)
         }
     }
-
-    private static func requestBody(of request: URLRequest) -> Data {
-        if let body = request.httpBody {
-            return body
-        }
-        guard let stream = request.httpBodyStream else {
-            return Data()
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: buffer.count)
-            guard read > 0 else { break }
-            data.append(buffer, count: read)
-        }
-        return data
-    }
-
-    private func respond(statusCode: Int, body: String) {
-        guard let url = request.url,
-              let response = HTTPURLResponse(
-                url: url,
-                statusCode: statusCode,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-              ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
-        }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !body.isEmpty {
-            client?.urlProtocol(self, didLoad: Data(body.utf8))
-        }
-        client?.urlProtocolDidFinishLoading(self)
-    }
 }
 
-private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var serverInstanceID = "self-hosted-diagnostics-instance"
-    nonisolated(unsafe) private static var reportID = UUID()
-    nonisolated(unsafe) private static var paths: [String] = []
+/// A self-hosted Silo's diagnostics routes on the shared stub.
+private final class SelfHostedDiagnosticsStub: @unchecked Sendable {
+    let handler = StubURLProtocol.Handler()
+    private let lock = NSLock()
+    private var serverInstanceID = "self-hosted-diagnostics-instance"
+    private var reportID = UUID()
 
-    static func configure(serverInstanceID: String, reportID: UUID) {
+    init() {
+        installRoutes()
+    }
+
+    func configure(serverInstanceID: String, reportID: UUID) {
         lock.withLock {
             self.serverInstanceID = serverInstanceID
             self.reportID = reportID
-            paths = []
         }
+        handler.reset()
+        installRoutes()
     }
 
-    static func requestedPaths() -> [String] {
-        lock.withLock { paths }
+    func requestedPaths() -> [String] {
+        handler.requests.map(\.path)
     }
 
-    static func reset() {
-        lock.withLock {
-            serverInstanceID = "self-hosted-diagnostics-instance"
-            reportID = UUID()
-            paths = []
+    private func installRoutes() {
+        handler.route(StubURLProtocol.method("GET", path: "/api/v1/diagnostics/status")) { [self] _ in
+            let serverInstanceID = lock.withLock { self.serverInstanceID }
+            return .json(#"{"status":"available","server_instance_id":"\#(serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#)
         }
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "selfhost.test"
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
-
-    override func startLoading() {
-        guard let url = request.url else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
-            return
+        handler.route(StubURLProtocol.method("GET", path: "/api/v1/auth/me")) { _ in
+            .json(#"{"id":42,"username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","download_allowed":true,"impersonation":null}"#)
         }
-        let response = Self.lock.withLock { () -> (Int, String) in
-            Self.paths.append(url.path)
-            switch (request.httpMethod, url.path) {
-            case ("GET", "/api/v1/diagnostics/status"):
-                return (
-                    200,
-                    #"{"status":"available","server_instance_id":"\#(Self.serverInstanceID)","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":1}"#
-                )
-            case ("GET", "/api/v1/auth/me"):
-                return (
-                    200,
-                    #"{"id":42,"username":"diagnostics-test","email":"diagnostics@example.invalid","role":"user","download_allowed":true,"impersonation":null}"#
-                )
-            case ("POST", "/api/v1/diagnostics/reports"):
-                return (
-                    201,
-                    #"{"report_id":"\#(Self.reportID.uuidString.lowercased())","short_id":"SILO-SELFHOSTED","state":"ready"}"#
-                )
-            default:
-                return (404, #"{"error":"not_found"}"#)
-            }
+        handler.route(StubURLProtocol.method("POST", path: "/api/v1/diagnostics/reports")) { [self] _ in
+            let reportID = lock.withLock { self.reportID }
+            return .json(#"{"report_id":"\#(reportID.uuidString.lowercased())","short_id":"SILO-SELFHOSTED","state":"ready"}"#, status: 201)
         }
-        respond(statusCode: response.0, body: response.1)
-    }
-
-    override func stopLoading() {}
-
-    private func respond(statusCode: Int, body: String) {
-        guard let url = request.url,
-              let response = HTTPURLResponse(
-                url: url,
-                statusCode: statusCode,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-              ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
+        handler.route(StubURLProtocol.any) { _ in
+            .json(#"{"error":"not_found"}"#, status: 404)
         }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(body.utf8))
-        client?.urlProtocolDidFinishLoading(self)
     }
 }

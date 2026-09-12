@@ -307,58 +307,30 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      # The whole tree, fixtures included. XcodeGen's default inference puts
+      # every non-Swift file under Tests/Fixtures into the resources phase
+      # (Fixtures/DiagnosticsContract has always been bundled this way), so
+      # nothing is excluded and re-listed by hand. The two provenance files
+      # named SOURCE stay in the project but out of the bundle: nothing reads
+      # them at runtime.
       - path: Tests
         excludes:
-          # Re-declared below with an explicit build phase. Both spellings:
-          # the directory itself, and everything under it.
-          - "Fixtures/ASS"
-          - "Fixtures/ASS/**"
-          - "Fixtures/SettingsContract"
-          - "Fixtures/SettingsContract/**"
-          - "Fixtures/PlaybackV3"
-          - "Fixtures/PlaybackV3/**"
-      - path: Tests/Fixtures/ASS/SiloASSFixture.ttf
-        buildPhase: resources
-      - path: Tests/Fixtures/ASS/authored.mkv
-        buildPhase: resources
-      - path: Tests/Fixtures/ASS/authored.ass
-        buildPhase: resources
-      # The vendored settings contract. SettingsConformanceTests reads both
-      # files out of the test bundle at runtime and fails hard when either is
-      # missing, so the build phase is stated rather than left to XcodeGen's
-      # extension-based inference: a cross-platform drift gate that quietly
-      # stopped being bundled is worse than no gate at all.
-      - path: Tests/Fixtures/SettingsContract/conformance.json
-        buildPhase: resources
-      - path: Tests/Fixtures/SettingsContract/manifest.json
-        buildPhase: resources
-      # Provenance for the two files above — which server commits they came
-      # from, and how to re-vendor. In the project so it is discoverable next
-      # to them, out of the bundle because nothing reads it at runtime.
+          # Provenance and tooling next to the fixtures, not fixtures. They
+          # are re-added below with no build phase so they stay visible in
+          # the project without landing in the bundle (ASS/README.md would
+          # also collide with DiagnosticsContract/README.md when flattened).
+          - "Fixtures/ASS/README.md"
+          - "Fixtures/ASS/generate-font.py"
+          - "Fixtures/ASS/alternate.ass"
       - path: Tests/Fixtures/SettingsContract/SOURCE
         buildPhase: none
-      # Playback V3's server-generated contract corpus. List every executable
-      # fixture explicitly so an XcodeGen inference change cannot silently
-      # remove this cross-repository gate from the test bundle.
-      - path: Tests/Fixtures/PlaybackV3/attempt_keys.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/capability_response.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/conformance_matrix.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/decision_response.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/error_response.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/replan_request.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/route_event.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/start_request.json
-        buildPhase: resources
-      - path: Tests/Fixtures/PlaybackV3/subtitle_inventory.json
-        buildPhase: resources
       - path: Tests/Fixtures/PlaybackV3/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/ASS/README.md
+        buildPhase: none
+      - path: Tests/Fixtures/ASS/generate-font.py
+        buildPhase: none
+      - path: Tests/Fixtures/ASS/alternate.ass
         buildPhase: none
     dependencies:
       - target: Silo
@@ -373,6 +345,67 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Silo.app/Silo"
+
+  # Unit-test bundle for the tvOS SiloTV app. Same Tests/ tree as SiloTests
+  # minus the files that reference iOS-only declarations (each exclusion says
+  # which). Everything else compiles against the tvOS module, so the
+  # `#if os(tvOS)` branches in shared code and tests become real coverage.
+  SiloTVTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources:
+      - path: Tests
+        excludes:
+          # UserNotifications and the ApplePush* types (Notifications/, #if os(iOS)).
+          - "ApplePushRegistrationTests.swift"
+          # PlayerOrientationCoordinator, AppRouter, DetailDismissalPolicy (iOS player/detail).
+          - "DetailDismissalNavigationTests.swift"
+          # Unguarded `import UIKit`, UIApplication.shared, phone home-feed rails.
+          - "HorizontalMediaRailTests.swift"
+          # UIApplication.shared, UIImage(systemName:), MobilePlayer* controls (iOS player).
+          - "PlayerSurfaceLayoutTests.swift"
+          # MetricKitCapture is declared under #if os(iOS).
+          - "MetricKitCaptureTests.swift"
+          # CompanionPairingCoordinator is declared under #if os(iOS).
+          - "PairingCoordinatorTests.swift"
+          # RemotePlaybackClock / RemoteVolumeReconciler / SiloControlPlaybackState (Control/iOS).
+          - "SiloControlTests.swift"
+          # SiloControlPlaybackState (Control/iOS).
+          - "SiloControlWireCompatibilityTests.swift"
+          # OnboardingTourViewModel / OnboardingTourAPI are declared under #if !os(tvOS).
+          - "OnboardingInvitationTests.swift"
+          # Same non-fixture files as SiloTests, re-added below with no phase.
+          - "Fixtures/ASS/README.md"
+          - "Fixtures/ASS/generate-font.py"
+          - "Fixtures/ASS/alternate.ass"
+      - path: Tests/Fixtures/SettingsContract/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/PlaybackV3/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/ASS/README.md
+        buildPhase: none
+      - path: Tests/Fixtures/ASS/generate-font.py
+        buildPhase: none
+      - path: Tests/Fixtures/ASS/alternate.ass
+        buildPhase: none
+    dependencies:
+      - target: SiloTV
+    settings:
+      base:
+        PRODUCT_NAME: SiloTVTests
+        GENERATE_INFOPLIST_FILE: "YES"
+        # Same reason as SiloTests: an explicit SDKROOT is what gives
+        # BUILT_PRODUCTS_DIR its platform suffix so TEST_HOST resolves.
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SiloTV.app/SiloTV"
+        # Every shared test file says `@testable import Silo`, but the tvOS
+        # app's Swift module is `SiloTV` (its PRODUCT_NAME, which must stay
+        # for TestFlight continuity). Module aliasing resolves `Silo` to
+        # `SiloTV` for this test bundle only; the app target, its symbol
+        # mangling, and its Info.plist are untouched.
+        OTHER_SWIFT_FLAGS: "$(inherited) -module-alias Silo=SiloTV"
 
 schemes:
   Silo:
@@ -411,10 +444,13 @@ schemes:
     build:
       targets:
         SiloTV: all
+        SiloTVTests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - SiloTVTests
     archive:
       config: Release
     analyze:

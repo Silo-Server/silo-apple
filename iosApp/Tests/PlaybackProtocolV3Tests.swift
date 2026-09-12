@@ -1287,7 +1287,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         XCTAssertEqual(snapshot.context.protocolVersion, 3)
+        #if os(tvOS)
+        XCTAssertEqual(snapshot.context.device.platform, "tvos")
+        #else
         XCTAssertEqual(snapshot.context.device.platform, "ios")
+        #endif
         XCTAssertEqual(
             Set(snapshot.context.deliveries.keys),
             [
