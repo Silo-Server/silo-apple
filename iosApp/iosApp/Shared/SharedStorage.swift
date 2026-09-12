@@ -309,6 +309,13 @@ struct SharedKeychain {
         return false
     }
 
+    /// A strict read that failed with a Keychain status other than success or
+    /// item-not-found. Carries the `OSStatus` so the cause survives the throw.
+    struct ReadError: Error, CustomStringConvertible {
+        let status: OSStatus
+        var description: String { "keychain_read_failed(status=\(status))" }
+    }
+
     /// Strict reads for canonical authority. A locked/inaccessible keychain is
     /// not an absent record and must never authorize a legacy fallback.
     func getChecked(_ account: String) throws -> String? {
@@ -317,11 +324,15 @@ struct SharedKeychain {
         if shouldUseAppLocalFallback(for: configured.status) {
             let fallback = readResult(account: account, accessGroup: nil)
             guard fallback.status == errSecSuccess || fallback.status == errSecItemNotFound else {
-                throw CocoaError(.fileReadNoPermission)
+                Self.logger.error("App-local Keychain fallback checked read failed: status=\(fallback.status, privacy: .public)")
+                throw ReadError(status: fallback.status)
             }
             return fallback.value
         }
-        guard configured.status == errSecItemNotFound else { throw CocoaError(.fileReadNoPermission) }
+        guard configured.status == errSecItemNotFound else {
+            Self.logger.error("Keychain checked read failed: status=\(configured.status, privacy: .public)")
+            throw ReadError(status: configured.status)
+        }
         return nil
     }
 

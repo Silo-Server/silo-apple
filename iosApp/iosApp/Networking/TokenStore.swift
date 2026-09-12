@@ -264,6 +264,20 @@ actor TokenStore {
         #endif
     }
 
+    /// Fixed classification of a session-persistence failure for
+    /// `recordSessionEvent`. The error itself never reaches the breadcrumb;
+    /// only one of these literals does.
+    private static func persistenceFailureReason(_ error: Error) -> String {
+        switch error {
+        case AccountSessionPersistenceError.unavailable: return "persistenceUnavailable"
+        case AccountSessionPersistenceError.invalidRecord: return "invalidSessionRecord"
+        case AccountSessionPersistenceError.invalidIdentity: return "invalidSessionIdentity"
+        case is DecodingError: return "invalidSessionRecord"
+        case is SharedKeychain.ReadError: return "keychainReadFailed"
+        default: return "persistenceUnavailable"
+        }
+    }
+
     // MARK: - Active server
 
     /// Point the Keychain reads at a different server. Flushes the
@@ -681,7 +695,24 @@ actor TokenStore {
             }
 
             if let original = canonicalSession {
-                guard case .session(let current) = try? sessions.load(serverId), current == original else { return false }
+                let stored: AccountSessionPersistence.State
+                do { stored = try sessions.load(serverId) }
+                catch {
+                    recordSessionEvent(
+                        phase: "tokenRefresh",
+                        outcome: "discarded",
+                        reason: Self.persistenceFailureReason(error)
+                    )
+                    return false
+                }
+                guard case .session(let current) = stored, current == original else {
+                    recordSessionEvent(
+                        phase: "tokenRefresh",
+                        outcome: "discarded",
+                        reason: "canonicalSessionMismatch"
+                    )
+                    return false
+                }
             }
             let rotated = CanonicalAccountSession(version: 1, signedOut: false,
                 origin: canonicalSession?.origin ?? captured.account.serverURL,
@@ -689,7 +720,15 @@ actor TokenStore {
                 epoch: canonicalSession?.epoch ?? accountKeychain.get(accountEpochKey).flatMap(UUID.init(uuidString:)) ?? UUID(),
                 accessToken: accessValue, refreshToken: value)
             do { try sessions.save(rotated, serverID: serverId) }
-            catch { blockRuntimeSession(); return false }
+            catch {
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "failed",
+                    reason: Self.persistenceFailureReason(error)
+                )
+                blockRuntimeSession()
+                return false
+            }
             canonicalSession = rotated
             mirrorCanonicalSession(rotated)
             cachedAccessToken = accessValue
@@ -848,7 +887,14 @@ actor TokenStore {
             case .signedOut: return nil
             case .legacy: return accountKeychain.get(Self.accessTokenKey(for: serverId))
             }
-        } catch { return nil }
+        } catch {
+            recordSessionEvent(
+                phase: "sessionLoad",
+                outcome: "failed",
+                reason: Self.persistenceFailureReason(error)
+            )
+            return nil
+        }
     }
 
     /// Minimal launch-time check for whether the active server has a stored
@@ -872,7 +918,17 @@ actor TokenStore {
             temporaryScope?.refreshToken = refreshToken
             return true
         }
-        return (try? installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: nil, clearProfile: false)) != nil
+        do {
+            try installAccountSession(accessToken: accessToken, refreshToken: refreshToken, accountID: nil, clearProfile: false)
+            return true
+        } catch {
+            recordSessionEvent(
+                phase: "sessionInstall",
+                outcome: "failed",
+                reason: Self.persistenceFailureReason(error)
+            )
+            return false
+        }
     }
 
     struct AccountInstallationExpectation: Equatable, Sendable {
@@ -1114,7 +1170,14 @@ actor TokenStore {
             case .signedOut: return nil
             case .legacy: break
             }
-        } catch { return nil }
+        } catch {
+            recordSessionEvent(
+                phase: "sessionLoad",
+                outcome: "failed",
+                reason: Self.persistenceFailureReason(error)
+            )
+            return nil
+        }
         let epochKey = Self.accountEpochKey(for: serverID)
         let accessKey = Self.accessTokenKey(for: serverID)
         if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
@@ -1288,7 +1351,16 @@ actor TokenStore {
                         cachedRefreshToken = accountKeychain.get(refreshTokenKey)
                         cachedProfileToken = profileKeychain.get(profileTokenKey)
                     }
-                } catch { runtimeBlockedServers.insert(activeServerId) }
+                } catch {
+                    // Fail closed: a record that cannot be read or decoded
+                    // blocks the runtime session until the next install.
+                    recordSessionEvent(
+                        phase: "sessionLoad",
+                        outcome: "blocked",
+                        reason: Self.persistenceFailureReason(error)
+                    )
+                    runtimeBlockedServers.insert(activeServerId)
+                }
             }
         }
         loadedForServerId = activeServerId
