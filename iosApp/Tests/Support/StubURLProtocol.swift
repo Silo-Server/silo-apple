@@ -155,27 +155,43 @@ final class StubURLProtocol: URLProtocol {
 
     /// An async latch for stalling a reply until the test releases it.
     /// `wait()` suspends until `open()` runs; opening is idempotent and
-    /// releases every current and future waiter.
+    /// releases every current and future waiter. A waiter whose task is
+    /// cancelled (a `stopLoading()` on the gated request, for example) is
+    /// resumed and removed at once, so a test that cancels a gated request
+    /// and never opens the gate does not leave a suspended task behind.
     actor Gate {
         private var isOpen = false
-        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
         init() {}
 
         func wait() async {
-            if isOpen { return }
-            await withCheckedContinuation { continuation in
-                waiters.append(continuation)
+            if isOpen || Task.isCancelled { return }
+            let id = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if isOpen || Task.isCancelled {
+                        continuation.resume()
+                    } else {
+                        waiters[id] = continuation
+                    }
+                }
+            } onCancel: {
+                Task { await self.cancelWaiter(id) }
             }
         }
 
         func open() {
             isOpen = true
-            let released = waiters
+            let released = waiters.values
             waiters.removeAll()
             for waiter in released {
                 waiter.resume()
             }
+        }
+
+        private func cancelWaiter(_ id: UUID) {
+            waiters.removeValue(forKey: id)?.resume()
         }
     }
 
