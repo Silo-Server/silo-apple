@@ -73,5 +73,3 @@ docs/tvos-player/*
 !docs/release/*
 !docs/release/
 !docs/*-api-v2.md
-# Exact-filename negation: the API v2 playback plan is not named *-api-v2.md.
-!docs/playback-simplification-plan.md
