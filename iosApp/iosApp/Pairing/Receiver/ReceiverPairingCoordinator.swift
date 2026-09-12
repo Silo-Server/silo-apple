@@ -388,7 +388,15 @@ final class ReceiverPairingCoordinator {
             serverId: id,
             holding: transitionLease
         ) else {
+            // Same rollback as the failed save above. The candidate's tokens
+            // are already persisted under its own server id, which is harmless
+            // and lets a retry succeed, but the previous server must get its
+            // URL and profile back or its canonical session no longer matches
+            // its origin and it reads as logged out.
+            await TokenStore.shared.setServerUrl(previousServerURL)
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await TokenStore.shared.setProfileId(previousProfileID)
+            _ = await TokenStore.shared.setProfileToken(previousProfileToken)
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
