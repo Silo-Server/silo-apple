@@ -226,6 +226,53 @@ final class CredentialIdentityTests: XCTestCase {
         XCTAssertFalse(bodyRan.value, "A stale owner must be refused before the request is sent")
     }
 
+    // MARK: - withCurrentDurableAuthority
+
+    /// A durable authority is bound to the verified account and its epoch, so
+    /// it must outlive the one credential change a request owner ignores too:
+    /// access-token rotation.
+    func testDurableAuthoritySurvivesAccessTokenRotation() async throws {
+        let (store, _) = try await makeStore()
+        let ownerValue = await store.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(ownerValue)
+        // A durable authority only exists for a verified account binding.
+        try await store.bindVerifiedAccount("12", expected: owner)
+        let durableValue = await store.captureDurableAccountAuth()
+        let durable = try XCTUnwrap(durableValue)
+        let rotated = await store.saveRefreshedTokens(
+            "access-2",
+            "refresh-2",
+            replacing: CapturedRefreshCredential(
+                account: owner.account,
+                refreshToken: "refresh",
+                owner: owner.credentialOwner
+            )
+        )
+        XCTAssertTrue(rotated)
+        let ran = BodyFlag()
+        try await store.withCurrentDurableAuthority(durable) { ran.set() }
+        XCTAssertTrue(ran.value, "queued work must still run for the same account after a token refresh")
+    }
+
+    /// A profile switch does change the owner the queued work was prepared
+    /// for, so the durable fence must refuse it.
+    func testDurableAuthorityRejectsProfileSwitch() async throws {
+        let (store, _) = try await makeStore()
+        let ownerValue = await store.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(ownerValue)
+        try await store.bindVerifiedAccount("12", expected: owner)
+        let durableValue = await store.captureDurableAccountAuth()
+        let durable = try XCTUnwrap(durableValue)
+        await store.setProfileId("profile-b")
+        _ = await store.setProfileToken("proof-b")
+        let ran = BodyFlag()
+        do {
+            try await store.withCurrentDurableAuthority(durable) { ran.set() }
+            XCTFail("Durable fence accepted work prepared for another profile")
+        } catch HTTPError.authorityChanged {}
+        XCTAssertFalse(ran.value)
+    }
+
     func testFencePropagatesBodyErrorsUnchanged() async throws {
         let (store, _) = try await makeStore()
         let ownerValue = await store.captureOrdinaryRequestAuth()
