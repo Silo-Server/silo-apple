@@ -326,6 +326,8 @@ targets:
         buildPhase: none
       - path: Tests/Fixtures/PlaybackV3/SOURCE
         buildPhase: none
+      - path: Tests/Fixtures/APIv2/SOURCE
+        buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none
       - path: Tests/Fixtures/ASS/generate-font.py
@@ -381,6 +383,8 @@ targets:
       - path: Tests/Fixtures/SettingsContract/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/PlaybackV3/SOURCE
+        buildPhase: none
+      - path: Tests/Fixtures/APIv2/SOURCE
         buildPhase: none
       - path: Tests/Fixtures/ASS/README.md
         buildPhase: none

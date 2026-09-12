@@ -26,6 +26,18 @@ struct CapturedHTTPRequestAuth: Sendable {
     let profileToken: String?
     let credentialOwner: CapturedHTTPRequestCredentialOwner
 
+    /// The same snapshot in the shape the one ownership comparator takes, so an
+    /// `expectedAuth` guard never hand-compares a subset of the identity fields.
+    var ordinaryIdentity: CapturedOrdinaryRequestAuth {
+        CapturedOrdinaryRequestAuth(
+            account: account,
+            credentialOwner: credentialOwner,
+            accessToken: accessToken,
+            profileId: profileId,
+            profileToken: profileToken
+        )
+    }
+
     init(
         account: RefreshAccountIdentity,
         serverURL: String,
@@ -399,16 +411,30 @@ actor HTTPClient {
     /// caller can address a profile other than the session default. Everything
     /// else — server URL resolution, 401 refresh, non-2xx translation — is the
     /// path every other request takes.
+    ///
+    /// `expectedAccount` and `expectedAuth` are the v2 pre-dispatch owner
+    /// guards: the request is refused before it leaves the device when the
+    /// credentials captured now do not belong to the owner the caller captured
+    /// earlier. `expectedAuth` compares through
+    /// `CapturedOrdinaryRequestAuth.sameCredentialIdentity(as:)`, the one
+    /// comparator, so the credential owner and the profile proof are covered.
+    /// `acceptedStatuses` only applies with `requestIdentity`; it exposes
+    /// selected non-2xx responses after normal scoped auth handling, without
+    /// adding retries. `repeatedQuery` carries query items that repeat a name.
     func requestData(
         method: String,
         path: String,
         query: [String: String] = [:],
+        repeatedQuery: [URLQueryItem] = [],
         body: Data? = nil,
         contentType: String = "application/json",
         headers: [String: String] = [:],
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout = .standard,
-        requestIdentity: HTTPRequestIdentity? = nil
+        requestIdentity: HTTPRequestIdentity? = nil,
+        acceptedStatuses: Set<Int> = [],
+        expectedAccount: RefreshAccountIdentity? = nil,
+        expectedAuth: CapturedOrdinaryRequestAuth? = nil
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -416,10 +442,17 @@ actor HTTPClient {
                 await requestCaptureBarrier()
             }
             var auth = try await tokenStore.captureRequestAuth(expected: requestIdentity)
+            if let expectedAccount, auth.account != expectedAccount {
+                throw HTTPError.requestIdentityChanged
+            }
+            if let expectedAuth, !auth.ordinaryIdentity.sameCredentialIdentity(as: expectedAuth) {
+                throw HTTPError.requestIdentityChanged
+            }
             var request = try scopedRequest(
                 method: method,
                 path: path,
                 query: query,
+                repeatedQuery: repeatedQuery,
                 body: body,
                 contentType: contentType,
                 headers: headers,
@@ -432,7 +465,7 @@ actor HTTPClient {
             )
 
             if response.statusCode == 401,
-               shouldAttemptRefresh(path: path),
+               shouldAttemptRefresh(path: path, method: method),
                await refreshScopedTokens(
                    auth: auth,
                    expected: requestIdentity,
@@ -449,6 +482,7 @@ actor HTTPClient {
                 if let refreshedAuth = try? await tokenStore.captureRequestAuth(
                     expected: requestIdentity
                 ),
+                   expectedAuth.map({ refreshedAuth.ordinaryIdentity.sameCredentialIdentity(as: $0) }) ?? true,
                    refreshedAuth.account == originalAuth.account,
                    refreshedAuth.credentialOwner == originalAuth.credentialOwner,
                    refreshedAuth.accessToken != nil,
@@ -459,6 +493,7 @@ actor HTTPClient {
                         method: method,
                         path: path,
                         query: query,
+                        repeatedQuery: repeatedQuery,
                         body: body,
                         contentType: contentType,
                         headers: headers,
@@ -489,7 +524,7 @@ actor HTTPClient {
                     )
                     #endif
                 }
-            } else if response.statusCode == 401, shouldAttemptRefresh(path: path) {
+            } else if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
                 // Refresh was eligible but declined (wrong credential owner,
                 // no refresh token, dispatch blocked). `shouldAttemptRefresh`
                 // is re-checked so a 401 from `/auth/login` — an ordinary wrong
@@ -502,7 +537,12 @@ actor HTTPClient {
                 )
                 #endif
             }
-            try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+            // Scoped adapters may inspect documented error headers (for example
+            // Retry-After). All other callers retain the standard non-2xx error
+            // translation.
+            if !acceptedStatuses.contains(response.statusCode) {
+                try ensureSuccess(data, response, method: method, quietStatuses: quietStatuses)
+            }
             return HTTPRawResponse(
                 data: data,
                 statusCode: response.statusCode,
@@ -515,7 +555,9 @@ actor HTTPClient {
             path: path,
             additionalHeaders: headers,
             quietStatuses: quietStatuses,
-            timeout: timeout
+            timeout: timeout,
+            expectedAccount: expectedAccount,
+            expectedAuth: expectedAuth
         ) { serverUrl in
             var request = try self.buildRequest(
                 serverUrl: serverUrl,
@@ -524,6 +566,7 @@ actor HTTPClient {
                 query: query,
                 body: Optional<String>.none
             )
+            try Self.appendQuery(repeatedQuery, to: &request)
             if let body {
                 request.httpBody = body
                 request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -537,6 +580,7 @@ actor HTTPClient {
         method: String,
         path: String,
         query: [String: String],
+        repeatedQuery: [URLQueryItem] = [],
         body: Data?,
         contentType: String,
         headers: [String: String],
@@ -553,9 +597,23 @@ actor HTTPClient {
             request.httpBody = body
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
+        try Self.appendQuery(repeatedQuery, to: &request)
         attachCapturedAuthHeaders(&request, auth: auth)
         Self.apply(headers, to: &request)
         return request
+    }
+
+    /// Appends query items that may repeat a name (`?key=a&key=b`), which the
+    /// `[String: String]` form cannot express. A URL that cannot take them is
+    /// a malformed request, not an ownership change.
+    private static func appendQuery(_ items: [URLQueryItem], to request: inout URLRequest) throws {
+        guard !items.isEmpty else { return }
+        guard let url = request.url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw HTTPError.invalidURL(request.url?.absoluteString ?? "")
+        }
+        components.queryItems = (components.queryItems ?? []) + items
+        guard let updated = components.url else { throw HTTPError.invalidURL(url.absoluteString) }
+        request.url = updated
     }
 
     /// Cancel all in-flight tasks on the shared session and drop any
@@ -924,6 +982,7 @@ actor HTTPClient {
         quietStatuses: Set<Int> = [],
         timeout: HTTPTimeout,
         expectedAccount: RefreshAccountIdentity? = nil,
+        expectedAuth: CapturedOrdinaryRequestAuth? = nil,
         makeRequest: (String) throws -> URLRequest
     ) async throws -> (Data, HTTPURLResponse) {
         let dispatchRevision = try captureRequestDispatchRevision()
@@ -934,6 +993,11 @@ actor HTTPClient {
         if let expectedAccount,
            capturedAuth?.account != expectedAccount {
             throw HTTPError.requestIdentityChanged
+        }
+        if let expectedAuth {
+            guard let capturedAuth, capturedAuth.sameCredentialIdentity(as: expectedAuth) else {
+                throw HTTPError.requestIdentityChanged
+            }
         }
         let serverUrl = if let capturedAuth {
             capturedAuth.account.serverURL
@@ -958,12 +1022,13 @@ actor HTTPClient {
             dispatchRevision: dispatchRevision
         )
 
-        if response.statusCode == 401, shouldAttemptRefresh(path: path) {
+        if response.statusCode == 401, shouldAttemptRefresh(path: path, method: method) {
             if let capturedAuth,
                let refreshedAuth = await refreshTokens(
                    expected: capturedAuth,
                    dispatchRevision: dispatchRevision
                ),
+               expectedAuth.map({ refreshedAuth.sameCredentialIdentity(as: $0) }) ?? true,
                refreshedAuth.accessToken != nil,
                await tokenStore.currentOrdinaryRequestAuth(
                    matchingIdentityOf: refreshedAuth
@@ -1127,7 +1192,7 @@ actor HTTPClient {
         let path = request.url?.path ?? ""
         // Skip auth injection for /auth/refresh (avoid recursion) and
         // /auth/login (a prior expired token can't authorize a fresh login).
-        if path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") {
+        if Self.isPublicAuthPath(path) {
             return
         }
 
@@ -1155,7 +1220,7 @@ actor HTTPClient {
         auth: CapturedOrdinaryRequestAuth
     ) {
         let path = request.url?.path ?? ""
-        if path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") {
+        if Self.isPublicAuthPath(path) {
             return
         }
 
@@ -1686,9 +1751,46 @@ actor HTTPClient {
     }
     #endif
 
-    private func shouldAttemptRefresh(path: String) -> Bool {
+    /// Public auth operations carry no bearer. Collecting polls and other
+    /// public auth mutations may consume one-use state, so a rejected or
+    /// uncertain request is never replayed by the auth refresh machinery.
+    private static func isPublicAuthPath(_ path: String) -> Bool {
+        path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") || [
+            "/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/oauth/complete",
+            "/api/v2/system/setup", "/api/v2/auth/signup"
+        ].contains(path)
+    }
+
+    /// The v2 exclusions are single-dispatch mutations (`docs/native-api-v2.md`):
+    /// a 401 on one of them surfaces as the failure it is instead of being
+    /// re-sent under a refreshed bearer, because the server may already have
+    /// consumed the first attempt.
+    private func shouldAttemptRefresh(path: String, method: String) -> Bool {
         // Matches the guard in AuthInterceptorImpl.kt:96.
-        !path.hasSuffix("/auth/refresh") && !path.hasSuffix("/auth/login")
+        let diagnosticsUploads = "/api/v2/diagnostics/reports/uploads"
+        return !Self.isPublicAuthPath(path) && path != "/api/v2/diagnostics/reports"
+            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/settings/values/"))
+            && !(method == "POST" && path.hasPrefix("/api/v2/playback/sessions/") && path.hasSuffix("/control/ws-ticket"))
+            && !(method == "POST" && path.hasPrefix("/api/v2/playback/") && (path.hasSuffix("/replan") || path.hasSuffix("/route-events")))
+            && path != "/api/v2/subtitles/download"
+            && !(method == "POST" && path == "/api/v2/devices/push/apple")
+            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watchlist/"))
+            && !(["PUT", "DELETE"].contains(method) && path.hasPrefix("/api/v2/favorites/"))
+            && !(["POST", "DELETE"].contains(method) && path.hasPrefix("/api/v2/watched/"))
+            && path != "/api/v2/downloads/subscriptions"
+            && path != "/api/v2/onboarding/progress"
+            && path != "/api/v2/subtitles/ai/translate"
+            && !(path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/translate-description"))
+            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/items/") && path.hasSuffix("/trailers/refresh"))
+            && !(method == "POST" && path.hasPrefix("/api/v2/catalog/people/") && path.hasSuffix("/refresh"))
+            && !(path == "/api/v2/profiles" && method == "POST")
+            // A journaled own-profile PATCH has one dispatch, even when a
+            // refresh could obtain another bearer for the same account.
+            && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")
+                && path.split(separator: "/").count == 4)
+            && !(path == "/api/v2/downloads" && method == "POST")
+            && path != diagnosticsUploads
+            && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
     }
 
     private var isRequestDispatchBlocked: Bool {
