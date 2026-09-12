@@ -2,9 +2,11 @@ import XCTest
 @testable import Silo
 
 final class OnboardingInvitationTests: XCTestCase {
+    private var stub = OnboardingRequestStub()
+
     override func setUp() {
         super.setUp()
-        OnboardingRequestStubProtocol.reset()
+        stub = OnboardingRequestStub()
     }
 
     func testOnboardingSurfaceUsesAQueryItemInsteadOfEmbeddingQueryInPath() async throws {
@@ -14,7 +16,7 @@ final class OnboardingInvitationTests: XCTestCase {
         let flow = try await api.onboardingFlow(surface: "phone")
         XCTAssertEqual(flow.tourId, "tour-test")
 
-        let request = try XCTUnwrap(OnboardingRequestStubProtocol.requests().last)
+        let request = try XCTUnwrap(stub.requests().last)
         XCTAssertEqual(request.url?.path, "/silo/api/v1/onboarding/flow")
         XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
             .queryItems, [URLQueryItem(name: "surface", value: "phone")])
@@ -238,10 +240,8 @@ final class OnboardingInvitationTests: XCTestCase {
         await tokenStore.switchActiveServer(serverId: "active")
         await tokenStore.saveTokens(accessToken: "existing-access", refreshToken: "existing-refresh")
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [OnboardingRequestStubProtocol.self]
         return (
-            HTTPClient(session: URLSession(configuration: configuration), tokenStore: tokenStore),
+            HTTPClient(session: stub.handler.makeSession(), tokenStore: tokenStore),
             tokenStore
         )
     }
@@ -306,52 +306,21 @@ private final class OnboardingRuntimeSettingsRefresherStub: OnboardingRuntimeSet
     }
 }
 
-private final class OnboardingRequestStubProtocol: URLProtocol {
-    private static let lock = NSLock()
-    private static var recordedRequests: [URLRequest] = []
+/// The onboarding flow endpoint as a route on the shared stub; anything
+/// else answers 500.
+private final class OnboardingRequestStub {
+    let handler = StubURLProtocol.Handler()
 
-    static func reset() {
-        lock.withLock { recordedRequests = [] }
-    }
-
-    static func requests() -> [URLRequest] {
-        lock.withLock { recordedRequests }
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.lock.withLock { Self.recordedRequests.append(request) }
-        let path = request.url?.path ?? ""
-        let status: Int
-        let body: Data
-        if path.hasSuffix("/api/v1/onboarding/flow") {
-            status = 200
-            body = Data(#"{"version":1,"tour_id":"tour-test","steps":[]}"#.utf8)
-        } else {
-            status = 500
-            body = Data()
+    init() {
+        handler.route(StubURLProtocol.pathSuffix("/api/v1/onboarding/flow")) { _ in
+            .json(#"{"version":1,"tour_id":"tour-test","steps":[]}"#)
         }
-
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: status,
-            httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: body)
-        client?.urlProtocolDidFinishLoading(self)
+        handler.route(StubURLProtocol.any) { _ in
+            .json("", status: 500)
+        }
     }
 
-    override func stopLoading() {}
-}
-
-private extension NSLock {
-    func withLock<T>(_ operation: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return operation()
+    func requests() -> [URLRequest] {
+        handler.requests.map(\.underlying)
     }
 }

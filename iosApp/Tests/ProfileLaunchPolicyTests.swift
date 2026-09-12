@@ -726,7 +726,13 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertEqual(remembered.profileID, "profile-a")
         XCTAssertTrue(remembered.requiredPINAtSelection)
         XCTAssertNil(registry.entry(with: serverID)?.legacyProfileId)
+        #if os(tvOS)
+        // tvOS persists the registry in the shared keychain and clears the
+        // defaults copy, so the legacy field is gone with the whole record.
+        XCTAssertNil(defaults.data(forKey: "continuumServerRegistry.v1"))
+        #else
         let migrated = try XCTUnwrap(defaults.data(forKey: "continuumServerRegistry.v1"))
         XCTAssertFalse(String(decoding: migrated, as: UTF8.self).contains("profileId"))
+        #endif
     }
 }

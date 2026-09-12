@@ -71,3 +71,5 @@ docs/tvos-player/*
 !docs/tvos-player/aetherengine-replacement-spec.md
 !docs/tvos-player/ass-subtitles.md
 !docs/release/*
+!docs/release/
+!docs/*-api-v2.md
