@@ -349,11 +349,18 @@ actor TokenStore {
     /// the effect. Throws `HTTPError.authorityChanged` when the verified
     /// account, its epoch, or the request owner moved since `expected` was
     /// captured.
+    ///
+    /// The request owner is compared with `sameCredentialIdentity(as:)`, not
+    /// `==`: a durable authority is meant to outlive access-token rotation, so
+    /// the rotated token must not make queued work look foreign. Profile and
+    /// credential-owner changes still break it, because the queued work was
+    /// prepared for that profile's view of the account.
     func withCurrentDurableAuthority(_ expected: CapturedDurableAccountAuth,
                                      operation: @Sendable () throws -> Void) throws {
         try Task.checkCancellation()
         guard let current = captureDurableAccountAuth(), current.accountID == expected.accountID,
-              current.accountEpoch == expected.accountEpoch, current.request == expected.request else {
+              current.accountEpoch == expected.accountEpoch,
+              current.request.sameCredentialIdentity(as: expected.request) else {
             throw HTTPError.authorityChanged
         }
         try operation()
@@ -1081,8 +1088,8 @@ actor TokenStore {
         }
         recordSessionEvent(
             phase: "clearTokens",
-            outcome: "cleared",
-            reason: "persistentSession"
+            outcome: durable ? "cleared" : "failed",
+            reason: durable ? "persistentSession" : "persistenceUnavailable"
         )
         accountKeychain.delete(accessTokenKey)
         accountKeychain.delete(refreshTokenKey)
@@ -1099,6 +1106,9 @@ actor TokenStore {
     func deleteTokens(for serverId: String) -> Bool {
         guard !serverId.isEmpty else { return true }
         let durable = sessions.invalidate(serverId)
+        if !durable {
+            recordSessionEvent(phase: "deleteTokens", outcome: "failed", reason: "persistenceUnavailable")
+        }
         runtimeBlockedServers.insert(serverId)
         accountKeychain.delete(Self.accessTokenKey(for: serverId))
         accountKeychain.delete(Self.refreshTokenKey(for: serverId))
