@@ -354,6 +354,9 @@ final class ReceiverPairingCoordinator {
             return false
         }
         let previousTokenServerID = await TokenStore.shared.getActiveServerId()
+        let previousServerURL = await TokenStore.shared.getServerUrl()
+        let previousProfileID = await TokenStore.shared.getProfileId()
+        let previousProfileToken = await TokenStore.shared.getProfileToken()
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
@@ -365,12 +368,35 @@ final class ReceiverPairingCoordinator {
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
-        await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
+        guard await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh) else {
+            // The session record could not be written, so nothing durable was
+            // committed for the candidate. Put every TokenStore mutation above
+            // back the way it was: the active server, its URL, and the profile
+            // selection. Otherwise the registry still names the previous server
+            // while the token store already points at the candidate URL, and a
+            // canonical session bound to the previous origin reads as logged
+            // out. The registry entry stays: it carries no credential, and the
+            // user can retry pairing against it.
+            await TokenStore.shared.setServerUrl(previousServerURL)
+            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await TokenStore.shared.setProfileId(previousProfileID)
+            _ = await TokenStore.shared.setProfileToken(previousProfileToken)
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
         guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
             holding: transitionLease
         ) else {
+            // Same rollback as the failed save above. The candidate's tokens
+            // are already persisted under its own server id, which is harmless
+            // and lets a retry succeed, but the previous server must get its
+            // URL and profile back or its canonical session no longer matches
+            // its origin and it reads as logged out.
+            await TokenStore.shared.setServerUrl(previousServerURL)
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await TokenStore.shared.setProfileId(previousProfileID)
+            _ = await TokenStore.shared.setProfileToken(previousProfileToken)
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
