@@ -27,7 +27,7 @@ enum RestoredSessionValidationResult: Equatable, Sendable {
 /// current-user endpoint.
 struct RestoredSessionValidator: Sendable {
     typealias SetupProbe = @Sendable (String) async throws -> SetupStatus
-    typealias AccountProbe = @Sendable () async throws -> Void
+    typealias AccountProbe = @Sendable () async throws -> UserInfo
     typealias IdentityReader = @Sendable () async -> RefreshAccountIdentity?
     typealias AccessTokenReader = @Sendable (String) async -> Bool
 
@@ -63,7 +63,7 @@ struct RestoredSessionValidator: Sendable {
                 )
             },
             accountProbe: {
-                _ = try await SiloAPI.shared.currentUser()
+                try await SiloAPI.shared.currentUser()
             },
             identityReader: {
                 await TokenStore.shared.refreshAccountIdentity()
@@ -90,7 +90,7 @@ struct RestoredSessionValidator: Sendable {
         }
 
         do {
-            try await accountProbe()
+            _ = try await accountProbe()
         } catch {
             return await result(for: error, stage: .account, expected: expected)
         }
@@ -140,7 +140,7 @@ struct RestoredSessionValidator: Sendable {
             if Self.isRetryable(statusCode) {
                 return .indeterminate
             }
-            if stage == .account, statusCode == 401 || statusCode == 403 {
+            if stage == .account, (statusCode == 401 || statusCode == 403) {
                 // HTTPClient removes the token before returning only when the
                 // refresh endpoint authoritatively rejects it. If the token is
                 // still present, refresh may instead have failed transiently;

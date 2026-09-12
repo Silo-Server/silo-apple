@@ -1,6 +1,7 @@
 import XCTest
 @testable import Silo
 
+@MainActor
 final class RestoredSessionValidatorTests: XCTestCase {
     private let expected = RefreshAccountIdentity(
         serverId: "server-a",
@@ -53,14 +54,14 @@ final class RestoredSessionValidatorTests: XCTestCase {
     }
 
     func testSuccessfulAccountProbeAcceptsRenamedUsernameSession() async {
-        let harness = ValidationHarness(identity: expected)
-        await harness.setObservedUsername("renamed-user")
+        let harness = ValidationHarness(
+            identity: expected,
+            account: UserInfo(id: "42", username: "renamed-user", isAdmin: false)
+        )
 
         let result = await makeValidator(harness).validate(expected: expected)
-        let observedUsername = await harness.observedUsername()
 
         XCTAssertEqual(result, .valid)
-        XCTAssertEqual(observedUsername, "renamed-user")
     }
 
     func testServerThatNeedsSetupEntersRecoveryWithoutAccountProbe() async {
@@ -197,6 +198,29 @@ final class RestoredSessionValidatorTests: XCTestCase {
         XCTAssertEqual(accountProbeCount, 0)
     }
 
+    func testConfirmedForgetCompletesAndRoutesOutsideTheRecoveryViewLifetime() async throws {
+        let gate = ServerRemovalGate()
+        let router = AppRouter()
+        router.authState = .serverRecovery(.serverNotRecognized)
+        let coordinator = RestoredServerRecoveryCoordinator(
+            removeServer: { serverID in
+                await gate.remove(serverID: serverID)
+            },
+            resolveDestination: { .needsServerSetup }
+        )
+
+        let task = try XCTUnwrap(coordinator.forget(serverID: "server-a", router: router))
+        XCTAssertTrue(coordinator.isForgetting)
+        await gate.allowRemoval()
+        await task.value
+
+        let removedServerID = await gate.removedServerID()
+        XCTAssertEqual(removedServerID, "server-a")
+        XCTAssertFalse(coordinator.isForgetting)
+        XCTAssertNil(coordinator.error)
+        XCTAssertEqual(router.authState, .needsServerSetup)
+    }
+
     private func makeValidator(_ harness: ValidationHarness) -> RestoredSessionValidator {
         RestoredSessionValidator(
             setupProbe: { serverURL in try await harness.probeSetup(serverURL: serverURL) },
@@ -207,18 +231,40 @@ final class RestoredSessionValidatorTests: XCTestCase {
     }
 }
 
+private actor ServerRemovalGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isRemovalAllowed = false
+    private var serverID: String?
+
+    func remove(serverID: String) async -> Bool {
+        self.serverID = serverID
+        if !isRemovalAllowed {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return true
+    }
+
+    func allowRemoval() {
+        isRemovalAllowed = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func removedServerID() -> String? { serverID }
+}
+
 private actor ValidationHarness {
     private var identity: RefreshAccountIdentity?
     private let setupStatus: SetupStatus
     private let setupFailure: HTTPError?
     private let setupCancellation: Bool
     private let accountFailure: HTTPError?
+    private let account: UserInfo
     private let identityAfterSetup: RefreshAccountIdentity?
     private let identityAfterAccountFailure: RefreshAccountIdentity?
     private let hasAccessTokenAfterAccountFailure: Bool
     private var accessTokenPresent = true
     private var accountProbes = 0
-    private var username: String?
 
     init(
         identity: RefreshAccountIdentity,
@@ -226,6 +272,7 @@ private actor ValidationHarness {
         setupFailure: HTTPError? = nil,
         setupCancellation: Bool = false,
         accountFailure: HTTPError? = nil,
+        account: UserInfo = UserInfo(id: "42", username: "original-user", isAdmin: false),
         identityAfterSetup: RefreshAccountIdentity? = nil,
         identityAfterAccountFailure: RefreshAccountIdentity? = nil,
         hasAccessTokenAfterAccountFailure: Bool = true
@@ -235,6 +282,7 @@ private actor ValidationHarness {
         self.setupFailure = setupFailure
         self.setupCancellation = setupCancellation
         self.accountFailure = accountFailure
+        self.account = account
         self.identityAfterSetup = identityAfterSetup
         self.identityAfterAccountFailure = identityAfterAccountFailure
         self.hasAccessTokenAfterAccountFailure = hasAccessTokenAfterAccountFailure
@@ -247,13 +295,14 @@ private actor ValidationHarness {
         return setupStatus
     }
 
-    func probeAccount() throws {
+    func probeAccount() throws -> UserInfo {
         accountProbes += 1
         if let accountFailure {
             if let identityAfterAccountFailure { identity = identityAfterAccountFailure }
             accessTokenPresent = hasAccessTokenAfterAccountFailure
             throw accountFailure
         }
+        return account
     }
 
     func currentIdentity() -> RefreshAccountIdentity? { identity }
@@ -263,6 +312,4 @@ private actor ValidationHarness {
     }
 
     func accountProbeCount() -> Int { accountProbes }
-    func setObservedUsername(_ value: String) { username = value }
-    func observedUsername() -> String? { username }
 }

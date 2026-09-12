@@ -22,6 +22,19 @@ private actor ContinueWatchingResponseGate {
 
 @MainActor
 final class DetailDismissalNavigationTests: XCTestCase {
+    func testServerResolutionClearsPresentationsEvenWhenAuthStateStaysAuthenticated() {
+        let router = AppRouter()
+        router.authState = .authenticated
+        router.presentItemDetail(contentId: "old-server-detail")
+        router.presentPlayer(contentId: "old-server-player")
+
+        router.resetAfterServerResolution(to: .authenticated)
+
+        XCTAssertNil(router.presentedItemDetail)
+        XCTAssertNil(router.presentedPlayer)
+        XCTAssertTrue(router.path.isEmpty)
+    }
+
     func testCloseAndRotationControlsWaitForTapInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }

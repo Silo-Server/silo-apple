@@ -534,6 +534,9 @@ class AppRouter {
     /// Every previous screen belongs to the old server/session boundary.
     func resetAfterServerResolution(to state: AuthState) {
         recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
+        PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
+        presentedPlayer = nil
+        dismissItemDetail()
         path = NavigationPath()
         profileJourneyLabels = nil
         setAuthState(state, reason: "serverResolution")

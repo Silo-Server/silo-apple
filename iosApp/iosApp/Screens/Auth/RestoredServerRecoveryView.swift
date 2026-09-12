@@ -1,15 +1,67 @@
 import SwiftUI
 
+/// Owns confirmed server removal above the auth subtree. Removing an active
+/// server changes the subtree identity before Keychain cleanup completes, so
+/// this operation must not be tied to the recovery view's lifetime.
+@MainActor
+@Observable
+final class RestoredServerRecoveryCoordinator {
+    typealias RemoveServer = (String) async -> Bool
+    typealias ResolveDestination = () async -> AppRouter.AuthState
+
+    private let removeServer: RemoveServer
+    private let resolveDestination: ResolveDestination
+    @ObservationIgnored private var forgetTask: Task<Void, Never>?
+
+    private(set) var isForgetting = false
+    private(set) var error: String?
+
+    init(
+        removeServer: @escaping RemoveServer = { serverID in
+            await ServerRegistry.shared.remove(serverId: serverID)
+        },
+        resolveDestination: @escaping ResolveDestination = {
+            await RestoredSessionAuthResolver.resolveValidated()
+        }
+    ) {
+        self.removeServer = removeServer
+        self.resolveDestination = resolveDestination
+    }
+
+    /// Removes the confirmed server and commits the fallback route even if
+    /// changing the active server tears down the recovery screen meanwhile.
+    @discardableResult
+    func forget(serverID: String, router: AppRouter) -> Task<Void, Never>? {
+        guard !isForgetting else { return nil }
+        isForgetting = true
+        error = nil
+
+        let task = Task { [self] in
+            let removed = await removeServer(serverID)
+            if removed {
+                let destination = await resolveDestination()
+                router.resetAfterServerResolution(to: destination)
+            } else {
+                error = "Silo couldn't forget this server. Try again."
+            }
+            isForgetting = false
+            forgetTask = nil
+        }
+        forgetTask = task
+        return task
+    }
+}
+
 /// Recovery surface for a remembered server that responded authoritatively but
 /// can no longer accept the restored session. Merely reaching this screen is
 /// non-destructive: the server entry and its Keychain slot stay intact.
 struct RestoredServerRecoveryView: View {
     var router: AppRouter
     let reason: ServerRecoveryReason
+    let coordinator: RestoredServerRecoveryCoordinator
 
     @State private var registry = ServerRegistry.shared
     @State private var isChecking = false
-    @State private var isForgetting = false
     @State private var error: String?
     @State private var retryTask: Task<Void, Never>?
     @State private var showForgetConfirmation = false
@@ -49,8 +101,8 @@ struct RestoredServerRecoveryView: View {
 
                     recoveryCopy
 
-                    if let error {
-                        recoveryError(error)
+                    if let visibleError {
+                        recoveryError(visibleError)
                     }
 
                     HStack(spacing: 24) {
@@ -72,7 +124,7 @@ struct RestoredServerRecoveryView: View {
                             .foregroundStyle(Color.siloError)
                             .focused($focusedAction, equals: .forget)
                     }
-                    .disabled(isChecking || isForgetting)
+                    .disabled(isChecking || coordinator.isForgetting)
                     .focusSection()
                 }
                 .padding(56)
@@ -121,8 +173,8 @@ struct RestoredServerRecoveryView: View {
                 .padding(.bottom, 22)
 
             VStack(spacing: 16) {
-                if let error {
-                    AuroraErrorLabel(error)
+                if let visibleError {
+                    AuroraErrorLabel(visibleError)
                 }
 
                 Button(action: retry) {
@@ -139,7 +191,7 @@ struct RestoredServerRecoveryView: View {
                     .foregroundStyle(Color.siloError)
                     .frame(maxWidth: .infinity)
             }
-            .disabled(isChecking || isForgetting)
+            .disabled(isChecking || coordinator.isForgetting)
             .padding(22)
             .auroraGlass(cornerRadius: 24, emphasized: true)
             .animation(.easeInOut(duration: 0.2), value: error)
@@ -234,7 +286,7 @@ struct RestoredServerRecoveryView: View {
     }
 
     private func retry() {
-        guard !isChecking, !isForgetting else { return }
+        guard !isChecking, !coordinator.isForgetting else { return }
         isChecking = true
         error = nil
         let expectedServerID = registry.activeServerId
@@ -294,34 +346,15 @@ struct RestoredServerRecoveryView: View {
     }
 
     private func requestForget() {
-        guard !isChecking, !isForgetting else { return }
+        guard !isChecking, !coordinator.isForgetting else { return }
         showForgetConfirmation = true
     }
 
     private func confirmForget() {
-        guard !isForgetting, let serverID = registry.activeServerId else { return }
+        guard !coordinator.isForgetting, let serverID = registry.activeServerId else { return }
         showForgetConfirmation = false
-        isForgetting = true
         error = nil
-
-        retryTask = Task {
-            let removed = await registry.remove(serverId: serverID)
-            let destination: AppRouter.AuthState?
-            if removed {
-                destination = await RestoredSessionAuthResolver.resolveValidated()
-            } else {
-                destination = nil
-            }
-            await MainActor.run {
-                isForgetting = false
-                guard !Task.isCancelled else { return }
-                if let destination {
-                    router.resetAfterServerResolution(to: destination)
-                } else {
-                    error = "Silo couldn't forget this server. Try again."
-                }
-            }
-        }
+        coordinator.forget(serverID: serverID, router: router)
     }
 
     #if os(tvOS)
@@ -338,6 +371,9 @@ struct RestoredServerRecoveryView: View {
         retryTask?.cancel()
         retryTask = nil
         isChecking = false
-        isForgetting = false
+    }
+
+    private var visibleError: String? {
+        error ?? coordinator.error
     }
 }

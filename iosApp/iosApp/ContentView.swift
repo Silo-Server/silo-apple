@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var didStartInitialStateCheck = false
     @State private var didFinishStartupSplash = false
     @State private var pendingInitialAuthState: AppRouter.AuthState?
+    @State private var serverRecoveryCoordinator = RestoredServerRecoveryCoordinator()
     #if os(iOS) || os(tvOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
@@ -600,7 +601,11 @@ struct ContentView: View {
 
         case .serverRecovery(let reason):
             NavigationStack(path: $router.path) {
-                RestoredServerRecoveryView(router: router, reason: reason)
+                RestoredServerRecoveryView(
+                    router: router,
+                    reason: reason,
+                    coordinator: serverRecoveryCoordinator
+                )
                     .navigationDestination(for: Route.self) { route in
                         profileFlowDestination(for: route)
                     }
