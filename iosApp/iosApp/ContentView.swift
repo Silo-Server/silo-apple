@@ -598,6 +598,15 @@ struct ContentView: View {
                     }
             }
 
+        case .serverRecovery(let reason):
+            NavigationStack(path: $router.path) {
+                RestoredServerRecoveryView(router: router, reason: reason)
+                    .navigationDestination(for: Route.self) { route in
+                        profileFlowDestination(for: route)
+                    }
+            }
+            .environment(router)
+
         case .needsProfile:
             NavigationStack(path: $router.path) {
                 ProfileSelectionView(
@@ -812,40 +821,31 @@ struct ContentView: View {
         #endif
     }
 
-    /// Determine the initial auth state with the smallest launch-time
-    /// Keychain surface possible. The registry loads synchronously in `init`;
-    /// TokenStore only needs to be retargeted to that active server before the
-    /// first authenticated request lazily loads the full token cache.
+    /// Resolve local credentials first, then opportunistically validate a
+    /// restored account while the brand splash is already visible. Publishing
+    /// the local state before the network probe is intentional: when the
+    /// splash finishes it commits that fallback and removes this task, which
+    /// cancels an unfinished probe instead of extending offline launch time.
     private func checkInitialState() async {
-        let activeServerId = ServerRegistry.shared.activeServerId
-        let hasStoredAccessToken: Bool
-        if let activeServerId, !activeServerId.isEmpty {
-            hasStoredAccessToken = await TokenStore.shared.hasAccessTokenForActiveServer(serverId: activeServerId)
-        } else {
-            hasStoredAccessToken = false
-        }
+        let local = await RestoredSessionAuthResolver.resolveLocal()
+        guard !Task.isCancelled, router.authState == .loading else { return }
+        pendingInitialAuthState = local.state
+        finishInitialStartupIfReady()
 
-        let api = AuthService.shared
-        let targetState: AppRouter.AuthState
-        if !api.hasServer {
-            targetState = .needsServerSetup
-        } else if !hasStoredAccessToken {
-            targetState = .needsLogin
-        } else {
-            targetState = await api.resolveActiveProfileForSession()
-                ? .authenticated
-                : .needsProfile
-        }
+        guard !Task.isCancelled,
+              router.authState == .loading,
+              let expectedAccount = local.restoredAccount else { return }
 
-        #if os(iOS) || os(tvOS)
-        // The single most useful launch line: everything above it is Keychain
-        // and profile resolution, everything below is the routed app. A cold
-        // launch that stalls here (no server reachable, a wedged Keychain read)
-        // shows as a long gap before this phase and nothing after it.
-        LaunchTimeline.recordInitialStateResolved(state: targetState.diagnosticsState)
-        #endif
+        let validation = await AuthService.shared.validateRestoredSession(
+            expected: expectedAccount
+        )
+        guard !Task.isCancelled, router.authState == .loading else { return }
+        let targetState = await RestoredSessionAuthResolver.state(
+            after: validation,
+            fallingBackTo: local.state
+        )
+        guard !Task.isCancelled, router.authState == .loading else { return }
 
-        StartupContentPrefetcher.prefetchForInitialRoute(targetState)
         pendingInitialAuthState = targetState
         finishInitialStartupIfReady()
 
@@ -858,12 +858,16 @@ struct ContentView: View {
         guard didFinishStartupSplash, let targetState = pendingInitialAuthState else { return }
         pendingInitialAuthState = nil
         #if os(iOS) || os(tvOS)
+        // The committed state may be an authoritative validation result or the
+        // offline-safe local fallback when the splash deadline won the race.
+        LaunchTimeline.recordInitialStateResolved(state: targetState.diagnosticsState)
         // Closes the cold-launch chain. Both gates (splash animation and state
         // resolution) have cleared, so this is the moment the user first sees
         // real content. `AppRouter` logs the auth transition itself; this line
         // records that launch reached a terminal, usable state at all.
         LaunchTimeline.recordFirstContent(state: targetState.diagnosticsState)
         #endif
+        StartupContentPrefetcher.prefetchForInitialRoute(targetState)
         router.authState = targetState
     }
 

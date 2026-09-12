@@ -13,6 +13,7 @@ struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
     @State private var removeTarget: ServerEntry?
+    @State private var isResolvingServer = false
     #if os(tvOS)
     @FocusState private var focusedRow: TVRow?
     #endif
@@ -21,7 +22,7 @@ struct ServerListView: View {
         #if os(tvOS)
         ZStack {
             tvOSContent
-                .disabled(removeTarget != nil)
+                .disabled(removeTarget != nil || isResolvingServer)
 
             if let entry = removeTarget {
                 TVSettingsConfirmationOverlay(
@@ -39,6 +40,7 @@ struct ServerListView: View {
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: removeTarget)
         #else
         contentList
+            .disabled(isResolvingServer)
             .navigationTitle("")
             .siloNavigationTitleDisplayMode(.inline)
             .alert(
@@ -248,12 +250,20 @@ struct ServerListView: View {
             refreshAuthState()
             return
         }
+        isResolvingServer = true
         Task {
             guard await registry.switchTo(
                 serverId: entry.id,
                 resolveDestinationProfile: true
-            ) else { return }
-            await MainActor.run { refreshAuthState() }
+            ) else {
+                await MainActor.run { isResolvingServer = false }
+                return
+            }
+            let state = await RestoredSessionAuthResolver.resolveValidated()
+            await MainActor.run {
+                isResolvingServer = false
+                router.resetAfterServerResolution(to: state)
+            }
         }
     }
 
@@ -275,19 +285,13 @@ struct ServerListView: View {
     /// drop any in-tab navigation that belonged to the previous server.
     private func refreshAuthState() {
         router.popToRoot()
-        // A server switch can land back on `.authenticated`, which the
-        // router's same-value guard drops — so the identity boundary for an
-        // engaged PiP video is enforced here, before the reassignment.
-        PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
-        let auth = AuthService.shared
-        if !auth.hasServer {
-            router.authState = .needsServerSetup
-        } else if !auth.isLoggedIn {
-            router.authState = .needsLogin
-        } else if !auth.hasProfile {
-            router.authState = .needsProfile
-        } else {
-            router.authState = .authenticated
+        isResolvingServer = true
+        Task {
+            let state = await RestoredSessionAuthResolver.resolveValidated()
+            await MainActor.run {
+                isResolvingServer = false
+                router.resetAfterServerResolution(to: state)
+            }
         }
     }
 }

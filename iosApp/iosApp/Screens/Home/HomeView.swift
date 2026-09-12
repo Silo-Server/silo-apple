@@ -71,7 +71,11 @@ struct HomeView: View {
                 // first-row anchor, and no marquee from a hidden row lingers.
                 .id(homeSectionPreferences.layoutRevision)
             } else if let error = viewModel.error {
-                ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
+                ErrorView(
+                    state: error,
+                    onRetry: { Task { await viewModel.loadSections() } },
+                    onManageServers: { router.navigate(to: .serverList) }
+                )
             } else if viewModel.isLoading {
                 Color.clear
             } else if !viewModel.regularSections.isEmpty {
@@ -110,7 +114,11 @@ struct HomeView: View {
                 if !displayedSections.isEmpty {
                     scrollContent
                 } else if let error = viewModel.error {
-                    ErrorView(state: error, onRetry: { Task { await viewModel.loadSections() } })
+                    ErrorView(
+                        state: error,
+                        onRetry: { Task { await viewModel.loadSections() } },
+                        onManageServers: { router.navigate(to: .serverList) }
+                    )
                 } else if viewModel.isLoading {
                     Color.clear
                 } else if !viewModel.regularSections.isEmpty {

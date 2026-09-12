@@ -10,6 +10,7 @@ struct ErrorView: View {
     var onRetry: (() -> Void)? = nil
     var onGoBack: (() -> Void)? = nil
     var onSignOut: (() -> Void)? = nil
+    var onManageServers: (() -> Void)? = nil
 
     @Environment(AppRouter.self) private var router
 
@@ -94,6 +95,9 @@ struct ErrorView: View {
         if state.isNotFound, resolvedOnGoBack != nil {
             if let onRetry { return Action(title: "Try Again", run: onRetry) }
             return nil
+        }
+        if let onManageServers {
+            return Action(title: "Manage Servers", run: onManageServers)
         }
         return nil
     }
