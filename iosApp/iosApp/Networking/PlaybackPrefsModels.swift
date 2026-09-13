@@ -183,7 +183,7 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
             ?? code.uppercased()
     }
 
-    private static func languageIdentity(_ value: String) -> String {
+    static func languageIdentity(_ value: String) -> String {
         let normalized = value.replacingOccurrences(of: "_", with: "-")
         var components = normalized.split(separator: "-").map(String.init)
         guard let language = components.first else { return normalized.lowercased() }
