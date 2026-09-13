@@ -156,7 +156,10 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
         var indexByIdentity: [String: Int] = [:]
 
         func add(_ rawValue: String, replacingAlias: Bool) {
-            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = trimmedValue.caseInsensitiveCompare("original") == .orderedSame
+                ? PlaybackPrefSentinel.originalLanguage
+                : trimmedValue
             guard !value.isEmpty,
                   value != PlaybackPrefSentinel.none,
                   value != PlaybackPrefSentinel.inherit else { return }
