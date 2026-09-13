@@ -2102,6 +2102,55 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
+    func testCaptureCapabilitiesCoalesceAndExpireWhileUploadsRefresh() async throws {
+        HostedDiagnosticsStubProtocol.configureCapabilities()
+        let clock = HostedCapabilitiesTestClock()
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(credential: nil),
+            now: { clock.read() }
+        )
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<20 {
+                group.addTask { _ = try await api.capabilities(requireFresh: false) }
+            }
+            try await group.waitForAll()
+        }
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().count, 1)
+        clock.set(299)
+        _ = try await api.capabilities(requireFresh: false)
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().count, 1)
+        clock.set(300)
+        _ = try await api.capabilities(requireFresh: false)
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().count, 2)
+        _ = try await api.capabilities()
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().count, 3)
+    }
+
+    func testFailedFreshCapabilitiesInvalidateCaptureCache() async throws {
+        HostedDiagnosticsStubProtocol.configureCapabilities()
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")),
+            session: makeSession(),
+            credentialStore: HostedTestCredentialStore(credential: nil)
+        )
+        _ = try await api.capabilities(requireFresh: false)
+        HostedDiagnosticsStubProtocol.configureCapabilities(collectorID: "unexpected-collector")
+        for requireFresh in [true, false] {
+            do {
+                _ = try await api.capabilities(requireFresh: requireFresh)
+                XCTFail("Failed attestation must not reuse old capabilities")
+            } catch let error as HostedDiagnosticsAPIError {
+                XCTAssertEqual(error, .collectorIdentityMismatch)
+            }
+        }
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().count, 2)
+        HostedDiagnosticsStubProtocol.configureCapabilities()
+        _ = try await api.capabilities(requireFresh: false)
+        XCTAssertEqual(HostedDiagnosticsStubProtocol.requests().count, 1)
+    }
+
     func testCapabilitiesArePublicAndMapCollectorIdentity() async throws {
         HostedDiagnosticsStubProtocol.configureCapabilities()
         let api = HostedDiagnosticsAPI(
@@ -3396,4 +3445,12 @@ private final class SelfHostedDiagnosticsStubProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
+}
+
+private final class HostedCapabilitiesTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval = 0
+
+    func read() -> TimeInterval { lock.withLock { value } }
+    func set(_ value: TimeInterval) { lock.withLock { self.value = value } }
 }

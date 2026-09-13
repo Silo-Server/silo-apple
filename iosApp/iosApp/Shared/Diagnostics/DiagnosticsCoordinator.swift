@@ -416,13 +416,17 @@ actor DiagnosticsCoordinator {
     }
 
     func refreshStatus(
-        destination: DiagnosticsDestinationChoice? = nil
+        destination: DiagnosticsDestinationChoice? = nil,
+        requireFreshCapabilities: Bool = true
     ) async throws -> DiagnosticsStatusSnapshot {
         let destination = destination ?? destinationStore.selectedDestination
         let requestGeneration = statusRefreshEpoch.begin(destination: destination)
         if destination == .hosted {
             do {
-                return try await refreshHostedStatus(requestGeneration: requestGeneration)
+                return try await refreshHostedStatus(
+                    requestGeneration: requestGeneration,
+                    requireFreshCapabilities: requireFreshCapabilities
+                )
             } catch {
                 guard statusRefreshEpoch.isCurrent(requestGeneration, destination: destination) else {
                     throw DiagnosticsCoordinatorError.identityChanged
@@ -499,7 +503,8 @@ actor DiagnosticsCoordinator {
     }
 
     private func refreshHostedStatus(
-        requestGeneration: UInt64
+        requestGeneration: UInt64,
+        requireFreshCapabilities: Bool
     ) async throws -> DiagnosticsStatusSnapshot {
         let requestServerRegistryID = ServerRegistry.activeServerIDSnapshot
         guard let requestServerRegistryID,
@@ -509,7 +514,7 @@ actor DiagnosticsCoordinator {
             throw DiagnosticsCoordinatorError.identityChanged
         }
 
-        async let capabilitiesRequest = hostedAPI.capabilities()
+        async let capabilitiesRequest = hostedAPI.capabilities(requireFresh: requireFreshCapabilities)
         async let currentUserRequest = siloAPI.currentUser()
         let (capabilities, user) = try await (capabilitiesRequest, currentUserRequest)
         guard statusRefreshEpoch.isCurrent(requestGeneration, destination: .hosted),
@@ -1043,7 +1048,8 @@ actor DiagnosticsCoordinator {
         // genuine binding mismatch is still reported below.
         guard let context = await captureContext(
             destination: destination,
-            requirePersistentCapture: false
+            requirePersistentCapture: false,
+            requireFreshCapabilities: true
         ) else {
             return .keptRetryable
         }
@@ -1473,7 +1479,8 @@ actor DiagnosticsCoordinator {
     func captureContext(
         applicationVersionOverride: String? = nil,
         destination: DiagnosticsDestinationChoice? = nil,
-        requirePersistentCapture: Bool = true
+        requirePersistentCapture: Bool = true,
+        requireFreshCapabilities: Bool = false
     ) async -> DiagnosticsCaptureContext? {
         let destination = destination ?? destinationStore.selectedDestination
         let snapshot: DiagnosticsStatusSnapshot
@@ -1481,7 +1488,10 @@ actor DiagnosticsCoordinator {
         let usedHostedFallback: Bool
         let hostedCredentialIdentity: RefreshAccountIdentity?
         do {
-            snapshot = try await refreshStatus(destination: destination)
+            snapshot = try await refreshStatus(
+                destination: destination,
+                requireFreshCapabilities: requireFreshCapabilities
+            )
             usedLastKnownSnapshot = false
             usedHostedFallback = false
             hostedCredentialIdentity = destination == .hosted

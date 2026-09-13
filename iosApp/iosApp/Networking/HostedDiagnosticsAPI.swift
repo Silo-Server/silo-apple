@@ -133,6 +133,9 @@ actor HostedDiagnosticsAPI {
     private let baseURL: URL
     private let session: URLSession
     private let credentialStore: any HostedDiagnosticsCredentialStoring
+    private let now: @Sendable () -> TimeInterval
+    private var cachedCapabilities: (value: HostedDiagnosticsCapabilities, fetchedAt: TimeInterval)?
+    private var capabilitiesTask: Task<HostedDiagnosticsCapabilities, Error>?
     /// A Task, rather than a boolean, makes first-run registration single
     /// flight across actor reentrancy: every concurrent upload awaits and uses
     /// the exact credential that wins persistence.
@@ -141,11 +144,13 @@ actor HostedDiagnosticsAPI {
     init(
         baseURL: URL = HostedDiagnosticsAPI.defaultBaseURL,
         session: URLSession = HostedDiagnosticsAPI.makeIsolatedSession(),
-        credentialStore: any HostedDiagnosticsCredentialStoring = HostedDiagnosticsKeychainCredentialStore()
+        credentialStore: any HostedDiagnosticsCredentialStoring = HostedDiagnosticsKeychainCredentialStore(),
+        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.baseURL = baseURL
         self.session = session
         self.credentialStore = credentialStore
+        self.now = now
     }
 
     nonisolated static func makeIsolatedSession() -> URLSession {
@@ -162,7 +167,24 @@ actor HostedDiagnosticsAPI {
         )
     }
 
-    func capabilities() async throws -> HostedDiagnosticsCapabilities {
+    /// Capture/status checks may reuse public metadata for five minutes. Uploads use the fresh default.
+    func capabilities(requireFresh: Bool = true) async throws -> HostedDiagnosticsCapabilities {
+        if !requireFresh, let cached = cachedCapabilities {
+            let age = now() - cached.fetchedAt
+            if age >= 0 && age < 5 * 60 { return cached.value }
+        }
+        // Concurrent checks share a live response; uploads never use a cached one.
+        if let task = capabilitiesTask { return try await task.value }
+        cachedCapabilities = nil
+        let task = Task { try await self.fetchCapabilities() }
+        capabilitiesTask = task
+        defer { capabilitiesTask = nil }
+        let response = try await task.value
+        cachedCapabilities = (response, now())
+        return response
+    }
+
+    private func fetchCapabilities() async throws -> HostedDiagnosticsCapabilities {
         var request = try request(path: "v1/capabilities", method: "GET")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 10

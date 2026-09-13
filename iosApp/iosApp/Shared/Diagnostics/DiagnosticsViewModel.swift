@@ -69,7 +69,7 @@ final class DiagnosticsViewModel {
         self.pendingStore = pendingStore
         self.destinationStore = destinationStore
         self.statusRefresher = statusRefresher ?? { destination in
-            try await coordinator.refreshStatus(destination: destination)
+            try await coordinator.refreshStatus(destination: destination, requireFreshCapabilities: false)
         }
         self.cachedStatusProvider = cachedStatusProvider ?? { destination in
             await coordinator.cachedStatusForActiveServer(destination: destination)
