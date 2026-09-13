@@ -120,7 +120,9 @@ struct AudioTrackSignature: Codable, Hashable {
 enum PlaybackPrefSentinel {
     static let inherit = "__inherit__"
     static let none = "__none__"
-    static let originalLanguage = "original"
+    /// Private-use BCP-47 tag used by the settings contract. Keep accepting
+    /// the legacy spelling when reading older local settings.
+    static let originalLanguage = "x-silo-original"
 }
 
 /// One language row in a settings picker. Values come from the generated
@@ -177,9 +179,11 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
     }
 
     static func label(forCode code: String) -> String {
-        if code == PlaybackPrefSentinel.originalLanguage { return "Original Language" }
-        return Locale.current.localizedString(forIdentifier: code)?.capitalized
-            ?? Locale.current.localizedString(forLanguageCode: code)?.capitalized
+        if code.caseInsensitiveCompare(PlaybackPrefSentinel.originalLanguage) == .orderedSame
+            || code.caseInsensitiveCompare("original") == .orderedSame { return "Original Language" }
+        let identifier = code.replacingOccurrences(of: "_", with: "-")
+        return Locale.current.localizedString(forIdentifier: identifier)?.capitalized
+            ?? Locale.current.localizedString(forLanguageCode: identifier.split(separator: "-").first.map(String.init) ?? identifier)?.capitalized
             ?? code.uppercased()
     }
 
