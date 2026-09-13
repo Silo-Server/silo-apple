@@ -311,7 +311,7 @@ struct APIv2Client: Sendable {
     func translateDescription(contentID: String, language: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
         try await gate()
         guard let profile = auth.profileId, await matchesAIAuthority(auth), !contentID.isEmpty,
-              !language.isEmpty, language.count <= 16 else {
+              !language.isEmpty else {
             throw HTTPError.requestIdentityChanged
         }
         let segment = try catalogPathSegment(contentID)
