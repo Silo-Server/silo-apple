@@ -1027,9 +1027,9 @@ actor TokenStore {
     /// per-token slots, which are not a canonical record but are still the
     /// user's session and must not be tombstoned by a rollback.
     enum AccountSessionSnapshot: Equatable, Sendable {
-        case session(CanonicalAccountSession)
-        case legacy(accessToken: String?, refreshToken: String?, epoch: String?)
-        case signedOut
+        case session(CanonicalAccountSession, profileToken: String?)
+        case legacy(accessToken: String?, refreshToken: String?, epoch: String?, profileToken: String?)
+        case signedOut(profileToken: String?)
         /// The slot could not be read. Restoring it fails closed.
         case unreadable
     }
@@ -1037,13 +1037,14 @@ actor TokenStore {
     func accountSessionSnapshot(for serverID: String) -> AccountSessionSnapshot {
         guard !serverID.isEmpty else { return .unreadable }
         do {
+            let profileToken = try profileKeychain.getChecked(Self.profileTokenKey(for: serverID))
             switch try sessions.load(serverID) {
-            case .session(let value): return .session(value)
-            case .signedOut: return .signedOut
+            case .session(let value): return .session(value, profileToken: profileToken)
+            case .signedOut: return .signedOut(profileToken: profileToken)
             case .legacy:
-                return .legacy(accessToken: accountKeychain.get(Self.accessTokenKey(for: serverID)),
-                    refreshToken: accountKeychain.get(Self.refreshTokenKey(for: serverID)),
-                    epoch: accountKeychain.get(Self.accountEpochKey(for: serverID)))
+                return .legacy(accessToken: try accountKeychain.getChecked(Self.accessTokenKey(for: serverID)),
+                    refreshToken: try accountKeychain.getChecked(Self.refreshTokenKey(for: serverID)),
+                    epoch: try accountKeychain.getChecked(Self.accountEpochKey(for: serverID)), profileToken: profileToken)
             }
         } catch {
             return .unreadable
@@ -1057,26 +1058,31 @@ actor TokenStore {
     @discardableResult
     func restoreAccountSession(_ snapshot: AccountSessionSnapshot, for serverID: String) -> Bool {
         guard !serverID.isEmpty else { return false }
-        let durable: Bool
+        var durable: Bool
+        let profileToken: String?
         switch snapshot {
-        case .session(let value):
+        case .session(let value, let proof):
+            profileToken = proof
             durable = (try? sessions.save(value, serverID: serverID)) != nil
             if durable {
                 if let access = value.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
                 if let refresh = value.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
                 if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
             }
-        case .legacy(let access, let refresh, let epoch):
-            durable = sessions.forget(serverID)
-            if durable {
-                func put(_ value: String?, _ key: String) {
-                    if let value { accountKeychain.set(value, for: key) } else { accountKeychain.delete(key) }
-                }
-                put(access, Self.accessTokenKey(for: serverID))
-                put(refresh, Self.refreshTokenKey(for: serverID))
-                put(epoch, Self.accountEpochKey(for: serverID))
+        case .legacy(let access, let refresh, let epoch, let proof):
+            profileToken = proof
+            func put(_ value: String?, _ key: String) -> Bool {
+                if let value { return accountKeychain.set(value, for: key) }
+                return accountKeychain.delete(key)
             }
-        case .signedOut:
+            let accessRestored = put(access, Self.accessTokenKey(for: serverID))
+            let refreshRestored = put(refresh, Self.refreshTokenKey(for: serverID))
+            let epochRestored = put(epoch, Self.accountEpochKey(for: serverID))
+            // Keep canonical authority until every legacy field is restored.
+            durable = accessRestored && refreshRestored && epochRestored
+            if durable { durable = sessions.forget(serverID) }
+        case .signedOut(let proof):
+            profileToken = proof
             durable = sessions.invalidate(serverID)
             if durable {
                 accountKeychain.delete(Self.accessTokenKey(for: serverID))
@@ -1084,7 +1090,15 @@ actor TokenStore {
                 accountKeychain.delete(Self.accountEpochKey(for: serverID))
             }
         case .unreadable:
+            profileToken = nil
             durable = false
+        }
+        if durable {
+            if let profileToken {
+                durable = profileKeychain.set(profileToken, for: Self.profileTokenKey(for: serverID))
+            } else {
+                durable = profileKeychain.delete(Self.profileTokenKey(for: serverID))
+            }
         }
         if durable {
             runtimeBlockedServers.remove(serverID)

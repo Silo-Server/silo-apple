@@ -360,7 +360,7 @@ final class ReceiverPairingCoordinator {
         // Re-pairing an already saved server replaces its credential slot in
         // `saveTokens` below (and adopts the slot even when the write fails
         // part way), before the registry commit can still fail. Keep what
-        // the slot held, whichever of the four states that is, so either
+        // the slot and its server-scoped profile proof held, so either
         // failure puts it back instead of leaving the new credentials, an
         // adoption marker, or a tombstone behind a reported failure.
         let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)

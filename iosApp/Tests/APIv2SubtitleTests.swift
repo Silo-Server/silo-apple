@@ -26,6 +26,48 @@ final class APIv2SubtitleTests: XCTestCase {
         }
     }
 
+    func testCreateAndCancelPreserveOpaqueJobIdentifiers() async throws {
+        let name = "SubtitleJobIdentityTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "server")
+        await tokens.setServerUrl("https://subtitles.example")
+        let stub = APIv2TestStub()
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { false })
+        let body = try APIv2SubtitleCreateBody(TranslateSubtitleBody(mediaFileId: 42, kind: .translate,
+            sourceIndex: 0, sourceLanguage: "en", targetLanguage: "fr", sessionId: nil, startPosition: 0))
+        for id in ["opaque-job", "007", "9223372036854775808", "job/part?x#y%z", ""] {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("subtitle_ai_job_opaque_id")) as? [String: Any])
+            var job = try XCTUnwrap(object["job"] as? [String: Any])
+            job["id"] = id; job["kind"] = "translate"; job["source_index"] = 0
+            object["job"] = job; object["live_delivery_attached"] = false
+            stub.reply(202, String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
+            let auth = try await api.subtitleCreateAuthority()
+            if id.isEmpty {
+                do { _ = try await api.createSubtitle(body, auth: auth); XCTFail("Accepted empty job ID") }
+                catch APIv2Error.invalidSubtitleResponse { }
+                let count = stub.requests.count
+                do { try await api.cancelSubtitleJob(id: id); XCTFail("Dispatched empty job ID") }
+                catch APIv2Error.invalidSubtitleResponse { }
+                XCTAssertEqual(stub.requests.count, count)
+            } else {
+                let created = try await api.createSubtitle(body, auth: auth)
+                XCTAssertEqual(created.job.id, id)
+                stub.reply(204, "")
+                try await api.cancelSubtitleJob(id: id)
+                let request = try XCTUnwrap(stub.requests.last)
+                let components = try XCTUnwrap(URLComponents(url: XCTUnwrap(request.url), resolvingAgainstBaseURL: false))
+                XCTAssertNil(components.query)
+                XCTAssertNil(components.fragment)
+                let segment = try XCTUnwrap(components.percentEncodedPath.split(separator: "/").dropLast().last)
+                XCTAssertEqual(String(segment).removingPercentEncoding, id)
+            }
+        }
+    }
+
     func testAIJobFixturePreservesOpaqueIdentityAndNullableResult() throws {
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleJobEnvelope.self,
             from: fixture("subtitle_ai_job_opaque_id"))

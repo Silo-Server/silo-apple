@@ -386,7 +386,7 @@ struct APIv2Client: Sendable {
         }
         guard raw.statusCode == 202 else { throw APIv2Error.invalidSubtitleResponse }
         let response = try HTTPClient.makeJSONDecoder().decode(APIv2SubtitleCreateResponse.self, from: raw.data)
-        guard let id = Int64(response.job.id), id > 0, String(id) == response.job.id,
+        guard !response.job.id.isEmpty,
               response.job.mediaFileId == body.mediaFileId, response.job.kind == body.kind.rawValue,
               response.job.sourceIndex == body.sourceIndex,
               !response.liveDeliveryAttached || body.sessionId != nil else { throw APIv2Error.invalidSubtitleResponse }
@@ -396,7 +396,7 @@ struct APIv2Client: Sendable {
 
     /// Acknowledges a cancellation request; completion may already have won.
     func cancelSubtitleJob(id: String) async throws {
-        guard let value = Int64(id), value > 0, String(value) == id else {
+        guard let segment = try? catalogPathSegment(id) else {
             throw APIv2Error.invalidSubtitleResponse
         }
         try await gate()
@@ -406,7 +406,7 @@ struct APIv2Client: Sendable {
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/jobs/\(id)/cancel",
+                try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/jobs/\(segment)/cancel",
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
@@ -677,6 +677,8 @@ struct APIv2Client: Sendable {
             }
             continuation = APIv2CatalogContinuation(query: query, operation: operation, cursor: next,
                 seen: seen.union([next]), identity: identity, account: auth.account, auth: auth)
+        } else if let next = page.page.nextCursor, !next.isEmpty {
+            throw APIv2Error.invalidCatalogContinuation
         }
         return APIv2CatalogResult(auth: auth, value: page, continuation: continuation)
     }

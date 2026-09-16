@@ -611,6 +611,20 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.count, 3)
     }
 
+    func testTerminalCursorIsRejectedForBothCatalogOperations() async throws {
+        let (api, _) = try await client()
+        for operation in [APIv2CatalogOperation.get, .query] {
+            stub.reply(200, #"{"items":[],"page":{"has_more":false,"next_cursor":"unfinished"},"total":3,"total_exact":true,"window_cursor":"w"}"#)
+            do {
+                _ = try await api.catalogPage(query: .init(), operation: operation)
+                XCTFail("Accepted a terminal page with a continuation")
+            } catch APIv2Error.invalidCatalogContinuation { }
+            stub.reply(200, terminal)
+            let page = try await api.catalogPage(query: .init(), operation: operation)
+            XCTAssertNil(page.continuation)
+        }
+    }
+
     func testExpiredCursorProblemRequiresExplicitRestart() async throws {
         stub.reply(400, #"{"type":"https://siloserver.org/docs/api/v2/problems/invalid_cursor","title":"Invalid cursor","status":400,"detail":"Ranking expired; restart.","instance":"urn:test"}"#)
         let (api, _) = try await client()

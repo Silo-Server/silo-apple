@@ -16,6 +16,7 @@ final class AuthService: @unchecked Sendable {
     private let restoredSessionValidator: RestoredSessionValidator
     private let contractProbe: APIv2Probe
     private let httpClient: HTTPClient
+    private let tokenStore: TokenStore
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -41,7 +42,8 @@ final class AuthService: @unchecked Sendable {
         launchPreferences: ProfileLaunchPreferences = .shared,
         restoredSessionValidator: RestoredSessionValidator = .live,
         contractProbe: APIv2Probe = APIv2Probe(),
-        httpClient: HTTPClient = .shared
+        httpClient: HTTPClient = .shared,
+        tokenStore: TokenStore = .shared
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
@@ -49,6 +51,7 @@ final class AuthService: @unchecked Sendable {
         self.restoredSessionValidator = restoredSessionValidator
         self.contractProbe = contractProbe
         self.httpClient = httpClient
+        self.tokenStore = tokenStore
     }
 
     /// Runs the v2 contract probe for `serverId` and records the verdict.
@@ -204,40 +207,48 @@ final class AuthService: @unchecked Sendable {
         refreshToken: String,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
             throw CancellationError()
         }
         guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             throw CancellationError()
         }
-        await HTTPClient.shared.cancelInFlightRequests()
+        await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled,
-              await TokenStore.shared.refreshAccountIdentity() == expectedAccount else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+              await tokenStore.refreshAccountIdentity() == expectedAccount else {
+            await httpClient.endIdentityTransition(transitionLease)
             if Task.isCancelled { throw CancellationError() }
             throw HTTPError.requestIdentityChanged
         }
-        if let serverID = serverRegistry.activeServerId {
-            launchPreferences.clearRememberedProfile(for: serverID)
+        let previousSession = await tokenStore.accountSessionSnapshot(for: expectedAccount.serverId)
+        guard previousSession != .unreadable else {
+            await httpClient.endIdentityTransition(transitionLease)
+            throw AccountSessionPersistenceError.unavailable
         }
-        await TokenStore.shared.clearTokens()
+        let previousProfileID = await tokenStore.getProfileId()
+        await tokenStore.clearTokens()
         do {
             // v1 login responses carry no verified account id for the durable
             // binding; the session installs unverified, exactly as
             // `saveTokens` did, but a failed persist is reported instead of
             // returning a "logged in" that does not survive the next launch.
-            try await TokenStore.shared.installAccountSession(
+            try await tokenStore.installAccountSession(
                 accessToken: accessToken,
                 refreshToken: refreshToken,
                 accountID: nil
             )
         } catch {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            // A failed restore keeps the server blocked in TokenStore. Preserve
+            // the installation error and never publish a successful login.
+            _ = await tokenStore.restoreAccountSession(previousSession, for: expectedAccount.serverId)
+            await tokenStore.setProfileId(previousProfileID)
+            await httpClient.endIdentityTransition(transitionLease)
             throw error
         }
+        launchPreferences.clearRememberedProfile(for: expectedAccount.serverId)
         await clearAllCaches()
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
     }
 
     // MARK: - Profiles

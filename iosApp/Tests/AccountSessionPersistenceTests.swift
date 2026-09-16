@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import Silo
 
@@ -223,13 +224,116 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let cleared = await store.getAccessToken()
         XCTAssertNil(cleared)
     }
+    @MainActor
+    func testFailedLoginRestoresSessionAndRetainsRememberedProfile() async throws {
+        let (store, keys, defaults, memory) = try await harness()
+        try await store.installAccountSession(accessToken: "original", refreshToken: "refresh", accountID: "12")
+        await store.setProfileId("profile")
+        _ = await store.setProfileToken("proof")
+        let epoch = await store.getOrCreateAccountEpoch()
+        let preferences = ProfileLaunchPreferences(defaults: defaults)
+        preferences.remember(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), for: "server")
+        let before = preferences.state
+        let http = HTTPClient(session: APIv2TestStub().makeSession(), tokenStore: store)
+        let auth = AuthService(launchPreferences: preferences, httpClient: http, tokenStore: store)
+        let expected = await store.refreshAccountIdentity()
+        memory.failAccessToken = "replacement"
+        do {
+            try await auth.installSession(accessToken: "replacement", refreshToken: "new-refresh",
+                expectedAccount: XCTUnwrap(expected))
+            XCTFail("Failed persistence reported login success")
+        } catch AccountSessionPersistenceError.unavailable { }
+        let restored = await store.getAccessToken()
+        let profile = await store.getProfileId()
+        let proof = await store.getProfileToken()
+        XCTAssertEqual(restored, "original")
+        XCTAssertEqual(profile, "profile")
+        XCTAssertEqual(proof, "proof")
+        XCTAssertEqual(preferences.state, before)
+        let relaunched = await restarted(keys, defaults, memory).getAccessToken()
+        XCTAssertEqual(relaunched, "original")
+        XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults).state, before)
+        let lease = await http.beginIdentityTransition()
+        XCTAssertNotNil(lease, "Failed login must release its transition lease")
+        if let lease { await http.endIdentityTransition(lease) }
+    }
+
+    func testRollbackRestoresInactiveTargetsProfileProof() async throws {
+        for sameServer in [false, true] {
+            let (store, keys, defaults, memory) = try await harness()
+            try await store.installAccountSession(accessToken: "original", refreshToken: "refresh", accountID: "12")
+            _ = await store.setProfileToken("target-proof")
+            if !sameServer {
+                await store.switchActiveServer(serverId: "other")
+                _ = await store.setProfileToken("active-proof")
+            }
+            let snapshot = await store.accountSessionSnapshot(for: "server")
+            await store.switchActiveServer(serverId: "server")
+            _ = await store.setProfileToken(nil)
+            try await store.installAccountSession(accessToken: "replacement", refreshToken: "new-refresh", accountID: "34")
+            let restored = await store.restoreAccountSession(snapshot, for: "server")
+            XCTAssertTrue(restored)
+            let proof = await store.getProfileToken()
+            XCTAssertEqual(proof, "target-proof")
+            let relaunched = await restarted(keys, defaults, memory)
+            let durableProof = await relaunched.getProfileToken()
+            XCTAssertEqual(durableProof, "target-proof")
+            if !sameServer {
+                await store.switchActiveServer(serverId: "other")
+                let activeProof = await store.getProfileToken()
+                XCTAssertEqual(activeProof, "active-proof")
+            }
+        }
+    }
+
+    func testSnapshotRejectsUnreadableLegacyOrProfileSlots() async throws {
+        let (store, keys, _, _) = try await harness()
+        // Disable persona-specific storage so this raw Security write targets
+        // the same slot on both iOS and tvOS.
+        let plainKeys = SharedKeychain(service: keys.service, accessGroup: nil, usesUserIndependentKeychain: false)
+        let checkedStore = TokenStore(keychain: plainKeys, sessionPersistence: SessionMemory().persistence)
+        for key in [TokenStore.accessTokenKey(for: "server"), TokenStore.refreshTokenKey(for: "server"),
+                    TokenStore.accountEpochKey(for: "server"), TokenStore.profileTokenKey(for: "server")] {
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: keys.service, kSecAttrAccount as String: key,
+                kSecValueData as String: Data([0xFF])]
+            XCTAssertEqual(SecItemAdd(query as CFDictionary, nil), errSecSuccess)
+            let snapshot = await checkedStore.accountSessionSnapshot(for: "server")
+            XCTAssertEqual(snapshot, .unreadable)
+            XCTAssertTrue(plainKeys.delete(key))
+        }
+        let empty = await store.accountSessionSnapshot(for: "server")
+        XCTAssertEqual(empty, .legacy(accessToken: nil, refreshToken: nil, epoch: nil, profileToken: nil))
+    }
+
+    func testLegacyRestoreFailsClosedWhenKeychainWritesOrDeletesFail() async throws {
+        for access in [String?.none, "legacy-access"] {
+            let (_, _, defaults, memory) = try await harness()
+            let blockedKeys = SharedKeychain(service: "Unavailable.\(UUID().uuidString)",
+                accessGroup: "unentitled.rollback.tests", allowsAppLocalFallback: false)
+            let store = TokenStore(keychain: blockedKeys, defaults: defaults, sessionPersistence: memory.persistence)
+            await store.switchActiveServer(serverId: "server")
+            try memory.persistence.save(CanonicalAccountSession(version: 1, signedOut: false,
+                origin: "https://session.example", accountID: "12", epoch: UUID(),
+                accessToken: "paired", refreshToken: "paired-refresh"), serverID: "server")
+            let restored = await store.restoreAccountSession(.legacy(accessToken: access,
+                refreshToken: "legacy-refresh", epoch: nil, profileToken: nil), for: "server")
+            XCTAssertFalse(restored)
+            let token = await store.getAccessToken()
+            XCTAssertNil(token)
+            guard case .session = try memory.persistence.load("server") else {
+                return XCTFail("Failed legacy restore must not remove canonical authority")
+            }
+        }
+    }
+
     func testSessionSnapshotRestoresEachSlotStateExactly() async throws {
         let (store, keys, defaults, memory) = try await harness()
 
         // A canonical session comes back as it was, and survives a relaunch.
         try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")
         let session = await store.accountSessionSnapshot(for: "server")
-        guard case .session(let value) = session else { return XCTFail("expected a session snapshot") }
+        guard case .session(let value, _) = session else { return XCTFail("expected a session snapshot") }
         XCTAssertEqual(value.accessToken, "one")
         try await store.installAccountSession(accessToken: "two", refreshToken: "refresh-two", accountID: "34")
         let restored = await store.restoreAccountSession(session, for: "server")
@@ -243,7 +347,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         // replacement credentials.
         _ = await store.clearTokens()
         let signedOut = await store.accountSessionSnapshot(for: "server")
-        XCTAssertEqual(signedOut, .signedOut)
+        XCTAssertEqual(signedOut, .signedOut(profileToken: nil))
         try await store.installAccountSession(accessToken: "three", refreshToken: "refresh-three", accountID: "56")
         let tombstoned = await store.restoreAccountSession(signedOut, for: "server")
         XCTAssertTrue(tombstoned)
@@ -257,7 +361,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         legacyKeys.withAudience(.userIndependent).set("legacy-access", for: TokenStore.accessTokenKey(for: "server"))
         legacyKeys.withAudience(.userIndependent).set("legacy-refresh", for: TokenStore.refreshTokenKey(for: "server"))
         let legacy = await legacyStore.accountSessionSnapshot(for: "server")
-        XCTAssertEqual(legacy, .legacy(accessToken: "legacy-access", refreshToken: "legacy-refresh", epoch: nil))
+        XCTAssertEqual(legacy, .legacy(accessToken: "legacy-access", refreshToken: "legacy-refresh", epoch: nil, profileToken: nil))
         try await legacyStore.installAccountSession(accessToken: "paired", refreshToken: "paired-refresh", accountID: "78")
         let unadopted = await legacyStore.restoreAccountSession(legacy, for: "server")
         XCTAssertTrue(unadopted)
@@ -334,6 +438,7 @@ private final class SessionMemory: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: String] = [:]
     var failRecordWrites = false
+    var failAccessToken: String?
     var failRemoval = false
     var failRead = false
     var persistence: AccountSessionPersistence {
@@ -345,6 +450,9 @@ private final class SessionMemory: @unchecked Sendable {
         }, write: { value, key in
             self.lock.withLock {
                 if self.failRecordWrites && key.hasSuffix(".accountSession") { return false }
+                if let rejected = self.failAccessToken,
+                   let session = try? JSONDecoder().decode(CanonicalAccountSession.self, from: Data(value.utf8)),
+                   session.accessToken == rejected { return false }
                 self.values[key] = value; return true
             }
         }, remove: { key in
