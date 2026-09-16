@@ -497,11 +497,16 @@ final class ServerRegistry {
     /// `purgeCurrentBinding: false` when the caller already purged the active
     /// binding while still authenticated (AuthService.signOut does, so the
     /// binding resolves against a live session) to avoid duplicate current work.
+    /// Returns `false` when the canonical session record could not be
+    /// invalidated durably; process-local credentials are still cleared, but
+    /// the caller must not report the sign-out as complete because the
+    /// record can restore the session on the next launch.
+    @discardableResult
     func signOut(
         serverId: String,
         purgeCurrentBinding: Bool = true,
         purgeRegistryBindings: Bool = true
-    ) async {
+    ) async -> Bool {
         #if os(iOS) || os(tvOS)
         if purgeCurrentBinding, serverId == activeServerId {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
@@ -510,7 +515,7 @@ final class ServerRegistry {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         }
         #endif
-        await TokenStore.shared.deleteTokens(for: serverId)
+        let durable = await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         // Read *after* the awaits above, not snapshotted at entry: the legacy
         // `profileId` key always describes whichever server is active right
@@ -545,9 +550,10 @@ final class ServerRegistry {
         // that is the case the reason names.
         recordRegistryEvent(
             phase: "signOutServer",
-            outcome: "succeeded",
+            outcome: durable ? "succeeded" : "notDurable",
             reason: signsOutActiveServer ? "activeServer" : "otherServer"
         )
+        return durable
     }
 
     /// Remove a server entirely (entry + tokens). If it was active, the
@@ -661,6 +667,30 @@ final class ServerRegistry {
             }
         }
 
+        // Invalidate the credentials before the entry goes: a canonical
+        // record that cannot be tombstoned would otherwise outlive the entry
+        // and restore the session when the same server is added again. The
+        // entry survives a failed invalidation so the caller's "entry
+        // survived" handling is accurate.
+        guard await TokenStore.shared.deleteTokens(for: serverId) else {
+            #if os(iOS) || os(tvOS)
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            #endif
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            if removesActiveServer {
+                Self.logger.error("removeServer could not invalidate the canonical session")
+            } else {
+                recordRegistryEvent(
+                    phase: "removeServer",
+                    outcome: "failed",
+                    reason: "sessionInvalidationFailed"
+                )
+            }
+            return false
+        }
+
         let previousEntries = entries
         let previousActiveServerID = activeServerId
         let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
@@ -728,7 +758,6 @@ final class ServerRegistry {
         if removesActiveServer {
             await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
         }
-        await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         if removesActiveServer,
            resolveFallbackProfile,

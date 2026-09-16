@@ -23,7 +23,8 @@ struct PlaybackSequencedSample: Codable, Equatable, Sendable {
     let itemPosition: Double?
 
     init(sequence: Int64, position: Double, isPaused: Bool, timelineId: String? = nil, itemPosition: Double? = nil) throws {
-        guard sequence > 0, position.isFinite, position >= 0 else { throw PlaybackSequencedError.invalidSample }
+        guard sequence > 0, position.isFinite, position >= 0,
+              itemPosition.map({ $0.isFinite && $0 >= 0 }) ?? true else { throw PlaybackSequencedError.invalidSample }
         self.sequence = sequence
         self.position = position
         self.isPaused = isPaused

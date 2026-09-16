@@ -638,17 +638,23 @@ class AppRouter {
     /// it owns request authentication, then retries against the persistent
     /// account. Other refusals leave navigation and credentials untouched.
     private func completeRequestedSignOut() async -> Bool {
-        if await AuthService.shared.signOut() {
-            return true
-        }
+        var outcome = await AuthService.shared.signOutWithOutcome()
         #if os(tvOS)
-        guard await RemotePlaybackIdentityManager.shared.end() else {
+        if outcome == .refused, await RemotePlaybackIdentityManager.shared.end() {
+            outcome = await AuthService.shared.signOutWithOutcome()
+        }
+        #endif
+        switch outcome {
+        case .completed:
+            return true
+        case .localOnly:
+            // The signed-in UI is gone either way; what is not true is that
+            // the session is durably ended. Say so where it can be found.
+            Self.logger.error("signOut cleared local credentials but the canonical session could not be invalidated")
+            return true
+        case .refused:
             return false
         }
-        return await AuthService.shared.signOut()
-        #else
-        return false
-        #endif
     }
 
     private func completeRequestedProfileSwitch() async -> Bool {

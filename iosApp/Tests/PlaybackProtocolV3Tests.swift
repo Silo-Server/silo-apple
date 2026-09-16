@@ -11,6 +11,16 @@ actor PlaybackTestActorBox<Value: Sendable> {
 
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
+    func testSequencedSampleRejectsInvalidItemPosition() throws {
+        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: 0)
+        _ = try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: nil)
+        for bad in [-1.0, .infinity, .nan] {
+            XCTAssertThrowsError(try PlaybackSequencedSample(sequence: 1, position: 10, isPaused: false, itemPosition: bad)) { error in
+                guard case PlaybackSequencedError.invalidSample = error else { return XCTFail("Unexpected \(error)") }
+            }
+        }
+    }
+
     /// The control ticket is a delegated credential carried in the WebSocket
     /// handshake, so it is only ever sent over TLS (or to loopback).
     func testControlTicketRequestRequiresTLSExceptLoopback() throws {

@@ -22,6 +22,19 @@ final class AuthService: @unchecked Sendable {
         case refused
     }
 
+    enum SignOutOutcome: Equatable, Sendable {
+        /// Credentials were cleared and the canonical record was invalidated.
+        case completed
+        /// Nothing was changed: the sign-out was not authorised or the
+        /// active identity changed while it ran.
+        case refused
+        /// Process-local credentials were cleared but the canonical record
+        /// could not be invalidated, so the session can return after a
+        /// relaunch. The caller should leave the signed-in UI but must not
+        /// report a durable sign-out.
+        case localOnly
+    }
+
     init(
         serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
         serverRegistry: ServerRegistry = .shared,
@@ -649,6 +662,10 @@ final class AuthService: @unchecked Sendable {
     /// forget a server instead.
     @discardableResult
     func signOut() async -> Bool {
+        await signOutWithOutcome() != .refused
+    }
+
+    func signOutWithOutcome() async -> SignOutOutcome {
         let signingOutServerId = ServerRegistry.shared.activeServerId
         let signingOutAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
         let authorization = Self.signOutAuthorization(
@@ -656,7 +673,7 @@ final class AuthService: @unchecked Sendable {
             capturedAuth: signingOutAuth
         )
         guard case .allowed(let signingOutAccount) = authorization else {
-            return false
+            return .refused
         }
         #if os(iOS) || os(tvOS)
         // Purge the active binding now, while still authenticated: the /logout
@@ -692,31 +709,32 @@ final class AuthService: @unchecked Sendable {
         }
         #endif
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return false
+            return .refused
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
+            return .refused
         }
         await HTTPClient.shared.cancelInFlightRequests()
         guard !Task.isCancelled,
               ServerRegistry.shared.activeServerId == signingOutServerId,
               await TokenStore.shared.refreshAccountIdentity() == signingOutAccount else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
+            return .refused
         }
+        let durable: Bool
         if let signingOutServerId {
-            await ServerRegistry.shared.signOut(
+            durable = await ServerRegistry.shared.signOut(
                 serverId: signingOutServerId,
                 purgeCurrentBinding: false,
                 purgeRegistryBindings: false
             )
         } else {
-            await TokenStore.shared.clearTokens()
+            durable = await TokenStore.shared.clearTokens()
         }
         await clearAllCaches()
         await HTTPClient.shared.endIdentityTransition(transitionLease)
-        return true
+        return durable ? .completed : .localOnly
     }
 
     /// Decide whether a captured credential can authorize local sign-out.
