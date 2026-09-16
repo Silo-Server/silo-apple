@@ -9,6 +9,7 @@ import SwiftUI
 /// next-up Play action, same horizontal episode rail — sized for touch.
 struct SeriesDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
+    var libraryId: Int? = nil
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -212,6 +213,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 if DownloadManager.shared.downloadsEnabled {
                     SeriesDownloadMenuButton(
                         detail: detail,
+                        libraryId: libraryId,
                         seasons: seasons,
                         selectedSeason: selectedSeason,
                         episodes: episodes,

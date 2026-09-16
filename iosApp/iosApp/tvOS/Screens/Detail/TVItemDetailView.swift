@@ -269,6 +269,7 @@ struct TVItemDetailView: View {
         if detail.isAudiobook {
             AudiobookDetailContent(
                 detail: detail,
+                libraryId: libraryId,
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 }

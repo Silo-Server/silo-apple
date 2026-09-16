@@ -86,6 +86,22 @@ final class LibraryDetailScopeTests: XCTestCase {
     }
 
     @MainActor
+    func testAudioPreparationReadsTheSelectedLibraryAndGlobalEntryClearsIt() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.reply(200, detailJSON)
+        let player = AudioPlayerViewModel(api: api)
+        for libraryId: Int? in [7, 8, nil] {
+            // An item without audio files ends preparation after the real
+            // catalog read, before any playback session can be created.
+            await player.start(contentId: "movie", libraryId: libraryId)
+            XCTAssertNotNil(player.error)
+        }
+        await player.close()
+        XCTAssertEqual(stub.requests.map { $0.query["library_id"] }, ["7", "8", nil])
+    }
+
+    @MainActor
     func testHydrationAndInvalidationRespectLibraryPresentations() throws {
         let cache = ResponseCache.shared
         let id = "scope-test-\(UUID().uuidString)"
@@ -209,6 +225,33 @@ final class LibraryDetailScopeTests: XCTestCase {
     #endif
 
     #if os(tvOS)
+    @MainActor
+    func testTVMarqueeAndContinueWatchingHydrateTheirOwnLibrary() async throws {
+        let id = "marquee-scope-\(UUID().uuidString)"
+        let cache = ResponseCache.shared
+        defer { cache.removeItemMetadata(contentId: id) }
+        let item = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"\#(id)","type":"movie","title":"Movie"}"#.utf8))
+        let store = TVContinueWatchingPlaybackMetadataStore.shared
+        for libraryId: Int? in [nil, 7, 8] {
+            let label = libraryId.map(String.init) ?? "global"
+            let detail = try JSONDecoder().decode(ItemDetail.self, from: Data(
+                #"{"contentId":"\#(id)","type":"movie","title":"\#(label)","contentRating":"\#(label)"}"#.utf8))
+            cache.set(detail, for: CacheKey.itemDetail(id, libraryId: libraryId))
+        }
+        // Revisit Home after both libraries to exercise the store's retained
+        // same-revision values as well as its first response-cache hydration.
+        for libraryId: Int? in [nil, 7, 8, nil, 7] {
+            let label = libraryId.map(String.init) ?? "global"
+            let model = TVFocusMarqueeModel(libraryId: libraryId)
+            model.seed(TVMarqueeContent(item: item, rowTitle: "Movies"))
+            XCTAssertEqual(model.enrichment?.contentRatingBadge, label.uppercased())
+            model.suspend()
+            let saved = await store.load(item: item, libraryId: libraryId)
+            XCTAssertEqual(saved?.title, label)
+        }
+    }
+
     @MainActor
     func testTVModelCacheSeparatesLibrariesAndGlobalEntry() {
         let cache = ItemDetailCache.shared

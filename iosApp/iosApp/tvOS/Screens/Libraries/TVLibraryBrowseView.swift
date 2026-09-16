@@ -55,6 +55,7 @@ struct TVLibraryBrowseView: View {
             } else {
                 TVSkylineSectionFeed(
                     sections: contentSections,
+                    libraryId: library.id,
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onMoveUp,
@@ -68,6 +69,7 @@ struct TVLibraryBrowseView: View {
                         )
                     }
                 )
+                .id(library.id)
             }
         }
         .environment(\.browseLibraryId, library.id)

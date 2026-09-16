@@ -536,6 +536,7 @@ private struct ItemDetailPhoneContent: View {
         if detail.isAudiobook {
             AudiobookDetailContent(
                 detail: detail,
+                libraryId: libraryId,
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 }
@@ -543,6 +544,7 @@ private struct ItemDetailPhoneContent: View {
         } else if detail.type == "season" {
             SeasonDetailContent(
                 detail: detail,
+                libraryId: libraryId,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
@@ -649,6 +651,7 @@ private struct ItemDetailPhoneContent: View {
         } else if detail.type == "series" {
             SeriesDetailContent(
                 detail: detail,
+                libraryId: libraryId,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,

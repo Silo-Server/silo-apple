@@ -11,6 +11,7 @@ import SwiftUI
 /// touch on a phone.
 struct SeasonDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
+    var libraryId: Int? = nil
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -173,6 +174,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             if DownloadManager.shared.downloadsEnabled {
                 SeriesDownloadMenuButton(
                     detail: detail,
+                    libraryId: libraryId,
                     seasons: seasons,
                     selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber }),
                     episodes: episodes,

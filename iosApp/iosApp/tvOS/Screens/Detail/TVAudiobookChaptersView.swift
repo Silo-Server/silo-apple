@@ -13,6 +13,7 @@ import SwiftUI
 /// already-entered scope" case from the tvOS focus playbook.
 struct TVAudiobookChaptersView: View {
     let detail: ItemDetail
+    let libraryId: Int?
 
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.dismiss) private var dismiss
@@ -22,8 +23,9 @@ struct TVAudiobookChaptersView: View {
     /// the full part/chapter timeline, so it should run once per view.
     private let model: TVAudiobookViewModel
 
-    init(detail: ItemDetail) {
+    init(detail: ItemDetail, libraryId: Int? = nil) {
         self.detail = detail
+        self.libraryId = libraryId
         self.model = TVAudiobookViewModel(detail: detail)
     }
 
@@ -180,7 +182,7 @@ struct TVAudiobookChaptersView: View {
 
     private func rowButton(_ row: Row) -> some View {
         Button {
-            audioStore.play(contentId: detail.contentId, restart: false, startPosition: row.startSeconds)
+            audioStore.play(contentId: detail.contentId, restart: false, startPosition: row.startSeconds, libraryId: libraryId)
             dismiss()
         } label: {
             TVAudiobookRowLabel(row: row)

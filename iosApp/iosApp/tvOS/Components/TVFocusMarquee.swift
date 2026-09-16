@@ -328,23 +328,24 @@ final class TVContinueWatchingPlaybackMetadataStore {
 
     private(set) var presentations: [String: TVContinueWatchingPlaybackPresentation] = [:]
 
-    @ObservationIgnored private var loadedRevisionByContentId: [String: String] = [:]
-    @ObservationIgnored private var detailByContentId: [String: ItemDetail] = [:]
-    @ObservationIgnored private var requestedRevisionByContentId: [String: String] = [:]
+    @ObservationIgnored private var loadedRevisionByCacheKey: [String: String] = [:]
+    @ObservationIgnored private var detailByCacheKey: [String: ItemDetail] = [:]
+    @ObservationIgnored private var requestedRevisionByCacheKey: [String: String] = [:]
 
     private init() {}
 
-    func presentation(for contentId: String?) -> TVContinueWatchingPlaybackPresentation? {
+    func presentation(for contentId: String?, libraryId: Int? = nil) -> TVContinueWatchingPlaybackPresentation? {
         guard let contentId else { return nil }
-        return presentations[contentId]
+        return presentations[CacheKey.itemDetail(contentId, libraryId: libraryId)]
     }
 
     @discardableResult
-    func load(item: SectionItem) async -> ItemDetail? {
+    func load(item: SectionItem, libraryId: Int? = nil) async -> ItemDetail? {
         await load(
             contentId: item.contentId,
             progressUpdatedAt: item.progressUpdatedAt,
-            baseOverlayData: OverlayData.from(item)
+            baseOverlayData: OverlayData.from(item),
+            libraryId: libraryId
         )
     }
 
@@ -352,43 +353,46 @@ final class TVContinueWatchingPlaybackMetadataStore {
     func load(
         contentId: String,
         progressUpdatedAt: String?,
-        baseOverlayData: OverlayData?
+        baseOverlayData: OverlayData?,
+        libraryId: Int? = nil
     ) async -> ItemDetail? {
         let revision = progressUpdatedAt ?? ""
-        if loadedRevisionByContentId[contentId] == revision,
-           let detail = detailByContentId[contentId] {
+        let key = CacheKey.itemDetail(contentId, libraryId: libraryId)
+        if loadedRevisionByCacheKey[key] == revision,
+           let detail = detailByCacheKey[key] {
             return detail
         }
 
         // A newly reported progress revision may carry a newly selected file,
         // so bypass an older item-detail cache in that one case. Initial Home
         // paint can still reuse the normal shared detail cache immediately.
-        let hasChangedRevision = loadedRevisionByContentId[contentId].map { $0 != revision } ?? false
+        let hasChangedRevision = loadedRevisionByCacheKey[key].map { $0 != revision } ?? false
         if !hasChangedRevision,
-           let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId)) {
+           let cached: ItemDetail = ResponseCache.shared.get(key) {
             commit(
                 detail: cached,
-                contentId: contentId,
+                cacheKey: key,
                 revision: revision,
                 baseOverlayData: baseOverlayData
             )
             return cached
         }
 
-        requestedRevisionByContentId[contentId] = revision
+        requestedRevisionByCacheKey[key] = revision
         guard let detail = try? await MetadataRequestPool.shared.itemDetail(
             contentId: contentId,
+            libraryId: libraryId,
             // Always key the flight by progress revision. An initial request
             // and a newer revision can otherwise overlap before either one
-            // publishes `loadedRevisionByContentId`, causing the newer caller
+            // publishes `loadedRevisionByCacheKey`, causing the newer caller
             // to join the older payload and mislabel it as current.
             freshnessDiscriminator: "continue-watching:\(revision)"
-        ), requestedRevisionByContentId[contentId] == revision else { return nil }
+        ), requestedRevisionByCacheKey[key] == revision else { return nil }
 
-        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
+        ResponseCache.shared.set(detail, for: key)
         commit(
             detail: detail,
-            contentId: contentId,
+            cacheKey: key,
             revision: revision,
             baseOverlayData: baseOverlayData
         )
@@ -397,22 +401,22 @@ final class TVContinueWatchingPlaybackMetadataStore {
 
     private func commit(
         detail: ItemDetail,
-        contentId: String,
+        cacheKey key: String,
         revision: String,
         baseOverlayData: OverlayData?
     ) {
-        detailByContentId[contentId] = detail
-        loadedRevisionByContentId[contentId] = revision
+        detailByCacheKey[key] = detail
+        loadedRevisionByCacheKey[key] = revision
 
         guard let baseOverlayData,
               let presentation = Self.presentation(
                   detail: detail,
                   baseOverlayData: baseOverlayData
               ) else {
-            presentations.removeValue(forKey: contentId)
+            presentations.removeValue(forKey: key)
             return
         }
-        presentations[contentId] = presentation
+        presentations[key] = presentation
     }
 
     private static func presentation(
@@ -611,6 +615,12 @@ struct TVMarqueeEnrichment: Equatable {
 @Observable
 @MainActor
 final class TVFocusMarqueeModel {
+    let libraryId: Int?
+
+    init(libraryId: Int? = nil) {
+        self.libraryId = libraryId
+    }
+
     /// Foreground text and cached metadata follow focus immediately.
     private(set) var content: TVMarqueeContent?
     /// Detail backfill (§9: air date, cast) for the displayed content.
@@ -917,14 +927,15 @@ final class TVFocusMarqueeModel {
             // The earlier hierarchy warmup may have been cancelled when focus
             // moved away after detail enrichment completed. A cached marquee
             // hit must therefore re-arm only the missing cache pieces.
-            enrichTask = Task {
+            enrichTask = Task { [libraryId] in
                 guard await Self.waitForEnrichmentRest(deferNetwork) else { return }
-                async let seriesContextWarmup: Void = Self.warmSeriesContext(for: candidate)
+                async let seriesContextWarmup: Void = Self.warmSeriesContext(for: candidate, libraryId: libraryId)
                 if candidate.prefersLastUsedPlaybackMetadata {
                     _ = await TVContinueWatchingPlaybackMetadataStore.shared.load(
                         contentId: contentId,
                         progressUpdatedAt: candidate.progressUpdatedAt,
-                        baseOverlayData: candidate.baseOverlayData
+                        baseOverlayData: candidate.baseOverlayData,
+                        libraryId: libraryId
                     )
                 }
                 await seriesContextWarmup
@@ -937,39 +948,41 @@ final class TVFocusMarqueeModel {
         // on the first focused frame instead of repeating the same request.
         if !candidate.prefersLastUsedPlaybackMetadata,
            let cachedDetail: ItemDetail = ResponseCache.shared.get(
-               CacheKey.itemDetail(contentId)
+               CacheKey.itemDetail(contentId, libraryId: libraryId)
            ) {
             let cached = TVMarqueeEnrichment(detail: cachedDetail)
             enrichmentCache[contentId] = cached
             enrichment = cached
             enrichmentState = .completed
             updateBackdropIfReady()
-            enrichTask = Task {
+            enrichTask = Task { [libraryId] in
                 guard await Self.waitForEnrichmentRest(deferNetwork) else { return }
-                await Self.warmSeriesContext(for: candidate)
+                await Self.warmSeriesContext(for: candidate, libraryId: libraryId)
             }
             return
         }
 
         enrichment = nil
         enrichmentState = .loading
-        enrichTask = Task { [weak self] in
+        enrichTask = Task { [weak self, libraryId] in
             guard await Self.waitForEnrichmentRest(deferNetwork) else { return }
             // Movie detail needs only the catalog request below. Series detail
             // also needs seasons + one episode page, so warm that independent
             // structure concurrently instead of starting it after navigation.
             // Continue Watching episodes warm the same parent context.
-            async let seriesContextWarmup: Void = Self.warmSeriesContext(for: candidate)
+            async let seriesContextWarmup: Void = Self.warmSeriesContext(for: candidate, libraryId: libraryId)
             let fetchedDetail: ItemDetail?
             if candidate.prefersLastUsedPlaybackMetadata {
                 fetchedDetail = await TVContinueWatchingPlaybackMetadataStore.shared.load(
                     contentId: contentId,
                     progressUpdatedAt: candidate.progressUpdatedAt,
-                    baseOverlayData: candidate.baseOverlayData
+                    baseOverlayData: candidate.baseOverlayData,
+                    libraryId: libraryId
                 )
             } else {
                 fetchedDetail = try? await MetadataRequestPool.shared.itemDetail(
-                    contentId: contentId
+                    contentId: contentId,
+                    libraryId: libraryId
                 )
             }
 
@@ -979,7 +992,7 @@ final class TVFocusMarqueeModel {
                 // detail route needs. Keep the complete payload—not only the
                 // tiny marquee projection—so pressing Select after resting on
                 // a card opens the approved detail layout immediately.
-                ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId))
+                ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
                 let enrichment = TVMarqueeEnrichment(detail: detail)
                 self.enrichmentCache[contentId] = enrichment
                 if self.content?.contentId == contentId {
@@ -1003,45 +1016,49 @@ final class TVFocusMarqueeModel {
     /// frame. The selected season mirrors `ItemDetailViewModel` exactly; all
     /// results land in its existing response cache and are still refreshed by
     /// the detail screen after navigation.
-    private static func warmSeriesContext(for candidate: TVMarqueeContent) async {
+    private static func warmSeriesContext(for candidate: TVMarqueeContent, libraryId: Int?) async {
         guard let seriesId = candidate.seriesContextId, !seriesId.isEmpty else { return }
 
         async let parentDetailWarmup: Void = warmParentSeriesDetail(
             seriesId: seriesId,
-            itemContentId: candidate.contentId
+            itemContentId: candidate.contentId,
+            libraryId: libraryId
         )
         async let hierarchyWarmup: Void = warmSeriesHierarchy(
             seriesId: seriesId,
-            seasonNumber: candidate.seriesContextSeasonNumber
+            seasonNumber: candidate.seriesContextSeasonNumber,
+            libraryId: libraryId
         )
         _ = await (parentDetailWarmup, hierarchyWarmup)
     }
 
     private static func warmParentSeriesDetail(
         seriesId: String,
-        itemContentId: String?
+        itemContentId: String?,
+        libraryId: Int?
     ) async {
-        let cached: ItemDetail? = ResponseCache.shared.get(CacheKey.itemDetail(seriesId))
+        let cached: ItemDetail? = ResponseCache.shared.get(CacheKey.itemDetail(seriesId, libraryId: libraryId))
         guard itemContentId != seriesId,
               cached == nil,
-              let detail = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId),
+              let detail = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId, libraryId: libraryId),
               !Task.isCancelled else { return }
-        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(seriesId))
+        ResponseCache.shared.set(detail, for: CacheKey.itemDetail(seriesId, libraryId: libraryId))
     }
 
     private static func warmSeriesHierarchy(
         seriesId: String,
-        seasonNumber: Int?
+        seasonNumber: Int?,
+        libraryId: Int?
     ) async {
         let seasonsResponse: SeasonsResponse
         if let cached: SeasonsResponse = ResponseCache.shared.get(
-            CacheKey.itemSeasons(seriesId)
+            CacheKey.itemSeasons(seriesId, libraryId: libraryId)
         ) {
             seasonsResponse = cached
         } else {
-            guard let fetched = try? await MetadataRequestPool.shared.seasons(seriesId: seriesId),
+            guard let fetched = try? await MetadataRequestPool.shared.seasons(seriesId: seriesId, libraryId: libraryId),
                   !Task.isCancelled else { return }
-            ResponseCache.shared.set(fetched, for: CacheKey.itemSeasons(seriesId))
+            ResponseCache.shared.set(fetched, for: CacheKey.itemSeasons(seriesId, libraryId: libraryId))
             seasonsResponse = fetched
         }
 
@@ -1053,7 +1070,8 @@ final class TVFocusMarqueeModel {
 
         let episodesKey = CacheKey.itemEpisodes(
             seriesId: seriesId,
-            seasonNumber: targetSeason.seasonNumber
+            seasonNumber: targetSeason.seasonNumber,
+            libraryId: libraryId
         )
         // Episode stills belong to the detail screen's visible rows. Warming
         // their image requests here lets work from previously focused series
@@ -1062,7 +1080,8 @@ final class TVFocusMarqueeModel {
         guard cachedEpisodes == nil else { return }
         guard let fetched = try? await MetadataRequestPool.shared.episodes(
             seriesId: seriesId,
-            seasonNumber: targetSeason.seasonNumber
+            seasonNumber: targetSeason.seasonNumber,
+            libraryId: libraryId
         ), !Task.isCancelled else { return }
         ResponseCache.shared.set(fetched, for: episodesKey)
     }
@@ -1129,6 +1148,7 @@ final class TVFocusMarqueeModel {
 /// the backdrop animates separately. VoiceOver exposes a polite, non-interrupting
 /// description of the focused item.
 struct TVFocusMarquee: View {
+    @Environment(\.browseLibraryId) private var browseLibraryId
     enum Scale {
         /// Home — full-bleed scale (title 84), anchored bottom-left above
         /// the row band.
@@ -1229,7 +1249,8 @@ struct TVFocusMarquee: View {
     private func playbackBadgeOverride(for content: TVMarqueeContent) -> [String]? {
         guard content.prefersLastUsedPlaybackMetadata,
               let presentation = continueWatchingMetadata.presentation(
-                  for: content.contentId
+                  for: content.contentId,
+                  libraryId: browseLibraryId
               ) else {
             return nil
         }

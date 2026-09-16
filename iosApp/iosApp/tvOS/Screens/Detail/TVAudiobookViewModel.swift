@@ -191,13 +191,13 @@ struct TVAudiobookViewModel {
     }
 
     @MainActor
-    func performPrimary(_ store: AudioPlaybackStore) {
+    func performPrimary(_ store: AudioPlaybackStore, libraryId: Int? = nil) {
         if let resumePosition {
-            store.play(contentId: detail.contentId, restart: false, startPosition: resumePosition)
+            store.play(contentId: detail.contentId, restart: false, startPosition: resumePosition, libraryId: libraryId)
         } else if isFinished {
-            store.play(contentId: detail.contentId, restart: true)
+            store.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
         } else {
-            store.play(contentId: detail.contentId, restart: false)
+            store.play(contentId: detail.contentId, restart: false, libraryId: libraryId)
         }
     }
 }

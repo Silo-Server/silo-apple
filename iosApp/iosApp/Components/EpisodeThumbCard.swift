@@ -29,6 +29,7 @@ struct EpisodeThumbCard: View {
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
+    @Environment(\.browseLibraryId) private var browseLibraryId
     @State private var playedOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -43,7 +44,6 @@ struct EpisodeThumbCard: View {
     @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
-    @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     /// Unique per-placement zoom source id (see MediaCard) so the same episode
     /// in two on-screen rows doesn't collide on `contentId`.
@@ -107,7 +107,7 @@ struct EpisodeThumbCard: View {
         }
         .task(id: continueWatchingMetadataTaskId) {
             guard onRemoveFromContinueWatching != nil else { return }
-            _ = await continueWatchingMetadata.load(item: item)
+            _ = await continueWatchingMetadata.load(item: item, libraryId: browseLibraryId)
         }
         #else
         Group {
@@ -243,7 +243,7 @@ struct EpisodeThumbCard: View {
     private var resolvedOverlayData: OverlayData {
         #if os(tvOS)
         if onRemoveFromContinueWatching != nil,
-           let presentation = continueWatchingMetadata.presentation(for: item.contentId) {
+           let presentation = continueWatchingMetadata.presentation(for: item.contentId, libraryId: browseLibraryId) {
             return presentation.overlayData
         }
         #endif
@@ -251,7 +251,7 @@ struct EpisodeThumbCard: View {
     }
 
     private var continueWatchingMetadataTaskId: String {
-        "\(item.contentId)#\(item.progressUpdatedAt ?? "")#\(onRemoveFromContinueWatching != nil)"
+        "\(CacheKey.itemDetail(item.contentId, libraryId: browseLibraryId))#\(item.progressUpdatedAt ?? "")#\(onRemoveFromContinueWatching != nil)"
     }
 
     // MARK: - Derived data
