@@ -635,8 +635,8 @@ private struct ItemDetailPhoneContent: View {
                         router.navigate(to: .personDetail(personId: pid))
                     }
                 },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                onNavigateToParent: { id in
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 belowOverview: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
@@ -860,6 +860,9 @@ private struct ItemDetailPhoneContent: View {
                     if let pid = Int(personId) {
                         router.navigate(to: .personDetail(personId: pid))
                     }
+                },
+                onNavigateToParent: { id in
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))

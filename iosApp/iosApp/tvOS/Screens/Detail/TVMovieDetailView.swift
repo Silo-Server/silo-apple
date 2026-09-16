@@ -50,6 +50,7 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
+    let onNavigateToParent: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
     let onPlayEpisodeShortcut: (String) -> Void
@@ -264,11 +265,11 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                     onFindTrailers()
                 case .season:
                     if let seriesId = detail.seriesId, let seasonNumber = detail.seasonNumber {
-                        onNavigateToItem("\(seriesId)-S\(seasonNumber)")
+                        onNavigateToParent("\(seriesId)-S\(seasonNumber)")
                     }
                 case .series:
                     if let seriesId = detail.seriesId {
-                        onNavigateToItem(seriesId)
+                        onNavigateToParent(seriesId)
                     }
                 case .none:
                     break

@@ -33,7 +33,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
-    let onNavigateToItem: (String) -> Void
+    let onNavigateToParent: (String) -> Void
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -184,7 +184,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             if let seriesId = detail.seriesId {
                 PhoneLabeledMenu(label: "More") {
                     Button {
-                        onNavigateToItem(seriesId)
+                        onNavigateToParent(seriesId)
                     } label: {
                         Label("Go to Series", systemImage: "tv")
                     }

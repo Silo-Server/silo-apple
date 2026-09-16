@@ -381,8 +381,8 @@ struct TVItemDetailView: View {
                         router.navigate(to: .personDetail(personId: pid))
                     }
                 },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                onNavigateToParent: { id in
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 belowSynopsis: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
@@ -676,6 +676,9 @@ struct TVItemDetailView: View {
                     if let pid = Int(personId) {
                         router.navigate(to: .personDetail(personId: pid))
                     }
+                },
+                onNavigateToParent: { id in
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
