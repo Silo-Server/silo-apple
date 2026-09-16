@@ -62,13 +62,15 @@ struct TVLibraryBrowseView: View {
                         router.navigate(
                             to: .itemDetail(
                                 destinationContentId: destinationContentId,
-                                sectionItem: item
+                                sectionItem: item,
+                                libraryId: library.id
                             )
                         )
                     }
                 )
             }
         }
+        .environment(\.browseLibraryId, library.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await loadContent() }
     }

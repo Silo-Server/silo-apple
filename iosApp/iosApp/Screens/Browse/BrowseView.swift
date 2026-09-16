@@ -84,6 +84,7 @@ struct BrowseView: View {
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
+        .environment(\.browseLibraryId, libraryId)
     }
 
     private var scrollContent: some View {
@@ -104,7 +105,7 @@ struct BrowseView: View {
                     isLoading: viewModel.isLoading,
                     hasMore: viewModel.hasMore,
                     forcesThreeColumnsOnPhone: libraryId != nil,
-                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0)) },
+                    onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
                     }
@@ -113,6 +114,7 @@ struct BrowseView: View {
             }
         }
         .reportsPageChromeScroll()
+        .environment(\.browseLibraryId, libraryId)
     }
 
     // MARK: - Search Bar
@@ -476,7 +478,8 @@ struct LibraryRecommendedView: View {
                             router.navigate(
                                 to: .itemDetail(
                                     destinationContentId: destinationContentId,
-                                    sectionItem: item
+                                    sectionItem: item,
+                                    libraryId: libraryId
                                 )
                             )
                         }
@@ -487,6 +490,7 @@ struct LibraryRecommendedView: View {
         }
         .siloScrollEdgeEffect()
         .reportsPageChromeScroll()
+        .environment(\.browseLibraryId, libraryId)
     }
 
     private var refreshStatusTopPadding: CGFloat {

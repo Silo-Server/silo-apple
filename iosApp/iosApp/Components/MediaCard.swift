@@ -113,6 +113,7 @@ struct MediaCard: View {
     @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     /// Stable per-placement id for the zoom source. A bare `contentId` collides
     /// when the same item is visible in two rows (e.g. Continue Watching +
@@ -201,6 +202,7 @@ struct MediaCard: View {
                     router.pendingZoomSourceID = zoomInstanceID.uuidString
                     router.presentItemDetail(
                         contentId: contentId,
+                        libraryId: browseLibraryId,
                         browseSource: detailBrowseSource
                     )
                 } label: {

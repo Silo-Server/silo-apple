@@ -20,6 +20,7 @@ extension Notification.Name {
 /// floating HUD for route, track, chapter, and playback controls.
 struct PlayerView: View {
     let contentId: String
+    let libraryId: Int?
     let preferredFileId: Int?
     let preferredAudioTrackIndex: Int?
     let preferredSubtitleTrackIndex: Int?
@@ -42,7 +43,7 @@ struct PlayerView: View {
     let onPlaybackStarted: (() -> Void)?
     let onDismissRequested: (() -> Void)?
 
-    @State private var viewModel = PlayerViewModel()
+    @State private var viewModel: PlayerViewModel
     @State private var didNotifyPlaybackStarted = false
     @Environment(\.dismiss) var dismiss
     #if os(iOS)
@@ -59,6 +60,7 @@ struct PlayerView: View {
 
     init(
         contentId: String,
+        libraryId: Int? = nil,
         preferredFileId: Int? = nil,
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
@@ -72,6 +74,8 @@ struct PlayerView: View {
         onDismissRequested: (() -> Void)? = nil
     ) {
         self.contentId = contentId
+        self.libraryId = libraryId
+        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
         self.preferredFileId = preferredFileId
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
@@ -377,7 +381,7 @@ struct PlayerView: View {
             #endif
             let activeViewModel: PlayerViewModel
             if viewModel.needsReplacementForPresentation {
-                let replacement = PlayerViewModel()
+                let replacement = PlayerViewModel(libraryId: libraryId)
                 viewModel = replacement
                 activeViewModel = replacement
             } else {

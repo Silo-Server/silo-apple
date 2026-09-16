@@ -34,6 +34,13 @@ final class ResponseCache {
         entries.removeValue(forKey: key)
     }
 
+    /// Personal mutations affect every library presentation of the same item.
+    func removeItemMetadata(contentId: String) {
+        let key = CacheKey.itemDetail(contentId)
+        remove(key)
+        removeAll(withPrefix: key + ":")
+    }
+
     /// Mutate a cached value in place. Used by optimistic mutations
     /// (favorite, watched, etc.) so a returning screen sees the same
     /// toggle state without a network round-trip.
@@ -85,13 +92,15 @@ enum CacheKey {
     /// type-derived tabs on tvOS.
     static let userLibraries = "user:libraries"
 
-    static func itemDetail(_ contentId: String) -> String { "item:\(contentId)" }
-    static func itemSeasons(_ seriesId: String) -> String { "item:\(seriesId):seasons" }
-    static func itemEpisodes(seriesId: String, seasonNumber: Int) -> String {
-        "item:\(seriesId):season:\(seasonNumber):episodes"
+    static func itemDetail(_ contentId: String, libraryId: Int? = nil) -> String {
+        "item:\(contentId)" + (libraryId.map { ":library:\($0)" } ?? "")
+    }
+    static func itemSeasons(_ seriesId: String, libraryId: Int? = nil) -> String { "\(itemDetail(seriesId, libraryId: libraryId)):seasons" }
+    static func itemEpisodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) -> String {
+        "\(itemDetail(seriesId, libraryId: libraryId)):season:\(seasonNumber):episodes"
     }
     static func itemUserState(_ contentId: String) -> String { "item:\(contentId):userState" }
-    static func itemWatchDetail(_ contentId: String) -> String { "item:\(contentId):watchDetail" }
+    static func itemWatchDetail(_ contentId: String, libraryId: Int? = nil) -> String { "\(itemDetail(contentId, libraryId: libraryId)):watchDetail" }
     /// Browse grid page-1 cache, keyed by the full filter/sort state so
     /// distinct filter combinations never collide (the old genre+sort-only
     /// key did). `filterKey` is `CatalogFilterState.cacheKeyFragment`.

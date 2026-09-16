@@ -43,6 +43,7 @@ final class DescriptionTranslationCoordinator {
     /// translation is already in flight.
     func translate(
         contentId: String,
+        libraryId: Int? = nil,
         targetLanguage: String,
         apply: @MainActor @escaping (ItemDetail) -> Void
     ) {
@@ -51,7 +52,7 @@ final class DescriptionTranslationCoordinator {
         let runID = UUID()
         activeRunID = runID
         task = Task { [weak self] in
-            await self?.run(contentId: contentId, targetLanguage: targetLanguage, runID: runID, apply: apply)
+            await self?.run(contentId: contentId, libraryId: libraryId, targetLanguage: targetLanguage, runID: runID, apply: apply)
         }
     }
 
@@ -66,6 +67,7 @@ final class DescriptionTranslationCoordinator {
 
     private func run(
         contentId: String,
+        libraryId: Int? = nil,
         targetLanguage: String,
         runID: UUID,
         apply: @MainActor @escaping (ItemDetail) -> Void
@@ -90,7 +92,7 @@ final class DescriptionTranslationCoordinator {
             try? await Task.sleep(for: .seconds(delay))
             guard isCurrentRun(runID) else { return }
 
-            guard let refreshed = try? await catalog.itemDetail(contentId: contentId) else {
+            guard let refreshed = try? await catalog.itemDetail(contentId: contentId, libraryId: libraryId) else {
                 continue
             }
             // A cancellation (disappear / item change) may have landed during
@@ -98,7 +100,7 @@ final class DescriptionTranslationCoordinator {
             // clobber the view model / cache with the previous item's detail.
             guard isCurrentRun(runID) else { return }
             apply(refreshed)
-            ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId))
+            ResponseCache.shared.set(refreshed, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
 
             if refreshed.pendingTranslationLanguage == nil {
                 guard isCurrentRun(runID) else { return }

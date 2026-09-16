@@ -83,6 +83,7 @@ extension AppRouter.PlayerPresentation {
     /// result as a new presentation.
     func reopened() -> Self {
         AppRouter.PlayerPresentation(
+            libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,

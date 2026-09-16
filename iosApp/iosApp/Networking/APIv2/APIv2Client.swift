@@ -959,15 +959,15 @@ struct APIv2Client: Sendable {
         return response
     }
 
-    func trailerItem(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
-        let raw = try await trailerRequest(id: id, refresh: false, imageSize: imageSize, auth: auth)
+    func trailerItem(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
+        let raw = try await trailerRequest(id: id, refresh: false, libraryId: libraryId, imageSize: imageSize, auth: auth)
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         let item = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogRead.CatalogItemDetail.self, from: raw.data)
         guard item.contentId == id else { throw APIv2Error.incompleteCatalogRead }
         return item
     }
 
-    private func trailerRequest(id: String, refresh: Bool, imageSize: String? = nil,
+    private func trailerRequest(id: String, refresh: Bool, libraryId: String? = nil, imageSize: String? = nil,
                                 auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -977,7 +977,7 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
         let path = "/api/v2/catalog/items/\(try catalogPathSegment(id))" + (refresh ? "/trailers/refresh" : "")
-        let query = refresh ? [:] : catalogReadScope(libraryId: nil, imageSize: imageSize)
+        let query = refresh ? [:] : catalogReadScope(libraryId: libraryId, imageSize: imageSize)
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: refresh ? "POST" : "GET", path: path, query: query,
@@ -988,9 +988,9 @@ struct APIv2Client: Sendable {
         return raw
     }
 
-    func catalogItem(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
+    func catalogItem(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
         // Same exact viewer detail read and authority fence used by bounded trailer observation.
-        try await trailerItem(id: id, imageSize: imageSize, auth: auth)
+        try await trailerItem(id: id, libraryId: libraryId, imageSize: imageSize, auth: auth)
     }
 
     func catalogItem(id: String, libraryId: String? = nil, fileId: String? = nil,
@@ -1019,7 +1019,7 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
-    func catalogEpisodes(seriesId: String, seasonNumber: Int, imageSize: String?,
+    func catalogEpisodes(seriesId: String, seasonNumber: Int, libraryId: String? = nil, imageSize: String?,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Episode] {
         try await gate()
         guard seasonNumber >= 0 else { throw APIv2Error.invalidCatalogQuery }
@@ -1030,7 +1030,7 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
         let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons/\(seasonNumber)/episodes"
-        let query = catalogReadScope(libraryId: nil, imageSize: imageSize)
+        let query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: path, query: query,
@@ -1043,7 +1043,7 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
-    func catalogSeasons(seriesId: String, imageSize: String?, includeArtwork: Bool? = nil,
+    func catalogSeasons(seriesId: String, libraryId: String? = nil, imageSize: String?, includeArtwork: Bool? = nil,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Season] {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -1053,7 +1053,7 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
         let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons"
-        var query = catalogReadScope(libraryId: nil, imageSize: imageSize)
+        var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
         if let includeArtwork { query["include_artwork"] = String(includeArtwork) }
         let requestQuery = query
         let raw = try await tokenStore.withOwnerFence(auth) {
@@ -1305,7 +1305,7 @@ struct APIv2Client: Sendable {
         return try ticket.request(serverURL: auth.account.serverURL, sessionID: sessionID)
     }
 
-    func watchDetail(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
+    func watchDetail(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
@@ -1316,7 +1316,7 @@ struct APIv2Client: Sendable {
         let path = "/api/v2/watch/\(try catalogPathSegment(id))"
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: imageSize.map { ["image_size": $0] } ?? [:],
+                try await http.requestData(method: "GET", path: path, query: catalogReadScope(libraryId: libraryId, imageSize: imageSize),
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }

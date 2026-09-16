@@ -43,6 +43,7 @@ struct EpisodeThumbCard: View {
     @Environment(\.zoomNamespace) private var zoomNamespace
     #if !os(tvOS)
     @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     /// Unique per-placement zoom source id (see MediaCard) so the same episode
     /// in two on-screen rows doesn't collide on `contentId`.
@@ -134,6 +135,7 @@ struct EpisodeThumbCard: View {
                 router.pendingZoomSourceID = zoomInstanceID.uuidString
                 router.presentItemDetail(
                     contentId: item.contentId,
+                    libraryId: browseLibraryId,
                     browseSource: detailBrowseSource
                 )
             }

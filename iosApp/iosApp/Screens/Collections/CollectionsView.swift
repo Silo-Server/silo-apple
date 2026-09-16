@@ -665,6 +665,7 @@ struct LibraryCollectionDetailView: View {
             }
         }
         .siloPageBackground()
+        .environment(\.browseLibraryId, libraryId)
         .navigationTitle(title ?? "Collection")
         .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)") {
@@ -688,7 +689,7 @@ struct LibraryCollectionDetailView: View {
                     hasMore: hasMore,
                     forcesThreeColumnsOnPhone: true,
                     onItemTap: { item in
-                        router.navigate(to: .itemDetail(browseItem: item))
+                        router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId))
                     },
                     onLoadMore: {
                         Task { await loadMoreIfNeeded() }

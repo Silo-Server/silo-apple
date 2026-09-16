@@ -19,12 +19,13 @@ struct PlayerView: View {
     let offlineDownloadId: String?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var viewModel = PlayerViewModel()
+    @State private var viewModel: PlayerViewModel
     @State private var isOptionsPresented = false
     @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
 
     init(
         contentId: String,
+        libraryId: Int? = nil,
         preferredFileId: Int? = nil,
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
@@ -34,6 +35,7 @@ struct PlayerView: View {
         offlineDownloadId: String? = nil
     ) {
         self.contentId = contentId
+        _viewModel = State(initialValue: PlayerViewModel(libraryId: libraryId))
         self.preferredFileId = preferredFileId
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex

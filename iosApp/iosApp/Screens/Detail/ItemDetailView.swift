@@ -7,18 +7,20 @@ import SwiftUI
 /// 10-foot layout.
 struct ItemDetailView: View {
     let contentId: String
+    var libraryId: Int? = nil
     var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
     var resumeContext: AppRouter.ItemDetailResumeContext? = nil
 
     var body: some View {
         #if os(tvOS)
-        TVItemDetailView(contentId: contentId, seed: tvSeed)
+        TVItemDetailView(contentId: contentId, libraryId: libraryId, seed: tvSeed)
             // Episode -> Series replaces the route with the same view type.
             // Its cached model and entry state belong to the new content ID.
-            .id(contentId)
+            .id(CacheKey.itemDetail(contentId, libraryId: libraryId))
         #else
-        ItemDetailPhoneContent(contentId: contentId, onClose: onClose, resumeContext: resumeContext)
+        ItemDetailPhoneContent(contentId: contentId, libraryId: libraryId, onClose: onClose, resumeContext: resumeContext)
+            .id(CacheKey.itemDetail(contentId, libraryId: libraryId))
         #endif
     }
 }
@@ -240,10 +242,19 @@ private struct UnreachablePlayRequest: Identifiable {
 
 private struct ItemDetailPhoneContent: View {
     let contentId: String
+    let libraryId: Int?
     var onClose: (() -> Void)? = nil
     var resumeContext: AppRouter.ItemDetailResumeContext? = nil
 
-    @State private var viewModel = ItemDetailViewModel()
+    init(contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: AppRouter.ItemDetailResumeContext?) {
+        self.contentId = contentId
+        self.libraryId = libraryId
+        self.onClose = onClose
+        self.resumeContext = resumeContext
+        _viewModel = State(initialValue: ItemDetailViewModel(libraryId: libraryId))
+    }
+
+    @State private var viewModel: ItemDetailViewModel
     @State private var preferredVersionFileId: Int?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
@@ -570,11 +581,11 @@ private struct ItemDetailPhoneContent: View {
                     }
                 },
                 onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onSelectSeason: { season in
                     guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId))
+                    router.navigate(to: .itemDetail(contentId: season.contentId, libraryId: libraryId))
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
@@ -854,7 +865,7 @@ private struct ItemDetailPhoneContent: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 },
                 onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
@@ -1172,7 +1183,7 @@ private struct ItemDetailPhoneContent: View {
         }
 
         do {
-            let watchDetail = try await SiloAPI.shared.watchDetail(contentId: requestedContentId)
+            let watchDetail = try await SiloAPI.shared.watchDetail(contentId: requestedContentId, libraryId: libraryId)
             guard !Task.isCancelled,
                   playbackEpisode(for: detail)?.contentId == requestedContentId else { return }
             nextUpWatchDetail = watchDetail
@@ -1287,6 +1298,7 @@ private struct ItemDetailPhoneContent: View {
         let isOwnDetail = viewModel.detail?.contentId == contentId
         router.presentPlayer(
             contentId: contentId,
+            libraryId: libraryId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,

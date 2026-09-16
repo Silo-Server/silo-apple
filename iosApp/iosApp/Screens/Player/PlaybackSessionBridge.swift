@@ -700,6 +700,7 @@ actor PlaybackSessionBridge {
 
     func startSession(
         contentId: String,
+        libraryId: Int? = nil,
         preferredFileId: Int? = nil,
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
@@ -712,7 +713,7 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
-        let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId)
+        let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
         logger.info("Got \(watchDetail.versions.count) versions, type=\(watchDetail.type, privacy: .public)")
 
         guard !watchDetail.versions.isEmpty else {

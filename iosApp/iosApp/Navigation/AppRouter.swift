@@ -19,6 +19,18 @@ struct ItemDetailBrowseSource: Equatable {
     }
 }
 
+private struct BrowseLibraryIDKey: EnvironmentKey {
+    static let defaultValue: Int? = nil
+}
+
+extension EnvironmentValues {
+    /// Set only by library browse surfaces; detail destinations carry a copy in their route.
+    var browseLibraryId: Int? {
+        get { self[BrowseLibraryIDKey.self] }
+        set { self[BrowseLibraryIDKey.self] = newValue }
+    }
+}
+
 private struct ItemDetailBrowseSourceKey: EnvironmentKey {
     static let defaultValue: ItemDetailBrowseSource? = nil
 }
@@ -168,12 +180,14 @@ class AppRouter {
         let id = UUID()
         var contentId: String
         let browseSource: ItemDetailBrowseSource?
+        let libraryId: Int?
         let resumeContext: ItemDetailResumeContext?
 
-        init(contentId: String, browseSource: ItemDetailBrowseSource? = nil,
+        init(contentId: String, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil,
              resumeContext: ItemDetailResumeContext? = nil) {
             self.contentId = contentId
             self.browseSource = browseSource
+            self.libraryId = libraryId
             self.resumeContext = resumeContext
         }
     }
@@ -189,6 +203,7 @@ class AppRouter {
     /// Used on iOS/iPadOS where pushing into the detail pane would box video
     /// into split-view navigation chrome.
     struct PlayerPresentation: Identifiable, Equatable {
+        var libraryId: Int? = nil
         let id = UUID()
         let contentId: String
         let fileId: Int?
@@ -239,6 +254,7 @@ class AppRouter {
     /// playback replaces the detail pane instead of opening in a sheet.
     func presentPlayer(
         contentId: String,
+        libraryId: Int? = nil,
         fileId: Int? = nil,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
@@ -265,18 +281,21 @@ class AppRouter {
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
-                resumePosition: resumePosition
+                resumePosition: resumePosition,
+                libraryId: libraryId
             ))
         } else {
             navigate(to: .player(
                 contentId: contentId,
                 startFromBeginning: startFromBeginning,
                 resumePosition: resumePosition,
-                prefersLastUsedVersion: prefersLastUsedVersion
+                prefersLastUsedVersion: prefersLastUsedVersion,
+                libraryId: libraryId
             ))
         }
         #else
         var presentation = PlayerPresentation(
+            libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,
@@ -371,8 +390,8 @@ class AppRouter {
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {
         #if os(iOS)
-        if case .itemDetail(let contentId, _) = route {
-            presentItemDetail(contentId: contentId)
+        if case .itemDetail(let contentId, _, let libraryId) = route {
+            presentItemDetail(contentId: contentId, libraryId: libraryId)
             return
         }
         #endif
@@ -400,6 +419,7 @@ class AppRouter {
     /// nested recommendations reached from inside an already-open detail.
     func presentItemDetail(
         contentId: String,
+        libraryId: Int? = nil,
         browseSource: ItemDetailBrowseSource? = nil,
         resumeContext: ItemDetailResumeContext? = nil
     ) {
@@ -412,27 +432,28 @@ class AppRouter {
             itemDetailPath = NavigationPath()
             presentedItemDetail = ItemDetailPresentation(
                 contentId: contentId,
+                libraryId: libraryId,
                 browseSource: source,
                 resumeContext: resumeContext
             )
         } else {
-            itemDetailPath.append(Route.itemDetail(contentId: contentId))
+            itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId))
         }
         #else
-        navigate(to: .itemDetail(contentId: contentId))
+        navigate(to: .itemDetail(contentId: contentId, libraryId: libraryId))
         #endif
     }
 
-    func presentContinueWatchingDetail(for item: SectionItem, browseSource: ItemDetailBrowseSource? = nil) {
+    func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil) {
         #if os(iOS)
         if let context = ItemDetailResumeContext(item: item) {
-            presentItemDetail(contentId: context.seriesContentId, resumeContext: context)
+            presentItemDetail(contentId: context.seriesContentId, libraryId: libraryId, resumeContext: context)
             return
         }
         #endif
         // Movies, audio and incomplete legacy episode payloads retain their
         // existing destination; a missing parent must not make a card inert.
-        presentItemDetail(contentId: item.contentId, browseSource: browseSource)
+        presentItemDetail(contentId: item.contentId, libraryId: libraryId, browseSource: browseSource)
     }
 
     /// Select a sibling while the iOS detail card stays presented. Keeping the

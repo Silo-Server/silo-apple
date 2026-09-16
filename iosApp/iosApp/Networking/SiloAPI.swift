@@ -241,8 +241,20 @@ actor SiloAPI {
         return try await catalog(query: query)
     }
 
-    func itemDetail(contentId: String) async throws -> ItemDetail {
-        try await http.get("/api/v1/catalog/items/\(contentId)", query: await imageSizeQuery)
+    func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {
+        let auth = try await detailReadAuth()
+        let item = try await APIv2Client(http: http, tokenStore: tokenStore).catalogItem(
+            id: contentId, libraryId: libraryId.map(String.init),
+            imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        return try ItemDetail(catalog: item)
+    }
+
+    private func detailReadAuth() async throws -> CapturedOrdinaryRequestAuth {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+            throw HTTPError.requestIdentityChanged
+        }
+        return auth
     }
 
     func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFilters {
@@ -253,27 +265,35 @@ actor SiloAPI {
         return try await http.get("/api/v1/catalog/filters", query: query)
     }
 
-    func seasons(seriesId: String) async throws -> SeasonsResponse {
-        var query = await imageSizeQuery
+    func seasons(seriesId: String, libraryId: Int? = nil) async throws -> SeasonsResponse {
+        let auth = try await detailReadAuth()
         #if os(tvOS)
-        // tvOS season selectors display labels and do not use season posters.
-        query["include_artwork"] = "false"
+        let includeArtwork: Bool? = false
+        #else
+        let includeArtwork: Bool? = nil
         #endif
-        return try await http.get(
-            "/api/v1/catalog/series/\(seriesId)/seasons",
-            query: query
+        let seasons = try await APIv2Client(http: http, tokenStore: tokenStore).catalogSeasons(
+            seriesId: seriesId, libraryId: libraryId.map(String.init),
+            imageSize: await imageSizeQuery["image_size"], includeArtwork: includeArtwork, auth: auth
         )
+        return SeasonsResponse(seasons: try seasons.map { try Season(catalog: $0) })
     }
 
-    func episodes(seriesId: String, seasonNumber: Int) async throws -> EpisodesResponse {
-        try await http.get(
-            "/api/v1/catalog/series/\(seriesId)/seasons/\(seasonNumber)/episodes",
-            query: await imageSizeQuery
+    func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) async throws -> EpisodesResponse {
+        let auth = try await detailReadAuth()
+        let episodes = try await APIv2Client(http: http, tokenStore: tokenStore).catalogEpisodes(
+            seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId.map(String.init),
+            imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        return EpisodesResponse(episodes: try episodes.map { try EpisodeListItem(catalog: $0) })
     }
 
-    func watchDetail(contentId: String) async throws -> WatchDetail {
-        try await http.get("/api/v1/watch/\(contentId)", query: await imageSizeQuery)
+    func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
+        let auth = try await detailReadAuth()
+        return try await APIv2Client(http: http, tokenStore: tokenStore).watchDetail(
+            id: contentId, libraryId: libraryId.map(String.init),
+            imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
     }
 
     func person(id: Int) async throws -> Person {

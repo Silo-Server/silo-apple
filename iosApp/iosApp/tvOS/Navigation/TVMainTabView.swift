@@ -201,6 +201,7 @@ struct TVMainTabView: View {
         .fullScreenCover(item: $router.presentedPlayer) { payload in
             PlayerView(
                 contentId: payload.contentId,
+                libraryId: payload.libraryId,
                 preferredFileId: payload.fileId,
                 preferredAudioTrackIndex: payload.audioTrackIndex,
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
@@ -212,7 +213,7 @@ struct TVMainTabView: View {
                 onPlaybackStarted: {
                     guard let returnToContentId = payload.returnToContentId,
                           router.presentedPlayer?.id == payload.id else { return }
-                    router.replaceCurrent(with: .itemDetail(contentId: returnToContentId))
+                    router.replaceCurrent(with: .itemDetail(contentId: returnToContentId, libraryId: payload.libraryId))
                 }
             )
         }
@@ -1408,20 +1409,22 @@ struct TVMainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId, let tvSeed):
-            ItemDetailView(contentId: contentId, tvSeed: tvSeed)
+        case .itemDetail(let contentId, let tvSeed, let libraryId):
+            ItemDetailView(contentId: contentId, libraryId: libraryId, tvSeed: tvSeed)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
-        case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion):
+        case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             PlayerView(
                 contentId: contentId,
+                libraryId: libraryId,
                 startFromBeginning: startFromBeginning,
                 resumePositionOverride: resumePosition,
                 prefersLastUsedVersion: prefersLastUsedVersion
             )
-        case .playerWithFile(let contentId, let fileId, let audioTrackIndex, let subtitleTrackIndex, let startFromBeginning, let resumePosition):
+        case .playerWithFile(let contentId, let fileId, let audioTrackIndex, let subtitleTrackIndex, let startFromBeginning, let resumePosition, let libraryId):
             PlayerView(
                 contentId: contentId,
+                libraryId: libraryId,
                 preferredFileId: fileId,
                 preferredAudioTrackIndex: audioTrackIndex,
                 preferredSubtitleTrackIndex: subtitleTrackIndex,

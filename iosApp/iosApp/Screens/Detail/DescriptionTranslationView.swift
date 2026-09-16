@@ -109,6 +109,7 @@ struct DescriptionTranslationView: View {
     private func startTranslation(targetLanguage: String) {
         coordinator.translate(
             contentId: contentId,
+            libraryId: viewModel.libraryId,
             targetLanguage: targetLanguage
         ) { refreshed in
             // Through the view model's generation gate, so a detail load

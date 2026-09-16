@@ -174,6 +174,7 @@ enum PlayerIdentityBoundary {
 @MainActor
 @Observable
 class PlayerViewModel {
+    let libraryId: Int?
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Player"
@@ -947,7 +948,8 @@ class PlayerViewModel {
     /// audio keep playing after this fires.
     private var foregroundExitObserverToken: NSObjectProtocol?
 
-    init() {
+    init(libraryId: Int? = nil) {
+        self.libraryId = libraryId
         do {
             aetherPlaybackController = try AetherPlaybackController()
         } catch {
@@ -4228,9 +4230,10 @@ class PlayerViewModel {
             )
         }()
         if let timeout {
-            let startTask = Task<PreparedPlayback, Error> { [sessionBridge] in
+            let startTask = Task<PreparedPlayback, Error> { [sessionBridge, libraryId] in
                 try await sessionBridge.startSession(
                     contentId: request.contentId,
+                    libraryId: libraryId,
                     preferredFileId: request.preferredFileId,
                     preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                     preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
@@ -4260,6 +4263,7 @@ class PlayerViewModel {
         } else {
             return try await self.sessionBridge.startSession(
                 contentId: request.contentId,
+                libraryId: libraryId,
                 preferredFileId: request.preferredFileId,
                 preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
@@ -5049,7 +5053,7 @@ class PlayerViewModel {
                 }
             }
             do {
-                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId)
+                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
                 guard !Task.isCancelled,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,
