@@ -181,7 +181,7 @@ struct APIv2CuratedCollection: Decodable {
     let libraryIds: [String]
     let title: String
     let collectionType: String
-    let posterUrl: String
+    @RequiredArtworkURL var posterUrl: String
     let posterThumbhash: String?
     let itemCount: Int
     let sortOrder: Int
@@ -191,7 +191,7 @@ struct APIv2CuratedCollection: Decodable {
 struct APIv2LibraryCollectionCard: Decodable {
     let id: String
     let title: String
-    let posterUrl: String
+    @RequiredArtworkURL var posterUrl: String
     let posterThumbhash: String?
     let itemCount: Int
     let creatorProfileId: String?

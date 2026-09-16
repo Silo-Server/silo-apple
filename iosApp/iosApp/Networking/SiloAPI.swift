@@ -47,7 +47,7 @@ actor SiloAPI {
             // Gate only the artwork request, never launch/profile navigation.
             // Concurrent startup prefetches join one probe, and older or
             // unreachable servers fall back to an empty query.
-            await ImageSizeCapability.shared.refresh()
+            await ImageSizeCapability.shared.refresh(retryFailed: false)
             return ImageSizeCapability.shared.requestQuery
         }
     }
@@ -58,11 +58,11 @@ actor SiloAPI {
         query.merging(await imageSizeQuery) { caller, _ in caller }
     }
 
-    /// `GET /api/v1/images/capability`. Throws `HTTPError.http(404, _)`
+    /// `GET /api/v2/images/capabilities`. Throws `HTTPError.http(404, _)`
     /// on servers that predate image-size selection; the caller treats
     /// that as "feature off".
     func imageSizeCapability() async throws -> ImageSizeCapabilityResponse {
-        try await http.get("/api/v1/images/capability")
+        try await http.get("/api/v2/images/capabilities")
     }
 
     // MARK: - Typed endpoint methods

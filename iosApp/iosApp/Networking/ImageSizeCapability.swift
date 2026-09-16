@@ -19,7 +19,8 @@ import Foundation
 /// `ActiveServerIDSnapshot`.
 ///
 /// Image URLs stay opaque: the server bakes the chosen variant into the
-/// URLs it returns and the client never rewrites them. A larger variant
+/// URLs it returns. Relative artwork is bound to the response origin at
+/// decode time; encoded paths and signature queries stay intact. A larger variant
 /// simply arrives as a different URL, which `CachedAsyncImage` /
 /// `PosterImageCache` cache independently.
 final class ImageSizeCapability: @unchecked Sendable {
@@ -66,6 +67,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     private let prefersLargeImages: Bool
     private let lock = NSLock()
     private var storedCapability: ImageSizeCapabilityResponse?
+    private var hasAttemptedProbe = false
     private var generation = 0
     private var nextProbeID = 0
     private var inFlightProbe: Probe?
@@ -113,15 +115,18 @@ final class ImageSizeCapability: @unchecked Sendable {
     /// error, leaves the feature off and is retried on the next
     /// foreground refresh.
     ///
-    /// Skipped entirely on platforms that wouldn't send the parameter,
-    /// so iOS and macOS don't pay for a request they can't use.
-    func refresh() async {
-        guard prefersLargeImages else { return }
+    /// Delivery capabilities are retained on every platform; only tvOS
+    /// sends the large-image query parameter.
+    /// Image-bearing requests pass `false`; lifecycle refreshes may retry a
+    /// failed probe so an unavailable endpoint never delays every catalog read.
+    func refresh(retryFailed: Bool = true) async {
         guard let probe = lock.withLock({ () -> Probe? in
             if storedCapability != nil { return nil }
             if let inFlightProbe, inFlightProbe.generation == generation {
                 return inFlightProbe
             }
+            if hasAttemptedProbe && !retryFailed { return nil }
+            hasAttemptedProbe = true
             nextProbeID &+= 1
             let probe = Probe(
                 id: nextProbeID,
@@ -151,6 +156,7 @@ final class ImageSizeCapability: @unchecked Sendable {
         let task = lock.withLock { () -> Task<ImageSizeCapabilityResponse?, Never>? in
             generation &+= 1
             storedCapability = nil
+            hasAttemptedProbe = false
             let task = inFlightProbe?.task
             inFlightProbe = nil
             return task

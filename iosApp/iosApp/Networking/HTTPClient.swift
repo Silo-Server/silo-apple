@@ -188,8 +188,9 @@ actor HTTPClient {
         self.encoder = encoder
     }
 
-    static func makeJSONDecoder() -> JSONDecoder {
+    static func makeJSONDecoder(artworkServerURL: URL? = nil) -> JSONDecoder {
         let decoder = JSONDecoder()
+        decoder.userInfo[ArtworkURLResolver.serverURLKey] = artworkServerURL
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -546,7 +547,7 @@ actor HTTPClient {
             return HTTPRawResponse(
                 data: data,
                 statusCode: response.statusCode,
-                headers: response.allHeaderFields
+                headers: response.allHeaderFields, url: response.url
             )
         }
 
@@ -573,7 +574,7 @@ actor HTTPClient {
             }
             return request
         }
-        return HTTPRawResponse(data: data, statusCode: response.statusCode, headers: response.allHeaderFields)
+        return HTTPRawResponse(data: data, statusCode: response.statusCode, headers: response.allHeaderFields, url: response.url)
     }
 
     private func scopedRequest(
@@ -813,12 +814,14 @@ actor HTTPClient {
         body: (any Encodable)?,
         timeout: HTTPTimeout = .standard
     ) async throws -> T {
-        let data = try await sendRaw(method: method, path: path, query: query, body: body, timeout: timeout)
+        let (data, response) = try await performWithAuthRetry(method: method, path: path, timeout: timeout) { serverURL in
+            try self.buildRequest(serverUrl: serverURL, method: method, path: path, query: query, body: body)
+        }
         if data.isEmpty, let empty = EmptyResponse.empty as? T {
             return empty
         }
         do {
-            return try decoder.decode(T.self, from: data)
+            return try Self.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: data)
         } catch {
             Self.logDecodingFailure(type: String(describing: T.self), path: path, error: error, data: data)
             throw HTTPError.decodingFailed(type: String(describing: T.self), underlying: error)
@@ -2159,12 +2162,14 @@ struct HTTPMultipartPart {
 struct HTTPRawResponse: Sendable {
     let data: Data
     let statusCode: Int
+    let url: URL?
     /// Header names are lowercased on the way in, because HTTP header names
     /// are case-insensitive and a lookup must not depend on the server's
     /// casing.
     let headers: [String: String]
 
-    init(data: Data, statusCode: Int, headers: [AnyHashable: Any]) {
+    init(data: Data, statusCode: Int, headers: [AnyHashable: Any], url: URL? = nil) {
+        self.url = url
         self.data = data
         self.statusCode = statusCode
         var normalized: [String: String] = [:]

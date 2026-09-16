@@ -20,9 +20,9 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let networks: [String]?
     let showStatus: String?
     let overview: String?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
-    let backdropUrl: String?
+    @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
     let addedAt: String?
     let releaseDate: String?
@@ -50,9 +50,9 @@ struct BrowseItem: Codable, Identifiable, Hashable {
         networks = try c.decodeIfPresent([String].self, forKey: .networks)
         showStatus = try c.decodeIfPresent(String.self, forKey: .showStatus)
         overview = try c.decodeIfPresent(String.self, forKey: .overview)
-        posterUrl = try c.decodeIfPresent(String.self, forKey: .posterUrl)
+        posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
-        backdropUrl = try c.decodeIfPresent(String.self, forKey: .backdropUrl)
+        backdropUrl = try c.decode(ArtworkURL.self, forKey: .backdropUrl).wrappedValue
         backdropThumbhash = try c.decodeIfPresent(String.self, forKey: .backdropThumbhash)
         addedAt = try c.decodeIfPresent(String.self, forKey: .addedAt)
         releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
@@ -176,11 +176,11 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
-    let backdropUrl: String?
+    @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
-    let logoUrl: String?
+    @ArtworkURL var logoUrl: String? = nil
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
     var id: String { contentId }
@@ -212,11 +212,11 @@ struct SectionItem: Codable, Identifiable, Hashable {
         positionSeconds = try c.decodeIfPresent(Double.self, forKey: .positionSeconds)
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         progressUpdatedAt = try c.decodeIfPresent(String.self, forKey: .progressUpdatedAt)
-        posterUrl = try c.decodeIfPresent(String.self, forKey: .posterUrl)
+        posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
-        backdropUrl = try c.decodeIfPresent(String.self, forKey: .backdropUrl)
+        backdropUrl = try c.decode(ArtworkURL.self, forKey: .backdropUrl).wrappedValue
         backdropThumbhash = try c.decodeIfPresent(String.self, forKey: .backdropThumbhash)
-        logoUrl = try c.decodeIfPresent(String.self, forKey: .logoUrl)
+        logoUrl = try c.decode(ArtworkURL.self, forKey: .logoUrl).wrappedValue
         userState = try c.decodeIfPresent(MediaItemUserState.self, forKey: .userState)
         overlaySummary = try c.decodeIfPresent(OverlaySummary.self, forKey: .overlaySummary)
     }
@@ -429,11 +429,11 @@ struct ItemDetail: Codable {
     let releaseDate: String?
     let firstAirDate: String?
     let lastAirDate: String?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
-    let backdropUrl: String?
+    @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
-    let logoUrl: String?
+    @ArtworkURL var logoUrl: String? = nil
     let seasonCount: Int?
     let seriesId: String?
     let seriesTitle: String?
@@ -597,7 +597,7 @@ struct AudiobookDetail: Codable, Hashable {
 struct AudiobookPerson: Codable, Identifiable, Hashable {
     let personId: String?
     let name: String
-    let photoUrl: String?
+    @ArtworkURL var photoUrl: String? = nil
     let photoThumbhash: String?
     var id: String { personId ?? name }
 }
@@ -628,7 +628,7 @@ struct AudiobookRelatedItem: Codable, Identifiable, Hashable {
     let contentId: String
     let title: String
     let year: Int?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let seriesIndex: Int?
     var id: String { contentId }
 }
@@ -649,7 +649,7 @@ struct CastMember: Codable, Identifiable, Hashable {
     let tmdbId: String?
     let tvdbId: String?
     let imdbId: String?
-    let photoUrl: String?
+    @ArtworkURL var photoUrl: String? = nil
     let photoThumbhash: String?
     var id: String { personId ?? "\(name)-\(character ?? "")" }
 }
@@ -661,7 +661,7 @@ struct CrewMember: Codable, Identifiable, Hashable {
     let tmdbId: String?
     let tvdbId: String?
     let imdbId: String?
-    let photoUrl: String?
+    @ArtworkURL var photoUrl: String? = nil
     let photoThumbhash: String?
     var id: String { "\(personId ?? name)-\(job ?? "")" }
 }
@@ -674,7 +674,7 @@ struct Person: Codable, Identifiable, Hashable {
     let deathDate: String?
     let birthplace: String?
     let homepage: String?
-    let photoUrl: String?
+    @ArtworkURL var photoUrl: String? = nil
     let photoThumbhash: String?
     let tmdbId: String?
     let imdbId: String?
@@ -695,7 +695,7 @@ struct Season: Codable, Identifiable, Hashable {
     let overview: String?
     let airDate: String?
     let episodeCount: Int
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     let userData: SeasonUserData?
     var id: String { contentId }
@@ -717,7 +717,7 @@ struct Season: Codable, Identifiable, Hashable {
         overview = try c.decodeIfPresent(String.self, forKey: .overview)
         airDate = try c.decodeIfPresent(String.self, forKey: .airDate)
         episodeCount = try c.decodeIfPresent(Int.self, forKey: .episodeCount) ?? 0
-        posterUrl = try c.decodeIfPresent(String.self, forKey: .posterUrl)
+        posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         userData = try c.decodeIfPresent(SeasonUserData.self, forKey: .userData)
     }
@@ -763,7 +763,7 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     let imdbId: String?
     let tmdbId: String?
     let tvdbId: String?
-    let stillUrl: String?
+    @ArtworkURL var stillUrl: String? = nil
     let stillThumbhash: String?
     let userData: LeafItemUserData?
     let files: [EpisodeFile]?
@@ -1231,7 +1231,7 @@ struct UserCollection: Codable, Identifiable {
     let groupId: String?
     let sortOrder: Int?
     let itemCount: Int?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     let includeInServerCollections: Bool?
 }
@@ -1255,7 +1255,7 @@ struct Library: Codable, Identifiable, Hashable {
     let name: String
     let type: String
     let sortOrder: Int?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
 
     var isMovieLibrary: Bool { SiloMediaType.isMovieLibrary(type) }
     var isAudiobookLibrary: Bool { SiloMediaType.isAudiobookLibrary(type) }
@@ -1313,7 +1313,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     let name: String
     let collectionType: String?
     let itemCount: Int?
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     /// Populated when the collection was decoded inside a
     /// `LibraryTabGroup`. Flat-response cards leave this nil; treat as
@@ -1364,7 +1364,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         name = try c.decode(String.self, forKey: .name)
         collectionType = try c.decodeIfPresent(String.self, forKey: .collectionType)
         itemCount = try c.decodeIfPresent(Int.self, forKey: .itemCount)
-        posterUrl = try c.decodeIfPresent(String.self, forKey: .posterUrl)
+        posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         // Tolerate unknown raw values by decoding through String first —
         // unrecognized kinds become nil rather than aborting the whole

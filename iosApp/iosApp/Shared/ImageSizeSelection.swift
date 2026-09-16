@@ -1,14 +1,17 @@
 import Foundation
 
-/// Shared wire contract for `GET /api/v1/images/capability`. The main app and
+/// Shared wire contract for `GET /api/v2/images/capabilities`. The main app and
 /// Top Shelf extension both decode this lightweight model so every tvOS
 /// artwork surface negotiates the same server-advertised query parameter.
 struct ImageSizeCapabilityResponse: Codable, Equatable {
-    let schemaVersion: Int
+    let schemaVersion: Int?
     let param: String
     let sizes: [String]
     let widths: [String: [String: Int]]
     let originalMaxWidthPx: Int
+    var state: String? = nil
+    var storageBackend: String? = nil
+    var delivery: String? = nil
 }
 
 enum ImageSizeSelection {
@@ -20,7 +23,7 @@ enum ImageSizeSelection {
     ) -> [String: String] {
         guard prefersLargeImages,
               let capability,
-              capability.schemaVersion == 1,
+              (capability.schemaVersion == 1 || (capability.schemaVersion == nil && capability.state == "available")),
               !capability.param.isEmpty,
               capability.sizes.contains(requestedSize)
         else { return [:] }

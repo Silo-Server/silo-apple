@@ -209,7 +209,7 @@ struct APIv2Profile: Decodable, Hashable, Sendable {
     let id: String
     let name: String
     let avatar: String
-    let avatarUrl: String?
+    @ArtworkURL var avatarUrl: String?
     let avatarSource: APIv2AvatarSource
     let hasPin: Bool
     let isChild: Bool

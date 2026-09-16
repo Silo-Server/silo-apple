@@ -46,11 +46,8 @@ extension ItemDetail {
         self.releaseDate = value.releaseDate
         self.firstAirDate = value.firstAirDate
         self.lastAirDate = value.lastAirDate
-        self.posterUrl = value.posterUrl
         self.posterThumbhash = value.posterThumbhash
-        self.backdropUrl = value.backdropUrl
         self.backdropThumbhash = value.backdropThumbhash
-        self.logoUrl = value.logoUrl
         self.seasonCount = try value.seasonCount.map { try catalogLegacyInt($0) }
         self.seriesId = value.seriesId
         self.seriesTitle = value.seriesTitle
@@ -72,6 +69,9 @@ extension ItemDetail {
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
         self.videos = try value.videos.map { try $0.map { try ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
+        self.posterUrl = value.posterUrl
+        self.backdropUrl = value.backdropUrl
+        self.logoUrl = value.logoUrl
     }
 }
 
@@ -84,9 +84,9 @@ extension Season {
         self.overview = value.overview
         self.airDate = value.airDate
         self.episodeCount = try catalogLegacyInt(value.episodeCount)
-        self.posterUrl = value.posterUrl
         self.posterThumbhash = value.posterThumbhash
         self.userData = try value.userData.map { try SeasonUserData(catalog: $0) }
+        self.posterUrl = value.posterUrl
     }
 }
 
@@ -102,10 +102,10 @@ extension EpisodeListItem {
         self.imdbId = value.imdbId
         self.tmdbId = value.tmdbId
         self.tvdbId = value.tvdbId
-        self.stillUrl = value.stillUrl
         self.stillThumbhash = value.stillThumbhash
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
         self.files = try value.files.map { try $0.map { try EpisodeFile(catalog: $0) } }
+        self.stillUrl = value.stillUrl
     }
 }
 
@@ -118,12 +118,12 @@ extension Person {
         self.deathDate = value.deathDate
         self.birthplace = value.birthplace
         self.homepage = value.homepage
-        self.photoUrl = value.photoUrl
         self.photoThumbhash = value.photoThumbhash
         self.tmdbId = value.tmdbId
         self.imdbId = value.imdbId
         self.tvdbId = value.tvdbId
         self.plexGuid = value.plexGuid
+        self.photoUrl = value.photoUrl
     }
 }
 
@@ -136,8 +136,8 @@ extension CastMember {
         self.tmdbId = value.tmdbId
         self.tvdbId = value.tvdbId
         self.imdbId = value.imdbId
-        self.photoUrl = value.photoUrl
         self.photoThumbhash = value.photoThumbhash
+        self.photoUrl = value.photoUrl
     }
 }
 
@@ -149,8 +149,8 @@ extension CrewMember {
         self.tmdbId = value.tmdbId
         self.tvdbId = value.tvdbId
         self.imdbId = value.imdbId
-        self.photoUrl = value.photoUrl
         self.photoThumbhash = value.photoThumbhash
+        self.photoUrl = value.photoUrl
     }
 }
 
@@ -423,8 +423,8 @@ extension AudiobookPerson {
     init(catalog value: APIv2CatalogRead.AudiobookPerson) throws {
         self.personId = value.personId
         self.name = value.name
-        self.photoUrl = value.photoUrl
         self.photoThumbhash = value.photoThumbhash
+        self.photoUrl = value.photoUrl
     }
 }
 
@@ -456,8 +456,8 @@ extension AudiobookRelatedItem {
         self.contentId = value.contentId
         self.title = value.title
         self.year = try value.year.map { try catalogLegacyInt($0) }
-        self.posterUrl = value.posterUrl
         self.seriesIndex = try value.seriesIndex.map { try catalogLegacyInt($0) }
+        self.posterUrl = value.posterUrl
     }
 }
 

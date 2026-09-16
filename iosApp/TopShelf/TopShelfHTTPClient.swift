@@ -57,7 +57,7 @@ struct TopShelfHTTPClient {
     /// extension's existing fallback behavior.
     func fetchImageSizeQuery() async -> [String: String] {
         let capability: ImageSizeCapabilityResponse? = try? await get(
-            "/api/v1/images/capability"
+            "/api/v2/images/capabilities"
         )
         return ImageSizeSelection.queryEntries(
             capability: capability,
@@ -66,15 +66,16 @@ struct TopShelfHTTPClient {
     }
 
     func fetchHomeSections(imageSizeQuery: [String: String]) async throws -> TopShelfSectionsResponse {
-        try await get("/api/v1/home/sections", query: imageSizeQuery)
+        try await get("/api/v2/home/sections", query: imageSizeQuery)
     }
 
     func fetchSeasons(
         seriesId: String,
         imageSizeQuery: [String: String]
     ) async throws -> TopShelfSeasonsResponse {
-        try await get(
-            "/api/v1/catalog/series/\(seriesId)/seasons",
+        guard let segment = CatalogPathSegment.encode(seriesId) else { throw Error.invalidURL }
+        return try await get(
+            "/api/v2/catalog/series/\(segment)/seasons",
             query: imageSizeQuery
         )
     }
@@ -83,8 +84,9 @@ struct TopShelfHTTPClient {
         contentId: String,
         imageSizeQuery: [String: String]
     ) async throws -> TopShelfItemDetail {
-        try await get(
-            "/api/v1/catalog/items/\(contentId)",
+        guard let segment = CatalogPathSegment.encode(contentId) else { throw Error.invalidURL }
+        return try await get(
+            "/api/v2/catalog/items/\(segment)",
             query: imageSizeQuery
         )
     }
@@ -140,6 +142,7 @@ struct TopShelfHTTPClient {
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.userInfo[ArtworkURLResolver.serverURLKey] = http.url ?? url
         return try decoder.decode(T.self, from: data)
     }
 }

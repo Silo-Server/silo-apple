@@ -16,7 +16,7 @@ struct Profile: Codable {
     /// short-lived presigned object-store URL that changes on every fetch, so
     /// it must not be persisted long-term. For presets it is a DiceBear URL or
     /// a server-relative `/profile-avatars/{id}.svg` path.
-    let avatarUrl: String?
+    @ArtworkURL var avatarUrl: String?
     /// `avatar_source`: "upload", "preset", or "none".
     let avatarSource: String?
     let hasPin: Bool?
@@ -321,7 +321,7 @@ private struct LibraryTabUngroupedWire: Decodable {
 private struct LibraryTabCollectionWire: Decodable {
     let id: String
     let title: String
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String?
     let posterThumbhash: String?
     let itemCount: Int?
     let creatorProfileId: String?

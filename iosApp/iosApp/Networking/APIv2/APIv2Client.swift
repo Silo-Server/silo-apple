@@ -143,7 +143,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder()
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url)
             .decode(APIv2CatalogReadCollection<APIv2UserLibrary>.self, from: response.data).completeItems()
     }
 
@@ -195,7 +195,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        let profile = try HTTPClient.makeJSONDecoder().decode(APIv2Profile.self, from: response.data)
+        let profile = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2Profile.self, from: response.data)
         guard profile.id == id else { throw APIv2Error.incompleteCatalogRead }
         return profile
     }
@@ -217,7 +217,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
     /// Create and cancel are never replayed after an ambiguous transport
@@ -239,7 +239,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard (200..<300).contains(response.statusCode) else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
@@ -449,7 +449,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
     func householdProfiles() async throws -> [UserProfile] {
@@ -578,7 +578,7 @@ struct APIv2Client: Sendable {
         }
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         guard let tag = raw.headers["etag"], !tag.isEmpty else { throw APIv2Error.missingCollectionVersion }
-        return CollectionEditor(value: try HTTPClient.makeJSONDecoder().decode(T.self, from: raw.data),
+        return CollectionEditor(value: try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(T.self, from: raw.data),
             version: CollectionEditVersion(path: path, etag: tag, identity: identity, account: auth.account, auth: auth))
     }
 
@@ -588,7 +588,7 @@ struct APIv2Client: Sendable {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let raw = try await collectionMutation(method: method, version: version, body: encoder.encode(body))
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(T.self, from: raw.data)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(T.self, from: raw.data)
     }
 
     func deleteCollection(version: CollectionEditVersion) async throws {
@@ -669,7 +669,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        let page = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogPage.self, from: response.data)
+        let page = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2CatalogPage.self, from: response.data)
         var continuation: APIv2CatalogContinuation?
         if page.page.hasMore {
             guard let next = page.page.nextCursor, !next.isEmpty, !seen.contains(next) else {
@@ -817,7 +817,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        let collection = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<APIv2DiscoverRow>.self, from: raw.data)
+        let collection = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<APIv2DiscoverRow>.self, from: raw.data)
         let rows = try collection.completeItems()
         guard rows.allSatisfy({ row in
             Set(row.items.map(\.contentId)).count == row.items.count &&
@@ -873,7 +873,7 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         struct Wire: Decodable { let sections: [ResolvedSection] }
-        let value = try HTTPClient.makeJSONDecoder().decode(Wire.self, from: raw.data)
+        let value = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(Wire.self, from: raw.data)
         guard Set(value.sections.map(\.id)).count == value.sections.count,
               value.sections.allSatisfy({ !$0.id.isEmpty }) else { throw APIv2Error.incompleteCatalogRead }
         return APIv2LibrarySectionsRead(libraryId: id, auth: auth,
@@ -897,7 +897,7 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         struct Wire: Decodable { let sections: [ResolvedSection] }
-        let value = try HTTPClient.makeJSONDecoder().decode(Wire.self, from: raw.data)
+        let value = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(Wire.self, from: raw.data)
         guard Set(value.sections.map(\.id)).count == value.sections.count,
               value.sections.allSatisfy({ !$0.id.isEmpty }) else { throw APIv2Error.incompleteCatalogRead }
         return APIv2HomeSectionsRead(auth: auth, response: SectionsResponse(sections: value.sections))
@@ -920,7 +920,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(CalendarResponse.self, from: raw.data)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(CalendarResponse.self, from: raw.data)
     }
 
     func similarCards(id: String, limit: Int, auth: CapturedOrdinaryRequestAuth) async throws -> [BrowseItem] {
@@ -940,7 +940,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        let collection = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<BrowseItem>.self, from: raw.data)
+        let collection = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<BrowseItem>.self, from: raw.data)
         let cards = try collection.completeItems()
         guard cards.count <= limit, Set(cards.map(\.contentId)).count == cards.count,
               cards.allSatisfy({ !$0.contentId.isEmpty }) else { throw APIv2Error.incompleteCatalogRead }
@@ -962,7 +962,7 @@ struct APIv2Client: Sendable {
     func trailerItem(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.CatalogItemDetail {
         let raw = try await trailerRequest(id: id, refresh: false, imageSize: imageSize, auth: auth)
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        let item = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.CatalogItemDetail.self, from: raw.data)
+        let item = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogRead.CatalogItemDetail.self, from: raw.data)
         guard item.contentId == id else { throw APIv2Error.incompleteCatalogRead }
         return item
     }
@@ -1039,7 +1039,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        let response = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<APIv2CatalogRead.Episode>.self, from: raw.data)
+        let response = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<APIv2CatalogRead.Episode>.self, from: raw.data)
         return try response.completeItems()
     }
 
@@ -1064,7 +1064,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        let response = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogReadCollection<APIv2CatalogRead.Season>.self, from: raw.data)
+        let response = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogReadCollection<APIv2CatalogRead.Season>.self, from: raw.data)
         return try response.completeItems()
     }
 
@@ -1080,7 +1080,7 @@ struct APIv2Client: Sendable {
     func catalogPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.Person {
         let response = try await personRequest(id: id, method: "GET", auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        let person = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.Person.self, from: response.data)
+        let person = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2CatalogRead.Person.self, from: response.data)
         guard person.id == String(id) else { throw APIv2Error.incompleteCatalogRead }
         return person
     }
@@ -1119,9 +1119,7 @@ struct APIv2Client: Sendable {
     /// and `%` are never allowed through unencoded, and `.`/`..` never become
     /// a segment.
     private func catalogPathSegment(_ value: String) throws -> String {
-        guard !value.isEmpty, value != ".", value != "..",
-              let escaped = value.addingPercentEncoding(withAllowedCharacters:
-                CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else {
+        guard let escaped = CatalogPathSegment.encode(value) else {
             throw APIv2Error.invalidCatalogQuery
         }
         return escaped
@@ -1140,7 +1138,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder().decode(Value.self, from: response.data)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(Value.self, from: response.data)
     }
 
     // MARK: Standalone personal list reads
@@ -1184,7 +1182,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
-        let page = try HTTPClient.makeJSONDecoder().decode(APIv2PersonalListPage.self, from: response.data)
+        let page = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2PersonalListPage.self, from: response.data)
         var continuation: APIv2PersonalListContinuation?
         if page.page.hasMore {
             guard let next = page.page.nextCursor, !next.isEmpty, !seen.contains(next) else {
@@ -1324,7 +1322,7 @@ struct APIv2Client: Sendable {
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
-        return try WatchDetail(v2: HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.WatchDetail.self, from: raw.data))
+        return try WatchDetail(v2: HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogRead.WatchDetail.self, from: raw.data))
     }
 
     func playbackCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackCapabilities {

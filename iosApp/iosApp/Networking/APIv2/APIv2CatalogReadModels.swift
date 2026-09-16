@@ -11,7 +11,7 @@ enum APIv2CatalogRead {
         let airTimezone: String?
         let audiobook: AudiobookDetailExtension?
         let backdropThumbhash: String?
-        let backdropUrl: String?
+        @ArtworkURL var backdropUrl: String?
         let badges: [String]?
         let cast: [CastCredit]
         let contentId: String
@@ -42,7 +42,7 @@ enum APIv2CatalogRead {
         let keywords: [String]
         let lastAirDate: String?
         let lockedFields: [Int64]?
-        let logoUrl: String?
+        @ArtworkURL var logoUrl: String?
         let manga: MangaDetailExtension?
         let mangaChapterCount: Int64?
         let mangaVolumeCount: Int64?
@@ -56,7 +56,7 @@ enum APIv2CatalogRead {
         let playbackVariants: [PlaybackVariant]?
         let positionSeconds: Double?
         let posterThumbhash: String?
-        let posterUrl: String?
+        @ArtworkURL var posterUrl: String?
         let preview: Marker?
         let progressUpdatedAt: Date?
         let ratingImdb: Double?
@@ -101,7 +101,7 @@ enum APIv2CatalogRead {
         let overview: String?
         let playContentId: String?
         let posterThumbhash: String?
-        let posterUrl: String?
+        @ArtworkURL var posterUrl: String?
         let seasonNumber: Int64
         let title: String
         let userData: WatchRollup?
@@ -118,7 +118,7 @@ enum APIv2CatalogRead {
         let runtime: Int64
         let seasonNumber: Int64
         let stillThumbhash: String?
-        let stillUrl: String?
+        @ArtworkURL var stillUrl: String?
         let title: String
         let tmdbId: String?
         let tvdbId: String?
@@ -135,7 +135,7 @@ enum APIv2CatalogRead {
         let imdbId: String?
         let name: String
         let photoThumbhash: String?
-        let photoUrl: String?
+        @ArtworkURL var photoUrl: String?
         let plexGuid: String?
         let tmdbId: String?
         let tvdbId: String?
@@ -176,7 +176,7 @@ enum APIv2CatalogRead {
         let name: String
         let personId: String?
         let photoThumbhash: String?
-        let photoUrl: String?
+        @ArtworkURL var photoUrl: String?
     }
 
     struct AudiobookRelatedContent: Decodable {
@@ -186,7 +186,7 @@ enum APIv2CatalogRead {
 
     struct AudiobookRelatedItem: Decodable {
         let contentId: String
-        let posterUrl: String?
+        @ArtworkURL var posterUrl: String?
         let seriesIndex: Int64?
         let title: String
         let year: Int64?
@@ -204,7 +204,7 @@ enum APIv2CatalogRead {
         let order: Int64
         let personId: String?
         let photoThumbhash: String?
-        let photoUrl: String?
+        @ArtworkURL var photoUrl: String?
         let plexGuid: String?
         let tmdbId: String?
         let tvdbId: String?
@@ -265,7 +265,7 @@ enum APIv2CatalogRead {
         let name: String
         let personId: String?
         let photoThumbhash: String?
-        let photoUrl: String?
+        @ArtworkURL var photoUrl: String?
         let plexGuid: String?
         let tmdbId: String?
         let tvdbId: String?
@@ -402,7 +402,7 @@ enum APIv2CatalogRead {
     struct MangaChapter: Decodable {
         let chapterIndex: Double?
         let contentId: String
-        let posterUrl: String?
+        @ArtworkURL var posterUrl: String?
         let progress: Double?
         let read: Bool
         let title: String
@@ -452,7 +452,7 @@ enum APIv2CatalogRead {
         let source: String
         let startSeconds: Double
         let thumbnailThumbhash: String?
-        let thumbnailUrl: String?
+        @ArtworkURL var thumbnailUrl: String?
         let title: String
     }
 
@@ -548,7 +548,7 @@ struct APIv2UserLibrary: Decodable {
     let name: String
     let type: String
     let sortOrder: Int
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String?
 }
 
 /// Complete Discover rows use the same flat catalog-card fields as section shelves.

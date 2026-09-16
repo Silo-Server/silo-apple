@@ -1,9 +1,9 @@
 import Foundation
 
-/// Minimal mirror of the server's `/api/v1/home/sections` response,
+/// Minimal mirror of the server's `/api/v2/home/sections` response,
 /// trimmed to the fields the Top Shelf surface actually uses. We keep
-/// this separate from the main app's `Models.swift` so the extension
-/// doesn't compile the full DTO surface (and its supporting types).
+/// this in Shared so the extension and artwork regression tests can use it
+/// without compiling the full app DTO surface.
 struct TopShelfSectionsResponse: Decodable {
     let sections: [TopShelfSection]
 
@@ -33,8 +33,8 @@ struct TopShelfItem: Decodable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
-    let posterUrl: String?
-    let backdropUrl: String?
+    @ArtworkURL var posterUrl: String?
+    @ArtworkURL var backdropUrl: String?
 
     /// 0.0...1.0 or nil when we don't have both position and duration.
     var playbackProgress: Double? {
@@ -45,26 +45,26 @@ struct TopShelfItem: Decodable {
     }
 }
 
-/// Subset of `/api/v1/catalog/series/{id}/seasons` we need. The main app
+/// Subset of `/api/v2/catalog/series/{id}/seasons` we need. The main app
 /// decodes the full `Season` shape, but the extension only cares about
 /// matching a season number to its poster URL.
 struct TopShelfSeasonsResponse: Decodable {
     let seasons: [TopShelfSeason]
 
-    enum CodingKeys: String, CodingKey { case seasons }
+    enum CodingKeys: String, CodingKey { case items }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        seasons = try c.decodeIfPresent([TopShelfSeason].self, forKey: .seasons) ?? []
+        seasons = try c.decodeIfPresent([TopShelfSeason].self, forKey: .items) ?? []
     }
 }
 
 struct TopShelfSeason: Decodable {
     let seasonNumber: Int
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String?
 }
 
-/// Subset of `/api/v1/catalog/items/{id}` — only the poster URL.
+/// Subset of `/api/v2/catalog/items/{id}` — only the poster URL.
 struct TopShelfItemDetail: Decodable {
-    let posterUrl: String?
+    @ArtworkURL var posterUrl: String?
 }
