@@ -234,15 +234,17 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let preferences = ProfileLaunchPreferences(defaults: defaults)
         preferences.remember(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), for: "server")
         let before = preferences.state
-        let http = HTTPClient(session: APIv2TestStub().makeSession(), tokenStore: store)
+        let stub = APIv2TestStub()
+        stub.reply(200, #"{"access_token":"replacement","refresh_token":"new-refresh","expires_in":3600,"user":{"id":34,"username":"new","email":"new@example.test","role":"user"}}"#)
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: store)
         let auth = AuthService(launchPreferences: preferences, httpClient: http, tokenStore: store)
-        let expected = await store.refreshAccountIdentity()
         memory.failAccessToken = "replacement"
         do {
-            try await auth.installSession(accessToken: "replacement", refreshToken: "new-refresh",
-                expectedAccount: XCTUnwrap(expected))
+            try await auth.login(username: "new", password: "password")
             XCTFail("Failed persistence reported login success")
         } catch AccountSessionPersistenceError.unavailable { }
+        XCTAssertEqual(stub.requestedPaths, ["/api/v1/auth/login"])
+        XCTAssertEqual(stub.requests.first?.url?.host, "session.example")
         let restored = await store.getAccessToken()
         let profile = await store.getProfileId()
         let proof = await store.getProfileToken()
@@ -256,6 +258,55 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let lease = await http.beginIdentityTransition()
         XCTAssertNotNil(lease, "Failed login must release its transition lease")
         if let lease { await http.endIdentityTransition(lease) }
+    }
+
+    @MainActor
+    func testLoginInstallsIntoItsInjectedStore() async throws {
+        let (store, _, defaults, _) = try await harness()
+        try await store.installAccountSession(accessToken: "original", refreshToken: "refresh", accountID: "12")
+        await store.setProfileId("old-profile")
+        _ = await store.setProfileToken("old-proof")
+        let stub = APIv2TestStub()
+        stub.reply(200, #"{"access_token":"replacement","refresh_token":"new-refresh","expires_in":3600,"user":{"id":34,"username":"new","email":"new@example.test","role":"user"}}"#)
+        let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: defaults),
+            httpClient: HTTPClient(session: stub.makeSession(), tokenStore: store), tokenStore: store)
+        try await auth.login(username: "new", password: "password")
+        XCTAssertEqual(stub.requestedPaths, ["/api/v1/auth/login"])
+        XCTAssertEqual(stub.requests.first?.url?.host, "session.example")
+        let access = await store.getAccessToken()
+        let proof = await store.getProfileToken()
+        let profile = await store.getProfileId()
+        XCTAssertEqual(access, "replacement")
+        XCTAssertNil(proof)
+        XCTAssertNil(profile)
+    }
+
+    func testFailedProfileRestoreInvalidatesPartialSessionAcrossRelaunch() async throws {
+        for proof in [String?.none, "original-proof"] {
+            for rejectTombstone in [false, true] {
+                let (_, keys, defaults, memory) = try await harness()
+                let blockedKeys = SharedKeychain(service: keys.service,
+                    accessGroup: "unentitled.rollback.tests", allowsAppLocalFallback: false)
+                let store = TokenStore(keychain: blockedKeys, defaults: defaults, sessionPersistence: memory.persistence)
+                await store.switchActiveServer(serverId: "server")
+                let original = CanonicalAccountSession(version: 1, signedOut: false,
+                    origin: "https://session.example", accountID: "12", epoch: UUID(),
+                    accessToken: "original", refreshToken: "refresh")
+                memory.rejectTombstones = rejectTombstone
+                let restored = await store.restoreAccountSession(.session(original, profileToken: proof), for: "server")
+                XCTAssertFalse(restored)
+                let current = await store.getAccessToken()
+                XCTAssertNil(current)
+                guard case .signedOut = try memory.persistence.load("server") else {
+                    return XCTFail("Partial session survived a failed profile-proof restore")
+                }
+                // Reopen with a working Keychain: the process-local block must
+                // not be what prevents the partial session from returning.
+                let relaunched = await restarted(keys, defaults, memory)
+                let access = await relaunched.getAccessToken()
+                XCTAssertNil(access)
+            }
+        }
     }
 
     func testRollbackRestoresInactiveTargetsProfileProof() async throws {
@@ -439,6 +490,7 @@ private final class SessionMemory: @unchecked Sendable {
     private var values: [String: String] = [:]
     var failRecordWrites = false
     var failAccessToken: String?
+    var rejectTombstones = false
     var failRemoval = false
     var failRead = false
     var persistence: AccountSessionPersistence {
@@ -450,9 +502,10 @@ private final class SessionMemory: @unchecked Sendable {
         }, write: { value, key in
             self.lock.withLock {
                 if self.failRecordWrites && key.hasSuffix(".accountSession") { return false }
-                if let rejected = self.failAccessToken,
-                   let session = try? JSONDecoder().decode(CanonicalAccountSession.self, from: Data(value.utf8)),
-                   session.accessToken == rejected { return false }
+                if let session = try? JSONDecoder().decode(CanonicalAccountSession.self, from: Data(value.utf8)) {
+                    if let rejected = self.failAccessToken, session.accessToken == rejected { return false }
+                    if self.rejectTombstones && session.signedOut { return false }
+                }
                 self.values[key] = value; return true
             }
         }, remove: { key in

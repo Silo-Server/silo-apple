@@ -129,7 +129,6 @@ struct APIv2CatalogContinuation {
     let cursor: String
     let seen: Set<String>
     let identity: HTTPRequestIdentity
-    let account: RefreshAccountIdentity
     let auth: CapturedOrdinaryRequestAuth
 }
 

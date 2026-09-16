@@ -1052,9 +1052,9 @@ actor TokenStore {
     }
 
     /// Reinstates `snapshot` for `serverID`. When the restore cannot be made
-    /// durable the server is blocked for this process (fail closed) and
-    /// `false` is returned; the caller must not report the previous state as
-    /// retained.
+    /// durable, returns false and blocks runtime use. If restoring the profile
+    /// proof fails after the account commit, invalidate that partial session
+    /// durably so it cannot return after relaunch.
     @discardableResult
     func restoreAccountSession(_ snapshot: AccountSessionSnapshot, for serverID: String) -> Bool {
         guard !serverID.isEmpty else { return false }
@@ -1093,17 +1093,25 @@ actor TokenStore {
             profileToken = nil
             durable = false
         }
+        var failureReason = "persistenceUnavailable"
         if durable {
             if let profileToken {
                 durable = profileKeychain.set(profileToken, for: Self.profileTokenKey(for: serverID))
             } else {
                 durable = profileKeychain.delete(Self.profileTokenKey(for: serverID))
             }
+            if !durable {
+                // Account and profile proofs use different Keychain audiences.
+                // Revoke the account if its profile proof cannot be restored.
+                failureReason = sessions.invalidate(serverID)
+                    ? "profileRestoreFailedSessionInvalidated"
+                    : "profileRestoreFailedInvalidationFailed"
+            }
         }
         if durable {
             runtimeBlockedServers.remove(serverID)
         } else {
-            recordSessionEvent(phase: "sessionRestore", outcome: "failed", reason: "persistenceUnavailable")
+            recordSessionEvent(phase: "sessionRestore", outcome: "failed", reason: failureReason)
             runtimeBlockedServers.insert(serverID)
         }
         if serverID == activeServerId {

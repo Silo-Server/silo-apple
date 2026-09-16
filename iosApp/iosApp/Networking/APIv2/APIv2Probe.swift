@@ -83,8 +83,7 @@ struct APIv2Probe: Sendable {
         // Exact match, tolerating only the single trailing newline the Go
         // helper writes. Leading whitespace or any other decoration is some
         // other service's 404, not the legacy listener's.
-        if body == legacyNotFoundBody { return true }
-        return body.hasSuffix("\n") && String(body.dropLast()) == legacyNotFoundBody
+        return body == legacyNotFoundBody || body == legacyNotFoundBody + "\n"
     }
 
     private static func classify(_ error: Error) -> APIv2ProbeFailure {

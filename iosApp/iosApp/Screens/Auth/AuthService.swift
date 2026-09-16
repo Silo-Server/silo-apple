@@ -184,10 +184,10 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Authentication
 
     func login(username: String, password: String) async throws {
-        guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
+        guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }
-        let response: LoginResponse = try await HTTPClient.shared.post(
+        let response: LoginResponse = try await httpClient.post(
             "/api/v1/auth/login",
             body: LoginRequest(username: username, password: password)
         )
@@ -198,10 +198,8 @@ final class AuthService: @unchecked Sendable {
         )
     }
 
-    /// A login response establishes a brand-new session. Wipe every piece of
-    /// prior auth state before persisting the new tokens — no need to carry
-    /// `profileId` or `profileToken` across the boundary, and keeping them
-    /// just strands stale values that the server rejects.
+    /// A new login clears the prior profile. Failed installation restores the
+    /// previous session before releasing the identity transition.
     func installSession(
         accessToken: String,
         refreshToken: String,
@@ -210,44 +208,39 @@ final class AuthService: @unchecked Sendable {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             throw CancellationError()
         }
-        guard !Task.isCancelled else {
-            await httpClient.endIdentityTransition(transitionLease)
-            throw CancellationError()
-        }
-        await httpClient.cancelInFlightRequests()
-        guard !Task.isCancelled,
-              await tokenStore.refreshAccountIdentity() == expectedAccount else {
-            await httpClient.endIdentityTransition(transitionLease)
-            if Task.isCancelled { throw CancellationError() }
-            throw HTTPError.requestIdentityChanged
-        }
-        let previousSession = await tokenStore.accountSessionSnapshot(for: expectedAccount.serverId)
-        guard previousSession != .unreadable else {
-            await httpClient.endIdentityTransition(transitionLease)
-            throw AccountSessionPersistenceError.unavailable
-        }
-        let previousProfileID = await tokenStore.getProfileId()
-        await tokenStore.clearTokens()
         do {
-            // v1 login responses carry no verified account id for the durable
-            // binding; the session installs unverified, exactly as
-            // `saveTokens` did, but a failed persist is reported instead of
-            // returning a "logged in" that does not survive the next launch.
-            try await tokenStore.installAccountSession(
-                accessToken: accessToken,
-                refreshToken: refreshToken,
-                accountID: nil
-            )
+            try Task.checkCancellation()
+            await httpClient.cancelInFlightRequests()
+            try Task.checkCancellation()
+            guard await tokenStore.refreshAccountIdentity() == expectedAccount else {
+                try Task.checkCancellation()
+                throw HTTPError.requestIdentityChanged
+            }
+            let previousSession = await tokenStore.accountSessionSnapshot(for: expectedAccount.serverId)
+            guard previousSession != .unreadable else {
+                throw AccountSessionPersistenceError.unavailable
+            }
+            let previousProfileID = await tokenStore.getProfileId()
+            await tokenStore.clearTokens()
+            do {
+                // This v1 entry point installs an unverified account binding.
+                try await tokenStore.installAccountSession(
+                    accessToken: accessToken,
+                    refreshToken: refreshToken,
+                    accountID: nil
+                )
+            } catch {
+                // TokenStore blocks the session if restoration also fails.
+                _ = await tokenStore.restoreAccountSession(previousSession, for: expectedAccount.serverId)
+                await tokenStore.setProfileId(previousProfileID)
+                throw error
+            }
+            launchPreferences.clearRememberedProfile(for: expectedAccount.serverId)
+            await clearAllCaches()
         } catch {
-            // A failed restore keeps the server blocked in TokenStore. Preserve
-            // the installation error and never publish a successful login.
-            _ = await tokenStore.restoreAccountSession(previousSession, for: expectedAccount.serverId)
-            await tokenStore.setProfileId(previousProfileID)
             await httpClient.endIdentityTransition(transitionLease)
             throw error
         }
-        launchPreferences.clearRememberedProfile(for: expectedAccount.serverId)
-        await clearAllCaches()
         await httpClient.endIdentityTransition(transitionLease)
     }
 

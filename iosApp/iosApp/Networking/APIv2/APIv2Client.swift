@@ -676,7 +676,7 @@ struct APIv2Client: Sendable {
                 throw APIv2Error.invalidCatalogContinuation
             }
             continuation = APIv2CatalogContinuation(query: query, operation: operation, cursor: next,
-                seen: seen.union([next]), identity: identity, account: auth.account, auth: auth)
+                seen: seen.union([next]), identity: identity, auth: auth)
         } else if let next = page.page.nextCursor, !next.isEmpty {
             throw APIv2Error.invalidCatalogContinuation
         }
