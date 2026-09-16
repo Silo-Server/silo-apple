@@ -211,6 +211,26 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
     }
 
+    func testRequestProbesCacheFailuresUntilLifecycleRefreshOrReset() async throws {
+        let stub = ImageSizeCapabilityFetchStub(response: try decodedCapability(), failuresBeforeSuccess: 2)
+        let capability = ImageSizeCapability(platformPrefersLargeImages: false) { try await stub.fetch() }
+        await capability.refresh(retryFailed: false)
+        await capability.refresh(retryFailed: false)
+        var count = await stub.callCount
+        XCTAssertEqual(count, 1)
+        XCTAssertNil(capability.capability)
+        await capability.refresh() // A foreground event may retry.
+        await capability.refresh(retryFailed: false)
+        count = await stub.callCount
+        XCTAssertEqual(count, 2)
+        capability.reset() // A different server must get its own probe.
+        await capability.refresh(retryFailed: false)
+        count = await stub.callCount
+        XCTAssertEqual(count, 3)
+        XCTAssertNotNil(capability.capability)
+        XCTAssertTrue(capability.requestQuery.isEmpty)
+    }
+
     func testResetRequiresCapabilityProbeForNewIdentity() async throws {
         let response = try decodedCapability()
         let stub = ImageSizeCapabilityFetchStub(response: response)

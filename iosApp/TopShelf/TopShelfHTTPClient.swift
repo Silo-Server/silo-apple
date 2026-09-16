@@ -73,8 +73,9 @@ struct TopShelfHTTPClient {
         seriesId: String,
         imageSizeQuery: [String: String]
     ) async throws -> TopShelfSeasonsResponse {
-        try await get(
-            "/api/v2/catalog/series/\(seriesId)/seasons",
+        guard let segment = CatalogPathSegment.encode(seriesId) else { throw Error.invalidURL }
+        return try await get(
+            "/api/v2/catalog/series/\(segment)/seasons",
             query: imageSizeQuery
         )
     }
@@ -83,8 +84,9 @@ struct TopShelfHTTPClient {
         contentId: String,
         imageSizeQuery: [String: String]
     ) async throws -> TopShelfItemDetail {
-        try await get(
-            "/api/v2/catalog/items/\(contentId)",
+        guard let segment = CatalogPathSegment.encode(contentId) else { throw Error.invalidURL }
+        return try await get(
+            "/api/v2/catalog/items/\(segment)",
             query: imageSizeQuery
         )
     }

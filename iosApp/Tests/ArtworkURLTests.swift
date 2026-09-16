@@ -149,6 +149,20 @@ final class ArtworkURLTests: XCTestCase {
         XCTAssertTrue(handler.requests.allSatisfy { $0.header("Authorization") == nil })
     }
 
+    func testCatalogIDsStayInOneURLPathSegment() throws {
+        let id = "series/a?b#c%2F"
+        let segment = try XCTUnwrap(CatalogPathSegment.encode(id))
+        for path in ["/api/v2/catalog/series/\(segment)/seasons", "/api/v2/catalog/items/\(segment)"] {
+            var components = try XCTUnwrap(URLComponents(string: "https://tv.example/mount"))
+            components.percentEncodedPath += path
+            let url = try XCTUnwrap(components.url)
+            XCTAssertTrue(url.absoluteString.contains("series%2Fa%3Fb%23c%252F"))
+            XCTAssertNil(url.query)
+            XCTAssertNil(url.fragment)
+        }
+        for invalid in ["", ".", ".."] { XCTAssertNil(CatalogPathSegment.encode(invalid)) }
+    }
+
     func testTopShelfHomeSeasonAndDetailArtwork() throws {
         let decoder = HTTPClient.makeJSONDecoder(artworkServerURL: URL(string: "https://tv.example/mount"))
         let sections = try decoder.decode(TopShelfSectionsResponse.self, from: Data(#"{"sections":[{"id":"cw","section_type":"continue_watching","title":"Continue Watching","items":[{"content_id":"episode","type":"episode","title":"Episode","poster_url":"/art/still.jpg?sig=a%2Bb"}]}]}"#.utf8))

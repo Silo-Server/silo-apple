@@ -47,7 +47,7 @@ actor SiloAPI {
             // Gate only the artwork request, never launch/profile navigation.
             // Concurrent startup prefetches join one probe, and older or
             // unreachable servers fall back to an empty query.
-            await ImageSizeCapability.shared.refresh()
+            await ImageSizeCapability.shared.refresh(retryFailed: false)
             return ImageSizeCapability.shared.requestQuery
         }
     }

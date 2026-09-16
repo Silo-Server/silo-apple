@@ -1119,9 +1119,7 @@ struct APIv2Client: Sendable {
     /// and `%` are never allowed through unencoded, and `.`/`..` never become
     /// a segment.
     private func catalogPathSegment(_ value: String) throws -> String {
-        guard !value.isEmpty, value != ".", value != "..",
-              let escaped = value.addingPercentEncoding(withAllowedCharacters:
-                CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) else {
+        guard let escaped = CatalogPathSegment.encode(value) else {
             throw APIv2Error.invalidCatalogQuery
         }
         return escaped

@@ -67,6 +67,7 @@ final class ImageSizeCapability: @unchecked Sendable {
     private let prefersLargeImages: Bool
     private let lock = NSLock()
     private var storedCapability: ImageSizeCapabilityResponse?
+    private var hasAttemptedProbe = false
     private var generation = 0
     private var nextProbeID = 0
     private var inFlightProbe: Probe?
@@ -116,12 +117,16 @@ final class ImageSizeCapability: @unchecked Sendable {
     ///
     /// Delivery capabilities are retained on every platform; only tvOS
     /// sends the large-image query parameter.
-    func refresh() async {
+    /// Image-bearing requests pass `false`; lifecycle refreshes may retry a
+    /// failed probe so an unavailable endpoint never delays every catalog read.
+    func refresh(retryFailed: Bool = true) async {
         guard let probe = lock.withLock({ () -> Probe? in
             if storedCapability != nil { return nil }
             if let inFlightProbe, inFlightProbe.generation == generation {
                 return inFlightProbe
             }
+            if hasAttemptedProbe && !retryFailed { return nil }
+            hasAttemptedProbe = true
             nextProbeID &+= 1
             let probe = Probe(
                 id: nextProbeID,
@@ -151,6 +156,7 @@ final class ImageSizeCapability: @unchecked Sendable {
         let task = lock.withLock { () -> Task<ImageSizeCapabilityResponse?, Never>? in
             generation &+= 1
             storedCapability = nil
+            hasAttemptedProbe = false
             let task = inFlightProbe?.task
             inFlightProbe = nil
             return task
