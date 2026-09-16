@@ -56,6 +56,12 @@ struct TVLibraryTypeTabView: View {
                     subtitle: "Libraries visible to this profile will appear here."
                 )
                 .padding(.top, TVTopMenuLayout.contentTopInset)
+                .tvPageFocusOwner(
+                    focusRequest: focusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: "No \(type.title.lowercased()) libraries",
+                    onMoveUp: onTopMenuFocusRequest
+                )
             }
         }
         .siloBackground()

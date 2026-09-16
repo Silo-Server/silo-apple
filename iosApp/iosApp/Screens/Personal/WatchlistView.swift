@@ -58,12 +58,15 @@ struct WatchlistView: View {
             } else if let error {
                 ErrorView(state: error, onRetry: { Task { await loadWatchlist() } })
             } else if isLoading {
-                // tvOS: this is a pushed destination, so the top menu bar
-                // isn't there to hold focus — without a focusable element
-                // the remote goes dead until the grid renders.
                 Color.clear
                 #if os(tvOS)
-                    .focusable()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .tvPageFocusOwner(
+                        focusRequest: focusRequest,
+                        isTopMenuFocused: isTopMenuFocused,
+                        accessibilityLabel: "Loading watchlist",
+                        onMoveUp: onTopMenuFocusRequest
+                    )
                 #endif
             } else {
                 EmptyStateView(
@@ -71,6 +74,14 @@ struct WatchlistView: View {
                     title: "Watchlist is empty",
                     subtitle: "Tap the bookmark icon on any item to add it here"
                 )
+                #if os(tvOS)
+                .tvPageFocusOwner(
+                    focusRequest: focusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: "Watchlist is empty",
+                    onMoveUp: onTopMenuFocusRequest
+                )
+                #endif
             }
         }
         .siloPageBackground()

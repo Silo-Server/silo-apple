@@ -78,17 +78,36 @@ struct HomeView: View {
                 )
             } else if viewModel.isLoading {
                 Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .tvPageFocusOwner(
+                        focusRequest: homeFocusRequest,
+                        isTopMenuFocused: isTopMenuFocused,
+                        accessibilityLabel: "Loading home",
+                        onMoveUp: onTopMenuFocusRequest
+                    )
             } else if !viewModel.regularSections.isEmpty {
                 EmptyStateView(
                     icon: "eye.slash",
                     title: "Home sections are hidden",
                     subtitle: "Choose which rows appear in Settings → General → Home Sections."
                 )
+                .tvPageFocusOwner(
+                    focusRequest: homeFocusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: "Home sections are hidden",
+                    onMoveUp: onTopMenuFocusRequest
+                )
             } else {
                 EmptyStateView(
                     icon: "play.rectangle.on.rectangle",
                     title: "Nothing to watch yet",
                     subtitle: "Add media to your libraries or start watching to see it here."
+                )
+                .tvPageFocusOwner(
+                    focusRequest: homeFocusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: "Nothing to watch yet",
+                    onMoveUp: onTopMenuFocusRequest
                 )
             }
         }

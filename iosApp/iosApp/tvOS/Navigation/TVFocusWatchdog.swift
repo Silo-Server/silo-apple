@@ -1,3 +1,31 @@
+/// What a focus-outage repair should try next.
+enum TVFocusRepairAction: Equatable {
+    /// Re-arm the page's own entry focus — the gentle nudge, and the right one
+    /// while the page still has a focus target to hand focus back to.
+    case contentHandoff
+    /// Un-suppress the top menu and pin its selected element.
+    case topMenu
+    /// Ask the engine to re-resolve from the window. Used on pushed routes,
+    /// where the shell owns no focus target it could legitimately pin.
+    case engineReresolve
+}
+
+/// Escalate a repeated outage at the root from the page to the top menu.
+///
+/// A content hand-down only repairs focus if the page has something focusable.
+/// A page rendering nothing but an inert placeholder has no focus target at
+/// all, so the hand-down changes nothing and the remote stays dead through
+/// every retry — the shape of the "Favorites with no favorites" soft-lock. The
+/// top menu always has focusable elements while it is on screen, so handing
+/// focus there guarantees the user a way out even from a page that cannot take
+/// focus itself.
+///
+/// - Parameter attempt: 1 for the first repair of an outage.
+func tvFocusRepairAction(attempt: Int, isShowingRoot: Bool) -> TVFocusRepairAction {
+    guard isShowingRoot else { return .engineReresolve }
+    return attempt <= 1 ? .contentHandoff : .topMenu
+}
+
 #if os(tvOS)
 import SwiftUI
 import UIKit
@@ -56,7 +84,9 @@ struct TVFocusWatchdogModifier: ViewModifier {
     /// suspends) focus — a presented cover, a system dialog, the background.
     /// A "no focused item" reading is not actionable in those states.
     let isActive: Bool
-    let onRepair: () -> Void
+    /// Passed the 1-based repair attempt for the current outage, so the shell
+    /// can escalate when an earlier attempt failed to restore focus.
+    let onRepair: (Int) -> Void
 
     private static let checkInterval = Duration.seconds(2)
     /// Two consecutive misses (~4 s) before acting. One miss is routinely seen
@@ -116,7 +146,7 @@ struct TVFocusWatchdogModifier: ViewModifier {
                 "action": .string("repair"),
             ]
         )
-        onRepair()
+        onRepair(repairsThisOutage)
     }
 
     @MainActor
@@ -146,7 +176,7 @@ struct TVFocusWatchdogModifier: ViewModifier {
 }
 
 extension View {
-    func tvFocusWatchdog(isActive: Bool, onRepair: @escaping () -> Void) -> some View {
+    func tvFocusWatchdog(isActive: Bool, onRepair: @escaping (Int) -> Void) -> some View {
         modifier(TVFocusWatchdogModifier(isActive: isActive, onRepair: onRepair))
     }
 }
