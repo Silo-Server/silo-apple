@@ -9,8 +9,7 @@ final class StubURLProtocolGateTests: XCTestCase {
     func testCancelledWaiterIsReleasedWithoutOpen() async {
         let gate = StubURLProtocol.Gate()
         let waiter = Task { await gate.wait() }
-        // Give the waiter a chance to suspend inside the gate before cancelling.
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        await waitForWaiter(on: gate)
         waiter.cancel()
         let released = await withTaskGroup(of: Bool.self) { group in
             group.addTask { await waiter.value; return true }
@@ -25,10 +24,20 @@ final class StubURLProtocolGateTests: XCTestCase {
     func testOpenStillReleasesLiveWaiters() async {
         let gate = StubURLProtocol.Gate()
         let waiter = Task { await gate.wait() }
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        await waitForWaiter(on: gate)
         await gate.open()
         await waiter.value
         // A wait after open returns immediately.
         await gate.wait()
+    }
+
+    /// Returns once a waiter is suspended inside the gate, so the step under
+    /// test acts on a registered continuation rather than racing it.
+    private func waitForWaiter(on gate: StubURLProtocol.Gate, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(2)
+        while await gate.waiterCount == 0 {
+            if Date() > deadline { return XCTFail("the waiter never registered", file: file, line: line) }
+            await Task.yield()
+        }
     }
 }

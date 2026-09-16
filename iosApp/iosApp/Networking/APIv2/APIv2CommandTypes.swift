@@ -43,9 +43,10 @@ struct PlaybackSequencedSample: Codable, Equatable, Sendable {
 }
 
 enum PlaybackSequencedError: LocalizedError {
-    case invalidSample, invalidResponse, invalidSession, authorityChanged, pendingStart
+    case invalidSample, invalidResponse, invalidSession, authorityChanged, pendingStart, controlRequiresTLS
     var errorDescription: String? {
         switch self {
+        case .controlRequiresTLS: return "Remote playback control needs an HTTPS server connection."
         case .pendingStart: return "A previous playback start is unresolved. Retry it before starting another item."
         case .invalidSample: return "Playback progress could not be recorded."
         case .invalidResponse: return "The server returned an invalid playback response."

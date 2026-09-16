@@ -11,6 +11,26 @@ actor PlaybackTestActorBox<Value: Sendable> {
 
 @MainActor
 final class PlaybackProtocolV3Tests: XCTestCase {
+    /// The control ticket is a delegated credential carried in the WebSocket
+    /// handshake, so it is only ever sent over TLS (or to loopback).
+    func testControlTicketRequestRequiresTLSExceptLoopback() throws {
+        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: Data(
+            #"{"ticket":"abc-123","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#.utf8))
+        let session = UUID().uuidString
+
+        let secure = try ticket.request(serverURL: "https://silo.example/base", sessionID: session)
+        XCTAssertEqual(secure.url?.scheme, "wss")
+        XCTAssertEqual(secure.url?.path, "/base/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertEqual(secure.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "silo.playback-control.v2, silo.ticket.abc-123")
+
+        let local = try ticket.request(serverURL: "http://localhost:8096", sessionID: session)
+        XCTAssertEqual(local.url?.scheme, "ws")
+
+        XCTAssertThrowsError(try ticket.request(serverURL: "http://silo.example", sessionID: session)) { error in
+            guard case PlaybackSequencedError.controlRequiresTLS = error else { return XCTFail("Unexpected \(error)") }
+        }
+    }
+
     func testNativeEmbeddedDecisionUsesExactStreamWithoutMountingFallbackURL() throws {
         let plan = makePlan(
             container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",

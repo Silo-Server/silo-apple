@@ -81,6 +81,22 @@ final class AuthDeviceV2Tests: XCTestCase {
         }
     }
 
+    /// The server URL may carry a base path. The public-path rule must still
+    /// recognise the auth endpoints under it, or a bearer leaks onto them.
+    func testPublicAuthPathsCarryNoBearerUnderAServerBasePath() async throws {
+        let (api, tokens) = try await harness()
+        await tokens.setServerUrl("https://auth.example/silo")
+        _ = await tokens.saveTokens(accessToken: "old", refreshToken: "refresh")
+        let identityValue = await tokens.refreshAccountIdentity()
+        let identity = try XCTUnwrap(identityValue)
+        stub.reply(200, #"{"status":"pending","poll_after":5,"profile_id":"","profile_token":"","temporary":false}"#)
+        _ = try await api.pollDeviceLogin(deviceCode: "secret", expectedAccount: identity)
+        let request = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(request.path, "/silo/api/v2/auth/device/poll")
+        XCTAssertNil(request.header("authorization"), "a prefixed public auth path still carries no bearer")
+        XCTAssertNil(request.header("x-profile-token"))
+    }
+
     func testHandoffDecisionRejectsChangedCapturedAccountBeforeDispatch() async throws {
         let (api, tokens) = try await harness()
         try await tokens.installAccountSession(accessToken: "old", refreshToken: "old-refresh", accountID: "1")

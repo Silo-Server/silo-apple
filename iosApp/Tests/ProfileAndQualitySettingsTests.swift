@@ -30,6 +30,17 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertTrue(options.contains("pt-BR"), "the exact current wire value must stay selectable")
     }
 
+    func testLegacyOriginalSpellingSharesTheSentinelIdentity() {
+        XCTAssertEqual(
+            PlaybackLanguageOption.languageIdentity("original"),
+            PlaybackLanguageOption.languageIdentity(PlaybackPrefSentinel.originalLanguage)
+        )
+        XCTAssertEqual(
+            PlaybackLanguageOption.languageIdentity("Original"),
+            PlaybackLanguageOption.languageIdentity("X-Silo-Original")
+        )
+    }
+
     func testCurrentAliasReplacesTheContractWireValue() {
         let options = PlaybackLanguageOption.options(
             for: .playbackAudioLanguage,

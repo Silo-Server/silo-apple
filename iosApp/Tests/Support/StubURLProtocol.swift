@@ -181,6 +181,10 @@ final class StubURLProtocol: URLProtocol {
             }
         }
 
+        /// Tasks currently suspended in `wait()`. Tests use it to know a
+        /// waiter has registered before cancelling or opening.
+        var waiterCount: Int { waiters.count }
+
         func open() {
             isOpen = true
             let released = waiters.values

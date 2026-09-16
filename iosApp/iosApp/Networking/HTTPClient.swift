@@ -1754,12 +1754,18 @@ actor HTTPClient {
     /// Public auth operations carry no bearer. Collecting polls and other
     /// public auth mutations may consume one-use state, so a rejected or
     /// uncertain request is never replayed by the auth refresh machinery.
+    ///
+    /// Matched by suffix: `buildRequest` keeps the server URL's base path, so
+    /// the path seen at header-attachment time may be `/prefix/api/v2/...`.
     private static func isPublicAuthPath(_ path: String) -> Bool {
-        path.hasSuffix("/auth/refresh") || path.hasSuffix("/auth/login") || [
-            "/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/oauth/complete",
-            "/api/v2/system/setup", "/api/v2/auth/signup"
-        ].contains(path)
+        publicAuthPathSuffixes.contains { path.hasSuffix($0) }
     }
+
+    private static let publicAuthPathSuffixes = [
+        "/auth/refresh", "/auth/login",
+        "/api/v2/auth/device/start", "/api/v2/auth/device/poll", "/api/v2/auth/oauth/complete",
+        "/api/v2/system/setup", "/api/v2/auth/signup",
+    ]
 
     /// The v2 exclusions are single-dispatch mutations (`docs/native-api-v2.md`):
     /// a 401 on one of them surfaces as the failure it is instead of being

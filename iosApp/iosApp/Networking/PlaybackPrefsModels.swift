@@ -191,6 +191,10 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
     }
 
     static func languageIdentity(_ value: String) -> String {
+        // The legacy `original` spelling and the BCP-47 sentinel are one row.
+        if value.caseInsensitiveCompare("original") == .orderedSame {
+            return PlaybackPrefSentinel.originalLanguage
+        }
         let normalized = value.replacingOccurrences(of: "_", with: "-")
         var components = normalized.split(separator: "-").map(String.init)
         guard let language = components.first else { return normalized.lowercased() }
