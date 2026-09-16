@@ -667,30 +667,6 @@ final class ServerRegistry {
             }
         }
 
-        // Invalidate the credentials before the entry goes: a canonical
-        // record that cannot be tombstoned would otherwise outlive the entry
-        // and restore the session when the same server is added again. The
-        // entry survives a failed invalidation so the caller's "entry
-        // survived" handling is accurate.
-        guard await TokenStore.shared.deleteTokens(for: serverId) else {
-            #if os(iOS) || os(tvOS)
-            if removesActiveServer {
-                DiagnosticsCoordinator.activeProfileDidChange()
-            }
-            #endif
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-            if removesActiveServer {
-                Self.logger.error("removeServer could not invalidate the canonical session")
-            } else {
-                recordRegistryEvent(
-                    phase: "removeServer",
-                    outcome: "failed",
-                    reason: "sessionInvalidationFailed"
-                )
-            }
-            return false
-        }
-
         let previousEntries = entries
         let previousActiveServerID = activeServerId
         let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
@@ -711,7 +687,13 @@ final class ServerRegistry {
             }
             activeServerId = fallback?.id
         }
-        guard persist() else {
+        // Two durable writes happen here: the registry without this entry,
+        // then the tombstone for its canonical session. Neither may stay
+        // committed when the other fails. The registry goes first because
+        // its rollback is a plain re-persist of the previous entries; when
+        // the tombstone then fails, that same rollback restores the entry so
+        // the server is neither half-removed nor silently signed out.
+        func rollBackRemoval(reason: String) async {
             entries = previousEntries
             activeServerId = previousActiveServerID
             _ = persist()
@@ -728,14 +710,22 @@ final class ServerRegistry {
             // active branch this is the same unrecordable position `switchTo`
             // is in: the gate closed above and the rollback does not reopen it.
             if removesActiveServer {
-                Self.logger.error("removeServer failed to persist the removal")
+                Self.logger.error("removeServer rolled back: \(reason, privacy: .public)")
             } else {
-                recordRegistryEvent(
-                    phase: "removeServer",
-                    outcome: "failed",
-                    reason: "persistFailed"
-                )
+                recordRegistryEvent(phase: "removeServer", outcome: "failed", reason: reason)
             }
+        }
+        guard persist() else {
+            await rollBackRemoval(reason: "persistFailed")
+            return false
+        }
+        // A canonical record that cannot be tombstoned would outlive the
+        // entry and restore the session when the same server is added again,
+        // so the entry comes back instead. Process-local credentials for the
+        // server are already cleared and its runtime is blocked; the record
+        // itself is intact, which is the state the restored entry describes.
+        guard await TokenStore.shared.deleteTokens(for: serverId) else {
+            await rollBackRemoval(reason: "sessionInvalidationFailed")
             return false
         }
 

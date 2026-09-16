@@ -104,6 +104,7 @@ final class CatalogV2Tests: XCTestCase {
             ("updateProfile", { _ = try await $0.updateProfile(id: "profile-one", patch: APIv2ProfilePatch()) }, profile),
             ("householdProfiles", { _ = try await $0.householdProfiles() }, #"{"items":[\#(profile)],"page":{"has_more":false}}"#),
             ("requestPost", { _ = try await $0.requestPost("/api/v2/requests", body: ["item_id": "one"]) as APIv2Profile }, profile),
+            ("listProgress", { _ = try await $0.listProgress(limit: 5) }, #"{"items":[],"page":{"has_more":false}}"#),
         ]
         for (name, call, body) in cases {
             // Owner replaced at HTTP capture: refused before the bytes leave.

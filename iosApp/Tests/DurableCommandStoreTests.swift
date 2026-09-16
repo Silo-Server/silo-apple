@@ -403,6 +403,8 @@ final class DurableCommandStoreTests: XCTestCase {
         do {
             try await store.claim(id: command.id)
             XCTFail("the write must fail")
+        } catch let error as DurableCommandStoreError {
+            XCTFail("expected the file write to fail, not \(error)")
         } catch { }
         let afterFailedClaim = await store.record(id: command.id)
         XCTAssertEqual(afterFailedClaim?.state, .prepared, "a claim that did not persist is not a claim")
@@ -410,6 +412,8 @@ final class DurableCommandStoreTests: XCTestCase {
         do {
             try await store.discard(id: command.id)
             XCTFail("the write must fail")
+        } catch let error as DurableCommandStoreError {
+            XCTFail("expected the file write to fail, not \(error)")
         } catch { }
         let afterFailedDiscard = await store.record(id: command.id)
         XCTAssertNotNil(afterFailedDiscard, "a discard that did not persist keeps the record")
@@ -417,6 +421,8 @@ final class DurableCommandStoreTests: XCTestCase {
         do {
             try await store.append(Command(payload: "second"))
             XCTFail("the write must fail")
+        } catch let error as DurableCommandStoreError {
+            XCTFail("expected the file write to fail, not \(error)")
         } catch { }
         let count = await store.all().count
         XCTAssertEqual(count, 1, "an append that did not persist is dropped")

@@ -145,6 +145,7 @@ final class AuthService: @unchecked Sendable {
         // contract verdict the pilot gate reads. Recorded after the switch so
         // a candidate that is not committed never touches the active verdict.
         await recordContractVerdict(serverId: id, serverURL: normalized)
+        try Task.checkCancellation()
 
         return status
     }

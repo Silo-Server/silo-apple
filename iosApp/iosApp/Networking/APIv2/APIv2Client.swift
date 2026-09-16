@@ -155,13 +155,12 @@ struct APIv2Client: Sendable {
         limit: Int? = nil,
         cursor: String? = nil
     ) async throws -> APIv2ProgressPage {
-        try await gate()
         var query: [String: String] = [:]
         if let status { query["status"] = status.wireValue }
         if let libraryId { query["library_id"] = libraryId }
         if let limit { query["limit"] = String(limit) }
         if let cursor { query["cursor"] = cursor }
-        return try await mapErrors { try await http.get("/api/v2/progress", query: query) }
+        return try await requestGet("/api/v2/progress", query: query)
     }
 
     // MARK: updateProfile (profile_scoped, no profile header required)
