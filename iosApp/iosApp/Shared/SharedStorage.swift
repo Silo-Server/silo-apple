@@ -433,6 +433,9 @@ struct SharedKeychain {
         readResult(account: account, accessGroup: accessGroup).value
     }
 
+    /// `errSecDecode` is reported when the item exists but its payload is not
+    /// UTF-8 text, so a strict reader can tell a corrupt record from an absent
+    /// one. The lenient `get` treats both as "no value", as before.
     private func readResult(account: String, accessGroup: String?) -> (status: OSStatus, value: String?) {
         var query = baseQuery(account: account, accessGroup: accessGroup)
         query[kSecReturnData as String] = true
@@ -442,7 +445,10 @@ struct SharedKeychain {
         guard status == errSecSuccess, let data = result as? Data else {
             return (status, nil)
         }
-        return (status, String(data: data, encoding: .utf8))
+        guard let value = String(data: data, encoding: .utf8) else {
+            return (errSecDecode, nil)
+        }
+        return (status, value)
     }
 
     private func write(_ data: Data, for account: String, accessGroup: String?) -> OSStatus {

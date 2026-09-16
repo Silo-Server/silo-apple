@@ -387,6 +387,50 @@ final class DurableCommandStoreTests: XCTestCase {
         XCTAssertNil(staleRecord)
     }
 
+    // MARK: failed persist
+
+    func testFailedPersistLeavesRecordsAsTheFileHoldsThem() async throws {
+        let store = makeStore()
+        let command = Command(payload: "held")
+        try await store.append(command)
+        let before = try Data(contentsOf: fileURL)
+
+        // Make the atomic write fail: the target path is now a directory.
+        try FileManager.default.removeItem(at: fileURL)
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        do {
+            try await store.claim(id: command.id)
+            XCTFail("the write must fail")
+        } catch { }
+        let afterFailedClaim = await store.record(id: command.id)
+        XCTAssertEqual(afterFailedClaim?.state, .prepared, "a claim that did not persist is not a claim")
+
+        do {
+            try await store.discard(id: command.id)
+            XCTFail("the write must fail")
+        } catch { }
+        let afterFailedDiscard = await store.record(id: command.id)
+        XCTAssertNotNil(afterFailedDiscard, "a discard that did not persist keeps the record")
+
+        do {
+            try await store.append(Command(payload: "second"))
+            XCTFail("the write must fail")
+        } catch { }
+        let count = await store.all().count
+        XCTAssertEqual(count, 1, "an append that did not persist is dropped")
+
+        // Once the file is writable again the retry is a normal claim.
+        try FileManager.default.removeItem(at: fileURL)
+        try before.write(to: fileURL)
+        let claimed = try await store.claim(id: command.id)
+        XCTAssertEqual(claimed.state, .uncertain)
+        let reopened = makeStore()
+        let stored = await reopened.record(id: command.id)
+        XCTAssertEqual(stored?.state, .uncertain)
+    }
+
     // MARK: corrupt file
 
     func testCorruptFileStartsEmptyAndIsReplacedOnNextPersist() async throws {

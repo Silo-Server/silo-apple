@@ -357,6 +357,26 @@ final class ReceiverPairingCoordinator {
         let previousServerURL = await TokenStore.shared.getServerUrl()
         let previousProfileID = await TokenStore.shared.getProfileId()
         let previousProfileToken = await TokenStore.shared.getProfileToken()
+        // `addOrUpdate(preservingProfile: false)` forgets the durable profile
+        // choice for this server id. When the pairing then fails, the previous
+        // session is kept, so its remembered profile must come back too or the
+        // next launch lands on profile selection for no reason.
+        let launchPreferences = ProfileLaunchPreferences.shared
+        let previousRememberedProfile = launchPreferences.rememberedProfile(for: id)
+        let previousSelectionRequired = launchPreferences.state.selectionRequiredServerIDs.contains(id)
+        func restoreRememberedProfile() {
+            if let remembered = previousRememberedProfile {
+                launchPreferences.remember(
+                    profileID: remembered.profileID,
+                    requiresPIN: remembered.requiredPINAtSelection,
+                    accountEpoch: remembered.accountEpoch,
+                    for: id
+                )
+            }
+            if previousSelectionRequired {
+                launchPreferences.markSelectionRequired(for: id)
+            }
+        }
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
@@ -381,6 +401,7 @@ final class ReceiverPairingCoordinator {
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await TokenStore.shared.setProfileId(previousProfileID)
             _ = await TokenStore.shared.setProfileToken(previousProfileToken)
+            restoreRememberedProfile()
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
@@ -397,6 +418,7 @@ final class ReceiverPairingCoordinator {
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await TokenStore.shared.setProfileId(previousProfileID)
             _ = await TokenStore.shared.setProfileToken(previousProfileToken)
+            restoreRememberedProfile()
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }

@@ -190,6 +190,48 @@ final class APIv2ContractStateTests: XCTestCase {
         monitor.noteServerResponded()
         XCTAssertEqual(fired, 0, "a stale verdict for another server never triggers a re-probe")
     }
+
+    /// `checkServer` and `refreshActiveServerName` are the two moments the
+    /// v2 contract verdict is established. A v1-only answer must close the
+    /// pilot gate for the active server; a v2 answer must open it again.
+    func testCheckServerAndRefreshRecordTheContractVerdict() async throws {
+        let previousTokenServerId = await TokenStore.shared.getActiveServerId()
+        let suiteName = "APIv2ContractStateTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let registry = ServerRegistry(
+            defaults: SharedDefaults(suite: suite, standard: suite),
+            keychain: SharedKeychain(service: suiteName, accessGroup: nil)
+        )
+        addTeardownBlock {
+            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerId)
+        }
+        monitor.activeServerIdProvider = { registry.activeServerId }
+
+        let stub = APIv2TestStub()
+        stub.reply(path: "/api/v1/auth/setup", 200, #"{"needs_setup":false}"#)
+        stub.reply(path: "/api/v1/theme/branding", 200, #"{"server_name":"Probed"}"#)
+        stub.reply(path: APIv2Probe.path, 404, "404 page not found\n")
+        let http = HTTPClient(session: stub.makeSession())
+        let service = AuthService(
+            serverIdentityResolver: ServerIdentityResolver(httpClient: http),
+            serverRegistry: registry,
+            contractProbe: APIv2Probe(httpClient: http),
+            httpClient: http
+        )
+
+        let url = "https://probed.example"
+        _ = try await service.checkServer(url: url)
+        XCTAssertEqual(registry.activeServerId, ServerRegistry.serverId(for: url))
+        XCTAssertTrue(monitor.isServerUpdateRequired, "a v1-only server closes the pilot gate once it is active")
+        XCTAssertTrue(stub.requestedPaths.contains(APIv2Probe.path))
+
+        stub.reply(path: APIv2Probe.path, 200,
+            #"{"server_version":"2.0.0","api_major":2,"contract_digest":"d","links":{"openapi":"/api/v2/openapi.json","capabilities":"/api/v2/capabilities"}}"#)
+        await service.refreshActiveServerName()
+        XCTAssertFalse(monitor.isServerUpdateRequired, "an upgraded server reopens the gate on the next refresh")
+        XCTAssertEqual(monitor.contractStatus, .v2)
+    }
 }
 
 private extension APIv2SystemInfo {

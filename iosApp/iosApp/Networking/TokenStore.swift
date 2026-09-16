@@ -815,15 +815,27 @@ actor TokenStore {
                 return nil
             }
 
+            // The durable tombstone is written first. If it cannot be
+            // persisted, the canonical record still holds the rejected tokens
+            // and `ensureLoaded()` would restore them on the next launch, so
+            // nothing local is cleared and no expiry is reported: the caller
+            // sees the same outcome as any other skipped invalidation and the
+            // next 401 retries the whole sequence.
+            guard sessions.invalidate(serverId) else {
+                recordSessionEvent(
+                    phase: "sessionInvalidation",
+                    outcome: "failed",
+                    reason: "persistenceUnavailable"
+                )
+                return nil
+            }
             recordSessionEvent(
                 phase: "sessionInvalidation",
                 outcome: "cleared",
                 reason: "refreshRejected"
             )
-            let durable = sessions.invalidate(serverId)
             runtimeBlockedServers.insert(serverId)
             canonicalSession = nil
-            if !durable { recordSessionEvent(phase: "sessionInvalidation", outcome: "failed", reason: "persistenceUnavailable") }
             cachedAccessToken = nil
             cachedRefreshToken = nil
             cachedProfileToken = nil

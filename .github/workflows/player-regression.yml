@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       baseline_ref:
-        description: Optional unchanged upstream commit for a comparative full-suite run
+        description: Optional unchanged upstream commit for a comparative iOS run (the tvOS test target may not exist there)
         type: string
         required: false
       record_preview:
@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(inputs.ios_only &&
+          ${{ fromJSON((inputs.ios_only || inputs.baseline_ref) &&
             '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests"}]' ||
             '[{"scheme":"Silo","destination":"platform=iOS Simulator,name=iPhone 17 Pro","action":"test","platform":"iOS","test_target":"SiloTests"},
               {"scheme":"SiloTV","destination":"platform=tvOS Simulator,name=Apple TV 4K (3rd generation)","action":"test","platform":"tvOS","test_target":"SiloTVTests"},

@@ -14,6 +14,8 @@ final class AuthService: @unchecked Sendable {
     private let serverRegistry: ServerRegistry
     private let launchPreferences: ProfileLaunchPreferences
     private let restoredSessionValidator: RestoredSessionValidator
+    private let contractProbe: APIv2Probe
+    private let httpClient: HTTPClient
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -24,12 +26,34 @@ final class AuthService: @unchecked Sendable {
         serverIdentityResolver: ServerIdentityResolver = ServerIdentityResolver(),
         serverRegistry: ServerRegistry = .shared,
         launchPreferences: ProfileLaunchPreferences = .shared,
-        restoredSessionValidator: RestoredSessionValidator = .live
+        restoredSessionValidator: RestoredSessionValidator = .live,
+        contractProbe: APIv2Probe = APIv2Probe(),
+        httpClient: HTTPClient = .shared
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
         self.launchPreferences = launchPreferences
         self.restoredSessionValidator = restoredSessionValidator
+        self.contractProbe = contractProbe
+        self.httpClient = httpClient
+    }
+
+    /// Runs the v2 contract probe for `serverId` and records the verdict.
+    /// The generation is issued before the await so an older probe that
+    /// finishes after a newer one cannot overwrite its verdict; the monitor
+    /// also drops the result unless `serverId` is still the active server.
+    /// Only `.v2` and `.updateServer` change the verdict; a transport or HTTP
+    /// failure leaves the previous one in place (a timeout is not an old
+    /// server). Nothing here throws: v1 paths keep working against a v1-only
+    /// server, and the verdict only closes the v2 pilot gate.
+    private func recordContractVerdict(serverId: String, serverURL: String) async {
+        let generation = await MainActor.run {
+            ConnectionMonitor.shared.beginContractProbe(serverId: serverId)
+        }
+        let result = await contractProbe.probe(serverURL: serverURL)
+        await MainActor.run {
+            ConnectionMonitor.shared.noteContractProbe(result, serverId: serverId, generation: generation)
+        }
     }
 
     // MARK: - Stored State Accessors
@@ -82,7 +106,7 @@ final class AuthService: @unchecked Sendable {
         try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
-        let status: SetupStatus = try await HTTPClient.shared.getUnauthenticated(
+        let status: SetupStatus = try await httpClient.getUnauthenticated(
             serverURL: normalized,
             path: "/api/v1/auth/setup"
         )
@@ -96,14 +120,18 @@ final class AuthService: @unchecked Sendable {
             profileId: nil,
             lastUsedAt: Date()
         )
-        guard ServerRegistry.shared.addOrUpdate(entry) != nil else {
+        guard serverRegistry.addOrUpdate(entry) != nil else {
             throw ServerRegistryError.persistenceFailed
         }
-        if ServerRegistry.shared.activeServerId != id {
-            guard await ServerRegistry.shared.switchTo(serverId: id) else {
+        if serverRegistry.activeServerId != id {
+            guard await serverRegistry.switchTo(serverId: id) else {
                 throw ServerRegistryError.persistenceFailed
             }
         }
+        // Now that the candidate is the active server, establish the v2
+        // contract verdict the pilot gate reads. Recorded after the switch so
+        // a candidate that is not committed never touches the active verdict.
+        await recordContractVerdict(serverId: id, serverURL: normalized)
 
         return status
     }
@@ -114,6 +142,11 @@ final class AuthService: @unchecked Sendable {
     func refreshActiveServerName() async {
         guard let server = serverRegistry.activeServer else { return }
         let serverId = server.id
+        // Refreshing the cached identity is the other moment the contract
+        // verdict is (re)established: server switch, foreground return, and
+        // unreachable->reachable recovery all come through here.
+        await recordContractVerdict(serverId: serverId, serverURL: server.url)
+        guard serverRegistry.activeServerId == serverId else { return }
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
               serverRegistry.activeServerId == serverId else {
             return

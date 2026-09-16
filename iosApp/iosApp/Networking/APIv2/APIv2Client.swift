@@ -166,10 +166,13 @@ struct APIv2Client: Sendable {
 
     // MARK: updateProfile (profile_scoped, no profile header required)
 
+    /// Updates the profile the captured owner currently has selected. The
+    /// owner is captured here and the request is bound to it, so a profile or
+    /// account switch during the call refuses the patch instead of applying
+    /// it under the replacement.
     func updateProfile(id: String, patch: APIv2ProfilePatch) async throws -> APIv2Profile {
-        try await gate()
-        let path = "/api/v2/profiles/\(try catalogPathSegment(id))"
-        return try await mapErrors { try await http.patch(path, body: patch) }
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        return try await updateProfile(id: id, patch: patch, auth: auth)
     }
 
     /// Onboarding may update only the profile that owned the displayed flow.
@@ -200,9 +203,22 @@ struct APIv2Client: Sendable {
 
     // MARK: Requests
 
+    /// A read bound to the owner current at capture: the response is
+    /// discarded if the account, credential owner, or profile changed while
+    /// the request was in flight.
     func requestGet<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
         try await gate()
-        return try await mapErrors { try await http.get(path, query: query) }
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let response = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: path, query: query,
+                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
     }
 
     /// Create and cancel are never replayed after an ambiguous transport failure.
@@ -414,7 +430,7 @@ struct APIv2Client: Sendable {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, body: body,
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account)
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }

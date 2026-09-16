@@ -139,8 +139,7 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
         var stored = record
         stored.state = .prepared
         stored.updatedAt = now()
-        records.append(stored)
-        try persist()
+        try mutating { records in records.append(stored) }
     }
 
     /// Moves a `prepared` record to `uncertain` immediately before dispatch,
@@ -154,10 +153,12 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
         guard records[index].state == .prepared else {
             throw DurableCommandStoreError.invalidTransition(id: id, from: records[index].state)
         }
-        records[index].state = .uncertain
-        records[index].updatedAt = now()
-        try persist()
-        return records[index]
+        let stamp = now()
+        try mutating { records in
+            records[index].state = .uncertain
+            records[index].updatedAt = stamp
+        }
+        return try records[self.index(of: id)]
     }
 
     /// Records the terminal outcome of a command. `.applied` requires a
@@ -177,10 +178,12 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
         default:
             throw DurableCommandStoreError.invalidTransition(id: id, from: current)
         }
-        records[index].state = resolution.state
-        records[index].updatedAt = now()
-        try persist()
-        return records[index]
+        let stamp = now()
+        try mutating { records in
+            records[index].state = resolution.state
+            records[index].updatedAt = stamp
+        }
+        return try records[self.index(of: id)]
     }
 
     /// Removes a record in any state. This is the user-visible exit from an
@@ -188,18 +191,16 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
     /// server switch clear a barrier without knowing its outcome.
     func discard(id: UUID) throws {
         ensureLoaded()
-        records.remove(at: try index(of: id))
-        try persist()
+        let index = try index(of: id)
+        try mutating { records in records.remove(at: index) }
     }
 
     /// Removes every record the predicate selects. Sign-out and server switch
     /// use this with their owner predicate.
     func discardAll(where shouldDiscard: @Sendable (Record) -> Bool) throws {
         ensureLoaded()
-        let before = records.count
-        records.removeAll(where: shouldDiscard)
-        guard records.count != before else { return }
-        try persist()
+        guard records.contains(where: shouldDiscard) else { return }
+        try mutating { records in records.removeAll(where: shouldDiscard) }
     }
 
     /// Writes the file. Terminal records older than `expiryInterval` are
@@ -208,17 +209,34 @@ actor DurableCommandStore<Record: DurableCommandRecord> {
     @discardableResult
     func persist() throws -> Bool {
         ensureLoaded()
-        reap()
-        let data = try Self.makeEncoder().encode(Document(records: records))
-        if data == persistedDocument {
-            return false
+        return try mutating { _ in }
+    }
+
+    /// Applies `change` to the records and writes the file. The in-memory
+    /// records (including the reap `persist` performs) only advance when the
+    /// write succeeds; when it throws, `records` is restored to what the file
+    /// still holds, so a retry or a later operation never observes a
+    /// transition that was never persisted.
+    @discardableResult
+    private func mutating(_ change: (inout [Record]) throws -> Void) throws -> Bool {
+        let before = records
+        do {
+            try change(&records)
+            reap()
+            let data = try Self.makeEncoder().encode(Document(records: records))
+            if data == persistedDocument {
+                return false
+            }
+            let directory = fileURL.deletingLastPathComponent()
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Self.excludeFromBackup(directory)
+            try data.write(to: fileURL, options: .atomic)
+            persistedDocument = data
+            return true
+        } catch {
+            records = before
+            throw error
         }
-        let directory = fileURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Self.excludeFromBackup(directory)
-        try data.write(to: fileURL, options: .atomic)
-        persistedDocument = data
-        return true
     }
 
     // MARK: Internals

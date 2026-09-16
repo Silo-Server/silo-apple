@@ -88,6 +88,13 @@ struct ApplePushDisplayTokenStore {
 
 enum ApplePushRegistrationWire {
     static let endpoint = "/api/v1/devices/push/apple"
+    /// Same shape `HTTPClient` gives every encoded body.
+    static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
     static let defaultTopic = "org.siloserver.silo"
     static let privatePushMode = "private_push"
 
@@ -269,11 +276,21 @@ final class ApplePushRegistrationCoordinator {
         }
 
         do {
+            // `expectedAuth` binds the dispatch itself to `owner`: the fence
+            // checks before and after the await, but the request captures its
+            // credentials inside it, and a sign-in or profile switch in that
+            // gap must refuse the send rather than register the old token
+            // under the replacement owner.
+            let body = try ApplePushRegistrationWire.encoder.encode(request)
             let response: ApplePushRegistrationResponse = try await tokenStore.withOwnerFence(owner) {
-                try await HTTPClient.shared.post(
-                    ApplePushRegistrationWire.endpoint,
-                    body: request
+                let raw = try await HTTPClient.shared.requestData(
+                    method: "POST",
+                    path: ApplePushRegistrationWire.endpoint,
+                    body: body,
+                    expectedAccount: owner.account,
+                    expectedAuth: owner
                 )
+                return try HTTPClient.makeJSONDecoder().decode(ApplePushRegistrationResponse.self, from: raw.data)
             }
             lastSuccessfulFingerprint = fingerprint
             endpointUnsupportedForContext = nil

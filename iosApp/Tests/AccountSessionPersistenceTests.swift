@@ -197,6 +197,32 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let restored = await next.getAccessToken()
         XCTAssertEqual(restored, "one", "Both persistent invalidation mechanisms failed; do not claim durable sign-out")
     }
+    func testRejectedRefreshKeepsLocalStateWhenTombstoneCannotPersist() async throws {
+        let (store, keys, defaults, memory) = try await harness()
+        try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")
+        let accountValue = await store.refreshAccountIdentity()
+        let account = try XCTUnwrap(accountValue)
+        let capturedValue = await store.captureRefreshCredential(expected: account)
+        let captured = try XCTUnwrap(capturedValue)
+        memory.failRecordWrites = true
+        memory.failRemoval = true
+
+        let disposition = await store.invalidateRejectedRefresh(captured)
+
+        XCTAssertNil(disposition, "A tombstone that did not persist is not a cleared session")
+        let access = await store.getAccessToken()
+        XCTAssertEqual(access, "one", "Local credentials stay until the durable record agrees they are gone")
+        let next = await restarted(keys, defaults, memory)
+        let restored = await next.getAccessToken()
+        XCTAssertEqual(restored, "one")
+
+        memory.failRecordWrites = false
+        memory.failRemoval = false
+        let retried = await store.invalidateRejectedRefresh(captured)
+        XCTAssertEqual(retried, .persistentSessionCleared, "The same captured credential can retry once persistence recovers")
+        let cleared = await store.getAccessToken()
+        XCTAssertNil(cleared)
+    }
     func testTemporaryCredentialsCannotReplaceDurableBinding() async throws {
         let (store, _, _, memory) = try await harness()
         try await store.installAccountSession(accessToken: "owner", refreshToken: "owner-refresh", accountID: "12")

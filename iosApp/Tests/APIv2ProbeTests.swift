@@ -168,6 +168,7 @@ final class APIv2ProbeTests: XCTestCase {
         )
         await tokenStore.switchActiveServer(serverId: "server-v2")
         await tokenStore.setServerUrl("http://apiv2-test.invalid")
+        await tokenStore.setProfileId("p-1")
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         let client = APIv2Client(http: http, tokenStore: tokenStore, isUpdateRequired: { false })
 

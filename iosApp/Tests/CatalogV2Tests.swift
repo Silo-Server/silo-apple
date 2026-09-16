@@ -91,6 +91,53 @@ final class CatalogV2Tests: XCTestCase {
         }
     }
 
+    /// The convenience reads and the household writes capture their owner
+    /// and bind the dispatch to it, like every other v2 surface.
+    func testOwnerBoundConveniencePathsRefuseALateOwnerChange() async throws {
+        let filters = #"{"genres":[],"studios":[],"networks":[],"countries":[],"content_ratings":[],"original_languages":[],"authors":[],"narrators":[],"series":[],"technical":null}"#
+        let profileData = try APIv2FixtureTestSupport.mutatedBody(named: "update_profile_ok", bundleClass: Self.self) {
+            $0["id"] = "profile-one"
+        }
+        let profile = try XCTUnwrap(String(data: profileData, encoding: .utf8))
+        let cases: [(String, (APIv2Client) async throws -> Void, String)] = [
+            ("requestGet", { _ = try await $0.catalogFilters(libraryId: nil) as APIv2CatalogFilters }, filters),
+            ("updateProfile", { _ = try await $0.updateProfile(id: "profile-one", patch: APIv2ProfilePatch()) }, profile),
+            ("householdProfiles", { _ = try await $0.householdProfiles() }, #"{"items":[\#(profile)],"page":{"has_more":false}}"#),
+        ]
+        for (name, call, body) in cases {
+            // Owner replaced at HTTP capture: refused before the bytes leave.
+            stub.reset()
+            let (blocked, _) = try await client(captureBarrier: { await $0.setProfileId("profile-two") })
+            do {
+                try await call(blocked)
+                XCTFail("\(name): must refuse dispatch after the owner changed")
+            } catch HTTPError.requestIdentityChanged { }
+            XCTAssertTrue(stub.requests.isEmpty, name)
+
+            // Owner replaced while in flight: the response is discarded.
+            stub.reset()
+            let (api, tokens) = try await client()
+            stub.reply(200, body)
+            stub.hold()
+            let task = Task { try await call(api) }
+            await stub.waitUntilHeld()
+            await tokens.setProfileToken("replacement")
+            stub.release()
+            do {
+                try await task.value
+                XCTFail("\(name): a response for a replaced owner cannot publish")
+            } catch HTTPError.authorityChanged { }
+            XCTAssertEqual(stub.requests.count, 1, name)
+
+            // Unchanged owner: the call succeeds against the same stub.
+            stub.reset()
+            let (ok, _) = try await client()
+            stub.reply(200, body)
+            try await call(ok)
+            XCTAssertEqual(stub.requests.count, 1, name)
+        }
+    }
+
     func testCatalogReadRejectsAccountChangeBeforePublishing() async throws {
         let (api, tokens) = try await client()
         stub.reply(200, detailJSON)
