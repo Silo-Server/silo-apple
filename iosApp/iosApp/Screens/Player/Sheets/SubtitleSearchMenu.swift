@@ -100,6 +100,7 @@ struct SubtitleSearchMenu: View {
             // Covers the sliver where the probe lands between the row's tap
             // and this view appearing, which `onChange` would never see.
             .onAppear { reflectUnavailabilityIfIdle() }
+            .onDisappear { searchTask?.cancel() }
     }
 
     @ViewBuilder
@@ -139,7 +140,7 @@ struct SubtitleSearchMenu: View {
         func add(_ code: String, hint: String?) {
             let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
-            let key = trimmed.lowercased()
+            let key = PlaybackLanguageOption.languageIdentity(trimmed)
             guard !seen.contains(key) else { return }
             seen.insert(key)
             result.append(.init(code: trimmed, label: displayName(trimmed), hint: hint))
@@ -312,8 +313,10 @@ struct SubtitleSearchMenu: View {
             // Empty result set: land focus on the fallback row so the remote
             // isn't left with nothing focused.
             focusedRowID = results.first?.uniqueKey ?? "back-to-languages"
-        case .searching, .failed:
-            break
+        case .searching:
+            focusedRowID = "cancel-search"
+        case .failed:
+            focusedRowID = searchedLanguage == nil ? "search-back" : "retry-search"
         }
     }
 
@@ -329,73 +332,45 @@ struct SubtitleSearchMenu: View {
     }
 
     private var tvOSPanel: some View {
-        ZStack {
-            Color.black.opacity(0.55)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { onDismiss() }
-
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(title.uppercased())
-                        .font(.system(size: 18, weight: .semibold))
-                        .tracking(1.5)
-                        .foregroundStyle(.white.opacity(0.7))
-                    if phase == .picking {
-                        Text(explainer)
-                            .font(.system(size: 16))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(2)
-                    }
-                }
-                .padding(.horizontal, 12)
-
-                switch phase {
-                case .searching:
-                    searchingPanel
-                case .failed(let message):
-                    failurePanel(message)
-                case .picking, .results:
-                    ScrollViewReader { proxy in
-                        ScrollView(showsIndicators: false) {
-                            LazyVStack(alignment: .leading, spacing: 2) {
-                                if phase == .picking {
-                                    tvLanguageRows
-                                } else {
-                                    tvResultRows
-                                }
+        TVSubtitleDialog(
+            title: title,
+            subtitle: tvSubtitle,
+            backHint: tvBackHint,
+            statusHint: downloadingId != nil ? "Adding subtitle…"
+                : phase == .results && !results.isEmpty ? "Select a subtitle to download and use it" : "",
+            onDismiss: { if downloadingId == nil { onDismiss() } }
+        ) {
+            switch phase {
+            case .searching:
+                searchingPanel
+            case .failed(let message):
+                failurePanel(message)
+            case .picking, .results:
+                ScrollViewReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            if phase == .picking {
+                                tvLanguageRows
+                            } else {
+                                tvResultRows
                             }
-                            .padding(.vertical, 2)
                         }
-                        .focusSection()
-                        .onAppear {
-                            focusFirstRow()
-                            scrollToFocusedRow(proxy, animated: false)
-                        }
-                        .onChange(of: focusedRowID) { _, value in
-                            // Focus fell off the list — pull it back rather
-                            // than letting it vanish; else keep it visible.
-                            if value == nil { focusFirstRow() }
-                            else { scrollToFocusedRow(proxy) }
-                        }
-                        .onChange(of: phase) { _, _ in focusFirstRow() }
+                        .padding(8)
                     }
+                    .focusSection()
+                    .onAppear {
+                        focusFirstRow()
+                        scrollToFocusedRow(proxy, animated: false)
+                    }
+                    .onChange(of: focusedRowID) { _, value in
+                        // Focus fell off the list — pull it back rather
+                        // than letting it vanish; else keep it visible.
+                        if value == nil { focusFirstRow() }
+                        else { scrollToFocusedRow(proxy) }
+                    }
+                    .onChange(of: phase) { _, _ in focusFirstRow() }
                 }
             }
-            .padding(28)
-            .frame(maxWidth: 1100, maxHeight: 720)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.black.opacity(0.35))
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
-            )
         }
         .onExitCommand {
             // First back-press from results returns to the language list;
@@ -415,10 +390,29 @@ struct SubtitleSearchMenu: View {
         .onChange(of: profilePrefs.preferredSubtitleLanguage) { _, _ in seedSelectedLanguage() }
     }
 
+    private var tvSubtitle: String {
+        switch phase {
+        case .picking:
+            return "Choose a language to find subtitles for this video."
+        case .searching:
+            return "Finding subtitles in \(searchedLanguage.map(displayName) ?? "your language")"
+        case .results:
+            let language = searchedLanguage.map(displayName) ?? "Subtitles"
+            return "\(language) · \(results.count) \(results.count == 1 ? "result" : "results")"
+        case .failed:
+            return "Subtitle search could not finish"
+        }
+    }
+
+    private var tvBackHint: String {
+        if downloadingId != nil { return "Please wait for the download to finish" }
+        return phase == .picking ? "Back to Subtitles" : "Back to languages"
+    }
+
     @ViewBuilder
     private var tvLanguageRows: some View {
         if !suggestedLanguages.isEmpty {
-            sectionHeader("Suggested")
+            sectionHeader("Preferred language")
             ForEach(suggestedLanguages) { tvLanguageRow($0) }
         }
         sectionHeader(suggestedLanguages.isEmpty ? "Language" : "All Languages")
@@ -427,28 +421,30 @@ struct SubtitleSearchMenu: View {
 
     @ViewBuilder
     private func tvLanguageRow(_ choice: LanguageChoice) -> some View {
-        TVSearchRow(
+        TVSubtitleMenuRow(
             rowID: choice.code,
             focusedID: $focusedRowID,
             action: { search(language: choice.code) }
         ) {
             Image(systemName: choice.hint == "Preferred" ? "star.fill" : "globe")
                 .font(.system(size: 22, weight: .regular))
-                .foregroundStyle(.white.opacity(0.8))
+                .opacity(0.8)
                 .frame(width: 34)
             VStack(alignment: .leading, spacing: 4) {
                 Text(choice.label)
                     .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(.white)
                     .lineLimit(1)
                 if let hint = choice.hint {
                     Text(hint)
                         .font(.system(size: 18))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .opacity(0.65)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 18, weight: .semibold))
+                .opacity(0.55)
         }
         .id(choice.code)
     }
@@ -458,7 +454,7 @@ struct SubtitleSearchMenu: View {
     private var warningRows: some View {
         ForEach(warnings, id: \.self) { warning in
             Label(warning, systemImage: "exclamationmark.triangle")
-                .font(.system(size: 16))
+                .font(.system(size: 20))
                 .foregroundStyle(Color.siloWarning)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 4)
@@ -474,23 +470,21 @@ struct SubtitleSearchMenu: View {
                 .foregroundStyle(.white.opacity(0.55))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-            TVSearchRow(
+            TVSubtitleMenuRow(
                 rowID: "back-to-languages",
                 focusedID: $focusedRowID,
                 action: { backToLanguages() }
             ) {
                 Image(systemName: "chevron.backward")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .opacity(0.8)
                     .frame(width: 34)
                 Text("Choose another language")
                     .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(.white)
                 Spacer(minLength: 8)
             }
             .id("back-to-languages")
         } else {
-            sectionHeader(searchedLanguage.map { displayName($0) } ?? "Results")
             ForEach(results, id: \.uniqueKey) { result in
                 tvResultRow(result)
             }
@@ -500,21 +494,26 @@ struct SubtitleSearchMenu: View {
     @ViewBuilder
     private func tvResultRow(_ result: SubtitleSearchResult) -> some View {
         let isDownloadingThis = downloadingId == result.uniqueKey
-        TVSearchRow(
+        TVSubtitleMenuRow(
             rowID: result.uniqueKey,
             isDisabled: downloadingId != nil && !isDownloadingThis,
             focusedID: $focusedRowID,
             action: { download(result) }
         ) {
-            scoreBadge(result.score, fontSize: 18)
+            VStack(spacing: 6) {
+                scoreBadge(result.score, fontSize: 18)
+                Text("Match")
+                    .font(.system(size: 14))
+                    .opacity(0.65)
+            }
+            .frame(width: 64)
             VStack(alignment: .leading, spacing: 4) {
                 Text(result.releaseName.isEmpty ? "Untitled release" : result.releaseName)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
+                    .font(.system(size: 24, weight: .medium))
+                    .lineLimit(2)
                 Text(resultDetail(result))
-                    .font(.system(size: 17))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .font(.system(size: 20))
+                    .opacity(0.65)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
@@ -522,10 +521,26 @@ struct SubtitleSearchMenu: View {
                 ProgressView()
                     .scaleEffect(0.7)
             } else {
-                providerTag(result.provider, fontSize: 15)
+                VStack(alignment: .trailing, spacing: 8) {
+                    Text(tvProviderName(result.provider))
+                        .font(.system(size: 18, weight: .medium))
+                    Label(result.format.uppercased(), systemImage: "arrow.down.circle")
+                        .font(.system(size: 17))
+                        .opacity(0.6)
+                }
+                .frame(width: 150, alignment: .trailing)
             }
         }
         .id(result.uniqueKey)
+    }
+
+    private func tvProviderName(_ provider: String) -> String {
+        switch provider.lowercased() {
+        case "opensubtitles": return "OpenSubtitles"
+        case "subdl": return "SubDL"
+        case "subsource": return "Subsource"
+        default: return provider
+        }
     }
 
     @ViewBuilder
@@ -542,10 +557,12 @@ struct SubtitleSearchMenu: View {
                 .foregroundStyle(.white.opacity(0.5))
             Button("Cancel") { backToLanguages() }
                 .buttonStyle(.bordered)
+                .focused($focusedRowID, equals: "cancel-search")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .onAppear { focusFirstRow() }
     }
 
     @ViewBuilder
@@ -558,14 +575,17 @@ struct SubtitleSearchMenu: View {
                 if let language = searchedLanguage {
                     Button("Try Again") { search(language: language) }
                         .buttonStyle(.bordered)
+                        .focused($focusedRowID, equals: "retry-search")
                 }
                 Button("Back") { backToLanguages() }
                     .buttonStyle(.bordered)
+                    .focused($focusedRowID, equals: "search-back")
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .onAppear { focusFirstRow() }
     }
 
     @ViewBuilder
@@ -766,41 +786,3 @@ struct SubtitleSearchMenu: View {
         }
     }
 }
-
-// MARK: - tvOS focus row
-
-#if os(tvOS)
-/// Generic panel row for the search menu: bare `.focusable` + tap (no system
-/// halo), row-fill focus highlight, focus driven by the panel-level
-/// `@FocusState.Binding` keyed on `rowID` — the `TVLanguageRow` /
-/// `TrackSelectionSheet.TrackRow` idiom generalized over arbitrary content.
-private struct TVSearchRow<Content: View>: View {
-    let rowID: String
-    var isDisabled: Bool = false
-    @FocusState.Binding var focusedID: String?
-    let action: () -> Void
-    @ViewBuilder let content: () -> Content
-
-    private var isFocused: Bool { focusedID == rowID }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            content()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isFocused ? Color.white.opacity(0.16) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .focusable(!isDisabled)
-        .focused($focusedID, equals: rowID)
-        .onTapGesture(perform: action)
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.35 : 1.0)
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-        .accessibilityAddTraits(.isButton)
-    }
-}
-#endif

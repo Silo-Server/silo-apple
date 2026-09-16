@@ -1,0 +1,8 @@
+{
+  "revision": "playback-unconfigured",
+  "state": "not_configured",
+  "allowed": false,
+  "protocol_versions": [],
+  "features": [],
+  "deliveries": []
+}

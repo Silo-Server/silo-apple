@@ -354,6 +354,42 @@ final class ReceiverPairingCoordinator {
             return false
         }
         let previousTokenServerID = await TokenStore.shared.getActiveServerId()
+        let previousServerURL = await TokenStore.shared.getServerUrl()
+        let previousProfileID = await TokenStore.shared.getProfileId()
+        let previousProfileToken = await TokenStore.shared.getProfileToken()
+        // Re-pairing an already saved server replaces its credential slot in
+        // `saveTokens` below (and adopts the slot even when the write fails
+        // part way), before the registry commit can still fail. Keep what
+        // the slot and its server-scoped profile proof held, so either
+        // failure puts it back instead of leaving the new credentials, an
+        // adoption marker, or a tombstone behind a reported failure.
+        let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)
+        guard previousSession != .unreadable else {
+            // A slot that cannot be read cannot be restored either; refuse
+            // before anything is mutated rather than fail half way.
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
+        // `addOrUpdate(preservingProfile: false)` forgets the durable profile
+        // choice for this server id. When the pairing then fails, the previous
+        // session is kept, so its remembered profile must come back too or the
+        // next launch lands on profile selection for no reason.
+        let launchPreferences = ProfileLaunchPreferences.shared
+        let previousRememberedProfile = launchPreferences.rememberedProfile(for: id)
+        let previousSelectionRequired = launchPreferences.state.selectionRequiredServerIDs.contains(id)
+        func restoreRememberedProfile() {
+            if let remembered = previousRememberedProfile {
+                launchPreferences.remember(
+                    profileID: remembered.profileID,
+                    requiresPIN: remembered.requiredPINAtSelection,
+                    accountEpoch: remembered.accountEpoch,
+                    for: id
+                )
+            }
+            if previousSelectionRequired {
+                launchPreferences.markSelectionRequired(for: id)
+            }
+        }
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
@@ -365,13 +401,35 @@ final class ReceiverPairingCoordinator {
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
-        await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh)
+        // One rollback for both failure points below. The slot is restored
+        // first (a failed `saveTokens` has still blocked the runtime session
+        // and may have adopted the slot; a failed commit has the candidate's
+        // tokens persisted in it), then the URL and profile, so the previous
+        // server reads exactly as it did before pairing started. When the
+        // slot itself cannot be restored the token store keeps that server
+        // blocked (fail closed) and pairing still reports failure; the
+        // registry entry stays either way so the user can retry.
+        func rollBack() async {
+            let restored = await TokenStore.shared.restoreAccountSession(previousSession, for: id)
+            if !restored {
+                Self.logger.error("pairing rollback could not restore the previous session; the server stays blocked until relaunch")
+            }
+            await TokenStore.shared.setServerUrl(previousServerURL)
+            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
+            await TokenStore.shared.setProfileId(previousProfileID)
+            _ = await TokenStore.shared.setProfileToken(previousProfileToken)
+            restoreRememberedProfile()
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+        }
+        guard await TokenStore.shared.saveTokens(accessToken: access, refreshToken: refresh) else {
+            await rollBack()
+            return false
+        }
         guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
             holding: transitionLease
         ) else {
-            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await rollBack()
             return false
         }
         await HTTPClient.shared.endIdentityTransition(transitionLease)

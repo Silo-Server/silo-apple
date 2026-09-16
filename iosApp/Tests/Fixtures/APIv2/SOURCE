@@ -1,0 +1,55 @@
+Source: silo-server contracts/api/v2/fixtures (plus contracts/api/v2/fixtures.schema.json)
+Server ref: HEAD
+Server commit: ba18bf1208b926b6efc764d02f6e2101c70c6765
+Vendored: 2026-09-08
+
+Two kinds of file live in this directory. Only the first kind is written by
+scripts/sync-apiv2-fixtures.sh; the second is maintained by hand.
+
+Vendored from the server (17 files): the 14 SELECTED bodies (see SELECTED in
+scripts/sync-apiv2-fixtures.sh), index.json filtered to those entries,
+fixtures.schema.json, and this SOURCE. Bytes are read from the server commit
+above (git show HEAD:...), never from a working tree. Refresh with
+scripts/sync-apiv2-fixtures.sh <silo-server checkout> with the fixture paths
+clean in that checkout, then regenerate Silo.xcodeproj with
+cd iosApp && xcodegen generate.
+  SOURCE
+  fixtures.schema.json
+  index.json
+  authentication_required.json
+  get_current_user_ok.json
+  get_setup_status_ok.json
+  get_system_info_ok.json
+  list_progress_offset_rejected.json
+  list_progress_ok.json
+  list_progress_profile_header_required.json
+  not_acceptable.json
+  not_found.json
+  profile_verification_required.json
+  rate_limited.json
+  update_profile_null_not_clearable.json
+  update_profile_ok.json
+  validation_failed_body.json
+
+Client-authored (18 files): written for the Apple tests from the server's
+OpenAPI document, not published by the server fixture set, absent from
+index.json, and untouched by the sync script. Update them by hand when the
+contract they describe changes.
+  download_capability.json
+  download_manifest.json
+  download_status_event.json
+  downloads_empty.json
+  playback_capability_available.json
+  playback_capability_unconfigured.json
+  playback_installation_changed.json
+  playback_invalid_protocol.json
+  playback_progress_applied.json
+  playback_progress_stale.json
+  playback_start_opaque_ids.json
+  playback_stop_completed.json
+  playback_stop_draining.json
+  subtitle_ai_job_opaque_id.json
+  subtitle_ai_quota.json
+  subtitles_search_partial.json
+  subtitles_stored.json
+  user_libraries.json

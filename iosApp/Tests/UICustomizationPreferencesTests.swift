@@ -557,6 +557,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
     }
 
+#if !os(tvOS)
+    // availablePrimaryMenuShortcuts / primaryMenuShortcutTypeTitle live in
+    // InterfaceCustomizationView, which the tvOS build compiles out.
     func testAvailableShortcutsExcludeItemsAlreadyInPrimaryMenu() {
         let availableLibrary = Library(
             id: 8,
@@ -648,6 +651,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             "Library"
         )
     }
+#endif
 
     func testPrimaryMenuItemsUseMainMenuNavigationIcons() {
         XCTAssertEqual(PrimaryMenuItem.builtin(.home).navigationIcon, AppTab.home.icon)
@@ -666,6 +670,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
     }
 
+#if !os(tvOS)
+    // PrimaryMenuEditorRow and its helpers live in InterfaceCustomizationView,
+    // which the tvOS build compiles out.
     func testPrimaryMenuEditorGroupsLibrariesUnderTheirVisibleMediaType() {
         let movies = Library(
             id: 1,
@@ -720,6 +727,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             [nil, nil, .movies, nil, .series, nil, nil]
         )
     }
+#endif
 
     func testMixedLibraryStaysOutsidePrimaryMenuMediaTypes() {
         let mixed = Library(
@@ -762,6 +770,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
     }
 
+#if !os(tvOS)
+    // PrimaryMenuEditorRow and its helpers live in InterfaceCustomizationView,
+    // which the tvOS build compiles out.
     func testPrimaryMenuEditorOnlyOffsetsLibrariesWithinTheirMediaType() {
         let rows = [
             PrimaryMenuEditorRow(item: .builtin(.movies), parentMediaType: nil),
@@ -838,6 +849,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             ]
         )
     }
+#endif
 
     func testPrimaryMenuLibraryCategoriesKeepTheirAuthoredMediaScope() {
         let movie = Library(id: 1, name: "Movies", type: "movies", sortOrder: 0, posterUrl: nil)

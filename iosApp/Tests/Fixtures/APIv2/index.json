@@ -1,0 +1,285 @@
+{
+  "fixtures": [
+    {
+      "name": "authentication_required",
+      "operation_id": null,
+      "scenario": "An authenticated operation called without a credential.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/probe/authenticated",
+        "body": "{\"name\":\"fixture\",\"cleared\":null}"
+      },
+      "expected_status": 401,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "authentication_required.json"
+    },
+    {
+      "name": "get_current_user_ok",
+      "operation_id": "getCurrentUser",
+      "scenario": "The signed-in account with no profile selected; impersonation is absent outside an admin impersonation session.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/account/me",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/Account",
+      "body_file": "get_current_user_ok.json"
+    },
+    {
+      "name": "get_setup_status_ok",
+      "operation_id": "getSetupStatus",
+      "scenario": "First-run discovery before login: whether the server still needs its initial admin account.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/system/setup"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/SetupStatus",
+      "body_file": "get_setup_status_ok.json"
+    },
+    {
+      "name": "get_system_info_ok",
+      "operation_id": "getSystemInfo",
+      "scenario": "Discovery before login: a public operation answered with the contract identity.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/system/info",
+        "headers": {
+          "X-Silo-Client": "Silo Fixture Client",
+          "X-Silo-Client-Version": "0.0.0"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/SystemInfo",
+      "body_file": "get_system_info_ok.json"
+    },
+    {
+      "name": "list_progress_offset_rejected",
+      "operation_id": "listProgress",
+      "scenario": "The v1 offset parameter is not part of v2 pagination; cursor-paginated operations refuse it as unknown.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/progress?offset=50",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "list_progress_offset_rejected.json"
+    },
+    {
+      "name": "list_progress_ok",
+      "operation_id": "listProgress",
+      "scenario": "The first page of a profile's watch progress, newest first, with an opaque cursor for the next page.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/progress?limit=1",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/ProgressCollection",
+      "body_file": "list_progress_ok.json"
+    },
+    {
+      "name": "list_progress_profile_header_required",
+      "operation_id": "listProgress",
+      "scenario": "A profile-scoped operation called without X-Profile-Id: a validation failure naming the header.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/progress",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        }
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "list_progress_profile_header_required.json"
+    },
+    {
+      "name": "not_acceptable",
+      "operation_id": "getSystemInfo",
+      "scenario": "An Accept header that admits no JSON representation.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/system/info",
+        "headers": {
+          "Accept": "text/html"
+        }
+      },
+      "expected_status": 406,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "not_acceptable.json"
+    },
+    {
+      "name": "not_found",
+      "operation_id": null,
+      "scenario": "A path under /api/v2/ with no operation registered at it.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/library/items/fixture-missing"
+      },
+      "expected_status": 404,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "not_found.json"
+    },
+    {
+      "name": "profile_verification_required",
+      "operation_id": null,
+      "scenario": "A profile-scoped operation called for a PIN-locked profile without X-Profile-Token; clients start PIN entry on this type.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/probe/profile_scoped",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-locked"
+        },
+        "body": "{\"name\":\"fixture\",\"cleared\":null}"
+      },
+      "expected_status": 403,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "profile_verification_required.json"
+    },
+    {
+      "name": "rate_limited",
+      "operation_id": null,
+      "scenario": "The authenticated-route limiter refused the request; Retry-After is the only rate-limit header on v2.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/probe/authenticated",
+        "headers": {
+          "Authorization": "Bearer tok-member"
+        },
+        "body": "{\"name\":\"fixture\",\"cleared\":null}"
+      },
+      "expected_status": 429,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json",
+        "Retry-After": "30"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "rate_limited.json"
+    },
+    {
+      "name": "update_profile_null_not_clearable",
+      "operation_id": "updateProfile",
+      "scenario": "Explicit null on a member that does not admit clearing is a validation failure; omit it to leave it unchanged.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v2/profiles/p-owner",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"is_child\":null}"
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "update_profile_null_not_clearable.json"
+    },
+    {
+      "name": "update_profile_ok",
+      "operation_id": "updateProfile",
+      "scenario": "A partial PATCH: omitted members stay unchanged, null clears a clearable member, the whole profile is returned.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v2/profiles/p-owner",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        },
+        "body": "{\"name\":\"Laura\",\"subtitle_mode\":\"always\",\"max_content_rating\":null,\"allowed_library_ids\":[\"3\"]}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/Profile",
+      "body_file": "update_profile_ok.json"
+    },
+    {
+      "name": "validation_failed_body",
+      "operation_id": null,
+      "scenario": "A JSON body with a missing required member and an out-of-range member: one errors[] entry per failure, the rejected values never echoed.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/probe/public",
+        "body": "{\"count\":99,\"cleared\":null}"
+      },
+      "expected_status": 422,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/problem+json"
+      },
+      "response_media_type": "application/problem+json",
+      "schema": "#/components/schemas/Problem",
+      "body_file": "validation_failed_body.json"
+    }
+  ]
+}

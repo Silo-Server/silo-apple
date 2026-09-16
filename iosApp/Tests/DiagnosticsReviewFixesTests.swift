@@ -119,6 +119,8 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
 
     // MARK: - Byte-safe stack truncation (#11)
 
+#if os(iOS)
+    // MetricKitDiagnosticParser is iOS-only.
     func testStackExcerptTruncatesToUTF8ByteLimit() throws {
         // 12 frames of multibyte symbols exceed 8192 UTF-8 bytes when joined.
         let frame: [String: Any] = ["symbolName": String(repeating: "é", count: 1000), "offset": 1]
@@ -137,6 +139,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         // Passes the same validation the server enforces.
         XCTAssertNoThrow(try crash.validate())
     }
+#endif
 
     // MARK: - Declined-prompt suppression (round 2 #6)
 
@@ -434,6 +437,8 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         XCTAssertNotEqual(store.currentURL, store.leftoverURL)
     }
 
+#if os(iOS)
+    // MetricKitCapture is iOS-only; the rest of this file runs on tvOS too.
     // MARK: - MetricKit evidence isolation (PR #98)
 
     func testMetricKitCaptureOmitsUncorrelatedProcessEvidence() throws {
@@ -474,6 +479,7 @@ final class DiagnosticsReviewFixesTests: XCTestCase {
         ))
         XCTAssertTrue(report.manifest.playbackSessionIds.isEmpty)
     }
+#endif
 
     func testEmptyFailedRunLogSnapshotStillFreezesLogsArtifact() async {
         DiagLog.ring.clear()

@@ -19,6 +19,13 @@ struct TVPlayerInfoHUD: View {
     let viewModel: PlayerViewModel
     @Binding var activeTab: Tab
     @State private var readOnlyPaneIsAtTop = true
+    @State private var subtitleOverlayActive = false
+    @State private var showSubtitleSearchMenu = false
+    @State private var showAITranslateMenu = false
+
+    private var subtitleMenuPresented: Bool {
+        showSubtitleSearchMenu || showAITranslateMenu
+    }
     /// Focus target for the tab-bar pills, owned by `TVPlayerControls`.
     /// Sharing this via `@FocusState.Binding` lets the parent seed focus on
     /// a specific pill when the HUD opens, which is critical: without a
@@ -113,6 +120,32 @@ struct TVPlayerInfoHUD: View {
             readOnlyPaneIsAtTop = true
         }
         .onExitCommand(perform: onDismiss)
+        .disabled(subtitleMenuPresented)
+        // Keep the HUD mounted for focus restoration, but show only the
+        // search dialog over a backdrop that spans the whole player.
+        .opacity(subtitleMenuPresented ? 0 : 1)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if showAITranslateMenu {
+                SubtitleTranslateMenu(
+                    viewModel: viewModel,
+                    onDismiss: { showAITranslateMenu = false },
+                    onJobStarted: {
+                        showAITranslateMenu = false
+                        onDismiss()
+                    }
+                )
+            } else if showSubtitleSearchMenu {
+                SubtitleSearchMenu(
+                    viewModel: viewModel,
+                    onDismiss: { showSubtitleSearchMenu = false },
+                    onDownloaded: {
+                        showSubtitleSearchMenu = false
+                        onDismiss()
+                    }
+                )
+            }
+        }
     }
 
     // MARK: - Tab bar
@@ -134,7 +167,7 @@ struct TVPlayerInfoHUD: View {
         // paged below its top anchor, remove the rail from the focus graph so
         // an Up press cannot both page the pane and escape to the active tab.
         // The pane re-enables the rail when it reaches the top again.
-        .disabled(isReadOnlyPaneScrolled)
+        .disabled(isReadOnlyPaneScrolled || subtitleOverlayActive)
         // Rail: moving Up from the panel must land on the *active* pill, not
         // the geometrically nearest one — with focus-driven selection a
         // nearest-pill landing would switch panes as a side effect.
@@ -160,7 +193,13 @@ struct TVPlayerInfoHUD: View {
                 )
             case .video:     VideoPane(viewModel: viewModel)
             case .audio:     AudioPane(viewModel: viewModel)
-            case .subtitles: SubtitlesPane(viewModel: viewModel, onCloseHUD: onDismiss)
+            case .subtitles:
+                SubtitlesPane(
+                    viewModel: viewModel,
+                    overlayActive: $subtitleOverlayActive,
+                    showSubtitleSearchMenu: $showSubtitleSearchMenu,
+                    showAITranslateMenu: $showAITranslateMenu
+                )
             case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss)
             }
         }
@@ -1529,13 +1568,10 @@ private struct AudioPane: View {
 
 private struct SubtitlesPane: View {
     let viewModel: PlayerViewModel
-    /// Dismiss the whole HUD (back to the player). Used when an AI subtitle job
-    /// is accepted so the live "Preparing subtitles" overlay is visible.
-    let onCloseHUD: () -> Void
-
+    @Binding var overlayActive: Bool
+    @Binding var showSubtitleSearchMenu: Bool
+    @Binding var showAITranslateMenu: Bool
     @State private var showAppearanceDialog = false
-    @State private var showAITranslateMenu = false
-    @State private var showSubtitleSearchMenu = false
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
@@ -1553,7 +1589,7 @@ private struct SubtitlesPane: View {
         case appearance
     }
 
-    private var overlayActive: Bool {
+    private var hasPresentedOverlay: Bool {
         showAppearanceDialog || activePicker != nil || showAITranslateMenu
             || showSubtitleSearchMenu
     }
@@ -1572,8 +1608,8 @@ private struct SubtitlesPane: View {
             // column. Explicitly route Down into the leftmost Tracks column
             // so entering this pane is consistent with the other track panes.
             .defaultFocus($entryTrackFocused, true, priority: .userInitiated)
-            .disabled(overlayActive)
-            .opacity(overlayActive ? 0.28 : 1)
+            .disabled(hasPresentedOverlay)
+            .opacity(hasPresentedOverlay ? 0.28 : 1)
 
             if showAppearanceDialog {
                 SubtitleAppearanceDialog(
@@ -1593,48 +1629,38 @@ private struct SubtitlesPane: View {
                 )
             }
 
-            // The AI translate/transcribe flow reuses the shared
-            // `SubtitleTranslateMenu` as a modal overlay — same presentation
-            // idiom as the appearance dialog above (columns dimmed + disabled).
-            if showAITranslateMenu {
-                SubtitleTranslateMenu(
-                    viewModel: viewModel,
-                    onDismiss: closeAITranslateMenu,
-                    // Job accepted: close the menu AND the HUD so the live
-                    // "Preparing subtitles" overlay is visible on the player.
-                    onJobStarted: {
-                        closeAITranslateMenu()
-                        onCloseHUD()
-                    }
-                )
-                .transition(.opacity)
-            }
-
-            // Provider subtitle search — same modal-overlay idiom as the AI
-            // menu above.
-            if showSubtitleSearchMenu {
-                SubtitleSearchMenu(
-                    viewModel: viewModel,
-                    onDismiss: closeSubtitleSearchMenu,
-                    // Download succeeded (track registered + selected): close
-                    // the menu AND the HUD so the player is visible.
-                    onDownloaded: {
-                        closeSubtitleSearchMenu()
-                        onCloseHUD()
-                    }
-                )
-                .transition(.opacity)
-            }
         }
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showAppearanceDialog)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showAITranslateMenu)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSubtitleSearchMenu)
-    }
-
-    private func closeAITranslateMenu() {
-        showAITranslateMenu = false
-        focusedOption = .translate
+        // The HUD rail selects panes on focus. Keep it out of the focus graph
+        // while a dialog replaces its rows during search or other actions.
+        .onChange(of: hasPresentedOverlay, initial: true) { _, presented in
+            overlayActive = presented
+        }
+        .onDisappear { overlayActive = false }
+        .onChange(of: showSubtitleSearchMenu) { _, presented in
+            if !presented {
+                // Restore after the HUD becomes visible and focusable again.
+                DispatchQueue.main.async {
+                    guard !showSubtitleSearchMenu else { return }
+                    restoreSubtitleSearchFocus()
+                }
+            }
+        }
+        .onChange(of: showAITranslateMenu) { _, presented in
+            if !presented {
+                DispatchQueue.main.async {
+                    guard !showAITranslateMenu else { return }
+                    if aiSubtitlesAvailable {
+                        focusedOption = .translate
+                    } else {
+                        entryTrackFocused = true
+                    }
+                }
+            }
+        }
     }
 
     /// Restore focus to the "Search Subtitles…" row — unless the provider
@@ -1643,8 +1669,7 @@ private struct SubtitlesPane: View {
     /// Returning focus to an unreachable target would leave the pane with
     /// nothing focused, so fall back to the Tracks column's "Off" row, which
     /// is always present (docs/tvos-focus.md).
-    private func closeSubtitleSearchMenu() {
-        showSubtitleSearchMenu = false
+    private func restoreSubtitleSearchFocus() {
         if viewModel.subtitleSearchEnabled {
             focusedOption = .search
         } else {

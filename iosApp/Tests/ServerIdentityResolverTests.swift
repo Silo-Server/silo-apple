@@ -2,13 +2,15 @@ import XCTest
 @testable import Silo
 
 final class ServerIdentityResolverTests: XCTestCase {
+    private var stub = ServerIdentityStub()
+
     override func setUp() {
         super.setUp()
-        ServerIdentityStubProtocol.reset()
+        stub = ServerIdentityStub()
     }
 
     func testPrefersNativeBrandingName() async {
-        ServerIdentityStubProtocol.configure([
+        stub.configure([
             "/api/v1/theme/branding": (200, #"{"server_name":"  Home Silo  "}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"StreamApp"}"#),
         ])
@@ -16,11 +18,11 @@ final class ServerIdentityResolverTests: XCTestCase {
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertEqual(name, "Home Silo")
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(stub.requestedPaths(), ["/api/v1/theme/branding"])
     }
 
     func testFallsBackToHealthForOlderServer() async {
-        ServerIdentityStubProtocol.configure([
+        stub.configure([
             "/api/v1/theme/branding": (404, #"{"error":"not_found"}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Legacy Home"}"#),
         ])
@@ -29,13 +31,13 @@ final class ServerIdentityResolverTests: XCTestCase {
 
         XCTAssertEqual(name, "Legacy Home")
         XCTAssertEqual(
-            ServerIdentityStubProtocol.requestedPaths(),
+            stub.requestedPaths(),
             ["/api/v1/theme/branding", "/api/v1/health"]
         )
     }
 
     func testBlankBrandingNameFallsBackToHealth() async {
-        ServerIdentityStubProtocol.configure([
+        stub.configure([
             "/api/v1/theme/branding": (200, #"{"server_name":"  "}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Fallback"}"#),
         ])
@@ -46,7 +48,7 @@ final class ServerIdentityResolverTests: XCTestCase {
     }
 
     func testBrandingFailureDoesNotFallBackToHealth() async {
-        ServerIdentityStubProtocol.configure([
+        stub.configure([
             "/api/v1/theme/branding": (500, #"{"error":"unavailable"}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Compat Name"}"#),
         ])
@@ -54,11 +56,11 @@ final class ServerIdentityResolverTests: XCTestCase {
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertNil(name)
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(stub.requestedPaths(), ["/api/v1/theme/branding"])
     }
 
     func testBrandingDecodeFailureDoesNotFallBackToHealth() async {
-        ServerIdentityStubProtocol.configure([
+        stub.configure([
             "/api/v1/theme/branding": (200, #"{"server_name":42}"#),
             "/api/v1/health": (200, #"{"status":"ok","server_name":"Compat Name"}"#),
         ])
@@ -66,7 +68,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         let name = await resolver().fetchServerName(serverURL: "https://silo.example")
 
         XCTAssertNil(name)
-        XCTAssertEqual(ServerIdentityStubProtocol.requestedPaths(), ["/api/v1/theme/branding"])
+        XCTAssertEqual(stub.requestedPaths(), ["/api/v1/theme/branding"])
     }
 
     func testStaleActiveServerResponseDoesNotRenameRegistryEntries() async {
@@ -100,10 +102,10 @@ final class ServerIdentityResolverTests: XCTestCase {
         registry.addOrUpdate(serverB)
         await registry.switchTo(serverId: serverA.id)
 
-        ServerIdentityStubProtocol.configure([
+        stub.configure([
             "/api/v1/theme/branding": (200, #"{"server_name":"Updated A"}"#),
         ], blockedPaths: ["/api/v1/theme/branding"])
-        defer { ServerIdentityStubProtocol.release(path: "/api/v1/theme/branding") }
+        defer { stub.release(path: "/api/v1/theme/branding") }
 
         let service = AuthService(
             serverIdentityResolver: resolver(),
@@ -113,7 +115,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         await waitForRequest(path: "/api/v1/theme/branding")
 
         await registry.switchTo(serverId: serverB.id)
-        ServerIdentityStubProtocol.release(path: "/api/v1/theme/branding")
+        stub.release(path: "/api/v1/theme/branding")
         await refresh.value
 
         XCTAssertEqual(registry.activeServerId, serverB.id)
@@ -123,102 +125,54 @@ final class ServerIdentityResolverTests: XCTestCase {
     }
 
     private func resolver() -> ServerIdentityResolver {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [ServerIdentityStubProtocol.self]
-        return ServerIdentityResolver(
-            httpClient: HTTPClient(session: URLSession(configuration: configuration))
+        ServerIdentityResolver(
+            httpClient: HTTPClient(session: stub.handler.makeSession())
         )
     }
 
     private func waitForRequest(path: String) async {
-        for _ in 0..<100 {
-            if ServerIdentityStubProtocol.requestedPaths().contains(path) {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
+        do {
+            try await stub.handler.waitForRequest(where: StubURLProtocol.path(path))
+        } catch {
+            XCTFail("Timed out waiting for request: \(path)")
         }
-        XCTFail("Timed out waiting for request: \(path)")
     }
 }
 
-private final class ServerIdentityStubProtocol: URLProtocol {
-    private static let lock = NSLock()
-    private static let responseCondition = NSCondition()
-    nonisolated(unsafe) private static var responses: [String: (status: Int, body: String)] = [:]
-    nonisolated(unsafe) private static var paths: [String] = []
-    nonisolated(unsafe) private static var blockedPaths: Set<String> = []
-    nonisolated(unsafe) private static var releasedPaths: Set<String> = []
+/// Path-keyed replies on the shared stub. A blocked path stalls its reply on
+/// a gate until `release(path:)` opens it.
+private final class ServerIdentityStub: @unchecked Sendable {
+    let handler = StubURLProtocol.Handler()
+    private let lock = NSLock()
+    private var gates: [String: StubURLProtocol.Gate] = [:]
 
-    static func configure(
-        _ configuredResponses: [String: (status: Int, body: String)],
-        blockedPaths configuredBlockedPaths: Set<String> = []
+    func configure(
+        _ responses: [String: (status: Int, body: String)],
+        blockedPaths: Set<String> = []
     ) {
+        handler.reset()
         lock.withLock {
-            responses = configuredResponses
-            paths = []
+            gates = Dictionary(uniqueKeysWithValues: blockedPaths.map { ($0, StubURLProtocol.Gate()) })
         }
-        responseCondition.withLock {
-            blockedPaths = configuredBlockedPaths
-            releasedPaths = []
-        }
-    }
-
-    static func requestedPaths() -> [String] {
-        lock.withLock { paths }
-    }
-
-    static func reset() {
-        lock.withLock {
-            responses = [:]
-            paths = []
-        }
-        responseCondition.withLock {
-            blockedPaths = []
-            releasedPaths = []
-            responseCondition.broadcast()
-        }
-    }
-
-    static func release(path: String) {
-        responseCondition.withLock {
-            releasedPaths.insert(path)
-            responseCondition.broadcast()
-        }
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        guard let url = request.url else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
-            return
-        }
-        let response = Self.lock.withLock {
-            Self.paths.append(url.path)
-            return Self.responses[url.path] ?? (500, #"{"error":"unexpected"}"#)
-        }
-        Self.responseCondition.withLock {
-            while Self.blockedPaths.contains(url.path),
-                  !Self.releasedPaths.contains(url.path) {
-                Self.responseCondition.wait()
+        for (path, response) in responses {
+            handler.route(StubURLProtocol.path(path)) { [weak self] _ in
+                if let gate = self?.lock.withLock({ self?.gates[path] }) {
+                    await gate.wait()
+                }
+                return .json(response.body, status: response.status)
             }
         }
-
-        guard let httpResponse = HTTPURLResponse(
-            url: url,
-            statusCode: response.status,
-            httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
-        ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
+        handler.route(StubURLProtocol.any) { _ in
+            .json(#"{"error":"unexpected"}"#, status: 500)
         }
-        client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(response.body.utf8))
-        client?.urlProtocolDidFinishLoading(self)
     }
 
-    override func stopLoading() {}
+    func requestedPaths() -> [String] {
+        handler.requests.map(\.path)
+    }
+
+    func release(path: String) {
+        guard let gate = lock.withLock({ gates[path] }) else { return }
+        Task { await gate.open() }
+    }
 }

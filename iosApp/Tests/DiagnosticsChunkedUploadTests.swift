@@ -2,6 +2,8 @@ import XCTest
 @testable import Silo
 
 final class DiagnosticsChunkedUploadTests: XCTestCase {
+    private let stub = ChunkedUploadStub()
+
     // MARK: - Bare-413 classification (the proxy body-cap bug)
 
     func testBare413MapsToRequestBlockedByProxy() {
@@ -115,14 +117,12 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
         )
         await tokenStore.setServerUrl("http://chunk-test.invalid")
 
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [ChunkedUploadStubProtocol.self]
-        let http = HTTPClient(session: URLSession(configuration: config), tokenStore: tokenStore)
+        let http = HTTPClient(session: stub.handler.makeSession(), tokenStore: tokenStore)
         return DiagnosticsAPI(http: http)
     }
 
     func testUploadChunkedSplitsSequentiallyAndCompletes() async throws {
-        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+        stub.reset(chunkBytes: 4, failChunkIndex: nil)
         let api = await makeStubbedAPI()
 
         let bundle = Data("0123456789".utf8) // 10 bytes → chunks of 4/4/2
@@ -130,7 +130,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
         let response = try await api.uploadChunked(manifestData: manifest, bundleData: bundle)
 
         XCTAssertEqual(response.shortID, "SILO-TEST12345678")
-        let state = ChunkedUploadStubProtocol.state()
+        let state = stub.state()
         XCTAssertEqual(state.chunkBodies.count, 3)
         XCTAssertEqual(state.chunkBodies.map(\.count), [4, 4, 2])
         XCTAssertEqual(Data(state.chunkBodies.joined()), bundle, "reassembled chunks must equal the bundle")
@@ -145,7 +145,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
     }
 
     func testUploadChunkedAbortsSessionWhenAChunkFails() async throws {
-        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: 1)
+        stub.reset(chunkBytes: 4, failChunkIndex: 1)
         let api = await makeStubbedAPI()
 
         do {
@@ -160,7 +160,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
             }
         }
 
-        let state = ChunkedUploadStubProtocol.state()
+        let state = stub.state()
         XCTAssertFalse(state.completed)
         XCTAssertTrue(state.aborted, "a failed upload must best-effort abort its session")
     }
@@ -168,7 +168,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
     func testUploadChunkedFailsFastOnNonPositiveChunkBytes() async throws {
         // A zero/negative advertised chunk size must fail fast, not degrade
         // to 1-byte chunks (millions of PUTs for a real bundle).
-        ChunkedUploadStubProtocol.reset(chunkBytes: 0, failChunkIndex: nil)
+        stub.reset(chunkBytes: 0, failChunkIndex: nil)
         let api = await makeStubbedAPI()
 
         do {
@@ -183,7 +183,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
             }
         }
 
-        let state = ChunkedUploadStubProtocol.state()
+        let state = stub.state()
         XCTAssertTrue(state.chunkIndexes.isEmpty, "no chunk PUTs may be issued")
         XCTAssertFalse(state.completed)
         XCTAssertTrue(state.aborted, "the opened session should still be reclaimed")
@@ -194,7 +194,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
         // fires before every post-init request, the remaining bundle bytes
         // must not be sent, and no abort may be issued (it would target the
         // newly active destination).
-        ChunkedUploadStubProtocol.reset(chunkBytes: 4, failChunkIndex: nil)
+        stub.reset(chunkBytes: 4, failChunkIndex: nil)
         let api = await makeStubbedAPI()
 
         let checkCount = ChunkCheckCounter()
@@ -209,7 +209,7 @@ final class DiagnosticsChunkedUploadTests: XCTestCase {
             XCTAssertEqual(error, .retryable("destination_changed"))
         }
 
-        let state = ChunkedUploadStubProtocol.state()
+        let state = stub.state()
         XCTAssertEqual(state.chunkIndexes, [0], "upload must stop after the destination changed")
         XCTAssertFalse(state.completed)
         XCTAssertFalse(state.aborted, "abort would target the new destination and must be skipped")
@@ -225,9 +225,9 @@ private actor ChunkCheckCounter {
     }
 }
 
-/// In-process stub for the chunked upload endpoints. State is static because
-/// URLSession instantiates the protocol itself; `reset` scopes it per test.
-final class ChunkedUploadStubProtocol: URLProtocol {
+/// The chunked upload endpoints as routes on the shared stub. `State` is what
+/// the tests assert on; `reset` scopes it per test.
+private final class ChunkedUploadStub: @unchecked Sendable {
     struct State {
         var chunkBytes = 4
         var failChunkIndex: Int?
@@ -238,103 +238,47 @@ final class ChunkedUploadStubProtocol: URLProtocol {
         var aborted = false
     }
 
-    private static let lock = NSLock()
-    private static var current = State()
+    let handler = StubURLProtocol.Handler()
+    private let lock = NSLock()
+    private var current = State()
 
-    static func reset(chunkBytes: Int, failChunkIndex: Int?) {
-        lock.lock()
-        current = State(chunkBytes: chunkBytes, failChunkIndex: failChunkIndex)
-        lock.unlock()
-    }
-
-    static func state() -> State {
-        lock.lock()
-        defer { lock.unlock() }
-        return current
-    }
-
-    private static func mutate(_ apply: (inout State) -> Void) {
-        lock.lock()
-        apply(&current)
-        lock.unlock()
-    }
-
-    override static func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "chunk-test.invalid"
-    }
-
-    override static func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
-
-    override func startLoading() {
-        let path = request.url?.path ?? ""
-        let method = request.httpMethod ?? ""
-        let body = Self.requestBody(of: request)
-
-        switch (method, path) {
-        case ("POST", "/api/v1/diagnostics/reports/uploads"):
-            Self.mutate { $0.initBody = body }
-            let chunkBytes = Self.state().chunkBytes
-            respond(status: 201, json: #"{"upload_id":"stub-session","chunk_bytes":\#(chunkBytes),"total_chunks":3,"expires_at":"2026-01-01T00:00:00Z"}"#)
-        case ("PUT", let chunkPath) where chunkPath.contains("/uploads/stub-session/chunks/"):
-            let index = Int(chunkPath.split(separator: "/").last ?? "") ?? -1
-            if Self.state().failChunkIndex == index {
-                respond(status: 500, json: #"{"error":"internal_error","message":"stub chunk failure"}"#)
-                return
+    func reset(chunkBytes: Int, failChunkIndex: Int?) {
+        lock.withLock { current = State(chunkBytes: chunkBytes, failChunkIndex: failChunkIndex) }
+        handler.reset()
+        handler.route(StubURLProtocol.method("POST", path: "/api/v1/diagnostics/reports/uploads")) { [self] request in
+            mutate { $0.initBody = request.body }
+            let chunkBytes = state().chunkBytes
+            return .json(#"{"upload_id":"stub-session","chunk_bytes":\#(chunkBytes),"total_chunks":3,"expires_at":"2026-01-01T00:00:00Z"}"#, status: 201)
+        }
+        handler.route({ $0.method == "PUT" && $0.path.contains("/uploads/stub-session/chunks/") }) { [self] request in
+            let index = Int(request.path.split(separator: "/").last ?? "") ?? -1
+            if state().failChunkIndex == index {
+                return .json(#"{"error":"internal_error","message":"stub chunk failure"}"#, status: 500)
             }
-            Self.mutate {
+            mutate {
                 $0.chunkIndexes.append(index)
-                $0.chunkBodies.append(body ?? Data())
+                $0.chunkBodies.append(request.body ?? Data())
             }
-            respond(status: 200, json: #"{"received_chunks":\#(index + 1),"total_chunks":3}"#)
-        case ("POST", "/api/v1/diagnostics/reports/uploads/stub-session/complete"):
-            Self.mutate { $0.completed = true }
-            respond(status: 201, json: #"{"report_id":"11111111-1111-1111-1111-111111111111","short_id":"SILO-TEST12345678"}"#)
-        case ("DELETE", "/api/v1/diagnostics/reports/uploads/stub-session"):
-            Self.mutate { $0.aborted = true }
-            respond(status: 204, json: "")
-        default:
-            respond(status: 404, json: #"{"error":"not_found"}"#)
+            return .json(#"{"received_chunks":\#(index + 1),"total_chunks":3}"#)
+        }
+        handler.route(StubURLProtocol.method("POST", path: "/api/v1/diagnostics/reports/uploads/stub-session/complete")) { [self] _ in
+            mutate { $0.completed = true }
+            return .json(#"{"report_id":"11111111-1111-1111-1111-111111111111","short_id":"SILO-TEST12345678"}"#, status: 201)
+        }
+        handler.route(StubURLProtocol.method("DELETE", path: "/api/v1/diagnostics/reports/uploads/stub-session")) { [self] _ in
+            mutate { $0.aborted = true }
+            return .json("", status: 204)
+        }
+        handler.route(StubURLProtocol.any) { _ in
+            .json(#"{"error":"not_found"}"#, status: 404)
         }
     }
 
-    override func stopLoading() {}
-
-    /// URLSession surfaces outgoing bodies to URLProtocol as a stream, not
-    /// `httpBody`; drain it.
-    private static func requestBody(of request: URLRequest) -> Data? {
-        if let body = request.httpBody {
-            return body
-        }
-        guard let stream = request.httpBodyStream else {
-            return nil
-        }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        let bufferSize = 64 * 1024
-        var buffer = [UInt8](repeating: 0, count: bufferSize)
-        while stream.hasBytesAvailable {
-            let read = stream.read(&buffer, maxLength: bufferSize)
-            guard read > 0 else { break }
-            data.append(buffer, count: read)
-        }
-        return data
+    func state() -> State {
+        lock.withLock { current }
     }
 
-    private func respond(status: Int, json: String) {
-        guard let url = request.url, let client else { return }
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if !json.isEmpty {
-            client.urlProtocol(self, didLoad: Data(json.utf8))
-        }
-        client.urlProtocolDidFinishLoading(self)
+    private func mutate(_ apply: (inout State) -> Void) {
+        lock.withLock { apply(&current) }
     }
 }

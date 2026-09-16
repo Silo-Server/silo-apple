@@ -497,11 +497,16 @@ final class ServerRegistry {
     /// `purgeCurrentBinding: false` when the caller already purged the active
     /// binding while still authenticated (AuthService.signOut does, so the
     /// binding resolves against a live session) to avoid duplicate current work.
+    /// Returns `false` when the canonical session record could not be
+    /// invalidated durably; process-local credentials are still cleared, but
+    /// the caller must not report the sign-out as complete because the
+    /// record can restore the session on the next launch.
+    @discardableResult
     func signOut(
         serverId: String,
         purgeCurrentBinding: Bool = true,
         purgeRegistryBindings: Bool = true
-    ) async {
+    ) async -> Bool {
         #if os(iOS) || os(tvOS)
         if purgeCurrentBinding, serverId == activeServerId {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
@@ -510,7 +515,7 @@ final class ServerRegistry {
             await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
         }
         #endif
-        await TokenStore.shared.deleteTokens(for: serverId)
+        let durable = await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         // Read *after* the awaits above, not snapshotted at entry: the legacy
         // `profileId` key always describes whichever server is active right
@@ -545,9 +550,10 @@ final class ServerRegistry {
         // that is the case the reason names.
         recordRegistryEvent(
             phase: "signOutServer",
-            outcome: "succeeded",
+            outcome: durable ? "succeeded" : "notDurable",
             reason: signsOutActiveServer ? "activeServer" : "otherServer"
         )
+        return durable
     }
 
     /// Remove a server entirely (entry + tokens). If it was active, the
@@ -681,10 +687,25 @@ final class ServerRegistry {
             }
             activeServerId = fallback?.id
         }
-        guard persist() else {
+        // Two durable writes happen here: the registry without this entry,
+        // then the tombstone for its canonical session. Neither may stay
+        // committed when the other fails. The registry goes first because
+        // its rollback is a plain re-persist of the previous entries; when
+        // the tombstone then fails, that same rollback restores the entry so
+        // the server is neither half-removed nor silently signed out.
+        func rollBackRemoval(reason: String) async {
             entries = previousEntries
             activeServerId = previousActiveServerID
-            _ = persist()
+            // The rollback is itself a durable write. When it fails after the
+            // registry removal was already persisted, the in-memory entry is
+            // restored for this process but the next launch will not have
+            // it, while the session record (which is what failed to tombstone
+            // on the other branch) survives. That is reported distinctly so
+            // it is never mistaken for a clean refusal; the record itself is
+            // unreachable until the same server is added again, at which
+            // point the new sign-in replaces it.
+            let rolledBack = persist()
+            let reason = rolledBack ? reason : "\(reason)+rollbackPersistFailed"
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
@@ -698,14 +719,22 @@ final class ServerRegistry {
             // active branch this is the same unrecordable position `switchTo`
             // is in: the gate closed above and the rollback does not reopen it.
             if removesActiveServer {
-                Self.logger.error("removeServer failed to persist the removal")
+                Self.logger.error("removeServer rolled back: \(reason, privacy: .public)")
             } else {
-                recordRegistryEvent(
-                    phase: "removeServer",
-                    outcome: "failed",
-                    reason: "persistFailed"
-                )
+                recordRegistryEvent(phase: "removeServer", outcome: "failed", reason: reason)
             }
+        }
+        guard persist() else {
+            await rollBackRemoval(reason: "persistFailed")
+            return false
+        }
+        // A canonical record that cannot be tombstoned would outlive the
+        // entry and restore the session when the same server is added again,
+        // so the entry comes back instead. Process-local credentials for the
+        // server are already cleared and its runtime is blocked; the record
+        // itself is intact, which is the state the restored entry describes.
+        guard await TokenStore.shared.deleteTokens(for: serverId) else {
+            await rollBackRemoval(reason: "sessionInvalidationFailed")
             return false
         }
 
@@ -728,7 +757,6 @@ final class ServerRegistry {
         if removesActiveServer {
             await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
         }
-        await TokenStore.shared.deleteTokens(for: serverId)
         launchPreferences.clearRememberedProfile(for: serverId)
         if removesActiveServer,
            resolveFallbackProfile,

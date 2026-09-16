@@ -132,7 +132,7 @@ struct RestoredSessionValidator: Sendable {
         }
 
         switch httpError {
-        case .requestIdentityChanged:
+        case .requestIdentityChanged, .authorityChanged:
             return .identityChanged
         case .network, .encodingFailed:
             return .indeterminate
