@@ -57,7 +57,7 @@ struct TopShelfHTTPClient {
     /// extension's existing fallback behavior.
     func fetchImageSizeQuery() async -> [String: String] {
         let capability: ImageSizeCapabilityResponse? = try? await get(
-            "/api/v1/images/capability"
+            "/api/v2/images/capabilities"
         )
         return ImageSizeSelection.queryEntries(
             capability: capability,
@@ -66,7 +66,7 @@ struct TopShelfHTTPClient {
     }
 
     func fetchHomeSections(imageSizeQuery: [String: String]) async throws -> TopShelfSectionsResponse {
-        try await get("/api/v1/home/sections", query: imageSizeQuery)
+        try await get("/api/v2/home/sections", query: imageSizeQuery)
     }
 
     func fetchSeasons(
@@ -74,7 +74,7 @@ struct TopShelfHTTPClient {
         imageSizeQuery: [String: String]
     ) async throws -> TopShelfSeasonsResponse {
         try await get(
-            "/api/v1/catalog/series/\(seriesId)/seasons",
+            "/api/v2/catalog/series/\(seriesId)/seasons",
             query: imageSizeQuery
         )
     }
@@ -84,7 +84,7 @@ struct TopShelfHTTPClient {
         imageSizeQuery: [String: String]
     ) async throws -> TopShelfItemDetail {
         try await get(
-            "/api/v1/catalog/items/\(contentId)",
+            "/api/v2/catalog/items/\(contentId)",
             query: imageSizeQuery
         )
     }
@@ -140,6 +140,7 @@ struct TopShelfHTTPClient {
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.userInfo[ArtworkURLResolver.serverURLKey] = http.url ?? url
         return try decoder.decode(T.self, from: data)
     }
 }

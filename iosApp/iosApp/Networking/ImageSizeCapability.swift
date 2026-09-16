@@ -19,7 +19,8 @@ import Foundation
 /// `ActiveServerIDSnapshot`.
 ///
 /// Image URLs stay opaque: the server bakes the chosen variant into the
-/// URLs it returns and the client never rewrites them. A larger variant
+/// URLs it returns. Relative artwork is bound to the response origin at
+/// decode time; encoded paths and signature queries stay intact. A larger variant
 /// simply arrives as a different URL, which `CachedAsyncImage` /
 /// `PosterImageCache` cache independently.
 final class ImageSizeCapability: @unchecked Sendable {
@@ -113,10 +114,9 @@ final class ImageSizeCapability: @unchecked Sendable {
     /// error, leaves the feature off and is retried on the next
     /// foreground refresh.
     ///
-    /// Skipped entirely on platforms that wouldn't send the parameter,
-    /// so iOS and macOS don't pay for a request they can't use.
+    /// Delivery capabilities are retained on every platform; only tvOS
+    /// sends the large-image query parameter.
     func refresh() async {
-        guard prefersLargeImages else { return }
         guard let probe = lock.withLock({ () -> Probe? in
             if storedCapability != nil { return nil }
             if let inFlightProbe, inFlightProbe.generation == generation {
