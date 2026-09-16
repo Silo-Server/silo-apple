@@ -108,6 +108,51 @@ final class LibraryDetailScopeTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testAutoplayHierarchyReadsRetainTheCurrentLibrary() async throws {
+        let stub = APIv2TestStub()
+        let (api, _) = try await client(stub: stub)
+        stub.reply(path: "/api/v2/catalog/series/series/seasons", 200,
+            #"{"items":[{"content_id":"season-1","season_number":1,"title":"One","episode_count":1},{"content_id":"season-2","season_number":2,"title":"Two","episode_count":1}]}"#)
+        stub.reply(path: "/api/v2/catalog/series/series/seasons/1/episodes", 200,
+            #"{"items":[{"content_id":"ep-1","season_number":1,"episode_number":1,"title":"One","runtime":40}]}"#)
+        stub.reply(path: "/api/v2/catalog/series/series/seasons/2/episodes", 200,
+            #"{"items":[{"content_id":"ep-2","season_number":2,"episode_number":1,"title":"Two","runtime":40}]}"#)
+        let model = PlayerViewModel(libraryId: 7)
+        defer { model.cleanup() }
+        let next = try await model.resolveNextUpEpisode(contentId: "ep-1", seriesId: "series",
+            seriesTitle: "Series", seasonNumber: 1, episodeNumber: 1, api: api)
+        XCTAssertEqual(next?.contentId, "ep-2")
+        XCTAssertEqual(stub.requests.count, 3)
+        XCTAssertTrue(stub.requests.allSatisfy { $0.query["library_id"] == "7" })
+    }
+
+    @MainActor
+    func testAutoplayAndRecoveryRetainScopeButGlobalOnDeckClearsIt() throws {
+        let model = PlayerViewModel(libraryId: 7)
+        defer { model.cleanup() }
+        model.loadAndPlay(contentId: "ep-1", startFromBeginning: false)
+        let episode = try JSONDecoder().decode(EpisodeListItem.self, from: Data(
+            #"{"contentId":"ep-2","seasonNumber":1,"episodeNumber":2,"title":"Two"}"#.utf8))
+        model.nextUpEpisode = PlayerNextUpEpisode(episode: episode, seriesId: "series", seriesTitle: "Series")
+        model.playNextEpisodeNow()
+        XCTAssertEqual(model.libraryId, 7)
+
+        let global = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"other-library-movie","type":"movie","title":"Other movie"}"#.utf8))
+        model.playOnDeckItemNow(PlayerOnDeckItem(item: global))
+        XCTAssertNil(model.libraryId)
+        model.retry()
+        XCTAssertNil(model.libraryId)
+
+        let scopedRequest = PlayerViewModel.LoadRequest(libraryId: 7, contentId: "movie", preferredFileId: 71,
+            preferredAudioTrackIndex: nil, preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil, startFromBeginning: false)
+        let recovery = scopedRequest.copyForRecovery(preferredFileId: 72, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil, offlineDownloadId: nil)
+        XCTAssertEqual(recovery.libraryId, 7)
+    }
+
     #if os(iOS)
     @MainActor
     func testSheetKeepsLibraryWhenPagingAndGlobalNavigationClearsIt() throws {

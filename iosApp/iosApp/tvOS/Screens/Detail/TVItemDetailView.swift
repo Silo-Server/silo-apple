@@ -257,7 +257,8 @@ struct TVItemDetailView: View {
                 to: .player(
                     contentId: extra.contentId,
                     startFromBeginning: true,
-                    resumePosition: nil
+                    resumePosition: nil,
+                    libraryId: libraryId
                 )
             )
         }
