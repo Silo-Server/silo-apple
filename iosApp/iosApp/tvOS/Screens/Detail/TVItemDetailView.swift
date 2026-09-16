@@ -11,6 +11,7 @@ import os
 /// then a scrollable body of horizontal rails below the fold.
 struct TVItemDetailView: View {
     let contentId: String
+    let libraryId: Int?
     let seed: TVItemDetailRouteSeed?
 
     @State private var viewModel: ItemDetailViewModel
@@ -50,12 +51,13 @@ struct TVItemDetailView: View {
         category: "TVFocus"
     )
 
-    init(contentId: String, seed: TVItemDetailRouteSeed? = nil) {
+    init(contentId: String, libraryId: Int? = nil, seed: TVItemDetailRouteSeed? = nil) {
         self.contentId = contentId
+        self.libraryId = libraryId
         self.seed = seed
         // Resolve the cached view model eagerly so the first `body`
         // evaluation can render cached content without a blank frame.
-        _viewModel = State(initialValue: ItemDetailCache.shared.viewModel(for: contentId))
+        _viewModel = State(initialValue: ItemDetailCache.shared.viewModel(for: contentId, libraryId: libraryId))
     }
 
     var body: some View {
@@ -245,7 +247,7 @@ struct TVItemDetailView: View {
             // `TVTrailerReturnStore`). tvOS cannot bring the user back from
             // YouTube; this is the fallback for when suspension doesn't
             // preserve the page either.
-            TVTrailerReturnStore.shared.saveHandoff(contentId: contentId)
+            TVTrailerReturnStore.shared.saveHandoff(contentId: contentId, libraryId: libraryId)
             TVTrailerLaunch.open(siteKey: video.siteKey) { didOpen in
                 guard !didOpen else { return }
                 TVTrailerReturnStore.shared.clear()
@@ -255,7 +257,8 @@ struct TVItemDetailView: View {
                 to: .player(
                     contentId: extra.contentId,
                     startFromBeginning: true,
-                    resumePosition: nil
+                    resumePosition: nil,
+                    libraryId: libraryId
                 )
             )
         }
@@ -266,6 +269,7 @@ struct TVItemDetailView: View {
         if detail.isAudiobook {
             AudiobookDetailContent(
                 detail: detail,
+                libraryId: libraryId,
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 }
@@ -302,7 +306,8 @@ struct TVItemDetailView: View {
                                 audioTrackIndex: preferredNextUpAudioTrackIndex,
                                 subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                                 startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
+                                resumePosition: resumePosition,
+                                libraryId: libraryId
                             )
                         )
                     } else {
@@ -310,13 +315,14 @@ struct TVItemDetailView: View {
                             to: .player(
                                 contentId: id,
                                 startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
+                                resumePosition: resumePosition,
+                                libraryId: libraryId
                             )
                         )
                     }
                 },
                 onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onSetEpisodeWatched: { id, played in
                     await viewModel.setEpisodeWatched(contentId: id, played: played)
@@ -326,7 +332,7 @@ struct TVItemDetailView: View {
                 },
                 onSelectSeason: { season in
                     guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId))
+                    router.navigate(to: .itemDetail(contentId: season.contentId, libraryId: libraryId))
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
@@ -377,8 +383,8 @@ struct TVItemDetailView: View {
                         router.navigate(to: .personDetail(personId: pid))
                     }
                 },
-                onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                onNavigateToParent: { id in
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 belowSynopsis: {
                     DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
@@ -470,7 +476,8 @@ struct TVItemDetailView: View {
                                 audioTrackIndex: preferredNextUpAudioTrackIndex,
                                 subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                                 startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
+                                resumePosition: resumePosition,
+                                libraryId: libraryId
                             )
                         )
                     } else {
@@ -478,7 +485,8 @@ struct TVItemDetailView: View {
                             to: .player(
                                 contentId: id,
                                 startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
+                                resumePosition: resumePosition,
+                                libraryId: libraryId
                             )
                         )
                     }
@@ -600,7 +608,8 @@ struct TVItemDetailView: View {
                                 audioTrackIndex: preferredAudioTrackIndex,
                                 subtitleTrackIndex: preferredSubtitleTrackIndex,
                                 startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
+                                resumePosition: resumePosition,
+                                libraryId: libraryId
                             )
                         )
                     } else {
@@ -608,7 +617,8 @@ struct TVItemDetailView: View {
                             to: .player(
                                 contentId: contentId,
                                 startFromBeginning: startFromBeginning,
-                                resumePosition: resumePosition
+                                resumePosition: resumePosition,
+                                libraryId: libraryId
                             )
                         )
                     }
@@ -669,6 +679,9 @@ struct TVItemDetailView: View {
                         router.navigate(to: .personDetail(personId: pid))
                     }
                 },
+                onNavigateToParent: { id in
+                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
+                },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
@@ -677,7 +690,7 @@ struct TVItemDetailView: View {
                     // Switch only the active episode detail. Replacing the
                     // current route keeps Back returning to the series page
                     // and avoids stacking one route per episode browse.
-                    router.replaceCurrent(with: .itemDetail(contentId: id))
+                    router.replaceCurrent(with: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onPlayEpisodeShortcut: { id in
                     let episode = viewModel.episodes.first { $0.contentId == id }
@@ -687,6 +700,7 @@ struct TVItemDetailView: View {
                     )
                     router.presentPlayer(
                         contentId: id,
+                        libraryId: libraryId,
                         fileId: nil,
                         audioTrackIndex: nil,
                         subtitleTrackIndex: nil,
@@ -732,7 +746,7 @@ struct TVItemDetailView: View {
     private func redirectEpisodeToSeries(
         _ destination: TVItemDetailRouteSeed.EpisodeContext
     ) async {
-        let cacheKey = CacheKey.itemDetail(destination.seriesContentId)
+        let cacheKey = CacheKey.itemDetail(destination.seriesContentId, libraryId: libraryId)
         if let cached: ItemDetail = ResponseCache.shared.get(cacheKey),
            cached.type == "series" {
             routeToSeries(destination, series: cached)
@@ -741,7 +755,8 @@ struct TVItemDetailView: View {
 
         do {
             let series = try await MetadataRequestPool.shared.itemDetail(
-                contentId: destination.seriesContentId
+                contentId: destination.seriesContentId,
+                libraryId: libraryId
             )
             guard !Task.isCancelled,
                   contentId == destination.episodeContentId else { return }
@@ -766,7 +781,8 @@ struct TVItemDetailView: View {
         router.replaceCurrent(
             with: .itemDetail(
                 contentId: destination.seriesContentId,
-                tvSeed: TVItemDetailRouteSeed(series, episodeContext: destination)
+                tvSeed: TVItemDetailRouteSeed(series, episodeContext: destination),
+                libraryId: libraryId
             )
         )
     }
@@ -778,12 +794,12 @@ struct TVItemDetailView: View {
             episodeSeriesDetail = nil
             return
         }
-        if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId)) {
+        if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(seriesId, libraryId: libraryId)) {
             episodeSeriesDetail = cached
         }
-        guard let fresh = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId),
+        guard let fresh = try? await MetadataRequestPool.shared.itemDetail(contentId: seriesId, libraryId: libraryId),
               !Task.isCancelled else { return }
-        ResponseCache.shared.set(fresh, for: CacheKey.itemDetail(seriesId))
+        ResponseCache.shared.set(fresh, for: CacheKey.itemDetail(seriesId, libraryId: libraryId))
         episodeSeriesDetail = fresh
     }
 
@@ -795,7 +811,7 @@ struct TVItemDetailView: View {
               let seriesId = detail.seriesId,
               !seriesId.isEmpty else { return episodeSeriesDetail }
         return episodeSeriesDetail
-            ?? ResponseCache.shared.get(CacheKey.itemDetail(seriesId))
+            ?? ResponseCache.shared.get(CacheKey.itemDetail(seriesId, libraryId: libraryId))
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
@@ -1012,7 +1028,7 @@ struct TVItemDetailView: View {
         didClearNextUpSubtitleOverride = false
 
         do {
-            let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId)
+            let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId, libraryId: libraryId)
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
@@ -1068,7 +1084,7 @@ struct TVItemDetailView: View {
         }
 
         let cached: ItemDetail? = ResponseCache.shared.get(
-            CacheKey.itemDetail(nextUp.contentId)
+            CacheKey.itemDetail(nextUp.contentId, libraryId: libraryId)
         )
         let usableCached = cached?.versions?.isEmpty == false ? cached : nil
         nextUpPlaybackDetail = usableCached
@@ -1093,13 +1109,13 @@ struct TVItemDetailView: View {
             if activeSeriesEpisodeContentId != nil {
                 try await Task.sleep(for: .milliseconds(120))
             }
-            let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId)
+            let item = try await MetadataRequestPool.shared.itemDetail(contentId: nextUp.contentId, libraryId: libraryId)
             guard !Task.isCancelled else { return }
             let enriched = await enrichPlaybackMetadata(for: item, contentId: nextUp.contentId)
             guard !Task.isCancelled else { return }
             let resolved: ItemDetail?
             if let enriched, enriched.versions?.isEmpty == false {
-                ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(nextUp.contentId))
+                ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(nextUp.contentId, libraryId: libraryId))
                 resolved = enriched
             } else if let usableCached {
                 resolved = usableCached
@@ -1154,12 +1170,13 @@ struct TVItemDetailView: View {
             guard !Task.isCancelled else { return }
             let neighbor = episodes[neighborIndex]
             let cached: ItemDetail? = ResponseCache.shared.get(
-                CacheKey.itemDetail(neighbor.contentId)
+                CacheKey.itemDetail(neighbor.contentId, libraryId: libraryId)
             )
             if cached?.versions?.isEmpty == false { continue }
 
             guard let item = try? await MetadataRequestPool.shared.itemDetail(
-                contentId: neighbor.contentId
+                contentId: neighbor.contentId,
+                libraryId: libraryId
             ), !Task.isCancelled else { continue }
             guard let enriched = await enrichPlaybackMetadata(
                 for: item,
@@ -1168,7 +1185,7 @@ struct TVItemDetailView: View {
             guard !Task.isCancelled else { return }
             ResponseCache.shared.set(
                 enriched,
-                for: CacheKey.itemDetail(neighbor.contentId)
+                for: CacheKey.itemDetail(neighbor.contentId, libraryId: libraryId)
             )
         }
     }
@@ -1206,14 +1223,15 @@ struct TVItemDetailView: View {
                 index += direction
                 continue
             }
-            let key = CacheKey.itemEpisodes(seriesId: detail.contentId, seasonNumber: season.seasonNumber)
+            let key = CacheKey.itemEpisodes(seriesId: detail.contentId, seasonNumber: season.seasonNumber, libraryId: libraryId)
             do {
                 let response: EpisodesResponse
                 if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
                     response = cached
                 } else {
                     response = try await MetadataRequestPool.shared.episodes(
-                        seriesId: detail.contentId, seasonNumber: season.seasonNumber
+                        seriesId: detail.contentId, seasonNumber: season.seasonNumber,
+                        libraryId: libraryId
                     )
                 }
                 guard !Task.isCancelled, viewModel.selectedSeason?.seasonNumber == selected,
@@ -1245,8 +1263,8 @@ struct TVItemDetailView: View {
         guard item.type != "series" else { return item }
 
         do {
-            let watchDetail = try await MetadataRequestPool.shared.watchDetail(contentId: contentId)
-            ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId))
+            let watchDetail = try await MetadataRequestPool.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+            ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId, libraryId: libraryId))
             return ItemDetail(
                 contentId: item.contentId,
                 type: item.type,

@@ -12,6 +12,7 @@ struct CatalogGrid: View {
     var forcesThreeColumnsOnPhone = false
     let onItemTap: (BrowseItem) -> Void
     let onLoadMore: () -> Void
+    @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
@@ -109,6 +110,7 @@ struct CatalogGrid: View {
         return {
             router.presentPlayer(
                 contentId: item.contentId,
+                libraryId: browseLibraryId,
                 posterURL: item.posterUrl,
                 backdropURL: item.backdropUrl
             )

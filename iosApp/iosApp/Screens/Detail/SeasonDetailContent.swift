@@ -11,6 +11,7 @@ import SwiftUI
 /// touch on a phone.
 struct SeasonDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
+    var libraryId: Int? = nil
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
@@ -33,7 +34,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
-    let onNavigateToItem: (String) -> Void
+    let onNavigateToParent: (String) -> Void
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -173,6 +174,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             if DownloadManager.shared.downloadsEnabled {
                 SeriesDownloadMenuButton(
                     detail: detail,
+                    libraryId: libraryId,
                     seasons: seasons,
                     selectedSeason: selectedSeason ?? seasons.first(where: { $0.seasonNumber == detail.seasonNumber }),
                     episodes: episodes,
@@ -184,7 +186,7 @@ struct SeasonDetailContent<BelowOverview: View>: View {
             if let seriesId = detail.seriesId {
                 PhoneLabeledMenu(label: "More") {
                     Button {
-                        onNavigateToItem(seriesId)
+                        onNavigateToParent(seriesId)
                     } label: {
                         Label("Go to Series", systemImage: "tv")
                     }

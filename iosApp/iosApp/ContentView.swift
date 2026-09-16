@@ -771,12 +771,12 @@ struct ContentView: View {
     /// link remains the priority launch intent, but the trailer record is still
     /// consumed so it cannot ghost-navigate a later launch.
     private func restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: Bool) {
-        guard let contentId = TVTrailerReturnStore.shared.consumeColdLaunchRestore(),
+        guard let route = TVTrailerReturnStore.shared.consumeColdLaunchRestore(),
               !hasPriorityLaunchIntent,
               router.path.isEmpty else {
             return
         }
-        router.navigate(to: .itemDetail(contentId: contentId))
+        router.navigate(to: route)
     }
     #endif
 
@@ -1995,6 +1995,7 @@ struct MainTabView: View {
         .fullScreenCover(item: $router.presentedPlayer) { payload in
             PlayerView(
                 contentId: payload.contentId,
+                libraryId: payload.libraryId,
                 preferredFileId: payload.fileId,
                 preferredAudioTrackIndex: payload.audioTrackIndex,
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
@@ -2456,8 +2457,8 @@ struct MainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId, _):
-            ItemDetailView(contentId: contentId)
+        case .itemDetail(let contentId, _, let libraryId):
+            ItemDetailView(contentId: contentId, libraryId: libraryId)
                 // The iOS 26 poster → detail zoom transition
                 // (`.navigationTransition(.zoom(sourceID:in:))`, keyed off
                 // `pendingZoomSourceID`) is intentionally NOT applied here.
@@ -2471,10 +2472,11 @@ struct MainTabView: View {
                 // regression (see forums thread 807208).
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
-        case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion):
+        case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             #if os(macOS)
             PlayerView(
                 contentId: contentId,
+                libraryId: libraryId,
                 startFromBeginning: startFromBeginning,
                 resumePositionOverride: resumePosition,
                 prefersLastUsedVersion: prefersLastUsedVersion
@@ -2491,11 +2493,13 @@ struct MainTabView: View {
             let audioTrackIndex,
             let subtitleTrackIndex,
             let startFromBeginning,
-            let resumePosition
+            let resumePosition,
+            let libraryId
         ):
             #if os(macOS)
             PlayerView(
                 contentId: contentId,
+                libraryId: libraryId,
                 preferredFileId: fileId,
                 preferredAudioTrackIndex: audioTrackIndex,
                 preferredSubtitleTrackIndex: subtitleTrackIndex,
@@ -2659,6 +2663,7 @@ private struct ItemDetailSheet: View {
         )
         return ItemDetailView(
             contentId: contentID,
+            libraryId: presentation.libraryId,
             onClose: router.dismissItemDetail,
             resumeContext: presentation.resumeContext?.seriesContentId == contentID ? presentation.resumeContext : nil
         )
@@ -2703,9 +2708,9 @@ private struct ItemDetailSheet: View {
 
         for contentID in neighborIDs {
             guard !Task.isCancelled else { return }
-            let key = CacheKey.itemDetail(contentID)
+            let key = CacheKey.itemDetail(contentID, libraryId: presentation.libraryId)
             if let _: ItemDetail = ResponseCache.shared.get(key) { continue }
-            guard let detail = try? await SiloAPI.shared.itemDetail(contentId: contentID),
+            guard let detail = try? await SiloAPI.shared.itemDetail(contentId: contentID, libraryId: presentation.libraryId),
                   !Task.isCancelled else { continue }
             ResponseCache.shared.set(detail, for: key)
         }
@@ -2714,8 +2719,8 @@ private struct ItemDetailSheet: View {
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
-        case .itemDetail(let contentId, _):
-            ItemDetailView(contentId: contentId)
+        case .itemDetail(let contentId, _, let libraryId):
+            ItemDetailView(contentId: contentId, libraryId: libraryId)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
         default:

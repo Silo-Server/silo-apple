@@ -1407,6 +1407,8 @@ struct LibraryCollectionsResponse {
 struct SeasonsResponse: Codable {
     let seasons: [Season]
 
+    init(seasons: [Season]) { self.seasons = seasons }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         seasons = try c.decodeIfPresent([Season].self, forKey: .seasons) ?? []
@@ -1415,6 +1417,8 @@ struct SeasonsResponse: Codable {
 
 struct EpisodesResponse: Codable {
     let episodes: [EpisodeListItem]
+
+    init(episodes: [EpisodeListItem]) { self.episodes = episodes }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

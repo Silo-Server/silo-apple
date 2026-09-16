@@ -52,6 +52,7 @@ enum PlayerPresentationRestoration {
         // A fresh identity is what makes `fullScreenCover(item:)` re-present
         // even if the router is still holding the outgoing payload.
         var reopened = payload.reopened()
+        reopened.libraryId = viewModel.libraryId
         // The user may have closed the original detail while PiP was active.
         // Restore above the currently visible owner, never an absent sheet.
         reopened.detailPresentationID = presenter.presentedItemDetail?.id
@@ -83,6 +84,7 @@ extension AppRouter.PlayerPresentation {
     /// result as a new presentation.
     func reopened() -> Self {
         AppRouter.PlayerPresentation(
+            libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
             audioTrackIndex: audioTrackIndex,

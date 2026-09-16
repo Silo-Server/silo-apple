@@ -7,6 +7,7 @@ import SwiftUI
 /// `DownloadManager.shared` directly so it reflects live state.
 struct SeriesDownloadMenuButton: View {
     let detail: ItemDetail
+    var libraryId: Int? = nil
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -105,6 +106,7 @@ struct SeriesDownloadMenuButton: View {
                     isMonitored: isMonitored,
                     onMonitor: { pendingMonitorSheet = true }
                 )
+                .environment(\.browseLibraryId, libraryId)
             case .monitor:
                 SeriesMonitorSheet(seriesId: seriesId, seriesTitle: detail.title, seasons: seasons)
             }
@@ -349,6 +351,7 @@ private struct SeriesSeasonDownloadPicker: View {
 /// Native multi-selection for one season. A season's episode list is reused
 /// from the detail model when available and fetched on demand otherwise.
 private struct SeriesEpisodeDownloadPicker: View {
+    @Environment(\.browseLibraryId) private var browseLibraryId
     let seriesId: String
     let seriesTitle: String
     let season: Season
@@ -633,7 +636,8 @@ private struct SeriesEpisodeDownloadPicker: View {
         do {
             let response = try await SiloAPI.shared.episodes(
                 seriesId: seriesId,
-                seasonNumber: season.seasonNumber
+                seasonNumber: season.seasonNumber,
+                libraryId: browseLibraryId
             )
             guard !Task.isCancelled else { return }
             episodes = Self.sorted(response.episodes)

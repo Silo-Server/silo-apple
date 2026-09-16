@@ -9,6 +9,7 @@ import Foundation
 /// trailer plays, and the user relaunches into Home with the detail page gone.
 struct TrailerReturnRecord: Codable, Equatable {
     let contentId: String
+    var libraryId: Int? = nil
     /// Identity at handoff time. A record from another server or profile is
     /// never honored — restoring it would surface one profile's browsing to
     /// another on a shared living-room device.

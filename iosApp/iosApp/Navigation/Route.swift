@@ -21,7 +21,8 @@ enum Route: Hashable {
     case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?)
     case itemDetail(
         contentId: String,
-        tvSeed: TVItemDetailRouteSeed? = nil
+        tvSeed: TVItemDetailRouteSeed? = nil,
+        libraryId: Int? = nil
     )
     case personDetail(personId: Int)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
@@ -32,7 +33,8 @@ enum Route: Hashable {
         contentId: String,
         startFromBeginning: Bool,
         resumePosition: Double?,
-        prefersLastUsedVersion: Bool = false
+        prefersLastUsedVersion: Bool = false,
+        libraryId: Int? = nil
     )
     case playerWithFile(
         contentId: String,
@@ -40,7 +42,8 @@ enum Route: Hashable {
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
         startFromBeginning: Bool,
-        resumePosition: Double?
+        resumePosition: Double?,
+        libraryId: Int? = nil
     )
     case favorites
     case watchlist
@@ -212,7 +215,8 @@ extension Route {
     /// route so poster zoom and detail behavior are unchanged.
     static func itemDetail(
         destinationContentId: String,
-        sectionItem: SectionItem
+        sectionItem: SectionItem,
+        libraryId: Int? = nil
     ) -> Route {
         #if os(tvOS)
         return .itemDetail(
@@ -220,23 +224,25 @@ extension Route {
             tvSeed: TVItemDetailRouteSeed.destination(
                 contentId: destinationContentId,
                 from: sectionItem
-            )
+            ),
+            libraryId: libraryId
         )
         #else
-        return .itemDetail(contentId: destinationContentId)
+        return .itemDetail(contentId: destinationContentId, libraryId: libraryId)
         #endif
     }
 
     /// Builds the platform-appropriate route from a catalog card. The seed is
     /// display-only and is ignored entirely on iOS/macOS.
-    static func itemDetail(browseItem: BrowseItem) -> Route {
+    static func itemDetail(browseItem: BrowseItem, libraryId: Int? = nil) -> Route {
         #if os(tvOS)
         return .itemDetail(
             contentId: browseItem.contentId,
-            tvSeed: TVItemDetailRouteSeed(browseItem)
+            tvSeed: TVItemDetailRouteSeed(browseItem),
+            libraryId: libraryId
         )
         #else
-        return .itemDetail(contentId: browseItem.contentId)
+        return .itemDetail(contentId: browseItem.contentId, libraryId: libraryId)
         #endif
     }
 }

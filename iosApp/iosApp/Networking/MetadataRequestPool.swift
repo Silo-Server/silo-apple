@@ -83,6 +83,7 @@ final class MetadataRequestPool: @unchecked Sendable {
     private struct RequestScope: Hashable, Sendable {
         let account: RefreshAccountIdentity?
         let profileID: String?
+        let libraryID: Int?
     }
 
     private struct ItemDetailKey: Hashable, Sendable {
@@ -112,52 +113,60 @@ final class MetadataRequestPool: @unchecked Sendable {
     private let episodesFlights = MetadataSingleFlight<EpisodesKey, EpisodesResponse>()
     private let watchDetailFlights = MetadataSingleFlight<WatchDetailKey, WatchDetail>()
 
-    private init() {}
+    private let api: SiloAPI
+    private let tokenStore: TokenStore
+
+    init(api: SiloAPI = .shared, tokenStore: TokenStore = .shared) {
+        self.api = api
+        self.tokenStore = tokenStore
+    }
 
     func itemDetail(
         contentId: String,
+        libraryId: Int? = nil,
         freshnessDiscriminator: String? = nil
     ) async throws -> ItemDetail {
         let key = ItemDetailKey(
-            scope: await requestScope(),
+            scope: await requestScope(libraryId: libraryId),
             contentID: contentId,
             freshnessDiscriminator: freshnessDiscriminator
         )
         return try await itemDetailFlights.value(for: key) {
-            try await SiloAPI.shared.itemDetail(contentId: contentId)
+            try await self.api.itemDetail(contentId: contentId, libraryId: libraryId)
         }
     }
 
-    func seasons(seriesId: String) async throws -> SeasonsResponse {
-        let key = SeasonsKey(scope: await requestScope(), seriesID: seriesId)
+    func seasons(seriesId: String, libraryId: Int? = nil) async throws -> SeasonsResponse {
+        let key = SeasonsKey(scope: await requestScope(libraryId: libraryId), seriesID: seriesId)
         return try await seasonsFlights.value(for: key) {
-            try await SiloAPI.shared.seasons(seriesId: seriesId)
+            try await self.api.seasons(seriesId: seriesId, libraryId: libraryId)
         }
     }
 
-    func episodes(seriesId: String, seasonNumber: Int) async throws -> EpisodesResponse {
+    func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) async throws -> EpisodesResponse {
         let key = EpisodesKey(
-            scope: await requestScope(),
+            scope: await requestScope(libraryId: libraryId),
             seriesID: seriesId,
             seasonNumber: seasonNumber
         )
         return try await episodesFlights.value(for: key) {
-            try await SiloAPI.shared.episodes(
+            try await self.api.episodes(
                 seriesId: seriesId,
-                seasonNumber: seasonNumber
+                seasonNumber: seasonNumber,
+                libraryId: libraryId
             )
         }
     }
 
-    func watchDetail(contentId: String) async throws -> WatchDetail {
-        let key = WatchDetailKey(scope: await requestScope(), contentID: contentId)
+    func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
+        let key = WatchDetailKey(scope: await requestScope(libraryId: libraryId), contentID: contentId)
         return try await watchDetailFlights.value(for: key) {
-            try await SiloAPI.shared.watchDetail(contentId: contentId)
+            try await self.api.watchDetail(contentId: contentId, libraryId: libraryId)
         }
     }
 
-    private func requestScope() async -> RequestScope {
-        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
-        return RequestScope(account: auth?.account, profileID: auth?.profileId)
+    private func requestScope(libraryId: Int?) async -> RequestScope {
+        let auth = await tokenStore.captureOrdinaryRequestAuth()
+        return RequestScope(account: auth?.account, profileID: auth?.profileId, libraryID: libraryId)
     }
 }

@@ -42,7 +42,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
-    let onNavigateToItem: (String) -> Void
+    let onNavigateToParent: (String) -> Void
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the synopsis.
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
@@ -219,7 +219,7 @@ struct TVSeasonDetailView<BelowSynopsis: View>: View {
                 case .favorite: onToggleFavorite()
                 case .watched: onToggleWatched()
                 case .series:
-                    if let seriesId = detail.seriesId { onNavigateToItem(seriesId) }
+                    if let seriesId = detail.seriesId { onNavigateToParent(seriesId) }
                 case .none: break
                 }
             }

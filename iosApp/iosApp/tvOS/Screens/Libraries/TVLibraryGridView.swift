@@ -98,6 +98,7 @@ struct TVLibraryGridView: View {
                 panelOverlay(panel)
             }
         }
+        .environment(\.browseLibraryId, libraryId)
         .animation(.easeOut(duration: 0.18), value: openPanel)
         .siloBackground()
         .task {
@@ -180,7 +181,7 @@ struct TVLibraryGridView: View {
                         isLoading: viewModel.isLoading,
                         hasMore: viewModel.hasMore,
                         onItemTap: { item in
-                            router.navigate(to: .itemDetail(browseItem: item))
+                            router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId))
                         },
                         onNearEnd: { _ in
                             Task { await viewModel.loadMoreIfNeeded() }

@@ -128,6 +128,7 @@ private struct HomeCardTap<Label: View>: View {
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     @Environment(\.zoomNamespace) private var zoomNamespace
     @State private var zoomInstanceID = UUID()
@@ -136,9 +137,10 @@ private struct HomeCardTap<Label: View>: View {
         Button {
             router.pendingZoomSourceID = zoomInstanceID.uuidString
             if let continueWatchingItem {
-                router.presentContinueWatchingDetail(for: continueWatchingItem, browseSource: detailBrowseSource)
+                router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId, browseSource: detailBrowseSource)
             } else {
-                router.presentItemDetail(contentId: contentId, browseSource: detailBrowseSource)
+                router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId, browseSource: detailBrowseSource
+                )
             }
         } label: {
             label()
@@ -451,6 +453,7 @@ struct HomeStillCard: View {
     /// Optimistic watched state, shared with the menu — see `HomePosterCard`.
     @State private var playedOverride: Bool?
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
 
     private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
@@ -590,6 +593,7 @@ struct HomeStillCard: View {
     private func playItem() {
         router.presentPlayer(
             contentId: item.contentId,
+            libraryId: playbackLibraryId,
             resumePosition: item.positionSeconds,
             prefersLastUsedVersion: opensResumeContext,
             posterURL: item.posterUrl,

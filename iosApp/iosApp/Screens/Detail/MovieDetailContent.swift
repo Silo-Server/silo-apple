@@ -34,6 +34,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
+    let onNavigateToParent: (String) -> Void
     let onNavigateToItem: (String) -> Void
     let onEpisodeTap: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -275,14 +276,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
         if let seriesId = detail.seriesId,
            let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
             Button {
-                onNavigateToItem("\(seriesId)-S\(seasonNumber)")
+                onNavigateToParent("\(seriesId)-S\(seasonNumber)")
             } label: {
                 Label("Go to Season", systemImage: "square.stack")
             }
         }
         if let seriesId = detail.seriesId {
             Button {
-                onNavigateToItem(seriesId)
+                onNavigateToParent(seriesId)
             } label: {
                 Label("Go to Series", systemImage: "tv")
             }

@@ -13,6 +13,7 @@ func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> Str
 
 struct AudiobookDetailContent: View {
     let detail: ItemDetail
+    var libraryId: Int? = nil
     let onNavigateToItem: (String) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
@@ -24,7 +25,7 @@ struct AudiobookDetailContent: View {
 
     var body: some View {
         #if os(tvOS)
-        TVAudiobookDetailView(detail: detail, onNavigateToItem: onNavigateToItem)
+        TVAudiobookDetailView(detail: detail, libraryId: libraryId, onNavigateToItem: onNavigateToItem)
         #else
         phoneBody
         #endif
@@ -316,7 +317,7 @@ struct AudiobookDetailContent: View {
                     icon: "arrow.counterclockwise",
                     accessibilityLabel: "Start Over"
                 ) {
-                    audioStore.play(contentId: detail.contentId, restart: true)
+                    audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
                 }
             }
 
@@ -419,7 +420,8 @@ struct AudiobookDetailContent: View {
             audioStore.play(
                 contentId: detail.contentId,
                 restart: false,
-                startPosition: chapter.startSeconds
+                startPosition: chapter.startSeconds,
+                libraryId: libraryId
             )
         } label: {
             HStack(spacing: 13) {
@@ -470,7 +472,8 @@ struct AudiobookDetailContent: View {
             audioStore.play(
                 contentId: detail.contentId,
                 restart: false,
-                startPosition: partStartOffset(index)
+                startPosition: partStartOffset(index),
+                libraryId: libraryId
             )
         } label: {
             HStack(spacing: 13) {
@@ -662,11 +665,11 @@ struct AudiobookDetailContent: View {
 
     private func primaryAction() {
         if let resumePosition {
-            audioStore.play(contentId: detail.contentId, restart: false, startPosition: resumePosition)
+            audioStore.play(contentId: detail.contentId, restart: false, startPosition: resumePosition, libraryId: libraryId)
         } else if isFinished {
-            audioStore.play(contentId: detail.contentId, restart: true)
+            audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
         } else {
-            audioStore.play(contentId: detail.contentId, restart: false)
+            audioStore.play(contentId: detail.contentId, restart: false, libraryId: libraryId)
         }
     }
 

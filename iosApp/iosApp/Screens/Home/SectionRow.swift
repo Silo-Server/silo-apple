@@ -51,6 +51,7 @@ struct SectionRow: View {
     #endif
 
     #if os(tvOS)
+    @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
     #endif
 
@@ -144,6 +145,7 @@ struct SectionRow: View {
         #if os(tvOS)
         router.presentPlayer(
             contentId: item.contentId,
+            libraryId: playbackLibraryId,
             resumePosition: item.positionSeconds,
             prefersLastUsedVersion: isContinueWatching,
             posterURL: item.posterUrl,

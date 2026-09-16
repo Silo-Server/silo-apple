@@ -35,7 +35,7 @@ struct TVSkylineSectionFeed: View {
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
 
     /// Immediate foreground content with a separately delayed backdrop.
-    @State private var marqueeModel = TVFocusMarqueeModel()
+    @State private var marqueeModel: TVFocusMarqueeModel
     /// Token handed only to row 1 when the shell explicitly enters content.
     /// It is never changed during ordinary row-to-row navigation.
     @State private var contentFocusToken = 0
@@ -46,6 +46,30 @@ struct TVSkylineSectionFeed: View {
     /// The row that owns card focus or its context-menu dismissal flow. Unlike
     /// the marquee preview, this is cleared when focus moves into chrome.
     @State private var focusRestorationOwnerSectionId: String?
+
+    init(
+        sections: [ResolvedSection],
+        libraryId: Int? = nil,
+        marqueeScale: TVFocusMarquee.Scale = .home,
+        focusRequest: Int = 0,
+        detailReturnFocusRequest: Int = 0,
+        isTopMenuFocused: Bool = false,
+        onTopMenuFocusRequest: (() -> Void)?,
+        onItemTap: @escaping (String, SectionItem) -> Void,
+        onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil,
+        onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
+    ) {
+        self.sections = sections
+        self.marqueeScale = marqueeScale
+        self.focusRequest = focusRequest
+        self.detailReturnFocusRequest = detailReturnFocusRequest
+        self.isTopMenuFocused = isTopMenuFocused
+        self.onTopMenuFocusRequest = onTopMenuFocusRequest
+        self.onItemTap = onItemTap
+        self.onRemoveFromContinueWatching = onRemoveFromContinueWatching
+        self.onSetWatched = onSetWatched
+        _marqueeModel = State(initialValue: TVFocusMarqueeModel(libraryId: libraryId))
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -63,6 +87,7 @@ struct TVSkylineSectionFeed: View {
             .offset(y: SiloTheme.Skyline.landingContentVerticalOffset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.browseLibraryId, marqueeModel.libraryId)
         .onAppear {
             marqueeModel.resume()
             seedMarqueeFromFirstItem()

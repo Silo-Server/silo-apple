@@ -33,6 +33,7 @@ struct TVCatalogGrid: View {
     @FocusState private var focusedItemId: String?
     @State private var lastAppliedFocusRequest = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
 
     private let columnSpacing: CGFloat = 40
@@ -143,6 +144,7 @@ struct TVCatalogGrid: View {
         return {
             router.presentPlayer(
                 contentId: item.contentId,
+                libraryId: playbackLibraryId,
                 posterURL: item.posterUrl,
                 backdropURL: item.backdropUrl
             )

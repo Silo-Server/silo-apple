@@ -17,6 +17,7 @@ import SwiftUI
 /// Below-fold rows/rails are ordinary vertical focus progression.
 struct TVAudiobookDetailView: View {
     let detail: ItemDetail
+    let libraryId: Int?
     let onNavigateToItem: (String) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
@@ -32,8 +33,9 @@ struct TVAudiobookDetailView: View {
     /// for every `model.` read in `body`.
     private let model: TVAudiobookViewModel
 
-    init(detail: ItemDetail, onNavigateToItem: @escaping (String) -> Void) {
+    init(detail: ItemDetail, libraryId: Int? = nil, onNavigateToItem: @escaping (String) -> Void) {
         self.detail = detail
+        self.libraryId = libraryId
         self.onNavigateToItem = onNavigateToItem
         self.model = TVAudiobookViewModel(detail: detail)
     }
@@ -45,7 +47,7 @@ struct TVAudiobookDetailView: View {
         }
         .siloBackground()
         .fullScreenCover(isPresented: $showChapters) {
-            TVAudiobookChaptersView(detail: detail)
+            TVAudiobookChaptersView(detail: detail, libraryId: libraryId)
         }
     }
 
@@ -308,7 +310,7 @@ struct TVAudiobookDetailView: View {
                 icon: model.primaryIcon,
                 title: model.primaryLabel
             ) {
-                model.performPrimary(audioStore)
+                model.performPrimary(audioStore, libraryId: libraryId)
             }
             .focused($focusedAction, equals: .primary)
             .onAppear(perform: claimInitialActionFocus)
@@ -321,7 +323,7 @@ struct TVAudiobookDetailView: View {
             }
 
             TVSecondaryPillButton(icon: "arrow.counterclockwise", title: "Start Over") {
-                audioStore.play(contentId: detail.contentId, restart: true)
+                audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
             }
             .focused($focusedAction, equals: .startOver)
         }

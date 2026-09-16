@@ -46,13 +46,14 @@ struct TVTrailerReturnStore {
     /// profile or server is active — an anonymous record could be honored by
     /// whoever signs in next, and an empty serverId would match an equally
     /// degenerate active server at consume time instead of failing closed.
-    func saveHandoff(contentId: String) {
+    func saveHandoff(contentId: String, libraryId: Int? = nil) {
         guard let profileId = AuthService.shared.profileId, !profileId.isEmpty,
               let serverId = ServerRegistry.shared.activeServerId, !serverId.isEmpty else {
             return
         }
         let record = TrailerReturnRecord(
             contentId: contentId,
+            libraryId: libraryId,
             serverId: serverId,
             profileId: profileId,
             savedAt: Date()
@@ -65,10 +66,10 @@ struct TVTrailerReturnStore {
         defaults.removeObject(forKey: Self.recordKey)
     }
 
-    /// The contentId to restore on this cold launch, or nil. First call per
+    /// The detail route to restore on this cold launch, or nil. First call per
     /// process does the work; every call deletes any stored record.
     @MainActor
-    func consumeColdLaunchRestore(now: Date = Date()) -> String? {
+    func consumeColdLaunchRestore(now: Date = Date()) -> Route? {
         defer { clear() }
         guard !Self.didAttemptColdLaunchRestore else { return nil }
         Self.didAttemptColdLaunchRestore = true
@@ -85,7 +86,7 @@ struct TVTrailerReturnStore {
         ) else {
             return nil
         }
-        return record.contentId
+        return .itemDetail(contentId: record.contentId, libraryId: record.libraryId)
     }
 }
 #endif

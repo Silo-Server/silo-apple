@@ -55,6 +55,7 @@ struct TVLibraryBrowseView: View {
             } else {
                 TVSkylineSectionFeed(
                     sections: contentSections,
+                    libraryId: library.id,
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onMoveUp,
@@ -62,13 +63,16 @@ struct TVLibraryBrowseView: View {
                         router.navigate(
                             to: .itemDetail(
                                 destinationContentId: destinationContentId,
-                                sectionItem: item
+                                sectionItem: item,
+                                libraryId: library.id
                             )
                         )
                     }
                 )
+                .id(library.id)
             }
         }
+        .environment(\.browseLibraryId, library.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await loadContent() }
     }

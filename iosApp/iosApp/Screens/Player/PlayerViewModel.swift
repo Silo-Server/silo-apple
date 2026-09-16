@@ -174,6 +174,11 @@ enum PlayerIdentityBoundary {
 @MainActor
 @Observable
 class PlayerViewModel {
+    private let initialLibraryId: Int?
+    var libraryId: Int? {
+        if let lastLoadRequest { return lastLoadRequest.libraryId }
+        return initialLibraryId
+    }
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Player"
@@ -774,6 +779,7 @@ class PlayerViewModel {
     private var autoSkipIntroCountdownTask: Task<Void, Never>?
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
+        var libraryId: Int? = nil
         let contentId: String
         let preferredFileId: Int?
         let preferredAudioTrackIndex: Int?
@@ -816,6 +822,7 @@ class PlayerViewModel {
                 offlineDownloadId: offlineDownloadId,
                 preferredQualityOverride: preferredQualityOverride
             )
+            request.libraryId = libraryId
             // A completed download can be selected after the last server plan.
             // Ask the replacement session for that combined ordinal; retaining
             // the old plan's ordinal would reselect its embedded subtitle.
@@ -947,7 +954,8 @@ class PlayerViewModel {
     /// audio keep playing after this fires.
     private var foregroundExitObserverToken: NSObjectProtocol?
 
-    init() {
+    init(libraryId: Int? = nil) {
+        self.initialLibraryId = libraryId
         do {
             aetherPlaybackController = try AetherPlaybackController()
         } catch {
@@ -2401,17 +2409,20 @@ class PlayerViewModel {
         return value
     }
 
-    private func resolveNextUpEpisode(
+    func resolveNextUpEpisode(
         contentId: String,
         seriesId: String,
         seriesTitle: String?,
         seasonNumber: Int,
-        episodeNumber: Int
+        episodeNumber: Int,
+        api: SiloAPI = .shared
     ) async throws -> PlayerNextUpEpisode? {
-        async let seasonsTask = SiloAPI.shared.seasons(seriesId: seriesId)
-        async let currentEpisodesTask = SiloAPI.shared.episodes(
+        let libraryId = self.libraryId
+        async let seasonsTask = api.seasons(seriesId: seriesId, libraryId: libraryId)
+        async let currentEpisodesTask = api.episodes(
             seriesId: seriesId,
-            seasonNumber: seasonNumber
+            seasonNumber: seasonNumber,
+            libraryId: libraryId
         )
 
         let seasonsResponse = try await seasonsTask
@@ -2423,9 +2434,10 @@ class PlayerViewModel {
             !(season.isSpecials ?? false) && season.seasonNumber > seasonNumber
         }
         if let nextSeason {
-            let nextSeasonEpisodes = try await SiloAPI.shared.episodes(
+            let nextSeasonEpisodes = try await api.episodes(
                 seriesId: seriesId,
-                seasonNumber: nextSeason.seasonNumber
+                seasonNumber: nextSeason.seasonNumber,
+                libraryId: libraryId
             )
             episodes.append(contentsOf: nextSeasonEpisodes.episodes)
         }
@@ -2668,6 +2680,7 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
+        request.libraryId = libraryId
         request.preferredQualityOverride = nextEpisodeQualityOverride
         beginFreshLoad(
             request: request,
@@ -3365,10 +3378,10 @@ class PlayerViewModel {
             nowPlaying.setArtworkURL(url)
             return
         }
-        Task { [weak self] in
+        Task { [weak self, libraryId] in
             let detail: ItemDetail
             do {
-                detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
+                detail = try await SiloAPI.shared.itemDetail(contentId: contentId, libraryId: libraryId)
             } catch {
                 Self.logger.warning(
                     "NowPlaying artwork itemDetail fetch failed for \(contentId, privacy: .public): \(String(describing: error), privacy: .public)"
@@ -4231,6 +4244,7 @@ class PlayerViewModel {
             let startTask = Task<PreparedPlayback, Error> { [sessionBridge] in
                 try await sessionBridge.startSession(
                     contentId: request.contentId,
+                    libraryId: request.libraryId,
                     preferredFileId: request.preferredFileId,
                     preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                     preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
@@ -4260,6 +4274,7 @@ class PlayerViewModel {
         } else {
             return try await self.sessionBridge.startSession(
                 contentId: request.contentId,
+                libraryId: request.libraryId,
                 preferredFileId: request.preferredFileId,
                 preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
@@ -4480,6 +4495,7 @@ class PlayerViewModel {
             startFromBeginning: startFromBeginning,
             offlineDownloadId: offlineDownloadId
         )
+        request.libraryId = initialLibraryId
         request.prefersLastUsedVersion = prefersLastUsedVersion
         beginFreshLoad(
             request: request,
@@ -5049,7 +5065,7 @@ class PlayerViewModel {
                 }
             }
             do {
-                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId)
+                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
                 guard !Task.isCancelled,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,

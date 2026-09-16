@@ -5,6 +5,7 @@ import OSLog
 @Observable
 @MainActor
 final class AudioPlayerViewModel {
+    @ObservationIgnored private let api: SiloAPI
     private struct StartedAudioSession {
         let session: PlaybackSessionResponse
         let track: AudioPlaybackTrack
@@ -84,7 +85,8 @@ final class AudioPlayerViewModel {
             .max { $0.startSeconds < $1.startSeconds }
     }
 
-    init() {
+    init(api: SiloAPI = .shared) {
+        self.api = api
         engine.onEvent = { [weak self] event in
             self?.handleEngineEvent(event)
         }
@@ -93,7 +95,7 @@ final class AudioPlayerViewModel {
         }
     }
 
-    func start(contentId: String, restart: Bool = false, startPosition: Double? = nil) async {
+    func start(contentId: String, restart: Bool = false, startPosition: Double? = nil, libraryId: Int? = nil) async {
         startGeneration += 1
         let generation = startGeneration
         isLoading = true
@@ -106,7 +108,7 @@ final class AudioPlayerViewModel {
                 await closePlayback()
             }
             guard generation == startGeneration else { return }
-            let detail = try await SiloAPI.shared.itemDetail(contentId: contentId)
+            let detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
             guard generation == startGeneration else {
                 // A newer start() superseded this request while the
                 // item-detail load was in flight; abandon it so the older,
