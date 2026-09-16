@@ -2020,8 +2020,21 @@ struct MainTabView: View {
         #if os(macOS)
         true
         #else
-        hSize == .regular
+        Self.prefersSidebarLayout(
+            isPad: UIDevice.current.userInterfaceIdiom == .pad,
+            horizontalSizeClass: hSize
+        )
         #endif
+    }
+
+    /// iPad uses the sidebar layout in the regular width; iPhone always uses
+    /// tabs. Plus/Max iPhones report a regular horizontal size class in
+    /// landscape, which on iPhone only happens while the full-screen player
+    /// is rotated (browsing is portrait-only). Keying off the size class alone
+    /// swapped the whole tab tree for the sidebar tree underneath the player,
+    /// and the rebuilt Search tab re-raised its keyboard over the video.
+    static func prefersSidebarLayout(isPad: Bool, horizontalSizeClass: UserInterfaceSizeClass?) -> Bool {
+        isPad && horizontalSizeClass == .regular
     }
 
     /// Visible tabs, plus a Downloads tab when the server advertises the
