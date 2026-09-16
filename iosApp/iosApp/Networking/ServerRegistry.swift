@@ -696,7 +696,16 @@ final class ServerRegistry {
         func rollBackRemoval(reason: String) async {
             entries = previousEntries
             activeServerId = previousActiveServerID
-            _ = persist()
+            // The rollback is itself a durable write. When it fails after the
+            // registry removal was already persisted, the in-memory entry is
+            // restored for this process but the next launch will not have
+            // it, while the session record (which is what failed to tombstone
+            // on the other branch) survives. That is reported distinctly so
+            // it is never mistaken for a clean refusal; the record itself is
+            // unreachable until the same server is added again, at which
+            // point the new sign-in replaces it.
+            let rolledBack = persist()
+            let reason = rolledBack ? reason : "\(reason)+rollbackPersistFailed"
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)

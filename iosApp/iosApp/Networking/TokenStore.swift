@@ -1021,6 +1021,48 @@ actor TokenStore {
         mirrorActiveTokensForExtension()
     }
 
+    /// The canonical session currently persisted for `serverID`, or `nil`
+    /// when there is none (signed out, legacy, or unreadable). Pairing takes
+    /// this before replacing a server's credentials so a failed commit can
+    /// put the previous session back.
+    func accountSessionSnapshot(for serverID: String) -> CanonicalAccountSession? {
+        guard !serverID.isEmpty, case .session(let value)? = try? sessions.load(serverID) else { return nil }
+        return value
+    }
+
+    /// Reinstates `snapshot` as the canonical session for `serverID`, or
+    /// tombstones the server when there was none. The active server's caches
+    /// are reset so the next read reflects the restored record.
+    @discardableResult
+    func restoreAccountSession(_ snapshot: CanonicalAccountSession?, for serverID: String) -> Bool {
+        guard !serverID.isEmpty else { return false }
+        let durable: Bool
+        if let snapshot {
+            durable = (try? sessions.save(snapshot, serverID: serverID)) != nil
+            if durable {
+                // `load` only returns `.session` for a record with both
+                // tokens, so a snapshot always carries them.
+                if let access = snapshot.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
+                if let refresh = snapshot.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
+                if let epoch = snapshot.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
+            }
+        } else {
+            durable = deleteTokens(for: serverID)
+        }
+        if durable {
+            runtimeBlockedServers.remove(serverID)
+            if serverID == activeServerId {
+                persistentCredentialGenerationID = UUID()
+                loadedForServerId = nil
+                ensureLoaded()
+                mirrorActiveTokensForExtension()
+            }
+        } else {
+            recordSessionEvent(phase: "sessionRestore", outcome: "failed", reason: "persistenceUnavailable")
+        }
+        return durable
+    }
+
     /// Bind a legacy/unverified session only after an authenticated account response
     /// under this exact token and process identity. Existing queues are not relabelled.
     func bindVerifiedAccount(_ accountID: String, expected: CapturedOrdinaryRequestAuth) throws {

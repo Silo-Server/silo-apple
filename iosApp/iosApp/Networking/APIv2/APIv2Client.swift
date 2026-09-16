@@ -408,7 +408,7 @@ struct APIv2Client: Sendable {
             try await mapErrors {
                 try await http.requestData(method: "POST", path: "/api/v2/subtitles/ai/jobs/\(id)/cancel",
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account)
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         guard response.statusCode == 204, response.data.isEmpty else { throw APIv2Error.invalidSubtitleResponse }

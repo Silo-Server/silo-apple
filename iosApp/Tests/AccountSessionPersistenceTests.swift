@@ -223,6 +223,33 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let cleared = await store.getAccessToken()
         XCTAssertNil(cleared)
     }
+    func testSessionSnapshotRestoresThePreviousRecordOrTombstonesTheSlot() async throws {
+        let (store, keys, defaults, memory) = try await harness()
+        try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")
+        let snapshot = await store.accountSessionSnapshot(for: "server")
+        XCTAssertEqual(snapshot?.accessToken, "one")
+
+        try await store.installAccountSession(accessToken: "two", refreshToken: "refresh-two", accountID: "34")
+        let restored = await store.restoreAccountSession(snapshot, for: "server")
+        XCTAssertTrue(restored)
+        let active = await store.getAccessToken()
+        XCTAssertEqual(active, "one", "the previous record is live again for the active server")
+        let next = await restarted(keys, defaults, memory)
+        let relaunched = await next.getAccessToken()
+        XCTAssertEqual(relaunched, "one")
+
+        // No previous record: the slot is tombstoned rather than left with the
+        // replacement credentials.
+        let none = await store.accountSessionSnapshot(for: "fresh")
+        XCTAssertNil(none)
+        let expectation = await store.captureAccountInstallationExpectation()
+        try await store.installAccountSessionForServer(serverID: "fresh", origin: "https://fresh.example",
+            accessToken: "new", refreshToken: "new-refresh", accountID: "56", expected: expectation)
+        let tombstoned = await store.restoreAccountSession(nil, for: "fresh")
+        XCTAssertTrue(tombstoned)
+        guard case .signedOut = try memory.persistence.load("fresh") else { return XCTFail("expected a tombstone") }
+    }
+
     func testTemporaryCredentialsCannotReplaceDurableBinding() async throws {
         let (store, _, _, memory) = try await harness()
         try await store.installAccountSession(accessToken: "owner", refreshToken: "owner-refresh", accountID: "12")

@@ -357,6 +357,11 @@ final class ReceiverPairingCoordinator {
         let previousServerURL = await TokenStore.shared.getServerUrl()
         let previousProfileID = await TokenStore.shared.getProfileId()
         let previousProfileToken = await TokenStore.shared.getProfileToken()
+        // Re-pairing an already saved server replaces its canonical session
+        // in `saveTokens` below, before the registry commit can still fail.
+        // Keep the previous record so that failure restores it instead of
+        // leaving the new credentials installed under a reported failure.
+        let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)
         // `addOrUpdate(preservingProfile: false)` forgets the durable profile
         // choice for this server id. When the pairing then fails, the previous
         // session is kept, so its remembered profile must come back too or the
@@ -409,11 +414,13 @@ final class ReceiverPairingCoordinator {
             serverId: id,
             holding: transitionLease
         ) else {
-            // Same rollback as the failed save above. The candidate's tokens
-            // are already persisted under its own server id, which is harmless
-            // and lets a retry succeed, but the previous server must get its
-            // URL and profile back or its canonical session no longer matches
-            // its origin and it reads as logged out.
+            // Same rollback as the failed save above, plus the session: the
+            // candidate's tokens were persisted under its server id, which
+            // for a re-paired server is the previous session's slot. Put the
+            // previous record back (or tombstone the slot when there was
+            // none) before restoring the URL and profile, so the previous
+            // server reads exactly as it did before pairing started.
+            await TokenStore.shared.restoreAccountSession(previousSession, for: id)
             await TokenStore.shared.setServerUrl(previousServerURL)
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await TokenStore.shared.setProfileId(previousProfileID)
