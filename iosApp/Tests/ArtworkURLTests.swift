@@ -89,6 +89,10 @@ final class ArtworkURLTests: XCTestCase {
         XCTAssertEqual(home.response.sections.first?.items.first?.posterUrl, secondURL)
         let legacy: SectionsResponse = try await http.get("/api/v1/home/sections")
         XCTAssertEqual(legacy.sections.first?.items.first?.posterUrl, secondURL)
+
+        stub.reply(200, #"{"events":[{"date":"2026-09-16","items":[\#(item)]}]}"#)
+        let calendar = try await api.calendar(start: "2026-09-16", end: "2026-09-17", filter: "everything", timezone: "UTC", auth: XCTUnwrap(authValue))
+        XCTAssertEqual(calendar.events.first?.items.first?.posterUrl, secondURL)
     }
 
     @MainActor
