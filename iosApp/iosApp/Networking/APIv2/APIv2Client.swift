@@ -139,7 +139,7 @@ struct APIv2Client: Sendable {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: "/api/v2/user/libraries",
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account)
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
@@ -254,7 +254,7 @@ struct APIv2Client: Sendable {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: path, repeatedQuery: query,
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account)
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteCatalogRead }

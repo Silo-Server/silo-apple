@@ -1021,44 +1021,84 @@ actor TokenStore {
         mirrorActiveTokensForExtension()
     }
 
-    /// The canonical session currently persisted for `serverID`, or `nil`
-    /// when there is none (signed out, legacy, or unreadable). Pairing takes
-    /// this before replacing a server's credentials so a failed commit can
-    /// put the previous session back.
-    func accountSessionSnapshot(for serverID: String) -> CanonicalAccountSession? {
-        guard !serverID.isEmpty, case .session(let value)? = try? sessions.load(serverID) else { return nil }
-        return value
+    /// Everything a server's credential slot held at one moment, so pairing
+    /// can put it back exactly when a later commit fails. The four states
+    /// mirror `AccountSessionPersistence.State` plus the never-adopted legacy
+    /// per-token slots, which are not a canonical record but are still the
+    /// user's session and must not be tombstoned by a rollback.
+    enum AccountSessionSnapshot: Equatable, Sendable {
+        case session(CanonicalAccountSession)
+        case legacy(accessToken: String?, refreshToken: String?, epoch: String?)
+        case signedOut
+        /// The slot could not be read. Restoring it fails closed.
+        case unreadable
     }
 
-    /// Reinstates `snapshot` as the canonical session for `serverID`, or
-    /// tombstones the server when there was none. The active server's caches
-    /// are reset so the next read reflects the restored record.
+    func accountSessionSnapshot(for serverID: String) -> AccountSessionSnapshot {
+        guard !serverID.isEmpty else { return .unreadable }
+        do {
+            switch try sessions.load(serverID) {
+            case .session(let value): return .session(value)
+            case .signedOut: return .signedOut
+            case .legacy:
+                return .legacy(accessToken: accountKeychain.get(Self.accessTokenKey(for: serverID)),
+                    refreshToken: accountKeychain.get(Self.refreshTokenKey(for: serverID)),
+                    epoch: accountKeychain.get(Self.accountEpochKey(for: serverID)))
+            }
+        } catch {
+            return .unreadable
+        }
+    }
+
+    /// Reinstates `snapshot` for `serverID`. When the restore cannot be made
+    /// durable the server is blocked for this process (fail closed) and
+    /// `false` is returned; the caller must not report the previous state as
+    /// retained.
     @discardableResult
-    func restoreAccountSession(_ snapshot: CanonicalAccountSession?, for serverID: String) -> Bool {
+    func restoreAccountSession(_ snapshot: AccountSessionSnapshot, for serverID: String) -> Bool {
         guard !serverID.isEmpty else { return false }
         let durable: Bool
-        if let snapshot {
-            durable = (try? sessions.save(snapshot, serverID: serverID)) != nil
+        switch snapshot {
+        case .session(let value):
+            durable = (try? sessions.save(value, serverID: serverID)) != nil
             if durable {
-                // `load` only returns `.session` for a record with both
-                // tokens, so a snapshot always carries them.
-                if let access = snapshot.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
-                if let refresh = snapshot.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
-                if let epoch = snapshot.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
+                if let access = value.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
+                if let refresh = value.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
+                if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
             }
-        } else {
-            durable = deleteTokens(for: serverID)
+        case .legacy(let access, let refresh, let epoch):
+            durable = sessions.forget(serverID)
+            if durable {
+                func put(_ value: String?, _ key: String) {
+                    if let value { accountKeychain.set(value, for: key) } else { accountKeychain.delete(key) }
+                }
+                put(access, Self.accessTokenKey(for: serverID))
+                put(refresh, Self.refreshTokenKey(for: serverID))
+                put(epoch, Self.accountEpochKey(for: serverID))
+            }
+        case .signedOut:
+            durable = sessions.invalidate(serverID)
+            if durable {
+                accountKeychain.delete(Self.accessTokenKey(for: serverID))
+                accountKeychain.delete(Self.refreshTokenKey(for: serverID))
+                accountKeychain.delete(Self.accountEpochKey(for: serverID))
+            }
+        case .unreadable:
+            durable = false
         }
         if durable {
             runtimeBlockedServers.remove(serverID)
-            if serverID == activeServerId {
-                persistentCredentialGenerationID = UUID()
-                loadedForServerId = nil
-                ensureLoaded()
-                mirrorActiveTokensForExtension()
-            }
         } else {
             recordSessionEvent(phase: "sessionRestore", outcome: "failed", reason: "persistenceUnavailable")
+            runtimeBlockedServers.insert(serverID)
+        }
+        if serverID == activeServerId {
+            persistentCredentialGenerationID = UUID()
+            canonicalSession = nil
+            cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
+            loadedForServerId = nil
+            ensureLoaded()
+            mirrorActiveTokensForExtension()
         }
         return durable
     }

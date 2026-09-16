@@ -223,31 +223,56 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let cleared = await store.getAccessToken()
         XCTAssertNil(cleared)
     }
-    func testSessionSnapshotRestoresThePreviousRecordOrTombstonesTheSlot() async throws {
+    func testSessionSnapshotRestoresEachSlotStateExactly() async throws {
         let (store, keys, defaults, memory) = try await harness()
-        try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")
-        let snapshot = await store.accountSessionSnapshot(for: "server")
-        XCTAssertEqual(snapshot?.accessToken, "one")
 
+        // A canonical session comes back as it was, and survives a relaunch.
+        try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")
+        let session = await store.accountSessionSnapshot(for: "server")
+        guard case .session(let value) = session else { return XCTFail("expected a session snapshot") }
+        XCTAssertEqual(value.accessToken, "one")
         try await store.installAccountSession(accessToken: "two", refreshToken: "refresh-two", accountID: "34")
-        let restored = await store.restoreAccountSession(snapshot, for: "server")
+        let restored = await store.restoreAccountSession(session, for: "server")
         XCTAssertTrue(restored)
         let active = await store.getAccessToken()
-        XCTAssertEqual(active, "one", "the previous record is live again for the active server")
-        let next = await restarted(keys, defaults, memory)
-        let relaunched = await next.getAccessToken()
+        XCTAssertEqual(active, "one")
+        let relaunched = await restarted(keys, defaults, memory).getAccessToken()
         XCTAssertEqual(relaunched, "one")
 
-        // No previous record: the slot is tombstoned rather than left with the
+        // A signed-out slot is tombstoned again rather than left with the
         // replacement credentials.
-        let none = await store.accountSessionSnapshot(for: "fresh")
-        XCTAssertNil(none)
-        let expectation = await store.captureAccountInstallationExpectation()
-        try await store.installAccountSessionForServer(serverID: "fresh", origin: "https://fresh.example",
-            accessToken: "new", refreshToken: "new-refresh", accountID: "56", expected: expectation)
-        let tombstoned = await store.restoreAccountSession(nil, for: "fresh")
+        _ = await store.clearTokens()
+        let signedOut = await store.accountSessionSnapshot(for: "server")
+        XCTAssertEqual(signedOut, .signedOut)
+        try await store.installAccountSession(accessToken: "three", refreshToken: "refresh-three", accountID: "56")
+        let tombstoned = await store.restoreAccountSession(signedOut, for: "server")
         XCTAssertTrue(tombstoned)
-        guard case .signedOut = try memory.persistence.load("fresh") else { return XCTFail("expected a tombstone") }
+        guard case .signedOut = try memory.persistence.load("server") else { return XCTFail("expected a tombstone") }
+        let afterTombstone = await store.getAccessToken()
+        XCTAssertNil(afterTombstone)
+
+        // Legacy per-token slots are put back and the adoption is undone, so
+        // the previous account is neither tombstoned nor replaced.
+        let (legacyStore, legacyKeys, legacyDefaults, legacyMemory) = try await harness()
+        legacyKeys.withAudience(.userIndependent).set("legacy-access", for: TokenStore.accessTokenKey(for: "server"))
+        legacyKeys.withAudience(.userIndependent).set("legacy-refresh", for: TokenStore.refreshTokenKey(for: "server"))
+        let legacy = await legacyStore.accountSessionSnapshot(for: "server")
+        XCTAssertEqual(legacy, .legacy(accessToken: "legacy-access", refreshToken: "legacy-refresh", epoch: nil))
+        try await legacyStore.installAccountSession(accessToken: "paired", refreshToken: "paired-refresh", accountID: "78")
+        let unadopted = await legacyStore.restoreAccountSession(legacy, for: "server")
+        XCTAssertTrue(unadopted)
+        guard case .legacy = try legacyMemory.persistence.load("server") else { return XCTFail("expected the slot to be un-adopted") }
+        let legacyBack = await restarted(legacyKeys, legacyDefaults, legacyMemory).getAccessToken()
+        XCTAssertEqual(legacyBack, "legacy-access")
+
+        // A restore that cannot persist blocks the server instead of
+        // claiming the previous state is back.
+        legacyMemory.failRecordWrites = true
+        legacyMemory.failRemoval = true
+        let failed = await legacyStore.restoreAccountSession(session, for: "server")
+        XCTAssertFalse(failed)
+        let blocked = await legacyStore.getAccessToken()
+        XCTAssertNil(blocked)
     }
 
     func testTemporaryCredentialsCannotReplaceDurableBinding() async throws {

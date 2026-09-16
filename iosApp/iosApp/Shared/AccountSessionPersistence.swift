@@ -65,6 +65,16 @@ struct AccountSessionPersistence: Sendable {
         }
     }
 
+    /// Removes both the record and the adoption marker, returning the slot to
+    /// the never-adopted state. Only pairing rollback uses this, to undo an
+    /// adoption that a failed commit should never have made.
+    func forget(_ serverID: String) -> Bool {
+        guard !serverID.isEmpty else { return false }
+        let recordRemoved = remove(Self.recordKey(serverID))
+        let markerRemoved = remove(Self.markerKey(serverID))
+        return recordRemoved && markerRemoved
+    }
+
     /// A durable marker plus absent record is also a signed-out state. If neither
     /// tombstone nor removal can persist, callers must report durable sign-out failure.
     func invalidate(_ serverID: String) -> Bool {
