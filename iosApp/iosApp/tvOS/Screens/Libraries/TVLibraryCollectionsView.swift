@@ -22,7 +22,6 @@ struct TVLibraryCollectionsView: View {
     @State private var hasPendingFocusClaim = false
     @State private var lastShellFocusRequest = 0
     @State private var contentFocusToken = 0
-    @FocusState private var isEmptyContentFocused: Bool
 
     @Environment(AppRouter.self) private var router
     @Namespace private var collectionsFocusNamespace
@@ -147,22 +146,12 @@ struct TVLibraryCollectionsView: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 400)
-        .contentShape(Rectangle())
-        .focusable(true)
-        .focused($isEmptyContentFocused)
-        .focusEffectDisabled()
-        .accessibilityLabel(isLoadingCollections ? "Loading collections" : "No collections yet")
-        .onMoveCommand { direction in
-            if direction == .up {
-                onMoveUp?()
-            }
-        }
-        .task(id: focusRequest) {
-            guard !isTopMenuFocused else { return }
-            await Task.yield()
-            guard collectionSections.isEmpty, !isTopMenuFocused else { return }
-            isEmptyContentFocused = true
-        }
+        .tvPageFocusOwner(
+            focusRequest: focusRequest,
+            isTopMenuFocused: isTopMenuFocused,
+            accessibilityLabel: isLoadingCollections ? "Loading collections" : "No collections yet",
+            onMoveUp: onMoveUp
+        )
     }
 
     // MARK: - Focus hand-down

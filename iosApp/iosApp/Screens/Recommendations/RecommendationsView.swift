@@ -131,11 +131,24 @@ struct RecommendationsView: View {
             )
         } else if viewModel.isLoading {
             Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .tvPageFocusOwner(
+                    focusRequest: focusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: "Loading recommendations",
+                    onMoveUp: onTopMenuFocusRequest
+                )
         } else {
             EmptyStateView(
                 icon: "sparkles.tv",
                 title: "No recommendations yet",
                 subtitle: "Watch or rate a few titles to build your personalised recommendations."
+            )
+            .tvPageFocusOwner(
+                focusRequest: focusRequest,
+                isTopMenuFocused: isTopMenuFocused,
+                accessibilityLabel: "No recommendations yet",
+                onMoveUp: onTopMenuFocusRequest
             )
         }
     }

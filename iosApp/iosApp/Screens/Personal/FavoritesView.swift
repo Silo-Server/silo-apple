@@ -283,12 +283,15 @@ struct FavoritesView: View {
             } else if let error {
                 ErrorView(state: error, onRetry: { Task { await loadFavorites() } })
             } else if isLoading {
-                // tvOS: this is a pushed destination, so the top menu bar
-                // isn't there to hold focus — without a focusable element
-                // the remote goes dead until the grid renders.
                 Color.clear
                 #if os(tvOS)
-                    .focusable()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .tvPageFocusOwner(
+                        focusRequest: focusRequest,
+                        isTopMenuFocused: isTopMenuFocused,
+                        accessibilityLabel: "Loading favorites",
+                        onMoveUp: onTopMenuFocusRequest
+                    )
                 #endif
             } else {
                 EmptyStateView(
@@ -296,6 +299,14 @@ struct FavoritesView: View {
                     title: "No favorites",
                     subtitle: "Tap the heart icon on any item to add it here"
                 )
+                #if os(tvOS)
+                .tvPageFocusOwner(
+                    focusRequest: focusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: "No favorites",
+                    onMoveUp: onTopMenuFocusRequest
+                )
+                #endif
             }
         }
         .siloPageBackground()

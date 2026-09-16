@@ -306,7 +306,10 @@ struct TVMainTabView: View {
                 Task { await loadLibraries(for: authority) }
             }
         }
-        .tvFocusWatchdog(isActive: focusWatchdogIsActive, onRepair: repairLostFocus)
+        .tvFocusWatchdog(
+            isActive: focusWatchdogIsActive,
+            onRepair: { attempt in repairLostFocus(attempt: attempt) }
+        )
     }
 
     /// The watchdog's reading is only actionable while this shell's focus graph
@@ -323,20 +326,32 @@ struct TVMainTabView: View {
     }
 
     /// One nudge per detected focus outage (docs/tvos-focus.md: do not fight
-    /// the engine). At root the shell owns the hand-down, so clear the bar's
-    /// stale focus state and re-arm content entry focus — the same path a tab
-    /// selection uses. On a pushed route the shell owns no focus target, so ask
-    /// the engine to re-resolve from the window instead of pinning one.
+    /// the engine), escalating from the page to the top menu when the first
+    /// nudge fails — see `tvFocusRepairAction`.
     ///
     /// `rootContent` blocks hit testing while a panel is open, so an open panel
-    /// has to come down first or the content focus hand-down lands on nothing.
-    private func repairLostFocus() {
+    /// has to come down first or either hand-down lands on nothing.
+    private func repairLostFocus(attempt: Int) {
+        // Drop the bar's stale @FocusState first. While it holds a non-nil
+        // value, the bar's own focus claim is a no-op write and nothing moves.
         topMenuFocusResetRequest += 1
-        if router.path.isEmpty {
+
+        switch tvFocusRepairAction(attempt: attempt, isShowingRoot: router.path.isEmpty) {
+        case .contentHandoff:
             closePanelForContentHandoff()
             suppressTopMenuFocusForContentHandoff()
             contentFocusRequest += 1
-        } else {
+        case .topMenu:
+            closePanelForContentHandoff()
+            // Stay suppressed across the reset above: while the bar is
+            // enabled, its nil-focus path hands focus back to content and
+            // would undo this repair before it lands. Un-suppress and claim a
+            // turn later, once the reset has committed.
+            suppressTopMenuFocusForContentHandoff()
+            DispatchQueue.main.async {
+                focusTopMenuIfVisible()
+            }
+        case .engineReresolve:
             TVFocusSystemProbe.requestFocusUpdate()
         }
     }
@@ -442,6 +457,12 @@ struct TVMainTabView: View {
                     subtitle: "This pinned library is no longer visible to the active profile."
                 )
                 .padding(.top, TVTopMenuLayout.contentTopInset)
+                .tvPageFocusOwner(
+                    focusRequest: contentFocusRequest,
+                    isTopMenuFocused: menuOwnsFocus,
+                    accessibilityLabel: "Library unavailable",
+                    onMoveUp: { focusTopMenuIfVisible() }
+                )
             }
         case .calendar:
             CalendarView(

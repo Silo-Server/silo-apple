@@ -97,6 +97,26 @@ bar.focusedItem -> Calendar
 When this happens, stop adding press interceptors. Decide which focus model the
 control should use, then remove the other one.
 
+## Every Page Needs a Focus Owner
+
+A page that renders no focusable view leaves the focus engine with nothing
+focused. The remote stops responding, and Menu/Back never reaches the shell's
+`onExitCommand` either, because exit commands travel up the *focused* responder
+chain. The page reads as hard-frozen and force quit is the only way out. The
+top bar cannot save it: the shell disables the bar while it hands focus to
+content, so a disabled bar and a placeholder page leave zero focus targets in
+the window.
+
+Empty states, error states, and loading skeletons are the usual offenders —
+they are inert by nature, so it is easy to ship one that is the whole content
+of a page. Apply `tvPageFocusOwner` to any placeholder that can be a page's
+entire content. It makes the placeholder a real focus target, routes Up back to
+the top menu, and seeds itself from the shell's content hand-down token.
+
+`TVFocusWatchdogModifier` is the backstop, not the fix. Its first repair re-arms
+page content, which cannot land on a page with no focus target, so a repeated
+outage at the root escalates to the top menu (`tvFocusRepairAction`).
+
 ## Settings Pane Navigation
 
 Settings uses two native focus sections. Right from a category enters its

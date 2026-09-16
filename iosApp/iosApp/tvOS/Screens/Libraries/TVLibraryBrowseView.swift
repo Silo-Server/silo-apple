@@ -41,6 +41,12 @@ struct TVLibraryBrowseView: View {
         Group {
             if isLoadingSections && sections.isEmpty {
                 TVLibraryBrowseLoadingView(libraryName: library.name)
+                    .tvPageFocusOwner(
+                        focusRequest: focusRequest,
+                        isTopMenuFocused: isTopMenuFocused,
+                        accessibilityLabel: "Loading \(library.name)",
+                        onMoveUp: onMoveUp
+                    )
             } else if let error = sectionsError, sections.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadContent() } })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -74,6 +80,12 @@ struct TVLibraryBrowseView: View {
             subtitle: "Add media to this library on the server to see it here."
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tvPageFocusOwner(
+            focusRequest: focusRequest,
+            isTopMenuFocused: isTopMenuFocused,
+            accessibilityLabel: "\(library.name) is empty",
+            onMoveUp: onMoveUp
+        )
     }
 
     private var emptyLibraryIcon: String {
@@ -135,9 +147,10 @@ private struct TVLibraryBrowseLoadingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .allowsHitTesting(false)
+        // No `allowsHitTesting(false)`: the caller makes this skeleton the
+        // page's focus owner while sections load, and an empty hit-test
+        // region would leave the focus engine with nothing to focus.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Loading \(libraryName)")
     }
 
     private var marqueePlaceholder: some View {
