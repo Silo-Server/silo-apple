@@ -93,13 +93,16 @@ enum CacheKey {
     static let userLibraries = "user:libraries"
 
     static func itemDetail(_ contentId: String, libraryId: Int? = nil) -> String {
-        "item:\(contentId)" + (libraryId.map { ":library:\($0)" } ?? "")
+        // Opaque IDs may contain our delimiter or literal escape sequences.
+        let encodedId = contentId.replacingOccurrences(of: "%", with: "%25")
+            .replacingOccurrences(of: ":", with: "%3A")
+        return "item:\(encodedId)" + (libraryId.map { ":library:\($0)" } ?? "")
     }
     static func itemSeasons(_ seriesId: String, libraryId: Int? = nil) -> String { "\(itemDetail(seriesId, libraryId: libraryId)):seasons" }
     static func itemEpisodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) -> String {
         "\(itemDetail(seriesId, libraryId: libraryId)):season:\(seasonNumber):episodes"
     }
-    static func itemUserState(_ contentId: String) -> String { "item:\(contentId):userState" }
+    static func itemUserState(_ contentId: String) -> String { "\(itemDetail(contentId)):userState" }
     static func itemWatchDetail(_ contentId: String, libraryId: Int? = nil) -> String { "\(itemDetail(contentId, libraryId: libraryId)):watchDetail" }
     /// Browse grid page-1 cache, keyed by the full filter/sort state so
     /// distinct filter combinations never collide (the old genre+sort-only
@@ -118,7 +121,7 @@ enum CacheKey {
         "tvlibrary:\(libraryId):\(filterKey)"
     }
     static func collectionItems(_ collectionId: String) -> String { "collection:\(collectionId):items" }
-    static func similar(_ contentId: String) -> String { "item:\(contentId):similar" }
+    static func similar(_ contentId: String) -> String { "\(itemDetail(contentId)):similar" }
     static func calendarWeek(_ weekStart: String, filter: String) -> String {
         "calendar:\(weekStart):\(filter)"
     }

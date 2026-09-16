@@ -109,6 +109,39 @@ final class LibraryDetailScopeTests: XCTestCase {
     }
 
     @MainActor
+    func testOpaqueIDsCannotCollideWithScopeOrHierarchySuffixes() {
+        let cache = ResponseCache.shared
+        let id = UUID().uuidString
+        let distinctKeys = [
+            CacheKey.itemDetail(id, libraryId: 7),
+            CacheKey.itemDetail(id + ":library:7"),
+            CacheKey.itemDetail(id + "%3Alibrary%3A7"),
+            CacheKey.itemDetail(id + ":seasons"),
+            CacheKey.itemSeasons(id),
+            CacheKey.itemDetail(id + ":userState"),
+            CacheKey.itemUserState(id),
+            CacheKey.itemDetail(id + ":similar"),
+            CacheKey.similar(id),
+        ]
+        XCTAssertEqual(Set(distinctKeys).count, distinctKeys.count)
+        defer { for key in distinctKeys { cache.remove(key) } }
+        for (index, key) in distinctKeys.enumerated() { cache.set(index, for: key) }
+        for (index, key) in distinctKeys.enumerated() {
+            let value: Int? = cache.get(key)
+            XCTAssertEqual(value, index)
+        }
+        cache.removeItemMetadata(contentId: id)
+        for index in [1, 2, 3, 5, 7] {
+            let value: Int? = cache.get(distinctKeys[index])
+            XCTAssertEqual(value, index, "Invalidation must preserve another opaque item")
+        }
+        for index in [0, 4, 6, 8] {
+            let value: Int? = cache.get(distinctKeys[index])
+            XCTAssertNil(value)
+        }
+    }
+
+    @MainActor
     func testAutoplayHierarchyReadsRetainTheCurrentLibrary() async throws {
         let stub = APIv2TestStub()
         let (api, _) = try await client(stub: stub)
