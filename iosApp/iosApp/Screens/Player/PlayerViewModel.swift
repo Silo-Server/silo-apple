@@ -715,6 +715,9 @@ class PlayerViewModel {
     /// the menu until the next replan. Rows are unioned in, de-duped against
     /// the plan, and dropped once the server publishes the same ordinal.
     private var locallyRegisteredSidecarSubtitleTracks: [PlayerTrack] = []
+    /// Local rendering can change without replacing the video plan. Retain
+    /// the choice through inventory updates and same-session video reloads.
+    private var localProtocolV3SubtitleSelection: ProtocolV3SubtitleSelection?
     /// Server-supplied preferred track indices (ffmpeg stream indices). Kept
     /// until we've observed a matching track in the core's track-list and
     /// applied it, or until the user makes a manual selection.
@@ -1429,6 +1432,7 @@ class PlayerViewModel {
         guard activePreparedProtocolV3 != nil,
               let epoch = activeAetherLoadEpoch else { return }
         committedProtocolV3LoadEpoch = epoch
+        restoreLocalProtocolV3SubtitleSelection()
         completeProtocolV3FirstFrameIfCommitted(epoch)
     }
 
@@ -1936,6 +1940,7 @@ class PlayerViewModel {
             let priorWatchDetail = self.currentWatchDetail
             let priorSelectedVersion = self.currentSelectedVersion
             let priorPreparedProtocolV3 = self.activePreparedProtocolV3
+            let priorLocalSubtitleSelection = self.localProtocolV3SubtitleSelection
             let priorLastLoadRequest = self.lastLoadRequest
             let priorPendingAudioFfIndex = self.pendingAudioFfIndex
             let priorPendingSubtitleFfIndex = self.pendingSubtitleFfIndex
@@ -2021,6 +2026,14 @@ class PlayerViewModel {
                 self.currentWatchDetail = prepared.watchDetail
                 self.currentSelectedVersion = prepared.selectedVersion
                 self.activePreparedProtocolV3 = prepared.protocolV3
+                if targetsSubtitle || classification == "subtitle_track_changed" {
+                    self.localProtocolV3SubtitleSelection = nil
+                } else if priorPreparedProtocolV3?.plan.effectiveMediaFileId != prepared.protocolV3?.plan.effectiveMediaFileId,
+                          case .track? = self.localProtocolV3SubtitleSelection {
+                    // A non-seek replan can choose another edition. The server
+                    // remaps the requested track onto that edition's inventory.
+                    self.localProtocolV3SubtitleSelection = nil
+                }
                 self.adoptProtocolV3RenewalIntent(from: prepared)
                 switch Self.protocolV3SidecarRestoreIntent(
                     snapshot: selectedSubtitleSnapshot,
@@ -2098,6 +2111,7 @@ class PlayerViewModel {
                     self.currentWatchDetail = priorWatchDetail
                     self.currentSelectedVersion = priorSelectedVersion
                     self.activePreparedProtocolV3 = priorPreparedProtocolV3
+                    self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
                     self.lastLoadRequest = priorLastLoadRequest
                     self.pendingAudioFfIndex = priorPendingAudioFfIndex
                     self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
@@ -2141,6 +2155,7 @@ class PlayerViewModel {
                     self.currentWatchDetail = priorWatchDetail
                     self.currentSelectedVersion = priorSelectedVersion
                     self.activePreparedProtocolV3 = priorPreparedProtocolV3
+                    self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
                     self.lastLoadRequest = priorLastLoadRequest
                     self.pendingAudioFfIndex = priorPendingAudioFfIndex
                     self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
@@ -3066,7 +3081,8 @@ class PlayerViewModel {
         let planSubtitleTracks = activePreparedProtocolV3.map { prepared in
             ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
                 plan: prepared.plan,
-                version: currentSelectedVersion
+                version: currentSelectedVersion,
+                localSelection: localProtocolV3SubtitleSelection
             )
         }
         // …but a sidecar this session registered itself (a finished AI job or
@@ -3098,7 +3114,8 @@ class PlayerViewModel {
             locallyRegisteredSidecarSubtitleTracks.contains { $0.trackId == id }
                 && planSubtitleTracks?.contains { $0.trackId == id } != true
         } ?? false
-        if selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) != true,
+        if localProtocolV3SubtitleSelection == nil,
+           selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) != true,
            !holdsLocalSidecarSelection {
             if activePreparedProtocolV3 != nil {
                 selectedSubtitleId = publishedSubtitleTracks
@@ -3137,11 +3154,13 @@ class PlayerViewModel {
             }
         }
 
-        applyPendingSubtitleSelections(
-            aetherSubtitleTracks: aetherSubtitleTracks,
-            publishedSubtitleTracks: publishedSubtitleTracks,
-            loadIsEstablished: loadIsEstablished
-        )
+        if !restoreLocalProtocolV3SubtitleSelection() {
+            applyPendingSubtitleSelections(
+                aetherSubtitleTracks: aetherSubtitleTracks,
+                publishedSubtitleTracks: publishedSubtitleTracks,
+                loadIsEstablished: loadIsEstablished
+            )
+        }
         applyAutoSubtitlePreferencesIfNeeded()
     }
 
@@ -3726,6 +3745,7 @@ class PlayerViewModel {
         playbackStats = .empty
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
+        localProtocolV3SubtitleSelection = nil
         pendingServerRenderedSubtitleTrackId = nil
         // Subtitle `-1` is the explicit "Off" sentinel; Aether inventory
         // adoption disables subtitles when it sees a negative value.
@@ -5374,6 +5394,11 @@ class PlayerViewModel {
         )
         if activePreparedProtocolV3 != nil,
            !SubtitleTrackIdSpace.isAILive(track.trackId) {
+            if applyLocalProtocolV3SubtitleSelection(track, reason: "user_selection") {
+                persistSubtitleSelection(track)
+                scheduleHideControls()
+                return
+            }
             let trackTarget = queuedTrackTarget(forSubtitle: track)
             if case .subtitle(_, let combinedIndex) = trackTarget {
                 cmpLog(
@@ -5419,6 +5444,7 @@ class PlayerViewModel {
             scheduleHideControls()
             return
         }
+        localProtocolV3SubtitleSelection = nil
         persistSubtitleSelection(track)
         applySubtitleTrackSelection(track.trackId, reason: "user_selection")
         scheduleHideControls()
@@ -5442,6 +5468,11 @@ class PlayerViewModel {
         selectedSubtitleId = nil
         Self.logger.info("[CMP-SUB] disable primary subtitles")
         if activePreparedProtocolV3 != nil {
+            if applyLocalProtocolV3SubtitleSelection(nil, reason: "user_selection") {
+                persistSubtitleSelection(nil)
+                scheduleHideControls()
+                return
+            }
             // The replan is what actually clears the track, so nothing is
             // persisted or recorded until one is under way.
             guard attemptProtocolV3Replan(
@@ -6204,6 +6235,7 @@ class PlayerViewModel {
         autoSkipIntroCancelledKey = nil
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
+        localProtocolV3SubtitleSelection = nil
         subtitleAI.reset()
         deferredLiveSubtitleCloseTask?.cancel()
         deferredLiveSubtitleCloseTask = nil
@@ -6908,7 +6940,7 @@ class PlayerViewModel {
             aetherPlaybackController.selectSecondarySubtitleTrack(id: nil)
             return
         }
-        registerSecondarySubtitleWithAetherIfNeeded(track)
+        registerProtocolV3SubtitleWithAetherIfNeeded(track)
         // Only a track Aether actually holds can be rendered as the secondary
         // one. Under V3 the plan mounts a single artifact, so an inventory row
         // that could not be registered above has no engine id at all — showing
@@ -6925,13 +6957,20 @@ class PlayerViewModel {
         aetherPlaybackController.selectSecondarySubtitleTrack(id: trackId)
     }
 
-    /// Mounts a V3 inventory sidecar on demand so it can be used as the
-    /// secondary subtitle.
-    ///
-    /// The plan declares exactly one artifact, which is the primary. Every
-    /// other picker row is server metadata the engine has never seen, so a
-    /// dual-subtitle pick has to register its URL before it can be selected.
-    private func registerSecondarySubtitleWithAetherIfNeeded(_ track: PlayerTrack) {
+    private func registerProtocolV3EmbeddedSubtitleIfAvailable(_ track: PlayerTrack, plan: PlaybackV3Plan) -> Bool {
+        guard let selection = ProtocolV3SubtitleSelection(track: track, plan: plan),
+              let streamIndex = selection.embeddedStreamIndex(for: track, in: plan),
+              let codec = track.codec else { return false }
+        return aetherPlaybackController.registerEmbeddedSubtitleTrack(
+            streamIndex: streamIndex, codec: codec, appTrackID: track.trackId
+        )
+    }
+
+    /// Prefer the open original file's embedded stream. Download an inventory
+    /// sidecar only when the current video source cannot supply that track.
+    private func registerProtocolV3SubtitleWithAetherIfNeeded(_ track: PlayerTrack) {
+        if let plan = activePreparedProtocolV3?.plan,
+           registerProtocolV3EmbeddedSubtitleIfAvailable(track, plan: plan) { return }
         guard !aetherPlaybackController.containsSubtitle(appTrackID: track.trackId),
               let url = protocolV3InventorySidecarURL(for: track) else {
             return
@@ -6945,11 +6984,94 @@ class PlayerViewModel {
                 isHearingImpaired: track.isHearingImpaired,
                 isDefault: track.isDefault,
                 httpHeaders: aetherSubtitleRequestHeaders(for: url),
-                formatHint: track.codec,
+                formatHint: ["vtt", "ass", "ssa", "srt", "sup"].contains(url.pathExtension.lowercased())
+                    ? url.pathExtension.lowercased() : track.codec,
                 nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
             ),
-            appTrackID: track.trackId
+            appTrackID: track.trackId,
+            fontRequest: activePreparedProtocolV3?.plan.subtitle.inventory
+                .first(where: { $0.combinedIndex == track.srcId })?
+                .fontBundleUrl.flatMap { resolveServerUrl($0, serverUrl: resolvedServerUrl) }
+                .map { url in
+                    var request = URLRequest(url: url)
+                    request.allHTTPHeaderFields = aetherSubtitleRequestHeaders(for: url)
+                    return request
+                }
         )
+    }
+
+    private func applyLocalProtocolV3SubtitleSelection(_ track: PlayerTrack?, reason: String) -> Bool {
+        guard let plan = activePreparedProtocolV3?.plan,
+              protocolV3ReplanTask == nil, isAetherLoadEstablished,
+              let selection = ProtocolV3SubtitleSelection(track: track, plan: plan) else { return false }
+        let isMounted = track.map {
+            registerProtocolV3EmbeddedSubtitleIfAvailable($0, plan: plan)
+                || aetherPlaybackController.containsSubtitle(appTrackID: $0.trackId)
+        } ?? false
+        guard selection.canApplyLocally(to: plan, isMounted: isMounted) else { return false }
+        let priorSelection = localProtocolV3SubtitleSelection
+        localProtocolV3SubtitleSelection = selection
+        selectedSubtitleId = track?.trackId
+        pendingSubtitleFfIndex = nil
+        pendingSidecarSubtitleTrackId = nil
+        pendingServerRenderedSubtitleTrackId = nil
+        if let track {
+            registerProtocolV3SubtitleWithAetherIfNeeded(track)
+            guard aetherPlaybackController.containsSubtitle(appTrackID: track.trackId) else {
+                localProtocolV3SubtitleSelection = priorSelection
+                return false
+            }
+        }
+        let engineID = track.flatMap { aetherPlaybackController.aetherSubtitleID(forAppID: $0.trackId) }
+        if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
+            applySubtitleTrackSelection(track?.trackId, reason: reason)
+        }
+        return true
+    }
+
+    /// Inventory is also published when an unrelated audio/transport property
+    /// changes. It must not restore the subtitle the old video plan selected.
+    /// After a video reload, register the current session's URL before applying
+    /// the saved renderer choice again.
+    @discardableResult
+    private func restoreLocalProtocolV3SubtitleSelection() -> Bool {
+        guard let selection = localProtocolV3SubtitleSelection,
+              let plan = activePreparedProtocolV3?.plan else { return false }
+        let trackID = selection.appTrackID(in: plan)
+        if case .track = selection, trackID == nil {
+            localProtocolV3SubtitleSelection = nil
+            return false
+        }
+        selectedSubtitleId = trackID
+        pendingSubtitleFfIndex = nil
+        pendingSidecarSubtitleTrackId = nil
+        pendingServerRenderedSubtitleTrackId = nil
+        guard isAetherLoadEstablished else { return true }
+        let isBurnedIn = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.burnIn
+        if isBurnedIn {
+            if trackID != nil, plan.selectedSubtitleCombinedIndex == selection.inventoryItem(in: plan)?.combinedIndex {
+                localProtocolV3SubtitleSelection = nil
+                return true
+            }
+        } else if let trackID, let track = subtitleTracks.first(where: { $0.trackId == trackID }) {
+            registerProtocolV3SubtitleWithAetherIfNeeded(track)
+        }
+        let engineID = trackID.flatMap { aetherPlaybackController.aetherSubtitleID(forAppID: $0) }
+        if !isBurnedIn, trackID == nil || engineID != nil {
+            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
+                applySubtitleTrackSelection(trackID, reason: "restored_local_selection")
+            }
+        } else if committedProtocolV3LoadEpoch != nil {
+            // A later route may need burn-in or lack the old sidecar. Let the
+            // server resolve that choice before declaring it rendered locally.
+            attemptProtocolV3Replan(
+                position: currentTime, classification: "subtitle_track_changed",
+                message: "Applying the subtitle choice after a video route change.",
+                requeueWhenBusy: true,
+                trackTarget: .subtitle(trackId: trackID, combinedIndex: selection.inventoryItem(in: plan)?.combinedIndex)
+            )
+        }
+        return true
     }
 
     /// Resolved sidecar URL the active plan publishes for this picker row, or
@@ -7318,10 +7440,10 @@ class PlayerViewModel {
         }
     }
 
-    /// System/server caption policy changes are protocol intent on V3. The
-    /// server must mint the replacement plan; mutating only the local player
-    /// would make selected_tracks and later recovery disagree with the UI.
+    /// Caption policy uses the same local renderer path as an explicit pick.
+    /// Burn-in and unavailable artifacts still require a server plan.
     private func replanAutomaticProtocolV3SubtitleSelection(_ track: PlayerTrack?) -> Bool {
+        if applyLocalProtocolV3SubtitleSelection(track, reason: "auto_preference") { return true }
         guard let activePreparedProtocolV3,
               let version = currentSelectedVersion,
               protocolV3ReplanTask == nil,

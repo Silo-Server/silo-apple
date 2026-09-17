@@ -152,8 +152,8 @@ enum ApplePlaybackV3Capabilities {
         let videoCodecs = AppleDecodeCapabilities.streamingVideoCodecs(for: videoCapabilityMode)
         let hardwareVideoCodecs = AppleDecodeCapabilities.hardwareVideoCodecs
 
-        // Aether owns demux/decode on original HTTP. On Apple TV 4K this is a
-        // build declaration, not a prediction about the exact source: Aether's
+        // Aether owns demux/decode on original HTTP. On iOS and Apple TV 4K
+        // the capability snapshot declares the pinned build: Aether's
         // load-time probe chooses native or software decode and a typed load
         // failure enters the existing bounded V3 replan path. The narrower
         // packaged delivery lists below still describe what the server may

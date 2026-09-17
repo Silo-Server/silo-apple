@@ -210,16 +210,21 @@ enum ApplePlaybackV3PlanAdapter {
     /// index; the combined ordinal alone cannot stand in for it.
     static func subtitlePickerTracks(
         plan: PlaybackV3Plan,
-        version: FileVersion? = nil
+        version: FileVersion? = nil,
+        localSelection: ProtocolV3SubtitleSelection? = nil
     ) -> [PlayerTrack] {
         // A selected row and a rendered row are different questions: `off`
         // means nothing is selected no matter what the plan still names.
-        let selectedIndex = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
-            ? nil
-            : plan.selectedSubtitleCombinedIndex
+        let selectedIndex: Int?
+        if let localSelection {
+            selectedIndex = localSelection.inventoryItem(in: plan)?.combinedIndex
+        } else {
+            selectedIndex = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+                ? nil : plan.selectedSubtitleCombinedIndex
+        }
         return plan.subtitle.inventory.compactMap { item in
             guard item.combinedIndex >= 0 else { return nil }
-            let ffIndex: Int? = item.combinedIndex == selectedIndex && plan.subtitle.embedded != nil
+            let ffIndex: Int? = item.combinedIndex == plan.selectedSubtitleCombinedIndex && plan.subtitle.embedded != nil
                 ? plan.subtitle.embedded?.streamIndex
                 : item.source == "embedded"
                 ? version.flatMap {

@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// A single, shell-level buffering indicator shared by every player surface.
+/// Keep brief loads quiet; show feedback only for a sustained video stall.
 struct PlayerBufferingCapsule: View {
-    var label: LocalizedStringKey = "Loading…"
+    @State private var isVisible = false
 
     var body: some View {
         HStack(spacing: spacing) {
@@ -11,7 +11,7 @@ struct PlayerBufferingCapsule: View {
                 .progressViewStyle(.circular)
                 .scaleEffect(spinnerScale)
 
-            Text(label)
+            Text("Loading…")
                 .font(.siloSmall.weight(.medium))
                 .foregroundStyle(.white.opacity(0.82))
         }
@@ -24,8 +24,17 @@ struct PlayerBufferingCapsule: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .allowsHitTesting(false)
         .transition(.opacity)
+        .opacity(isVisible ? 1 : 0)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(label)
+        .accessibilityLabel("Loading…")
+        .accessibilityHidden(!isVisible)
+        .task {
+            isVisible = false
+            try? await Task.sleep(for: .milliseconds(1_500))
+            // Resuming playback removes this view and cancels the delay.
+            guard !Task.isCancelled else { return }
+            isVisible = true
+        }
     }
 
     private var spacing: CGFloat {

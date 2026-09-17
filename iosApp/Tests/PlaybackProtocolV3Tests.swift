@@ -131,6 +131,105 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             selectedTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)))
     }
 
+    func testSubtitleSwitchCanUseSidecarWithoutReplacingAnyVideoDelivery() throws {
+        for delivery in ["original_http", "server_remux_progressive", "server_remux_hls", "server_transcode_hls"] {
+            let plan = makePlan(delivery: delivery, selectedSubtitleIndex: 0, subtitleMode: "render",
+                subtitleInventory: [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                                    makeInventoryItem(combinedIndex: 3, source: "external")])
+            let row = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).last)
+            let selection = try XCTUnwrap(ProtocolV3SubtitleSelection(track: row, plan: plan))
+            XCTAssertTrue(selection.canApplyLocally(to: plan, isMounted: false), delivery)
+            XCTAssertEqual(selection.appTrackID(in: plan), row.trackId)
+            XCTAssertTrue(ProtocolV3SubtitleSelection.off.canApplyLocally(to: plan, isMounted: false))
+        }
+    }
+
+    func testSubtitleSwitchRequiresNewVideoWhenCurrentSubtitlesAreBurnedIn() throws {
+        let plan = makePlan(selectedSubtitleIndex: 0, subtitleMode: "burn_in",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                                makeInventoryItem(combinedIndex: 3, source: "external")])
+        let row = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).last)
+        let selection = try XCTUnwrap(ProtocolV3SubtitleSelection(track: row, plan: plan))
+        XCTAssertFalse(selection.canApplyLocally(to: plan, isMounted: true))
+        XCTAssertFalse(ProtocolV3SubtitleSelection.off.canApplyLocally(to: plan, isMounted: false))
+    }
+
+    func testSubtitleWithoutSidecarRequiresMountedNativeTrackOrServerReplan() throws {
+        let plan = makePlan(subtitleInventory: [
+            makeInventoryItem(combinedIndex: 3, source: "embedded", delivery: "burn_in_only")
+        ])
+        let row = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).first)
+        let selection = try XCTUnwrap(ProtocolV3SubtitleSelection(track: row, plan: plan))
+        XCTAssertFalse(selection.canApplyLocally(to: plan, isMounted: false))
+        XCTAssertTrue(selection.canApplyLocally(to: plan, isMounted: true))
+    }
+
+    func testLocalSubtitleChoiceSurvivesInventoryAndReanchorPlanPublication() throws {
+        let inventory = [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                         makeInventoryItem(combinedIndex: 3, source: "external")]
+        let plan = makePlan(selectedSubtitleIndex: 0, subtitleMode: "render", subtitleInventory: inventory)
+        let target = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).last)
+        let selection = try XCTUnwrap(ProtocolV3SubtitleSelection(track: target, plan: plan))
+        // A seek reanchor retains the server's prior selection. The renderer
+        // and picker must keep the newer choice, including explicit Off.
+        let reanchored = makePlan(delivery: "server_transcode_hls", selectedSubtitleIndex: 0,
+            subtitleMode: "render", subtitleInventory: inventory)
+        for published in [plan, reanchored, reanchored] {
+            let rows = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: published, localSelection: selection)
+            XCTAssertEqual(rows.filter(\.isSelected).map(\.trackId), [target.trackId])
+            XCTAssertFalse(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: published, localSelection: .off)
+                .contains(where: \.isSelected))
+        }
+    }
+
+    func testLocalSelectionDoesNotAssignPreviousNativeStreamToNewSubtitle() throws {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil)
+        ])
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 0, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                                makeInventoryItem(combinedIndex: 1, source: "embedded")],
+            embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 11))
+        let rows = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan, version: version,
+            localSelection: .track("file:42:subtitle:1"))
+        XCTAssertEqual(rows.first?.ffIndex, 11)
+        XCTAssertEqual(rows.last?.ffIndex, 12)
+        XCTAssertTrue(rows.last?.isSelected == true)
+    }
+
+    func testLocalSelectionCannotSelectReusedOrdinalFromAnotherFile() {
+        let selection = ProtocolV3SubtitleSelection.track("file:other:subtitle:3")
+        let plan = makePlan(subtitleInventory: [makeInventoryItem(combinedIndex: 3, source: "external")])
+        XCTAssertNil(selection.appTrackID(in: plan))
+        XCTAssertFalse(selection.canApplyLocally(to: plan, isMounted: true))
+    }
+
+    func testLocalEmbeddedSwitchUsesFFmpegIndexOnlyForSupportedOriginalFile() throws {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil)
+        ])
+        let inventory = [makeInventoryItem(combinedIndex: 7, source: "embedded"),
+                         makeInventoryItem(combinedIndex: 8, source: "embedded")]
+        for delivery in ["original_http", "server_remux_progressive", "server_remux_hls", "server_transcode_hls"] {
+            let plan = makePlan(delivery: delivery, container: "mkv", subtitleInventory: inventory)
+            let track = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan, version: version).last)
+            let choice = try XCTUnwrap(ProtocolV3SubtitleSelection(track: track, plan: plan))
+            XCTAssertEqual(choice.embeddedStreamIndex(for: track, in: plan), delivery == "original_http" ? 12 : nil)
+            let unknownStream = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).last)
+            XCTAssertNil(choice.embeddedStreamIndex(for: unknownStream, in: plan))
+        }
+        for (container, source, mode) in [("mp4", "embedded", "off"), ("mkv", "external", "off"),
+                                           ("mkv", "embedded", "burn_in")] {
+            let plan = makePlan(container: container, subtitleMode: mode,
+                subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: source)])
+            let track = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan, version: version).first)
+            let choice = try XCTUnwrap(ProtocolV3SubtitleSelection(track: track, plan: plan))
+            XCTAssertNil(choice.embeddedStreamIndex(for: track, in: plan))
+        }
+    }
+
     func testRenewalRequestsNewerDownloadedSidecarInsteadOfPreviousEmbeddedTrack() {
         let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
         let localID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)

@@ -1380,7 +1380,9 @@ actor PlaybackSessionBridge {
         } ?? active.plan.selectedTracks.audio
         let selectedSubtitle: PlaybackV3TrackIdentity? = {
             if isSeekReanchor { return active.plan.selectedTracks.subtitle }
-            if classification == "subtitle_track_changed" {
+            if classification == "subtitle_track_changed"
+                || operation == PlaybackProtocolV3.ReplanOperation.trackChange
+                || subtitleTrackIndex != nil {
                 return subtitleTrackIndex.flatMap { index in
                     guard index >= 0 else { return nil }
                     return PlaybackV3TrackIdentity(
@@ -1481,8 +1483,8 @@ actor PlaybackSessionBridge {
                 classification: classification,
                 message: message
             ),
-            // Apple never mutates a server plan locally, so it never has a
-            // mutation to fold into the server's next attempt key.
+            // Local subtitle rendering does not change the frozen video
+            // recipe. Its current track is carried in selectedTracks above.
             localMutations: [],
             clientCapabilities: active.snapshot.capabilities,
             clientPlaybackContext: active.snapshot.context

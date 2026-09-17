@@ -109,7 +109,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertFalse(originalHTTP.containers.contains("ogg"))
     }
 
-    func testAppleTV4KUsesTheAetherBuildDeclaration() throws {
+    func testOriginalFilePlaybackUsesTheAetherBuildDeclaration() throws {
         let snapshot = ApplePlaybackV3Capabilities.snapshot(
             videoCapabilityMode: .aetherDeclared
         )
@@ -268,7 +268,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertFalse(caps.videoDecode.isEmpty)
     }
 
-    func testStreamingPolicyTrustsAppleTV4KButNotAppleTVHDOrSimulators() {
+    func testStreamingPolicyUsesAetherForPhysicalIOSAndAppleTV4K() {
         func mode(
             _ isTVOS: Bool,
             _ isSimulator: Bool,
@@ -286,8 +286,39 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertEqual(mode(true, false, "AppleTV14,1"), .aetherDeclared)
         XCTAssertEqual(mode(true, false, "AppleTV99,1"), .aetherDeclared)
         XCTAssertEqual(mode(true, true, "arm64"), .platformAttested)
-        XCTAssertEqual(mode(false, false, "iPhone19,1"), .platformAttested)
+        XCTAssertEqual(mode(false, false, "iPhone19,1"), .aetherDeclared)
+        XCTAssertEqual(mode(false, false, "iPhone11,2"), .aetherDeclared)
+        XCTAssertEqual(mode(false, false, "iPad16,3"), .aetherDeclared)
+        XCTAssertEqual(mode(false, true, "iPhone19,1"), .platformAttested)
+        XCTAssertEqual(mode(false, true, "iPad16,3"), .platformAttested)
+        XCTAssertEqual(mode(false, false, "Mac16,1"), .platformAttested)
+        XCTAssertEqual(mode(false, false, "arm64"), .platformAttested)
+        XCTAssertEqual(mode(false, false, "unknown"), .platformAttested)
         XCTAssertEqual(mode(true, false, "unknown"), .platformAttested)
+    }
+
+    func testPhysicalIOSAdvertisesOriginalFileAudioSelectionAndHDRHandling() throws {
+        for device in ["iPhone19,1", "iPad16,3"] {
+            let mode = AppleDecodeCapabilities.streamingVideoCapabilityModeForDevice(
+                isTVOS: false, isSimulator: false, machineIdentifier: device
+            )
+            let snapshot = ApplePlaybackV3Capabilities.snapshot(videoCapabilityMode: mode)
+            let original = try XCTUnwrap(snapshot.context.deliveries[PlaybackProtocolV3.DeliveryClass.originalHTTP])
+            XCTAssertTrue(original.validatedClaims.contains(PlaybackProtocolV3.clientSelectedAudioTrackClaim), device)
+            XCTAssertTrue(original.validatedClaims.contains(PlaybackProtocolV3.clientManagedDynamicRangeClaim), device)
+            XCTAssertTrue(original.containers.contains("mkv"))
+            XCTAssertTrue(original.videoCodecs.contains("hevc"))
+            XCTAssertTrue(original.audioDecodeCodecs.contains("eac3"))
+            XCTAssertTrue(original.audioDecodeCodecs.contains("truehd"))
+            XCTAssertEqual(snapshot.capabilities.videoEvidence, PlaybackProtocolV3.Evidence.declared)
+            XCTAssertTrue(snapshot.capabilities.videoDecode.isEmpty)
+
+            for delivery in [PlaybackProtocolV3.DeliveryClass.progressive, PlaybackProtocolV3.DeliveryClass.hls] {
+                let packaged = try XCTUnwrap(snapshot.context.deliveries[delivery])
+                XCTAssertFalse(packaged.validatedClaims.contains(PlaybackProtocolV3.clientSelectedAudioTrackClaim))
+                XCTAssertFalse(packaged.validatedClaims.contains(PlaybackProtocolV3.clientManagedDynamicRangeClaim))
+            }
+        }
     }
 
     // MARK: - The vocabulary itself

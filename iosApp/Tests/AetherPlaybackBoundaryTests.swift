@@ -1188,6 +1188,55 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    func testEmbeddedSubtitleSwitchUsesOpenedStreamsWithoutReloadOrSidecarLoading() async throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "authored", withExtension: "mkv"))
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let spec = try AetherLoadSpec(offlineURL: url, startPosition: 0, audioOnly: false, panelIsInHDRMode: false)
+        let epoch = controller.beginLoad(spec, shouldPlayWhenReady: false)
+        try await controller.finishLoad(epoch)
+        let firstID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
+        let secondID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)
+        XCTAssertFalse(controller.registerEmbeddedSubtitleTrack(streamIndex: 99, codec: "ass", appTrackID: firstID))
+        XCTAssertFalse(controller.registerEmbeddedSubtitleTrack(streamIndex: 2, codec: "subrip", appTrackID: firstID))
+        XCTAssertFalse(controller.containsSubtitle(appTrackID: firstID))
+
+        // Even if the same menu row had an extracted-file alias, prefer the
+        // opened stream and remove the stale reverse mapping.
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: URL(fileURLWithPath: "/missing-extraction.ass")),
+            appTrackID: secondID)
+        let extractedID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: secondID))
+        XCTAssertTrue(controller.registerEmbeddedSubtitleTrack(streamIndex: 2, codec: "ass", appTrackID: firstID))
+        XCTAssertTrue(controller.registerEmbeddedSubtitleTrack(streamIndex: 3, codec: "ass", appTrackID: secondID))
+        XCTAssertEqual(controller.appSubtitleID(forAetherID: extractedID), Int64(extractedID))
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: secondID), 3)
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: secondID, slot: .primary))
+
+        controller.play()
+        let player = controller.engine.currentAVPlayer
+        let item = controller.engine.currentAVPlayerItem
+        for (appID, streamIndex, marker) in [(firstID, 2, "pos(20,30)"), (secondID, 3, "pos(220,90)"),
+                                            (firstID, 2, "pos(20,30)")] {
+            let position = controller.engine.clock.currentTime
+            controller.selectSubtitleTrack(id: appID)
+            XCTAssertFalse(controller.engine.isLoadingSubtitles, "Embedded selection must not start a file download")
+            let deadline = Date().addingTimeInterval(3)
+            while !controller.engine.subtitleCues.contains(where: { $0.text?.contains(marker) == true }), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            XCTAssertTrue(controller.engine.subtitleCues.contains { $0.text?.contains(marker) == true })
+            XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, streamIndex)
+            XCTAssertEqual(controller.activeLoadEpoch, epoch)
+            XCTAssertTrue(controller.engine.currentAVPlayer === player)
+            XCTAssertTrue(controller.engine.currentAVPlayerItem === item)
+            XCTAssertGreaterThanOrEqual(controller.engine.clock.currentTime, position)
+        }
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
+        XCTAssertTrue(controller.engine.subtitleCues.isEmpty)
+        XCTAssertEqual(controller.activeLoadEpoch, epoch)
+    }
+
     /// Opt-in local fixture: two embedded SRT tracks, with the second stream
     /// at FFmpeg index 3 and text "Native track 2". No sidecar is registered.
     func testOriginalHTTPSelectsExactEmbeddedSubtitleWithoutSidecar() async throws {
@@ -1257,6 +1306,35 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             appTrackID
         )
         controller.stop()
+    }
+
+    func testDynamicSubtitleRegistrationPublishesUsableAliasWithoutReplacingVideoLoad() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let spec = try AetherLoadSpec(
+            directURL: URL(string: "https://example.test/video.mp4")!, headers: [:],
+            startPosition: 12, audioOnly: false
+        )
+        let epoch = controller.beginLoad(spec)
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
+        var inventoryEvents = 0
+        controller.onEvent = { [weak controller] event in
+            guard case .inventoryChanged = event.event, let controller else { return }
+            inventoryEvents += 1
+            XCTAssertTrue(controller.containsSubtitle(appTrackID: appID))
+            let engineID = controller.aetherSubtitleID(forAppID: appID)
+            XCTAssertTrue(controller.engine.subtitleTracks.contains { $0.id == engineID })
+            XCTAssertEqual(controller.activeLoadEpoch, epoch)
+        }
+        let subtitle = ExternalSubtitleTrack(url: URL(fileURLWithPath: "/tmp/subtitle-registration.srt"))
+        controller.addExternalSubtitleTrack(subtitle, appTrackID: appID)
+        XCTAssertEqual(inventoryEvents, 1)
+        controller.addExternalSubtitleTrack(subtitle, appTrackID: appID)
+        XCTAssertEqual(inventoryEvents, 1, "Inventory reconciliation must not register the track twice")
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertEqual(controller.activeLoadEpoch, epoch)
+        XCTAssertEqual(controller.activeSpec?.sourceURL, spec.sourceURL)
+        controller.onEvent = nil
     }
 
     func testReplacementPreparationInvalidatesOutgoingLoadAndAllowsSuccessorEpoch() throws {
