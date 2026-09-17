@@ -258,6 +258,43 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         }
     }
 
+    func testFailedSeekCandidatesKeepLocalRetryIntentBeforeCommit() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        let inventory = [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                         makeInventoryItem(combinedIndex: 3, source: "external")]
+        for selection in [ProtocolV3SubtitleSelection.off, .track("file:42:subtitle:3")] {
+            var retry = PlayerViewModel.LoadRequest(
+                contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: 0,
+                preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+                startFromBeginning: false
+            )
+            // A reanchor and promoted fallback may fail before either load
+            // commits. Each adoption must save local intent immediately,
+            // while the candidate's pending tracks still follow its plan.
+            for delivery in ["server_remux_hls", "server_transcode_hls"] {
+                let plan = makePlan(delivery: delivery, selectedAudioIndex: 1,
+                    selectedSubtitleIndex: 0, subtitleMode: "render", subtitleInventory: inventory)
+                let adopted = retry.adoptingProtocolV3Intent(
+                    plan: plan, selectedVersion: version, activeQualityId: "720p"
+                )
+                retry = adopted.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
+                let pending = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: adopted)
+                XCTAssertEqual(pending.sidecarSubtitleTrackId, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0))
+                XCTAssertEqual(retry.preferredAudioTrackIndex, 1)
+                XCTAssertEqual(retry.preferredQualityOverride, "720p")
+                XCTAssertEqual(retry.preferredProtocolV3SubtitleIndex, selection == .off ? -1 : 3)
+            }
+            // Terminal cleanup no longer has a renderer override to consult.
+            let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: retry.preferredSubtitleTrackIndex,
+                explicitCombinedIndex: retry.preferredProtocolV3SubtitleIndex,
+                preferredLanguage: "en", mode: .always, showForced: true,
+                trackSignature: nil, currentAudioLanguage: "en"
+            )
+            XCTAssertEqual(intent.combinedIndex, selection == .off ? nil : 3)
+        }
+    }
+
     func testRenewalRequestsNewerDownloadedSidecarInsteadOfPreviousEmbeddedTrack() {
         let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
         let localID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)

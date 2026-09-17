@@ -3890,7 +3890,12 @@ class PlayerViewModel {
             selectedVersion: prepared.selectedVersion,
             activeQualityId: prepared.activeQualityId
         )
-        self.lastLoadRequest = adopted
+        // A seek candidate still carries the server's frozen subtitle. Save
+        // the user's newer choice before loading: a failed candidate can be
+        // promoted into recovery without ever reaching the commit callback.
+        self.lastLoadRequest = localProtocolV3SubtitleSelection.map {
+            adopted.adoptingLocalProtocolV3SubtitleSelection($0, plan: protocolV3.plan)
+        } ?? adopted
 
         armAdoptedProtocolV3TrackIntent(
             plan: protocolV3.plan,
