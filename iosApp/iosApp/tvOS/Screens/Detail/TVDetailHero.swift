@@ -750,7 +750,10 @@ enum TVHeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = detail.runtime, runtime > 0 {
+        if let runtime = SelectedMediaRuntime.minutes(
+            detail: detail,
+            selectedVersion: selectedVersion
+        ), runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
         }
         return tokens
@@ -763,6 +766,24 @@ enum TVHeroMetadata {
         }
         if let count = detail.seasonCount, count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
+        }
+        return tokens
+    }
+
+    static func seriesEpisodeFactsLine(
+        episode: EpisodeListItem,
+        playbackDetail: ItemDetail?,
+        selectedVersion: FileVersion?
+    ) -> [TVHeroFactToken] {
+        var tokens: [TVHeroFactToken] = []
+        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
+            tokens.append(.text(airDate))
+        }
+        let runtime = playbackDetail.flatMap {
+            SelectedMediaRuntime.minutes(detail: $0, selectedVersion: selectedVersion)
+        } ?? episode.runtime
+        if let runtime, runtime > 0 {
+            tokens.append(.text(formatRuntime(runtime)))
         }
         return tokens
     }

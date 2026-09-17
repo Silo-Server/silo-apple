@@ -431,14 +431,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         guard !isShowingSeriesOverview, let episode = displayedEpisode else {
             return TVHeroMetadata.seriesFactsLine(from: detail)
         }
-        var facts: [TVHeroFactToken] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            facts.append(.text(airDate))
-        }
-        if let runtime = episode.runtime, runtime > 0 {
-            facts.append(.text(runtimeLabel(runtime)))
-        }
-        return facts
+        return TVHeroMetadata.seriesEpisodeFactsLine(
+            episode: episode,
+            playbackDetail: matchingPlaybackDetail,
+            selectedVersion: effectiveNextUpVersion
+        )
     }
 
     // MARK: - Show mode actions
@@ -954,10 +951,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         if let title = season.title, !title.isEmpty { return title }
         if season.seasonNumber == 0 { return "Specials" }
         return "Season \(season.seasonNumber)"
-    }
-
-    private func runtimeLabel(_ minutes: Int) -> String {
-        minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
     }
 
     // MARK: - Supporting rails
