@@ -1310,6 +1310,7 @@ struct TVItemDetailView: View {
                 isSpecials: item.isSpecials,
                 userData: item.userData,
                 versions: watchDetail.versions,
+                playbackVariants: item.playbackVariants,
                 subtitles: watchDetail.subtitles,
                 intro: watchDetail.intro,
                 credits: watchDetail.credits,

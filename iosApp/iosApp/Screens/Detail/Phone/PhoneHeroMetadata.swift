@@ -67,7 +67,10 @@ enum PhoneHeroMetadata {
         } else if let year = detail.year, year > 0 {
             tokens.append(.text(String(year)))
         }
-        if let runtime = detail.runtime, runtime > 0 {
+        if let runtime = SelectedMediaRuntime.minutes(
+            detail: detail,
+            selectedVersion: selectedVersion
+        ), runtime > 0 {
             tokens.append(.text(formatRuntime(runtime)))
         }
         if let imdb = detail.ratingImdb {

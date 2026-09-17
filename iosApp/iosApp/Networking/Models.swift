@@ -444,6 +444,7 @@ struct ItemDetail: Codable {
     let isSpecials: Bool?
     let userData: LeafItemUserData?
     let versions: [FileVersion]?
+    var playbackVariants: [PlaybackVariant]? = nil
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
@@ -909,6 +910,25 @@ struct FileVersion: Codable, Identifiable, Hashable {
             return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } ?? nil
     }
+}
+
+struct PlaybackVariant: Codable, Hashable {
+    let variantId: String
+    let editionRaw: String?
+    let editionKey: String?
+    let presentationKind: String?
+    let presentationGroupKey: String?
+    let partCount: Int
+    let totalDuration: Double?
+    let defaultFileId: Int?
+    let parts: [PlaybackVariantPart]
+}
+
+struct PlaybackVariantPart: Codable, Hashable {
+    let partIndex: Int
+    let defaultFileId: Int?
+    let totalDuration: Double?
+    let versions: [FileVersion]
 }
 
 struct VersionChapter: Codable, Hashable {
