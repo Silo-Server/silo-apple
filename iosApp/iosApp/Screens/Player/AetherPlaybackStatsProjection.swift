@@ -80,6 +80,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
     let sourceVideoFormat: VideoFormat
     let outputVideoFormat: VideoFormat
     let sourceDVProfile: Int?
+    let dolbyVisionConversion: DolbyVisionConversion?
     let sourceVideoWidth: Int32
     let sourceVideoHeight: Int32
     let sourceVideoPixelAspectRatio: Double
@@ -102,6 +103,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         sourceVideoFormat = engine.sourceVideoFormat
         outputVideoFormat = engine.videoFormat
         sourceDVProfile = engine.sourceDVProfile
+        dolbyVisionConversion = engine.dolbyVisionConversion
         sourceVideoWidth = engine.sourceVideoWidth
         sourceVideoHeight = engine.sourceVideoHeight
         sourceVideoPixelAspectRatio = engine.sourceVideoPixelAspectRatio
@@ -124,6 +126,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         sourceVideoFormat: VideoFormat = .sdr,
         outputVideoFormat: VideoFormat = .sdr,
         sourceDVProfile: Int? = nil,
+        dolbyVisionConversion: DolbyVisionConversion? = nil,
         sourceVideoWidth: Int32 = 0,
         sourceVideoHeight: Int32 = 0,
         sourceVideoPixelAspectRatio: Double = 1,
@@ -144,6 +147,7 @@ struct AetherPlaybackStatsSnapshot: Equatable {
         self.sourceVideoFormat = sourceVideoFormat
         self.outputVideoFormat = outputVideoFormat
         self.sourceDVProfile = sourceDVProfile
+        self.dolbyVisionConversion = dolbyVisionConversion
         self.sourceVideoWidth = sourceVideoWidth
         self.sourceVideoHeight = sourceVideoHeight
         self.sourceVideoPixelAspectRatio = sourceVideoPixelAspectRatio
@@ -305,6 +309,10 @@ enum AetherPlaybackStatsProjection {
         guard snapshot.sourceVideoWidth > 0, snapshot.sourceVideoHeight > 0 else { return nil }
         if let planned = plannedDynamicRangeLabel(metadata) { return planned }
         let source = videoFormatLabel(snapshot.sourceVideoFormat, dvProfile: snapshot.sourceDVProfile)
+        if snapshot.outputVideoFormat == .dolbyVision,
+           snapshot.dolbyVisionConversion == .profile7ToProfile81 {
+            return "\(source) → Profile 8.1"
+        }
         let output = videoFormatLabel(snapshot.outputVideoFormat, dvProfile: nil)
         return snapshot.sourceVideoFormat == snapshot.outputVideoFormat
             ? source
