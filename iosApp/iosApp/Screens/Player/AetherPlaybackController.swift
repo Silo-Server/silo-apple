@@ -429,6 +429,9 @@ final class AetherPlaybackController {
         if let previous = aetherSubtitleIDByAppID[appTrackID], previous != streamIndex {
             appSubtitleIDByAetherID.removeValue(forKey: previous)
         }
+        if let previousAppID = appSubtitleIDByAetherID[streamIndex], previousAppID != appTrackID {
+            aetherSubtitleIDByAppID.removeValue(forKey: previousAppID)
+        }
         aetherSubtitleIDByAppID[appTrackID] = streamIndex
         appSubtitleIDByAetherID[streamIndex] = appTrackID
         return true

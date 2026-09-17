@@ -1245,6 +1245,19 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
         XCTAssertTrue(controller.engine.subtitleCues.isEmpty)
         XCTAssertEqual(controller.activeLoadEpoch, epoch)
+
+        // Reassigning an opened stream to another picker identity must evict
+        // the previous alias in both directions, including repeated binding.
+        let replacementID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 9)
+        for _ in 0..<2 {
+            XCTAssertTrue(controller.registerEmbeddedSubtitleTrack(streamIndex: 2, codec: "ass", appTrackID: replacementID))
+            XCTAssertFalse(controller.containsSubtitle(appTrackID: firstID))
+            XCTAssertNil(controller.aetherSubtitleID(forAppID: firstID))
+            XCTAssertEqual(controller.aetherSubtitleID(forAppID: replacementID), 2)
+            XCTAssertEqual(controller.appSubtitleID(forAetherID: 2), replacementID)
+            XCTAssertEqual(controller.aetherSubtitleID(forAppID: secondID), 3)
+            XCTAssertEqual(controller.appSubtitleID(forAetherID: 3), secondID)
+        }
     }
 
     /// Opt-in local fixture: two embedded SRT tracks, with the second stream
