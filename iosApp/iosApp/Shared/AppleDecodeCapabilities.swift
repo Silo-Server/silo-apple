@@ -86,8 +86,9 @@ enum AppleDecodeCapabilities {
     /// detailed entry below because ordinary H.264 is also hardware-backed.
     static let softwareVideoCodecs = ["av1", "vp9", "mpeg2video", "vc1"]
 
-    /// The complete online video manifest of AetherEngine 6.67.2 with
-    /// FFmpegBuild 3.0.0 (same FFmpeg n8.1.2 decoder set as 2.4.3). Aether routes H.264, HEVC, and
+    /// Silo's declared online video set for AetherEngine 7.1.0 with
+    /// FFmpegBuild 3.3.0. Newly bundled formats await capability and playback
+    /// validation in silo-apple#299. Aether routes H.264, HEVC, and
     /// hardware-decodable AV1 natively when the exact probed stream permits;
     /// every other decoder present in the build goes through libavcodec.
     static let aetherOriginalHTTPVideoCodecs = [
@@ -110,8 +111,9 @@ enum AppleDecodeCapabilities {
             "opus", "vorbis", "pcm", "pcm_s16le", "pcm_s24le"
         ]
 
-    /// Audio decoders present in the same Aether/FFmpeg build. Aliases are
-    /// intentional because scanners do not all spell DTS-HD or PCM alike.
+    /// Silo's declared online audio set from the same Aether/FFmpeg build.
+    /// Newly bundled WMA and legacy Flash audio are tracked in silo-apple#299.
+    /// Aliases are intentional because scanners do not all spell DTS-HD or PCM alike.
     /// `pcm_bluray` is the Blu-ray LPCM decoder FFmpegBuild ships for M2TS;
     /// `pcm_dvd` stays absent because the build does not enable it.
     static let aetherOriginalHTTPAudioCodecs = [
@@ -137,11 +139,11 @@ enum AppleDecodeCapabilities {
     /// the engine manifest below and relies on its per-source probe.
     static let audioContainers = ["mp3", "m4a", "m4b", "aac", "flac", "wav"]
 
-    /// Demuxers used by the pinned Aether build for online original HTTP.
+    /// Silo's declared containers for online original HTTP.
     /// Silo's scanner records MPEG program streams (`.mpg`/`.vob`) as `mpeg`,
     /// so that token is what carries FFmpegBuild's `mpegps` demuxer claim.
-    /// ASF/WMV stays absent even though WMV elementary streams in Matroska are
-    /// supported; FFmpegBuild does not ship the corresponding container path.
+    /// FFmpegBuild 3.3.0 includes ASF/WMV support. Advertising it together with
+    /// the matching audio codecs awaits playback validation in silo-apple#299.
     private static let aetherVideoContainers = [
         "mp4", "m4v", "mov", "mkv", "matroska", "avi", "mpegts", "ts", "m2ts",
         "mts", "3gp", "3g2", "mpeg", "vob", "ogg", "webm", "flv"

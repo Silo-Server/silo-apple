@@ -112,6 +112,37 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         XCTAssertFalse(labels.contains("Video packets"))
     }
 
+    func testDolbyVisionProfileConversionRequiresEngineConfirmation() {
+        let cases: [(DolbyVisionConversion?, VideoFormat, String)] = [
+            (.profile7ToProfile81, .dolbyVision, "Dolby Vision Profile 7 → Profile 8.1"),
+            (nil, .dolbyVision, "Dolby Vision Profile 7"),
+            (.profile7ToProfile81, .hdr10, "Dolby Vision Profile 7 → HDR10"),
+            (.profile7ToProfile81, .hdr10Plus, "Dolby Vision Profile 7 → HDR10+"),
+        ]
+        for (conversion, output, expected) in cases {
+            let stats = AetherPlaybackStatsProjection.make(
+                snapshot: AetherPlaybackStatsSnapshot(
+                    route: .loopback,
+                    phase: .playing,
+                    sourceVideoFormat: .dolbyVision,
+                    outputVideoFormat: output,
+                    sourceDVProfile: 7,
+                    dolbyVisionConversion: conversion,
+                    sourceVideoWidth: 3840,
+                    sourceVideoHeight: 2160
+                ),
+                source: AetherPlaybackStatsSourceMetadata(
+                    sourceURL: nil,
+                    delivery: "original_http",
+                    container: "mkv",
+                    playbackRate: 1
+                )
+            )
+
+            XCTAssertEqual(stats.dynamicRange, expected)
+        }
+    }
+
     func testRouteAsymmetricTelemetryDoesNotInventForwardBuffer() {
         let telemetry = LiveTelemetry(
             instantBitrateMbps: nil,
