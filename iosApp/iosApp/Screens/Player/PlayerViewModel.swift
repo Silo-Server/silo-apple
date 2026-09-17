@@ -7118,8 +7118,14 @@ class PlayerViewModel {
     /// subtitle: it is either already mounted in Aether or can be mounted from
     /// the plan inventory on demand.
     private func canRenderAsSecondarySubtitle(_ track: PlayerTrack) -> Bool {
-        guard activePreparedProtocolV3 != nil else { return true }
+        guard let plan = activePreparedProtocolV3?.plan else { return true }
         if SubtitleTrackIdSpace.isAILive(track.trackId) { return false }
+        if let selection = ProtocolV3SubtitleSelection(track: track, plan: plan),
+           let streamIndex = selection.embeddedStreamIndex(for: track, in: plan),
+           let codec = track.codec,
+           aetherPlaybackController.containsEmbeddedSubtitleTrack(streamIndex: streamIndex, codec: codec) {
+            return true
+        }
         return aetherPlaybackController.containsSubtitle(appTrackID: track.trackId)
             || protocolV3InventorySidecarURL(for: track) != nil
     }

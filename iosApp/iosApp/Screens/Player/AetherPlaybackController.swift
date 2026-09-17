@@ -413,15 +413,19 @@ final class AetherPlaybackController {
         aetherSubtitleIDByAppID[appTrackID] != nil
     }
 
+    func containsEmbeddedSubtitleTrack(streamIndex: Int, codec: String) -> Bool {
+        engine.subtitleTracks.contains(where: {
+            !$0.isExternal && $0.id == streamIndex
+                && ApplePlaybackV3Capabilities.normalizedSubtitleCodec($0.codec)
+                    == ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)
+        })
+    }
+
     /// Bind a picker row to a stream already in the current demuxer. Validate
     /// the actual inventory before replacing a possible extracted-file alias.
     @discardableResult
     func registerEmbeddedSubtitleTrack(streamIndex: Int, codec: String, appTrackID: Int64) -> Bool {
-        guard engine.subtitleTracks.contains(where: {
-            !$0.isExternal && $0.id == streamIndex
-                && ApplePlaybackV3Capabilities.normalizedSubtitleCodec($0.codec)
-                    == ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)
-        }) else { return false }
+        guard containsEmbeddedSubtitleTrack(streamIndex: streamIndex, codec: codec) else { return false }
         if let previous = aetherSubtitleIDByAppID[appTrackID], previous != streamIndex {
             appSubtitleIDByAetherID.removeValue(forKey: previous)
         }

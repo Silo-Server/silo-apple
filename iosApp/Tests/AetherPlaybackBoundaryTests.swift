@@ -1197,6 +1197,16 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         try await controller.finishLoad(epoch)
         let firstID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
         let secondID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)
+        // Fresh embedded rows must be discoverable by the secondary picker
+        // before primary selection creates an app-to-engine alias. Merely
+        // listing them must not select a track or mutate those aliases.
+        XCTAssertTrue(controller.containsEmbeddedSubtitleTrack(streamIndex: 2, codec: "ass"))
+        XCTAssertTrue(controller.containsEmbeddedSubtitleTrack(streamIndex: 3, codec: "ass"))
+        XCTAssertFalse(controller.containsEmbeddedSubtitleTrack(streamIndex: 99, codec: "ass"))
+        XCTAssertFalse(controller.containsEmbeddedSubtitleTrack(streamIndex: 2, codec: "subrip"))
+        XCTAssertFalse(controller.containsSubtitle(appTrackID: firstID))
+        XCTAssertFalse(controller.containsSubtitle(appTrackID: secondID))
+        XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
         XCTAssertFalse(controller.registerEmbeddedSubtitleTrack(streamIndex: 99, codec: "ass", appTrackID: firstID))
         XCTAssertFalse(controller.registerEmbeddedSubtitleTrack(streamIndex: 2, codec: "subrip", appTrackID: firstID))
         XCTAssertFalse(controller.containsSubtitle(appTrackID: firstID))
