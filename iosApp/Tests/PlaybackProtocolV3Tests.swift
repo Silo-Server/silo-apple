@@ -230,6 +230,34 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         }
     }
 
+    func testRetryUsesLocalSubtitleChoiceAfterTransientStateIsLost() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        let plan = makePlan(container: "mkv", selectedSubtitleIndex: 0, subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 0, source: "embedded"),
+                                makeInventoryItem(combinedIndex: 3, source: "external")])
+        let original = PlayerViewModel.LoadRequest(
+            libraryId: 9, contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: 1,
+            preferredSubtitleTrackIndex: 11, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false, preferredProtocolV3SubtitleIndex: 0,
+            preferredQualityOverride: "original"
+        )
+        for selection in [ProtocolV3SubtitleSelection.off, .track("file:42:subtitle:3")] {
+            let retry = original.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
+            XCTAssertEqual(retry.libraryId, 9)
+            XCTAssertEqual(retry.preferredAudioTrackIndex, 1)
+            XCTAssertEqual(retry.preferredQualityOverride, "original")
+            XCTAssertEqual(retry.preferredProtocolV3SubtitleIndex, selection == .off ? -1 : 3)
+            let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: retry.preferredSubtitleTrackIndex,
+                explicitCombinedIndex: retry.preferredProtocolV3SubtitleIndex,
+                preferredLanguage: "en", mode: .always, showForced: true,
+                trackSignature: nil, currentAudioLanguage: "en"
+            )
+            XCTAssertEqual(intent.combinedIndex, selection == .off ? nil : 3)
+            XCTAssertNil(intent.ffmpegStreamIndex)
+        }
+    }
+
     func testRenewalRequestsNewerDownloadedSidecarInsteadOfPreviousEmbeddedTrack() {
         let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
         let localID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)
@@ -605,6 +633,46 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(object["plan_attempt_key"] as? String, serverKey)
         XCTAssertNil(object["engine"])
         XCTAssertNil(object["output_route_generation"])
+    }
+
+    func testReplansPreserveUnspecifiedSubtitlesAndCarryExplicitLocalChoices() throws {
+        let plan = makePlan(selectedSubtitleIndex: 0, subtitleMode: "render", subtitleInventory: [
+            makeInventoryItem(combinedIndex: 0, source: "embedded"),
+            makeInventoryItem(combinedIndex: 3, source: "external")
+        ])
+        let localTrack = ProtocolV3SubtitleSelection.track("file:42:subtitle:3")
+        for (operation, classification) in [
+            (PlaybackProtocolV3.ReplanOperation.trackChange, "audio_track_changed"),
+            (PlaybackProtocolV3.ReplanOperation.qualityChange, "quality_changed"),
+            (PlaybackProtocolV3.ReplanOperation.outputChange, "output_route_changed"),
+            (PlaybackProtocolV3.ReplanOperation.failureRecovery, "decoder_failed")
+        ] {
+            XCTAssertEqual(PlaybackSessionBridge.subtitleForProtocolV3Replan(
+                plan: plan, operation: operation, classification: classification, subtitleTrackIndex: nil
+            ), plan.selectedTracks.subtitle, "An omitted override must preserve subtitles: \(classification)")
+            XCTAssertNil(PlaybackSessionBridge.subtitleForProtocolV3Replan(
+                plan: plan, operation: operation, classification: classification,
+                subtitleTrackIndex: ProtocolV3SubtitleSelection.off.replanIndex(in: plan)
+            ), "Explicit Off must survive \(classification)")
+            XCTAssertEqual(PlaybackSessionBridge.subtitleForProtocolV3Replan(
+                plan: plan, operation: operation, classification: classification,
+                subtitleTrackIndex: localTrack.replanIndex(in: plan)
+            ), PlaybackV3TrackIdentity(id: "file:42:subtitle:3", index: 3))
+        }
+        XCTAssertNil(PlaybackSessionBridge.subtitleForProtocolV3Replan(
+            plan: plan, operation: PlaybackProtocolV3.ReplanOperation.trackChange,
+            classification: "subtitle_track_changed", subtitleTrackIndex: nil
+        ), "A direct subtitle Off request retains its existing nil spelling")
+    }
+
+    func testSeekReanchorKeepsFrozenSubtitleRecipeDespiteLocalOverride() {
+        let plan = makePlan(selectedSubtitleIndex: 0, subtitleMode: "render")
+        for index: Int? in [nil, -1, 3] {
+            XCTAssertEqual(PlaybackSessionBridge.subtitleForProtocolV3Replan(
+                plan: plan, operation: PlaybackProtocolV3.ReplanOperation.seekReanchor,
+                classification: "seek_reanchor", subtitleTrackIndex: index
+            ), plan.selectedTracks.subtitle)
+        }
     }
 
     func testIntentReplansCarryNoFailureAndUseNeutralOperations() throws {

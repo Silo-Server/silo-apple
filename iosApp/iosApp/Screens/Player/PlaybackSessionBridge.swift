@@ -1315,6 +1315,26 @@ actor PlaybackSessionBridge {
         }
     }
 
+    /// Reanchors must retain the frozen recipe. Other replans distinguish an
+    /// omitted override from explicit Off (-1), including audio-only changes.
+    static func subtitleForProtocolV3Replan(
+        plan: PlaybackV3Plan,
+        operation: String,
+        classification: String,
+        subtitleTrackIndex: Int?
+    ) -> PlaybackV3TrackIdentity? {
+        if operation == PlaybackProtocolV3.ReplanOperation.seekReanchor {
+            return plan.selectedTracks.subtitle
+        }
+        guard classification == "subtitle_track_changed" || subtitleTrackIndex != nil else {
+            return plan.selectedTracks.subtitle
+        }
+        guard let index = subtitleTrackIndex, index >= 0 else { return nil }
+        return PlaybackV3TrackIdentity(
+            id: "file:\(plan.effectiveMediaFileId):subtitle:\(index)", index: index
+        )
+    }
+
     func replanProtocolV3(
         watchDetail: WatchDetail,
         position: Double,
@@ -1378,21 +1398,10 @@ actor PlaybackSessionBridge {
                 index: index
             )
         } ?? active.plan.selectedTracks.audio
-        let selectedSubtitle: PlaybackV3TrackIdentity? = {
-            if isSeekReanchor { return active.plan.selectedTracks.subtitle }
-            if classification == "subtitle_track_changed"
-                || operation == PlaybackProtocolV3.ReplanOperation.trackChange
-                || subtitleTrackIndex != nil {
-                return subtitleTrackIndex.flatMap { index in
-                    guard index >= 0 else { return nil }
-                    return PlaybackV3TrackIdentity(
-                        id: protocolV3TrackId(fileId: selectedFileId, kind: "subtitle", index: index),
-                        index: index
-                    )
-                }
-            }
-            return active.plan.selectedTracks.subtitle
-        }()
+        let selectedSubtitle = Self.subtitleForProtocolV3Replan(
+            plan: active.plan, operation: operation, classification: classification,
+            subtitleTrackIndex: subtitleTrackIndex
+        )
         let selectedTracks = PlaybackV3SelectedTracks(audio: selectedAudio, subtitle: selectedSubtitle)
         let normalizedPosition = position.isFinite ? max(0, position) : 0
         let qualitySelection = qualityPreference.map {

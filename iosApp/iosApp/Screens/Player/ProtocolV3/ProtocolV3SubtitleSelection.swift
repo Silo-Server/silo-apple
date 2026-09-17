@@ -29,6 +29,11 @@ enum ProtocolV3SubtitleSelection: Equatable {
         }
     }
 
+    /// Nil means no known override; -1 explicitly clears a server selection.
+    func replanIndex(in plan: PlaybackV3Plan) -> Int? {
+        self == .off ? -1 : inventoryItem(in: plan)?.combinedIndex
+    }
+
     /// Original-file playback already demuxes every embedded subtitle. The
     /// inventory's combined ordinal is a menu identity; only the catalog's
     /// FFmpeg index can identify a stream in that opened file.

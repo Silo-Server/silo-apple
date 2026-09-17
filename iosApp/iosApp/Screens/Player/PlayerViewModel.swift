@@ -845,6 +845,24 @@ class PlayerViewModel {
             return request
         }
 
+        /// Retry starts a new session after transient player state is cleared.
+        /// Carry the renderer choice as an explicit V3 intent into that start.
+        func adoptingLocalProtocolV3SubtitleSelection(
+            _ selection: ProtocolV3SubtitleSelection,
+            plan: PlaybackV3Plan
+        ) -> LoadRequest {
+            guard let index = selection.replanIndex(in: plan) else { return self }
+            var request = copyForRecovery(
+                preferredFileId: plan.effectiveMediaFileId,
+                preferredAudioTrackIndex: preferredAudioTrackIndex,
+                preferredSubtitleTrackIndex: selection == .off ? -1 : nil,
+                preferredSidecarSubtitleTrackId: selection.appTrackID(in: plan),
+                offlineDownloadId: offlineDownloadId
+            )
+            request.preferredProtocolV3SubtitleIndex = index
+            return request
+        }
+
         /// Refresh the inputs used by session renewal from an adopted V3 plan.
         /// Player track lists are transient and may already be empty when a
         /// failed transport reports that its server session disappeared.
@@ -3834,6 +3852,9 @@ class PlayerViewModel {
     }
 
     private func resolvedProtocolV3SubtitleIndexForResume() -> Int? {
+        if let localProtocolV3SubtitleSelection, let plan = activePreparedProtocolV3?.plan {
+            return localProtocolV3SubtitleSelection.replanIndex(in: plan)
+        }
         guard let selectedSubtitleId,
               !SubtitleTrackIdSpace.isAILive(selectedSubtitleId),
               let selected = subtitleTracks.first(where: { $0.trackId == selectedSubtitleId }),
@@ -7026,6 +7047,7 @@ class PlayerViewModel {
         if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
             applySubtitleTrackSelection(track?.trackId, reason: reason)
         }
+        lastLoadRequest = lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
         return true
     }
 
@@ -7042,6 +7064,7 @@ class PlayerViewModel {
             localProtocolV3SubtitleSelection = nil
             return false
         }
+        lastLoadRequest = lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
         selectedSubtitleId = trackID
         pendingSubtitleFfIndex = nil
         pendingSidecarSubtitleTrackId = nil
