@@ -19,8 +19,8 @@ struct AppleVideoDecodeCapability: Equatable, Sendable {
 ///
 /// Online playback and persistent downloads deliberately use different
 /// policies. Aether probes each online source and chooses its native or
-/// libavcodec path at load time, so supported Apple TV 4K hardware reports the
-/// pinned engine/build manifest without predicting profiles, bit depths, or
+/// libavcodec path at load time, so physical iOS devices and Apple TV 4K report
+/// the pinned engine/build manifest without predicting profiles, bit depths, or
 /// performance in app code. Downloads have no server replan available when
 /// they are played offline, so they retain the bounded platform attestation.
 ///
@@ -47,6 +47,7 @@ enum AppleDecodeCapabilities {
         }
     }()
 
+    /// iPhone, iPad, and Apple TV 4K use Aether's original-file executor.
     /// Keep the optimistic engine declaration off Apple TV HD. It has much
     /// less software-decode headroom than every Apple TV 4K generation and no
     /// online performance signal exists yet that can trigger a typed replan.
@@ -55,13 +56,13 @@ enum AppleDecodeCapabilities {
         isSimulator: Bool,
         machineIdentifier: String
     ) -> StreamingVideoCapabilityMode {
-        guard isTVOS,
-              !isSimulator,
-              machineIdentifier.hasPrefix("AppleTV"),
-              machineIdentifier != "AppleTV5,3" else {
-            return .platformAttested
+        guard !isSimulator else { return .platformAttested }
+        if isTVOS {
+            return machineIdentifier.hasPrefix("AppleTV") && machineIdentifier != "AppleTV5,3"
+                ? .aetherDeclared : .platformAttested
         }
-        return .aetherDeclared
+        return machineIdentifier.hasPrefix("iPhone") || machineIdentifier.hasPrefix("iPad")
+            ? .aetherDeclared : .platformAttested
     }
 
     static var streamingVideoCapabilityMode: StreamingVideoCapabilityMode {
@@ -135,8 +136,8 @@ enum AppleDecodeCapabilities {
     /// aliases remain honest for legacy metadata and future scanner changes.
     ///
     /// Aether supports additional containers, including Ogg. They stay out of
-    /// the conservative/download vocabulary; online Apple TV 4K playback uses
-    /// the engine manifest below and relies on its per-source probe.
+    /// the conservative/download vocabulary; online iOS and Apple TV 4K
+    /// playback use the engine manifest below and its per-source probe.
     static let audioContainers = ["mp3", "m4a", "m4b", "aac", "flac", "wav"]
 
     /// Silo's declared containers for online original HTTP.
@@ -222,8 +223,8 @@ enum AppleDecodeCapabilities {
     /// The hardware attestations VideoToolbox supplies, followed by the
     /// narrower software envelopes proven with Aether fixtures. This is the
     /// persistent-download safety contract and the fallback for Apple TV HD,
-    /// simulators, iOS, and macOS; online Apple TV 4K playback does not send
-    /// these predictions.
+    /// simulators, and macOS. Online iOS and Apple TV 4K playback delegate
+    /// these decisions to Aether's source probe.
     static func videoDecodeAttestation() -> [AppleVideoDecodeCapability] {
         videoDecodeAttestationValue
     }

@@ -169,7 +169,7 @@ extension AppleDecodeCapabilities {
 }
 
 struct PlaybackV3CodecCapabilities: Codable, Equatable {
-    /// How this client knows what it can decode. Online Apple TV 4K playback
+    /// How this client knows what it can decode. Online iOS and Apple TV 4K playback
     /// uses `declared` for the pinned Aether/FFmpeg manifest and lets Aether
     /// probe the exact stream at load time. Persistent downloads and the
     /// conservative Apple surfaces retain bounded `platform_attested` entries.

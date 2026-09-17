@@ -78,8 +78,6 @@ struct PlayerView: View {
 
                 if viewModel.isLoading || viewModel.isBuffering {
                     PlayerBufferingCapsule()
-                } else if viewModel.isLoadingSubtitles {
-                    PlayerBufferingCapsule(label: "Loading subtitles…")
                 }
 
                 if let notice = viewModel.activeNotice {

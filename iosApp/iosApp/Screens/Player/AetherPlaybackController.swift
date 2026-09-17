@@ -114,6 +114,7 @@ final class AetherPlaybackController {
     private var muted = false
     private var aetherSubtitleIDByAppID: [Int64: Int] = [:]
     private var appSubtitleIDByAetherID: [Int: Int64] = [:]
+    private var isRegisteringExternalSubtitle = false
     private var externalPlaybackObservation: NSKeyValueObservation?
     private var observedExternalPlaybackPlayer: AVPlayer?
     private var externalPlaybackPolicyTask: Task<Void, Never>?
@@ -412,16 +413,46 @@ final class AetherPlaybackController {
         aetherSubtitleIDByAppID[appTrackID] != nil
     }
 
+    func containsEmbeddedSubtitleTrack(streamIndex: Int, codec: String) -> Bool {
+        engine.subtitleTracks.contains(where: {
+            !$0.isExternal && $0.id == streamIndex
+                && ApplePlaybackV3Capabilities.normalizedSubtitleCodec($0.codec)
+                    == ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)
+        })
+    }
+
+    /// Bind a picker row to a stream already in the current demuxer. Validate
+    /// the actual inventory before replacing a possible extracted-file alias.
+    @discardableResult
+    func registerEmbeddedSubtitleTrack(streamIndex: Int, codec: String, appTrackID: Int64) -> Bool {
+        guard containsEmbeddedSubtitleTrack(streamIndex: streamIndex, codec: codec) else { return false }
+        if let previous = aetherSubtitleIDByAppID[appTrackID], previous != streamIndex {
+            appSubtitleIDByAetherID.removeValue(forKey: previous)
+        }
+        if let previousAppID = appSubtitleIDByAetherID[streamIndex], previousAppID != appTrackID {
+            aetherSubtitleIDByAppID.removeValue(forKey: previousAppID)
+        }
+        aetherSubtitleIDByAppID[appTrackID] = streamIndex
+        appSubtitleIDByAetherID[streamIndex] = appTrackID
+        return true
+    }
+
     @discardableResult
     func addExternalSubtitleTrack(_ track: ExternalSubtitleTrack, appTrackID: Int64, fontRequest: URLRequest? = nil) -> Int64 {
         if let engineID = aetherSubtitleIDByAppID[appTrackID] {
             if let fontRequest { assSubtitles.registerFontRequest(fontRequest, trackID: engineID) }
             return appTrackID
         }
+        // Aether publishes its inventory synchronously before returning the
+        // new id. Publish to Silo only after the alias and fonts are ready;
+        // otherwise inventory reconciliation can try to register it again.
+        isRegisteringExternalSubtitle = true
         let registered = engine.addExternalSubtitleTrack(track)
         aetherSubtitleIDByAppID[appTrackID] = registered.id
         appSubtitleIDByAetherID[registered.id] = appTrackID
         if let fontRequest { assSubtitles.registerFontRequest(fontRequest, trackID: registered.id) }
+        isRegisteringExternalSubtitle = false
+        publish(.inventoryChanged)
         return appTrackID
     }
 
@@ -577,7 +608,10 @@ final class AetherPlaybackController {
             engine.$subtitleTracks.map { _ in () },
             engine.$mediaChapters.map { _ in () }
         )
-        .sink { [weak self] in self?.publish(.inventoryChanged) }
+        .sink { [weak self] in
+            guard let self, !isRegisteringExternalSubtitle else { return }
+            publish(.inventoryChanged)
+        }
         .store(in: &subscriptions)
 
         engine.diagnostics.$liveTelemetry
