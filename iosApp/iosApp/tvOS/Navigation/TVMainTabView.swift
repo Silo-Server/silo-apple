@@ -46,7 +46,6 @@ struct TVMainTabView: View {
         }
         return cached.first(where: { $0.id == profileId })
     }()
-    @State private var showServerPicker = false
     @State private var showSignOutConfirm = false
     @State private var registry = ServerRegistry.shared
     /// Local, per-profile tab-visibility prefs (e.g. whether the Audiobooks
@@ -217,23 +216,6 @@ struct TVMainTabView: View {
                 }
             )
         }
-        .confirmationDialog(
-            "Switch Server",
-            isPresented: $showServerPicker,
-            titleVisibility: .visible
-        ) {
-            ForEach(registry.sortedEntries) { entry in
-                Button(serverButtonLabel(entry)) {
-                    switchToServer(entry)
-                }
-            }
-            Button("Add Server…") {
-                router.navigate(to: .serverSetup)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Choose a saved server to switch to.")
-        }
         // Outside the presentation modifiers so presented covers (audio
         // player) inherit the router — ErrorView requires it and traps
         // when it's absent.
@@ -322,7 +304,6 @@ struct TVMainTabView: View {
             && router.presentedPlayer == nil
             && !audioStore.isShowingFullPlayer
             && !showSignOutConfirm
-            && !showServerPicker
             && controlReceiver.standbyState == nil
     }
 
@@ -739,7 +720,7 @@ struct TVMainTabView: View {
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
-            onSwitchServer: { closePanel(then: { showServerPicker = true }) },
+            onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
             onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
         )
     }
@@ -856,12 +837,8 @@ struct TVMainTabView: View {
         panelEntersFocus = false
         panelHasFocus = false
 
-        // Returning focus to *that panel's* tab/avatar (§7) keeps the remote
-        // from stranding. Do it whether or not a follow-up action runs:
-        // route-pushing actions tear the bar down (the request is a no-op),
-        // but `Switch Server` opens a confirmation dialog and leaves the bar
-        // on screen — without re-arming, focus would be lost after dismiss.
-        // Re-arm before the action so a route push still wins the focus.
+        // Restore the panel's tab/avatar before the action so a route push
+        // can take focus and dismissing a confirmation returns to the bar.
         if wasFocused {
             focusTopMenuIfVisible(focusing: panel)
         }
@@ -1339,64 +1316,6 @@ struct TVMainTabView: View {
         }
     }
 
-    private func serverButtonLabel(_ entry: ServerEntry) -> String {
-        entry.id == registry.activeServerId
-            ? "\(entry.displayName) (Current)"
-            : entry.displayName
-    }
-
-    /// Switch to the selected server and snap the auth state machine to
-    /// the right screen (login / profile select / home) based on what's
-    /// remembered for that server.
-    private func switchToServer(_ entry: ServerEntry) {
-        guard entry.id != registry.activeServerId else { return }
-        Task {
-            guard await registry.switchTo(
-                serverId: entry.id,
-                resolveDestinationProfile: true
-            ) else { return }
-            await MainActor.run {
-                selectedRoot = .home
-                personalRoot = nil
-                currentProfile = nil
-                libraries = []
-                loadedLibraryAuthority = nil
-                ResponseCache.shared.remove(CacheKey.userLibraries)
-                pillSelections = [:]
-                shortcutPillSelections = [:]
-                // Re-read tab-visibility prefs under the new server+profile
-                // key: this path switches in place without rebuilding the
-                // shell, so `.task` (the only other caller of refresh) won't
-                // re-run and the cached mirror would otherwise stay stale.
-                navPrefs.refresh()
-                refreshAuthState()
-            }
-            if AuthService.shared.hasProfile {
-                async let profileTask: Void = loadCurrentProfile()
-                async let librariesTask: Void = loadLibraries(for: currentLibraryAuthority)
-                _ = await (profileTask, librariesTask)
-            }
-        }
-    }
-
-    private func refreshAuthState() {
-        router.popToRoot()
-        // A server switch can land back on `.authenticated`, which the
-        // router's same-value guard drops — so the identity boundary for an
-        // engaged PiP video is enforced here, before the reassignment.
-        PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
-        let auth = AuthService.shared
-        if !auth.hasServer {
-            router.authState = .needsServerSetup
-        } else if !auth.isLoggedIn {
-            router.authState = .needsLogin
-        } else if !auth.hasProfile {
-            router.authState = .needsProfile
-        } else {
-            router.authState = .authenticated
-        }
-    }
-
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
@@ -1458,7 +1377,7 @@ struct TVMainTabView: View {
         case .serverList:
             ServerListView()
         case .serverSetup:
-            // Pushed from the profile menu's "Add Server…" button — staying
+            // Pushed from the server list's "Add Server" button — staying
             // on the nav stack means the tvOS back button returns to the
             // previous active server instead of dropping the authenticated
             // tree entirely. Successful `connect()` flips authState to

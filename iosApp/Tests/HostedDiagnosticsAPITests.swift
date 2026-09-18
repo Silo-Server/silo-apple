@@ -1290,6 +1290,32 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
+    func testServerErasureFinishesLocallyWhileCollectorIsUnresponsive() async throws {
+        let fixture = try makePendingHostedReport(label: "logout-offline-erasure")
+        let bundle = try DiagnosticsBundleBuilder().build(report: fixture.report, logLines: [], droppedLogLines: 0)
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let stub = APIv2TestStub()
+        stub.reply(204, "")
+        stub.hold()
+        defer { stub.release() }
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")), session: stub.makeSession(),
+            credentialStore: HostedTestCredentialStore(credential: HostedDiagnosticsCredential(
+                installationID: "logout-test", installationToken: "logout-test-token")))
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+        let completed = expectation(description: "Server erasure does not wait for the collector")
+        let purge = Task {
+            await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+            completed.fulfill()
+        }
+        await fulfillment(of: [completed], timeout: 2)
+        await purge.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertTrue(try fixture.store.hostedDeletionIntents().contains(fixture.report.id))
+        await stub.waitUntilHeld()
+        XCTAssertEqual(stub.methods, ["DELETE"])
+    }
+
     func testHostedDeleteIntentRemovesEvidenceAndRetriesUntilCollectorAccepts() async throws {
         let fixture = try makePendingHostedReport(label: "durable-delete-intent")
         let bundle = try DiagnosticsBundleBuilder().build(
