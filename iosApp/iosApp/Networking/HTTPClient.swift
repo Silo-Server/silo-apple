@@ -315,6 +315,25 @@ actor HTTPClient {
         }
     }
 
+    /// Best-effort revocation after local sign-out. The captured bearer belongs
+    /// to the outgoing session; never refresh it or read the replacement account.
+    func revokeSession(_ auth: CapturedOrdinaryRequestAuth) async {
+        guard let token = auth.accessToken, !token.isEmpty else { return }
+        do {
+            var request = try buildRequest(serverUrl: auth.account.serverURL,
+                method: "POST", path: "/api/v1/auth/logout", query: [:], body: nil)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 5
+            // Removing the server or signing in again cancels ordinary traffic.
+            // Let this one captured revocation finish independently.
+            let revocationSession = URLSession(configuration: session.configuration)
+            defer { revocationSession.invalidateAndCancel() }
+            _ = try await revocationSession.data(for: request)
+        } catch {
+            // Local sign-out is complete even when the server is unavailable.
+        }
+    }
+
     func postMultipart<T: Decodable>(
         _ path: String,
         parts: [HTTPMultipartPart],
