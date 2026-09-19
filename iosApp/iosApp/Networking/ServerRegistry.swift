@@ -531,7 +531,14 @@ final class ServerRegistry {
             // publishing a fallback server/profile combination.
             DiagnosticsCoordinator.activeProfileWillChange()
         }
-        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        guard await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId) else {
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            await httpClient.endIdentityTransition(transitionLease)
+            Self.logger.error("removeServer failed to purge local diagnostics")
+            return false
+        }
         #endif
         guard !Task.isCancelled else {
             #if os(iOS) || os(tvOS)

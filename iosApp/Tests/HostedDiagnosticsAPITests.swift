@@ -1304,16 +1304,34 @@ final class HostedDiagnosticsAPITests: XCTestCase {
                 installationID: "logout-test", installationToken: "logout-test-token")))
         let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
         let completed = expectation(description: "Server erasure does not wait for the collector")
-        let purge = Task {
-            await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+        Task {
+            let removed = await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+            XCTAssertTrue(removed)
             completed.fulfill()
         }
         await fulfillment(of: [completed], timeout: 2)
-        await purge.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
         XCTAssertTrue(try fixture.store.hostedDeletionIntents().contains(fixture.report.id))
-        await stub.waitUntilHeld()
+        let deletionStarted = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !stub.methods.isEmpty }, object: nil)
+        await fulfillment(of: [deletionStarted], timeout: 2)
         XCTAssertEqual(stub.methods, ["DELETE"])
+    }
+
+    func testServerErasureReportsLocalFailureAndAllowsRetry() async throws {
+        let fixture = try makePendingHostedReport(label: "server-erasure-retry")
+        let ledgerURL = hostedErasureLedgerURL(for: fixture.report, kind: .deletionIntents)
+        try Data("invalid ledger".utf8).write(to: ledgerURL)
+        let coordinator = DiagnosticsCoordinator(pendingStore: fixture.store)
+
+        let failed = await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+        XCTAssertFalse(failed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        try FileManager.default.removeItem(at: ledgerURL)
+        let retried = await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+        XCTAssertTrue(retried)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
     func testHostedDeleteIntentRemovesEvidenceAndRetriesUntilCollectorAccepts() async throws {

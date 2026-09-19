@@ -1740,7 +1740,8 @@ actor DiagnosticsCoordinator {
     /// Local erasure must work offline and while the HTTP identity gate is
     /// closed. Known bindings already identify the data; fetching a new status
     /// here can refresh an expiring session during logout.
-    func purgeDiagnosticsForServerRegistryID(_ serverId: String) {
+    @discardableResult
+    func purgeDiagnosticsForServerRegistryID(_ serverId: String) -> Bool {
         var bindings = Set(DiagnosticsDestinationChoice.allCases.compactMap {
             Self.LastKnownStatusStore.snapshot(for: serverId, destination: $0)?.binding
         })
@@ -1770,10 +1771,15 @@ actor DiagnosticsCoordinator {
                 binding.serverInstanceID == hostedServerInstanceID ? reportID : nil
             }
         )
-        try? pendingStore.stageHostedDeletionsAndPurge(
-            serverInstanceID: hostedServerInstanceID,
-            additionalRemoteReportIDs: additionalReportIDs
-        )
+        do {
+            try pendingStore.stageHostedDeletionsAndPurge(
+                serverInstanceID: hostedServerInstanceID,
+                additionalRemoteReportIDs: additionalReportIDs
+            )
+        } catch {
+            // Keep the binding and consent records so removal can be retried.
+            return false
+        }
         consentStore.remove(serverInstanceID: hostedServerInstanceID)
         profileEligibilityStore.remove(serverInstanceID: hostedServerInstanceID)
         let serverInstanceIDs = Self.ServerBindingIndex.serverInstanceIDs(for: serverId)
@@ -1791,6 +1797,7 @@ actor DiagnosticsCoordinator {
         Self.ServerBindingIndex.remove(serverId: serverId)
         Self.purgeBreadcrumbJournal()
         scheduleHostedDeletionMaintenance()
+        return true
     }
 
     #if os(tvOS)

@@ -275,7 +275,7 @@ struct ServerListView: View {
         isResolvingServer = true
         let wasActive = entry.id == registry.activeServerId
         Task { @MainActor in
-            let removed = await registry.remove(serverId: entry.id)
+            let removed = await registry.remove(serverId: entry.id, resolveFallbackProfile: wasActive)
             isResolvingServer = false
             removeTarget = nil
             guard removed else {

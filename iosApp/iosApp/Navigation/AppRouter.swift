@@ -589,7 +589,7 @@ class AppRouter {
             }
             var durable = outcome == .completed
             if removingServer, let serverID {
-                let removed = await ServerRegistry.shared.remove(serverId: serverID)
+                let removed = await ServerRegistry.shared.remove(serverId: serverID, resolveFallbackProfile: true)
                 durable = durable || removed
                 if !removed {
                     accountActionError = "Silo couldn't remove the saved server. Please try again."
