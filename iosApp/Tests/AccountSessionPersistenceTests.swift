@@ -20,6 +20,186 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.switchActiveServer(serverId: "server")
         return store
     }
+    @MainActor
+    private func lifecycleHarness(purgeDiagnostics: @escaping @Sendable (String) async -> Bool = { _ in true }) async throws -> (
+        store: TokenStore, keys: SharedKeychain, defaults: SharedDefaults,
+        memory: SessionMemory, registry: ServerRegistry, auth: AuthService, http: HTTPClient, stub: APIv2TestStub
+    ) {
+        let (store, keys, defaults, memory) = try await harness()
+        defaults.set(true, forKey: "continuumServerRegistry.migrated.v1")
+        let preferences = ProfileLaunchPreferences(defaults: defaults)
+        let stub = APIv2TestStub()
+        stub.reply(204, "")
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: store)
+        let registry = ServerRegistry(defaults: defaults, keychain: keys,
+            launchPreferences: preferences, tokenStore: store, httpClient: http)
+        XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
+            fetchedName: "Test Server", lastUsedAt: Date())))
+        let switched = await registry.switchTo(serverId: "server")
+        XCTAssertTrue(switched)
+        let auth = AuthService(serverRegistry: registry, launchPreferences: preferences,
+            httpClient: http, tokenStore: store, sessionPersistence: memory.persistence,
+            purgeDiagnostics: purgeDiagnostics)
+        try await store.installAccountSession(accessToken: "original", refreshToken: "refresh", accountID: "12")
+        await store.setProfileId("profile")
+        _ = await store.setProfileToken("proof")
+        let epoch = await store.getOrCreateAccountEpoch()
+        preferences.remember(profileID: "profile", requiresPIN: true,
+            accountEpoch: try XCTUnwrap(epoch), for: "server")
+        return (store, keys, defaults, memory, registry, auth, http, stub)
+    }
+
+    @MainActor
+    func testSignOutReportsDiagnosticsFailureWithoutKeepingCredentials() async throws {
+        let h = try await lifecycleHarness(purgeDiagnostics: { _ in false })
+        let outcome = await h.auth.signOutWithOutcome()
+        XCTAssertEqual(outcome, .diagnosticsCleanupFailed)
+        XCTAssertFalse(h.auth.isLoggedIn)
+        XCTAssertNotNil(h.registry.activeServer)
+        let restored = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
+        XCTAssertNil(restored)
+        try await h.store.installAccountSession(accessToken: "replacement", refreshToken: "new-refresh", accountID: "12")
+        XCTAssertTrue(h.auth.isLoggedIn)
+    }
+
+    @MainActor
+    func testSignOutCompletesBeforeServerRepliesAndStaysSignedOutAfterRestart() async throws {
+        let h = try await lifecycleHarness()
+        h.stub.hold()
+        defer { h.stub.release() }
+        let completed = expectation(description: "Local sign-out does not wait for the server")
+        let operation = Task {
+            let result = await h.auth.signOutWithOutcome()
+            completed.fulfill()
+            return result
+        }
+        await fulfillment(of: [completed], timeout: 2)
+        let result = await operation.value
+        XCTAssertEqual(result, .completed)
+        XCTAssertNotNil(h.registry.activeServer)
+        XCTAssertFalse(h.auth.isLoggedIn)
+        XCTAssertNil(h.defaults.string(forKey: SharedStorage.profileIdKey))
+        XCTAssertNil(ProfileLaunchPreferences(defaults: h.defaults).rememberedProfile(for: "server"))
+        let restored = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
+        XCTAssertNil(restored)
+        await h.stub.waitUntilHeld()
+        XCTAssertEqual(h.stub.requestedPaths, ["/api/v1/auth/logout"])
+        XCTAssertEqual(h.stub.requests.first?.header("Authorization"), "Bearer original")
+    }
+
+    @MainActor
+    func testLateUnauthorizedLogoutCannotRefreshOrClearNewLogin() async throws {
+        let h = try await lifecycleHarness()
+        let capture = await h.store.captureOrdinaryRequestAuth()
+        let outgoing = try XCTUnwrap(capture)
+        h.stub.reply(401, "{}")
+        h.stub.hold()
+        defer { h.stub.release() }
+        let revoke = Task { await h.http.revokeSession(outgoing) }
+        await h.stub.waitUntilHeld()
+        _ = await h.store.clearTokens()
+        let expected = await h.store.refreshAccountIdentity()
+        try await h.auth.installSession(accessToken: "replacement", refreshToken: "replacement-refresh",
+            expectedAccount: XCTUnwrap(expected))
+        h.stub.release()
+        await revoke.value
+        let access = await h.store.getAccessToken()
+        XCTAssertEqual(access, "replacement")
+        XCTAssertTrue(h.auth.isLoggedIn)
+        XCTAssertEqual(h.stub.requestedPaths, ["/api/v1/auth/logout"])
+    }
+
+    @MainActor
+    func testRemovingLastServerSurvivesRestartAndReaddingRequiresLogin() async throws {
+        let h = try await lifecycleHarness()
+        let removed = await h.registry.remove(serverId: "server")
+        XCTAssertTrue(removed)
+        XCTAssertTrue(h.registry.entries.isEmpty)
+        XCTAssertNil(h.registry.activeServerId)
+        XCTAssertNil(h.defaults.string(forKey: SharedStorage.serverUrlKey))
+        XCTAssertNil(h.defaults.string(forKey: SharedStorage.profileIdKey))
+        let restored = ServerRegistry(defaults: h.defaults, keychain: h.keys,
+            launchPreferences: ProfileLaunchPreferences(defaults: h.defaults),
+            tokenStore: h.store, httpClient: h.http)
+        XCTAssertTrue(restored.entries.isEmpty)
+        XCTAssertNil(restored.activeServerId)
+        XCTAssertNotNil(restored.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
+            fetchedName: nil, lastUsedAt: Date())))
+        let switched = await restored.switchTo(serverId: "server")
+        XCTAssertTrue(switched)
+        let access = await h.store.getAccessToken()
+        XCTAssertNil(access)
+        let account = await h.store.refreshAccountIdentity()
+        try await h.auth.installSession(accessToken: "new-login", refreshToken: "new-refresh",
+            expectedAccount: XCTUnwrap(account))
+        let relaunched = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
+        XCTAssertEqual(relaunched, "new-login")
+    }
+
+    @MainActor
+    func testRemovingActiveServerPreservesFallbackAccount() async throws {
+        let h = try await lifecycleHarness()
+        XCTAssertNotNil(h.registry.addOrUpdate(ServerEntry(id: "fallback", url: "https://fallback.example",
+            fetchedName: nil, lastUsedAt: .distantPast)))
+        let before = await h.store.captureAccountInstallationExpectation()
+        try await h.store.installAccountSessionForServer(serverID: "fallback", origin: "https://fallback.example",
+            accessToken: "fallback-access", refreshToken: "fallback-refresh", accountID: "34", expected: before)
+        let removed = await h.registry.remove(serverId: "server")
+        XCTAssertTrue(removed)
+        XCTAssertEqual(h.registry.activeServerId, "fallback")
+        XCTAssertEqual(h.defaults.string(forKey: SharedStorage.serverUrlKey), "https://fallback.example")
+        let access = await h.store.getAccessToken()
+        XCTAssertEqual(access, "fallback-access")
+        let oldAccess = await h.store.getAccessToken(for: "server")
+        XCTAssertNil(oldAccess)
+        XCTAssertTrue(h.auth.isLoggedIn)
+    }
+
+    @MainActor
+    func testFailedServerRemovalRetainsEntryAndReleasesIdentityGate() async throws {
+        let h = try await lifecycleHarness()
+        h.memory.rejectTombstones = true
+        h.memory.failRemoval = true
+        let removed = await h.registry.remove(serverId: "server")
+        XCTAssertFalse(removed)
+        XCTAssertEqual(h.registry.activeServerId, "server")
+        XCTAssertNotNil(h.registry.entry(with: "server"))
+        XCTAssertEqual(h.defaults.string(forKey: SharedStorage.serverUrlKey), "https://session.example")
+        let restored = ServerRegistry(defaults: h.defaults, keychain: h.keys,
+            launchPreferences: ProfileLaunchPreferences(defaults: h.defaults),
+            tokenStore: h.store, httpClient: h.http)
+        XCTAssertEqual(restored.activeServerId, "server")
+        XCTAssertNotNil(restored.entry(with: "server"))
+        h.memory.rejectTombstones = false
+        h.memory.failRemoval = false
+        let retry = await h.registry.remove(serverId: "server")
+        XCTAssertTrue(retry)
+        XCTAssertTrue(h.registry.entries.isEmpty)
+    }
+
+    @MainActor
+    func testLoginStateUsesCanonicalRecordInsteadOfLegacyMirror() async throws {
+        let h = try await lifecycleHarness()
+        // A mirror can be missing after a failed best-effort mirror write.
+        h.keys.withAudience(.userIndependent).delete(TokenStore.accessTokenKey(for: "server"))
+        XCTAssertTrue(h.auth.isLoggedIn)
+        XCTAssertTrue(h.memory.persistence.invalidate("server"))
+        // A legacy copy can survive erasure or migrate from an older tvOS keychain.
+        h.keys.withAudience(.userIndependent).set("stale", for: TokenStore.accessTokenKey(for: "server"))
+        XCTAssertFalse(h.auth.isLoggedIn)
+    }
+
+    @MainActor
+    func testSignOutReportsFailedPersistenceAndClearsRuntimeCredentials() async throws {
+        let h = try await lifecycleHarness()
+        h.memory.failRecordWrites = true
+        h.memory.failRemoval = true
+        let result = await h.auth.signOutWithOutcome()
+        XCTAssertEqual(result, .localOnly)
+        let access = await h.store.getAccessToken()
+        XCTAssertNil(access)
+    }
+
     func testDelayedLoginInstallRejectsSameAccountReloginInsideActor() async throws {
         let (store, _, _, _) = try await harness()
         try await store.installAccountSession(accessToken: "first", refreshToken: "first-refresh", accountID: "12")

@@ -228,8 +228,11 @@ struct ServerListView: View {
                     Text(entry.url)
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .multilineTextAlignment(.leading)
                 Spacer()
             }
             .contentShape(Rectangle())
@@ -268,16 +271,19 @@ struct ServerListView: View {
     }
 
     private func remove(_ entry: ServerEntry) {
+        guard !isResolvingServer else { return }
+        isResolvingServer = true
         let wasActive = entry.id == registry.activeServerId
-        Task {
-            guard await registry.remove(
-                serverId: entry.id,
-                resolveFallbackProfile: wasActive
-            ) else { return }
-            await MainActor.run {
-                removeTarget = nil
+        Task { @MainActor in
+            let removed = await registry.remove(serverId: entry.id, resolveFallbackProfile: wasActive)
+            isResolvingServer = false
+            removeTarget = nil
+            guard removed else {
+                router.accountActionError = "Silo couldn't remove the saved server. Please try again."
                 if wasActive { refreshAuthState() }
+                return
             }
+            if wasActive { refreshAuthState() }
         }
     }
 

@@ -163,18 +163,24 @@ final class ServerRegistry {
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
     private let launchPreferences: ProfileLaunchPreferences
+    private let tokenStore: TokenStore
+    private let httpClient: HTTPClient
     private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
 
     init(
         defaults: SharedDefaults = .shared,
         keychain: SharedKeychain = SharedKeychain(),
         launchPreferences: ProfileLaunchPreferences = .shared,
-        persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil
+        persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil,
+        tokenStore: TokenStore = .shared,
+        httpClient: HTTPClient = .shared
     ) {
         self.defaults = defaults
         self.keychain = keychain
         self.launchPreferences = launchPreferences
         self.persistenceOverride = persistenceOverride
+        self.tokenStore = tokenStore
+        self.httpClient = httpClient
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
@@ -293,7 +299,7 @@ final class ServerRegistry {
             )
             return false
         }
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
             // No lease means another identity transition owns the client. The
             // tap appears to do nothing, with no error surfaced anywhere else.
             recordRegistryEvent(
@@ -304,12 +310,12 @@ final class ServerRegistry {
             return false
         }
         guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             return false
         }
-        await HTTPClient.shared.cancelInFlightRequests()
+        await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             return false
         }
         #if os(iOS) || os(tvOS)
@@ -320,7 +326,7 @@ final class ServerRegistry {
             #if os(iOS) || os(tvOS)
             DiagnosticsCoordinator.activeProfileDidChange()
             #endif
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             return false
         }
         if resolveDestinationProfile, AuthService.shared.isLoggedIn {
@@ -331,7 +337,7 @@ final class ServerRegistry {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
         await refreshFeaturesAfterServerSwitch()
         return true
     }
@@ -345,7 +351,7 @@ final class ServerRegistry {
         holding transitionLease: HTTPIdentityTransitionLease
     ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }),
-              await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
+              await httpClient.isIdentityTransitionActive(transitionLease) else {
             Self.logger.error("gated switchTo called without its identity transition")
             recordRegistryEvent(
                 phase: "switchServer",
@@ -451,7 +457,7 @@ final class ServerRegistry {
             Self.logger.error("switchTo failed to persist the destination server")
             return false
         }
-        await TokenStore.shared.switchActiveServer(serverId: serverId)
+        await tokenStore.switchActiveServer(serverId: serverId)
         return true
     }
 
@@ -485,113 +491,14 @@ final class ServerRegistry {
         }
     }
 
-    /// Sign out from `serverId` without removing the entry. Clears tokens
-    /// and profile selection; URL + display name remain so the user can
-    /// log back in. If `serverId` is the active server, the legacy
-    /// `profileId` UserDefaults key is cleared too.
-    ///
-    /// The registry-wide diagnostics purge always runs: it clears reports and
-    /// consent stored under *older* `server_instance_id`s recorded for this
-    /// registry URL (e.g. after a server restore/reinstall at the same URL),
-    /// which a current-binding-only purge would leave behind. Pass
-    /// `purgeCurrentBinding: false` when the caller already purged the active
-    /// binding while still authenticated (AuthService.signOut does, so the
-    /// binding resolves against a live session) to avoid duplicate current work.
-    /// Returns `false` when the canonical session record could not be
-    /// invalidated durably; process-local credentials are still cleared, but
-    /// the caller must not report the sign-out as complete because the
-    /// record can restore the session on the next launch.
-    @discardableResult
-    func signOut(
-        serverId: String,
-        purgeCurrentBinding: Bool = true,
-        purgeRegistryBindings: Bool = true
-    ) async -> Bool {
-        #if os(iOS) || os(tvOS)
-        if purgeCurrentBinding, serverId == activeServerId {
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
-        }
-        if purgeRegistryBindings {
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
-        }
-        #endif
-        let durable = await TokenStore.shared.deleteTokens(for: serverId)
-        launchPreferences.clearRememberedProfile(for: serverId)
-        // Read *after* the awaits above, not snapshotted at entry: the legacy
-        // `profileId` key always describes whichever server is active right
-        // now. If a switch lands during those suspensions, this server is no
-        // longer the one the key belongs to and clearing it would erase the
-        // destination server's profile selection. The breadcrumb below reuses
-        // the same value so the recorded reason always names the branch that
-        // actually ran.
-        let signsOutActiveServer = serverId == activeServerId
-        if signsOutActiveServer {
-            defaults.removeObject(forKey: SharedStorage.profileIdKey)
-        }
-        // Deliberately after the purge above, matching `remove`: the purge
-        // wipes the whole journal, so a line written before it is lost, while
-        // one written after explains why the journal starts empty. It is still
-        // consent-gated — the journal re-checks capture on every append.
-        // Signing out a *non-active* server leaves the UI unchanged, so the
-        // two cases are distinguished to keep a later "why am I still signed
-        // in" report answerable.
-        //
-        // Whether this appends depends on the caller, and only one of them can
-        // ever see it. `AuthService.signOut` passes both purge flags false
-        // precisely because it already purged the current binding itself —
-        // and that purge cleared the breadcrumb consent context along with the
-        // last-known status snapshot behind it, so nothing resolves a context
-        // and this line is dropped on the whole active sign-out path. What
-        // survives is the direct caller that never touched the current binding:
-        // a non-active sign-out, where `otherServer` still records. The
-        // `activeServer` reason is kept rather than deleted because the purge
-        // flags are parameters — a future caller that signs out an active
-        // server without pre-purging would land here with the gate open, and
-        // that is the case the reason names.
-        recordRegistryEvent(
-            phase: "signOutServer",
-            outcome: durable ? "succeeded" : "notDurable",
-            reason: signsOutActiveServer ? "activeServer" : "otherServer"
-        )
-        return durable
-    }
-
-    /// Remove a server entirely (entry + tokens). If it was active, the
-    /// next-most-recent server becomes active; if none remain, the active
-    /// slot is cleared.
-    ///
-    /// Breadcrumbs here are deliberately asymmetric, and the asymmetry is the
-    /// whole point. Removing a *non-active* server never opens an identity
-    /// boundary: no `activeProfileWillChange()` runs, the capture gate stays
-    /// open, and every outcome below is recorded normally. The registry-wide
-    /// purge that does run empties the journal but leaves the consent context
-    /// intact, so a line written after it still appends — the same position
-    /// `signOut` takes, and for the same reason.
-    ///
-    /// Removing the *active* server cannot record any outcome. The boundary at
-    /// the top of that branch closes the capture gate synchronously, and its
-    /// matching `activeProfileDidChange()` only starts an async re-resolution
-    /// that cannot land before this function returns — so every later line is
-    /// offered to a disabled journal. Nor does moving one earlier help: the
-    /// boundary also calls `purgeBreadcrumbJournal()` once this launch's
-    /// capture decision is in effect, deleting the journal directory and the
-    /// early-boot staging buffer, so a pre-boundary line sits in exactly the
-    /// trail that purge destroys. See `commitSwitchTo` for the long form.
-    ///
-    /// The cost is real and worth naming: the `activeServerNoFallback` /
-    /// `activeServerFellBack` distinction — which server the user gets bounced
-    /// to, or whether they land at setup — is what a "my servers disappeared"
-    /// report wants most, and it is unrecordable anywhere in this function.
-    /// Claiming otherwise with a line that never appends would be worse, so
-    /// the active branch keeps only its OSLog failure line, and what makes the
-    /// removal readable in a report is the fallback identity's own trail,
-    /// which opens fresh once eligibility re-resolves.
+    /// Forget the entry and its credentials. Removing the active server
+    /// selects the most recently used remaining server, or clears setup.
     @discardableResult
     func remove(
         serverId: String,
         resolveFallbackProfile: Bool = false
     ) async -> Bool {
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
             recordRegistryEvent(
                 phase: "removeServer",
                 outcome: "failed",
@@ -600,7 +507,7 @@ final class ServerRegistry {
             return false
         }
         guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             recordRegistryEvent(
                 phase: "removeServer",
                 outcome: "cancelled",
@@ -609,7 +516,7 @@ final class ServerRegistry {
             return false
         }
         guard entries.contains(where: { $0.id == serverId }) else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             recordRegistryEvent(
                 phase: "removeServer",
                 outcome: "failed",
@@ -623,9 +530,15 @@ final class ServerRegistry {
             // Close the synchronous capture gate before any await or before
             // publishing a fallback server/profile combination.
             DiagnosticsCoordinator.activeProfileWillChange()
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
         }
-        await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId)
+        guard await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverId) else {
+            if removesActiveServer {
+                DiagnosticsCoordinator.activeProfileDidChange()
+            }
+            await httpClient.endIdentityTransition(transitionLease)
+            Self.logger.error("removeServer failed to purge local diagnostics")
+            return false
+        }
         #endif
         guard !Task.isCancelled else {
             #if os(iOS) || os(tvOS)
@@ -633,7 +546,7 @@ final class ServerRegistry {
                 DiagnosticsCoordinator.activeProfileDidChange()
             }
             #endif
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             // Diagnostics for this server were already purged above but the
             // entry survives, so the reason names the abandonment point and the
             // resulting half-cleaned state stays recognizable in a report. Only
@@ -653,13 +566,13 @@ final class ServerRegistry {
         if removesActiveServer {
             // Stop old-server responses and clear every process-wide cache
             // before publishing the fallback ID to observing views.
-            await HTTPClient.shared.cancelInFlightRequests()
+            await httpClient.cancelInFlightRequests()
             await AuthService.shared.clearCachesForServerChange()
             guard !Task.isCancelled else {
                 #if os(iOS) || os(tvOS)
                 DiagnosticsCoordinator.activeProfileDidChange()
                 #endif
-                await HTTPClient.shared.endIdentityTransition(transitionLease)
+                await httpClient.endIdentityTransition(transitionLease)
                 // Inside the active-server branch, so the gate is always
                 // closed here. OSLog only.
                 Self.logger.error("removeServer cancelled after clearing caches")
@@ -714,7 +627,7 @@ final class ServerRegistry {
                 DiagnosticsCoordinator.activeProfileDidChange()
             }
             #endif
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             // A rolled-back persist restores the outgoing server, so on the
             // active branch this is the same unrecordable position `switchTo`
             // is in: the gate closed above and the rollback does not reopen it.
@@ -733,7 +646,7 @@ final class ServerRegistry {
         // so the entry comes back instead. Process-local credentials for the
         // server are already cleared and its runtime is blocked; the record
         // itself is intact, which is the state the restored entry describes.
-        guard await TokenStore.shared.deleteTokens(for: serverId) else {
+        guard await tokenStore.deleteTokens(for: serverId) else {
             await rollBackRemoval(reason: "sessionInvalidationFailed")
             return false
         }
@@ -755,7 +668,7 @@ final class ServerRegistry {
             )
         }
         if removesActiveServer {
-            await TokenStore.shared.switchActiveServer(serverId: activeServerId ?? "")
+            await tokenStore.switchActiveServer(serverId: activeServerId ?? "")
         }
         launchPreferences.clearRememberedProfile(for: serverId)
         if removesActiveServer,
@@ -772,7 +685,7 @@ final class ServerRegistry {
             DiagnosticsCoordinator.activeProfileDidChange()
         }
         #endif
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
         if removesActiveServer {
             await MainActor.run {
                 AICapabilities.shared.reset()

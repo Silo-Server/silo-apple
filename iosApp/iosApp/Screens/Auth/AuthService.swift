@@ -17,6 +17,8 @@ final class AuthService: @unchecked Sendable {
     private let contractProbe: APIv2Probe
     private let httpClient: HTTPClient
     private let tokenStore: TokenStore
+    private let sessionPersistence: AccountSessionPersistence
+    private let purgeDiagnostics: @Sendable (String) async -> Bool
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -26,6 +28,8 @@ final class AuthService: @unchecked Sendable {
     enum SignOutOutcome: Equatable, Sendable {
         /// Credentials were cleared and the canonical record was invalidated.
         case completed
+        /// Credentials were invalidated, but local diagnostics could not be erased.
+        case diagnosticsCleanupFailed
         /// Nothing was changed: the sign-out was not authorised or the
         /// active identity changed while it ran.
         case refused
@@ -43,7 +47,15 @@ final class AuthService: @unchecked Sendable {
         restoredSessionValidator: RestoredSessionValidator = .live,
         contractProbe: APIv2Probe = APIv2Probe(),
         httpClient: HTTPClient = .shared,
-        tokenStore: TokenStore = .shared
+        tokenStore: TokenStore = .shared,
+        sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain()),
+        purgeDiagnostics: @escaping @Sendable (String) async -> Bool = { serverID in
+            #if os(iOS) || os(tvOS)
+            return await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverID)
+            #else
+            return true
+            #endif
+        }
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
@@ -52,6 +64,8 @@ final class AuthService: @unchecked Sendable {
         self.contractProbe = contractProbe
         self.httpClient = httpClient
         self.tokenStore = tokenStore
+        self.sessionPersistence = sessionPersistence
+        self.purgeDiagnostics = purgeDiagnostics
     }
 
     /// Runs the v2 contract probe for `serverId` and records the verdict.
@@ -84,17 +98,13 @@ final class AuthService: @unchecked Sendable {
     /// on one identity boundary.
     var profileId: String? { defaults.string(forKey: SharedStorage.profileIdKey) }
 
-    var hasServer: Bool { ServerRegistry.shared.hasActiveServer }
+    var hasServer: Bool { serverRegistry.hasActiveServer }
 
-    /// Sync check used by SwiftUI bodies and view-state gates. Reads the
-    /// active server's Keychain slot directly — Keychain APIs are
-    /// synchronous, so no actor hop is needed.
+    /// Use the same canonical record as TokenStore. Legacy mirrors cannot
+    /// revive a session after its sign-out tombstone has been written.
     var isLoggedIn: Bool {
-        guard let id = ServerRegistry.shared.activeServerId, !id.isEmpty else {
-            return false
-        }
-        return SharedKeychain(audience: .userIndependent)
-            .get(TokenStore.accessTokenKey(for: id)) != nil
+        guard let server = serverRegistry.activeServer else { return false }
+        return sessionPersistence.hasSession(serverID: server.id, origin: ServerRegistry.normalize(url: server.url))
     }
 
     var hasProfile: Bool { profileId != nil }
@@ -661,85 +671,38 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Sign Out
 
-    /// Sign out of the active server. Keeps the registry entry (URL +
-    /// display name) so the user can log back in without re-adding the
-    /// server. Call `ServerRegistry.shared.remove(serverId:)` to fully
-    /// forget a server instead.
-    @discardableResult
-    func signOut() async -> Bool {
-        await signOutWithOutcome() != .refused
-    }
-
+    /// Clear local credentials under the identity gate. Remote revocation uses
+    /// only the outgoing credential and cannot delay logout or alter a new login.
     func signOutWithOutcome() async -> SignOutOutcome {
-        let signingOutServerId = ServerRegistry.shared.activeServerId
-        let signingOutAuth = await TokenStore.shared.captureOrdinaryRequestAuth()
-        let authorization = Self.signOutAuthorization(
-            activeServerId: signingOutServerId,
-            capturedAuth: signingOutAuth
-        )
-        guard case .allowed(let signingOutAccount) = authorization else {
-            return .refused
-        }
-        #if os(iOS) || os(tvOS)
-        // Purge the active binding now, while still authenticated: the /logout
-        // below invalidates the session, after which the binding could only be
-        // resolved from the last-known snapshot. The registry-wide purge always
-        // runs in ServerRegistry.signOut regardless, catching diagnostics under
-        // older server_instance_ids for this URL.
-        let purgedCurrentBinding = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
-        #else
-        let purgedCurrentBinding = false
-        #endif
-        // Best-effort server-side logout; never block sign-out on a
-        // server-side error, since the client wants to end the session
-        // regardless.
-        if let signingOutAccount {
-            do {
-                try await HTTPClient.shared.postVoid(
-                    "/api/v1/auth/logout",
-                    expectedAccount: signingOutAccount
-                )
-            } catch {
-                // Swallow; the captured account check below still prevents
-                // clearing a server selected while logout was in flight.
-            }
-        }
-        #if os(iOS) || os(tvOS)
-        if !purgedCurrentBinding,
-           ServerRegistry.shared.activeServerId == signingOutServerId {
-            _ = await DiagnosticsCoordinator.shared.purgeDiagnosticsForCurrentBinding()
-        }
-        if let signingOutServerId {
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(signingOutServerId)
-        }
-        #endif
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return .refused
-        }
-        guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return .refused
-        }
-        await HTTPClient.shared.cancelInFlightRequests()
+        let serverID = serverRegistry.activeServerId
+        let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
+        guard case .allowed(let account) = Self.signOutAuthorization(
+            activeServerId: serverID, capturedAuth: capturedAuth
+        ) else { return .refused }
+        guard let lease = await httpClient.beginIdentityTransition() else { return .refused }
+        await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled,
-              ServerRegistry.shared.activeServerId == signingOutServerId,
-              await TokenStore.shared.refreshAccountIdentity() == signingOutAccount else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+              serverRegistry.activeServerId == serverID,
+              await tokenStore.refreshAccountIdentity() == account else {
+            await httpClient.endIdentityTransition(lease)
             return .refused
         }
-        let durable: Bool
-        if let signingOutServerId {
-            durable = await ServerRegistry.shared.signOut(
-                serverId: signingOutServerId,
-                purgeCurrentBinding: false,
-                purgeRegistryBindings: false
-            )
-        } else {
-            durable = await TokenStore.shared.clearTokens()
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        let durable = await tokenStore.clearTokens()
+        var diagnosticsRemoved = true
+        if let serverID {
+            launchPreferences.clearRememberedProfile(for: serverID)
+            diagnosticsRemoved = await purgeDiagnostics(serverID)
         }
         await clearAllCaches()
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
-        return durable ? .completed : .localOnly
+        await httpClient.endIdentityTransition(lease)
+        if let capturedAuth {
+            Task { await httpClient.revokeSession(capturedAuth) }
+        }
+        guard durable else { return .localOnly }
+        return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
     }
 
     /// Decide whether a captured credential can authorize local sign-out.

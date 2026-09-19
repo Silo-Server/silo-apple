@@ -67,6 +67,14 @@ struct ContentView: View {
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
+        .alert("Account Update", isPresented: Binding(
+            get: { router.accountActionError != nil },
+            set: { if !$0 { router.accountActionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { router.accountActionError = nil }
+        } message: {
+            Text(router.accountActionError ?? "")
+        }
         #if os(tvOS) && DEBUG
         .modifier(TVFocusDebugActivationModifier())
         #endif

@@ -57,6 +57,21 @@ struct AccountSessionPersistence: Sendable {
         return .session(value)
     }
 
+    func hasSession(serverID: String, origin: String) -> Bool {
+        do {
+            switch try load(serverID) {
+            case .session(let session):
+                return session.origin == origin
+            case .signedOut:
+                return false
+            case .legacy:
+                return try read(SharedStorage.accessTokenAccount(for: serverID))?.isEmpty == false
+            }
+        } catch {
+            return false
+        }
+    }
+
     func save(_ value: CanonicalAccountSession, serverID: String) throws {
         guard !serverID.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
         let raw = String(decoding: try JSONEncoder().encode(value), as: UTF8.self)

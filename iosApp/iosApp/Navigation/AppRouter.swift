@@ -1,4 +1,3 @@
-import OSLog
 import SwiftUI
 
 /// The ordered cards surrounding a detail presentation. iOS uses this to
@@ -64,14 +63,6 @@ extension Notification.Name {
 /// Observed by ContentView to decide which screen tree to present.
 @Observable
 class AppRouter {
-
-    /// Outcomes on the post-erasure sign-out paths can only go here: the
-    /// diagnostics binding is purged before control returns, so a breadcrumb
-    /// would be dropped. See `signOutAndReset`.
-    @ObservationIgnored private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
-        category: "AppRouter"
-    )
 
     // MARK: - Auth State Machine
 
@@ -144,6 +135,9 @@ class AppRouter {
     // MARK: - Navigation Stack
 
     /// Navigation path for push/pop within the current flow.
+    private(set) var isSigningOut = false
+    var accountActionError: String?
+
     var path = NavigationPath()
 
     /// Zoom-transition source id of the most recently tapped card, handed to
@@ -563,118 +557,60 @@ class AppRouter {
         setAuthState(state, reason: "serverResolution")
     }
 
-    /// Sign out of the active server and land at the next sensible step:
-    /// the login screen if a server entry still remembers its URL,
-    /// otherwise the server-setup screen. Fire-and-forget wrapper so
-    /// buttons and error-screen callbacks don't spell out a `Task`.
-    ///
-    /// Only the refusal is breadcrumbed, and that is not an oversight.
-    ///
-    /// A successful `completeRequestedSignOut()` has already run
-    /// `AuthService.signOut()`, which purges the current diagnostics binding
-    /// and then every binding for the signed-out server. That purge drops the
-    /// live breadcrumb consent context *and* the last-known status snapshot it
-    /// would otherwise fall back to, so no context resolves and capture is off
-    /// by the time control returns here. A `succeeded` line would be offered to
-    /// a disabled journal — whose directory the same purge just deleted — and
-    /// dropped. The auth-state transition that `resetToLogin()` /
-    /// `resetToServerSetup()` record below is in the same position and equally
-    /// silent; both wait on the next account's first status refresh to reopen
-    /// the gate, which is exactly the erasure working as intended.
-    ///
-    /// Re-emitting either one afterwards is not an option worth taking. This is
-    /// a post-erasure path: the user asked to be signed out, and reviving a
-    /// journal after the account's diagnostics were deleted — even with a
-    /// line carrying no identifiers — would put the signed-out session's tail
-    /// in front of whoever signs in next.
-    ///
-    /// The refusal keeps its line because a refusal purges nothing: the
-    /// authorization check fails before any diagnostics work, so the gate is
-    /// still open and "it won't let me sign out" stays answerable.
     func signOutAndReset() {
-        Task {
-            guard await completeRequestedSignOut() else {
-                Self.recordAuthActionBreadcrumb(reason: "signOut", outcome: "refused")
-                return
-            }
-            await MainActor.run {
-                if ServerRegistry.shared.hasActiveServer {
-                    self.resetToLogin()
-                } else {
-                    self.resetToServerSetup()
-                }
-            }
-        }
+        requestSignOut(removingServer: false)
     }
 
-    /// Sign out and forget the active server entirely. If another saved
-    /// server becomes active, re-enter its existing auth state; otherwise
-    /// return to server setup.
-    ///
-    /// Breadcrumbed exactly like `signOutAndReset`, for the same reason and
-    /// with one addition. Past the sign-out guard the binding purge has already
-    /// run, so neither the `removeFailed` half-state nor the success can be
-    /// recorded. The removal that follows then crosses an identity boundary of
-    /// its own — `ServerRegistry.remove` closes the capture gate for an active
-    /// server and reopens it only asynchronously — so a line here would be
-    /// blocked twice over even if the purge had not already erased the context.
     func signOutRemoveServerAndReset() {
-        Task {
-            let serverId = ServerRegistry.shared.activeServerId
-            guard await completeRequestedSignOut() else {
-                Self.recordAuthActionBreadcrumb(reason: "signOutRemoveServer", outcome: "refused")
-                return
-            }
-            if let serverId {
-                let removed = await ServerRegistry.shared.remove(
-                    serverId: serverId,
-                    resolveFallbackProfile: true
-                )
-                guard removed else {
-                    // Signed out but the entry survived: the user lands back at
-                    // login for a server they asked to forget. The two halves
-                    // disagreeing is the actual bug, and it is visible only in
-                    // OSLog — see this function's doc comment.
-                    Self.logger.error("signOutRemoveServer signed out but the entry survived")
-                    await MainActor.run { self.resetToLogin() }
+        requestSignOut(removingServer: true)
+    }
+
+    /// One operation owns the button action through cleanup and navigation.
+    /// Repeated taps cannot queue another logout behind a subsequent login.
+    private func requestSignOut(removingServer: Bool) {
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        accountActionError = nil
+        Task { @MainActor in
+            defer { isSigningOut = false }
+            #if os(tvOS)
+            if await TokenStore.shared.hasTemporaryScope() {
+                guard await RemotePlaybackIdentityManager.shared.end() else {
+                    accountActionError = "Couldn't end remote playback. Try signing out again."
                     return
                 }
             }
-            await MainActor.run {
-                let auth = AuthService.shared
-                if !auth.hasServer {
-                    self.resetToServerSetup()
-                } else if !auth.isLoggedIn {
-                    self.resetToLogin()
-                } else if !auth.hasProfile {
-                    self.showProfileSelection()
-                } else {
-                    self.resetToHome()
+            #endif
+            let serverID = ServerRegistry.shared.activeServerId
+            let outcome = await AuthService.shared.signOutWithOutcome()
+            guard outcome != .refused else {
+                accountActionError = "The active session changed. Try signing out again."
+                return
+            }
+            var durable = outcome != .localOnly
+            if outcome == .diagnosticsCleanupFailed {
+                accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
+            }
+            if removingServer, let serverID {
+                let removed = await ServerRegistry.shared.remove(serverId: serverID, resolveFallbackProfile: true)
+                durable = durable || removed
+                if removed { accountActionError = nil }
+                if !removed {
+                    accountActionError = "Silo couldn't remove the saved server. Please try again."
                 }
             }
-        }
-    }
-
-    /// A user-initiated tvOS sign-out first retires a playback-only overlay if
-    /// it owns request authentication, then retries against the persistent
-    /// account. Other refusals leave navigation and credentials untouched.
-    private func completeRequestedSignOut() async -> Bool {
-        var outcome = await AuthService.shared.signOutWithOutcome()
-        #if os(tvOS)
-        if outcome == .refused, await RemotePlaybackIdentityManager.shared.end() {
-            outcome = await AuthService.shared.signOutWithOutcome()
-        }
-        #endif
-        switch outcome {
-        case .completed:
-            return true
-        case .localOnly:
-            // The signed-in UI is gone either way; what is not true is that
-            // the session is durably ended. Say so where it can be found.
-            Self.logger.error("signOut cleared local credentials but the canonical session could not be invalidated")
-            return true
-        case .refused:
-            return false
+            if !durable, accountActionError == nil {
+                accountActionError = "Silo couldn't clear the saved sign-in on this device. Please try signing out again."
+            }
+            let state: AuthState
+            if !ServerRegistry.shared.hasActiveServer {
+                state = .needsServerSetup
+            } else if removingServer, ServerRegistry.shared.activeServerId != serverID {
+                state = await RestoredSessionAuthResolver.resolveValidated()
+            } else {
+                state = .needsLogin
+            }
+            resetAfterServerResolution(to: state)
         }
     }
 

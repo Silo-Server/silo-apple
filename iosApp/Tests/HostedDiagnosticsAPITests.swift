@@ -1290,6 +1290,50 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
     }
 
+    func testServerErasureFinishesLocallyWhileCollectorIsUnresponsive() async throws {
+        let fixture = try makePendingHostedReport(label: "logout-offline-erasure")
+        let bundle = try DiagnosticsBundleBuilder().build(report: fixture.report, logLines: [], droppedLogLines: 0)
+        try fixture.store.saveHostedEnvelope(bundle, for: fixture.report)
+        let stub = APIv2TestStub()
+        stub.reply(204, "")
+        stub.hold()
+        defer { stub.release() }
+        let api = HostedDiagnosticsAPI(
+            baseURL: try XCTUnwrap(URL(string: "https://collector.example")), session: stub.makeSession(),
+            credentialStore: HostedTestCredentialStore(credential: HostedDiagnosticsCredential(
+                installationID: "logout-test", installationToken: "logout-test-token")))
+        let coordinator = DiagnosticsCoordinator(hostedAPI: api, pendingStore: fixture.store)
+        let completed = expectation(description: "Server erasure does not wait for the collector")
+        Task {
+            let removed = await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+            XCTAssertTrue(removed)
+            completed.fulfill()
+        }
+        await fulfillment(of: [completed], timeout: 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+        XCTAssertTrue(try fixture.store.hostedDeletionIntents().contains(fixture.report.id))
+        let deletionStarted = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in !stub.methods.isEmpty }, object: nil)
+        await fulfillment(of: [deletionStarted], timeout: 2)
+        XCTAssertEqual(stub.methods, ["DELETE"])
+    }
+
+    func testServerErasureReportsLocalFailureAndAllowsRetry() async throws {
+        let fixture = try makePendingHostedReport(label: "server-erasure-retry")
+        let ledgerURL = hostedErasureLedgerURL(for: fixture.report, kind: .deletionIntents)
+        try Data("invalid ledger".utf8).write(to: ledgerURL)
+        let coordinator = DiagnosticsCoordinator(pendingStore: fixture.store)
+
+        let failed = await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+        XCTAssertFalse(failed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+
+        try FileManager.default.removeItem(at: ledgerURL)
+        let retried = await coordinator.purgeDiagnosticsForServerRegistryID("collector-acknowledgement-test-server")
+        XCTAssertTrue(retried)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.report.directoryURL.path))
+    }
+
     func testHostedDeleteIntentRemovesEvidenceAndRetriesUntilCollectorAccepts() async throws {
         let fixture = try makePendingHostedReport(label: "durable-delete-intent")
         let bundle = try DiagnosticsBundleBuilder().build(

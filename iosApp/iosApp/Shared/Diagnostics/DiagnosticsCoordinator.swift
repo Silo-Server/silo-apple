@@ -159,6 +159,10 @@ struct DiagnosticsStatusRefreshEpoch {
         return generation
     }
 
+    mutating func invalidate() {
+        generation &+= 1
+    }
+
     func isCurrent(_ generation: UInt64, destination: DiagnosticsDestinationChoice) -> Bool {
         self.generation == generation && self.destination == destination
     }
@@ -1733,23 +1737,29 @@ actor DiagnosticsCoordinator {
         )
     }
 
+    /// Local erasure must work offline and while the HTTP identity gate is
+    /// closed. Known bindings already identify the data; fetching a new status
+    /// here can refresh an expiring session during logout.
     @discardableResult
-    func purgeDiagnosticsForCurrentBinding() async -> Bool {
-        let binding: DiagnosticsBinding?
-        if let context = await captureContext(requirePersistentCapture: false) {
-            binding = context.binding
-        } else {
-            binding = Self.currentBreadcrumbBinding()
+    func purgeDiagnosticsForServerRegistryID(_ serverId: String) -> Bool {
+        var bindings = Set(DiagnosticsDestinationChoice.allCases.compactMap {
+            Self.LastKnownStatusStore.snapshot(for: serverId, destination: $0)?.binding
+        })
+        if cachedStatusServerRegistryID == serverId, let binding = cachedStatus?.binding {
+            bindings.insert(binding)
         }
-
-        if let binding {
-            await purgeDiagnostics(for: binding)
+        if ServerRegistry.activeServerIDSnapshot == serverId {
+            statusRefreshEpoch.invalidate()
+            if let binding = Self.currentBreadcrumbBinding() { bindings.insert(binding) }
+            DiagLog.ring.clear()
+            #if os(tvOS)
+            ExitSentinel.shared.purge()
+            #endif
         }
-        Self.purgeBreadcrumbJournal()
-        return binding != nil
-    }
-
-    func purgeDiagnosticsForServerRegistryID(_ serverId: String) async {
+        for binding in bindings {
+            RecentSessionTracker.shared.purge(binding: binding)
+            clearContext(for: binding)
+        }
         let hostedServerInstanceID = DiagnosticsBinding.hosted(
             serverRegistryID: serverId,
             accountUserID: "local-purge"
@@ -1761,10 +1771,15 @@ actor DiagnosticsCoordinator {
                 binding.serverInstanceID == hostedServerInstanceID ? reportID : nil
             }
         )
-        try? pendingStore.stageHostedDeletionsAndPurge(
-            serverInstanceID: hostedServerInstanceID,
-            additionalRemoteReportIDs: additionalReportIDs
-        )
+        do {
+            try pendingStore.stageHostedDeletionsAndPurge(
+                serverInstanceID: hostedServerInstanceID,
+                additionalRemoteReportIDs: additionalReportIDs
+            )
+        } catch {
+            // Keep the binding and consent records so removal can be retried.
+            return false
+        }
         consentStore.remove(serverInstanceID: hostedServerInstanceID)
         profileEligibilityStore.remove(serverInstanceID: hostedServerInstanceID)
         let serverInstanceIDs = Self.ServerBindingIndex.serverInstanceIDs(for: serverId)
@@ -1781,7 +1796,8 @@ actor DiagnosticsCoordinator {
         }
         Self.ServerBindingIndex.remove(serverId: serverId)
         Self.purgeBreadcrumbJournal()
-        _ = await drainHostedDeletionIntents()
+        scheduleHostedDeletionMaintenance()
+        return true
     }
 
     #if os(tvOS)
@@ -2211,12 +2227,6 @@ actor DiagnosticsCoordinator {
         return Data(rendered.joined(separator: "\n").appending("\n").utf8)
     }
 
-    private func purgeDiagnostics(for binding: DiagnosticsBinding) async {
-        _ = await turnOffAndDelete(binding: binding)
-        consentStore.remove(binding: binding)
-        clearContext(for: binding)
-    }
-
     /// After purging a binding (e.g. an active-server sign-out) the pending
     /// files and consent record are gone, but the cached/persisted status and
     /// the breadcrumb consent context can still point at it. Since the consent
@@ -2229,6 +2239,7 @@ actor DiagnosticsCoordinator {
             cachedStatusDestination = nil
             cachedStatusServerRegistryID = nil
             cachedStatusAccessTokenFingerprint = nil
+            cachedHostedCredentialIdentity = nil
         }
         Self.LastKnownStatusStore.removeSnapshots(matching: binding)
         profileEligibilityStore.remove(binding: binding)
