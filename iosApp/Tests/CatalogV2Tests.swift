@@ -318,6 +318,38 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertEqual(detail.userData?.lastFileId, 41)
     }
 
+    func testReadProjectionPreservesPlaybackVariantsAndStringFileIDs() throws {
+        var body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(playableDetail().utf8)) as? [String: Any]
+        )
+        let projectedVersion = try XCTUnwrap((body["versions"] as? [[String: Any]])?.first)
+        body["playback_variants"] = [[
+            "variant_id": "directors-cut",
+            "part_count": 2,
+            "total_duration": 15_120,
+            "default_file_id": "41",
+            "parts": [[
+                "part_index": 0,
+                "total_duration": 7_560,
+                "default_file_id": "41",
+                "versions": [projectedVersion],
+            ]],
+        ]]
+        let data = try JSONSerialization.data(withJSONObject: body)
+        let wire = try HTTPClient.makeJSONDecoder().decode(
+            APIv2CatalogRead.CatalogItemDetail.self,
+            from: data
+        )
+        let variant = try XCTUnwrap(ItemDetail(catalog: wire).playbackVariants?.first)
+
+        XCTAssertEqual(variant.variantId, "directors-cut")
+        XCTAssertEqual(variant.partCount, 2)
+        XCTAssertEqual(variant.totalDuration, 15_120)
+        XCTAssertEqual(variant.defaultFileId, 41)
+        XCTAssertEqual(variant.parts.first?.defaultFileId, 41)
+        XCTAssertEqual(variant.parts.first?.versions.first?.fileId, 41)
+    }
+
     func testReadProjectionRejectsUnrepresentableLegacyIDs() throws {
         let decoder = HTTPClient.makeJSONDecoder()
         for id in ["opaque-file", "0", "-1", "999999999999999999999999999999"] {

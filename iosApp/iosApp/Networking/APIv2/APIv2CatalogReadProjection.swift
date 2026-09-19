@@ -58,6 +58,9 @@ extension ItemDetail {
         self.isSpecials = value.isSpecials
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
         self.versions = try value.versions.map { try FileVersion(catalog: $0) }
+        self.playbackVariants = try value.playbackVariants.map { variants in
+            try variants.map { try PlaybackVariant(catalog: $0) }
+        }
         self.subtitles = try value.subtitles.map { try SubtitleInfoBasic(catalog: $0) }
         self.intro = try value.intro.map { try TimeRange(catalog: $0) }
         self.credits = try value.credits.map { try TimeRange(catalog: $0) }
@@ -72,6 +75,29 @@ extension ItemDetail {
         self.posterUrl = value.posterUrl
         self.backdropUrl = value.backdropUrl
         self.logoUrl = value.logoUrl
+    }
+}
+
+extension PlaybackVariant {
+    init(catalog value: APIv2CatalogRead.PlaybackVariant) throws {
+        self.variantId = value.variantId
+        self.editionRaw = value.editionRaw
+        self.editionKey = value.editionKey
+        self.presentationKind = value.presentationKind
+        self.presentationGroupKey = value.presentationGroupKey
+        self.partCount = try catalogLegacyInt(value.partCount)
+        self.totalDuration = value.totalDuration.map(Double.init)
+        self.defaultFileId = try value.defaultFileId.map { try catalogLegacyID($0) }
+        self.parts = try value.parts.map { try PlaybackVariantPart(catalog: $0) }
+    }
+}
+
+extension PlaybackVariantPart {
+    init(catalog value: APIv2CatalogRead.PlaybackVariantPart) throws {
+        self.partIndex = try catalogLegacyInt(value.partIndex)
+        self.defaultFileId = try value.defaultFileId.map { try catalogLegacyID($0) }
+        self.totalDuration = value.totalDuration.map(Double.init)
+        self.versions = try value.versions.map { try FileVersion(catalog: $0) }
     }
 }
 
