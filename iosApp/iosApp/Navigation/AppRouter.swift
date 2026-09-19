@@ -587,10 +587,14 @@ class AppRouter {
                 accountActionError = "The active session changed. Try signing out again."
                 return
             }
-            var durable = outcome == .completed
+            var durable = outcome != .localOnly
+            if outcome == .diagnosticsCleanupFailed {
+                accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
+            }
             if removingServer, let serverID {
                 let removed = await ServerRegistry.shared.remove(serverId: serverID, resolveFallbackProfile: true)
                 durable = durable || removed
+                if removed { accountActionError = nil }
                 if !removed {
                     accountActionError = "Silo couldn't remove the saved server. Please try again."
                 }

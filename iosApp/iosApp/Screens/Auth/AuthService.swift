@@ -18,6 +18,7 @@ final class AuthService: @unchecked Sendable {
     private let httpClient: HTTPClient
     private let tokenStore: TokenStore
     private let sessionPersistence: AccountSessionPersistence
+    private let purgeDiagnostics: @Sendable (String) async -> Bool
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -27,6 +28,8 @@ final class AuthService: @unchecked Sendable {
     enum SignOutOutcome: Equatable, Sendable {
         /// Credentials were cleared and the canonical record was invalidated.
         case completed
+        /// Credentials were invalidated, but local diagnostics could not be erased.
+        case diagnosticsCleanupFailed
         /// Nothing was changed: the sign-out was not authorised or the
         /// active identity changed while it ran.
         case refused
@@ -45,7 +48,14 @@ final class AuthService: @unchecked Sendable {
         contractProbe: APIv2Probe = APIv2Probe(),
         httpClient: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
-        sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain())
+        sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain()),
+        purgeDiagnostics: @escaping @Sendable (String) async -> Bool = { serverID in
+            #if os(iOS) || os(tvOS)
+            return await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverID)
+            #else
+            return true
+            #endif
+        }
     ) {
         self.serverIdentityResolver = serverIdentityResolver
         self.serverRegistry = serverRegistry
@@ -55,6 +65,7 @@ final class AuthService: @unchecked Sendable {
         self.httpClient = httpClient
         self.tokenStore = tokenStore
         self.sessionPersistence = sessionPersistence
+        self.purgeDiagnostics = purgeDiagnostics
     }
 
     /// Runs the v2 contract probe for `serverId` and records the verdict.
@@ -680,18 +691,18 @@ final class AuthService: @unchecked Sendable {
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
         let durable = await tokenStore.clearTokens()
+        var diagnosticsRemoved = true
         if let serverID {
             launchPreferences.clearRememberedProfile(for: serverID)
-            #if os(iOS) || os(tvOS)
-            await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverID)
-            #endif
+            diagnosticsRemoved = await purgeDiagnostics(serverID)
         }
         await clearAllCaches()
         await httpClient.endIdentityTransition(lease)
         if let capturedAuth {
             Task { await httpClient.revokeSession(capturedAuth) }
         }
-        return durable ? .completed : .localOnly
+        guard durable else { return .localOnly }
+        return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
     }
 
     /// Decide whether a captured credential can authorize local sign-out.

@@ -21,7 +21,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         return store
     }
     @MainActor
-    private func lifecycleHarness() async throws -> (
+    private func lifecycleHarness(purgeDiagnostics: @escaping @Sendable (String) async -> Bool = { _ in true }) async throws -> (
         store: TokenStore, keys: SharedKeychain, defaults: SharedDefaults,
         memory: SessionMemory, registry: ServerRegistry, auth: AuthService, http: HTTPClient, stub: APIv2TestStub
     ) {
@@ -38,7 +38,8 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let switched = await registry.switchTo(serverId: "server")
         XCTAssertTrue(switched)
         let auth = AuthService(serverRegistry: registry, launchPreferences: preferences,
-            httpClient: http, tokenStore: store, sessionPersistence: memory.persistence)
+            httpClient: http, tokenStore: store, sessionPersistence: memory.persistence,
+            purgeDiagnostics: purgeDiagnostics)
         try await store.installAccountSession(accessToken: "original", refreshToken: "refresh", accountID: "12")
         await store.setProfileId("profile")
         _ = await store.setProfileToken("proof")
@@ -46,6 +47,19 @@ final class AccountSessionPersistenceTests: XCTestCase {
         preferences.remember(profileID: "profile", requiresPIN: true,
             accountEpoch: try XCTUnwrap(epoch), for: "server")
         return (store, keys, defaults, memory, registry, auth, http, stub)
+    }
+
+    @MainActor
+    func testSignOutReportsDiagnosticsFailureWithoutKeepingCredentials() async throws {
+        let h = try await lifecycleHarness(purgeDiagnostics: { _ in false })
+        let outcome = await h.auth.signOutWithOutcome()
+        XCTAssertEqual(outcome, .diagnosticsCleanupFailed)
+        XCTAssertFalse(h.auth.isLoggedIn)
+        XCTAssertNotNil(h.registry.activeServer)
+        let restored = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
+        XCTAssertNil(restored)
+        try await h.store.installAccountSession(accessToken: "replacement", refreshToken: "new-refresh", accountID: "12")
+        XCTAssertTrue(h.auth.isLoggedIn)
     }
 
     @MainActor
