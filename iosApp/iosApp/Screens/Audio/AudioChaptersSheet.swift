@@ -22,7 +22,7 @@ struct AudioChaptersSheet: View {
                 .listStyle(.plain)
                 #if !os(tvOS)
                 .scrollContentBackground(.hidden)
-                .background(Color.siloSurface)
+                .siloSheetBackground(legacyColor: .siloSurface)
                 #endif
                 .onAppear {
                     if let current = player.currentChapter {

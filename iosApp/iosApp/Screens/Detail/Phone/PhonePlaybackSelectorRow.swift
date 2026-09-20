@@ -361,7 +361,7 @@ private struct PhonePlaybackSelectorSheet: View {
             .listStyle(.insetGrouped)
             #endif
             .scrollContentBackground(.hidden)
-            .background(Color.siloBackground.ignoresSafeArea())
+            .siloSheetBackground(legacyColor: .siloBackground)
             .task {
                 await ProfilePrefsStore.shared.hydrateIfNeeded()
                 preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage

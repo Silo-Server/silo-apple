@@ -2029,7 +2029,6 @@ struct MainTabView: View {
         )) {
             SiloControlRemoteView(controller: siloControl)
                 .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
         #endif
         #endif
@@ -2651,9 +2650,6 @@ private struct ItemDetailSheet: View {
         // Native pull-down dismissal still returns to the exact source page.
         .presentationSizing(.page)
         .presentationDetents([.large])
-        .presentationDragIndicator(.hidden)
-        .presentationCornerRadius(28)
-        .presentationBackground(.ultraThickMaterial)
         // Nested pages handle a top pull as Back. The sheet's native dismiss
         // remains available only at the root, preserving the source page.
         .interactiveDismissDisabled(!router.itemDetailPath.isEmpty)
@@ -2664,21 +2660,25 @@ private struct ItemDetailSheet: View {
         router.presentedItemDetail?.contentId ?? presentation.contentId
     }
 
+    @ViewBuilder
     private func detailPage(contentID: String, width: CGFloat, height: CGFloat) -> some View {
         let shape = UnevenRoundedRectangle(
             topLeadingRadius: 28, bottomLeadingRadius: 0,
             bottomTrailingRadius: 0, topTrailingRadius: 28, style: .continuous
         )
-        return ItemDetailView(
+        let page = ItemDetailView(
             contentId: contentID,
             libraryId: presentation.libraryId,
             onClose: router.dismissItemDetail,
             resumeContext: presentation.resumeContext?.seriesContentId == contentID ? presentation.resumeContext : nil
         )
             .frame(width: width, height: height)
-            .clipShape(shape)
-            .contentShape(shape)
             .id(contentID)
+        if browseSource == nil {
+            page
+        } else {
+            page.clipShape(shape).contentShape(shape)
+        }
     }
 
     /// iPhone detail cards are intentionally fixed to the title that was

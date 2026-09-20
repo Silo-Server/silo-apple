@@ -93,7 +93,7 @@ struct DownloadOptionsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .siloScrollContentBackgroundHidden()
-            .siloPageBackground()
+            .siloSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

@@ -211,7 +211,7 @@ struct CollectionsView: View {
                 Spacer()
             }
             .padding(SiloTheme.padding)
-            .siloPageBackground()
+            .siloSheetBackground()
             .navigationTitle("New Collection")
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
@@ -240,7 +240,7 @@ private struct GroupActionSheet: View {
     var body: some View {
         NavigationStack {
             content
-                .siloPageBackground()
+                .siloSheetBackground()
                 .siloNavigationTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {

@@ -64,6 +64,28 @@ extension View {
         }
     }
 
+    /// Let modern iOS sheets supply their adaptive material; retain the
+    /// existing page canvas on older systems and other platforms.
+    @ViewBuilder
+    func siloSheetBackground(legacyColor: Color? = nil) -> some View {
+        let legacyBackdrop = Group {
+            if let legacyColor {
+                legacyColor.ignoresSafeArea()
+            } else {
+                SiloPageBackdrop()
+            }
+        }
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            self
+        } else {
+            background(legacyBackdrop)
+        }
+        #else
+        background(legacyBackdrop)
+        #endif
+    }
+
     /// Hide the view conditionally.
     @ViewBuilder
     func hidden(_ isHidden: Bool) -> some View {
@@ -155,9 +177,13 @@ extension View {
         #if os(tvOS) || os(macOS)
         self
         #else
-        self
-            .toolbarBackground(Color.siloSurface, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+        if #available(iOS 26.0, *) {
+            self
+        } else {
+            self
+                .toolbarBackground(Color.siloSurface, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+        }
         #endif
     }
 

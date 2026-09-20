@@ -443,7 +443,6 @@ private struct ItemDetailPhoneContent: View {
         .sheet(isPresented: $isShowingRemoteControl) {
             SiloControlRemoteView(controller: siloControl)
                 .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
         }
         #endif
     }

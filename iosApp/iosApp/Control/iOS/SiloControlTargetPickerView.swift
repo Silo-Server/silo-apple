@@ -20,7 +20,7 @@ struct SiloControlTargetPickerView: View {
                     searchingState
                 }
             }
-            .siloPageBackground()
+            .siloSheetBackground()
             .navigationTitle("Remote Control")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -37,7 +37,6 @@ struct SiloControlTargetPickerView: View {
         }
         .preferredColorScheme(.dark)
         .presentationDetents(displayedTargets.count > 3 ? [.medium, .large] : [.medium])
-        .presentationDragIndicator(.visible)
     }
 
     private var searchingState: some View {

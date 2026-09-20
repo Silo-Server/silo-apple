@@ -220,7 +220,7 @@ private struct SeriesDownloadOptionsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .siloScrollContentBackgroundHidden()
-            .siloPageBackground()
+            .siloSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -344,7 +344,7 @@ private struct SeriesSeasonDownloadPicker: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .siloScrollContentBackgroundHidden()
-        .siloPageBackground()
+        .siloSheetBackground()
     }
 }
 
@@ -435,7 +435,7 @@ private struct SeriesEpisodeDownloadPicker: View {
                 .siloScrollContentBackgroundHidden()
             }
         }
-        .siloPageBackground()
+        .siloSheetBackground()
         .navigationTitle(season.downloadDisplayName)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
