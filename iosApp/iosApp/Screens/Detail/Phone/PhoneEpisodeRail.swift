@@ -1,10 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Horizontal rail of episode cards used on the phone series and
-/// season detail pages, plus the episode page (where it shows the
-/// other episodes in the same season). Tapping a card navigates to
-/// that episode's detail page.
+/// Episode cards in the Series page's selected season. Selection and playback
+/// are supplied by the Series page so browsing never pushes another detail.
 struct PhoneEpisodeRail: View {
     let episodes: [EpisodeListItem]
     let onSelect: (String) -> Void
@@ -12,6 +10,12 @@ struct PhoneEpisodeRail: View {
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
     var captionStyleOverride: CardCaptionStyle? = nil
+    var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
+    var isUpdatingWatched = false
+    var favoriteStates: [String: Bool] = [:]
+    var watchlistStates: [String: Bool] = [:]
+    var onSetFavorite: ((String, Bool) async -> Bool)? = nil
+    var onSetWatchlist: ((String, Bool) async -> Bool)? = nil
 
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var visibleEpisodeId: String?
@@ -38,7 +42,13 @@ struct PhoneEpisodeRail: View {
                         onSelect: { onSelect(episode.contentId) },
                         onPlay: onPlay.map { play in
                             { play(episode.contentId) }
-                        }
+                        },
+                        onSetWatched: onSetWatched,
+                        isUpdatingWatched: isUpdatingWatched,
+                        isFavorite: favoriteStates[episode.contentId] ?? false,
+                        inWatchlist: watchlistStates[episode.contentId] ?? false,
+                        onSetFavorite: onSetFavorite,
+                        onSetWatchlist: onSetWatchlist
                     )
                     .id(episode.contentId)
                 }
@@ -97,11 +107,41 @@ private struct PhoneEpisodeCard: View {
     let captionStyle: CardCaptionStyle
     let onSelect: () -> Void
     let onPlay: (() -> Void)?
+    let onSetWatched: ((EpisodeListItem, Bool) -> Void)?
+    let isUpdatingWatched: Bool
+    let isFavorite: Bool
+    let inWatchlist: Bool
+    let onSetFavorite: ((String, Bool) async -> Bool)?
+    let onSetWatchlist: ((String, Bool) async -> Bool)?
+
+    @State private var isUpdatingPersonalLists = false
+    @State private var personalListUpdateFailed = false
 
     var body: some View {
-        ZStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 8) {
+            thumbnailControls
+
+            if captionStyle.showsTitle {
+                Button(action: onSelect) {
+                    caption
+                }
+                .buttonStyle(.plain)
+                // The thumbnail exposes the same action and full episode description.
+                .accessibilityHidden(true)
+            }
+        }
+        .frame(width: cardWidth, alignment: .leading)
+        .alert("Couldn't Update Episode", isPresented: $personalListUpdateFailed) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Please try again.")
+        }
+    }
+
+    private var thumbnailControls: some View {
+        ZStack {
             Button(action: onSelect) {
-                cardContent
+                still
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
@@ -116,48 +156,79 @@ private struct PhoneEpisodeCard: View {
                         .background(Circle().fill(Color.white.opacity(0.94)))
                 }
                 .buttonStyle(.plain)
-                .padding(.top, (stillHeight - 42) / 2)
                 .accessibilityLabel(
                     "Play Season \(episode.seasonNumber), Episode \(episode.episodeNumber)"
                 )
             }
         }
+        #if os(iOS)
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: stillCornerRadius))
+        #endif
+        .contextMenu {
+            if let onSetWatched {
+                Button {
+                    onSetWatched(episode, !(episode.userData?.played ?? false))
+                } label: {
+                    Label(
+                        episode.userData?.played == true ? "Mark Episode Unwatched" : "Mark Episode Watched",
+                        systemImage: episode.userData?.played == true ? "circle" : "checkmark.circle"
+                    )
+                }
+                .disabled(isUpdatingWatched)
+            }
+            if let onSetFavorite, let onSetWatchlist {
+                PersonalListMenuItems(
+                    isFavorite: isFavorite,
+                    inWatchlist: inWatchlist,
+                    onToggleFavorite: { updatePersonalList(onSetFavorite, to: !isFavorite) },
+                    onToggleWatchlist: { updatePersonalList(onSetWatchlist, to: !inWatchlist) }
+                )
+                .disabled(isUpdatingPersonalLists)
+            }
+        }
     }
 
-    private var cardContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            still
-            if captionStyle.showsTitle {
-                VStack(alignment: .leading, spacing: 4) {
-                    if isCurrent {
-                        nowViewingTag
-                    }
+    private func updatePersonalList(
+        _ update: @escaping (String, Bool) async -> Bool,
+        to value: Bool
+    ) {
+        guard !isUpdatingPersonalLists else { return }
+        isUpdatingPersonalLists = true
+        Task {
+            personalListUpdateFailed = !(await update(episode.contentId, value))
+            isUpdatingPersonalLists = false
+        }
+    }
 
-                    Text(PhoneEpisodeFormatting.title(for: episode))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(titleColor)
+    private var caption: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if isCurrent {
+                nowViewingTag
+            }
+
+            Text(PhoneEpisodeFormatting.title(for: episode))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(titleColor)
+                .lineLimit(1)
+                .multilineTextAlignment(.leading)
+
+            if captionStyle.showsMetadata {
+                if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
+                    Text(metadataLine)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.siloSecondaryText)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                         .multilineTextAlignment(.leading)
+                }
 
-                    if captionStyle.showsMetadata {
-                        if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
-                            Text(metadataLine)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color.siloSecondaryText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
-                                .multilineTextAlignment(.leading)
-                        }
-
-                        if let overview = episode.overview, !overview.isEmpty {
-                            Text(overview)
-                                .font(.system(size: 12, weight: .regular))
-                                .foregroundStyle(Color.siloSecondaryText)
-                                .lineLimit(3, reservesSpace: true)
-                                .lineSpacing(2)
-                                .multilineTextAlignment(.leading)
-                        }
-                    }
+                if let overview = episode.overview, !overview.isEmpty {
+                    Text(overview)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(3, reservesSpace: true)
+                        .lineSpacing(2)
+                        .multilineTextAlignment(.leading)
                 }
             }
         }

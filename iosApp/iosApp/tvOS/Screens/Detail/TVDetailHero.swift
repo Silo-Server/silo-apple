@@ -65,7 +65,6 @@ struct TVDetailPageSurface<Content: View>: View {
 /// hero.
 struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     let title: String
-    let seriesTitle: String?
     let logoUrl: String?
     let backdropUrl: String?
     let backdropThumbhash: String?
@@ -331,68 +330,29 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
         }
     }
 
-    @ViewBuilder
     private var titleBlock: some View {
-        if let episodeSeriesTitle {
-            TVEpisodeHierarchyTitle(
-                seriesTitle: episodeSeriesTitle,
-                episodeTitle: title,
-                logoUrl: logoUrl
-            )
-        } else {
-            TVDecodedLogoTitle(
-                logoUrl: logoUrl,
-                accessibilityLabel: title,
-                maxWidth: 650,
-                maxHeight: 160
-            ) {
-                TVHeroTitle(title: title)
-            }
+        TVDecodedLogoTitle(
+            logoUrl: logoUrl,
+            accessibilityLabel: title,
+            maxWidth: 650,
+            maxHeight: 160
+        ) {
+            TVHeroTitle(title: title)
         }
-    }
-
-    private var episodeSeriesTitle: String? {
-        guard let trimmed = seriesTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty
-        else { return nil }
-        return trimmed
     }
 
     // MARK: - Metadata
 
     @ViewBuilder
     private var metadataBlock: some View {
-        if episodeSeriesTitle != nil {
-            sourceRow
-            factsRow(includeSourceTokens: false)
-        } else {
-            factsRow(includeSourceTokens: true)
-        }
-    }
-
-    @ViewBuilder
-    private var sourceRow: some View {
-        if !sourceTokens.isEmpty {
-            HStack(spacing: 14) {
-                ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
-                    if index > 0 {
-                        Text("·")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundColor(Color.white.opacity(0.5))
-                    }
-                    Text(token)
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(Color.white.opacity(0.78))
-                }
-            }
-        }
+        factsRow
     }
 
     // MARK: - Facts + quality row
 
     @ViewBuilder
-    private func factsRow(includeSourceTokens: Bool) -> some View {
-        if !factsLine.isEmpty || (includeSourceTokens && !sourceTokens.isEmpty) || ratingChip != nil {
+    private var factsRow: some View {
+        if !factsLine.isEmpty || !sourceTokens.isEmpty || ratingChip != nil {
             HStack(spacing: 14) {
                 if let ratingChip, !ratingChip.isEmpty {
                     ratingBadge(ratingChip)
@@ -404,13 +364,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                     factsItem(token)
                 }
 
-                if includeSourceTokens {
-                    ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
-                        if !factsLine.isEmpty || index > 0 { metadataDivider }
-                        Text(token)
-                            .font(.system(size: 24, weight: .medium))
-                            .foregroundColor(Color.white.opacity(0.90))
-                    }
+                ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
+                    if !factsLine.isEmpty || index > 0 { metadataDivider }
+                    Text(token)
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundColor(Color.white.opacity(0.90))
                 }
             }
         }
@@ -607,51 +565,6 @@ struct TVDecodedLogoTitle<Fallback: View>: View {
                 alignment: .bottomLeading
             )
             .accessibilityHidden(true)
-    }
-}
-
-private struct TVEpisodeHierarchyTitle: View {
-    let seriesTitle: String
-    let episodeTitle: String
-    let logoUrl: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TVDecodedLogoTitle(
-                logoUrl: logoUrl,
-                accessibilityLabel: seriesTitle,
-                maxWidth: 650,
-                maxHeight: 140
-            ) {
-                Text(seriesTitle.uppercased())
-                    .font(seriesFont)
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Text(episodeTitle)
-                .font(episodeFont)
-                .foregroundColor(Color.white.opacity(0.94))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var seriesFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 92, weight: .black).width(.compressed)
-        }
-        return .system(size: 88, weight: .black)
-    }
-
-    private var episodeFont: Font {
-        if #available(tvOS 16.0, *) {
-            return .system(size: 46, weight: .bold)
-        }
-        return .system(size: 44, weight: .bold)
     }
 }
 

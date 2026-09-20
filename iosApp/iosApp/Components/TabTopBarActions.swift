@@ -10,10 +10,6 @@ import SwiftUI
 /// Libraries tab, the wordmark on Home) and places this view on the
 /// trailing side of a single `HStack` row.
 struct TabTopBarActions: View {
-    /// Circular native Liquid Glass matching the close/remote detail
-    /// controls. On by default because every root header now floats over
-    /// the shared `PageChromeGlass` strip.
-    var usesGlass = true
     let onSearch: () -> Void
     let onOpenSettings: () -> Void
     /// Opens the media-requests hub. The menu row only renders when the
@@ -38,17 +34,15 @@ struct TabTopBarActions: View {
             TopBarIconButton(
                 systemImage: "magnifyingglass",
                 accessibilityLabel: "Search",
-                usesGlass: usesGlass,
                 action: onSearch
             )
             #if os(iOS)
-            SiloControlModeButton(controller: siloControl, usesGlass: usesGlass) {
+            SiloControlModeButton(controller: siloControl) {
                 isShowingControlPicker = true
             }
             #endif
             ProfileAvatarMenu(
                 profile: profileStore.profile,
-                usesGlass: usesGlass,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
@@ -73,7 +67,6 @@ struct TabTopBarActions: View {
 private struct TopBarIconButton: View {
     let systemImage: String
     let accessibilityLabel: String
-    let usesGlass: Bool
     let action: () -> Void
 
     var body: some View {
@@ -82,8 +75,7 @@ private struct TopBarIconButton: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.siloOnSurface)
                 .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
-                .modifier(TopBarCircularGlass(enabled: usesGlass))
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
@@ -96,7 +88,6 @@ private struct TopBarIconButton: View {
 /// and manage their account without leaving the current tab.
 private struct ProfileAvatarMenu: View {
     let profile: UserProfile?
-    let usesGlass: Bool
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
@@ -149,30 +140,15 @@ private struct ProfileAvatarMenu: View {
                 avatar: profile?.avatarEmoji,
                 imageUrl: profile?.avatarImageUrl,
                 name: profile?.name ?? "",
-                size: usesGlass ? 30 : 36
+                size: 30
             )
             .frame(
-                width: usesGlass ? SiloTheme.topBarIconHitSize : 36,
-                height: usesGlass ? SiloTheme.topBarIconHitSize : 36
+                width: SiloTheme.topBarIconHitSize,
+                height: SiloTheme.topBarIconHitSize
             )
-            .modifier(TopBarCircularGlass(enabled: usesGlass))
-            .contentShape(Circle())
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
-    }
-}
-
-/// Keeps all top-bar utilities on the exact same 44pt native-glass circle.
-/// A modifier avoids duplicating branches inside Button and Menu labels.
-private struct TopBarCircularGlass: ViewModifier {
-    let enabled: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if enabled {
-            content.siloGlass(in: Circle(), interactive: true)
-        } else {
-            content
-        }
+        .accessibilityLabel("Profile menu")
     }
 }

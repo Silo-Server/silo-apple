@@ -2465,8 +2465,8 @@ struct MainTabView: View {
                 title: title,
                 kind: kind
             )
-        case .itemDetail(let contentId, _, let libraryId):
-            ItemDetailView(contentId: contentId, libraryId: libraryId)
+        case .itemDetail(let contentId, _, let libraryId, let context):
+            ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
                 // The iOS 26 poster → detail zoom transition
                 // (`.navigationTransition(.zoom(sourceID:in:))`, keyed off
                 // `pendingZoomSourceID`) is intentionally NOT applied here.
@@ -2727,8 +2727,8 @@ private struct ItemDetailSheet: View {
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
-        case .itemDetail(let contentId, _, let libraryId):
-            ItemDetailView(contentId: contentId, libraryId: libraryId)
+        case .itemDetail(let contentId, _, let libraryId, let context):
+            ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
         default:

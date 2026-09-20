@@ -38,7 +38,6 @@ struct SiloControlTargetPickerView: View {
         .preferredColorScheme(.dark)
         .presentationDetents(displayedTargets.count > 3 ? [.medium, .large] : [.medium])
         .presentationDragIndicator(.visible)
-        .presentationCornerRadius(24)
     }
 
     private var searchingState: some View {

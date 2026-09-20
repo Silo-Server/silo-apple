@@ -190,6 +190,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let onLoadMoreEpisodes: (Int) -> Void
     let activeEpisodeContentId: String?
     let episodeFavoriteStates: [String: Bool]
+    let episodeWatchlistStates: [String: Bool]
     let isLoadingEpisodes: Bool
     let hierarchyError: String?
     let onRetryHierarchy: () async -> Void
@@ -206,11 +207,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let isFetchingTrailers: Bool
     let onTrailerStatusShown: () -> Void
     let onSelectSeason: (Season) async -> String?
+    let onSetSeasonWatched: (Season, Bool) async -> Bool
     /// `nil` restores the show overview and its suggested next episode.
     let onActivateEpisode: (_ contentId: String?) -> Void
     let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
     let onSetEpisodeWatched: (_ contentId: String, _ played: Bool) async -> Bool
     let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> Bool
+    let onSetEpisodeWatchlist: (_ contentId: String, _ inWatchlist: Bool) async -> Bool
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
@@ -229,6 +232,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     @State private var isShowingSeriesOverview = true
     @State private var userNavigated = false
     @State private var hierarchyRetryTask: Task<Void, Never>?
+    @State private var isUpdatingSeasonWatched = false
+    @State private var seasonWatchedUpdateFailed = false
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
     @State private var episodeRailFocusRequest = 0
     @State private var episodeRailFocusTarget: String?
@@ -331,6 +336,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             seasonSelection.cancel()
             pageScrollCoordinator.detach()
         }
+        .alert("Couldn't Update Watched Status", isPresented: $seasonWatchedUpdateFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please check your connection and try again.")
+        }
     }
 
     // MARK: - Fixed series hero
@@ -341,7 +351,6 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
             // focus changes the bounded synopsis/metadata only, never the
             // logo or title block that determines the page geometry.
             title: detail.title,
-            seriesTitle: nil,
             logoUrl: detail.logoUrl,
             // Deliberately never switch to episode artwork. The series image
             // remains a stable visual anchor while episode details change.
@@ -565,6 +574,17 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         )
                         .id(season.id)
                         .focused($focusedModeId, equals: season.id)
+                        .contextMenu {
+                            Button {
+                                setSeasonWatched(season)
+                            } label: {
+                                Label(
+                                    season.userData?.played == true ? "Mark Season Unwatched" : "Mark Season Watched",
+                                    systemImage: season.userData?.played == true ? "circle" : "checkmark.circle"
+                                )
+                            }
+                            .disabled(isUpdatingSeasonWatched || season.episodeCount == 0)
+                        }
                         .onMoveCommand { direction in
                             guard direction == .down else { return }
                             if !isLoadingEpisodes, let episode = displayedEpisode {
@@ -675,6 +695,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
         onActivateEpisode(nil)
     }
 
+    private func setSeasonWatched(_ season: Season) {
+        guard !isUpdatingSeasonWatched else { return }
+        let played = !(season.userData?.played ?? false)
+        isUpdatingSeasonWatched = true
+        Task {
+            defer { isUpdatingSeasonWatched = false }
+            seasonWatchedUpdateFailed = !(await onSetSeasonWatched(season, played))
+        }
+    }
+
     private func activateSeason(_ season: Season) {
         modeActivationTask?.cancel()
         modeActivationTask = nil
@@ -745,11 +775,13 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                 onFocusedEpisodeChange: focusEpisode,
                 onSetWatched: onSetEpisodeWatched,
                 onSetFavorite: onSetEpisodeFavorite,
+                onSetWatchlist: onSetEpisodeWatchlist,
                 currentContentId: displayedEpisode?.contentId,
                 currentContentIsFavorite: displayedEpisode.map {
                     episodeFavoriteStates[$0.contentId] ?? false
                 } ?? false,
                 favoriteStates: episodeFavoriteStates,
+                watchlistStates: episodeWatchlistStates,
                 baseCardWidth: SiloTheme.thumbnailCardWidth,
                 cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth,
                 cardSpacing: 40,

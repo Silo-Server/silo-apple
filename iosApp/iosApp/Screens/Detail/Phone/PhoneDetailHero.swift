@@ -239,7 +239,6 @@ private struct PhoneDetailParallaxArtwork: View {
 /// the phone stack or reusing television geometry.
 struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let title: String
-    let seriesTitle: String?
     let logoUrl: String?
     let posterUrl: String?
     let posterThumbhash: String?
@@ -463,23 +462,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @ViewBuilder
     private func titleBlock(textAlignment: TextAlignment, logoHeight: CGFloat) -> some View {
-        if let episodeSeriesTitle {
-            if let logoUrl, !logoUrl.isEmpty {
-                PhoneEpisodeLogoTitle(
-                    logoUrl: logoUrl,
-                    seriesTitle: episodeSeriesTitle,
-                    episodeTitle: title,
-                    textAlignment: textAlignment,
-                    logoHeight: logoHeight
-                )
-            } else {
-                PhoneEpisodeHierarchyTitle(
-                    seriesTitle: episodeSeriesTitle,
-                    episodeTitle: title,
-                    textAlignment: textAlignment
-                )
-            }
-        } else if let logoUrl, !logoUrl.isEmpty {
+        if let logoUrl, !logoUrl.isEmpty {
             AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
                 .frame(maxWidth: textAlignment == .leading ? 430 : .infinity)
                 .frame(height: logoHeight, alignment: textAlignment == .leading ? .leading : .center)
@@ -487,12 +470,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         } else {
             PhoneHeroTitle(title: title, textAlignment: textAlignment)
         }
-    }
-
-    private var episodeSeriesTitle: String? {
-        guard let trimmed = seriesTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else { return nil }
-        return trimmed
     }
 
     // MARK: - Metadata
@@ -640,59 +617,4 @@ private struct PhoneHeroTitle: View {
     }
 }
 
-private struct PhoneEpisodeHierarchyTitle: View {
-    let seriesTitle: String
-    let episodeTitle: String
-    let textAlignment: TextAlignment
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(seriesTitle)
-                .font(.system(size: 32, weight: .heavy))
-                .foregroundStyle(Color.siloOnSurface)
-                .lineLimit(2)
-                .multilineTextAlignment(textAlignment)
-            Text(episodeTitle)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.90))
-                .lineLimit(2)
-                .multilineTextAlignment(textAlignment)
-        }
-        .frame(maxWidth: .infinity, alignment: textAlignment == .leading ? .leading : .center)
-    }
-}
-
-/// Episode hierarchy using the parent show's supplied clear logo, with the
-/// episode title beneath it. This is the touch-sized counterpart of tvOS's
-/// episode hero and falls back to `PhoneEpisodeHierarchyTitle` only when the
-/// backend has no logo artwork.
-private struct PhoneEpisodeLogoTitle: View {
-    let logoUrl: String
-    let seriesTitle: String
-    let episodeTitle: String
-    let textAlignment: TextAlignment
-    let logoHeight: CGFloat
-
-    var body: some View {
-        VStack(spacing: 6) {
-            AsyncImageView(url: logoUrl, contentMode: .fit, placeholderStyle: .clear)
-                .frame(maxWidth: textAlignment == .leading ? 430 : .infinity)
-                .frame(
-                    height: logoHeight,
-                    alignment: textAlignment == .leading ? .leading : .center
-                )
-                .accessibilityLabel(seriesTitle)
-
-            Text(episodeTitle)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.90))
-                .lineLimit(2)
-                .multilineTextAlignment(textAlignment)
-        }
-        .frame(
-            maxWidth: .infinity,
-            alignment: textAlignment == .leading ? .leading : .center
-        )
-    }
-}
 #endif

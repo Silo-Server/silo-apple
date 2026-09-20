@@ -149,23 +149,6 @@ class AppRouter {
 
     // MARK: - Item Detail Presentation
 
-    /// A Continue Watching episode opens its existing series card, retaining
-    /// the episode/season intent without fetching an intermediate detail page.
-    struct ItemDetailResumeContext: Equatable {
-        let seriesContentId: String
-        let episodeContentId: String
-        let seasonNumber: Int?
-
-        init?(item: SectionItem) {
-            guard item.type.lowercased() == "episode" || item.episodeNumber != nil,
-                  let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !seriesId.isEmpty else { return nil }
-            seriesContentId = seriesId
-            episodeContentId = item.contentId
-            seasonNumber = item.seasonNumber
-        }
-    }
-
     /// iPhone and iPad present catalog details as a native bottom sheet instead
     /// of pushing them into the tab or split-view navigation stack. A fresh UUID
     /// makes reopening the same title after dismissal a new presentation while
@@ -175,10 +158,10 @@ class AppRouter {
         var contentId: String
         let browseSource: ItemDetailBrowseSource?
         let libraryId: Int?
-        let resumeContext: ItemDetailResumeContext?
+        let resumeContext: SeriesDetailContext?
 
         init(contentId: String, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil,
-             resumeContext: ItemDetailResumeContext? = nil) {
+             resumeContext: SeriesDetailContext? = nil) {
             self.contentId = contentId
             self.browseSource = browseSource
             self.libraryId = libraryId
@@ -384,8 +367,8 @@ class AppRouter {
     /// Push a route onto the navigation stack.
     func navigate(to route: Route) {
         #if os(iOS)
-        if case .itemDetail(let contentId, _, let libraryId) = route {
-            presentItemDetail(contentId: contentId, libraryId: libraryId)
+        if case .itemDetail(let contentId, _, let libraryId, let context) = route {
+            presentItemDetail(contentId: contentId, libraryId: libraryId, resumeContext: context)
             return
         }
         #endif
@@ -415,7 +398,7 @@ class AppRouter {
         contentId: String,
         libraryId: Int? = nil,
         browseSource: ItemDetailBrowseSource? = nil,
-        resumeContext: ItemDetailResumeContext? = nil
+        resumeContext: SeriesDetailContext? = nil
     ) {
         #if os(iOS)
         recordScreenBreadcrumb(target: "itemDetail", action: "present")
@@ -431,20 +414,18 @@ class AppRouter {
                 resumeContext: resumeContext
             )
         } else {
-            itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId))
+            itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         }
         #else
-        navigate(to: .itemDetail(contentId: contentId, libraryId: libraryId))
+        navigate(to: .itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         #endif
     }
 
     func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil, browseSource: ItemDetailBrowseSource? = nil) {
-        #if os(iOS)
-        if let context = ItemDetailResumeContext(item: item) {
+        if let context = SeriesDetailContext(item: item) {
             presentItemDetail(contentId: context.seriesContentId, libraryId: libraryId, resumeContext: context)
             return
         }
-        #endif
         // Movies, audio and incomplete legacy episode payloads retain their
         // existing destination; a missing parent must not make a card inert.
         presentItemDetail(contentId: item.contentId, libraryId: libraryId, browseSource: browseSource)

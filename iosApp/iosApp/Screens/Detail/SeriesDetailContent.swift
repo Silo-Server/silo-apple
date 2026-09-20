@@ -16,6 +16,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
+    let episodeFavoriteStates: [String: Bool]
+    let episodeWatchlistStates: [String: Bool]
     let episodesBySeason: [Int: [EpisodeListItem]]
     let isLoadingEpisodes: Bool
     let hierarchyError: String?
@@ -35,6 +37,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    let onSetSeasonWatched: (Season, Bool) async -> Bool
+    let onSetEpisodeWatched: (EpisodeListItem, Bool) async -> Bool
+    let onSetEpisodeFavorite: (String, Bool) async -> Bool
+    let onSetEpisodeWatchlist: (String, Bool) async -> Bool
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -61,6 +67,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var hierarchyRetryTask: Task<Void, Never>?
     @State private var pendingResumeEpisode: EpisodeListItem?
+    @State private var isUpdatingWatched = false
+    @State private var watchedUpdateFailed = false
     private struct PendingEpisodePlayRequest: Equatable {
         let seasonNumber: Int?
     }
@@ -129,6 +137,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             guard !isLoading, nextUpEpisode == nil else { return }
             pendingEpisodePlayRequest = nil
         }
+        .alert("Couldn't Update Watched Status", isPresented: $watchedUpdateFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please check your connection and try again.")
+        }
     }
 
     private var heroToContentSpacing: CGFloat {
@@ -140,7 +153,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private var hero: some View {
         PhoneDetailHero(
             title: detail.title,
-            seriesTitle: nil,
             logoUrl: detail.logoUrl,
             posterUrl: detail.posterUrl,
             posterThumbhash: detail.posterThumbhash,
@@ -210,6 +222,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                         ? "Mark Series Unwatched" : "Mark Series Watched",
                     action: onToggleWatched
                 )
+                .disabled(isUpdatingWatched)
                 if DownloadManager.shared.downloadsEnabled {
                     SeriesDownloadMenuButton(
                         detail: detail,
@@ -276,6 +289,18 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
+        if let selectedSeason {
+            Button {
+                setSeasonWatched(selectedSeason, !(selectedSeason.userData?.played ?? false))
+            } label: {
+                Label(
+                    "Mark \(selectedSeason.downloadDisplayName) \(selectedSeason.userData?.played == true ? "Unwatched" : "Watched")",
+                    systemImage: selectedSeason.userData?.played == true ? "circle" : "checkmark.circle"
+                )
+            }
+            .disabled(isUpdatingWatched || selectedSeason.episodeCount == 0)
+            Divider()
+        }
         Button(action: onFindTrailers) {
             Label("Find Trailers", systemImage: "film")
         }
@@ -304,6 +329,24 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private func handleSeasonSelection(_ season: Season) {
         pendingEpisodePlayRequest = nil
         onSelectSeason(season)
+    }
+
+    private func setSeasonWatched(_ season: Season, _ played: Bool) {
+        guard !isUpdatingWatched else { return }
+        isUpdatingWatched = true
+        Task {
+            defer { isUpdatingWatched = false }
+            watchedUpdateFailed = !(await onSetSeasonWatched(season, played))
+        }
+    }
+
+    private func setEpisodeWatched(_ episode: EpisodeListItem, _ played: Bool) {
+        guard !isUpdatingWatched else { return }
+        isUpdatingWatched = true
+        Task {
+            defer { isUpdatingWatched = false }
+            watchedUpdateFailed = !(await onSetEpisodeWatched(episode, played))
+        }
     }
 
     private func handleEpisodeSelection(_ contentId: String) {
@@ -450,7 +493,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 PhoneSeasonChips(
                     seasons: seasons,
                     selected: selectedSeason,
-                    onSelect: handleSeasonSelection
+                    onSelect: handleSeasonSelection,
+                    onSetWatched: setSeasonWatched,
+                    isUpdatingWatched: isUpdatingWatched
                 )
             }
 
@@ -481,15 +526,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, SiloTheme.safePadding)
                     } else if hierarchyError == nil || !episodes.isEmpty {
-                        PhoneSeasonEpisodeBrowser(
-                            seasons: seasons,
-                            selectedSeason: selectedSeason,
+                        PhoneEpisodeCarousel(
                             episodes: episodes,
-                            episodesBySeason: episodesBySeason,
-                            isLoadingEpisodes: isLoadingEpisodes,
-                            onSelectSeason: handleSeasonSelection,
-                            onSelectEpisode: handleEpisodeSelection,
-                            onPlayEpisode: { contentId in
+                            isLoading: isLoadingEpisodes,
+                            onSelect: handleEpisodeSelection,
+                            onPlay: { contentId in
                                 guard let episode = episodes.first(where: {
                                     $0.contentId == contentId
                                 }) else { return }
@@ -497,9 +538,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             },
                             currentContentId: nextUpEpisode?.contentId,
                             selectsCenteredEpisode: true,
-                            showsSeasonSelector: false,
-                            forcesEpisodeCarousel: true,
-                            episodeCaptionStyleOverride: .titleMetadata
+                            captionStyleOverride: .titleMetadata,
+                            onSetWatched: setEpisodeWatched,
+                            isUpdatingWatched: isUpdatingWatched,
+                            favoriteStates: episodeFavoriteStates,
+                            watchlistStates: episodeWatchlistStates,
+                            onSetFavorite: onSetEpisodeFavorite,
+                            onSetWatchlist: onSetEpisodeWatchlist
                         )
                     }
                 }

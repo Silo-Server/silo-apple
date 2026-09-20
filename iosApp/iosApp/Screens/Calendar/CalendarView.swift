@@ -252,7 +252,7 @@ struct CalendarView: View {
                     heading: viewModel.sectionHeading(for: day),
                     events: viewModel.events(on: day),
                     onEventTap: { event in
-                        router.navigate(to: .itemDetail(contentId: event.navigationContentId))
+                        router.navigate(to: event.detailRoute)
                     },
                     prefersDefaultFocusOnFirstItem: day == firstNonEmptyDay,
                     focusRequest: shelfFocusRequest(for: day),

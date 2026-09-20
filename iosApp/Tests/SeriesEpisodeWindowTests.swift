@@ -97,21 +97,27 @@ final class SeriesEpisodeWindowTests: XCTestCase {
         let item = try JSONDecoder().decode(SectionItem.self, from: Data(
             #"{"contentId":"episode-38-1","type":"episode","title":"Episode","seriesId":"series","seriesTitle":"Series","seasonNumber":38,"episodeNumber":1}"#.utf8
         ))
-        let seed = TVItemDetailRouteSeed.destination(contentId: "series", from: item)
-        let routeCopy = seed
-        XCTAssertEqual(routeCopy.episodeContext?.seriesContentId, "series")
-        XCTAssertEqual(routeCopy.episodeContext?.seasonNumber, 38)
-        XCTAssertEqual(routeCopy.episodeContext?.episodeContentId, "episode-38-1")
-        XCTAssertEqual(seed.episodeContext, routeCopy.episodeContext)
-        XCTAssertEqual(seed.mediaType, "series")
+        let route = Route.itemDetail(destinationContentId: "series", sectionItem: item)
+        let routeCopy = route
+        guard case .itemDetail(let id, _, _, let context) = routeCopy else {
+            return XCTFail("Expected item detail")
+        }
+        XCTAssertEqual(id, "series")
+        XCTAssertEqual(context?.seriesContentId, "series")
+        XCTAssertEqual(context?.seasonNumber, 38)
+        XCTAssertEqual(context?.episodeContentId, "episode-38-1")
+        XCTAssertEqual(route, routeCopy)
     }
 
     func testUnrelatedDestinationDoesNotReceiveEpisodeIntent() throws {
         let item = try JSONDecoder().decode(SectionItem.self, from: Data(
             #"{"contentId":"episode","type":"episode","title":"Episode","seriesId":"series","seasonNumber":4,"episodeNumber":1}"#.utf8
         ))
-        XCTAssertNil(TVItemDetailRouteSeed.destination(contentId: "other", from: item).episodeContext)
-        XCTAssertNil(TVItemDetailRouteSeed.destination(contentId: "episode", from: item).episodeContext)
+        guard case .itemDetail(let id, _, _, let context) = Route.itemDetail(
+            destinationContentId: "other", sectionItem: item
+        ) else { return XCTFail("Expected item detail") }
+        XCTAssertEqual(id, "other")
+        XCTAssertNil(context)
     }
 
     private func season(_ number: Int) throws -> Season {

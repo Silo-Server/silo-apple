@@ -1,8 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone movie / episode detail screen. Cinematic backdrop hero up
-/// top, then a scrollable body of episode rail (when applicable),
+/// Phone movie detail screen. Cinematic backdrop hero up
+/// top, then a scrollable body of
 /// cast, "About", and the Details key/value list.
 ///
 /// Mirrors `TVMovieDetailView` semantically — same hero metadata,
@@ -17,26 +17,15 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
-    let seasons: [Season]
-    let selectedSeason: Season?
-    let seasonEpisodes: [EpisodeListItem]
-    let seasonEpisodesBySeason: [Int: [EpisodeListItem]]
-    let isLoadingEpisodes: Bool
-    let episodeSeriesPosterUrl: String?
-    let episodeSeriesPosterThumbhash: String?
-    let episodeSeriesLogoUrl: String?
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
-    let onSelectSeason: (Season) -> Void
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
     let onPersonTap: (String) -> Void
-    let onNavigateToParent: (String) -> Void
     let onNavigateToItem: (String) -> Void
-    let onEpisodeTap: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
     /// `onPlay` because extras are never downloadable and have no resume
     /// point — see `ItemDetailView` for why they skip the offline/cast gates.
@@ -103,18 +92,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
     // MARK: - Hero
 
     private var hero: some View {
-        let posterArtwork = heroPosterArtwork
-        return PhoneDetailHero(
+        PhoneDetailHero(
             title: detail.title,
-            seriesTitle: detail.type == "episode" ? detail.seriesTitle : nil,
-            logoUrl: detail.type == "episode"
-                ? (episodeSeriesLogoUrl ?? detail.logoUrl)
-                : detail.logoUrl,
-            posterUrl: posterArtwork.url,
-            posterThumbhash: posterArtwork.thumbhash,
+            logoUrl: detail.logoUrl,
+            posterUrl: detail.posterUrl,
+            posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            eyebrow: detail.type == "episode" ? nil : PhoneHeroMetadata.eyebrow(from: detail),
+            eyebrow: PhoneHeroMetadata.eyebrow(from: detail),
             sourceTokens: PhoneHeroMetadata.movieSourceTokens(from: detail),
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
@@ -134,35 +119,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
         )
     }
 
-    /// Episodes carry wide stills as their own artwork. The portrait slot
-    /// instead follows the episode hierarchy: its season poster, then the
-    /// parent series poster. Browsing another season below the hero does not
-    /// change this because the lookup stays anchored to `detail.seasonNumber`.
-    private var heroPosterArtwork: (url: String?, thumbhash: String?) {
-        guard detail.type == "episode" else {
-            return (detail.posterUrl, detail.posterThumbhash)
-        }
-
-        if let seasonNumber = detail.seasonNumber,
-           let season = seasons.first(where: { $0.seasonNumber == seasonNumber }),
-           let url = nonEmptyArtworkURL(season.posterUrl) {
-            return (url, season.posterThumbhash)
-        }
-
-        if let url = nonEmptyArtworkURL(episodeSeriesPosterUrl) {
-            return (url, episodeSeriesPosterThumbhash)
-        }
-
-        return (nil, nil)
-    }
-
-    private func nonEmptyArtworkURL(_ value: String?) -> String? {
-        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return value
-    }
-
     /// Play, then the named secondary actions, then the playback
     /// selectors. See `PhoneDetailActionRow` for why the circles went away.
     @ViewBuilder
@@ -170,7 +126,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: primaryPlayLabel,
+                title: "Play",
                 action: handlePlayTap,
                 fullWidth: true
             )
@@ -200,7 +156,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     isActive: isWatched,
                     label: "Watched",
                     accessibilityLabelOverride: isWatched
-                        ? watchedLabelUnmark : watchedLabelMark,
+                        ? "Mark as Unwatched" : "Mark as Watched",
                     action: onToggleWatched
                 )
                 if showsDownloadButton {
@@ -252,15 +208,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
             onPlay(false)
         }
     }
-    /// Download is offered for movies and individual episodes once the
+    /// Download is offered for movies once the
     /// server advertises the capability for this profile.
     private var showsDownloadButton: Bool {
         DownloadManager.shared.downloadsEnabled
-            && (detail.type == "movie" || detail.type == "episode")
-    }
-
-    private var hasOverflowNavigation: Bool {
-        detail.type == "episode" && detail.seriesId != nil
+            && detail.type == "movie"
     }
 
     /// Downloads also earn the overflow menu: a plain tap on Download starts
@@ -268,26 +220,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// always earn it, because "Find Trailers" is the only entry point to the
     /// trailer fetch.
     private var hasOverflowMenu: Bool {
-        hasOverflowNavigation || showsDownloadButton || detail.type == "movie"
+        showsDownloadButton || detail.type == "movie"
     }
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
-        if let seriesId = detail.seriesId,
-           let seasonNumber = detail.seasonNumber, seasonNumber > 0 {
-            Button {
-                onNavigateToParent("\(seriesId)-S\(seasonNumber)")
-            } label: {
-                Label("Go to Season", systemImage: "square.stack")
-            }
-        }
-        if let seriesId = detail.seriesId {
-            Button {
-                onNavigateToParent(seriesId)
-            } label: {
-                Label("Go to Series", systemImage: "tv")
-            }
-        }
         if showsDownloadButton {
             Button {
                 showDownloadOptions = true
@@ -307,10 +244,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var belowFold: some View {
         VStack(alignment: .leading, spacing: 36) {
-            if showsEpisodeRail {
-                episodesSection
-            }
-
             if let cast = detail.cast, !cast.isEmpty {
                 castSection(cast: cast)
             }
@@ -320,9 +253,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             detailsSection
                 .padding(.horizontal, SiloTheme.safePadding)
 
-            if showsSimilarRail {
-                similarSection
-            }
+            similarSection
         }
     }
 
@@ -347,49 +278,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
     }
 
-    // MARK: - Episode rail (episode detail page)
-
-    private var showsEpisodeRail: Bool {
-        detail.type == "episode"
-            && (!seasons.isEmpty || !seasonEpisodes.isEmpty || isLoadingEpisodes)
-    }
-
-    @ViewBuilder
-    private var episodesSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if !seasons.isEmpty {
-                PhoneSeasonChips(
-                    seasons: seasons,
-                    selected: selectedSeason,
-                    onSelect: onSelectSeason
-                )
-            }
-
-            PhoneSectionHeader(title: "\(episodeRailEyebrow) Episodes")
-                .padding(.horizontal, SiloTheme.safePadding)
-
-            PhoneSeasonEpisodeBrowser(
-                seasons: seasons,
-                selectedSeason: selectedSeason,
-                episodes: seasonEpisodes,
-                episodesBySeason: seasonEpisodesBySeason,
-                isLoadingEpisodes: isLoadingEpisodes,
-                onSelectSeason: onSelectSeason,
-                onSelectEpisode: onEpisodeTap,
-                currentContentId: detail.contentId,
-                showsSeasonSelector: false
-            )
-        }
-    }
-
-    private var episodeRailEyebrow: String {
-        if let seasonNumber = selectedSeason?.seasonNumber ?? detail.seasonNumber,
-           seasonNumber > 0 {
-            return "Season \(seasonNumber)"
-        }
-        return "This Season"
-    }
-
     // MARK: - Cast
 
     @ViewBuilder
@@ -402,13 +290,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     // MARK: - More Like This
-
-    /// Hide the similar rail on episode pages — viewers usually want
-    /// the next episode, not a tangentially related title; the season
-    /// episode rail above already serves browsing.
-    private var showsSimilarRail: Bool {
-        detail.type != "episode"
-    }
 
     private var similarSection: some View {
         // Header lives inside the rail so it disappears with the cards when
@@ -440,30 +321,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var hasResumeProgress: Bool { resumePositionSeconds != nil }
 
-    /// Play button label. For episodes we surface the S/E so the user
-    /// can confirm which sibling they're about to start; movies and
-    /// other one-off items just read "Play".
-    private var primaryPlayLabel: String {
-        if detail.type == "episode",
-           let season = detail.seasonNumber,
-           let episode = detail.episodeNumber {
-            if season == 0 { return "Play E\(episode)" }
-            return "Play S\(season)·E\(episode)"
-        }
-        return "Play"
-    }
-
     private var resumeTimestamp: String {
         guard let pos = resumePositionSeconds else { return "0:00" }
         return PlayerTimeFormatter.formatHMS(pos)
-    }
-
-    private var watchedLabelMark: String {
-        detail.type == "episode" ? "Mark Episode Watched" : "Mark as Watched"
-    }
-
-    private var watchedLabelUnmark: String {
-        detail.type == "episode" ? "Mark Episode Unwatched" : "Mark as Unwatched"
     }
 
     // MARK: - Versions

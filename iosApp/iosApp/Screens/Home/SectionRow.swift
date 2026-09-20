@@ -163,16 +163,6 @@ struct SectionRow: View {
             return
         }
 
-        #if os(tvOS)
-        let isEpisode = item.type.lowercased() == "episode" || item.episodeNumber != nil
-        if isEpisode,
-           let seriesId = item.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !seriesId.isEmpty,
-           item.seasonNumber != nil {
-            onItemTap(seriesId, item)
-            return
-        }
-        #endif
         onItemTap(contentId, item)
     }
 

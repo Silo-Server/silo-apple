@@ -1,26 +1,43 @@
 import SwiftUI
 
-/// Detail screen that routes to the appropriate Movie / Series /
-/// Season / Episode layout for the current platform. Phones get the
-/// `MovieDetailContent` / `SeriesDetailContent` / `SeasonDetailContent`
-/// stack; tvOS forwards to `TVItemDetailView` for the cinematic
-/// 10-foot layout.
+/// Movie, Series, and audiobook details. Episode and season links resolve to
+/// their Series in the same presentation, retaining the requested selection.
 struct ItemDetailView: View {
     let contentId: String
     var libraryId: Int? = nil
     var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
-    var resumeContext: AppRouter.ItemDetailResumeContext? = nil
+    var resumeContext: SeriesDetailContext? = nil
+
+    @State private var resolvedSeries: SeriesDetailContext?
+    @State private var resolvedSourceID: String?
+
+    private var seriesContext: SeriesDetailContext? {
+        resolvedSourceID == contentId ? resolvedSeries : nil
+    }
 
     var body: some View {
+        let destinationID = seriesContext?.seriesContentId ?? contentId
+        let context = seriesContext ?? resumeContext
+        // Only the original leaf may redirect. Malformed parent metadata must
+        // show a recoverable error rather than cycle between catalog entries.
+        let resolve: ((SeriesDetailContext) -> Void)? = seriesContext == nil ? { context in
+            resolvedSourceID = contentId
+            resolvedSeries = context
+        } : nil
         #if os(tvOS)
-        TVItemDetailView(contentId: contentId, libraryId: libraryId, seed: tvSeed)
-            // Episode -> Series replaces the route with the same view type.
-            // Its cached model and entry state belong to the new content ID.
-            .id(CacheKey.itemDetail(contentId, libraryId: libraryId))
+        TVItemDetailView(
+            contentId: destinationID, libraryId: libraryId,
+            seed: seriesContext == nil ? tvSeed : nil,
+            navigationContext: context, onResolveSeries: resolve
+        )
+        .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         #else
-        ItemDetailPhoneContent(contentId: contentId, libraryId: libraryId, onClose: onClose, resumeContext: resumeContext)
-            .id(CacheKey.itemDetail(contentId, libraryId: libraryId))
+        ItemDetailPhoneContent(
+            contentId: destinationID, libraryId: libraryId, onClose: onClose,
+            resumeContext: context, onResolveSeries: resolve
+        )
+        .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         #endif
     }
 }
@@ -244,13 +261,16 @@ private struct ItemDetailPhoneContent: View {
     let contentId: String
     let libraryId: Int?
     var onClose: (() -> Void)? = nil
-    var resumeContext: AppRouter.ItemDetailResumeContext? = nil
+    var resumeContext: SeriesDetailContext? = nil
 
-    init(contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: AppRouter.ItemDetailResumeContext?) {
+    let onResolveSeries: ((SeriesDetailContext) -> Void)?
+
+    init(contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?, onResolveSeries: ((SeriesDetailContext) -> Void)?) {
         self.contentId = contentId
         self.libraryId = libraryId
         self.onClose = onClose
         self.resumeContext = resumeContext
+        self.onResolveSeries = onResolveSeries
         _viewModel = State(initialValue: ItemDetailViewModel(libraryId: libraryId))
     }
 
@@ -312,12 +332,8 @@ private struct ItemDetailPhoneContent: View {
             preferredNextUpSubtitleTrackIndex = nil
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
-            #if os(iOS)
             selectedSeriesEpisodeId = resumeContext?.episodeContentId
             viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
-            #else
-            selectedSeriesEpisodeId = nil
-            #endif
             refreshOnPlayerDismiss = false
             detailScrollState.reset()
             await viewModel.loadDetail(contentId: contentId)
@@ -541,112 +557,9 @@ private struct ItemDetailPhoneContent: View {
                     router.navigate(to: .itemDetail(contentId: id))
                 }
             )
-        } else if detail.type == "season" {
-            SeasonDetailContent(
-                detail: detail,
-                libraryId: libraryId,
-                isFavorite: viewModel.isFavorite,
-                inWatchlist: viewModel.inWatchlist,
-                isWatched: viewModel.isWatched,
-                seasons: viewModel.seasons,
-                selectedSeason: viewModel.selectedSeason,
-                episodes: viewModel.episodes,
-                episodesBySeason: viewModel.episodesBySeason,
-                isLoadingEpisodes: viewModel.isLoadingEpisodes,
-                selectedNextUpFileId: preferredNextUpFileId,
-                selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
-                selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                nextUpWatchDetail: nextUpWatchDetail,
-                onPlayEpisode: { id, fileId, startFromBeginning in
-                    let episode = viewModel.episodes.first { $0.contentId == id }
-                    let resumePosition = startFromBeginning
-                        ? nil
-                        : playableResumePosition(
-                            position: episode?.userData?.positionSeconds,
-                            duration: episode?.userData?.durationSeconds
-                        )
-                    if let fileId = nextUpPlaybackFileId(resolvedFileId: fileId) {
-                        presentPlayerFromDetail(
-                            contentId: id,
-                            fileId: fileId,
-                            audioTrackIndex: preferredNextUpAudioTrackIndex,
-                            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
-                            startFromBeginning: startFromBeginning,
-                            resumePosition: resumePosition
-                        )
-                    } else {
-                        presentPlayerFromDetail(
-                            contentId: id,
-                            startFromBeginning: startFromBeginning,
-                            resumePosition: resumePosition
-                        )
-                    }
-                },
-                onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
-                },
-                onSelectSeason: { season in
-                    guard season.id != detail.contentId else { return }
-                    router.navigate(to: .itemDetail(contentId: season.contentId, libraryId: libraryId))
-                },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
-                onSelectNextUpAudioTrack: { index in
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    persistAudioSelection(
-                        prefKey: prefKey(for: nextUpWatchDetail),
-                        version: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpAudioTrackIndex
-                    )
-                },
-                onSelectNextUpSubtitleTrack: { index in
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: index
-                    )
-                    persistSubtitleSelection(
-                        prefKey: prefKey(for: nextUpWatchDetail),
-                        version: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
-                        requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nextUpWatchDetail?.effectiveShowForcedSubtitles
-                    )
-                },
-                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
-                onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
-                onToggleWatched: { Task { await viewModel.toggleWatched() } },
-                onPersonTap: { personId in
-                    if let pid = Int(personId) {
-                        router.navigate(to: .personDetail(personId: pid))
-                    }
-                },
-                onNavigateToParent: { id in
-                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
-                },
-                belowOverview: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
-            )
-            .task(id: nextUpEpisodeContentId(for: detail)) {
-                await loadNextUpWatchDetail(for: detail)
+        } else if detail.type == "season" || detail.type == "episode" {
+            SeriesDetailResolutionView(detail: detail, onResolve: onResolveSeries) {
+                Task { await viewModel.loadDetail(contentId: contentId) }
             }
         } else if detail.type == "series" {
             SeriesDetailContent(
@@ -658,6 +571,8 @@ private struct ItemDetailPhoneContent: View {
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
+                episodeFavoriteStates: viewModel.episodeFavoriteStates,
+                episodeWatchlistStates: viewModel.episodeWatchlistStates,
                 episodesBySeason: viewModel.episodesBySeason,
                 isLoadingEpisodes: viewModel.isLoadingSeriesHierarchy,
                 hierarchyError: viewModel.seriesLoadErrorMessage,
@@ -754,6 +669,22 @@ private struct ItemDetailPhoneContent: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                onSetSeasonWatched: { season, played in
+                    await viewModel.setSeasonWatched(season, played: played)
+                },
+                onSetEpisodeWatched: { episode, played in
+                    await viewModel.setEpisodeWatched(
+                        contentId: episode.contentId,
+                        played: played,
+                        seasonNumber: episode.seasonNumber
+                    )
+                },
+                onSetEpisodeFavorite: { id, isFavorite in
+                    await viewModel.setEpisodeFavorite(contentId: id, isFavorite: isFavorite)
+                },
+                onSetEpisodeWatchlist: { id, inWatchlist in
+                    await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
+                },
                 onPersonTap: { personId in
                     if let pid = Int(personId) {
                         router.navigate(to: .personDetail(personId: pid))
@@ -785,14 +716,6 @@ private struct ItemDetailPhoneContent: View {
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                seasons: viewModel.seasons,
-                selectedSeason: viewModel.selectedSeason,
-                seasonEpisodes: viewModel.episodes,
-                seasonEpisodesBySeason: viewModel.episodesBySeason,
-                isLoadingEpisodes: viewModel.isLoadingEpisodes,
-                episodeSeriesPosterUrl: viewModel.episodeSeriesPosterUrl,
-                episodeSeriesPosterThumbhash: viewModel.episodeSeriesPosterThumbhash,
-                episodeSeriesLogoUrl: viewModel.episodeSeriesLogoUrl,
                 onPlay: { startFromBeginning in
                     let resumePosition = startFromBeginning ? nil : playableResumePosition(for: detail)
                     if let fileId = playbackFileId(for: detail) {
@@ -853,9 +776,6 @@ private struct ItemDetailPhoneContent: View {
                         showForced: nil
                     )
                 },
-                onSelectSeason: { season in
-                    Task { await viewModel.selectSeason(season) }
-                },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
@@ -864,14 +784,8 @@ private struct ItemDetailPhoneContent: View {
                         router.navigate(to: .personDetail(personId: pid))
                     }
                 },
-                onNavigateToParent: { id in
-                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
-                },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
-                },
-                onEpisodeTap: { id in
-                    router.navigate(to: .itemDetail(contentId: id, libraryId: libraryId))
                 },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
@@ -1129,7 +1043,7 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func nextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
-        guard detail.type == "series" || detail.type == "season" else { return nil }
+        guard detail.type == "series" else { return nil }
         if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
             return inProgress
         }
@@ -1139,14 +1053,9 @@ private struct ItemDetailPhoneContent: View {
         return viewModel.episodes.first
     }
 
-    private func nextUpEpisodeContentId(for detail: ItemDetail) -> String? {
-        nextUpEpisode(for: detail)?.contentId
-    }
-
     /// Series detail keeps one active episode on the main page. The user's
     /// explicit card selection wins; otherwise retain the existing in-progress
-    /// then first-unwatched next-up policy. Season detail continues to use the
-    /// unmodified next-up path.
+    /// then first-unwatched next-up policy.
     private func playbackEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         if detail.type == "series",
            let selectedSeriesEpisodeId,

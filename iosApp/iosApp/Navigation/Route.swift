@@ -22,7 +22,8 @@ enum Route: Hashable {
     case itemDetail(
         contentId: String,
         tvSeed: TVItemDetailRouteSeed? = nil,
-        libraryId: Int? = nil
+        libraryId: Int? = nil,
+        seriesContext: SeriesDetailContext? = nil
     )
     case personDetail(personId: Int)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
@@ -94,16 +95,9 @@ enum Route: Hashable {
 }
 
 /// Card metadata that lets tvOS paint a branded detail frame before the
-/// authoritative item response arrives, plus the episode that opened a Series.
+/// authoritative item response arrives. Series selection lives on the route.
 /// Playback, personal state, selectors, and actions still wait for `ItemDetail`.
 struct TVItemDetailRouteSeed: Hashable {
-    struct EpisodeContext: Hashable {
-        let seriesContentId: String
-        let seasonNumber: Int
-        let episodeContentId: String
-    }
-
-    var episodeContext: EpisodeContext? = nil
     let mediaType: String
     let title: String
     let year: Int?
@@ -130,22 +124,6 @@ struct TVItemDetailRouteSeed: Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
-    }
-
-    init(_ detail: ItemDetail, episodeContext: EpisodeContext) {
-        self.episodeContext = episodeContext
-        mediaType = detail.type
-        title = detail.title
-        year = detail.year
-        overview = detail.overview
-        runtime = detail.runtime
-        contentRating = detail.contentRating
-        genre = detail.genres?.first
-        logoUrl = detail.logoUrl
-        posterUrl = detail.posterUrl
-        posterThumbhash = detail.posterThumbhash
-        backdropUrl = detail.backdropUrl
-        backdropThumbhash = detail.backdropThumbhash
     }
 
     init(_ item: BrowseItem) {
@@ -195,41 +173,34 @@ struct TVItemDetailRouteSeed: Hashable {
            seriesId?.isEmpty == false,
            seriesId == contentId,
            contentId != item.contentId {
-            var seed = TVItemDetailRouteSeed(parentSeriesFrom: item)
-            if let seasonNumber = item.seasonNumber {
-                seed.episodeContext = EpisodeContext(
-                    seriesContentId: contentId,
-                    seasonNumber: seasonNumber,
-                    episodeContentId: item.contentId
-                )
-            }
-            return seed
+            return TVItemDetailRouteSeed(parentSeriesFrom: item)
         }
         return TVItemDetailRouteSeed(item)
     }
 }
 
 extension Route {
-    /// Builds the platform-appropriate route from a section card. tvOS carries
-    /// the card's presentation seed; iOS/macOS retain their existing ID-only
-    /// route so poster zoom and detail behavior are unchanged.
+    /// Section cards carry the same Series selection on every platform.
+    /// tvOS additionally uses card artwork to paint its loading frame.
     static func itemDetail(
         destinationContentId: String,
         sectionItem: SectionItem,
         libraryId: Int? = nil
     ) -> Route {
+        let context = SeriesDetailContext(item: sectionItem)
+        let isSeriesLink = context?.seriesContentId == destinationContentId
+        let isEpisodeLink = context != nil && destinationContentId == sectionItem.contentId
+        let entryContext = isSeriesLink || isEpisodeLink ? context : nil
+        let resolvedID = entryContext?.seriesContentId ?? destinationContentId
         #if os(tvOS)
-        return .itemDetail(
-            contentId: destinationContentId,
-            tvSeed: TVItemDetailRouteSeed.destination(
-                contentId: destinationContentId,
-                from: sectionItem
-            ),
-            libraryId: libraryId
-        )
+        let seed: TVItemDetailRouteSeed? = .destination(contentId: resolvedID, from: sectionItem)
         #else
-        return .itemDetail(contentId: destinationContentId, libraryId: libraryId)
+        let seed: TVItemDetailRouteSeed? = nil
         #endif
+        return .itemDetail(
+            contentId: resolvedID, tvSeed: seed, libraryId: libraryId,
+            seriesContext: entryContext
+        )
     }
 
     /// Builds the platform-appropriate route from a catalog card. The seed is

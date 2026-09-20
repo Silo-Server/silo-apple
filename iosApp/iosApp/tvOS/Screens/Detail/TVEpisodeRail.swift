@@ -28,11 +28,13 @@ struct TVEpisodeRail: View {
     var onFocusedEpisodeChange: ((String?) -> Void)? = nil
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> Bool)? = nil
+    var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> Bool)? = nil
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
     var currentContentIsFavorite = false
     var favoriteStates: [String: Bool] = [:]
+    var watchlistStates: [String: Bool] = [:]
     var prefersCurrentContentFocus = false
     /// Series opts into a larger carousel card. The default keeps the
     /// approved 480-point geometry on existing season/episode pages.
@@ -150,6 +152,7 @@ struct TVEpisodeRail: View {
     @State private var anchoredContentId: String?
     @State private var anchoredPlayedOverrides: [String: Bool] = [:]
     @State private var anchoredFavoriteOverrides: [String: Bool] = [:]
+    @State private var anchoredWatchlistOverrides: [String: Bool] = [:]
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -179,7 +182,9 @@ struct TVEpisodeRail: View {
                             initialIsFavorite: currentContentId == episode.contentId
                                 ? currentContentIsFavorite
                                 : favoriteStates[episode.contentId] ?? false,
-                            onSetFavorite: onSetFavorite
+                            onSetFavorite: onSetFavorite,
+                            onSetWatchlist: onSetWatchlist,
+                            initialInWatchlist: watchlistStates[episode.contentId] ?? false
                         )
                         .id(episode.contentId)
                         .focused($focusedCardId, equals: episode.contentId)
@@ -543,6 +548,10 @@ struct TVEpisodeRail: View {
             ?? (currentContentId == episode.contentId && currentContentIsFavorite)
     }
 
+    private func anchoredInWatchlist(_ episode: EpisodeListItem) -> Bool {
+        anchoredWatchlistOverrides[episode.contentId] ?? watchlistStates[episode.contentId] ?? false
+    }
+
     private func anchoredMetadataLine(for episode: EpisodeListItem) -> String? {
         var parts: [String] = []
         if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
@@ -600,6 +609,23 @@ struct TVEpisodeRail: View {
                     Label(
                         anchoredIsFavorite(episode) ? "Remove from Favorites" : "Add to Favorites",
                         systemImage: anchoredIsFavorite(episode) ? "heart.slash" : "heart"
+                    )
+                }
+            }
+
+            if let onSetWatchlist {
+                Button {
+                    let inWatchlist = !anchoredInWatchlist(episode)
+                    anchoredWatchlistOverrides[episode.contentId] = inWatchlist
+                    Task {
+                        if await onSetWatchlist(episode.contentId, inWatchlist) == false {
+                            anchoredWatchlistOverrides[episode.contentId] = nil
+                        }
+                    }
+                } label: {
+                    Label(
+                        anchoredInWatchlist(episode) ? "Remove from Watchlist" : "Add to Watchlist",
+                        systemImage: anchoredInWatchlist(episode) ? "bookmark.slash" : "bookmark"
                     )
                 }
             }
@@ -702,9 +728,13 @@ struct TVEpisodeCard: View {
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> Bool)? = nil
     var initialIsFavorite = false
     var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> Bool)? = nil
+    var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> Bool)? = nil
+
+    var initialInWatchlist = false
 
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
+    @State private var watchlistOverride: Bool?
 
     private var cardWidth: CGFloat { baseCardWidth * posterSize.scale }
     private var stillHeight: CGFloat { cardWidth * 9 / 16 }
@@ -727,7 +757,7 @@ struct TVEpisodeCard: View {
         .accessibilityLabel(accessibilityDescription)
 
         Group {
-            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil {
+            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil {
                 button.contextMenu { contextActions }
             } else {
                 button
@@ -741,6 +771,14 @@ struct TVEpisodeCard: View {
             guard let favoriteOverride, refreshedValue == favoriteOverride else { return }
             self.favoriteOverride = nil
         }
+        .onChange(of: initialInWatchlist) { _, refreshedValue in
+            guard let watchlistOverride, refreshedValue == watchlistOverride else { return }
+            self.watchlistOverride = nil
+        }
+    }
+
+    private var inWatchlist: Bool {
+        watchlistOverride ?? initialInWatchlist
     }
 
     private var isPlayed: Bool {
@@ -817,6 +855,23 @@ struct TVEpisodeCard: View {
                 Label(
                     isFavorite ? "Remove from Favorites" : "Add to Favorites",
                     systemImage: isFavorite ? "heart.slash" : "heart"
+                )
+            }
+        }
+
+        if let onSetWatchlist {
+            Button {
+                let newValue = !inWatchlist
+                watchlistOverride = newValue
+                Task {
+                    if await onSetWatchlist(episode.contentId, newValue) == false {
+                        watchlistOverride = nil
+                    }
+                }
+            } label: {
+                Label(
+                    inWatchlist ? "Remove from Watchlist" : "Add to Watchlist",
+                    systemImage: inWatchlist ? "bookmark.slash" : "bookmark"
                 )
             }
         }
