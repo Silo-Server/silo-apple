@@ -42,10 +42,9 @@ struct PhoneLabeledAction: View {
                     .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
 
                 Text(label)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(Color.siloOnSurface.opacity(isActive ? 0.92 : 0.6))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                    .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())
@@ -74,9 +73,9 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
                     .frame(width: 42, height: 42)
                     .background(Circle().fill(Color.white.opacity(0.10)))
                 Text(label)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.6))
-                    .lineLimit(1)
+                    .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, minHeight: 58)
             .contentShape(Rectangle())

@@ -1,46 +1,4 @@
-import SwiftUI
-
-/// The favorite / watchlist entries shared by the media-card context
-/// menus (long press on iOS/macOS, long press on the touch surface on
-/// tvOS). Labels reflect the caller's current membership state; the
-/// caller owns the optimistic flip and the API call.
-struct PersonalListMenuItems: View {
-    let isFavorite: Bool
-    let inWatchlist: Bool
-    let onToggleFavorite: () -> Void
-    let onToggleWatchlist: () -> Void
-
-    var body: some View {
-        Group {
-            Button(action: onToggleFavorite) {
-                Label(
-                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                    systemImage: isFavorite ? "heart.slash" : "heart"
-                )
-            }
-            Button(action: onToggleWatchlist) {
-                Label(
-                    inWatchlist ? "Remove from Watchlist" : "Add to Watchlist",
-                    systemImage: inWatchlist ? "bookmark.slash" : "bookmark"
-                )
-            }
-        }
-    }
-}
-
-extension View {
-    /// Attaches a long-press context menu with the given favorite /
-    /// watchlist items, or leaves the view untouched when `nil` — so
-    /// cards without a catalog identity never get an empty menu.
-    @ViewBuilder
-    func personalListContextMenu(_ items: PersonalListMenuItems?) -> some View {
-        if let items {
-            contextMenu { items }
-        } else {
-            self
-        }
-    }
-}
+import Foundation
 
 /// Server sync behind the card context-menu toggles. Mirrors
 /// `ItemDetailViewModel.toggleFavorite/toggleWatchlist`: on success it
@@ -96,5 +54,9 @@ enum PersonalListSync {
         ResponseCache.shared.remove(CacheKey.favorites)
         ResponseCache.shared.remove(CacheKey.watchlist)
         ResponseCache.shared.remove(CacheKey.homeSections)
+        ResponseCache.shared.remove(CacheKey.recommendations)
+        for prefix in ["browse:", "tvlibrary:", "library:", "collection:"] {
+            ResponseCache.shared.removeAll(withPrefix: prefix)
+        }
     }
 }

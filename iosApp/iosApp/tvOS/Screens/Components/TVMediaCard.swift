@@ -52,6 +52,8 @@ struct TVMediaCard: View {
     }
 
     @FocusState private var isFocused: Bool
+    @State private var actionFeedback = MediaActionFeedback()
+    @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -73,13 +75,15 @@ struct TVMediaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             posterButton
-                .personalListContextMenu(hasPersonalActions ? personalMenuItems : nil)
+                .mediaStateContextMenu(hasPersonalActions ? stateMenu : nil)
             if uiCustomization.cardPresentation.caption.showsTitle {
                 caption
             }
         }
         .frame(width: resolvedCardWidth)
+        .mediaActionFeedback(actionFeedback)
         .onChange(of: userState) { _, _ in
+            playedOverride = nil
             favoriteOverride = nil
             watchlistOverride = nil
         }
@@ -99,26 +103,46 @@ struct TVMediaCard: View {
         watchlistOverride ?? (userState?.inWatchlist == true)
     }
 
-    private var personalMenuItems: PersonalListMenuItems {
-        PersonalListMenuItems(
+    private var isPlayed: Bool { playedOverride ?? (userState?.played == true) }
+
+    private var stateMenu: MediaStateMenuItems {
+        MediaStateMenuItems(
+            isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
+            isUpdating: actionFeedback.isUpdating,
+            onToggleWatched: aspect != .square ? toggleWatched : nil,
             onToggleFavorite: togglePersonalFavorite,
             onToggleWatchlist: togglePersonalWatchlist
         )
+    }
+
+    private func toggleWatched() {
+        guard let contentId else { return }
+        let played = !isPlayed
+        let previous = playedOverride
+        actionFeedback.perform {
+            playedOverride = played
+            let succeeded = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
+            if !succeeded { playedOverride = previous }
+            return succeeded
+        }
     }
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
         let newValue = !isFavorite
         let watchlist = isInWatchlist
-        favoriteOverride = newValue
-        Task {
+        let previous = favoriteOverride
+        actionFeedback.perform {
+            favoriteOverride = newValue
             if await PersonalListSync.setFavorite(
                 contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
             ) == false {
-                favoriteOverride = !newValue // Revert on failure
+                favoriteOverride = previous
+                return false
             }
+            return true
         }
     }
 
@@ -126,13 +150,16 @@ struct TVMediaCard: View {
         guard let contentId else { return }
         let newValue = !isInWatchlist
         let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
+        let previous = watchlistOverride
+        actionFeedback.perform {
+            watchlistOverride = newValue
             if await PersonalListSync.setWatchlist(
                 contentId: contentId, isFavorite: favorite, inWatchlist: newValue
             ) == false {
-                watchlistOverride = !newValue // Revert on failure
+                watchlistOverride = previous
+                return false
             }
+            return true
         }
     }
 
@@ -179,7 +206,7 @@ struct TVMediaCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
-            if userState?.played == true {
+            if isPlayed {
                 watchedBadge
                     .padding(12)
             }
@@ -244,7 +271,7 @@ struct TVMediaCard: View {
         if let secondLine {
             components.append(secondLine)
         }
-        if userState?.played == true {
+        if isPlayed {
             components.append("Watched")
         }
         return components.joined(separator: ", ")

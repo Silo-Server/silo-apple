@@ -18,15 +18,16 @@ struct PhonePrimaryPillButton: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.body.bold())
                 Text(title)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .lineLimit(1)
             }
             .foregroundColor(.black)
             .frame(maxWidth: fullWidth ? .infinity : nil)
             .padding(.horizontal, fullWidth ? 24 : 24)
-            .frame(height: 52)
+            .padding(.vertical, 12)
+            .frame(minHeight: 52)
             .background(Capsule().fill(Color.white))
         }
         .buttonStyle(.plain)
@@ -66,7 +67,7 @@ struct PhoneCircleActionButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: resolvedIcon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundColor(.white)
                 .frame(width: 44, height: 44)
                 .background(
@@ -110,7 +111,7 @@ struct PhoneCircleMenuButton<MenuContent: View>: View {
             menu()
         } label: {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundColor(.white)
                 .frame(width: 44, height: 44)
                 .background(

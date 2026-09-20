@@ -114,8 +114,8 @@ private struct PhoneEpisodeCard: View {
     let onSetFavorite: ((String, Bool) async -> Bool)?
     let onSetWatchlist: ((String, Bool) async -> Bool)?
 
-    @State private var isUpdatingPersonalLists = false
-    @State private var personalListUpdateFailed = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var actionFeedback = MediaActionFeedback()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -131,11 +131,7 @@ private struct PhoneEpisodeCard: View {
             }
         }
         .frame(width: cardWidth, alignment: .leading)
-        .alert("Couldn't Update Episode", isPresented: $personalListUpdateFailed) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("Please try again.")
-        }
+        .mediaActionFeedback(actionFeedback)
     }
 
     private var thumbnailControls: some View {
@@ -152,7 +148,7 @@ private struct PhoneEpisodeCard: View {
                     Image(systemName: "play.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.black)
-                        .frame(width: 42, height: 42)
+                        .frame(width: 44, height: 44)
                         .background(Circle().fill(Color.white.opacity(0.94)))
                 }
                 .buttonStyle(.plain)
@@ -165,38 +161,22 @@ private struct PhoneEpisodeCard: View {
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: stillCornerRadius))
         #endif
         .contextMenu {
-            if let onSetWatched {
-                Button {
-                    onSetWatched(episode, !(episode.userData?.played ?? false))
-                } label: {
-                    Label(
-                        episode.userData?.played == true ? "Mark Episode Unwatched" : "Mark Episode Watched",
-                        systemImage: episode.userData?.played == true ? "circle" : "checkmark.circle"
-                    )
+            MediaStateMenuItems(
+                isWatched: episode.userData?.played == true,
+                isFavorite: isFavorite,
+                inWatchlist: inWatchlist,
+                watchedSubject: "Episode",
+                isUpdating: isUpdatingWatched || actionFeedback.isUpdating,
+                onToggleWatched: onSetWatched.map { update in
+                    { update(episode, !(episode.userData?.played ?? false)) }
+                },
+                onToggleFavorite: onSetFavorite.map { update in
+                    { actionFeedback.perform { await update(episode.contentId, !isFavorite) } }
+                },
+                onToggleWatchlist: onSetWatchlist.map { update in
+                    { actionFeedback.perform { await update(episode.contentId, !inWatchlist) } }
                 }
-                .disabled(isUpdatingWatched)
-            }
-            if let onSetFavorite, let onSetWatchlist {
-                PersonalListMenuItems(
-                    isFavorite: isFavorite,
-                    inWatchlist: inWatchlist,
-                    onToggleFavorite: { updatePersonalList(onSetFavorite, to: !isFavorite) },
-                    onToggleWatchlist: { updatePersonalList(onSetWatchlist, to: !inWatchlist) }
-                )
-                .disabled(isUpdatingPersonalLists)
-            }
-        }
-    }
-
-    private func updatePersonalList(
-        _ update: @escaping (String, Bool) async -> Bool,
-        to value: Bool
-    ) {
-        guard !isUpdatingPersonalLists else { return }
-        isUpdatingPersonalLists = true
-        Task {
-            personalListUpdateFailed = !(await update(episode.contentId, value))
-            isUpdatingPersonalLists = false
+            )
         }
     }
 
@@ -207,28 +187,31 @@ private struct PhoneEpisodeCard: View {
             }
 
             Text(PhoneEpisodeFormatting.title(for: episode))
-                .font(.system(size: 14, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
 
             if captionStyle.showsMetadata {
                 if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
                     Text(metadataLine)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(Color.siloSecondaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .multilineTextAlignment(.leading)
                 }
 
                 if let overview = episode.overview, !overview.isEmpty {
-                    Text(overview)
-                        .font(.system(size: 12, weight: .regular))
+                    let description = Text(overview)
+                        .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
-                        .lineLimit(3, reservesSpace: true)
                         .lineSpacing(2)
                         .multilineTextAlignment(.leading)
+                    if dynamicTypeSize.isAccessibilitySize {
+                        description
+                    } else {
+                        description.lineLimit(3, reservesSpace: true)
+                    }
                 }
             }
         }
@@ -242,7 +225,7 @@ private struct PhoneEpisodeCard: View {
 
     private var nowViewingTag: some View {
         Text("NOW VIEWING")
-            .font(.system(size: 9, weight: .heavy))
+            .font(.caption2.weight(.heavy))
             .tracking(0.8)
             .foregroundColor(.black)
             .padding(.horizontal, 5)

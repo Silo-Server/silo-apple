@@ -16,6 +16,7 @@ struct CatalogGrid: View {
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     #if !os(tvOS)
     @State private var detailBrowseOriginID = UUID().uuidString
     @State private var detailBrowseSource: ItemDetailBrowseSource?
@@ -35,6 +36,12 @@ struct CatalogGrid: View {
     #else
     @Environment(\.horizontalSizeClass) private var hSize
     private var columns: [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize {
+            return Array(
+                repeating: GridItem(.flexible(), spacing: 8, alignment: .top),
+                count: hSize == .regular ? 3 : 2
+            )
+        }
         if usesThreeColumnPhoneLayout {
             return Array(
                 repeating: GridItem(.flexible(), spacing: 8),
@@ -131,6 +138,17 @@ struct CatalogGrid: View {
     /// MediaCard applies the global poster-size scale after its override. Undo
     /// that scale here, then cap the standard width to the measured grid cell.
     private var phoneCardWidthOverride: CGFloat? {
+        #if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            let fittedWidth = AdaptiveColumns.fittedPosterWidth(
+                containerWidth: gridWidth,
+                columnCount: columns.count,
+                spacing: 8,
+                maximumWidth: 240
+            )
+            return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
+        }
+        #endif
         guard usesThreeColumnPhoneLayout else { return nil }
         let fittedWidth = AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,

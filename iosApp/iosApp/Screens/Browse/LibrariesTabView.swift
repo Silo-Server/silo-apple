@@ -621,7 +621,7 @@ private struct LibraryPickerSheet: View {
             .padding(.horizontal, SiloTheme.padding)
             .padding(.vertical, SiloTheme.padding)
         }
-        .siloPageBackground()
+        .siloSheetBackground()
         .navigationTitle("Libraries")
     }
 }

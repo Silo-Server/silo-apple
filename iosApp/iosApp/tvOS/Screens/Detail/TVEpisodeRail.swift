@@ -150,6 +150,7 @@ struct TVEpisodeRail: View {
     @State private var anchoredFocusedContentId: String?
     @Namespace private var anchoredFocusScope
     @State private var anchoredContentId: String?
+    @State private var actionFeedback = MediaActionFeedback()
     @State private var anchoredPlayedOverrides: [String: Bool] = [:]
     @State private var anchoredFavoriteOverrides: [String: Bool] = [:]
     @State private var anchoredWatchlistOverrides: [String: Bool] = [:]
@@ -158,11 +159,14 @@ struct TVEpisodeRail: View {
 
     @ViewBuilder
     var body: some View {
-        if anchorsFocusedCard {
-            anchoredRail
-        } else {
-            legacyRail
+        Group {
+            if anchorsFocusedCard {
+                anchoredRail
+            } else {
+                legacyRail
+            }
         }
+        .mediaActionFeedback(actionFeedback)
     }
 
     private var legacyRail: some View {
@@ -579,56 +583,49 @@ struct TVEpisodeRail: View {
                 }
             }
 
-            if let onSetWatched {
-                Button {
-                    let played = !anchoredIsPlayed(episode)
-                    anchoredPlayedOverrides[episode.contentId] = played
-                    Task {
-                        if await onSetWatched(episode.contentId, played) == false {
-                            anchoredPlayedOverrides[episode.contentId] = nil
+            MediaStateMenuItems(
+                isWatched: anchoredIsPlayed(episode),
+                isFavorite: anchoredIsFavorite(episode),
+                inWatchlist: anchoredInWatchlist(episode),
+                watchedSubject: "Episode",
+                isUpdating: actionFeedback.isUpdating,
+                onToggleWatched: onSetWatched.map { update in
+                    {
+                        let value = !anchoredIsPlayed(episode)
+                        let previous = anchoredPlayedOverrides[episode.contentId]
+                        actionFeedback.perform {
+                            anchoredPlayedOverrides[episode.contentId] = value
+                            let succeeded = await update(episode.contentId, value)
+                            if !succeeded { anchoredPlayedOverrides[episode.contentId] = previous }
+                            return succeeded
                         }
                     }
-                } label: {
-                    Label(
-                        anchoredIsPlayed(episode) ? "Mark as Unwatched" : "Mark as Watched",
-                        systemImage: anchoredIsPlayed(episode) ? "circle" : "checkmark.circle"
-                    )
-                }
-            }
-
-            if let onSetFavorite {
-                Button {
-                    let isFavorite = !anchoredIsFavorite(episode)
-                    anchoredFavoriteOverrides[episode.contentId] = isFavorite
-                    Task {
-                        if await onSetFavorite(episode.contentId, isFavorite) == false {
-                            anchoredFavoriteOverrides[episode.contentId] = nil
+                },
+                onToggleFavorite: onSetFavorite.map { update in
+                    {
+                        let value = !anchoredIsFavorite(episode)
+                        let previous = anchoredFavoriteOverrides[episode.contentId]
+                        actionFeedback.perform {
+                            anchoredFavoriteOverrides[episode.contentId] = value
+                            let succeeded = await update(episode.contentId, value)
+                            if !succeeded { anchoredFavoriteOverrides[episode.contentId] = previous }
+                            return succeeded
                         }
                     }
-                } label: {
-                    Label(
-                        anchoredIsFavorite(episode) ? "Remove from Favorites" : "Add to Favorites",
-                        systemImage: anchoredIsFavorite(episode) ? "heart.slash" : "heart"
-                    )
-                }
-            }
-
-            if let onSetWatchlist {
-                Button {
-                    let inWatchlist = !anchoredInWatchlist(episode)
-                    anchoredWatchlistOverrides[episode.contentId] = inWatchlist
-                    Task {
-                        if await onSetWatchlist(episode.contentId, inWatchlist) == false {
-                            anchoredWatchlistOverrides[episode.contentId] = nil
+                },
+                onToggleWatchlist: onSetWatchlist.map { update in
+                    {
+                        let value = !anchoredInWatchlist(episode)
+                        let previous = anchoredWatchlistOverrides[episode.contentId]
+                        actionFeedback.perform {
+                            anchoredWatchlistOverrides[episode.contentId] = value
+                            let succeeded = await update(episode.contentId, value)
+                            if !succeeded { anchoredWatchlistOverrides[episode.contentId] = previous }
+                            return succeeded
                         }
                     }
-                } label: {
-                    Label(
-                        anchoredInWatchlist(episode) ? "Remove from Watchlist" : "Add to Watchlist",
-                        systemImage: anchoredInWatchlist(episode) ? "bookmark.slash" : "bookmark"
-                    )
                 }
-            }
+            )
         }
     }
 }
@@ -732,6 +729,7 @@ struct TVEpisodeCard: View {
 
     var initialInWatchlist = false
 
+    @State private var actionFeedback = MediaActionFeedback()
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
@@ -763,6 +761,7 @@ struct TVEpisodeCard: View {
                 button
             }
         }
+        .mediaActionFeedback(actionFeedback)
         .onChange(of: episode.userData?.played) { _, refreshedValue in
             guard let playedOverride, refreshedValue == playedOverride else { return }
             self.playedOverride = nil
@@ -825,56 +824,49 @@ struct TVEpisodeCard: View {
             }
         }
 
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                playedOverride = played
-                Task {
-                    if await onSetWatched(episode.contentId, played) == false {
-                        playedOverride = nil
+        MediaStateMenuItems(
+            isWatched: isPlayed,
+            isFavorite: isFavorite,
+            inWatchlist: inWatchlist,
+            watchedSubject: "Episode",
+            isUpdating: actionFeedback.isUpdating,
+            onToggleWatched: onSetWatched.map { update in
+                {
+                    let value = !isPlayed
+                    let previous = playedOverride
+                    actionFeedback.perform {
+                        playedOverride = value
+                        let succeeded = await update(episode.contentId, value)
+                        if !succeeded { playedOverride = previous }
+                        return succeeded
                     }
                 }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if let onSetFavorite {
-            Button {
-                let newValue = !isFavorite
-                favoriteOverride = newValue
-                Task {
-                    if await onSetFavorite(episode.contentId, newValue) == false {
-                        favoriteOverride = nil
+            },
+            onToggleFavorite: onSetFavorite.map { update in
+                {
+                    let value = !isFavorite
+                    let previous = favoriteOverride
+                    actionFeedback.perform {
+                        favoriteOverride = value
+                        let succeeded = await update(episode.contentId, value)
+                        if !succeeded { favoriteOverride = previous }
+                        return succeeded
                     }
                 }
-            } label: {
-                Label(
-                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                    systemImage: isFavorite ? "heart.slash" : "heart"
-                )
-            }
-        }
-
-        if let onSetWatchlist {
-            Button {
-                let newValue = !inWatchlist
-                watchlistOverride = newValue
-                Task {
-                    if await onSetWatchlist(episode.contentId, newValue) == false {
-                        watchlistOverride = nil
+            },
+            onToggleWatchlist: onSetWatchlist.map { update in
+                {
+                    let value = !inWatchlist
+                    let previous = watchlistOverride
+                    actionFeedback.perform {
+                        watchlistOverride = value
+                        let succeeded = await update(episode.contentId, value)
+                        if !succeeded { watchlistOverride = previous }
+                        return succeeded
                     }
                 }
-            } label: {
-                Label(
-                    inWatchlist ? "Remove from Watchlist" : "Add to Watchlist",
-                    systemImage: inWatchlist ? "bookmark.slash" : "bookmark"
-                )
             }
-        }
+        )
     }
 }
 

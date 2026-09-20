@@ -100,6 +100,7 @@ struct MediaCard: View {
     /// Watchlist grids use it to drop the card from the list in place.
     var onUserStateChanged: ((MediaItemUserState) -> Void)? = nil
 
+    @State private var actionFeedback = MediaActionFeedback()
     @State private var playedOverride: Bool?
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
@@ -137,6 +138,10 @@ struct MediaCard: View {
     }
 
     var body: some View {
+        cardBody.mediaActionFeedback(actionFeedback)
+    }
+
+    private var cardBody: some View {
         #if os(tvOS)
         // tvOS: button label is just the poster (so .card style lifts the image),
         // then a title caption lives outside the button and reacts to focus via FocusState.
@@ -156,17 +161,7 @@ struct MediaCard: View {
             contextDetailTitle: contextDetailTitle,
             onOpenContextDetail: onOpenContextDetail,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onSetWatched: onSetWatched.map { handler in
-                { played in
-                    playedOverride = played
-                    let succeeded = await handler(played)
-                    if !succeeded {
-                        playedOverride = nil
-                    }
-                    return succeeded
-                }
-            },
-            personalItems: hasPersonalActions ? personalMenuItems : nil
+            stateMenu: hasStateActions ? stateMenu : nil
         ) {
             posterImage
         }
@@ -222,34 +217,14 @@ struct MediaCard: View {
     }
 
     private var hasIOSContextActions: Bool {
-        hasPersonalActions || onSetWatched != nil || onRemoveFromContinueWatching != nil
+        hasStateActions || onRemoveFromContinueWatching != nil
     }
 
     /// Same action set (and ordering) as the tvOS `FocusableMediaCard` menu:
     /// watched toggle, favorite/watchlist, then the destructive remove.
     @ViewBuilder
     private var iosContextActions: some View {
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                Task { @MainActor in
-                    playedOverride = played
-                    let succeeded = await onSetWatched(played)
-                    if !succeeded {
-                        playedOverride = nil
-                    }
-                }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if hasPersonalActions {
-            personalMenuItems
-        }
+        stateMenu
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {
@@ -278,29 +253,66 @@ struct MediaCard: View {
         watchlistOverride ?? (userState?.inWatchlist == true)
     }
 
-    private var personalMenuItems: PersonalListMenuItems {
-        PersonalListMenuItems(
+    private var canSetWatched: Bool {
+        onSetWatched != nil || (hasPersonalActions && aspect != .square)
+    }
+
+    private var hasStateActions: Bool { hasPersonalActions || canSetWatched }
+
+    private var stateMenu: MediaStateMenuItems {
+        MediaStateMenuItems(
+            isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
-            onToggleFavorite: togglePersonalFavorite,
-            onToggleWatchlist: togglePersonalWatchlist
+            isUpdating: actionFeedback.isUpdating,
+            onToggleWatched: canSetWatched ? toggleWatched : nil,
+            onToggleFavorite: hasPersonalActions ? togglePersonalFavorite : nil,
+            onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil
         )
+    }
+
+    private func toggleWatched() {
+        let played = !isPlayed
+        let previous = playedOverride
+        // Home's injected handler owns its page-level failure alert.
+        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
+            playedOverride = played
+            let succeeded: Bool
+            if let onSetWatched {
+                succeeded = await onSetWatched(played)
+            } else if let contentId {
+                succeeded = await MediaCardWatchedSync.setWatched(contentId: contentId, played: played)
+            } else {
+                succeeded = false
+            }
+            if succeeded {
+                onUserStateChanged?(MediaItemUserState(
+                    played: played, isFavorite: isFavorite, inWatchlist: isInWatchlist
+                ))
+            } else {
+                playedOverride = previous
+            }
+            return succeeded
+        }
     }
 
     private func togglePersonalFavorite() {
         guard let contentId else { return }
         let newValue = !isFavorite
         let watchlist = isInWatchlist
-        favoriteOverride = newValue
-        Task {
+        let previous = favoriteOverride
+        actionFeedback.perform {
+            favoriteOverride = newValue
             if await PersonalListSync.setFavorite(
                 contentId: contentId, isFavorite: newValue, inWatchlist: watchlist
             ) {
                 onUserStateChanged?(
                     MediaItemUserState(played: isPlayed, isFavorite: newValue, inWatchlist: watchlist)
                 )
+                return true
             } else {
-                favoriteOverride = !newValue // Revert on failure
+                favoriteOverride = previous
+                return false
             }
         }
     }
@@ -309,16 +321,19 @@ struct MediaCard: View {
         guard let contentId else { return }
         let newValue = !isInWatchlist
         let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
+        let previous = watchlistOverride
+        actionFeedback.perform {
+            watchlistOverride = newValue
             if await PersonalListSync.setWatchlist(
                 contentId: contentId, isFavorite: favorite, inWatchlist: newValue
             ) {
                 onUserStateChanged?(
                     MediaItemUserState(played: isPlayed, isFavorite: favorite, inWatchlist: newValue)
                 )
+                return true
             } else {
-                watchlistOverride = !newValue // Revert on failure
+                watchlistOverride = previous
+                return false
             }
         }
     }
@@ -502,10 +517,7 @@ private struct FocusableMediaCard<Content: View>: View {
     let contextDetailTitle: String?
     let onOpenContextDetail: (() -> Void)?
     let onRemoveFromContinueWatching: (() -> Void)?
-    let onSetWatched: ((Bool) async -> Bool)?
-    /// Favorite / watchlist toggles, built by the owning card. `nil`
-    /// when the card has no catalog identity or user state.
-    let personalItems: PersonalListMenuItems?
+    let stateMenu: MediaStateMenuItems?
     @ViewBuilder var content: () -> Content
 
     @ViewBuilder
@@ -582,9 +594,8 @@ private struct FocusableMediaCard<Content: View>: View {
     private var hasContextActions: Bool {
         (contextPlayTitle != nil && playAction != nil)
             || onOpenContextDetail != nil
-            || onSetWatched != nil
             || onRemoveFromContinueWatching != nil
-            || personalItems != nil
+            || stateMenu != nil
     }
 
     private var accessibilityDescription: String {
@@ -610,22 +621,7 @@ private struct FocusableMediaCard<Content: View>: View {
             }
         }
 
-        if let onSetWatched {
-            Button {
-                Task { @MainActor in
-                    _ = await onSetWatched(!isWatched)
-                }
-            } label: {
-                Label(
-                    isWatched ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isWatched ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if let personalItems {
-            personalItems
-        }
+        if let stateMenu { stateMenu }
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {

@@ -30,6 +30,9 @@ struct EpisodeThumbCard: View {
     var onSetWatched: ((Bool) async -> Bool)? = nil
 
     @Environment(\.browseLibraryId) private var browseLibraryId
+    @State private var actionFeedback = MediaActionFeedback()
+    @State private var favoriteOverride: Bool?
+    @State private var watchlistOverride: Bool?
     @State private var playedOverride: Bool?
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -67,6 +70,10 @@ struct EpisodeThumbCard: View {
     #endif
 
     var body: some View {
+        cardBody.mediaActionFeedback(actionFeedback)
+    }
+
+    private var cardBody: some View {
         #if os(tvOS)
         VStack(alignment: .leading, spacing: 14) {
             thumbnailButton
@@ -102,8 +109,10 @@ struct EpisodeThumbCard: View {
         }
         .frame(width: cardWidth)
         .focusSection()
-        .onChange(of: item.userState?.played) { _, _ in
+        .onChange(of: item.userState) { _, _ in
             playedOverride = nil
+            favoriteOverride = nil
+            watchlistOverride = nil
         }
         .task(id: continueWatchingMetadataTaskId) {
             guard onRemoveFromContinueWatching != nil else { return }
@@ -119,8 +128,10 @@ struct EpisodeThumbCard: View {
                 iosButton
             }
         }
-        .onChange(of: item.userState?.played) { _, _ in
+        .onChange(of: item.userState) { _, _ in
             playedOverride = nil
+            favoriteOverride = nil
+            watchlistOverride = nil
         }
         .frame(width: cardWidth)
         #endif
@@ -377,7 +388,8 @@ struct EpisodeThumbCard: View {
     private var hasContextActions: Bool {
         (contextPlayTitle != nil && playAction != nil)
             || onOpenContextDetail != nil
-            || onSetWatched != nil
+            || canSetWatched
+            || hasPersonalActions
             || onRemoveFromContinueWatching != nil
     }
 
@@ -395,23 +407,15 @@ struct EpisodeThumbCard: View {
             }
         }
 
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                Task { @MainActor in
-                    playedOverride = played
-                    let succeeded = await onSetWatched(played)
-                    if !succeeded {
-                        playedOverride = nil
-                    }
-                }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
-                )
-            }
-        }
+        MediaStateMenuItems(
+            isWatched: isPlayed,
+            isFavorite: isFavorite,
+            inWatchlist: inWatchlist,
+            isUpdating: actionFeedback.isUpdating,
+            onToggleWatched: canSetWatched ? toggleWatched : nil,
+            onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
+            onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil
+        )
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {
@@ -419,6 +423,63 @@ struct EpisodeThumbCard: View {
             } label: {
                 Label("Remove from Continue Watching", systemImage: "xmark.circle")
             }
+        }
+    }
+    private var hasPersonalActions: Bool { item.userState != nil }
+    private var isFavorite: Bool { favoriteOverride ?? (item.userState?.isFavorite == true) }
+    private var inWatchlist: Bool { watchlistOverride ?? (item.userState?.inWatchlist == true) }
+
+    private var canSetWatched: Bool {
+        onSetWatched != nil || (hasPersonalActions && !item.isAudiobook)
+    }
+
+    private func toggleWatched() {
+        let played = !isPlayed
+        let previous = playedOverride
+        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
+            playedOverride = played
+            let succeeded: Bool
+            if let onSetWatched {
+                succeeded = await onSetWatched(played)
+            } else {
+                succeeded = await MediaCardWatchedSync.setWatched(
+                    contentId: item.contentId, played: played, seriesId: item.seriesId
+                )
+            }
+            if !succeeded { playedOverride = previous }
+            return succeeded
+        }
+    }
+
+    private func toggleFavorite() {
+        let newValue = !isFavorite
+        let watchlist = inWatchlist
+        let previous = favoriteOverride
+        actionFeedback.perform {
+            favoriteOverride = newValue
+            if await PersonalListSync.setFavorite(
+                contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
+            ) == false {
+                favoriteOverride = previous
+                return false
+            }
+            return true
+        }
+    }
+
+    private func toggleWatchlist() {
+        let newValue = !inWatchlist
+        let favorite = isFavorite
+        let previous = watchlistOverride
+        actionFeedback.perform {
+            watchlistOverride = newValue
+            if await PersonalListSync.setWatchlist(
+                contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
+            ) == false {
+                watchlistOverride = previous
+                return false
+            }
+            return true
         }
     }
 }

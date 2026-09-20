@@ -55,8 +55,9 @@ struct PhoneSeasonChips: View {
             onSelect(season)
         } label: {
             Text(label(for: season))
-                .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+                .font(.subheadline.weight(isSelected ? .semibold : .medium))
                 .padding(.horizontal, 16)
+                .padding(.vertical, 8)
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
         }
@@ -87,7 +88,7 @@ struct PhoneSeasonChips: View {
                         )
                 }
             }
-            .frame(height: 36)
+            .padding(.vertical, 4)
         )
         .buttonStyle(.plain)
     }

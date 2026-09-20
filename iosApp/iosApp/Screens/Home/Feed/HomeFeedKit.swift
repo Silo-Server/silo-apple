@@ -183,6 +183,7 @@ private struct HomeCardMenu: ViewModifier {
     /// with the menu label instead of waiting on the Home refresh —
     /// `MediaCard` drives its badge from the same effective state.
     @Binding var playedOverride: Bool?
+    @State private var actionFeedback = MediaActionFeedback()
     @State private var favoriteOverride: Bool?
     @State private var watchlistOverride: Bool?
 
@@ -202,6 +203,7 @@ private struct HomeCardMenu: ViewModifier {
         if hasAnyAction {
             content
                 .contextMenu { menuItems }
+                .mediaActionFeedback(actionFeedback)
                 .onChange(of: item.userState) { _, _ in
                     playedOverride = nil
                     favoriteOverride = nil
@@ -214,31 +216,15 @@ private struct HomeCardMenu: ViewModifier {
 
     @ViewBuilder
     private var menuItems: some View {
-        if let onSetWatched {
-            Button {
-                let played = !isPlayed
-                Task { @MainActor in
-                    playedOverride = played
-                    if await onSetWatched(played) == false {
-                        playedOverride = nil
-                    }
-                }
-            } label: {
-                Label(
-                    isPlayed ? "Mark as Unwatched" : "Mark as Watched",
-                    systemImage: isPlayed ? "circle" : "checkmark.circle"
-                )
-            }
-        }
-
-        if hasPersonalActions {
-            PersonalListMenuItems(
-                isFavorite: isFavorite,
-                inWatchlist: inWatchlist,
-                onToggleFavorite: toggleFavorite,
-                onToggleWatchlist: toggleWatchlist
-            )
-        }
+        MediaStateMenuItems(
+            isWatched: isPlayed,
+            isFavorite: isFavorite,
+            inWatchlist: inWatchlist,
+            isUpdating: actionFeedback.isUpdating,
+            onToggleWatched: canSetWatched ? toggleWatched : nil,
+            onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
+            onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil
+        )
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive, action: onRemoveFromContinueWatching) {
@@ -247,29 +233,57 @@ private struct HomeCardMenu: ViewModifier {
         }
     }
 
+    private var canSetWatched: Bool {
+        onSetWatched != nil || (hasPersonalActions && !item.isAudiobook)
+    }
+
+    private func toggleWatched() {
+        let played = !isPlayed
+        let previous = playedOverride
+        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
+            playedOverride = played
+            let succeeded: Bool
+            if let onSetWatched {
+                succeeded = await onSetWatched(played)
+            } else {
+                succeeded = await MediaCardWatchedSync.setWatched(
+                    contentId: item.contentId, played: played, seriesId: item.seriesId
+                )
+            }
+            if !succeeded { playedOverride = previous }
+            return succeeded
+        }
+    }
+
     private func toggleFavorite() {
         let newValue = !isFavorite
         let watchlist = inWatchlist
-        favoriteOverride = newValue
-        Task {
+        let previous = favoriteOverride
+        actionFeedback.perform {
+            favoriteOverride = newValue
             if await PersonalListSync.setFavorite(
                 contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
             ) == false {
-                favoriteOverride = !newValue
+                favoriteOverride = previous
+                return false
             }
+            return true
         }
     }
 
     private func toggleWatchlist() {
         let newValue = !inWatchlist
         let favorite = isFavorite
-        watchlistOverride = newValue
-        Task {
+        let previous = watchlistOverride
+        actionFeedback.perform {
+            watchlistOverride = newValue
             if await PersonalListSync.setWatchlist(
                 contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
             ) == false {
-                watchlistOverride = !newValue
+                watchlistOverride = previous
+                return false
             }
+            return true
         }
     }
 }
@@ -401,7 +415,7 @@ struct HomePosterCard: View {
     private var caption: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(HomeFeedMeta.cardTitle(for: item))
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(Color.siloOnSurface)
                 // One line, always. Reserving two lines (as the shipping card
                 // does) makes every row 17pt taller than it needs to be; letting
@@ -412,7 +426,7 @@ struct HomePosterCard: View {
 
             if showsMetadata, let secondLine = HomeFeedMeta.cardSecondLine(for: item) {
                 Text(secondLine)
-                    .font(.system(size: 11, weight: .regular))
+                    .font(.caption2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.5))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -570,7 +584,7 @@ struct HomeStillCard: View {
     @ViewBuilder
     private var playBadge: some View {
         let badge = Image(systemName: "play.fill")
-            .font(.system(size: 14, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white.opacity(0.9))
             .frame(width: 36, height: 36)
             .background(Circle().fill(.black.opacity(0.32)))
@@ -604,7 +618,7 @@ struct HomeStillCard: View {
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(HomeFeedMeta.cardTitle(for: item))
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
@@ -613,7 +627,7 @@ struct HomeStillCard: View {
                 // reserved even when empty so a row mixing episodes and
                 // movies keeps one caption height.
                 Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
-                    .font(.system(size: 11, weight: .regular))
+                    .font(.caption2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                     .monospacedDigit()
                     .lineLimit(1, reservesSpace: true)
@@ -626,7 +640,7 @@ struct HomeStillCard: View {
                 // Keep phone resume cards the same height when only some items have
                 // a remaining-time caption, including as lazy cards enter/leave.
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
-                    .font(.system(size: 11, weight: .regular))
+                    .font(.caption2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                     .lineLimit(1)
                     .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)
@@ -681,12 +695,12 @@ struct HomeSectionHeader: View {
         HStack(spacing: 7) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.85))
             }
 
             Text(title)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.headline)
                 .tracking(-0.3)
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
@@ -696,7 +710,7 @@ struct HomeSectionHeader: View {
             if let onSeeAll {
                 Button(action: onSeeAll) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(Color.siloOnSurface.opacity(0.35))
                 }
                 .buttonStyle(.plain)
@@ -709,7 +723,7 @@ struct HomeSectionHeader: View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 Text(title.uppercased())
-                    .font(.system(size: 11, weight: .heavy))
+                    .font(.caption2.weight(.heavy))
                     .tracking(1.4)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.72))
                     .lineLimit(1)
@@ -719,7 +733,7 @@ struct HomeSectionHeader: View {
                 if let onSeeAll {
                     Button(action: onSeeAll) {
                         Image(systemName: "arrow.right")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(Color.siloOnSurface.opacity(0.35))
                     }
                     .buttonStyle(.plain)

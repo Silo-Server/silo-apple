@@ -29,7 +29,7 @@ struct DownloadReclaimSheet: View {
                     list
                 }
             }
-            .siloPageBackground()
+            .siloSheetBackground()
             .navigationTitle("Free Up Space")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -65,7 +65,7 @@ struct DownloadReclaimSheet: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(records.count) item\(records.count == 1 ? "" : "s") you've finished watching")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundColor(.siloSecondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -85,16 +85,16 @@ struct DownloadReclaimSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label(record))
-                        .font(.system(size: 13.5, weight: .medium))
+                        .font(.subheadline.weight(.medium))
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
                     Text("Watched")
-                        .font(.system(size: 11.5))
+                        .font(.caption)
                         .foregroundColor(.siloSecondaryText)
                 }
                 Spacer(minLength: 8)
                 Text(DownloadFormatting.bytes(record.fileSize))
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundColor(.siloOnSurface)
             }
             .padding(.horizontal, 18)
@@ -117,9 +117,9 @@ struct DownloadReclaimSheet: View {
                         Text("Delete \(selected.count) · Free \(DownloadFormatting.bytes(selectedBytes))")
                             .fontWeight(.bold)
                     }
-                    .font(.system(size: 15))
+                    .font(.subheadline)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 50)
+                    .frame(minHeight: 50)
                     .background(selected.isEmpty ? Color.siloDisabled : Color.siloOnSurface)
                     .foregroundColor(.black)
                     .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -128,10 +128,10 @@ struct DownloadReclaimSheet: View {
                 .disabled(selected.isEmpty)
 
                 Button("Not now") { dismiss() }
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundColor(.siloOnSurface)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 42)
+                    .frame(minHeight: 44)
                     .background(
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
                             .fill(Color.siloChromeRestingFill)
