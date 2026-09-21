@@ -14,7 +14,7 @@ struct TVPairingReceiverView: View {
     private static let successDwell: Duration = .seconds(1.8)
 
     @FocusState private var focused: Control?
-    private enum Control: Hashable { case primary, secondary }
+    private enum Control: Hashable { case primary, secondary, tertiary }
 
     var body: some View {
         VStack(spacing: 28) {
@@ -32,8 +32,12 @@ struct TVPairingReceiverView: View {
                 signedIn(count: count)
             case let .completed(serverNames):
                 completed(serverNames: serverNames)
-            case let .failed(name):
-                failed(name: name)
+            case let .reaching(serverName):
+                reaching(serverName: serverName)
+            case let .unreachable(serverName, help, alternate):
+                unreachable(serverName: serverName, help: help, alternate: alternate)
+            case let .failed(name, code, help):
+                failed(name: name, code: code, help: help)
             }
         }
         .frame(maxWidth: 880)
@@ -201,9 +205,77 @@ struct TVPairingReceiverView: View {
         }
     }
 
+    // MARK: - Reaching (checking which address answers)
+
+    private func reaching(serverName: String) -> some View {
+        VStack(spacing: 26) {
+            AuroraEyebrow(text: "Step 01 — Connect", centered: true)
+            Text("Connecting to \(serverName)")
+                .font(.siloTitle)
+                .foregroundStyle(Color.auroraInk)
+            WaitingDots()
+            Text("Checking which address this Apple TV can reach.")
+                .font(.siloBody)
+                .foregroundStyle(Color.auroraInkSecondary)
+                .frame(maxWidth: 720)
+            cancelButton(title: "Cancel")
+                .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Unreachable (provider help + explicit alternate)
+
+    /// The pushed address did not answer. The user chooses: set the provider
+    /// up and retry, or use the verified alternate address when the server
+    /// offers one. Nothing switches on its own.
+    private func unreachable(serverName: String, help: String, alternate: ServerEndpoint?) -> some View {
+        VStack(spacing: 22) {
+            AuroraEyebrow(text: "Step 01 — Connect", centered: true)
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 60))
+                .foregroundStyle(Color.auroraAccent)
+            Text("Can’t reach \(serverName)")
+                .font(.siloTitle)
+                .foregroundStyle(Color.auroraInk)
+            Text(help)
+                .font(.siloBody)
+                .foregroundStyle(Color.auroraInkSecondary)
+                .frame(maxWidth: 760)
+
+            if let alternate {
+                Button { coordinator.useAlternateAddress() } label: {
+                    Text("Use \(Self.hostLabel(alternate.url))")
+                }
+                .buttonStyle(AuroraPrimaryButtonStyle())
+                .focused($focused, equals: .primary)
+                .frame(width: 520)
+                .padding(.top, 8)
+                Button { coordinator.retryPushedAddress() } label: { Text("Try again") }
+                    .buttonStyle(AuroraGhostButtonStyle())
+                    .focused($focused, equals: .secondary)
+            } else {
+                Button { coordinator.retryPushedAddress() } label: { Text("Try again") }
+                    .buttonStyle(AuroraPrimaryButtonStyle())
+                    .focused($focused, equals: .primary)
+                    .frame(width: 360)
+                    .padding(.top, 8)
+            }
+            Button { cancel() } label: { Text("Cancel") }
+                .buttonStyle(AuroraGhostButtonStyle())
+                .focused($focused, equals: .tertiary)
+        }
+        .defaultFocus($focused, .primary)
+    }
+
+    /// The host of an address, for a button label. Falls back to the
+    /// address itself when it does not parse.
+    private static func hostLabel(_ url: String) -> String {
+        URLComponents(string: url)?.host ?? url
+    }
+
     // MARK: - Failed (actionable retry)
 
-    private func failed(name: String) -> some View {
+    private func failed(name: String, code: PairingFailureCode, help: String?) -> some View {
         VStack(spacing: 22) {
             AuroraEyebrow(text: "Step 01 — Connect", centered: true)
             Image(systemName: "exclamationmark.triangle.fill")
@@ -212,7 +284,7 @@ struct TVPairingReceiverView: View {
             Text("Setup didn’t finish")
                 .font(.siloTitle)
                 .foregroundStyle(Color.auroraInk)
-            Text("Something went wrong signing in to \(name). Try again from your iPhone, or add your server manually.")
+            Text(Self.failureText(name: name, code: code, help: help))
                 .font(.siloBody)
                 .foregroundStyle(Color.auroraInkSecondary)
                 .frame(maxWidth: 720)
@@ -224,6 +296,22 @@ struct TVPairingReceiverView: View {
                 .padding(.top, 8)
         }
         .defaultFocus($focused, .primary)
+    }
+
+    private static func failureText(name: String, code: PairingFailureCode, help: String?) -> String {
+        switch code {
+        case .unreachable:
+            return (help ?? "This Apple TV can’t reach \(name).")
+                + " You can also add the server manually with its public address."
+        case .identityMismatch:
+            return "The address your iPhone sent for \(name) answered as a different server. Check the server address on your iPhone, or add your server manually."
+        case .denied:
+            return "The sign-in to \(name) was declined. Try again from your iPhone."
+        case .expired:
+            return "The code for \(name) expired before it was approved. Try again from your iPhone."
+        case .authFailed:
+            return "Something went wrong signing in to \(name). Try again from your iPhone, or add your server manually."
+        }
     }
 
     // MARK: - Shared pieces

@@ -64,6 +64,57 @@ struct ContentView: View {
         .environment(audioStore)
         #if os(iOS)
         .environment(siloControl)
+        .onAppear {
+            // One routing decision for every streaming play on iOS: an
+            // engaged TV (including one mid-reconnect) takes the request;
+            // otherwise the local player opens as before.
+            router.remotePlaybackInterceptor = { [siloControl] request in
+                await siloControl.launchOnEngagedTV(request)
+            }
+            router.isRemotePlaybackEngaged = { [siloControl] in siloControl.remotePlaybackEngaged }
+            router.remotePlaybackCurrentTitle = { [siloControl] in
+                guard siloControl.remotePlaybackEngaged,
+                      let state = siloControl.state,
+                      let contentId = state.contentId, !contentId.isEmpty else { return nil }
+                return (
+                    title: state.title,
+                    contentId: contentId,
+                    targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "the TV"
+                )
+            }
+        }
+        .confirmationDialog(
+            "Replace what's playing?",
+            isPresented: Binding(
+                get: { router.pendingReplaceRemotePlayback != nil },
+                set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: router.pendingReplaceRemotePlayback
+        ) { choice in
+            Button("Play on \(choice.targetName)") { router.confirmReplaceRemotePlayback() }
+            Button("Cancel", role: .cancel) { router.pendingReplaceRemotePlayback = nil }
+        } message: { choice in
+            Text("\(choice.targetName) is playing \(choice.currentTitle). Playing this will stop it.")
+        }
+        .confirmationDialog(
+            "A TV is connected",
+            isPresented: Binding(
+                get: { router.pendingOfflinePlayChoice != nil },
+                set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Play on \(siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "TV")") {
+                router.sendPendingOfflinePlayToTV()
+            }
+            Button("Play on this \(UIDevice.current.model)") {
+                router.confirmOfflinePlayHere()
+            }
+            Button("Cancel", role: .cancel) { router.pendingOfflinePlayChoice = nil }
+        } message: {
+            Text("Downloads only play on this device. The TV can stream the same title from your server.")
+        }
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)

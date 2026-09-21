@@ -22,6 +22,28 @@ struct SiloControlHello: Codable, Equatable, Sendable {
     let serverId: String?
     let serverName: String?
     let supportedVersions: [Int]
+    /// The deployment identity behind `serverId` when the peer has learned
+    /// it. Lets a phone and a TV on different addresses of one server
+    /// recognise each other. Optional on the wire: older peers omit it.
+    var serverIdentity: String? = nil
+
+    init(
+        role: SiloControlPeerRole,
+        deviceName: String,
+        deviceId: String,
+        serverId: String?,
+        serverName: String?,
+        supportedVersions: [Int],
+        serverIdentity: String? = nil
+    ) {
+        self.role = role
+        self.deviceName = deviceName
+        self.deviceId = deviceId
+        self.serverId = serverId
+        self.serverName = serverName
+        self.supportedVersions = supportedVersions
+        self.serverIdentity = serverIdentity
+    }
 }
 
 struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
@@ -40,12 +62,44 @@ struct SiloControlLaunchRequest: Codable, Equatable, Sendable {
 
 struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     let requestId: String
+    /// The phone's registry key for the server. Echoed back in
+    /// `handoff_ready` and used for the launch request.
     let serverId: String
+    /// The phone's own address for the server. The TV treats it as one
+    /// candidate among `serverEndpoints` when `serverIdentity` is present.
     let serverURL: String
     let serverName: String?
     let profileId: String
     /// Display-only label for the verified profile ID. Older peers omit it.
     let profileName: String?
+    /// The deployment identity the phone verified at `serverURL`. When
+    /// present the TV may reach the server through any candidate address
+    /// that reports the same identity. Absent from older phones, in which
+    /// case the TV must use `serverURL` exactly.
+    var serverIdentity: String? = nil
+    /// Other addresses the deployment offers, from its connections document.
+    /// Public first, then providers. Reachability is the TV's to test.
+    var serverEndpoints: [ServerEndpoint]? = nil
+
+    init(
+        requestId: String,
+        serverId: String,
+        serverURL: String,
+        serverName: String?,
+        profileId: String,
+        profileName: String?,
+        serverIdentity: String? = nil,
+        serverEndpoints: [ServerEndpoint]? = nil
+    ) {
+        self.requestId = requestId
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.serverName = serverName
+        self.profileId = profileId
+        self.profileName = profileName
+        self.serverIdentity = serverIdentity
+        self.serverEndpoints = serverEndpoints
+    }
 }
 
 struct SiloControlHandoffChallenge: Codable, Equatable, Sendable {

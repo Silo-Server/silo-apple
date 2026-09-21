@@ -11,6 +11,7 @@ final class TVControlReceiver {
     private var listener: NWListener?
     private var advertisedServerId: String?
     private var advertisedServerName: String?
+    private var advertisedServerIdentity: String?
     /// Bumped whenever we intentionally cancel/replace the listener, so its
     /// state handler can tell a system-initiated failure (restart) from our
     /// own teardown (ignore).
@@ -51,6 +52,7 @@ final class TVControlReceiver {
     private var remoteControllerName: String?
     private var remoteControllerDeviceId: String?
     private var remoteControllerServerId: String?
+    private var remoteControllerServerIdentity: String?
     private nonisolated static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "control.receiver"
@@ -66,29 +68,37 @@ final class TVControlReceiver {
         }
         let serverId = RemotePlaybackIdentityManager.shared.effectiveServerId ?? server.id
         let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? server.displayName
+        let serverIdentity = RemotePlaybackIdentityManager.shared.effectiveServerIdentity
         if listener != nil,
            advertisedServerId == serverId,
-           advertisedServerName == serverName {
+           advertisedServerName == serverName,
+           advertisedServerIdentity == serverIdentity {
             return
         }
 
         stop()
-        startListener(serverId: serverId, serverName: serverName)
+        startListener(serverId: serverId, serverName: serverName, serverIdentity: serverIdentity)
     }
 
-    private func startListener(serverId: String, serverName: String) {
+    private func startListener(serverId: String, serverName: String, serverIdentity: String?) {
         listenerGeneration += 1
         let generation = listenerGeneration
 
         let device = AppleDeviceIdentity.current
-        let txt = NWTXTRecord([
+        var record: [String: String] = [
             "v": String(SiloControlProtocol.version),
             "name": device.name,
             "id": device.id,
             "server": serverId,
             "serverName": serverName,
             "playing": isPlaybackAdvertised ? "1" : "0"
-        ])
+        ]
+        // Lets a phone signed in at another address of the same deployment
+        // list this TV. Older phones ignore the key.
+        if let serverIdentity {
+            record["serverIdentity"] = serverIdentity
+        }
+        let txt = NWTXTRecord(record)
 
         do {
             let listener = try NWListener(using: SiloControlSession.tlsParameters())
@@ -123,6 +133,7 @@ final class TVControlReceiver {
             self.listener = listener
             advertisedServerId = serverId
             advertisedServerName = serverName
+            advertisedServerIdentity = serverIdentity
         } catch {
             Self.logger.error("failed to start control listener: \(String(describing: error), privacy: .public)")
         }
@@ -132,6 +143,7 @@ final class TVControlReceiver {
         listener = nil
         advertisedServerId = nil
         advertisedServerName = nil
+        advertisedServerIdentity = nil
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self, self.listener == nil, let router = self.router else { return }
@@ -154,7 +166,11 @@ final class TVControlReceiver {
         listenerGeneration += 1
         listener?.cancel()
         listener = nil
-        startListener(serverId: serverId, serverName: serverName)
+        startListener(
+            serverId: serverId,
+            serverName: serverName,
+            serverIdentity: RemotePlaybackIdentityManager.shared.effectiveServerIdentity
+        )
     }
 
     func stop() {
@@ -163,6 +179,7 @@ final class TVControlReceiver {
         listener = nil
         advertisedServerId = nil
         advertisedServerName = nil
+        advertisedServerIdentity = nil
         closeActiveSession(sendClose: false)
     }
 
@@ -255,6 +272,7 @@ final class TVControlReceiver {
         remoteControllerName = nil
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
+        remoteControllerServerIdentity = nil
         refreshStandbyState()
         let stream = await session.open()
         startReadLoop(stream: stream, connectionId: connectionId)
@@ -318,9 +336,10 @@ final class TVControlReceiver {
             remoteControllerName = hello.deviceName
             remoteControllerDeviceId = hello.deviceId
             remoteControllerServerId = serverId
-            if ServerRegistry.serverIdsMatch(
-                serverId,
-                RemotePlaybackIdentityManager.shared.effectiveServerId
+            remoteControllerServerIdentity = ServerIdentity.usable(hello.serverIdentity)
+            if RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
+                serverId: serverId,
+                serverIdentity: remoteControllerServerIdentity
             ) {
                 isAuthorized = true
                 refreshStandbyState()
@@ -433,7 +452,8 @@ final class TVControlReceiver {
                 guard self.activeConnectionId == connectionId else { return }
                 self.sendHandoffCancel(
                     offer.requestId,
-                    reason: "handoff_failed",
+                    reason: (error as? RemotePlaybackIdentityManager.HandoffError)?.cancelReason
+                        ?? "handoff_failed",
                     message: error.localizedDescription
                 )
                 self.pendingHandoffRequestId = nil
@@ -475,9 +495,14 @@ final class TVControlReceiver {
     }
 
     private func handleLaunch(_ launch: SiloControlLaunchRequest) {
-        guard ServerRegistry.serverIdsMatch(
-            launch.serverId,
-            RemotePlaybackIdentityManager.shared.effectiveServerId
+        // The launch names the phone's registry key; the identity learned
+        // from its hello lets a same-deployment phone on another address
+        // launch without a handoff having renamed the effective server.
+        let launchIdentity = launch.serverId == remoteControllerServerId
+            ? remoteControllerServerIdentity : nil
+        guard RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
+            serverId: launch.serverId,
+            serverIdentity: launchIdentity
         ) else {
             sendError(code: "server_mismatch", message: "This Apple TV is connected to a different Silo server.")
             return
@@ -485,7 +510,15 @@ final class TVControlReceiver {
 
         let playback = launch.playback
         standbyState = nil
-        pendingPlayerHandoffGeneration = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+        let generation = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+        // Replacing a title: the outgoing player still owns this generation
+        // and would end the temporary identity on its way out, just as the
+        // incoming player starts loading under it. Hand the generation to
+        // the new player instead; the old one tears down without ending it.
+        if playerViewModel != nil, playerHandoffGeneration == generation {
+            playerHandoffGeneration = nil
+        }
+        pendingPlayerHandoffGeneration = generation
         router?.presentPlayer(
             contentId: playback.contentId,
             fileId: playback.fileId,
@@ -536,6 +569,7 @@ final class TVControlReceiver {
         remoteLaunchReady = false
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
+        remoteControllerServerIdentity = nil
         standbyState = nil
     }
 
@@ -558,6 +592,7 @@ final class TVControlReceiver {
         remoteLaunchReady = false
         remoteControllerDeviceId = nil
         remoteControllerServerId = nil
+        remoteControllerServerIdentity = nil
         standbyState = nil
 
         guard let session else {
@@ -606,9 +641,9 @@ final class TVControlReceiver {
 
     private func reconcileAuthorizationAfterRestore() {
         remoteLaunchReady = false
-        isAuthorized = ServerRegistry.serverIdsMatch(
-            remoteControllerServerId,
-            RemotePlaybackIdentityManager.shared.effectiveServerId
+        isAuthorized = RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
+            serverId: remoteControllerServerId,
+            serverIdentity: remoteControllerServerIdentity
         )
         if isAuthorized {
             sendState()
@@ -712,7 +747,8 @@ final class TVControlReceiver {
             deviceId: device.id,
             serverId: RemotePlaybackIdentityManager.shared.effectiveServerId,
             serverName: RemotePlaybackIdentityManager.shared.effectiveServerName,
-            supportedVersions: SiloControlProtocol.supportedVersions
+            supportedVersions: SiloControlProtocol.supportedVersions,
+            serverIdentity: RemotePlaybackIdentityManager.shared.effectiveServerIdentity
         ))
     }
 

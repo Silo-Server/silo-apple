@@ -465,7 +465,7 @@ private struct ItemDetailPhoneContent: View {
                     router.itemDetailPath.removeLast()
                 }
             },
-            trailingSystemName: siloControl.hasActiveSession
+            trailingSystemName: siloControl.remotePlaybackEngaged
                 ? "appletvremote.gen4.fill"
                 : "appletvremote.gen4",
             onTrailingTap: handleRemoteControlTap
@@ -489,7 +489,7 @@ private struct ItemDetailPhoneContent: View {
     private func handleRemoteControlTap() {
         if let detail = viewModel.detail, isDirectlyPlayable(detail) {
             playOnTV(currentControlRequest(for: detail))
-        } else if siloControl.hasActiveSession || siloControl.isReconnecting {
+        } else if siloControl.remotePlaybackEngaged {
             isShowingRemoteControl = true
         } else {
             isShowingControlPicker = true
@@ -536,9 +536,9 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func playOnTV(_ request: SiloControlPlaybackRequest) {
-        if siloControl.hasActiveSession {
-            // Already connected ⇒ cast this item now.
-            Task { await siloControl.launch(request) }
+        if siloControl.remotePlaybackEngaged {
+            // Already engaged (or reconnecting) ⇒ cast this item now.
+            Task { await siloControl.launchOnEngagedTV(request) }
         } else {
             // No session ⇒ pick a TV, then cast-and-play in one step.
             controlRequestBox = ControlRequestBox(request)
@@ -816,16 +816,10 @@ private struct ItemDetailPhoneContent: View {
     /// play affordance on the page.
     private func playExtra(contentId: String) {
         #if os(iOS)
-        if siloControl.hasActiveSession {
-            let request = SiloControlPlaybackRequest(
-                contentId: contentId,
-                fileId: nil,
-                audioTrackIndex: nil,
-                subtitleTrackIndex: nil,
-                startFromBeginning: true,
-                resumePosition: nil
-            )
-            Task { await siloControl.launch(request) }
+        // An engaged TV takes the request through the router's interceptor
+        // (see `AppRouter.presentPlayer`); nothing here decides destination.
+        if siloControl.remotePlaybackEngaged {
+            router.presentPlayer(contentId: contentId, startFromBeginning: true, resumePosition: nil)
             return
         }
         #endif
@@ -1123,8 +1117,12 @@ private struct ItemDetailPhoneContent: View {
         resumePosition: Double?
     ) {
         #if os(iOS)
-        if siloControl.hasActiveSession {
-            let request = SiloControlPlaybackRequest(
+        // An engaged TV takes the request through the router's interceptor
+        // (see `AppRouter.presentPlayer`). Skipping the local-copy choice and
+        // the reachability alert is deliberate: a TV can't read the phone's
+        // download, and the TV reaches the server on its own link.
+        if siloControl.remotePlaybackEngaged {
+            presentStreamingPlayer(
                 contentId: contentId,
                 fileId: fileId,
                 audioTrackIndex: audioTrackIndex,
@@ -1132,9 +1130,6 @@ private struct ItemDetailPhoneContent: View {
                 startFromBeginning: startFromBeginning,
                 resumePosition: resumePosition
             )
-            Task {
-                await siloControl.launch(request)
-            }
             return
         }
         #endif

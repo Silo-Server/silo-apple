@@ -25,7 +25,7 @@ struct NowPlayingShelf: View {
     /// tabViewBottomAccessory there made it re-insert (with a system slide-in)
     /// every time the sheet was swiped away.
     static func controlBarVisible(_ control: SiloControlClient) -> Bool {
-        (control.hasActiveSession && !control.isAutoResuming) || control.isReconnecting
+        control.remotePlaybackEngaged
     }
     #else
     static func hasActiveAccessory(audio: AudioPlaybackStore) -> Bool {

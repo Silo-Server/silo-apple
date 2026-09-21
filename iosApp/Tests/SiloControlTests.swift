@@ -72,6 +72,41 @@ final class SiloControlTests: XCTestCase {
         XCTAssertNil(offer.profileName)
     }
 
+    func testHandoffOfferCarriesIdentityAndEndpointsOptionally() throws {
+        let offer = SiloControlHandoffOffer(
+            requestId: "request-1",
+            serverId: "server-1",
+            serverURL: "https://silo.overlay.example",
+            serverName: "Home",
+            profileId: "profile-1",
+            profileName: "Alex",
+            serverIdentity: "96c1bd08-b839-4d47-980e-57d4e7a44cfa",
+            serverEndpoints: [
+                ServerEndpoint(url: "https://silo.example", kind: .public),
+                ServerEndpoint(url: "https://silo.overlay.example", kind: .provider, provider: "tailscale", displayName: "Tailscale"),
+            ]
+        )
+        XCTAssertEqual(try roundTrip(.handoffOffer(offer)), .handoffOffer(offer))
+
+        let hello = SiloControlHello(
+            role: .tv, deviceName: "TV", deviceId: "tv-1", serverId: "server-1", serverName: "Home",
+            supportedVersions: [1, 2], serverIdentity: "96c1bd08-b839-4d47-980e-57d4e7a44cfa"
+        )
+        XCTAssertEqual(try roundTrip(.hello(hello)), .hello(hello))
+
+        // The keys stay off the wire when unset, so a v2 peer that predates
+        // them never sees an unexpected value.
+        let legacyOffer = SiloControlHandoffOffer(
+            requestId: "r", serverId: "s", serverURL: "https://silo.example",
+            serverName: nil, profileId: "p", profileName: nil
+        )
+        let data = try JSONEncoder().encode(SiloControlMessage.handoffOffer(legacyOffer))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let body = try XCTUnwrap(json["handoffOffer"] as? [String: Any])
+        XCTAssertNil(body["serverIdentity"])
+        XCTAssertNil(body["serverEndpoints"])
+    }
+
     func testServerIdentityMatchesURLCapitalizationAcrossDevices() {
         let phone = ServerRegistry.serverId(for: "https://Media.Example.test")
         let tv = ServerRegistry.serverId(for: "HTTPS://media.example.test/")

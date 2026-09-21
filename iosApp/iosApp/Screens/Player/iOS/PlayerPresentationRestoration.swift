@@ -48,6 +48,12 @@ enum PlayerPresentationRestoration {
             logger.error("No player presentation owner available for a PiP restore")
             return false
         }
+        // The user engaged a TV while PiP was up (or the session reconnected
+        // underneath it): the phone player must not come back over it.
+        if presenter.isRemotePlaybackEngaged?() == true {
+            logger.info("Skipping PiP restore: a TV is engaged")
+            return false
+        }
         pendingAdoption = (viewModel, payload.contentId)
         // A fresh identity is what makes `fullScreenCover(item:)` re-present
         // even if the router is still holding the outgoing payload.

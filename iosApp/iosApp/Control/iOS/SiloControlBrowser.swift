@@ -12,10 +12,25 @@ struct SiloControlTarget: Identifiable, Equatable {
     /// The TV's advertised "currently playing" flag (Bonjour TXT `playing`).
     /// False for TVs running an older build that doesn't advertise it.
     var isPlaying: Bool = false
+    /// The deployment identity behind the TV's server (Bonjour TXT
+    /// `serverIdentity`). Nil for older TVs or servers.
+    var serverIdentity: String? = nil
 
     static func == (lhs: SiloControlTarget, rhs: SiloControlTarget) -> Bool {
         lhs.id == rhs.id && lhs.isPlaying == rhs.isPlaying
             && lhs.serverId == rhs.serverId && lhs.protocolVersion == rhs.protocolVersion
+            && lhs.serverIdentity == rhs.serverIdentity
+    }
+
+    /// Whether this TV is signed in to the phone's active server, by
+    /// registry origin or by verified deployment identity.
+    @MainActor
+    var targetsActiveServer: Bool {
+        let active = ServerRegistry.shared.activeServer
+        return ServerRegistry.serversMatch(
+            serverId: serverId, verifiedServerId: serverIdentity,
+            serverId: active?.id, verifiedServerId: active?.verifiedServerId
+        )
     }
 }
 
@@ -63,7 +78,8 @@ final class SiloControlBrowser {
             serverId: serverId,
             serverName: txt["serverName"],
             protocolVersion: Int(txt["v"] ?? "1") ?? 1,
-            isPlaying: txt["playing"] == "1"
+            isPlaying: txt["playing"] == "1",
+            serverIdentity: ServerIdentity.usable(txt["serverIdentity"])
         )
     }
 }

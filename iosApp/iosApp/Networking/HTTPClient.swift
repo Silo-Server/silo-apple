@@ -254,16 +254,62 @@ actor HTTPClient {
         serverURL: String,
         path: String,
         quietStatuses: Set<Int> = [],
-        diagnosticPath: String? = nil
+        diagnosticPath: String? = nil,
+        timeout: TimeInterval? = nil
+    ) async throws -> T {
+        try await getByExplicitURL(
+            serverURL: serverURL,
+            path: path,
+            bearer: nil,
+            quietStatuses: quietStatuses,
+            diagnosticPath: diagnosticPath,
+            timeout: timeout
+        )
+    }
+
+    /// Read from an explicit server URL with an explicit bearer, outside the
+    /// active credential slot. No refresh, no retry, no routing change: used
+    /// for reading another saved server's documents (for example its
+    /// connection list) while a different server stays active.
+    func getWithBearer<T: Decodable>(
+        serverURL: String,
+        path: String,
+        bearer: String,
+        quietStatuses: Set<Int> = [],
+        timeout: TimeInterval? = nil
+    ) async throws -> T {
+        try await getByExplicitURL(
+            serverURL: serverURL,
+            path: path,
+            bearer: bearer,
+            quietStatuses: quietStatuses,
+            diagnosticPath: nil,
+            timeout: timeout
+        )
+    }
+
+    private func getByExplicitURL<T: Decodable>(
+        serverURL: String,
+        path: String,
+        bearer: String?,
+        quietStatuses: Set<Int>,
+        diagnosticPath: String?,
+        timeout: TimeInterval?
     ) async throws -> T {
         let dispatchRevision = try captureRequestDispatchRevision()
-        let request = try buildRequest(
+        var request = try buildRequest(
             serverUrl: ServerRegistry.normalize(url: serverURL),
             method: "GET",
             path: path,
             query: [:],
             body: Optional<String>.none
         )
+        if let bearer {
+            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        }
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         let (data, response) = try await perform(
             request: request,
             dispatchRevision: dispatchRevision,

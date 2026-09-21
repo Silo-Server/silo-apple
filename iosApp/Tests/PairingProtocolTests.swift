@@ -16,6 +16,15 @@ final class PairingProtocolTests: XCTestCase {
             .hello(tvName: "Living Room", tvDeviceId: "ABC-123", state: .setup, supportedVersions: [1]),
             .pushServer(serverURL: "https://media.example.com", serverName: "Home"),
             .pushServer(serverURL: "https://media.example.com", serverName: nil),
+            .pushServer(
+                serverURL: "https://media.example.com", serverName: "Home",
+                serverIdentity: "96c1bd08-b839-4d47-980e-57d4e7a44cfa",
+                endpoints: [
+                    ServerEndpoint(url: "https://media.example.com", kind: .public),
+                    ServerEndpoint(url: "https://media.overlay.example", kind: .provider, provider: "tailscale", displayName: "Tailscale"),
+                ]
+            ),
+            .serverResult(serverURL: "https://media.example.com", status: .failed, error: PairingFailureCode.unreachable.rawValue),
             .deviceStarted(serverURL: "https://media.example.com", userCode: "WXYZ-12", matchCode: "brave-otter"),
             .serverResult(serverURL: "https://media.example.com", status: .signedIn, error: nil),
             .serverResult(serverURL: "https://media.example.com", status: .failed, error: "timeout"),
@@ -32,6 +41,42 @@ final class PairingProtocolTests: XCTestCase {
         let json = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
         XCTAssertTrue(json["type"] as? String == "done", "missing/incorrect type discriminator")
         XCTAssertTrue(json["v"] as? Int == PairingProtocol.version, "missing/incorrect version")
+    }
+
+    /// Protocol stays v1: the identity fields are additive and optional, so a
+    /// legacy push decodes and a legacy peer sees no new required key.
+    func testPushServerIdentityFieldsAreOptionalOnTheWire() throws {
+        let legacy = Data(#"{"type":"pushServer","v":1,"serverURL":"https://media.example.com","serverName":"Home"}"#.utf8)
+        guard case let .pushServer(url, name, identity, endpoints) = try decoder.decode(PairingMessage.self, from: legacy) else {
+            return XCTFail("expected pushServer")
+        }
+        XCTAssertEqual(url, "https://media.example.com")
+        XCTAssertEqual(name, "Home")
+        XCTAssertNil(identity)
+        XCTAssertNil(endpoints)
+
+        let data = try encoder.encode(PairingMessage.pushServer(serverURL: "https://media.example.com", serverName: nil))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(json["serverIdentity"])
+        XCTAssertNil(json["endpoints"])
+        XCTAssertEqual(json["v"] as? Int, 1)
+
+        let full = try encoder.encode(PairingMessage.pushServer(
+            serverURL: "https://media.example.com", serverName: "Home", serverIdentity: "S",
+            endpoints: [ServerEndpoint(url: "https://media.overlay.example/", kind: .provider, provider: "tailscale", displayName: "Tailscale")]
+        ))
+        let fullJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: full) as? [String: Any])
+        let endpoint = try XCTUnwrap((fullJSON["endpoints"] as? [[String: Any]])?.first)
+        XCTAssertEqual(endpoint["url"] as? String, "https://media.overlay.example")
+        XCTAssertEqual(endpoint["kind"] as? String, "provider")
+        XCTAssertEqual(endpoint["displayName"] as? String, "Tailscale")
+    }
+
+    func testFailureCodesReadUnknownAsGenericFailure() {
+        XCTAssertEqual(PairingFailureCode(wire: "unreachable"), .unreachable)
+        XCTAssertEqual(PairingFailureCode(wire: "identity_mismatch"), .identityMismatch)
+        XCTAssertEqual(PairingFailureCode(wire: nil), .authFailed)
+        XCTAssertEqual(PairingFailureCode(wire: "something_new"), .authFailed)
     }
 
     func testUnknownTypeFailsToDecode() {

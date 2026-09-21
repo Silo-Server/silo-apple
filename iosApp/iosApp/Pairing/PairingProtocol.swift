@@ -29,13 +29,20 @@ enum PairingReceiverState: String, Codable, Equatable {
 enum PairingMessage: Equatable {
     /// TV → phone, first message after the connection opens.
     case hello(tvName: String, tvDeviceId: String, state: PairingReceiverState, supportedVersions: [Int])
-    /// phone → TV, one per chosen server.
-    case pushServer(serverURL: String, serverName: String?)
+    /// phone → TV, one per chosen server. `serverIdentity` and `endpoints`
+    /// are optional additions (protocol still v1): the deployment identity
+    /// the phone verified at `serverURL`, and the other addresses the
+    /// deployment offers, so a TV that cannot reach the phone's address can
+    /// verify and use one it can. Older peers omit and ignore them.
+    case pushServer(serverURL: String, serverName: String?, serverIdentity: String? = nil, endpoints: [ServerEndpoint]? = nil)
     /// TV → phone, after the TV called device/start for a pushed server.
     /// `matchCode` is advisory display only; the phone re-fetches the
     /// authoritative match code from the server via lookup before approving.
     case deviceStarted(serverURL: String, userCode: String, matchCode: String)
-    /// TV → phone, terminal per-server outcome.
+    /// TV → phone, terminal per-server outcome. `serverURL` always echoes
+    /// the pushed URL, even when the TV signed in at another address, so a
+    /// phone that keys on it keeps working. `error` is a
+    /// ``PairingFailureCode`` raw value on failure.
     case serverResult(serverURL: String, status: PairingServerStatus, error: String?)
     /// phone → TV, no more servers; finish.
     case done
@@ -48,11 +55,33 @@ enum PairingServerStatus: String, Codable, Equatable {
     case failed
 }
 
+/// Why a pushed server failed on the TV. Carried in `serverResult.error`
+/// so the phone can say what to fix. Older TVs send only `auth_failed`, and
+/// an unknown code from a newer TV reads as that generic failure.
+enum PairingFailureCode: String, Codable, Equatable, Sendable {
+    /// Device authorization could not be started or completed; the legacy
+    /// catch-all.
+    case authFailed = "auth_failed"
+    /// The phone's user declined the request, or the server refused it.
+    case denied
+    /// The device code expired before approval, or was already used.
+    case expired
+    /// The TV could not reach the pushed address, and no offered
+    /// alternative worked or was accepted.
+    case unreachable
+    /// An address answered with a different deployment identity.
+    case identityMismatch = "identity_mismatch"
+
+    init(wire: String?) {
+        self = wire.flatMap(PairingFailureCode.init(rawValue:)) ?? .authFailed
+    }
+}
+
 extension PairingMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case type, v
         case tvName, tvDeviceId, state, supportedVersions
-        case serverURL, serverName
+        case serverURL, serverName, serverIdentity, endpoints
         case userCode, matchCode
         case status, error
         case reason
@@ -72,10 +101,12 @@ extension PairingMessage: Codable {
             try c.encode(tvDeviceId, forKey: .tvDeviceId)
             try c.encode(state, forKey: .state)
             try c.encode(supportedVersions, forKey: .supportedVersions)
-        case let .pushServer(serverURL, serverName):
+        case let .pushServer(serverURL, serverName, serverIdentity, endpoints):
             try c.encode(Kind.pushServer, forKey: .type)
             try c.encode(serverURL, forKey: .serverURL)
             try c.encodeIfPresent(serverName, forKey: .serverName)
+            try c.encodeIfPresent(serverIdentity, forKey: .serverIdentity)
+            try c.encodeIfPresent(endpoints, forKey: .endpoints)
         case let .deviceStarted(serverURL, userCode, matchCode):
             try c.encode(Kind.deviceStarted, forKey: .type)
             try c.encode(serverURL, forKey: .serverURL)
@@ -108,7 +139,9 @@ extension PairingMessage: Codable {
         case .pushServer:
             self = .pushServer(
                 serverURL: try c.decode(String.self, forKey: .serverURL),
-                serverName: try c.decodeIfPresent(String.self, forKey: .serverName)
+                serverName: try c.decodeIfPresent(String.self, forKey: .serverName),
+                serverIdentity: try c.decodeIfPresent(String.self, forKey: .serverIdentity),
+                endpoints: try c.decodeIfPresent([ServerEndpoint].self, forKey: .endpoints)
             )
         case .deviceStarted:
             self = .deviceStarted(

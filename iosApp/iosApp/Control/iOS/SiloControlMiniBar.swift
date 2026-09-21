@@ -17,7 +17,7 @@ struct SiloControlMiniBar: View {
     /// and pop back. Stays visible under the full remote sheet so dismissing
     /// the sheet doesn't re-insert the accessory with a second animation.
     private var isVisible: Bool {
-        (controller.hasActiveSession && !controller.isAutoResuming) || controller.isReconnecting
+        controller.remotePlaybackEngaged
     }
 
     private var targetName: String {

@@ -22,6 +22,13 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// list; not part of identity.
     var lastUsedAt: Date
 
+    /// The deployment identity the server reported from
+    /// `GET /api/v2/system/identity` at this URL. It lets one deployment be
+    /// recognised across public, LAN, and network-plugin addresses without
+    /// changing `id`, which still keys credentials and settings. Self-asserted:
+    /// it groups and matches servers but never authorizes anything by itself.
+    var verifiedServerId: String?
+
     /// Display label for lists/menus. Server-advertised name → URL.
     var displayName: String {
         if let name = fetchedName, !name.isEmpty { return name }
@@ -38,13 +45,15 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         url: String,
         fetchedName: String?,
         profileId: String? = nil,
-        lastUsedAt: Date
+        lastUsedAt: Date,
+        verifiedServerId: String? = nil
     ) {
         self.id = id
         self.url = url
         self.fetchedName = fetchedName
         self.lastUsedAt = lastUsedAt
         self.legacyProfileId = profileId
+        self.verifiedServerId = ServerIdentity.usable(verifiedServerId)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -53,6 +62,7 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         case fetchedName
         case profileId
         case lastUsedAt
+        case verifiedServerId
     }
 
     init(from decoder: Decoder) throws {
@@ -62,6 +72,9 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         fetchedName = try container.decodeIfPresent(String.self, forKey: .fetchedName)
         lastUsedAt = try container.decode(Date.self, forKey: .lastUsedAt)
         legacyProfileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+        verifiedServerId = ServerIdentity.usable(
+            try container.decodeIfPresent(String.self, forKey: .verifiedServerId)
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -75,6 +88,7 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         // profile identity.
         try container.encodeIfPresent(legacyProfileId, forKey: .profileId)
         try container.encode(lastUsedAt, forKey: .lastUsedAt)
+        try container.encodeIfPresent(verifiedServerId, forKey: .verifiedServerId)
     }
 }
 
@@ -226,6 +240,9 @@ final class ServerRegistry {
             if merged.fetchedName == nil || merged.fetchedName?.isEmpty == true {
                 merged.fetchedName = existing.fetchedName
             }
+            if merged.verifiedServerId == nil {
+                merged.verifiedServerId = existing.verifiedServerId
+            }
         }
         let isExistingEntry = self.entries.contains(where: { $0.id == entry.id })
         if let idx = self.entries.firstIndex(where: { $0.id == entry.id }) {
@@ -272,6 +289,32 @@ final class ServerRegistry {
             return false
         }
         return true
+    }
+
+    /// Records the deployment identity a server reported at its registry URL.
+    /// A blank value is ignored: losing the identity is never an improvement
+    /// over a stale one, and both only affect matching, never authorization.
+    @discardableResult
+    func updateVerifiedServerId(for serverId: String, verifiedServerId: String?) -> Bool {
+        guard let idx = entries.firstIndex(where: { $0.id == serverId }),
+              let identity = ServerIdentity.usable(verifiedServerId) else { return false }
+        guard entries[idx].verifiedServerId != identity else { return true }
+        let previousEntries = entries
+        entries[idx].verifiedServerId = identity
+        guard persist() else {
+            entries = previousEntries
+            _ = persist()
+            return false
+        }
+        return true
+    }
+
+    /// The saved server that belongs to the deployment `verifiedServerId`,
+    /// if any. Prefers the active server when it qualifies.
+    func entry(verifiedServerId: String?) -> ServerEntry? {
+        guard let identity = ServerIdentity.usable(verifiedServerId) else { return nil }
+        if let active = activeServer, active.verifiedServerId == identity { return active }
+        return sortedEntries.first { $0.verifiedServerId == identity }
     }
 
     // MARK: - Server switching
@@ -766,6 +809,21 @@ final class ServerRegistry {
             return false
         }
         return lhsCanonical == rhsCanonical
+    }
+
+    /// Whether two servers are one deployment. Registry IDs still match by
+    /// origin; additionally, two verified deployment identities that are equal
+    /// recognise one server across different addresses (public URL, LAN, or a
+    /// network plugin origin). Used for visibility and grouping only: it never
+    /// merges credentials and never authorizes a handoff by itself.
+    static func serversMatch(
+        serverId lhsId: String?, verifiedServerId lhsIdentity: String?,
+        serverId rhsId: String?, verifiedServerId rhsIdentity: String?
+    ) -> Bool {
+        if serverIdsMatch(lhsId, rhsId) { return true }
+        guard let lhs = ServerIdentity.usable(lhsIdentity),
+              let rhs = ServerIdentity.usable(rhsIdentity) else { return false }
+        return lhs == rhs
     }
 
     private static func canonicalComparisonURL(for url: String) -> String? {

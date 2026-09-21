@@ -6,7 +6,7 @@ struct SiloControlModeButton: View {
     let onChooseTarget: () -> Void
 
     var body: some View {
-        if controller.hasActiveSession {
+        if controller.remotePlaybackEngaged {
             Menu {
                 Button { controller.showRemoteControl() } label: {
                     Label("Remote Control", systemImage: "slider.horizontal.3")

@@ -60,6 +60,12 @@ class ServerSetupViewModel {
             attempted.append(candidate)
             do {
                 let status = try await auth.checkServer(url: candidate)
+                // This view is also pushed onto the login stack (Change
+                // Server, then Add Server) while `authState` is already
+                // `needsLogin`. Setting the same state is a no-op there, so
+                // the stack must be reset explicitly or the setup screen
+                // stays put after a successful connect.
+                router.popToRoot()
                 router.authState = .needsLogin
                 if status.needsSetup {
                     router.navigate(to: .serverNeedsSetup)
