@@ -124,6 +124,64 @@ final class ServerIdentityResolverTests: XCTestCase {
         await TokenStore.shared.switchActiveServer(serverId: previousTokenServerId)
     }
 
+    // MARK: - Deployment identity
+
+    func testProbeReportsIdentityAtAnyAddress() async {
+        stub.configure([
+            "/api/v2/system/identity": (200, #"{"server_id":"96c1bd08-b839-4d47-980e-57d4e7a44cfa"}"#),
+        ])
+
+        let result = await resolver().probeIdentity(serverURL: "https://silo.overlay.example/")
+
+        XCTAssertEqual(result, .identity("96c1bd08-b839-4d47-980e-57d4e7a44cfa"))
+        let fetched = await resolver().fetchServerIdentity(serverURL: "https://silo.overlay.example")
+        XCTAssertEqual(fetched, "96c1bd08-b839-4d47-980e-57d4e7a44cfa")
+    }
+
+    func testLegacy404IsReachableButUnsupported() async {
+        stub.handler.reset()
+        stub.handler.route(StubURLProtocol.path("/api/v2/system/identity")) { _ in
+            .text("404 page not found\n", status: 404, contentType: "text/plain")
+        }
+
+        let result = await resolver().probeIdentity(serverURL: "https://silo.example")
+
+        XCTAssertEqual(result, .unsupportedServer)
+    }
+
+    func testProxy404AndTransportFailuresAreUnreachable() async {
+        stub.configure([
+            "/api/v2/system/identity": (404, "<html>nope</html>"),
+        ])
+        let proxy = await resolver().probeIdentity(serverURL: "https://silo.example")
+        XCTAssertEqual(proxy, .unreachable)
+
+        stub.handler.reset()
+        stub.handler.route(StubURLProtocol.any) { _ in throw URLError(.cannotConnectToHost) }
+        let transport = await resolver().probeIdentity(serverURL: "https://silo.example")
+        XCTAssertEqual(transport, .unreachable)
+        let fetched = await resolver().fetchServerIdentity(serverURL: "https://silo.example")
+        XCTAssertNil(fetched)
+    }
+
+    func testConnectionsUsesTheSuppliedBearerAndRequiresAvailability() async {
+        stub.configure([
+            "/api/v2/system/connections": (200, #"{"revision":"r","state":"available","allowed":true,"server_id":"S","current":{"kind":"provider","provider":"tailscale"},"endpoints":[{"kind":"public","url":"https://silo.example"}]}"#),
+        ])
+
+        let document = await resolver().fetchConnections(serverURL: "https://silo.example", bearer: "TOKEN")
+
+        XCTAssertEqual(document?.serverId, "S")
+        XCTAssertEqual(document?.current?.provider, "tailscale")
+        XCTAssertEqual(stub.handler.requests.first?.header("Authorization"), "Bearer TOKEN")
+
+        stub.configure([
+            "/api/v2/system/connections": (200, #"{"state":"not_configured","allowed":true,"server_id":"S","endpoints":[]}"#),
+        ])
+        let unavailable = await resolver().fetchConnections(serverURL: "https://silo.example", bearer: "TOKEN")
+        XCTAssertNil(unavailable)
+    }
+
     private func resolver() -> ServerIdentityResolver {
         ServerIdentityResolver(
             httpClient: HTTPClient(session: stub.handler.makeSession())

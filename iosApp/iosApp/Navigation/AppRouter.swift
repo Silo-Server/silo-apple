@@ -210,6 +210,71 @@ class AppRouter {
 
     var presentedPlayer: PlayerPresentation?
 
+    #if os(iOS)
+    /// Where a streaming play request should go. Installed by the root view
+    /// with the SiloControl client so every local-play entry point (detail
+    /// page, home rail badge, deep links, restored alerts) routes through one
+    /// decision instead of each call site re-checking the remote session.
+    /// Returns true when the request was taken by an engaged TV.
+    var remotePlaybackInterceptor: ((SiloControlPlaybackRequest) async -> Bool)?
+    /// Whether a TV is engaged right now, for sites that must not open the
+    /// local player at all (a PiP restore) rather than route a request.
+    var isRemotePlaybackEngaged: (() -> Bool)?
+
+    /// True while the interceptor is deciding; a second Play in that window
+    /// must not slip past it and open the local player.
+    private var isRoutingRemotePlayback = false
+
+    /// An offline play requested while a TV is engaged. A download can only
+    /// play on the phone, so instead of silently starting a second player the
+    /// root view asks: play here, or send the streamed version to the TV.
+    struct OfflinePlayChoice: Identifiable, Equatable {
+        let id = UUID()
+        let presentation: PlayerPresentation
+        let request: SiloControlPlaybackRequest
+    }
+    var pendingOfflinePlayChoice: OfflinePlayChoice?
+
+    /// A play requested while the engaged TV is already playing a different
+    /// title. Replacing what someone may be watching deserves a confirmation,
+    /// so the root view asks before the request goes to the TV.
+    struct ReplaceRemotePlaybackChoice: Identifiable, Equatable {
+        let id = UUID()
+        let request: SiloControlPlaybackRequest
+        let currentTitle: String
+        let targetName: String
+    }
+    var pendingReplaceRemotePlayback: ReplaceRemotePlaybackChoice?
+
+    /// Installed by the root view: the title the engaged TV is playing right
+    /// now, or nil when it is idle, so the router knows whether a play
+    /// would replace something.
+    var remotePlaybackCurrentTitle: (() -> (title: String, contentId: String?, targetName: String)?)?
+
+    func confirmReplaceRemotePlayback() {
+        guard let choice = pendingReplaceRemotePlayback else { return }
+        pendingReplaceRemotePlayback = nil
+        guard let remotePlaybackInterceptor else { return }
+        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+    }
+
+    /// User chose the phone for a pending offline play.
+    func confirmOfflinePlayHere() {
+        guard let choice = pendingOfflinePlayChoice else { return }
+        pendingOfflinePlayChoice = nil
+        presentedPlayer = choice.presentation
+    }
+
+    /// User chose the TV for a pending offline play: the streamed version
+    /// goes through the same interceptor as any other play.
+    func sendPendingOfflinePlayToTV() {
+        guard let choice = pendingOfflinePlayChoice else { return }
+        pendingOfflinePlayChoice = nil
+        guard let remotePlaybackInterceptor else { return }
+        Task { @MainActor in _ = await remotePlaybackInterceptor(choice.request) }
+    }
+    #endif
+
     // MARK: - Tab Selection
 
     /// One-shot tab-switch request, consumed (and cleared) by `MainTabView`,
@@ -286,6 +351,38 @@ class AppRouter {
         )
         #if os(iOS)
         presentation.detailPresentationID = presentedItemDetail?.id
+        if let remotePlaybackInterceptor {
+            // Decide the destination before touching `presentedPlayer`, so
+            // an engaged TV never sees the local cover flash. The request
+            // mirrors the values the local player would have used.
+            let request = SiloControlPlaybackRequest(
+                contentId: contentId,
+                fileId: fileId,
+                audioTrackIndex: audioTrackIndex,
+                subtitleTrackIndex: subtitleTrackIndex,
+                startFromBeginning: startFromBeginning,
+                resumePosition: resumePosition
+            )
+            guard !isRoutingRemotePlayback else { return }
+            // The TV is mid-title and this is a different one: ask first.
+            // Same title (a Resume of what is already on) goes straight through.
+            if let now = remotePlaybackCurrentTitle?(),
+               now.contentId != contentId {
+                pendingReplaceRemotePlayback = ReplaceRemotePlaybackChoice(
+                    request: request,
+                    currentTitle: now.title,
+                    targetName: now.targetName
+                )
+                return
+            }
+            isRoutingRemotePlayback = true
+            Task { @MainActor in
+                defer { isRoutingRemotePlayback = false }
+                if await remotePlaybackInterceptor(request) { return }
+                presentedPlayer = presentation
+            }
+            return
+        }
         #endif
         presentedPlayer = presentation
         #endif
@@ -330,6 +427,22 @@ class AppRouter {
         )
         #if os(iOS)
         presentation.detailPresentationID = presentedItemDetail?.id
+        #endif
+        #if os(iOS)
+        if isRemotePlaybackEngaged?() == true {
+            pendingOfflinePlayChoice = OfflinePlayChoice(
+                presentation: presentation,
+                request: SiloControlPlaybackRequest(
+                    contentId: contentId,
+                    fileId: nil,
+                    audioTrackIndex: nil,
+                    subtitleTrackIndex: nil,
+                    startFromBeginning: startFromBeginning,
+                    resumePosition: resumePosition
+                )
+            )
+            return
+        }
         #endif
         presentedPlayer = presentation
         #endif

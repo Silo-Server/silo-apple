@@ -189,7 +189,7 @@ struct CompanionPairingCard: View {
         }
     }
 
-    private func finished(signedIn: [String], failed: [String]) -> some View {
+    private func finished(signedIn: [String], failed: [CompanionPairingCoordinator.FailedServer]) -> some View {
         VStack(spacing: 0) {
             Image(systemName: signedIn.isEmpty ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 44))
@@ -198,8 +198,8 @@ struct CompanionPairingCard: View {
             Text(signedIn.isEmpty ? "Setup didn’t finish" : "Set up \(signedIn.joined(separator: ", "))")
                 .font(.siloHeadline)
                 .multilineTextAlignment(.center)
-            if !failed.isEmpty {
-                Text("Couldn’t sign in to \(failed.joined(separator: ", ")).")
+            ForEach(failed, id: \.name) { failure in
+                Text(failure.summary)
                     .font(.siloCaption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

@@ -221,6 +221,7 @@ private struct RemoteNowPlayingContent: View {
     let onSetMuted: (Bool) -> Void
 
     @State private var scrubPreview: Double?
+    @State private var scrubSettleTask: Task<Void, Never>?
     private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 2.0]
     private let subtitleDelayOptions = [-2_000, -1_500, -1_000, -500, -250, 0, 250, 500, 1_000, 1_500, 2_000]
 
@@ -304,9 +305,7 @@ private struct RemoteNowPlayingContent: View {
                     value: Binding(get: { live }, set: { scrubPreview = $0 }),
                     in: 0...max(state.duration, 1),
                     onEditingChanged: { editing in
-                        guard !editing, let scrubPreview else { return }
-                        onSeek(scrubPreview)
-                        self.scrubPreview = nil
+                        if !editing { commitScrub() }
                     }
                 )
                 .tint(Color.siloOnSurface)
@@ -323,6 +322,37 @@ private struct RemoteNowPlayingContent: View {
                 .foregroundStyle(Color.siloSecondaryText)
             }
         }
+        // The slider's end-of-edit callback is not guaranteed: a tap that
+        // lands elsewhere while the finger is still down (play/pause, the
+        // mini-bar) can swallow the touch-up, and SwiftUI then never reports
+        // `editing == false`. The preview would stay pinned and every later
+        // drag would be ignored as "still editing". So the value stream is
+        // the commit signal too: once it goes quiet the seek is sent, and the
+        // slider is released whether or not the callback ever comes.
+        .onChange(of: scrubPreview) { _, value in
+            guard value != nil else { return }
+            scrubSettleTask?.cancel()
+            scrubSettleTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                commitScrub()
+            }
+        }
+        .onChange(of: state.contentId) { _, _ in
+            scrubSettleTask?.cancel()
+            scrubPreview = nil
+        }
+    }
+
+    /// Sends the scrubbed position once and releases the slider. Safe to
+    /// call from both the settle timer and the end-of-edit callback: the
+    /// preview is cleared before sending so the second caller finds nothing.
+    private func commitScrub() {
+        scrubSettleTask?.cancel()
+        scrubSettleTask = nil
+        guard let target = scrubPreview else { return }
+        scrubPreview = nil
+        onSeek(target)
     }
 
     private func remainingLabel(live: Double) -> String {

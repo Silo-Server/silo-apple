@@ -130,6 +130,10 @@ final class AuthService: @unchecked Sendable {
         // exposing a global A/B routing mixture to unrelated requests.
         let fetchedName = await serverIdentityResolver.fetchServerName(serverURL: normalized)
         try Task.checkCancellation()
+        // Best effort: an older server has no identity and the entry simply
+        // stays unmatched across addresses until it is upgraded.
+        let verifiedServerId = await serverIdentityResolver.fetchServerIdentity(serverURL: normalized)
+        try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
         let status: SetupStatus = try await httpClient.getUnauthenticated(
@@ -144,7 +148,8 @@ final class AuthService: @unchecked Sendable {
             url: normalized,
             fetchedName: fetchedName,
             profileId: nil,
-            lastUsedAt: Date()
+            lastUsedAt: Date(),
+            verifiedServerId: verifiedServerId
         )
         guard serverRegistry.addOrUpdate(entry) != nil else {
             throw ServerRegistryError.persistenceFailed
@@ -174,11 +179,24 @@ final class AuthService: @unchecked Sendable {
         // unreachable->reachable recovery all come through here.
         await recordContractVerdict(serverId: serverId, serverURL: server.url)
         guard serverRegistry.activeServerId == serverId else { return }
+        await refreshVerifiedServerId(for: server)
+        guard serverRegistry.activeServerId == serverId else { return }
         guard let name = await serverIdentityResolver.fetchServerName(serverURL: server.url),
               serverRegistry.activeServerId == serverId else {
             return
         }
         serverRegistry.updateFetchedName(for: serverId, fetchedName: name)
+    }
+
+    /// Learns (or re-learns) the deployment identity behind a saved server so
+    /// SiloRemote and companion pairing can recognise it at other addresses.
+    /// Servers added before the identity contract pick it up here on their
+    /// next activation or foreground refresh.
+    func refreshVerifiedServerId(for server: ServerEntry) async {
+        guard let identity = await serverIdentityResolver.fetchServerIdentity(serverURL: server.url) else {
+            return
+        }
+        serverRegistry.updateVerifiedServerId(for: server.id, verifiedServerId: identity)
     }
 
     /// Validate a Keychain-restored account without changing the remembered
