@@ -347,6 +347,7 @@ enum APIv2CatalogRead {
         let fileSize: Int64
         let hdr: Bool
         let intro: WatchMarker?
+        let markerSegments: [PlaybackMarkerSegment]?
         let multiEpisodeEnd: Int64?
         let multiEpisodeStart: Int64?
         let presentationGroupKey: String?

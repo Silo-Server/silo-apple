@@ -152,7 +152,7 @@ struct PlayerView: View {
                         // (docs/tvos-focus.md), and the sink's Down handler
                         // force-switches the HUD tab underneath the user.
                         if !viewModel.isLoading && !viewModel.isHUDPresented &&
-                            (!(viewModel.showIntroSkip || viewModel.showCreditsSkip) || viewModel.isHoldSeeking) &&
+                            (!(viewModel.showIntroSkip || viewModel.showSecondaryMarkerSkip) || viewModel.isHoldSeeking) &&
                             (!viewModel.showControls || viewModel.isHoldSeeking) {
                             TVPressCaptureView(
                                 onArrowTap: { direction in

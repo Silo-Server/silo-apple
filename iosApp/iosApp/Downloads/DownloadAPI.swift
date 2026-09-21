@@ -45,7 +45,10 @@ extension SiloAPI {
     }
 
     func fetchManifest(downloadId: String) async throws -> OfflineManifest {
-        try await http.get("/api/v1/downloads/\(downloadId)/manifest")
+        guard let id = CatalogPathSegment.encode(downloadId) else {
+            throw HTTPError.invalidURL("Invalid download ID")
+        }
+        return try await apiV2Client.requestGet("/api/v2/downloads/\(id)/manifest")
     }
 
     /// Fetch the raw bytes of an authenticated proxy asset (artwork or

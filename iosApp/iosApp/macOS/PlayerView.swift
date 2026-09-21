@@ -54,9 +54,10 @@ struct PlayerView: View {
             } else {
                 playerSurface
 
-                if shouldShowControls {
+                if shouldShowControls || viewModel.showIntroSkip || viewModel.showSecondaryMarkerSkip {
                     MacPlayerControls(
                         viewModel: viewModel,
+                        showTransportControls: shouldShowControls,
                         isOptionsPresented: $isOptionsPresented,
                         selectedOptionsTab: $selectedOptionsTab,
                         onDismiss: { dismiss() }

@@ -798,6 +798,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let chapters: [VersionChapter]?
     let intro: TimeRange?
     let credits: TimeRange?
+    let recap: TimeRange?
+    let preview: TimeRange?
+    /// A present array replaces the singular marker fields, including when empty.
+    let markerSegments: [PlaybackMarkerSegment]?
     let presentationKind: String?
     let presentationGroupKey: String?
     let presentationPartIndex: Int?
@@ -833,6 +837,9 @@ struct FileVersion: Codable, Identifiable, Hashable {
         chapters: [VersionChapter]?,
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
+        recap: TimeRange? = nil,
+        preview: TimeRange? = nil,
+        markerSegments: [PlaybackMarkerSegment]? = nil,
         presentationKind: String? = nil,
         presentationGroupKey: String? = nil,
         presentationPartIndex: Int? = nil,
@@ -859,6 +866,9 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.chapters = chapters
         self.intro = intro
         self.credits = credits
+        self.recap = recap
+        self.preview = preview
+        self.markerSegments = markerSegments
         self.presentationKind = presentationKind
         self.presentationGroupKey = presentationGroupKey
         self.presentationPartIndex = presentationPartIndex
@@ -888,6 +898,9 @@ struct FileVersion: Codable, Identifiable, Hashable {
         chapters = try c.decodeIfPresent([VersionChapter].self, forKey: .chapters)
         intro = try c.decodeIfPresent(TimeRange.self, forKey: .intro)
         credits = try c.decodeIfPresent(TimeRange.self, forKey: .credits)
+        recap = try c.decodeIfPresent(TimeRange.self, forKey: .recap)
+        preview = try c.decodeIfPresent(TimeRange.self, forKey: .preview)
+        markerSegments = try c.decodeIfPresent([PlaybackMarkerSegment].self, forKey: .markerSegments)
         presentationKind = try c.decodeIfPresent(String.self, forKey: .presentationKind)
         presentationGroupKey = try c.decodeIfPresent(String.self, forKey: .presentationGroupKey)
         presentationPartIndex = try c.decodeIfPresent(Int.self, forKey: .presentationPartIndex)

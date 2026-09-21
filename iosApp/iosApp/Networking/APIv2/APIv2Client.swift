@@ -1305,7 +1305,7 @@ struct APIv2Client: Sendable {
         return try ticket.request(serverURL: auth.account.serverURL, sessionID: sessionID)
     }
 
-    func watchDetail(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
+    func watchDetail(id: String, libraryId: String? = nil, fileId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
@@ -1314,9 +1314,12 @@ struct APIv2Client: Sendable {
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
         let path = "/api/v2/watch/\(try catalogPathSegment(id))"
+        var query = catalogReadScope(libraryId: libraryId, imageSize: imageSize)
+        if let fileId { query["file_id"] = fileId }
+        let requestQuery = query
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: "GET", path: path, query: catalogReadScope(libraryId: libraryId, imageSize: imageSize),
+                try await http.requestData(method: "GET", path: path, query: requestQuery,
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }

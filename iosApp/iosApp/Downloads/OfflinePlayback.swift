@@ -38,7 +38,7 @@ struct OfflinePreparedPlayback {
 /// from a stored offline manifest + local media file, so AetherEngine loads
 /// with no server session. Aether probes the delivered file itself; the
 /// manifest remains authoritative for catalog metadata, chapters,
-/// intro/credits markers, track preferences, and downloaded subtitles.
+/// markers, track preferences, and downloaded subtitles.
 enum OfflinePlaybackBuilder {
     /// Near-end resume points restart from zero, mirroring the session
     /// bridge's suppression window so offline resume feels identical to
@@ -221,7 +221,10 @@ enum OfflinePlaybackBuilder {
             subtitleTracks: nil,
             chapters: manifest.chapters,
             intro: manifest.intro,
-            credits: manifest.credits
+            credits: manifest.credits,
+            recap: manifest.recap,
+            preview: manifest.preview,
+            markerSegments: manifest.markerSegments
         )
 
         let watchDetail = WatchDetail(

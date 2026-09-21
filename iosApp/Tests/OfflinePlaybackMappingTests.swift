@@ -16,6 +16,7 @@ final class OfflinePlaybackMappingTests: XCTestCase {
 
     private func manifest(
         audioTracksJSON: String? = nil,
+        markerFieldsJSON: String? = nil,
         selectedAudioTrackIndex: Int? = nil,
         targetBitrateKbps: Int? = nil,
         fileSize: Int64? = 1_000_000_000,
@@ -35,6 +36,7 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         if let fileSize { fields.append("\"file_size\": \(fileSize)") }
         if let durationSeconds { fields.append("\"duration_seconds\": \(durationSeconds)") }
         if let audioTracksJSON { fields.append("\"audio_tracks\": \(audioTracksJSON)") }
+        if let markerFieldsJSON { fields.append(markerFieldsJSON) }
         if let selectedAudioTrackIndex {
             fields.append("\"selected_audio_track_index\": \(selectedAudioTrackIndex)")
         }
@@ -133,6 +135,74 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         // Ordinal into `version.audioTracks` — the same space the server's
         // `audio_track_index` uses.
         XCTAssertEqual(session.audioTrackIndex, 0)
+    }
+
+    func testMarkerOccurrencesSurviveManifestPersistenceAndPlayback() throws {
+        let fetched = try manifest(markerFieldsJSON: """
+        "intro": { "start": 10, "end": 20 },
+        "marker_segments": [
+          { "kind": "intro", "start_seconds": 10, "end_seconds": 20 },
+          { "kind": "intro", "start_seconds": 30, "end_seconds": 40 },
+          { "kind": "credits", "start_seconds": 1100, "end_seconds": 1200 },
+          { "kind": "credits", "start_seconds": 1250, "end_seconds": 1300 },
+          { "kind": "recap", "start_seconds": 0, "end_seconds": 10 },
+          { "kind": "preview", "start_seconds": 1300, "end_seconds": 1350 },
+          { "kind": "future_kind", "start_seconds": 50, "end_seconds": 60 }
+        ]
+        """)
+        // DownloadStore uses plain coders for persisted manifests.
+        let saved = try JSONEncoder().encode(fetched)
+        let stored = try JSONDecoder().decode(OfflineManifest.self, from: saved)
+        let version = prepared(stored).selectedVersion
+
+        XCTAssertEqual(version.markerSegments, fetched.markerSegments)
+        XCTAssertEqual(version.markerSegments?.count, 7)
+        let timeline = PlayerMarkerTimeline(segments: version.markerSegments, intro: version.intro)
+        XCTAssertEqual(timeline.ranges(kind: "intro"), [TimeRange(start: 10, end: 20), TimeRange(start: 30, end: 40)])
+        XCTAssertEqual(timeline.ranges(kind: "credits"), [TimeRange(start: 1100, end: 1200), TimeRange(start: 1250, end: 1300)])
+        XCTAssertEqual(timeline.ranges(kind: "recap"), [TimeRange(start: 0, end: 10)])
+        XCTAssertEqual(timeline.ranges(kind: "preview"), [TimeRange(start: 1300, end: 1350)])
+    }
+
+    func testV2ManifestFileIDProjectsToLegacyOfflineStorage() throws {
+        let wire = try APIv2FixtureTestSupport.decode(
+            OfflineManifest.self, named: "download_manifest", bundleClass: Self.self
+        )
+        XCTAssertEqual(wire.mediaFileId, 42)
+        let saved = try JSONEncoder().encode(wire)
+        let stored = try JSONDecoder().decode(OfflineManifest.self, from: saved)
+        XCTAssertEqual(stored.mediaFileId, 42)
+        XCTAssertEqual(prepared(stored).selectedVersion.fileId, 42)
+
+        for id in ["opaque-file", "0", "-1", "042", "9223372036854775808"] {
+            let invalid = try APIv2FixtureTestSupport.mutatedBody(named: "download_manifest", bundleClass: Self.self) {
+                $0["media_file_id"] = id
+            }
+            XCTAssertThrowsError(try HTTPClient.makeJSONDecoder().decode(OfflineManifest.self, from: invalid))
+        }
+    }
+
+    func testOfflineMarkersKeepLegacyFallbackAndExplicitEmptySnapshot() throws {
+        let legacyFields = """
+        "intro": { "start": 10, "end": 20 },
+        "credits": { "start": 1200, "end": 1300 },
+        "recap": { "start": 0, "end": 10 },
+        "preview": { "start": 1300, "end": 1350 }
+        """
+        let legacy = prepared(try manifest(markerFieldsJSON: legacyFields)).selectedVersion
+        XCTAssertNil(legacy.markerSegments)
+        let timeline = PlayerMarkerTimeline(
+            segments: legacy.markerSegments, intro: legacy.intro, credits: legacy.credits,
+            recap: legacy.recap, preview: legacy.preview
+        )
+        XCTAssertEqual(timeline.ranges(kind: "intro"), [TimeRange(start: 10, end: 20)])
+        XCTAssertEqual(timeline.ranges(kind: "credits"), [TimeRange(start: 1200, end: 1300)])
+        XCTAssertEqual(timeline.ranges(kind: "recap"), [TimeRange(start: 0, end: 10)])
+        XCTAssertEqual(timeline.ranges(kind: "preview"), [TimeRange(start: 1300, end: 1350)])
+
+        let empty = prepared(try manifest(markerFieldsJSON: legacyFields + ",\"marker_segments\":[]")).selectedVersion
+        XCTAssertEqual(empty.markerSegments, [])
+        XCTAssertTrue(PlayerMarkerTimeline(segments: empty.markerSegments, intro: empty.intro).segments.isEmpty)
     }
 
     // MARK: - Bitrate

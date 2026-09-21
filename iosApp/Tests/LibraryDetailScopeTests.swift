@@ -30,11 +30,12 @@ final class LibraryDetailScopeTests: XCTestCase {
             _ = try await api.itemDetail(contentId: "movie", libraryId: libraryId)
             _ = try await api.seasons(seriesId: "series", libraryId: libraryId)
             _ = try await api.episodes(seriesId: "series", seasonNumber: 0, libraryId: libraryId)
-            _ = try await api.watchDetail(contentId: "movie", libraryId: libraryId)
+            _ = try await api.watchDetail(contentId: "movie", libraryId: libraryId, fileId: libraryId.map { $0 * 10 + 1 })
         }
         XCTAssertEqual(stub.requests.count, 12)
         for (index, request) in stub.requests.enumerated() {
             XCTAssertEqual(request.query["library_id"], ["7", "8", nil][index / 4])
+            XCTAssertEqual(request.query["file_id"], index % 4 == 3 ? ["71", "81", nil][index / 4] : nil)
             XCTAssertTrue(request.path.hasPrefix("/api/v2/"))
             XCTAssertEqual(request.header("x-profile-id"), "profile-one")
         }

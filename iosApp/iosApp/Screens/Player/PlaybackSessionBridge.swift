@@ -713,7 +713,7 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
-        let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+        let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId, fileId: preferredFileId)
         logger.info("Got \(watchDetail.versions.count) versions, type=\(watchDetail.type, privacy: .public)")
 
         guard !watchDetail.versions.isEmpty else {

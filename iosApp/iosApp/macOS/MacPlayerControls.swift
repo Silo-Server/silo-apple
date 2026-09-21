@@ -5,17 +5,68 @@ import SwiftUI
 
 struct MacPlayerControls: View {
     let viewModel: PlayerViewModel
+    let showTransportControls: Bool
     @Binding var isOptionsPresented: Bool
     @Binding var selectedOptionsTab: MacPlayerOptionsPanel.Tab
     let onDismiss: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
+            if showTransportControls {
+                topBar
+            }
             Spacer(minLength: 0)
-            bottomControls
+            if !isOptionsPresented && (viewModel.showIntroSkip || viewModel.showSecondaryMarkerSkip) {
+                markerSkipControls
+                    .padding(.bottom, showTransportControls ? 12 : 0)
+            }
+            if showTransportControls {
+                bottomControls
+            }
         }
         .padding(20)
+    }
+
+    private var markerSkipControls: some View {
+        HStack(spacing: 8) {
+            Spacer()
+            if viewModel.showIntroSkip {
+                if viewModel.introAutoSkipCountdownSeconds != nil {
+                    markerButton("Cancel", systemImage: "xmark", action: viewModel.cancelIntroAutoSkip)
+                        .accessibilityLabel("Cancel Auto-Skip Intro")
+                }
+                markerButton(introSkipTitle, action: viewModel.skipIntro)
+                    .accessibilityLabel(
+                        viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
+                    )
+            } else if viewModel.showSecondaryMarkerSkip {
+                markerButton(viewModel.secondaryMarkerSkipTitle, action: viewModel.skipSecondaryMarker)
+            }
+        }
+    }
+
+    private var introSkipTitle: String {
+        if let countdown = viewModel.introAutoSkipCountdownSeconds {
+            return "Skip Intro · \(countdown)"
+        }
+        return "Skip Intro"
+    }
+
+    private func markerButton(
+        _ title: String,
+        systemImage: String = "forward.end.fill",
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.callout.weight(.semibold))
+                .monospacedDigit()
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.black)
+        .background(Capsule(style: .continuous).fill(Color.white))
     }
 
     private var topBar: some View {

@@ -818,5 +818,48 @@ final class DetailVersionSelectionTests: XCTestCase {
         )
         XCTAssertTrue(missingMarkersPayload?.introUpdate == .unchanged)
         XCTAssertTrue(missingMarkersPayload?.creditsUpdate == .unchanged)
+        XCTAssertNil(missingMarkersPayload?.markerSegments)
+        XCTAssertEqual(missingMarkersPayload?.recapUpdate, .unchanged)
+        XCTAssertEqual(missingMarkersPayload?.previewUpdate, .unchanged)
+    }
+
+    func testRealtimeMarkerSegmentsDistinguishClearFromMissingAndMalformedUpdates() throws {
+        let data = Data("""
+        {
+          "file_id": 42,
+          "recap": { "start": 0, "end": 12 },
+          "preview": null,
+          "marker_segments": [
+            { "kind": "credits", "start_seconds": 1500, "end_seconds": 1550 },
+            { "kind": "credits", "start_seconds": 1600, "end_seconds": 1700 },
+            { "kind": "future_kind", "start_seconds": 1750, "end_seconds": 1760 }
+          ]
+        }
+        """.utf8)
+        var values = try JSONDecoder().decode(PlaybackRealtimePayload.self, from: data)
+        let update = try XCTUnwrap(PlaybackRealtimeMarkersUpdatedPayload(payload: values))
+        XCTAssertEqual(update.markerSegments?.map(\.kind), ["credits", "credits", "future_kind"])
+        XCTAssertEqual(update.recapUpdate, .set(TimeRange(start: 0, end: 12)))
+        XCTAssertEqual(update.previewUpdate, .clear)
+
+        values["marker_segments"] = .array([])
+        XCTAssertEqual(PlaybackRealtimeMarkersUpdatedPayload(payload: values)?.markerSegments, [])
+
+        values["marker_segments"] = .null
+        let legacy = try XCTUnwrap(PlaybackRealtimeMarkersUpdatedPayload(payload: values))
+        XCTAssertNil(legacy.markerSegments)
+        XCTAssertEqual(legacy.recapUpdate, .set(TimeRange(start: 0, end: 12)))
+
+        // Singular fallback fields must not replace a valid timeline when
+        // a newer server's full snapshot is malformed.
+        values["intro"] = .object(["start": .number(10), "end": .number(20)])
+        let invalidValues: [PlaybackRealtimeValue] = [
+            .string("invalid"), .array([.object([:])]),
+            .array([.object(["kind": .string("intro"), "start_seconds": .number(20), "end_seconds": .number(10)])])
+        ]
+        for invalid in invalidValues {
+            values["marker_segments"] = invalid
+            XCTAssertNil(PlaybackRealtimeMarkersUpdatedPayload(payload: values))
+        }
     }
 }
