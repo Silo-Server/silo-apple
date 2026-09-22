@@ -6,12 +6,12 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: 29ca39cb67ca9917e4f417519196385cd5259da3 (upstream release
+  Revision: 241dff50a02a0a1d4aaa095dca58ca4aa4c1b6cf (upstream release
   7.1.0 plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   and refreshable authorization for native HLS, sidecar subtitles and fonts)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/29ca39cb67ca9917e4f417519196385cd5259da3
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/241dff50a02a0a1d4aaa095dca58ca4aa4c1b6cf
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/7.1.0
   Rebuild: the Package.swift and source tree at that revision
 
