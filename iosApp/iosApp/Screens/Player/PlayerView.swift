@@ -48,6 +48,7 @@ struct PlayerView: View {
     @Environment(\.dismiss) var dismiss
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
+    @State private var pictureInPicture = PictureInPictureCoordinator.shared
     #endif
     #if os(tvOS)
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
@@ -360,6 +361,16 @@ struct PlayerView: View {
             }
         }
         #endif
+        #if os(iOS)
+        // Like AVKit's stock player, a PiP start from the player's own control
+        // returns the user to the app while the video continues in the window.
+        // Only the cover closes: `playerPresentationDidDisappear` defers the
+        // engaged session's cleanup, and AVKit's restore re-presents it.
+        .onChange(of: pictureInPicture.controlStartToken) { _, _ in
+            guard pictureInPicture.ownsEngagedSession(viewModel) else { return }
+            closePresentation()
+        }
+        #endif
         .onChange(of: viewModel.remoteDismissToken) { _, newValue in
             guard newValue != nil else { return }
             dismissPlayer()
@@ -478,6 +489,10 @@ struct PlayerView: View {
 
     private func dismissPlayer() {
         viewModel.cleanup()
+        closePresentation()
+    }
+
+    private func closePresentation() {
         if let onDismissRequested {
             onDismissRequested()
         } else {

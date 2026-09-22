@@ -33,6 +33,11 @@ final class PictureInPictureCoordinator {
     private(set) var hasSource = false
     /// Stable external-picture state, including AirPlay's transient item-reload gap.
     private(set) var isExternalPlaybackActive = false
+    /// Advances each time PiP finishes starting from the player's own control.
+    /// AVKit's stock player closes its full-screen interface at that moment;
+    /// the player presentation observes this to do the same while the session
+    /// plays on in the PiP window. Automatic PiP on backgrounding leaves it alone.
+    private(set) var controlStartToken = 0
 
     /// True while PiP owns, or is about to own, playback.
     var isEngaged: Bool { isActive || isTransitioning }
@@ -79,6 +84,8 @@ final class PictureInPictureCoordinator {
     /// the delegate, so without this the user sees a button that does nothing.
     @ObservationIgnored private var onStartFailure: ((StartFailure) -> Void)?
     @ObservationIgnored private var isRestoringUserInterface = false
+    /// The pending start came from `toggle()` rather than automatic PiP.
+    @ObservationIgnored private var isStartingFromControl = false
     /// A source disappeared while PiP was engaged. Re-read Aether when PiP stops.
     @ObservationIgnored private var pendingRebind = false
     /// A backend-class transition cannot reuse the active controller safely.
@@ -266,6 +273,7 @@ final class PictureInPictureCoordinator {
                 onStartFailure?(.notReady)
                 return
             }
+            isStartingFromControl = true
             controller.startPictureInPicture()
         }
     }
@@ -561,8 +569,12 @@ final class PictureInPictureCoordinator {
         isActive = true
         syncNativeSubtitleRendering()
         Self.logger.info("PiP started")
+        let startedFromControl = isStartingFromControl
+        isStartingFromControl = false
         if shouldStopForSourceChange {
             controller?.stopPictureInPicture()
+        } else if startedFromControl {
+            controlStartToken &+= 1
         }
     }
 
@@ -623,6 +635,7 @@ final class PictureInPictureCoordinator {
     }
 
     fileprivate func handleFailedToStart(_ error: Error) {
+        isStartingFromControl = false
         engine?.pictureInPictureActive = false
         isTransitioning = false
         isActive = false
