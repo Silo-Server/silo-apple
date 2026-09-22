@@ -178,7 +178,8 @@ final class AetherPlaybackController {
         }
         for (appID, request) in spec.subtitleFontRequests {
             if let engineID = aetherSubtitleID(forAppID: appID) {
-                assSubtitles.registerFontRequest(request, trackID: engineID)
+                assSubtitles.registerFontRequest(request, trackID: engineID,
+                                                authorization: spec.subtitleRequestAuthorization(for: request.url))
             }
         }
         didPublishFirstFrame = false
@@ -440,7 +441,10 @@ final class AetherPlaybackController {
     @discardableResult
     func addExternalSubtitleTrack(_ track: ExternalSubtitleTrack, appTrackID: Int64, fontRequest: URLRequest? = nil) -> Int64 {
         if let engineID = aetherSubtitleIDByAppID[appTrackID] {
-            if let fontRequest { assSubtitles.registerFontRequest(fontRequest, trackID: engineID) }
+            if let fontRequest {
+                assSubtitles.registerFontRequest(fontRequest, trackID: engineID,
+                                                authorization: activeSpec?.subtitleRequestAuthorization(for: fontRequest.url))
+            }
             return appTrackID
         }
         // Aether publishes its inventory synchronously before returning the
@@ -450,7 +454,10 @@ final class AetherPlaybackController {
         let registered = engine.addExternalSubtitleTrack(track)
         aetherSubtitleIDByAppID[appTrackID] = registered.id
         appSubtitleIDByAetherID[registered.id] = appTrackID
-        if let fontRequest { assSubtitles.registerFontRequest(fontRequest, trackID: registered.id) }
+        if let fontRequest {
+            assSubtitles.registerFontRequest(fontRequest, trackID: registered.id,
+                                            authorization: activeSpec?.subtitleRequestAuthorization(for: fontRequest.url))
+        }
         isRegisteringExternalSubtitle = false
         publish(.inventoryChanged)
         return appTrackID

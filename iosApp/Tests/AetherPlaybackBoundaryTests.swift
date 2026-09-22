@@ -590,15 +590,18 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             return XCTFail("Expected a playable HLS fixture")
         }
 
+        let authorization = HTTPRequestAuthorization { _, _ in ["Authorization": "Bearer current"] }
         let spec = try AetherLoadSpec(
             validating: plan,
             sessionID: sessionID,
             matchContentEnabled: true,
+            requestAuthorization: authorization,
             resolveURL: { URL(string: $0, relativeTo: URL(string: "https://dev.example.test")) }
         )
 
         XCTAssertTrue(spec.options.nativeRemoteHLS)
         XCTAssertEqual(spec.options.httpHeaders["Authorization"], "Bearer test")
+        XCTAssertTrue(spec.options.httpRequestAuthorization === authorization)
     }
 
     func testV3CredentialReloadTranslatesCurrentSourcePositionOntoPlanTimeline() throws {
@@ -786,12 +789,14 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         let proxySource = try XCTUnwrap(
             URL(string: "\(Self.proxyOrigin)/stream/v3/\(sessionID)")
         )
+        let subtitleAuthorization = HTTPRequestAuthorization { _, _ in currentHeaders }
         let spec = try AetherLoadSpec(
             validating: plan,
             sessionID: sessionID,
             matchContentEnabled: true,
             sourceURLOverride: proxySource,
             requestHeaders: currentHeaders,
+            subtitleRequestAuthorization: subtitleAuthorization,
             resolveURL: {
                 StreamRequest.resolve(
                     rawURL: $0,
@@ -807,6 +812,21 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         let sidecar = try XCTUnwrap(spec.options.externalSubtitles.first)
         XCTAssertEqual(sidecar.url.host, "dev.example.test")
         XCTAssertEqual(sidecar.httpHeaders, currentHeaders)
+        XCTAssertTrue(spec.subtitleRequestAuthorization === subtitleAuthorization)
+        XCTAssertTrue(sidecar.httpRequestAuthorization === subtitleAuthorization)
+        // Sidecars and fonts choose independently: a third-party resource
+        // stays unauthenticated even when its paired resource is API-owned.
+        for path in ["/api/v1/stream/session/subtitles/1.ass", "/api/v1/stream/session/subtitles/1/fonts",
+                     "/api/v1/stream/wrong-session/subtitles/1.ass", "/admin/settings"] {
+            let url = try XCTUnwrap(URL(string: "https://dev.example.test:443" + path))
+            XCTAssertTrue(spec.subtitleRequestAuthorization(for: url) === subtitleAuthorization)
+        }
+        for value in ["https://subtitles.example.net/movie.ass", "https://fonts.example.net/bundle",
+                      "\(Self.proxyOrigin)/fonts", "file:///tmp/movie.ass"] {
+            let url = try XCTUnwrap(URL(string: value))
+            XCTAssertNil(spec.subtitleRequestAuthorization(for: url))
+            XCTAssertEqual(spec.refreshableSubtitleHeaders(for: url), [:])
+        }
     }
 
     func testV3SubtitleArtifactRejectsOffOriginAndNonMediaURLs() throws {

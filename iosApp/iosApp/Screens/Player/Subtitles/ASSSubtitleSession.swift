@@ -14,14 +14,18 @@ final class ASSSubtitleSession: ObservableObject {
     @Published private(set) var failureMessage: String?
 
     private let engine: AetherEngine
-    private let fontLoader: @Sendable (URLRequest) async throws -> [FontAttachment]
+    private let fontLoader: @Sendable (URLRequest, HTTPRequestAuthorization?) async throws -> [FontAttachment]
     private var renderer = ASSSubtitleRenderer()
     private var subscriptions: Set<AnyCancellable> = []
     private var events: [ASSSubtitleRenderer.Event] = []
     private var clockSample: (source: Double, item: Double)?
     private weak var clockPlayer: AVPlayer?
     private var fontTask: Task<Void, Never>?
-    private var fontRequests: [Int: URLRequest] = [:]
+    private struct FontRequest: Equatable {
+        let request: URLRequest
+        let authorization: HTTPRequestAuthorization?
+    }
+    private var fontRequests: [Int: FontRequest] = [:]
     private var fontCache: [URL: [FontAttachment]] = [:]
     private var selectedFonts: [FontAttachment] = []
     private var fontSelection: Int?
@@ -34,7 +38,9 @@ final class ASSSubtitleSession: ObservableObject {
     private static let logger = Logger(subsystem: "org.siloserver.silo", category: "ASSSubtitles")
 
     init(engine: AetherEngine,
-         fontLoader: @escaping @Sendable (URLRequest) async throws -> [FontAttachment] = { try await ASSSubtitleSession.loadFonts($0) }) {
+         fontLoader: @escaping @Sendable (URLRequest, HTTPRequestAuthorization?) async throws -> [FontAttachment] = {
+             try await ASSSubtitleSession.loadFonts($0, authorization: $1)
+         }) {
         self.engine = engine
         self.fontLoader = fontLoader
         engine.$activeSubtitleTrackIndex.removeDuplicates().sink { [weak self] _ in
@@ -84,9 +90,10 @@ final class ASSSubtitleSession: ObservableObject {
         clearSelection()
     }
 
-    func registerFontRequest(_ request: URLRequest, trackID: Int) {
-        guard fontRequests[trackID] != request else { return }
-        fontRequests[trackID] = request
+    func registerFontRequest(_ request: URLRequest, trackID: Int, authorization: HTTPRequestAuthorization? = nil) {
+        let resource = FontRequest(request: request, authorization: authorization)
+        guard fontRequests[trackID] != resource else { return }
+        fontRequests[trackID] = resource
         if fontSelection == trackID { clearSelection() }
     }
 
@@ -169,7 +176,7 @@ final class ASSSubtitleSession: ObservableObject {
             selectedFonts = engine.fontAttachments
             return
         }
-        guard let request = fontRequests[trackID], let url = request.url else { return }
+        guard let resource = fontRequests[trackID], let url = resource.request.url else { return }
         if let cached = fontCache[url] {
             selectedFonts = cached
             return
@@ -179,7 +186,7 @@ final class ASSSubtitleSession: ObservableObject {
         let loader = fontLoader
         fontTask = Task { [weak self] in
             do {
-                let fonts = try await loader(request)
+                let fonts = try await loader(resource.request, resource.authorization)
                 guard let self, !Task.isCancelled, epoch == fontGeneration else { return }
                 fontCache[url] = fonts
                 selectedFonts = fonts
@@ -202,11 +209,14 @@ final class ASSSubtitleSession: ObservableObject {
         Self.logger.error("ASS subtitle failure domain=\(underlying.domain, privacy: .public) code=\(underlying.code, privacy: .public)")
     }
 
-    nonisolated static func loadFonts(_ request: URLRequest) async throws -> [FontAttachment] {
+    nonisolated static func loadFonts(_ request: URLRequest, authorization: HTTPRequestAuthorization? = nil) async throws -> [FontAttachment] {
         var request = request
         request.timeoutInterval = 20
         let data: Data
-        if let url = request.url, url.isFileURL {
+        if let authorization {
+            guard let url = request.url else { throw URLError(.badURL) }
+            data = try await authorization.data(from: url, maximumBytes: 48 * 1_024 * 1_024)
+        } else if let url = request.url, url.isFileURL {
             data = try Data(contentsOf: url)
         } else {
             let (body, response) = try await URLSession.shared.data(for: request)

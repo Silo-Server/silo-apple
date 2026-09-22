@@ -211,7 +211,7 @@ final class ASSSubtitleRendererTests: XCTestCase {
         let engine = try AetherEngine()
         defer { engine.stop(finalTeardown: true) }
         let pending = PendingFonts()
-        let session = ASSSubtitleSession(engine: engine, fontLoader: { try await pending.load($0) })
+        let session = ASSSubtitleSession(engine: engine, fontLoader: { request, _ in try await pending.load(request) })
         session.finishLoad()
         let first = engine.addExternalSubtitleTrack(ExternalSubtitleTrack(url: URL(fileURLWithPath: "/missing-a.ass")))
         let second = engine.addExternalSubtitleTrack(ExternalSubtitleTrack(url: URL(fileURLWithPath: "/missing-b.ass")))

@@ -73,9 +73,10 @@ enum AetherAuthenticationRecoveryPolicy {
     static func shouldReloadAfterProgress(
         _ result: PlaybackProgressReportResult,
         activeHeaders: [String: String],
-        currentHeaders: [String: String]
+        currentHeaders: [String: String],
+        hasRequestAuthorization: Bool = false
     ) -> Bool {
-        result == .success && shouldReload(
+        !hasRequestAuthorization && result == .success && shouldReload(
             failedHeaders: activeHeaders,
             refreshedHeaders: currentHeaders
         )
@@ -130,6 +131,10 @@ struct AetherLoadSpec {
     /// Font bundles keyed by the same app-facing IDs as subtitle picker rows.
     /// Requests carry only headers authorized for the bundle's origin.
     let subtitleFontRequests: [Int64: URLRequest]
+    /// Captured API-session authorization, reused by late subtitle selections
+    /// and font downloads without changing registered track identities.
+    let subtitleRequestAuthorization: HTTPRequestAuthorization?
+    private let subtitleAuthorizationOrigin: URL?
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
@@ -189,6 +194,8 @@ struct AetherLoadSpec {
             )
         }
         planID = "offline"
+        subtitleRequestAuthorization = nil
+        subtitleAuthorizationOrigin = nil
         sessionID = "offline"
         delivery = PlaybackProtocolV3.PlanDelivery.originalHTTP
         sourceURL = offlineURL
@@ -261,6 +268,8 @@ struct AetherLoadSpec {
             )
         }
         planID = "legacy-direct"
+        subtitleRequestAuthorization = nil
+        subtitleAuthorizationOrigin = nil
         sessionID = "legacy-direct"
         delivery = PlaybackProtocolV3.PlanDelivery.originalHTTP
         sourceURL = directURL
@@ -306,6 +315,8 @@ struct AetherLoadSpec {
         matchContentEnabled: Bool,
         sourceURLOverride: URL? = nil,
         requestHeaders: [String: String]? = nil,
+        requestAuthorization: HTTPRequestAuthorization? = nil,
+        subtitleRequestAuthorization: HTTPRequestAuthorization? = nil,
         resolveURL: ((String) -> URL?)? = nil,
         apiOriginURL: URL? = nil,
         audioSourceStreamIndex: Int32? = nil,
@@ -390,6 +401,7 @@ struct AetherLoadSpec {
                     resourceURL: artifactURL,
                     trustedOriginURLs: [sourceURL, apiOriginURL].compactMap { $0 }
                 ),
+                httpRequestAuthorization: subtitleRequestAuthorization,
                 formatHint: artifact.format,
                 nativeTimelineOffsetSeconds: plan.timeline.timelineOffsetSeconds
             ))
@@ -402,6 +414,8 @@ struct AetherLoadSpec {
         }
 
         self.planID = plan.planId
+        self.subtitleRequestAuthorization = subtitleRequestAuthorization
+        subtitleAuthorizationOrigin = apiOriginURL ?? sourceURL
         self.sessionID = sessionID
         self.delivery = plan.delivery
         self.sourceURL = sourceURL
@@ -445,6 +459,8 @@ struct AetherLoadSpec {
         ].contains(plan.delivery)
         options = LoadOptions(
             httpHeaders: effectiveHeaders,
+            httpRequestAuthorization: isServerHLS && plan.effectiveRecipe.videoCodec != nil
+                ? requestAuthorization : nil,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
@@ -476,6 +492,22 @@ struct AetherLoadSpec {
                 .standardizedFileURL
         }
         return URL(string: value, relativeTo: mediaURL)?.absoluteURL
+    }
+
+    /// Choose per resource: an unrelated sidecar or font server keeps its
+    /// unauthenticated path. API-origin URLs retain the strict provider even
+    /// for invalid paths/sessions, so denial cannot fall back to frozen headers.
+    func subtitleRequestAuthorization(for resourceURL: URL?) -> HTTPRequestAuthorization? {
+        guard let resourceURL, let subtitleAuthorizationOrigin,
+              StreamRequest.hasSameOrigin(resourceURL, subtitleAuthorizationOrigin) else { return nil }
+        return subtitleRequestAuthorization
+    }
+
+    func refreshableSubtitleHeaders(for resourceURL: URL) -> [String: String] {
+        Self.subtitleRequestHeaders(
+            options.httpHeaders, resourceURL: resourceURL,
+            trustedOriginURLs: [subtitleAuthorizationOrigin].compactMap { $0 }
+        )
     }
 
     static func subtitleRequestHeaders(
