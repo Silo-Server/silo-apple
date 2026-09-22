@@ -814,7 +814,13 @@ private struct WatchPartyEpisodePicker: View {
                     .padding(.bottom, 24)
                 }
                 Group {
-                    if isLoading && episodes.isEmpty {
+                    if isLoading && episodes.isEmpty && seasons.isEmpty {
+                        // Nothing else on the page can hold focus until the
+                        // seasons arrive; without an owner Menu cannot leave.
+                        ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
+                            .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
+                                              accessibilityLabel: "Loading episodes", onMoveUp: nil)
+                    } else if isLoading && episodes.isEmpty {
                         ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
                     } else if episodes.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
