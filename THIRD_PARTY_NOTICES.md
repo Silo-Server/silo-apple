@@ -52,9 +52,9 @@ the GNU GPL version 3 text incorporated by LGPLv3.
 The exception permits Apple App Store and TestFlight distribution despite
 store signing, DRM, and relinking restrictions. It does not waive source-code
 obligations: the exact-revision link above must stay current for each release,
-and any downstream modifications must be published under the LGPL. The fork
-branch above is that publication; keep it public for as long as builds that
-link this revision are distributed.
+and any downstream modifications must be published under the LGPL. The exact
+source revision linked above is that publication; keep it public for as long
+as builds that link this revision are distributed.
 
 ## FFmpegBuild and its component libraries
 

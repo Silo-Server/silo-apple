@@ -124,7 +124,7 @@ actor HTTPClient {
     /// flight registry; neither path may submit the same credential while the
     /// other owns its rotation.
     private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
-    private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: Date)?
+    private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
 
     private struct RefreshFlight {
@@ -2052,7 +2052,7 @@ actor HTTPClient {
         }?.value
         let challengedCurrentToken = rejectedBearer == "Bearer \(token)"
         let expired = MediaAccessTokenExpiry.isExpired(token, now: now)
-        let backingOff = (mediaRefreshBackoff.map { $0.auth == current && now < $0.until } ?? false)
+        let backingOff = (mediaRefreshBackoff.map { $0.auth == current && ContinuousClock.now < $0.until } ?? false)
             && !expired
         let proactiveRefresh = rejectedHeaders == nil
             && MediaAccessTokenExpiry.shouldRefresh(token, now: now)
@@ -2068,7 +2068,7 @@ actor HTTPClient {
                 throw HTTPError.http(statusCode: 401, body: nil)
             }
         } else if proactiveRefresh {
-            startProactiveMediaRefresh(expected: current, revision: revision, now: now)
+            startProactiveMediaRefresh(expected: current, revision: revision)
         }
         try Task.checkCancellation()
         guard let latest = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: current),
@@ -2088,7 +2088,7 @@ actor HTTPClient {
     /// Still-valid media must never wait for the refresh endpoint. The shared
     /// flight continues in the background; a later 401/expired request joins it.
     private func startProactiveMediaRefresh(
-        expected: CapturedOrdinaryRequestAuth, revision: UInt64, now: Date
+        expected: CapturedOrdinaryRequestAuth, revision: UInt64
     ) {
         guard proactiveMediaRefreshes[expected.account] == nil,
               !isRequestDispatchBlocked, requestDispatchRevision == revision else { return }
@@ -2100,7 +2100,7 @@ actor HTTPClient {
             if refreshed == nil, !Task.isCancelled, requestDispatchRevision == revision {
                 // Only the failed credential backs off. A rotated credential
                 // or a different account/profile cannot inherit this delay.
-                mediaRefreshBackoff = (expected, now.addingTimeInterval(10))
+                mediaRefreshBackoff = (expected, ContinuousClock.now.advanced(by: .seconds(10)))
             }
         }
         proactiveMediaRefreshes[expected.account] = (id, task)
