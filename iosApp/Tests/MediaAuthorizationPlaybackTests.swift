@@ -41,8 +41,9 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         let url = try await origin.start()
         defer { origin.stop() }
         let auth = try await authorizationHarness(sourceURL: url)
-        let engine = try AetherEngine()
-        defer { engine.stop() }
+        let controller = try AetherPlaybackController()
+        let engine = controller.engine
+        defer { controller.stop() }
         var options = LoadOptions()
         options.nativeRemoteHLS = true
         options.httpHeaders = ["Authorization": RotatingMediaOrigin.initialAuthorization]
@@ -55,11 +56,20 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             http: auth.http
         )
         options.autoplay = false
+        options.preserveASSMarkup = true
+        let subtitleAuthorization = try PlaybackMediaAuthorization.makeSubtitleAuthorization(
+            serverURL: auth.serverURL, sessionID: RotatingMediaOrigin.sessionID,
+            expectedAuth: auth.owner, baseHeaders: options.httpHeaders, http: auth.http
+        )
+        let subtitleURL = try XCTUnwrap(URL(string: auth.serverURL + RotatingMediaOrigin.subtitlePath))
+        let spec = try playbackSpec(sourceURL: url, auth: auth, options: options,
+                                    subtitleAuthorization: subtitleAuthorization)
+        let epoch = controller.beginLoad(spec, shouldPlayWhenReady: false)
 
         var loadCompleted = false
         var loadError: Error?
         let load = Task {
-            do { try await engine.load(url: url, options: options) }
+            do { try await controller.finishLoad(epoch) }
             catch { loadError = error }
             loadCompleted = true
         }
@@ -70,12 +80,20 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         if let loadError { throw loadError }
         let player = try XCTUnwrap(engine.currentAVPlayer)
         let item = try XCTUnwrap(player.currentItem)
+        let subtitleID = try XCTUnwrap(engine.subtitleTracks.first(where: \.isExternal)?.id)
+        let originalTrackIDs = engine.subtitleTracks.map(\.id)
+        let subtitles = controller.assSubtitles
+        let fontRequest = try XCTUnwrap(spec.subtitleFontRequests.values.first)
         // The native HLS load returns before AVFoundation has decoded its
         // initial buffer. Starting at rate 1 with waiting disabled before
         // readiness can immediately exhaust an empty buffer on a cold boot.
         guard await waitUntil(timeout: 10, { item.status == .readyToPlay }) else {
             return XCTFail("Synthetic HLS item never became ready. \(diagnostics(player, origin: origin))")
         }
+        engine.selectSubtitleTrack(index: subtitleID)
+        let initialCues = await waitUntil(timeout: 5) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
+        XCTAssertTrue(initialCues, "The initial ASS selection must succeed before rotation")
+        engine.clearSubtitle()
         // This is a media-authorization test, independent of audio rendering.
         // The simulator's CoreAudio device can block startup and extrapolate
         // its clock past the gated buffer before any later bytes arrive.
@@ -164,6 +182,78 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
             XCTAssertEqual(after.rejectedRequests, 0)
             XCTAssertGreaterThan(after.acceptedLaterSegments, 0)
         }
+
+        engine.selectSubtitleTrack(index: subtitleID)
+        let hasCues = await waitUntil(timeout: 5) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
+        XCTAssertTrue(hasCues, "A registered ASS track must download with the current bearer after rotation. \(origin.snapshot().description)")
+        await subtitles.render(size: CGSize(width: 320, height: 180), scale: 1, delaySeconds: 0)
+        let fontsFinished = await waitUntil(timeout: 5) { !subtitles.isLoadingFonts }
+        XCTAssertTrue(fontsFinished)
+        XCTAssertNil(subtitles.failureMessage)
+        XCTAssertTrue(origin.snapshot().requests.contains { $0.path == RotatingMediaOrigin.fontPath && $0.status == 200 })
+        XCTAssertEqual(engine.subtitleTracks.map(\.id), originalTrackIDs)
+        XCTAssertTrue(engine.currentAVPlayer === player && player.currentItem === item)
+
+        let lateURL = subtitleURL.deletingLastPathComponent().appendingPathComponent("2.ass")
+        let lateAppID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(
+            url: lateURL, httpHeaders: spec.refreshableSubtitleHeaders(for: lateURL),
+            httpRequestAuthorization: spec.subtitleRequestAuthorization(for: lateURL), formatHint: "ass"
+        ), appTrackID: lateAppID, fontRequest: fontRequest)
+        controller.selectSecondarySubtitleTrack(id: lateAppID)
+        let secondaryCues = await waitUntil(timeout: 5) { !engine.secondarySubtitleCues.isEmpty }
+        XCTAssertTrue(secondaryCues, "A subtitle registered after rotation must use the current bearer")
+        XCTAssertEqual(Array(engine.subtitleTracks.map(\.id).prefix(originalTrackIDs.count)), originalTrackIDs)
+        XCTAssertTrue(engine.currentAVPlayer === player && player.currentItem === item)
+
+        // The provider retains this playback's owner; changing profile cannot
+        // authorize its old subtitle/font URLs under the replacement identity.
+        let resourceRequests = origin.snapshot().requests.filter { $0.path.contains("/subtitles/") }.count
+        await auth.store.setProfileId("replacement-profile")
+        do {
+            _ = try await ASSSubtitleSession.loadFonts(fontRequest, authorization: subtitleAuthorization)
+            XCTFail("An old playback's font request must fail after a profile change")
+        } catch {}
+        XCTAssertEqual(origin.snapshot().requests.filter { $0.path.contains("/subtitles/") }.count, resourceRequests)
+    }
+
+    /// Build the real immutable load boundary so this regression exercises
+    /// controller registration of declared sidecars and their font requests.
+    private func playbackSpec(
+        sourceURL: URL, auth: AuthorizationHarness, options: LoadOptions,
+        subtitleAuthorization: HTTPRequestAuthorization
+    ) throws -> AetherLoadSpec {
+        let fixture = try PlaybackV3FixtureTestSupport.fixtureURL(named: "decision_response", bundleClass: Self.self)
+        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        var plan = try XCTUnwrap(response["playback_plan"] as? [String: Any])
+        plan["session_id"] = RotatingMediaOrigin.sessionID
+        plan["delivery"] = PlaybackProtocolV3.PlanDelivery.remuxHLS
+        plan["stream"] = ["url": sourceURL.absoluteString, "protocol": "hls", "container": "mpegts",
+                          "mime_type": "application/vnd.apple.mpegurl", "headers": [:], "header_refresh": "none"] as [String: Any]
+        var timeline = try XCTUnwrap(plan["timeline"] as? [String: Any])
+        timeline["source_start_seconds"] = 0
+        timeline["player_start_seconds"] = 0
+        plan["timeline"] = timeline
+        plan["selected_tracks"] = ["subtitle": ["id": "file:42:subtitle:1", "index": 1]]
+        let subtitlePath = "/stream/\(RotatingMediaOrigin.sessionID)/subtitles/1.ass"
+        let fontPath = "/stream/\(RotatingMediaOrigin.sessionID)/subtitles/1/fonts"
+        plan["subtitle"] = [
+            "mode": "render", "track_id": "file:42:subtitle:1",
+            "artifact": ["url": subtitlePath, "mime_type": "text/x-ass", "format": "ass", "timing_origin_seconds": 0],
+            "inventory": [["track_id": "file:42:subtitle:1", "combined_index": 1, "source": "embedded",
+                           "codec": "ass", "language": "eng", "forced": false, "default": false,
+                           "hearing_impaired": false, "delivery": "sidecar", "url": subtitlePath,
+                           "font_bundle_url": fontPath]],
+        ] as [String: Any]
+        let decoded = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3Plan.self, from: JSONSerialization.data(withJSONObject: plan))
+        return try AetherLoadSpec(
+            validating: decoded, sessionID: RotatingMediaOrigin.sessionID, matchContentEnabled: false,
+            sourceURLOverride: sourceURL, requestHeaders: options.httpHeaders,
+            requestAuthorization: options.httpRequestAuthorization, subtitleRequestAuthorization: subtitleAuthorization,
+            resolveURL: { URL(string: auth.serverURL + "/api/v1" + $0) },
+            apiOriginURL: URL(string: auth.serverURL), panelIsInHDRMode: false
+        )
     }
 
     private func authorizationHarness(sourceURL: URL) async throws -> AuthorizationHarness {

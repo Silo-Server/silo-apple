@@ -231,7 +231,7 @@ struct StreamRequest {
     /// header-authenticated mode — and duplicates are rejected too — so an old
     /// or compromised server cannot smuggle a signed media credential into
     /// Aether's source URL. Media (non-subtitle) routes keep the seek-only rule.
-    private static func hasAllowedHeaderAuthenticatedMediaQuery(
+    static func hasAllowedHeaderAuthenticatedMediaQuery(
         path: String,
         items: [URLQueryItem]
     ) -> Bool {

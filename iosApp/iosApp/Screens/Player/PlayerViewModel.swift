@@ -2855,6 +2855,7 @@ class PlayerViewModel {
                 audioSourceStreamIndex = nil
             }
             let requestAuthorization: HTTPRequestAuthorization?
+            let subtitleRequestAuthorization: HTTPRequestAuthorization?
             if v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature),
                [PlaybackProtocolV3.PlanDelivery.remuxHLS,
                 PlaybackProtocolV3.PlanDelivery.transcodeHLS].contains(v3.plan.delivery),
@@ -2870,8 +2871,16 @@ class PlayerViewModel {
                     baseHeaders: streamRequest.headers,
                     http: SiloAPI.shared.http
                 )
+                subtitleRequestAuthorization = try PlaybackMediaAuthorization.makeSubtitleAuthorization(
+                    serverURL: streamRequest.serverUrl,
+                    sessionID: prepared.session.sessionId,
+                    expectedAuth: owner,
+                    baseHeaders: streamRequest.headers,
+                    http: SiloAPI.shared.http
+                )
             } else {
                 requestAuthorization = nil
+                subtitleRequestAuthorization = nil
             }
             spec = try AetherLoadSpec(
                 validating: v3.plan,
@@ -2880,6 +2889,7 @@ class PlayerViewModel {
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
                 requestAuthorization: requestAuthorization,
+                subtitleRequestAuthorization: subtitleRequestAuthorization,
                 // Subtitle artifacts, inventory sidecars and font bundles stay
                 // relative API-origin routes even when the media itself moved
                 // to a proxy, so this resolver never accepts absolute URLs.
@@ -5936,6 +5946,7 @@ class PlayerViewModel {
                 isHearingImpaired: descriptor.isHearingImpaired ?? false,
                 isDefault: descriptor.isDefault ?? false,
                 httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
+                httpRequestAuthorization: aetherPlaybackController.activeSpec?.subtitleRequestAuthorization(for: descriptor.url),
                 formatHint: descriptor.codec,
                 nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
             ),
@@ -6754,6 +6765,7 @@ class PlayerViewModel {
                     isHearingImpaired: known.hearingImpaired ?? false,
                     isDefault: known.default ?? false,
                     httpHeaders: aetherSubtitleRequestHeaders(for: url),
+                    httpRequestAuthorization: aetherPlaybackController.activeSpec?.subtitleRequestAuthorization(for: url),
                     formatHint: known.codec,
                     nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
                 ),
@@ -6843,6 +6855,7 @@ class PlayerViewModel {
                     isHearingImpaired: descriptor.isHearingImpaired ?? false,
                     isDefault: descriptor.isDefault ?? false,
                     httpHeaders: aetherSubtitleRequestHeaders(for: descriptor.url),
+                    httpRequestAuthorization: aetherPlaybackController.activeSpec?.subtitleRequestAuthorization(for: descriptor.url),
                     formatHint: descriptor.codec,
                     nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0
                 ),
@@ -6863,6 +6876,9 @@ class PlayerViewModel {
     /// sidecar URL.
     private func aetherSubtitleRequestHeaders(for resourceURL: URL) -> [String: String] {
         guard let spec = aetherPlaybackController.activeSpec else { return [:] }
+        if spec.subtitleRequestAuthorization != nil {
+            return spec.refreshableSubtitleHeaders(for: resourceURL)
+        }
         let serverOrigin = URL(string: resolvedServerUrl)
         return AetherLoadSpec.subtitleRequestHeaders(
             spec.options.httpHeaders,
@@ -7043,6 +7059,7 @@ class PlayerViewModel {
                 isHearingImpaired: track.isHearingImpaired,
                 isDefault: track.isDefault,
                 httpHeaders: aetherSubtitleRequestHeaders(for: url),
+                httpRequestAuthorization: aetherPlaybackController.activeSpec?.subtitleRequestAuthorization(for: url),
                 formatHint: ["vtt", "ass", "ssa", "srt", "sup"].contains(url.pathExtension.lowercased())
                     ? url.pathExtension.lowercased() : track.codec,
                 nativeTimelineOffsetSeconds: aetherPlaybackController.activeSpec?.timeline.timelineOffsetSeconds ?? 0

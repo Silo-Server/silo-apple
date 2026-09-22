@@ -15,7 +15,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.1.0 + Silo subtitle and HLS authorization patches | `8746e6f85dde8b2622e16cd4c7edad81b4d994fc` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 7.1.0 + Silo subtitle and HLS authorization patches | `29ca39cb67ca9917e4f417519196385cd5259da3` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.3.0 | `4e58942403d37cceff3a3212e3e026f4205146a2` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
@@ -33,16 +33,16 @@ Copyright (C) 2026 Vincent Herbst.
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
 `7.1.0` plus Silo patches for complete native subtitle renditions, source
-timing after a media reanchor, ASS subtitle routing, and refreshable native HLS
-authorization. Raw ASS events stay
-on the primary local overlay; secondary
-subtitles and software PiP receive normalized text, and packaged HLS retains
+timing after a media reanchor, ASS subtitle routing, and refreshable authorization
+for native HLS, sidecar subtitles and font bundles. Raw ASS events stay on the
+primary local overlay; secondary subtitles and software PiP receive normalized
+text, and packaged HLS retains
 its native text rendition for PiP and AirPlay. These modifications are
 published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/8746e6f85dde8b2622e16cd4c7edad81b4d994fc>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/29ca39cb67ca9917e4f417519196385cd5259da3>
   (engine pull request: <https://github.com/Silo-Server/AetherEngine/pull/2>)
 - Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/7.1.0>
 - Rebuild input: `Package.swift` and the source tree at that revision

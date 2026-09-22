@@ -3,6 +3,37 @@ import XCTest
 @testable import Silo
 
 final class PlaybackMediaAuthorizationTests: XCTestCase {
+    func testSubtitleScopeKeepsArtifactsAndFontsOnTheOriginalAPISession() throws {
+        let scope = try PlaybackMediaAuthorization.SubtitleScope(
+            serverURL: "https://api.example/silo", sessionID: "session-one"
+        )
+        for resource in [
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass",
+            "https://api.example:443/silo/api/v1/stream/session-one/subtitles/2/fonts?file_id=42&embedded_stream_index=3",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.srt?downloaded_subtitle_id=8",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.vtt?external_subtitle_key=" + String(repeating: "a1", count: 32),
+        ] {
+            XCTAssertTrue(scope.allows(url(resource)), resource)
+        }
+        for resource in [
+            "https://api.example/silo/api/v1/stream/session-two/subtitles/2.ass",
+            "https://proxy.example/silo/api/v1/stream/session-one/subtitles/2.ass",
+            "http://api.example/silo/api/v1/stream/session-one/subtitles/2.ass",
+            "https://api.example/api/v1/stream/session-one/subtitles/2.ass",
+            "https://api.example/silo/api/v1/stream/session-one",
+            "https://api.example/silo/api/v1/auth/refresh",
+            "https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2/fonts/extra",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/%252e%252e",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass?token=secret",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass?file_id=1&file_id=2",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass?embedded_stream_index=1&downloaded_subtitle_id=2",
+            "https://api.example/silo/api/v1/stream/session-one/subtitles/2.ass#fragment",
+        ] {
+            XCTAssertFalse(scope.allows(url(resource)), resource)
+        }
+    }
+
     func testAPIMasterAuthorizesOnlyItsOwnSessionMedia() throws {
         let scope = try PlaybackMediaAuthorization.Scope(
             sourceURL: url("https://api.example/silo/api/v1/playback/transcode/session-one/master.m3u8"),

@@ -11,6 +11,8 @@ final class RotatingMediaOrigin: @unchecked Sendable {
     static let rotatedAuthorization = "Bearer \(rotatedAccessToken)"
     static let sessionID = "test-session"
     static let mediaPath = "/api/v1/playback/transcode/\(sessionID)"
+    static let subtitlePath = "/api/v1/stream/\(sessionID)/subtitles/1.ass"
+    static let fontPath = "/api/v1/stream/\(sessionID)/subtitles/1/fonts"
     static let firstGatedSegment = 6
 
     struct Request: Sendable {
@@ -47,6 +49,8 @@ final class RotatingMediaOrigin: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "SiloTests.RotatingMediaOrigin")
     private let segments: [Data]
+    private let subtitle: Data
+    private let fonts: Data
     private let listener: NWListener
     private var connections: [NWConnection] = []
     private var pending: [PendingRequest] = []
@@ -56,6 +60,14 @@ final class RotatingMediaOrigin: @unchecked Sendable {
     private var startContinuation: CheckedContinuation<URL, Error>?
 
     init(bundle: Bundle) throws {
+        guard let subtitleURL = bundle.url(forResource: "authored", withExtension: "ass"),
+              let fontURL = bundle.url(forResource: "SiloASSFixture", withExtension: "ttf") else {
+            throw NSError(domain: "RotatingMediaOrigin", code: 3)
+        }
+        subtitle = try Data(contentsOf: subtitleURL)
+        fonts = try JSONSerialization.data(withJSONObject: [[
+            "name": "fixture.ttf", "data": try Data(contentsOf: fontURL).base64EncodedString()
+        ]])
         segments = try (0...1).map { index in
             guard let url = bundle.url(forResource: "v3_hls_0\(index)", withExtension: "ts") else {
                 throw NSError(domain: "RotatingMediaOrigin", code: 1, userInfo: [
@@ -185,6 +197,14 @@ final class RotatingMediaOrigin: @unchecked Sendable {
             status = 200
             body = Self.playlist
             contentType = "application/vnd.apple.mpegurl"
+        } else if request.path == Self.subtitlePath || request.path == Self.subtitlePath.replacingOccurrences(of: "1.ass", with: "2.ass") {
+            status = 200
+            body = subtitle
+            contentType = "text/plain"
+        } else if request.path == Self.fontPath {
+            status = 200
+            body = fonts
+            contentType = "application/json"
         } else if let segment = request.segment, (0..<24).contains(segment) {
             status = 200
             body = segments[segment % 2]

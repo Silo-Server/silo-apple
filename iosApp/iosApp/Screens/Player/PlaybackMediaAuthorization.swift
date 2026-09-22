@@ -65,7 +65,7 @@ enum PlaybackMediaAuthorization {
             return true
         }
 
-        private static func checkedComponents(_ url: URL) -> URLComponents? {
+        fileprivate static func checkedComponents(_ url: URL) -> URLComponents? {
             guard let components = URLComponents(url: url, resolvingAgainstBaseURL: true),
                   let scheme = components.scheme?.lowercased(),
                   scheme == "https" || scheme == "http",
@@ -77,7 +77,7 @@ enum PlaybackMediaAuthorization {
             return components
         }
 
-        private static func pathComponents(_ path: String, allowsTrailingSlash: Bool = false) -> [String]? {
+        fileprivate static func pathComponents(_ path: String, allowsTrailingSlash: Bool = false) -> [String]? {
             if path.isEmpty { return [] }
             guard path.hasPrefix("/") else { return nil }
             let lowercased = path.lowercased()
@@ -96,7 +96,7 @@ enum PlaybackMediaAuthorization {
             return decoded
         }
 
-        private static func isSafeComponent(_ value: String) -> Bool {
+        fileprivate static func isSafeComponent(_ value: String) -> Bool {
             guard !value.isEmpty, value != ".", value != ".." else { return false }
             return value.utf8.allSatisfy { byte in
                 (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
@@ -115,7 +115,58 @@ enum PlaybackMediaAuthorization {
         }
     }
 
+    /// Subtitle artifacts and fonts remain on the API server even when the
+    /// media comes from a proxy. They never inherit the proxy's authority.
+    struct SubtitleScope: Sendable {
+        private let server: URL
+        private let prefix: [String]
+        private let sessionID: String
+
+        init(serverURL: String, sessionID: String) throws {
+            guard Scope.isSafeComponent(sessionID),
+                  let server = URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let components = Scope.checkedComponents(server), components.query == nil,
+                  let base = Scope.pathComponents(components.percentEncodedPath, allowsTrailingSlash: true) else {
+                throw ValidationError.invalidSourceURL
+            }
+            self.server = server
+            self.sessionID = sessionID
+            prefix = base + ["api", "v1", "stream", sessionID, "subtitles"]
+        }
+
+        func allows(_ url: URL) -> Bool {
+            guard StreamRequest.hasSameOrigin(url, server),
+                  let components = Scope.checkedComponents(url),
+                  let path = Scope.pathComponents(components.percentEncodedPath),
+                  Array(path.prefix(prefix.count)) == prefix else { return false }
+            let tail = path.dropFirst(prefix.count)
+            guard tail.count == 1 || (tail.count == 2 && tail.last == "fonts") else { return false }
+            return StreamRequest.hasAllowedHeaderAuthenticatedMediaQuery(
+                path: "/stream/\(sessionID)/subtitles/" + tail.joined(separator: "/"),
+                items: components.queryItems ?? []
+            )
+        }
+    }
+
     #if canImport(AetherEngine)
+    static func makeSubtitleAuthorization(
+        serverURL: String, sessionID: String,
+        expectedAuth: CapturedOrdinaryRequestAuth,
+        baseHeaders: [String: String], http: HTTPClient
+    ) throws -> HTTPRequestAuthorization {
+        guard ServerRegistry.normalize(url: expectedAuth.account.serverURL)
+                == ServerRegistry.normalize(url: serverURL) else {
+            throw ValidationError.credentialOwnerMismatch
+        }
+        let scope = try SubtitleScope(serverURL: serverURL, sessionID: sessionID)
+        return HTTPRequestAuthorization { url, rejectedHeaders in
+            guard scope.allows(url) else { throw ValidationError.outsideSessionScope }
+            return try await http.mediaRequestHeaders(
+                expectedAuth: expectedAuth, baseHeaders: baseHeaders, rejectedHeaders: rejectedHeaders
+            )
+        }
+    }
+
     static func make(
         sourceURL: URL,
         serverURL: String,
