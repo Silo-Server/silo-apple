@@ -262,15 +262,9 @@ struct WatchPartyMediaPicker: View {
                     onTopMenuFocusRequest: { chromeFocus = .search },
                     onItemTap: { _, item in openSection(item) }
                 )
-                .background(GeometryReader { proxy in
-                    Color.clear.onAppear { NSLog("WPSAFE picker.feed insets=\(proxy.safeAreaInsets) size=\(proxy.size)") }
-                })
             }
             tvChrome
         }
-        .background(GeometryReader { proxy in
-            Color.clear.onAppear { NSLog("WPSAFE picker.zstack insets=\(proxy.safeAreaInsets) size=\(proxy.size)") }
-        })
         // Mirror the tab shell: it ignores the safe area on both the outer
         // stack and the root inside the navigation stack, so Skyline rows see
         // no horizontal inset. With an inset the row's rest offset includes it
@@ -996,7 +990,7 @@ private struct WatchPartyMediaChoiceView: View {
                         Label(actionTitle, systemImage: purpose == .suggest ? "plus" : "checkmark")
                     }
                     .buttonStyle(WatchPartyButtonStyle(kind: .primary))
-                    .disabled(session.isBusy || !session.isEngaged)
+                    .disabled(session.locksControls || !session.isEngaged)
                     .accessibilityIdentifier("watchParty.confirmSelection")
                     #if os(tvOS)
                     .focused($confirmFocused)

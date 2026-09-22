@@ -28,8 +28,10 @@ final class WatchPartySession {
     var room: WatchPartyRoom? { state.room }
     var isEngaged: Bool { room != nil && !state.terminal }
     var voteWinner: WatchPartySuggestion? { WatchPartyLobbyPolicy.voteWinner(votes.rows) }
+    /// Independent of `isBusy` so the lobby's button layout does not change
+    /// while an unrelated request runs; `mutate` still refuses a second call.
     var canStartPlayback: Bool {
-        guard !isBusy, room?.selfCanManageRoom == true, room?.phase == .lobby else { return false }
+        guard room?.selfCanManageRoom == true, room?.phase == .lobby else { return false }
         if room?.selectionMode == .vote { return voteWinner != nil }
         return capabilities?.stagedSelection == true && !(room?.selectedContentId?.isEmpty ?? true)
     }
@@ -71,6 +73,9 @@ final class WatchPartySession {
     @ObservationIgnored private var bufferBegan: Date?
     @ObservationIgnored private var reportedBuffering = false
     @ObservationIgnored private var serverOffset: TimeInterval = 0
+    /// Local receipt time of the current room snapshot. Its anchor position is
+    /// already projected to the server's build time, so only this age remains.
+    @ObservationIgnored private var roomReceivedAt: Date = .distantPast
     @ObservationIgnored private var lastCommandCompleted: Date = .distantPast
     @ObservationIgnored private var mutationSequence: UInt64 = 0
 
@@ -247,6 +252,14 @@ final class WatchPartySession {
         isBusy = false
     }
 
+    /// Leave the room without crossing an identity boundary. Support was read
+    /// for this same identity, so the Watch Party entry points stay offered.
+    func leaveRoom() {
+        let support = (capabilities, supportsPlayback, supportsFallback)
+        leave()
+        (capabilities, supportsPlayback, supportsFallback) = support
+    }
+
     private func clearRecentRoom() {
         recentPersistenceTask?.cancel()
         recentPersistenceTask = nil
@@ -400,12 +413,20 @@ final class WatchPartySession {
                     }
                 } catch {
                     guard owner == self.engagement, socketID == self.connectionID, !Task.isCancelled else { return }
+                    // The room read and ticket refuse an ended room with 409.
+                    // Only members with a live socket receive room_closed.
+                    if Self.isConflict(error) {
+                        self.terminate("This party has ended.", canRejoin: false)
+                        return
+                    }
                     if self.isTerminalError(error) {
                         self.terminate("The party connection expired or is no longer available. Join again to continue.")
                         return
                     }
                 }
                 socket.close()
+                // leave() and terminate() finish the stream without an error.
+                guard owner == self.engagement, socketID == self.connectionID, !Task.isCancelled else { return }
                 self.reportTask?.cancel()
                 self.commandTask?.cancel()
                 self.attachmentConfirmed = false
@@ -470,6 +491,7 @@ final class WatchPartySession {
     private func accept(_ incoming: WatchPartyRoom, requestReceipt: UInt64? = nil) {
         let old = room
         guard state.accept(incoming, requestReceipt: requestReceipt) else { return }
+        roomReceivedAt = Date()
         trace("snapshot phase=\(incoming.phase.wireValue) state=\(incoming.playbackState.wireValue) revision=\(incoming.selectionRevision)")
         if incoming.phase == .ended { terminate("This party has ended.", canRejoin: false); return }
         if let auth {
@@ -492,7 +514,7 @@ final class WatchPartySession {
             reportedBuffering = false
             adapter?.stop()
             adapter = nil
-            playbackContext = Self.playbackContext(for: incoming, serverNow: Date().addingTimeInterval(serverOffset))
+            playbackContext = Self.playbackContext(for: incoming)
         }
         if let adapter {
             adapter.canPlayPause = incoming.selfCanControlTransport
@@ -503,11 +525,14 @@ final class WatchPartySession {
         }
     }
 
-    static func playbackContext(for room: WatchPartyRoom, serverNow: Date) -> WatchPartyPlaybackContext? {
+    /// Snapshots report the anchor already projected to when the server built
+    /// them; `anchorUpdatedAt` is the last re-anchor, so projecting from it
+    /// would count that playback twice. Only the snapshot's local age remains.
+    static func playbackContext(for room: WatchPartyRoom, elapsedSinceSnapshot: TimeInterval = 0) -> WatchPartyPlaybackContext? {
         guard room.phase == .playing, let contentId = room.selectedContentId,
               let file = room.selectedFileId.flatMap(Int.init), file > 0 else { return nil }
         let position = room.anchorPositionSeconds + (room.playbackState == .playing && !room.isPaused
-            ? max(0, serverNow.timeIntervalSince(room.anchorUpdatedAt)) : 0)
+            ? max(0, elapsedSinceSnapshot) : 0)
         return WatchPartyPlaybackContext(roomId: room.roomId, selectionRevision: room.selectionRevision,
             contentId: contentId, fileId: file, libraryId: room.selectedLibraryId.flatMap(Int.init), startPosition: position)
     }
@@ -539,8 +564,8 @@ final class WatchPartySession {
             self.issuedAttachSession = nil
             self.lastAttach = .distantPast
             if let room = self.room {
-                let position = Self.playbackContext(for: room, serverNow: Date().addingTimeInterval(self.serverOffset))?.startPosition
-                    ?? room.anchorPositionSeconds
+                let position = Self.playbackContext(for: room, elapsedSinceSnapshot: Date().timeIntervalSince(self.roomReceivedAt))?
+                    .startPosition ?? room.anchorPositionSeconds
                 adapter?.restoreIfNeeded(at: position)
             }
         }
@@ -550,7 +575,7 @@ final class WatchPartySession {
         }
         adapter.onLocalExit = { [weak self, weak adapter] in
             guard let self, self.adapter === adapter else { return }
-            self.leave()
+            self.leaveRoom()
         }
         adapter.onFailure = { [weak self, weak adapter] reason, message in
             guard let self, self.adapter === adapter else { return }

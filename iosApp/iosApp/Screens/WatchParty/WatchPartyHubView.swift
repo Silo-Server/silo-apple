@@ -124,6 +124,8 @@ private struct WatchPartyRoomSheets: ViewModifier {
                     #endif
                     }
                 }
+                // Choosing a title here must never start solo playback.
+                .environment(\.allowsDirectPlayback, false)
             }
             #if os(tvOS)
             .fullScreenCover(item: coverSheet, onDismiss: { router.watchPartySheetDidDismiss() }) { destination in
@@ -140,6 +142,7 @@ private struct WatchPartyRoomSheets: ViewModifier {
                 // this inside the stack instead leaves each row's scroll view
                 // with an automatic inset that shows the moment focus leaves it.
                 .ignoresSafeArea(edges: [.top, .horizontal])
+                .environment(\.allowsDirectPlayback, false)
             }
             #endif
             .onChange(of: session.playbackContext) { _, context in
@@ -252,7 +255,7 @@ private struct WatchPartyEntryView: View {
                         .lineLimit(1)
                 }
                 .buttonStyle(WatchPartyButtonStyle(kind: .outlined))
-                .disabled(session.isBusy || !canEnter)
+                .disabled(session.locksControls || !canEnter)
                 #if os(tvOS)
                 .focused($focused, equals: .rejoin)
                 #endif
@@ -287,7 +290,7 @@ private struct WatchPartyEntryView: View {
             .focused($focused, equals: .vote)
             #endif
         }
-        .disabled(session.isBusy || !canEnter)
+        .disabled(session.locksControls || !canEnter)
     }
 
     private var joinField: some View {
@@ -325,7 +328,7 @@ private struct WatchPartyEntryView: View {
             Text("Join party")
         }
         .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
-        .disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.isBusy || !canEnter)
+        .disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.locksControls || !canEnter)
         .accessibilityIdentifier("watchParty.join")
         #if os(tvOS)
         .focused($focused, equals: .join)
@@ -429,10 +432,13 @@ struct WatchPartyLobbyView: View {
                     thumbhash: session.selectedItem?.backdropUrl != nil ? session.selectedItem?.backdropThumbhash : session.selectedItem?.posterThumbhash,
                     isPoster: session.selectedItem?.backdropUrl == nil)
                 #if os(tvOS)
+                // The options overlay is the only focus owner while it is up;
+                // closing it returns focus to the Options button that opened it.
                 tvLobby(room)
+                    .disabled(showsHostControls)
                 if showsHostControls {
                     WatchPartyHostControlsOverlay(session: session, room: room, onEnd: { openSheet(.end) },
-                        dismiss: { showsHostControls = false })
+                        dismiss: { showsHostControls = false; focused = .more })
                         .transition(.opacity)
                         .zIndex(1)
                 }
@@ -577,7 +583,7 @@ struct WatchPartyLobbyView: View {
         case .chooseTitle:
             Button { openSheet(.select) } label: { Text(room.selectedContentId == nil ? "Choose a title" : "Change title") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .primary))
-                .disabled(session.isBusy)
+                .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.choose")
         case .start(let title):
             Button {
@@ -587,12 +593,12 @@ struct WatchPartyLobbyView: View {
                     .lineLimit(1)
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
-            .disabled(!session.canStartPlayback || session.isBusy || !isConnected)
+            .disabled(!session.canStartPlayback || session.locksControls || !isConnected)
             .accessibilityIdentifier("watchParty.start")
         case .waitingForVotes:
             Button { openSheet(.suggest) } label: { Label("Suggest a title", systemImage: "plus") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .primary))
-                .disabled(session.isBusy)
+                .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
         case .ready(let isReady):
             Button {
@@ -628,17 +634,17 @@ struct WatchPartyLobbyView: View {
            case .start = primaryAction {
             Button { openSheet(.select) } label: { Text("Change title") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
-                .disabled(session.isBusy)
+                .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.choose")
         } else if room.phase == .lobby, room.selectionMode == .vote, case .start = primaryAction {
             Button { openSheet(.suggest) } label: { Label("Suggest", systemImage: "plus") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
-                .disabled(session.isBusy)
+                .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
         } else if room.phase == .lobby, room.selectionMode == .vote, !room.selfCanManageRoom {
             Button { openSheet(.suggest) } label: { Label("Suggest a title", systemImage: "plus") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
-                .disabled(session.isBusy)
+                .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
         }
     }
@@ -748,7 +754,7 @@ struct WatchPartyLobbyView: View {
                     Label("End party for everyone", systemImage: "xmark.circle")
                 }
             }
-            Button(role: .destructive) { session.leave() } label: {
+            Button(role: .destructive) { session.leaveRoom() } label: {
                 Label("Leave party", systemImage: "rectangle.portrait.and.arrow.right")
             }
         } label: {
@@ -759,7 +765,7 @@ struct WatchPartyLobbyView: View {
                 .background(Circle().fill(Color.siloChromeRestingFill))
                 .overlay(Circle().stroke(Color.siloChromeRestingBorder, lineWidth: 1))
         }
-        .disabled(session.isBusy)
+        .disabled(session.locksControls)
         .accessibilityLabel("Party options")
         .accessibilityIdentifier("watchParty.options")
     }
@@ -894,7 +900,7 @@ struct WatchPartyBallot: View {
                         .foregroundStyle(Color.siloSecondaryText.opacity(0.5)))
             }
             .buttonStyle(.siloFlat)
-            .disabled(session.isBusy)
+            .disabled(session.locksControls)
             .accessibilityIdentifier("watchParty.suggest")
         }
         #endif
@@ -963,7 +969,7 @@ private struct WatchPartyCandidateRow: View {
                         .stroke(personalVote == true ? Color.clear : Color.siloOutline, lineWidth: 1))
             }
             .buttonStyle(.siloFlat)
-            .disabled(personalVote == nil || session.isBusy || session.connection != .connected)
+            .disabled(personalVote == nil || session.locksControls || session.connection != .connected)
             .accessibilityLabel(personalVote == nil ? "Loading your vote" : personalVote == true ? "Remove vote for \(suggestion.title)" : "Vote for \(suggestion.title)")
         }
         .padding(8)
@@ -1024,7 +1030,7 @@ private struct WatchPartyCandidateCard: View {
             }
             .buttonStyle(.siloFlat)
             .focused($isFocused)
-            .disabled(personalVote == nil || session.isBusy || session.connection != .connected)
+            .disabled(personalVote == nil || session.locksControls || session.connection != .connected)
             .accessibilityLabel(personalVote == nil ? "Loading your vote" : personalVote == true ? "Remove vote for \(suggestion.title)" : "Vote for \(suggestion.title)")
             .contextMenu {
                 if room.selfCanManageRoom, session.capabilities?.voteHostOverride == true || room.selectionMode == .hostPick {
@@ -1095,7 +1101,7 @@ private struct WatchPartyHostControlsOverlay: View {
                     }
                     row("End party for everyone", value: nil, id: .end, destructive: true) { dismiss(); onEnd() }
                 }
-                row("Leave party", value: nil, id: .leave, destructive: true) { dismiss(); session.leave() }
+                row("Leave party", value: nil, id: .leave, destructive: true) { dismiss(); session.leaveRoom() }
                 row("Close", value: nil, id: .close, action: dismiss)
             }
             .padding(48)
@@ -1107,10 +1113,12 @@ private struct WatchPartyHostControlsOverlay: View {
         }
         // Menu must close the overlay, not pop the route beneath it. Exit
         // commands climb the focused responder chain, so the overlay claims
-        // focus the moment it appears and handles Menu itself.
+        // focus the moment it appears and handles Menu itself. Rows stay
+        // enabled while a change is in flight: disabling the focused row
+        // would push focus out of the overlay. The session ignores a second
+        // mutation until the first one returns.
         .onExitCommand(perform: dismiss)
         .onAppear { focused = .close }
-        .disabled(session.isBusy)
     }
 
     private func row(_ title: String, value: String?, id: Row, destructive: Bool = false, action: @escaping () -> Void) -> some View {

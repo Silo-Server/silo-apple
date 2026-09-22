@@ -8037,7 +8037,9 @@ extension PlayerViewModel {
         aetherPlaybackController.requiresExplicitTransportResume = true
         aetherPlaybackController.permitsExternalPlayback = false
         #if os(iOS)
-        PictureInPictureCoordinator.shared.endSession(owner: self)
+        // The room takes over playback. A solo title left in Picture in
+        // Picture belongs to another view model, so end it whoever owns it.
+        PictureInPictureCoordinator.shared.endSessionForIdentityChange()
         #endif
         endHoldFastForward()
         introSkipPrompt.reset()

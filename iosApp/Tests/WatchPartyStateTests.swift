@@ -168,16 +168,29 @@ final class WatchPartyStateTests: XCTestCase {
     @MainActor
     func testPlaybackContextRequiresPlayingAndUsesRoomPositionForSoloHostRejoin() throws {
         let staged = room(revision: 8, phase: .lobby)
-        XCTAssertNil(WatchPartySession.playbackContext(for: staged, serverNow: now.addingTimeInterval(5)))
+        XCTAssertNil(WatchPartySession.playbackContext(for: staged, elapsedSinceSnapshot: 5))
         var playing = room(revision: 9)
-        let context = try XCTUnwrap(WatchPartySession.playbackContext(for: playing, serverNow: now.addingTimeInterval(5)))
+        let context = try XCTUnwrap(WatchPartySession.playbackContext(for: playing, elapsedSinceSnapshot: 5))
         XCTAssertEqual(context.startPosition, 105, accuracy: 0.001)
         XCTAssertEqual(context.fileId, 42)
         XCTAssertEqual(context.selectionRevision, 9)
         playing.isPaused = true
-        XCTAssertEqual(WatchPartySession.playbackContext(for: playing, serverNow: now.addingTimeInterval(5))?.startPosition, 100)
+        XCTAssertEqual(WatchPartySession.playbackContext(for: playing, elapsedSinceSnapshot: 5)?.startPosition, 100)
         playing.selectedFileId = nil
-        XCTAssertNil(WatchPartySession.playbackContext(for: playing, serverNow: now))
+        XCTAssertNil(WatchPartySession.playbackContext(for: playing))
+    }
+
+    @MainActor
+    func testSnapshotAnchorIsAlreadyProjectedToItsBuildTime() throws {
+        // The server sends expectedPosition(now) as anchor_position_seconds but
+        // keeps anchor_updated_at at the last re-anchor. A viewer joining 40
+        // minutes after that re-anchor starts at the reported position, not
+        // 40 minutes further on.
+        var playing = room()
+        playing.anchorPositionSeconds = 2_500
+        playing.anchorUpdatedAt = Date().addingTimeInterval(-40 * 60)
+        let context = try XCTUnwrap(WatchPartySession.playbackContext(for: playing))
+        XCTAssertEqual(context.startPosition, 2_500, accuracy: 0.001)
     }
 
     @MainActor
@@ -185,13 +198,13 @@ final class WatchPartyStateTests: XCTestCase {
         var state = WatchPartyRoomState()
         let first = room(generation: 2, revision: 1)
         XCTAssertTrue(state.accept(first))
-        let firstContext = try XCTUnwrap(WatchPartySession.playbackContext(for: first, serverNow: now))
+        let firstContext = try XCTUnwrap(WatchPartySession.playbackContext(for: first))
         let stopped = room(generation: 3, revision: 2, phase: .lobby)
         XCTAssertTrue(state.accept(stopped))
-        XCTAssertNil(WatchPartySession.playbackContext(for: stopped, serverNow: now))
+        XCTAssertNil(WatchPartySession.playbackContext(for: stopped))
         let restarted = room(generation: 4, revision: 3)
         XCTAssertTrue(state.accept(restarted))
-        let nextContext = try XCTUnwrap(WatchPartySession.playbackContext(for: restarted, serverNow: now))
+        let nextContext = try XCTUnwrap(WatchPartySession.playbackContext(for: restarted))
         XCTAssertEqual(firstContext.contentId, nextContext.contentId)
         XCTAssertNotEqual(firstContext, nextContext)
     }
@@ -394,6 +407,57 @@ final class WatchPartyStateTests: XCTestCase {
         XCTAssertEqual(handler.requests.filter { $0.method == "GET" && $0.path == path }.count, 2)
         session.leave()
         await socketGate.open()
+    }
+
+    @MainActor
+    func testReconnectEndsWhenTheRoomReadReportsTheRoomClosed() async throws {
+        // A member whose socket was down when the room ended never receives
+        // room_closed. The server refuses the reconnect's room read with 409.
+        let handler = StubURLProtocol.Handler()
+        let caps = sessionCapabilities
+        handler.route(StubURLProtocol.pathSuffix("/capabilities")) { _ in .json(caps) }
+        var lobby = room(phase: .lobby)
+        lobby.selectedContentId = nil
+        lobby.selectedFileId = nil
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        let receipt = String(decoding: try encoder.encode(WatchPartyRoomResponse(room: lobby, roomAccessToken: "room-proof")), as: UTF8.self)
+        handler.route(StubURLProtocol.path("/api/v2/watch-together/join")) { _ in .json(receipt) }
+        let roomPath = "/api/v2/watch-together/rooms/room-one"
+        handler.route(StubURLProtocol.method("GET", path: roomPath)) { _ in
+            .json(#"{"type":"https://silo.example/problems/conflict","title":"Conflict","status":409,"detail":"The room is closed."}"#,
+                  status: 409, headers: ["Content-Type": "application/problem+json"])
+        }
+        let session = try await sessionClient(urlSession: handler.makeSession())
+        defer { session.leave() }
+        let entered = await session.join(code: "PARTY")
+        XCTAssertTrue(entered)
+        for _ in 0..<250 where session.connection != .ended {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(session.connection, .ended)
+        XCTAssertFalse(session.isEngaged)
+        XCTAssertEqual(session.errorMessage, "This party has ended.")
+        XCTAssertNil(session.recentRoom, "An ended room is not offered for rejoin")
+        XCTAssertEqual(handler.requests.filter { $0.method == "GET" && $0.path == roomPath }.count, 1)
+        XCTAssertFalse(handler.requests.contains { $0.path.hasSuffix("/ws-ticket") })
+    }
+
+    @MainActor
+    func testLeavingTheRoomKeepsServerSupportButAnIdentityResetDropsIt() async throws {
+        let stub = APIv2TestStub()
+        stub.reply(200, sessionCapabilities)
+        let session = try await sessionClient(urlSession: stub.makeSession())
+        await session.refreshCapabilities()
+        XCTAssertEqual(session.capabilities?.supportsSocket, true)
+        XCTAssertTrue(session.supportsPlayback)
+        session.leaveRoom()
+        XCTAssertEqual(session.capabilities?.supportsSocket, true, "Leaving the room does not change what this server supports")
+        XCTAssertTrue(session.supportsPlayback)
+        session.leave(forgetRecent: true)
+        XCTAssertNil(session.capabilities)
+        XCTAssertFalse(session.supportsPlayback)
     }
 
     private func recentOwner(accountID: String = "account-one", epoch: UUID = UUID(uuidString: "96207173-607f-40a2-a9a1-ea406fb8f35d")!,

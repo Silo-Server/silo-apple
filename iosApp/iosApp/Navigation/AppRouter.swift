@@ -30,6 +30,19 @@ extension EnvironmentValues {
     }
 }
 
+private struct AllowsDirectPlaybackKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// False where picking a title must not start solo playback (the Watch
+    /// Party picker). Cards keep Select but drop their Play/Pause action.
+    var allowsDirectPlayback: Bool {
+        get { self[AllowsDirectPlaybackKey.self] }
+        set { self[AllowsDirectPlaybackKey.self] = newValue }
+    }
+}
+
 private struct ItemDetailBrowseSourceKey: EnvironmentKey {
     static let defaultValue: ItemDetailBrowseSource? = nil
 }

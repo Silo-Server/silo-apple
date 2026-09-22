@@ -1,6 +1,19 @@
 #if os(iOS) || os(tvOS)
 import SwiftUI
 
+extension WatchPartySession {
+    /// Whether room controls lock while a request runs. tvOS keeps them
+    /// enabled: disabling the focused control throws focus elsewhere, and
+    /// every session call ignores a repeat until the first one returns.
+    var locksControls: Bool {
+        #if os(tvOS)
+        false
+        #else
+        isBusy
+        #endif
+    }
+}
+
 /// Platform metrics for the lobby. tvOS values are mockup pixels at 1920×1080.
 enum WatchPartyMetrics {
     #if os(tvOS)
