@@ -73,9 +73,10 @@ enum AetherAuthenticationRecoveryPolicy {
     static func shouldReloadAfterProgress(
         _ result: PlaybackProgressReportResult,
         activeHeaders: [String: String],
-        currentHeaders: [String: String]
+        currentHeaders: [String: String],
+        hasRequestAuthorization: Bool = false
     ) -> Bool {
-        result == .success && shouldReload(
+        !hasRequestAuthorization && result == .success && shouldReload(
             failedHeaders: activeHeaders,
             refreshedHeaders: currentHeaders
         )
@@ -306,6 +307,7 @@ struct AetherLoadSpec {
         matchContentEnabled: Bool,
         sourceURLOverride: URL? = nil,
         requestHeaders: [String: String]? = nil,
+        requestAuthorization: HTTPRequestAuthorization? = nil,
         resolveURL: ((String) -> URL?)? = nil,
         apiOriginURL: URL? = nil,
         audioSourceStreamIndex: Int32? = nil,
@@ -445,6 +447,8 @@ struct AetherLoadSpec {
         ].contains(plan.delivery)
         options = LoadOptions(
             httpHeaders: effectiveHeaders,
+            httpRequestAuthorization: isServerHLS && plan.effectiveRecipe.videoCodec != nil
+                ? requestAuthorization : nil,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,

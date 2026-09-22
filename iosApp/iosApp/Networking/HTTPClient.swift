@@ -124,6 +124,8 @@ actor HTTPClient {
     /// flight registry; neither path may submit the same credential while the
     /// other owns its rotation.
     private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
+    private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: Date)?
+    private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
 
     private struct RefreshFlight {
         let id: UUID
@@ -836,6 +838,9 @@ actor HTTPClient {
         }
         inFlightRefreshes.values.forEach { $0.task.cancel() }
         inFlightRefreshes.removeAll()
+        proactiveMediaRefreshes.values.forEach { $0.task.cancel() }
+        proactiveMediaRefreshes.removeAll()
+        mediaRefreshBackoff = nil
         for (index, session) in [session, longWaitSession].enumerated() {
             await withCheckedContinuation { continuation in
                 session.getAllTasks { tasks in
@@ -2026,6 +2031,79 @@ actor HTTPClient {
             Self.logger.error("Scoped refresh threw: \(String(describing: error), privacy: .public)")
             return false
         }
+    }
+
+    /// Media uses the same owner fence and refresh flight as ordinary API
+    /// requests. The playback authorizer validates the URL before calling here.
+    func mediaRequestHeaders(
+        expectedAuth: CapturedOrdinaryRequestAuth,
+        baseHeaders: [String: String],
+        rejectedHeaders: [String: String]? = nil,
+        now: Date = Date()
+    ) async throws -> [String: String] {
+        try Task.checkCancellation()
+        let revision = try captureRequestDispatchRevision()
+        guard var current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: expectedAuth),
+              let token = current.accessToken, !token.isEmpty else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let rejectedBearer = rejectedHeaders?.first {
+            $0.key.caseInsensitiveCompare("Authorization") == .orderedSame
+        }?.value
+        let challengedCurrentToken = rejectedBearer == "Bearer \(token)"
+        let expired = MediaAccessTokenExpiry.isExpired(token, now: now)
+        let backingOff = (mediaRefreshBackoff.map { $0.auth == current && now < $0.until } ?? false)
+            && !expired
+        let proactiveRefresh = rejectedHeaders == nil
+            && MediaAccessTokenExpiry.shouldRefresh(token, now: now)
+            && !backingOff
+        if challengedCurrentToken || expired {
+            if let refreshed = await refreshTokens(expected: current, dispatchRevision: revision) {
+                current = refreshed
+                mediaRefreshBackoff = nil
+            } else if let latest = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: current),
+                      latest.accessToken != token, latest.accessToken != nil {
+                current = latest
+            } else {
+                throw HTTPError.http(statusCode: 401, body: nil)
+            }
+        } else if proactiveRefresh {
+            startProactiveMediaRefresh(expected: current, revision: revision, now: now)
+        }
+        try Task.checkCancellation()
+        guard let latest = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: current),
+              let accessToken = latest.accessToken, !accessToken.isEmpty else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try ensureRequestDispatchAllowed(expectedRevision: revision)
+        var headers = baseHeaders.filter {
+            !["authorization", "x-profile-id", "x-profile-token"].contains($0.key.lowercased())
+        }
+        headers["Authorization"] = "Bearer \(accessToken)"
+        headers["X-Profile-Id"] = latest.profileId
+        headers["X-Profile-Token"] = latest.profileToken
+        return headers
+    }
+
+    /// Still-valid media must never wait for the refresh endpoint. The shared
+    /// flight continues in the background; a later 401/expired request joins it.
+    private func startProactiveMediaRefresh(
+        expected: CapturedOrdinaryRequestAuth, revision: UInt64, now: Date
+    ) {
+        guard proactiveMediaRefreshes[expected.account] == nil,
+              !isRequestDispatchBlocked, requestDispatchRevision == revision else { return }
+        let id = UUID()
+        let task = Task { [self] in
+            let refreshed = await refreshTokens(expected: expected, dispatchRevision: revision)
+            guard proactiveMediaRefreshes[expected.account]?.id == id else { return }
+            proactiveMediaRefreshes.removeValue(forKey: expected.account)
+            if refreshed == nil, !Task.isCancelled, requestDispatchRevision == revision {
+                // Only the failed credential backs off. A rotated credential
+                // or a different account/profile cannot inherit this delay.
+                mediaRefreshBackoff = (expected, now.addingTimeInterval(10))
+            }
+        }
+        proactiveMediaRefreshes[expected.account] = (id, task)
     }
 
     // MARK: - Refresh (single-flight)

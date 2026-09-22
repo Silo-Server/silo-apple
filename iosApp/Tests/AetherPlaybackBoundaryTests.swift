@@ -590,15 +590,18 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             return XCTFail("Expected a playable HLS fixture")
         }
 
+        let authorization = HTTPRequestAuthorization { _, _ in ["Authorization": "Bearer current"] }
         let spec = try AetherLoadSpec(
             validating: plan,
             sessionID: sessionID,
             matchContentEnabled: true,
+            requestAuthorization: authorization,
             resolveURL: { URL(string: $0, relativeTo: URL(string: "https://dev.example.test")) }
         )
 
         XCTAssertTrue(spec.options.nativeRemoteHLS)
         XCTAssertEqual(spec.options.httpHeaders["Authorization"], "Bearer test")
+        XCTAssertTrue(spec.options.httpRequestAuthorization === authorization)
     }
 
     func testV3CredentialReloadTranslatesCurrentSourcePositionOntoPlanTimeline() throws {

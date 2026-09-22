@@ -6,11 +6,12 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: eabce40de1d59c1c03696d99de688730904979da (upstream release
+  Revision: 8746e6f85dde8b2622e16cd4c7edad81b4d994fc (upstream release
   7.1.0 plus Silo patches for subtitle renditions,
-  source timing, and primary ASS routing with normalized secondary/PiP text)
+  source timing, primary ASS routing with normalized secondary/PiP text,
+  and refreshable native HLS authorization)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/eabce40de1d59c1c03696d99de688730904979da
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/8746e6f85dde8b2622e16cd4c7edad81b4d994fc
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/7.1.0
   Rebuild: the Package.swift and source tree at that revision
 
@@ -88,7 +89,8 @@ SwiftAssRenderer, SwiftLibass, and local ASS rendering
   SwiftLibass 1.4.0 (MIT)
   Source and rebuild script: https://github.com/mihai8804858/swift-libass/tree/6513c488e377a26c06db327fb2acfc2653a041d5
   Transitive Swift packages: Combine Schedulers 1.2.2, Concurrency Extras
-  1.4.1, and Issue Reporting 2.1.0, all MIT; their notices are included.
+  1.4.1, and IssueReporting from xctest-dynamic-overlay 1.13.1, all MIT;
+  their notices are included.
   libass 0.17.3: ISC
   Fontconfig 2.15.0: permissive notices in Fontconfig.txt
   FreeType 2.13.2: FreeType License; this product uses the FreeType project

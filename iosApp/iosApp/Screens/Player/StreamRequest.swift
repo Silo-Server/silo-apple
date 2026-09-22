@@ -5,6 +5,9 @@ struct StreamRequest {
     let url: URL
     let headers: [String: String]
     let serverUrl: String
+    /// Owner of the credentials resolved for this load, excluding future
+    /// access-token rotations. Never recapture a new owner during playback.
+    let capturedAuth: CapturedOrdinaryRequestAuth?
 
     /// Resolve the server's engine-neutral transport without allowing the
     /// user's API credential to cross an origin boundary. Header-authenticated
@@ -29,7 +32,8 @@ struct StreamRequest {
         additionalHeaders: [String: String],
         accessToken: String?,
         requiresHeaderAuthenticatedMedia: Bool,
-        authorizedMediaOriginSessionId: String? = nil
+        authorizedMediaOriginSessionId: String? = nil,
+        capturedAuth: CapturedOrdinaryRequestAuth? = nil
     ) -> StreamRequest? {
         let raw = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
@@ -42,7 +46,7 @@ struct StreamRequest {
             guard !requiresHeaderAuthenticatedMedia, let fileURL = URL(string: raw) else {
                 return nil
             }
-            return StreamRequest(url: fileURL, headers: [:], serverUrl: normalizedServer)
+            return StreamRequest(url: fileURL, headers: [:], serverUrl: normalizedServer, capturedAuth: nil)
         }
 
         guard let baseURL = URL(string: normalizedServer),
@@ -114,7 +118,7 @@ struct StreamRequest {
         if let accessToken, !accessToken.isEmpty {
             headers["Authorization"] = "Bearer \(accessToken)"
         }
-        return StreamRequest(url: resolvedURL, headers: headers, serverUrl: normalizedServer)
+        return StreamRequest(url: resolvedURL, headers: headers, serverUrl: normalizedServer, capturedAuth: capturedAuth)
     }
 
     /// The absolute form `authorized_media_origins_v1` permits. The server may

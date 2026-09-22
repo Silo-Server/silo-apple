@@ -1525,9 +1525,8 @@ class PlayerViewModel {
         )
     }
 
-    /// The periodic progress request uses the live API credential and owns its
-    /// refresh. If that request rotated the bearer, rebuild Aether before its
-    /// next source request can reuse the credential frozen at asset creation.
+    /// Only static-header transports need replacement after API rotation.
+    /// Native HLS resolves the current credential for each upstream request.
     private func attemptProtocolV3AuthenticationReloadAfterProgress(
         _ result: PlaybackProgressReportResult
     ) async {
@@ -1539,6 +1538,7 @@ class PlayerViewModel {
               ),
               let sessionId = activePlaybackSessionId,
               let failedSpec = aetherPlaybackController.activeSpec,
+              failedSpec.options.httpRequestAuthorization == nil,
               failedSpec.planID == protocolV3.plan.planId,
               failedSpec.sessionID == sessionId,
               committedProtocolV3LoadEpoch != nil,
@@ -1560,7 +1560,8 @@ class PlayerViewModel {
               AetherAuthenticationRecoveryPolicy.shouldReloadAfterProgress(
                   result,
                   activeHeaders: failedSpec.options.httpHeaders,
-                  currentHeaders: streamRequest.headers
+                  currentHeaders: streamRequest.headers,
+                  hasRequestAuthorization: failedSpec.options.httpRequestAuthorization != nil
               ) else {
             return
         }
@@ -1587,6 +1588,7 @@ class PlayerViewModel {
               let watchDetail = currentWatchDetail,
               let selectedVersion = currentSelectedVersion,
               let failedSpec = aetherPlaybackController.activeSpec,
+              failedSpec.options.httpRequestAuthorization == nil,
               failedSpec.planID == protocolV3.plan.planId,
               failedSpec.sessionID == sessionId,
               committedProtocolV3LoadEpoch != nil else {
@@ -2852,12 +2854,32 @@ class PlayerViewModel {
             } else {
                 audioSourceStreamIndex = nil
             }
+            let requestAuthorization: HTTPRequestAuthorization?
+            if v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature),
+               [PlaybackProtocolV3.PlanDelivery.remuxHLS,
+                PlaybackProtocolV3.PlanDelivery.transcodeHLS].contains(v3.plan.delivery),
+               v3.plan.effectiveRecipe.videoCodec != nil {
+                guard let owner = streamRequest.capturedAuth else {
+                    throw HTTPError.requestIdentityChanged
+                }
+                requestAuthorization = try PlaybackMediaAuthorization.make(
+                    sourceURL: streamRequest.url,
+                    serverURL: streamRequest.serverUrl,
+                    sessionID: prepared.session.sessionId,
+                    expectedAuth: owner,
+                    baseHeaders: streamRequest.headers,
+                    http: SiloAPI.shared.http
+                )
+            } else {
+                requestAuthorization = nil
+            }
             spec = try AetherLoadSpec(
                 validating: v3.plan,
                 sessionID: prepared.session.sessionId,
                 matchContentEnabled: settings.hdrEnabled && AetherDisplayContext.matchContentEnabled,
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
+                requestAuthorization: requestAuthorization,
                 // Subtitle artifacts, inventory sidecars and font bundles stay
                 // relative API-origin routes even when the media itself moved
                 // to a proxy, so this resolver never accepts absolute URLs.
@@ -6644,8 +6666,18 @@ class PlayerViewModel {
         requiresHeaderAuthenticatedMedia: Bool = false,
         allowsAuthorizedMediaOrigins: Bool = false
     ) async -> StreamRequest? {
-        let serverUrl = await SiloAPI.shared.currentServerUrl()
-        let token = await SiloAPI.shared.currentAccessToken()
+        let owner = await TokenStore.shared.captureOrdinaryRequestAuth()
+        let serverUrl: String
+        let token: String?
+        if let owner {
+            serverUrl = owner.account.serverURL
+            token = owner.accessToken
+        } else {
+            // Preserve legacy transport resolution without an account snapshot;
+            // refreshable V3 loads require a captured owner in loadAether.
+            serverUrl = await SiloAPI.shared.currentServerUrl()
+            token = await SiloAPI.shared.currentAccessToken()
+        }
         return StreamRequest.resolve(
             rawURL: session.streamUrl,
             serverURL: serverUrl,
@@ -6656,7 +6688,8 @@ class PlayerViewModel {
             // different one is rejected rather than trusted.
             authorizedMediaOriginSessionId: allowsAuthorizedMediaOrigins
                 ? session.sessionId
-                : nil
+                : nil,
+            capturedAuth: owner
         )
     }
 
