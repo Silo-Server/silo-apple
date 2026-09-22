@@ -15,8 +15,8 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.1.0 + Silo subtitle and HLS authorization patches | `241dff50a02a0a1d4aaa095dca58ca4aa4c1b6cf` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
-| FFmpegBuild 3.3.0 | `4e58942403d37cceff3a3212e3e026f4205146a2` | Nine separately embedded dynamic frameworks | See the component table below |
+| AetherEngine 7.13.0 + Silo subtitle and HLS authorization patches | `ec969b734548d09f8324dc18645050cdc94d3018` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| FFmpegBuild 3.4.0 | `9ee46ba4fb533e35efa6492eb1a903ca4f8058fc` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
@@ -32,7 +32,7 @@ Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
-`7.1.0` plus Silo patches for complete native subtitle renditions, source
+`7.13.0` plus Silo patches for complete native subtitle renditions, source
 timing after a media reanchor, ASS subtitle routing, and refreshable authorization
 for native HLS, sidecar subtitles and font bundles. Raw ASS events stay on the
 primary local overlay; secondary subtitles and software PiP receive normalized
@@ -42,9 +42,9 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/241dff50a02a0a1d4aaa095dca58ca4aa4c1b6cf>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/ec969b734548d09f8324dc18645050cdc94d3018>
   (engine pull request: <https://github.com/Silo-Server/AetherEngine/pull/2>)
-- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/7.1.0>
+- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/7.13.0>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
   `GPL-3.0.txt`
@@ -71,9 +71,10 @@ dynamic frameworks:
 
 FFmpegBuild 3.0.0 renamed every target, framework bundle, and install name
 with an `Aether` prefix so the build can coexist with another FFmpeg in the
-same app. The pinned 3.3.0 release adds WMV/ASF and legacy Flash support,
-the VC-1 parser repair for seeking, and dSYMs for crash symbolication.
-The exact FFmpegBuild 3.3.0 `build.sh` is the rebuild recipe and patch record:
+same app. Earlier releases added WMV/ASF and legacy Flash support, the VC-1
+parser repair for seeking, and dSYMs for crash symbolication. The pinned 3.4.0
+release adds FFmpeg support for the `dav1` (Dolby Vision AV1) MP4 sample entry.
+The exact FFmpegBuild 3.4.0 `build.sh` is the rebuild recipe and patch record:
 
 - it builds FFmpeg with dynamic linkage and does not enable GPL, version-3,
   or nonfree FFmpeg components;
@@ -98,11 +99,11 @@ in the table under `SiloTV.app/Frameworks/`. Its `AetherLibavcodec` configure
 string contained `--enable-shared` without `--enable-gpl`, `--enable-version3`, or
 nonfree enablement, and the app binary exported no `avcodec_`/`avformat_`
 symbols of its own. These observations describe that older debug artifact;
-they are not a binary inventory of the current 3.3.0 dependency. Repeat this
+they are not a binary inventory of the current 3.4.0 dependency. Repeat this
 inventory against each release archive; debug evidence is not a release substitute.
 
 - Exact packaging source and rebuild script:
-  <https://github.com/superuser404notfound/FFmpegBuild/tree/4e58942403d37cceff3a3212e3e026f4205146a2>
+  <https://github.com/superuser404notfound/FFmpegBuild/tree/9ee46ba4fb533e35efa6492eb1a903ca4f8058fc>
 - Current upstream tag resolutions:
   [FFmpeg](https://github.com/FFmpeg/FFmpeg/tree/38b88335f99e76ed89ff3c93f877fdefce736c13),
   [dav1d](https://code.videolan.org/videolan/dav1d/-/tree/54706fc6bc0cdecab7e9593974a4039cc038fca7),

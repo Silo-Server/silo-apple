@@ -6,18 +6,18 @@ texts are bundled beside this file and are available from Settings > About >
 Open Source Licenses.
 
 AetherEngine
-  Revision: 241dff50a02a0a1d4aaa095dca58ca4aa4c1b6cf (upstream release
-  7.1.0 plus Silo patches for subtitle renditions,
+  Revision: ec969b734548d09f8324dc18645050cdc94d3018 (upstream release
+  7.13.0 plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   and refreshable authorization for native HLS, sidecar subtitles and fonts)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/241dff50a02a0a1d4aaa095dca58ca4aa4c1b6cf
-  Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/7.1.0
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/ec969b734548d09f8324dc18645050cdc94d3018
+  Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/7.13.0
   Rebuild: the Package.swift and source tree at that revision
 
 FFmpegBuild and embedded media frameworks
-  Revision: 4e58942403d37cceff3a3212e3e026f4205146a2 (release 3.3.0)
-  Source and rebuild script: https://github.com/superuser404notfound/FFmpegBuild/tree/4e58942403d37cceff3a3212e3e026f4205146a2
+  Revision: 9ee46ba4fb533e35efa6492eb1a903ca4f8058fc (release 3.4.0)
+  Source and rebuild script: https://github.com/superuser404notfound/FFmpegBuild/tree/9ee46ba4fb533e35efa6492eb1a903ca4f8058fc
 
   Components built by that revision:
   - FFmpeg n8.1.2, currently 38b88335f99e76ed89ff3c93f877fdefce736c13:
