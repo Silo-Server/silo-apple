@@ -257,7 +257,8 @@ final class AetherPlaybackController {
                     aetherSubtitleIDByAppID[appID] = registered.id
                     appSubtitleIDByAetherID[registered.id] = appID
                     if let request = spec.subtitleFontRequests[appID] {
-                        assSubtitles.registerFontRequest(request, trackID: registered.id)
+                        assSubtitles.registerFontRequest(request, trackID: registered.id,
+                                                        authorization: spec.subtitleRequestAuthorization(for: request.url))
                     }
                 }
             }
