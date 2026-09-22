@@ -32,12 +32,14 @@ struct ItemDetailView: View {
             navigationContext: context, onResolveSeries: resolve
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
+        .environment(\.browseLibraryId, libraryId)
         #else
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
             resumeContext: context, onResolveSeries: resolve
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
+        .environment(\.browseLibraryId, libraryId)
         #endif
     }
 }

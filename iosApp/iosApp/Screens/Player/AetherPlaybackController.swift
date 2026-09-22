@@ -4,6 +4,7 @@ import Combine
 import Foundation
 #if os(iOS) || os(tvOS)
 import MediaPlayer
+import UIKit
 #endif
 
 /// Silo's single production boundary around AetherEngine.
@@ -80,6 +81,7 @@ final class AetherPlaybackController {
     private let aetherSessionClaim: AetherAudioSessionOwnership.Claim
     var onEvent: ((ScopedEvent) -> Void)?
     var onControllerEvent: ((ControllerEvent) -> Void)?
+    var onTransportAvailabilityChanged: ((Bool) -> Void)?
     /// iOS 26's Automatic Subtitles turn captions on with no read API behind
     /// them, so Aether forwarding the ask is the only observable signal. The
     /// engine has already deselected its own rendition by the time this fires;
@@ -110,6 +112,17 @@ final class AetherPlaybackController {
     /// states such as loading, buffering, and error. A replacement load reads
     /// this after it commits so Play/Pause commands issued while loading win.
     private(set) var shouldPlayWhenReady = false
+    /// Watch Party resumes only through a current room command.
+    var requiresExplicitTransportResume = false
+    private var audioInterrupted = false
+    private var applicationBackgrounded = false
+    var isTransportInterrupted: Bool { audioInterrupted || applicationBackgrounded }
+    var permitsExternalPlayback = true {
+        didSet {
+            configureExternalPlaybackPolicy()
+            refreshExternalPlaybackState()
+        }
+    }
     private var desiredVolume: Float = 1
     private var muted = false
     private var aetherSubtitleIDByAppID: [Int64: Int] = [:]
@@ -191,11 +204,19 @@ final class AetherPlaybackController {
         guard epoch == activeLoadEpoch, let spec = activeSpec else {
             throw CancellationError()
         }
+        // A server subtitle artifact may still be streaming its extraction.
+        // Declaring it in the native HLS master makes AVPlayer wait for the
+        // whole film's captions before becoming ready for the room barrier.
+        // Party playback uses the host overlay (PiP/AirPlay are disabled), so
+        // register these tracks after mounting the media instead.
+        let usesSubtitleOverlay = requiresExplicitTransportResume && spec.options.nativeRemoteHLS
+        var options = spec.options
+        if usesSubtitleOverlay { options.externalSubtitles = [] }
         do {
             try await engine.load(
                 url: spec.sourceURL,
                 startPosition: spec.aetherStartPosition,
-                options: spec.options,
+                options: options,
                 audioSourceStreamIndex: spec.audioSourceStreamIndex
             )
         } catch is CancellationError {
@@ -227,6 +248,21 @@ final class AetherPlaybackController {
         }
         guard epoch == activeLoadEpoch else {
             throw CancellationError()
+        }
+        if usesSubtitleOverlay {
+            isRegisteringExternalSubtitle = true
+            for (ordinal, track) in spec.options.externalSubtitles.enumerated() {
+                let registered = engine.addExternalSubtitleTrack(track)
+                if let appID = spec.externalSubtitleAppTrackIDs[ordinal] {
+                    aetherSubtitleIDByAppID[appID] = registered.id
+                    appSubtitleIDByAetherID[registered.id] = appID
+                    if let request = spec.subtitleFontRequests[appID] {
+                        assSubtitles.registerFontRequest(request, trackID: registered.id)
+                    }
+                }
+            }
+            isRegisteringExternalSubtitle = false
+            publish(.inventoryChanged)
         }
         hasCommittedActiveLoad = true
         assSubtitles.finishLoad()
@@ -664,7 +700,39 @@ final class AetherPlaybackController {
         NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
             .sink { [weak self] _ in self?.refreshExternalPlaybackState() }
             .store(in: &subscriptions)
+        NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
+            .sink { [weak self] notification in
+                guard let self, requiresExplicitTransportResume else { return }
+                let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                let wasInterrupted = isTransportInterrupted
+                audioInterrupted = raw == AVAudioSession.InterruptionType.began.rawValue
+                // Aether handles this notification asynchronously. Clearing
+                // its play intent here also disarms its automatic resume.
+                pause()
+                publish(.telemetryChanged)
+                if wasInterrupted != isTransportInterrupted {
+                    onTransportAvailabilityChanged?(!isTransportInterrupted)
+                }
+            }
+            .store(in: &subscriptions)
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .sink { [weak self] _ in self?.setApplicationBackgrounded(true) }
+            .store(in: &subscriptions)
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in self?.setApplicationBackgrounded(false) }
+            .store(in: &subscriptions)
         #endif
+    }
+
+    private func setApplicationBackgrounded(_ value: Bool) {
+        guard requiresExplicitTransportResume else { return }
+        let wasInterrupted = isTransportInterrupted
+        applicationBackgrounded = value
+        if value { pause() }
+        publish(.telemetryChanged)
+        if wasInterrupted != isTransportInterrupted {
+            onTransportAvailabilityChanged?(!isTransportInterrupted)
+        }
     }
 
     private func bindExternalPlayback(to player: AVPlayer?) {
@@ -695,7 +763,7 @@ final class AetherPlaybackController {
     private func configureExternalPlaybackPolicy() {
         guard let player = observedExternalPlaybackPlayer,
               engine.currentAVPlayer === player else { return }
-        let allowed = Self.externalPlaybackAllowed(
+        let allowed = permitsExternalPlayback && Self.externalPlaybackAllowed(
             activePolicy: externalPlaybackIsReceiverFetchable,
             preservedReplacementPolicy: replacementExternalPlaybackPolicy,
             preservedPolicyIsReceiverSafe: preservedReplacementPolicyIsReceiverSafe
@@ -716,7 +784,7 @@ final class AetherPlaybackController {
                   let self, let player,
                   self.observedExternalPlaybackPlayer === player,
                   self.engine.currentAVPlayer === player else { return }
-            let allowed = Self.externalPlaybackAllowed(
+            let allowed = self.permitsExternalPlayback && Self.externalPlaybackAllowed(
                 activePolicy: self.externalPlaybackIsReceiverFetchable,
                 preservedReplacementPolicy: self.replacementExternalPlaybackPolicy,
                 preservedPolicyIsReceiverSafe: self.preservedReplacementPolicyIsReceiverSafe
@@ -735,7 +803,7 @@ final class AetherPlaybackController {
     /// request headers; AVURLAsset headers stay on the sending device and are
     /// not credentials an AirPlay receiver can reproduce.
     private var externalPlaybackIsReceiverFetchable: Bool {
-        guard hasCommittedActiveLoad, activeSpec != nil else { return false }
+        guard permitsExternalPlayback, hasCommittedActiveLoad, activeSpec != nil else { return false }
         switch engine.videoRoute {
         case .loopback:
             return true

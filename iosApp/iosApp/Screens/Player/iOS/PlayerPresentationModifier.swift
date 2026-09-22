@@ -28,8 +28,10 @@ struct PlayerPresentationModifier: ViewModifier {
                 offlineDownloadId: presentation.offlineDownloadId,
                 posterURLHint: presentation.posterURL,
                 backdropURLHint: presentation.backdropURL,
+                watchPartyContext: presentation.watchPartyContext,
                 onDismissRequested: { router.dismissPlayerPresentation(id: presentation.id) }
             )
+            .id(presentation.id)
             // Playback exits through its X button, never a downward gesture.
             // This affects only the player cover, not the underlying detail.
             .interactiveDismissDisabled()

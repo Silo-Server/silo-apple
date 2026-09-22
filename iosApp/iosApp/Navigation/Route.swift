@@ -56,6 +56,9 @@ enum Route: Hashable {
     case serverList
     case downloads
 
+    /// The active party or the create/join hub.
+    case watchParty
+
     /// Media-requests hub: discover carousels + search-to-request. Entry
     /// points (profile menu / tvOS profile dropdown) only render when
     /// `RequestsFeatureStore.shared.isEnabled`.

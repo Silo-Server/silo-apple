@@ -184,8 +184,11 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
     // MARK: - More menu
 
     private enum MoreAction: String {
-        case favorite, watched, trailers
+        case watchParty, favorite, watched, trailers
     }
+
+    @Environment(AppRouter.self) private var partyRouter
+    @Environment(\.browseLibraryId) private var partyLibraryId
 
     private var moreMenu: some View {
         TVCircleMenuButton(
@@ -212,10 +215,17 @@ struct TVMovieDetailView<BelowSynopsis: View>: View {
                         systemImage: "film.stack"
                     ))
                 }
+                if WatchPartyEntry.isAvailable {
+                    items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
+                        title: "Watch Party", systemImage: "person.3"))
+                }
                 return items
             },
             onSelect: { item in
                 switch MoreAction(rawValue: item.id) {
+                case .watchParty:
+                    WatchPartyEntry.open(contentId: detail.contentId, title: detail.title, type: detail.type,
+                        fileId: selectedVersionFileId, libraryId: partyLibraryId, router: partyRouter)
                 case .favorite:
                     onToggleFavorite()
                 case .watched:

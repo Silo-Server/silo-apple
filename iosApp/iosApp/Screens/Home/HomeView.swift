@@ -66,6 +66,9 @@ struct HomeView: View {
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
+                .background(GeometryReader { proxy in
+                    Color.clear.onAppear { NSLog("WPSAFE home.feed insets=\(proxy.safeAreaInsets) size=\(proxy.size)") }
+                })
                 // Preference edits replace the row band as one stable unit:
                 // the next visible row takes the vacated slot at the fixed
                 // first-row anchor, and no marquee from a hidden row lingers.

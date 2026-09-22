@@ -33,12 +33,15 @@ enum PlayerScreenOrientation: Equatable {
 /// is persisted through `player.orientation_mode`, so a new session starts
 /// locked when the last one was.
 struct PlayerRotationState {
-    private(set) var isPlayerActive = false
+    private var isPlayerPresented = false
+    private var isPlayerCovered = false
+    var isPlayerActive: Bool { isPlayerPresented && !isPlayerCovered }
     private(set) var lockedOrientation: UIInterfaceOrientationMask?
     var isLocked: Bool { lockedOrientation != nil }
 
     mutating func activate(lockedOrientation: UIInterfaceOrientationMask? = nil) {
-        isPlayerActive = true
+        isPlayerPresented = true
+        isPlayerCovered = false
         self.lockedOrientation = lockedOrientation
     }
 
@@ -51,8 +54,14 @@ struct PlayerRotationState {
     }
 
     mutating func deactivate() {
-        isPlayerActive = false
+        isPlayerPresented = false
+        isPlayerCovered = false
         lockedOrientation = nil
+    }
+
+    mutating func setPlayerCovered(_ covered: Bool) {
+        guard isPlayerPresented else { return }
+        isPlayerCovered = covered
     }
 
     mutating func toggleLock(at orientation: UIInterfaceOrientationMask) {
@@ -133,6 +142,15 @@ final class PlayerOrientationCoordinator {
         rotationState.deactivate()
         applyCurrentPolicy(preferredOrientation: Self.appDefaultOrientations.contains(.portrait)
             ? .portrait : Self.appDefaultOrientations)
+    }
+
+    /// A browsing panel can cover a retained player without ending playback.
+    /// Keep its rotation lock so returning to video restores the same policy.
+    func setPlayerCovered(_ covered: Bool) {
+        rotationState.setPlayerCovered(covered)
+        applyCurrentPolicy(preferredOrientation: isPlayerActive
+            ? rotationState.lockedOrientation ?? deviceOrientationMask()
+            : Self.appDefaultOrientations)
     }
 
     /// Write the lock back to `player.orientation_mode` so it survives the

@@ -284,6 +284,8 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let bandwidthCapKbps: Int?
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
+    /// Room playback keeps one source timeline across all participant plans.
+    var allowAlternateVersions: Bool? = nil
 }
 
 struct PlaybackV3TrackIdentity: Codable, Equatable {

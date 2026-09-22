@@ -172,6 +172,43 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let overlaySummary: OverlaySummary?
     var id: String { contentId }
 
+    /// Lift a catalog row into a section row so client-composed shelves
+    /// (Watch Party's picker) render through the same `SectionRow` as Home.
+    init(browseItem item: BrowseItem, positionSeconds: Double? = nil, durationSeconds: Double? = nil) {
+        contentId = item.contentId
+        type = item.type
+        title = item.title
+        seriesId = nil
+        seriesTitle = nil
+        seasonNumber = nil
+        episodeNumber = nil
+        year = item.year
+        genres = item.genres
+        status = item.status
+        ratingImdb = item.ratingImdb
+        ratingTmdb = item.ratingTmdb
+        ratingRtCritic = item.ratingRtCritic
+        ratingRtAudience = item.ratingRtAudience
+        contentRating = item.contentRating
+        runtime = item.runtime
+        originalLanguage = item.originalLanguage
+        studios = item.studios
+        networks = item.networks
+        showStatus = item.showStatus
+        overview = item.overview
+        itemSource = nil
+        self.positionSeconds = positionSeconds
+        self.durationSeconds = durationSeconds
+        progressUpdatedAt = nil
+        posterUrl = item.posterUrl
+        posterThumbhash = item.posterThumbhash
+        backdropUrl = item.backdropUrl
+        backdropThumbhash = item.backdropThumbhash
+        logoUrl = nil
+        userState = item.userState
+        overlaySummary = item.overlaySummary
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         contentId = try c.decode(String.self, forKey: .contentId)
@@ -288,6 +325,16 @@ enum SiloMediaType {
 
 extension BrowseItem {
     var isAudiobook: Bool { SiloMediaType.isAudiobook(type) }
+
+    /// Section rows carry the same catalog fields under the same keys, so a
+    /// Home card can be re-decoded as a catalog row when a client-composed
+    /// shelf (Watch Party's picker) needs the browse shape. Artwork URLs are
+    /// already absolute on a decoded section item, so no server URL is needed.
+    init?(sectionItem item: SectionItem) {
+        guard let data = try? JSONEncoder().encode(item),
+              let decoded = try? JSONDecoder().decode(BrowseItem.self, from: data) else { return nil }
+        self = decoded
+    }
 }
 
 extension SectionItem {

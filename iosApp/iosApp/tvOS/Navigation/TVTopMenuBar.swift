@@ -1116,6 +1116,7 @@ private enum TVProfileAction: Hashable {
     case favorites
     case history
     case requests
+    case watchParty
     case settings
     case switchServer
     case signOut
@@ -1146,6 +1147,7 @@ struct TVProfileDropdown: View {
     let onFavorites: () -> Void
     let onHistory: () -> Void
     let onRequests: () -> Void
+    let onWatchParty: () -> Void
     let onSettings: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
@@ -1195,6 +1197,9 @@ struct TVProfileDropdown: View {
             actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
             if showRequests {
                 actionButton("Requests", systemImage: "sparkles", id: .requests, action: onRequests)
+            }
+            if WatchPartyEntry.isAvailable {
+                actionButton(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3", id: .watchParty, action: onWatchParty)
             }
 
             divider

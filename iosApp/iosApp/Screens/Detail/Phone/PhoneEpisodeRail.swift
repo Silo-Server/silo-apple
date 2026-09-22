@@ -161,6 +161,9 @@ private struct PhoneEpisodeCard: View {
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: stillCornerRadius))
         #endif
         .contextMenu {
+            #if os(iOS)
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
+            #endif
             MediaStateMenuItems(
                 isWatched: episode.userData?.played == true,
                 isFavorite: isFavorite,

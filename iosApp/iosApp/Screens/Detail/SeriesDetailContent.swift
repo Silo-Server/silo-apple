@@ -291,6 +291,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
+        #if os(iOS)
+        if let episode = nextUpEpisode {
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+                fileId: playbackFileId(for: episode))
+        }
+        #endif
         if let selectedSeason {
             Button {
                 setSeasonWatched(selectedSeason, !(selectedSeason.userData?.played ?? false))

@@ -184,7 +184,7 @@ struct MobilePlayerControls: View {
 
     @ViewBuilder
     private var externalPlaybackControls: some View {
-        if pictureInPicture.isSupported, pictureInPicture.hasSource {
+        if !viewModel.isWatchPartyPlayback, pictureInPicture.isSupported, pictureInPicture.hasSource {
             controlButton(
                 systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter"
             ) {
@@ -200,7 +200,7 @@ struct MobilePlayerControls: View {
             )
         }
 
-        if viewModel.supportsExternalPlayback {
+        if !viewModel.isWatchPartyPlayback, viewModel.supportsExternalPlayback {
             AirPlayRoutePicker { isPresentingRoutes in
                 // The route sheet is a UIKit presentation the auto-hide
                 // timer knows nothing about; pin the controls so it can't
@@ -275,6 +275,7 @@ struct MobilePlayerControls: View {
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Back 10 Seconds")
+            .disabled(!viewModel.canRequestSeek)
 
             Button {
                 viewModel.togglePlayPause()
@@ -289,6 +290,7 @@ struct MobilePlayerControls: View {
             }
             .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
+            .disabled(!viewModel.canRequestPlayPause)
 
             Button {
                 viewModel.skipForward(10)
@@ -300,6 +302,7 @@ struct MobilePlayerControls: View {
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
             .accessibilityLabel("Skip Forward 10 Seconds")
+            .disabled(!viewModel.canRequestSeek)
         }
     }
 

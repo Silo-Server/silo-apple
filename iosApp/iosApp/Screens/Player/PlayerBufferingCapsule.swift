@@ -2,6 +2,8 @@ import SwiftUI
 
 /// Keep brief loads quiet; show feedback only for a sustained video stall.
 struct PlayerBufferingCapsule: View {
+    var message: LocalizedStringKey = "Loading…"
+    var delay: Duration = .milliseconds(1_500)
     @State private var isVisible = false
 
     var body: some View {
@@ -11,7 +13,7 @@ struct PlayerBufferingCapsule: View {
                 .progressViewStyle(.circular)
                 .scaleEffect(spinnerScale)
 
-            Text("Loading…")
+            Text(message)
                 .font(.siloSmall.weight(.medium))
                 .foregroundStyle(.white.opacity(0.82))
         }
@@ -26,11 +28,11 @@ struct PlayerBufferingCapsule: View {
         .transition(.opacity)
         .opacity(isVisible ? 1 : 0)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading…")
+        .accessibilityLabel(message)
         .accessibilityHidden(!isVisible)
         .task {
             isVisible = false
-            try? await Task.sleep(for: .milliseconds(1_500))
+            try? await Task.sleep(for: delay)
             // Resuming playback removes this view and cancels the delay.
             guard !Task.isCancelled else { return }
             isVisible = true

@@ -423,6 +423,23 @@ actor PlaybackSessionBridge {
     private static let nearEndResumeSuppressionSeconds: Double = 5
     private static let pastEndResumeClampSeconds: Double = 0.25
 
+    nonisolated static func validateFixedSource(
+        requestedFileId: Int?, availableFileIds: [Int], position: Double?
+    ) throws {
+        guard let requestedFileId, availableFileIds.contains(requestedFileId),
+              let position, position.isFinite, position >= 0 else {
+            throw fixedSourceFailure()
+        }
+    }
+
+    nonisolated static func fixedSourceFailure() -> PlaybackV3TerminalFailure {
+        PlaybackV3TerminalFailure(
+            reason: "room_source_unavailable",
+            message: "The Watch Party's selected media version is unavailable.",
+            retryable: false
+        )
+    }
+
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "Playback"
@@ -459,6 +476,7 @@ actor PlaybackSessionBridge {
         /// state on a replan, so every replan repeats what the start request
         /// negotiated. Changing it means a new attempt, not a replan.
         let negotiatedAuthorizedMediaOrigins: Bool
+        let fixedMediaFileId: Int?
         var plan: PlaybackV3Plan
     }
 
@@ -481,6 +499,7 @@ actor PlaybackSessionBridge {
         let snapshot: ApplePlaybackV3CapabilitySnapshot
         let serverFeatures: [String]
         let negotiatedAuthorizedMediaOrigins: Bool
+        let fixedMediaFileId: Int?
         let plan: PlaybackV3Plan
         let sessionId: String
         let selectedVersion: FileVersion
@@ -787,7 +806,8 @@ actor PlaybackSessionBridge {
         resumePosition: Double? = nil,
         allowNearEndResume: Bool = false,
         prefersLastUsedVersion: Bool = false,
-        preferredQualityOverride: String? = nil
+        preferredQualityOverride: String? = nil,
+        allowAlternateVersions: Bool? = nil
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
         let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
@@ -795,6 +815,13 @@ actor PlaybackSessionBridge {
 
         guard !watchDetail.versions.isEmpty else {
             throw APIError.httpError(statusCode: 404)
+        }
+        if allowAlternateVersions == false {
+            try Self.validateFixedSource(
+                requestedFileId: preferredFileId,
+                availableFileIds: watchDetail.versions.map(\.fileId),
+                position: resumePosition
+            )
         }
 
         // A mid-stream quality-change replan passes an explicit override
@@ -882,7 +909,7 @@ actor PlaybackSessionBridge {
                 : initialSubtitlePreferences?.trackSignature,
             currentAudioLanguage: selectedAudioLanguage
         )
-        let effectiveStartPosition = resolvedStartPosition(
+        let effectiveStartPosition = allowAlternateVersions == false ? normalizedResumePosition : resolvedStartPosition(
             startFromBeginning: startFromBeginning,
             explicitResumePosition: normalizedResumePosition,
             storedResumePosition: storedResumePosition,
@@ -897,7 +924,7 @@ actor PlaybackSessionBridge {
         // Quality preference is a server-owned planning input. An explicit
         // override is the user's in-player choice, so preserve it verbatim
         // instead of deriving a different rung from the selected file.
-        let resolvedQualityPreference = preferredQualityOverride != nil
+        let resolvedQualityPreference = preferredQualityOverride != nil || allowAlternateVersions == false
             ? preferredQuality
             : requestedQualityPreference(
                 preferredQuality: preferredQuality,
@@ -929,7 +956,8 @@ actor PlaybackSessionBridge {
             // effective audio index so a movie's remembered track survives.
             audioTrackIndex: resolvedAudioTrackIndex,
             subtitleTrackIndex: subtitleIntent.ffmpegStreamIndex,
-            subtitleCombinedIndex: subtitleIntent.combinedIndex
+            subtitleCombinedIndex: subtitleIntent.combinedIndex,
+            allowAlternateVersions: allowAlternateVersions
         )
     }
 
@@ -1017,7 +1045,8 @@ actor PlaybackSessionBridge {
         startPosition: Double?,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
-        subtitleCombinedIndex: Int? = nil
+        subtitleCombinedIndex: Int? = nil,
+        allowAlternateVersions: Bool? = nil
     ) async throws -> PreparedPlayback {
         let resolvedSubtitleCombinedIndex = subtitleCombinedIndex ?? subtitleTrackIndex.flatMap {
             ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
@@ -1033,7 +1062,8 @@ actor PlaybackSessionBridge {
             bandwidthCapKbps: bandwidthCapKbps,
             startPosition: startPosition,
             audioTrackIndex: audioTrackIndex,
-            subtitleCombinedIndex: resolvedSubtitleCombinedIndex
+            subtitleCombinedIndex: resolvedSubtitleCombinedIndex,
+            allowAlternateVersions: allowAlternateVersions
         )
         return adoptProtocolV3Start(staged, watchDetail: watchDetail)
     }
@@ -1060,7 +1090,8 @@ actor PlaybackSessionBridge {
         bandwidthCapKbps: Int?,
         startPosition: Double?,
         audioTrackIndex: Int?,
-        subtitleCombinedIndex: Int?
+        subtitleCombinedIndex: Int?,
+        allowAlternateVersions: Bool?
     ) async throws -> StagedProtocolV3Start {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
@@ -1100,7 +1131,8 @@ actor PlaybackSessionBridge {
                 bandwidthEstimateKbps: nil,
                 bandwidthCapKbps: bandwidthCapKbps,
                 clientCapabilities: snapshot.capabilities,
-                clientPlaybackContext: snapshot.context
+                clientPlaybackContext: snapshot.context,
+                allowAlternateVersions: allowAlternateVersions
             )
 
             logger.info(
@@ -1154,6 +1186,10 @@ actor PlaybackSessionBridge {
                 retryable: false
             )
         case .playable(let plan, let resolvedSessionId):
+            if allowAlternateVersions == false, plan.effectiveMediaFileId != selectedVersion.fileId {
+                await retireAbandonedSession(resolvedSessionId, reason: "room_source_changed", authority: authority)
+                throw Self.fixedSourceFailure()
+            }
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {
@@ -1211,6 +1247,7 @@ actor PlaybackSessionBridge {
                     && response.serverFeatures.contains(
                         PlaybackProtocolV3.authorizedMediaOriginsFeature
                     ),
+                fixedMediaFileId: allowAlternateVersions == false ? selectedVersion.fileId : nil,
                 plan: plan,
                 sessionId: resolvedSessionId,
                 selectedVersion: effectiveVersion,
@@ -1244,6 +1281,7 @@ actor PlaybackSessionBridge {
             snapshot: staged.snapshot,
             serverFeatures: staged.serverFeatures,
             negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
+            fixedMediaFileId: staged.fixedMediaFileId,
             plan: staged.plan
         )
         protocolV3FirstFramePlanIds.removeAll()
@@ -1615,6 +1653,12 @@ actor PlaybackSessionBridge {
                 retryable: false
             )
         case .playable(let nextPlan, let nextSessionId):
+            if let fixedFileId = active.fixedMediaFileId, nextPlan.effectiveMediaFileId != fixedFileId {
+                if nextSessionId != currentSessionId {
+                    await retireAbandonedSession(nextSessionId, reason: "room_source_changed")
+                }
+                throw Self.fixedSourceFailure()
+            }
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {

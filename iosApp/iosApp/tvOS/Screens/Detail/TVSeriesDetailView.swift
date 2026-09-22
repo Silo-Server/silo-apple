@@ -883,8 +883,11 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private enum MoreAction: String {
-        case overview, favorite, watched, trailers
+        case watchParty, overview, favorite, watched, trailers
     }
+
+    @Environment(AppRouter.self) private var partyRouter
+    @Environment(\.browseLibraryId) private var partyLibraryId
 
     private var moreMenu: some View {
         TVCircleMenuButton(
@@ -919,10 +922,19 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                         systemImage: "film.stack"
                     ))
                 }
+                if WatchPartyEntry.isAvailable && displayedEpisode != nil {
+                    items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
+                        title: "Watch Party", systemImage: "person.3"))
+                }
                 return items
             },
             onSelect: { item in
                 switch MoreAction(rawValue: item.id) {
+                case .watchParty:
+                    if let episode = displayedEpisode {
+                        WatchPartyEntry.open(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+                            fileId: selectedFileId(for: episode), libraryId: partyLibraryId, router: partyRouter)
+                    }
                 case .overview: showSeriesOverview()
                 case .favorite: onToggleFavorite()
                 case .watched: onToggleWatched()
@@ -1091,9 +1103,9 @@ private struct TVSeriesAnchorResolver: UIViewRepresentable {
     }
 }
 
-/// Stable Show/Season tab used only by the combined Series page. It changes
+/// Stable Show/Season tab shared by Series detail and the Watch Party picker. It changes
 /// fill and outline on focus without scaling, so neighboring tabs never move.
-private struct TVSeriesModeTab: View {
+struct TVSeriesModeTab: View {
     let title: String
     let isSelected: Bool
     let rendersFocusedAppearance: Bool

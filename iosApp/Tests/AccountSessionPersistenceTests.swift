@@ -361,6 +361,30 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(value.accountID, "12")
         XCTAssertEqual(value.epoch?.uuidString, epoch)
     }
+    func testAccountReadCannotBindItsResultToAReplacementLogin() async throws {
+        let (store, _, _, _) = try await harness()
+        await store.saveTokens(accessToken: "original", refreshToken: "original-refresh")
+        let stub = StubURLProtocol.Handler()
+        stub.expect(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            _ = await store.clearTokens()
+            await store.saveTokens(accessToken: "replacement", refreshToken: "replacement-refresh")
+            return .json(#"{"id":"12","username":"Original","email":"","role":"user","permissions":[],"download_allowed":true}"#)
+        }
+        stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            .json(#"{"id":"34","username":"Replacement","email":"","role":"user","permissions":[],"download_allowed":true}"#)
+        }
+        let client = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: store),
+                                 tokenStore: store, isUpdateRequired: { false })
+
+        _ = try? await client.currentUser()
+        let durable = await store.captureDurableAccountAuth()
+        XCTAssertNil(durable, "The replacement login has not verified its account ID")
+
+        _ = try await client.currentUser()
+        let verified = await store.captureDurableAccountAuth()
+        XCTAssertEqual(verified?.accountID, "34")
+    }
+
     func testRefreshPreservesEpochAndStaleRefreshCannotReplaceRelogin() async throws {
         let (store, _, _, _) = try await harness()
         try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")

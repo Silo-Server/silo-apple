@@ -1315,6 +1315,50 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         controller.onEvent = nil
     }
 
+    func testPartyHLSKeepsSubtitleIdentityAcrossOverlayLoads() async throws {
+        let fixture = try sidecarInventoryPlan(
+            mode: "render", selectedTrackId: "file:42:subtitle:2", includeArtifact: true
+        )
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(fixture.plan)
+        ) as? [String: Any])
+        object["delivery"] = PlaybackProtocolV3.PlanDelivery.transcodeHLS
+        var stream = try XCTUnwrap(object["stream"] as? [String: Any])
+        stream["protocol"] = "hls"
+        stream["container"] = "mpegts"
+        stream["mime_type"] = "application/vnd.apple.mpegurl"
+        object["stream"] = stream
+        let plan = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3Plan.self, from: JSONSerialization.data(withJSONObject: object)
+        )
+        let source = URL(string: "http://127.0.0.1:9/master.m3u8")!
+        let spec = try AetherLoadSpec(
+            validating: plan, sessionID: fixture.sessionID, matchContentEnabled: false,
+            sourceURLOverride: source,
+            resolveURL: { URL(string: $0, relativeTo: source)?.absoluteURL },
+            panelIsInHDRMode: false
+        )
+        let controller = try AetherPlaybackController()
+        controller.requiresExplicitTransportResume = true
+        defer { controller.stop() }
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
+
+        // A replan must register the selected track again, without accumulating
+        // aliases or losing the selection just because media mounts first.
+        for _ in 0..<2 {
+            let epoch = controller.beginLoad(spec, shouldPlayWhenReady: false)
+            try await controller.finishLoad(epoch)
+            let engineID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: appID))
+            XCTAssertEqual(controller.engine.subtitleTracks.filter(\.isExternal).count, 1)
+            XCTAssertTrue(controller.engine.subtitleTracks.contains { $0.id == engineID })
+            XCTAssertEqual(controller.appSubtitleID(forAetherID: engineID), appID)
+            controller.selectSubtitleTrack(id: appID)
+            XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, engineID)
+            XCTAssertEqual(controller.activeLoadEpoch, epoch)
+            XCTAssertEqual(controller.activeSpec?.sourceURL, source)
+        }
+    }
+
     func testReplacementPreparationInvalidatesOutgoingLoadAndAllowsSuccessorEpoch() throws {
         let controller = try AetherPlaybackController()
         defer { controller.stop() }

@@ -512,6 +512,7 @@ final class ServerRegistry {
         await MainActor.run {
             AICapabilities.shared.reset()
             ImageSizeCapability.shared.reset()
+            WatchPartySession.shared.leave(forgetRecent: true)
             RequestsFeatureStore.shared.reset()
             CurrentProfileStore.shared.reset()
             SubtitleProvidersStore.shared.reset()
@@ -733,6 +734,7 @@ final class ServerRegistry {
             await MainActor.run {
                 AICapabilities.shared.reset()
                 ImageSizeCapability.shared.reset()
+                WatchPartySession.shared.leave(forgetRecent: true)
                 RequestsFeatureStore.shared.reset()
                 CurrentProfileStore.shared.reset()
                 SubtitleProvidersStore.shared.reset()

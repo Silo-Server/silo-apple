@@ -209,12 +209,14 @@ struct TVMainTabView: View {
                 prefersLastUsedVersion: payload.prefersLastUsedVersion,
                 posterURLHint: payload.posterURL,
                 backdropURLHint: payload.backdropURL,
+                watchPartyContext: payload.watchPartyContext,
                 onPlaybackStarted: {
                     guard let returnToContentId = payload.returnToContentId,
                           router.presentedPlayer?.id == payload.id else { return }
                     router.replaceCurrent(with: .itemDetail(contentId: returnToContentId, libraryId: payload.libraryId))
                 }
             )
+            .id(payload.id)
         }
         // Outside the presentation modifiers so presented covers (audio
         // player) inherit the router — ErrorView requires it and traps
@@ -719,6 +721,7 @@ struct TVMainTabView: View {
             onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
+            onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
             onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
@@ -1362,6 +1365,12 @@ struct TVMainTabView: View {
             CollectionDetailView(collectionId: id)
         case .browse(let libraryId):
             BrowseView(libraryId: libraryId)
+        case .watchParty:
+            #if os(iOS) || os(tvOS)
+            WatchPartyHubView(session: .shared)
+            #else
+            EmptyView()
+            #endif
         case .requestsHub:
             RequestsHubView()
         case .requestDetail(let mediaType, let tmdbId):
