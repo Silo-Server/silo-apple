@@ -251,10 +251,14 @@ final class CollectionsViewModelTests: XCTestCase {
         stub.reply(path: "/api/v2/collections/capabilities", 200, capabilities(groups: true))
         let (model, http) = try await viewModelAndClient()
         model.newCollectionName = "Saved"
-        stub.sequence([.json(201, collection), .json(200, listBody())])
+        stub.sequence([.json(201, collection)])
         stub.hold()
         let create = Task { await model.createCollection() }
         await stub.waitUntilHeld()
+        // The held POST has taken its reply. The re-read sends the list and
+        // capability reads together in either order, so answer the list by
+        // path rather than from the path-blind queue.
+        stub.reply(path: "/api/v2/collections", 200, listBody())
         // An identity transition runs while the POST is at the server, so
         // HTTPClient discards the answer: the collection may exist.
         let transition = await http.beginIdentityTransition()
