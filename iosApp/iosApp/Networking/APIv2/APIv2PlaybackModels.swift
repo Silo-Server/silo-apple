@@ -155,11 +155,8 @@ struct APIv2PlaybackDecision: Codable {
     let sessionId: String?
     let playbackPlan: APIv2PlaybackPlan?
     let terminal: PlaybackV3Terminal?
-    var progressTimeline: APIv2ProgressTimeline? = nil
 
-    /// The player's decision shape. `progressTimeline` stays on this wire
-    /// value; the player consumer that binds it arrives with the playback
-    /// write surface.
+    /// The player's decision shape.
     func legacy() throws -> PlaybackV3DecisionResponse {
         PlaybackV3DecisionResponse(
             protocolVersion: protocolVersion,

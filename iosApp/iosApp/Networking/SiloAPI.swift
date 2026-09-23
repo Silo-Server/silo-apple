@@ -102,19 +102,6 @@ actor SiloAPI {
 
     // --- User settings ---
 
-    func effectiveSettings(keys: [String]) async throws -> [EffectiveSettingResponse] {
-        guard !keys.isEmpty else { return [] }
-        let response: EffectiveSettingsResponse = try await http.get(
-            "/api/v1/settings/effective",
-            query: ["keys": keys.joined(separator: ",")]
-        )
-        return response.settings
-    }
-
-    func effectiveSubtitleAppearance() async throws -> EffectiveSubtitleAppearanceResponse {
-        try await http.get("/api/v1/settings/subtitle_appearance/effective")
-    }
-
     func setDeviceSetting(key: String, value: String) async throws {
         try await http.putVoid("/api/v1/settings/device/\(key)", body: SetSettingBody(value: value))
     }
@@ -451,13 +438,6 @@ actor SiloAPI {
 
     func watchlist(offset: Int, limit: Int) async throws -> CatalogResponse {
         try await http.get("/api/v1/watchlist", query: await withImageSize([
-            "offset": String(offset),
-            "limit": String(limit),
-        ]))
-    }
-
-    func history(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/history", query: await withImageSize([
             "offset": String(offset),
             "limit": String(limit),
         ]))
