@@ -40,8 +40,7 @@ final class WatchPartySession {
         return WatchPartyLobbyPolicy.inviteURL(path: path, serverURL: auth.account.serverURL)
     }
 
-    @ObservationIgnored private let api: WatchPartyAPI
-    @ObservationIgnored private let catalog: APIv2Client
+    @ObservationIgnored private let api: APIv2Client
     @ObservationIgnored private let tokenStore: TokenStore
     @ObservationIgnored private let recentStore: WatchPartyRecentStore
     @ObservationIgnored private var recentPersistenceTask: Task<Void, Never>?
@@ -79,11 +78,10 @@ final class WatchPartySession {
     @ObservationIgnored private var lastCommandCompleted: Date = .distantPast
     @ObservationIgnored private var mutationSequence: UInt64 = 0
 
-    init(api: WatchPartyAPI = WatchPartyAPI(), tokenStore: TokenStore = .shared, catalog: APIv2Client? = nil,
+    init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared,
          recentStore: WatchPartyRecentStore = WatchPartyRecentStore()) {
         self.api = api
         self.tokenStore = tokenStore
-        self.catalog = catalog ?? APIv2Client(tokenStore: tokenStore)
         self.recentStore = recentStore
     }
 
@@ -99,8 +97,8 @@ final class WatchPartySession {
 
     private func loadCapabilities(auth captured: CapturedOrdinaryRequestAuth, owner: UUID) async -> Bool {
         do {
-            async let rooms = api.capabilities(auth: captured)
-            async let playback = catalog.playbackCapabilities(auth: captured)
+            async let rooms = api.watchPartyCapabilities(auth: captured)
+            async let playback = api.playbackCapabilities(auth: captured)
             let (roomCaps, playbackCaps) = try await (rooms, playback)
             guard await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: captured) != nil,
                   owner == engagement, !Task.isCancelled else { return false }
@@ -127,7 +125,7 @@ final class WatchPartySession {
 
     @discardableResult
     func create(selection: WatchPartySelection? = nil, mode: WatchPartySelectionMode = .hostPick) async -> Bool {
-        let entered = await enter { try await self.api.create(selectionMode: mode, auth: $0) }
+        let entered = await enter { try await self.api.createWatchPartyRoom(selectionMode: mode, auth: $0) }
         guard entered else { return false }
         if let selection, mode == .hostPick { return await select(selection) }
         return true
@@ -137,7 +135,7 @@ final class WatchPartySession {
     func join(code: String) async -> Bool {
         let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else { errorMessage = "Enter a party code or invitation link."; return false }
-        return await enter { try await self.api.join(code: code, auth: $0) }
+        return await enter { try await self.api.joinWatchPartyRoom(code: code, auth: $0) }
     }
 
     @discardableResult
@@ -153,7 +151,7 @@ final class WatchPartySession {
 
     @discardableResult
     func join(joinToken: String, serverURL: String) async -> Bool {
-        await enter(invitationServer: serverURL) { try await self.api.join(joinToken: joinToken, auth: $0) }
+        await enter(invitationServer: serverURL) { try await self.api.joinWatchPartyRoom(joinToken: joinToken, auth: $0) }
     }
 
     @discardableResult
@@ -165,7 +163,7 @@ final class WatchPartySession {
             return false
         }
         return await enter(expectedRoomID: recentRoom.roomId, expectedAuth: recentAuth) {
-            try await self.api.join(code: recentRoom.code, auth: $0)
+            try await self.api.joinWatchPartyRoom(code: recentRoom.code, auth: $0)
         }
     }
 
@@ -389,12 +387,12 @@ final class WatchPartySession {
                 self.commands = WatchPartyCommandState()
                 do {
                     let receipt = self.state.receipt
-                    let response = try await self.api.room(id: room.roomId, token: self.roomToken, auth: auth)
+                    let response = try await self.api.watchPartyRoom(id: room.roomId, token: self.roomToken, auth: auth)
                     guard await self.ownsCurrentIdentity(), owner == self.engagement, socketID == self.connectionID else { return }
                     self.roomToken = response.roomAccessToken
                     self.accept(response.room, requestReceipt: receipt)
                     guard self.isEngaged else { return }
-                    let ticket = try await self.api.socketTicket(roomId: room.roomId, token: self.roomToken, auth: auth)
+                    let ticket = try await self.api.watchPartySocketTicket(roomId: room.roomId, token: self.roomToken, auth: auth)
                     guard await self.ownsCurrentIdentity(), owner == self.engagement, socketID == self.connectionID else { return }
                     let events = try socket.connect(serverURL: auth.account.serverURL, roomId: room.roomId, ticket: ticket)
                     for try await event in events {
@@ -742,37 +740,37 @@ final class WatchPartySession {
     func select(_ selection: WatchPartySelection) async -> Bool {
         guard isEngaged, room?.selectionMode == .hostPick else { return false }
         if room?.phase == .lobby, capabilities?.stagedSelection == true { return await stage(selection) }
-        return await mutate { try await self.api.select(roomId: $0, token: $1, selection: selection, auth: $2) }
+        return await mutate { try await self.api.setWatchPartySelection(roomId: $0, token: $1, selection: selection, auth: $2) }
     }
 
     @discardableResult
     func stage(_ selection: WatchPartySelection) async -> Bool {
         guard capabilities?.stagedSelection == true, room?.phase == .lobby, room?.selectionMode == .hostPick else { return false }
-        return await mutate { try await self.api.stage(roomId: $0, token: $1, selection: selection, auth: $2) }
+        return await mutate { try await self.api.stageWatchPartySelection(roomId: $0, token: $1, selection: selection, auth: $2) }
     }
 
     @discardableResult
     func startPlayback() async -> Bool {
         guard canStartPlayback else { return false }
         if room?.selectionMode == .vote, let winner = voteWinner { return await promoteSuggestion(id: winner.id) }
-        return await mutate { try await self.api.start(roomId: $0, token: $1, auth: $2) }
+        return await mutate { try await self.api.startWatchPartyPlayback(roomId: $0, token: $1, auth: $2) }
     }
 
     @discardableResult
     func stopPlayback() async -> Bool {
         guard capabilities?.stopPlayback == true, room?.phase == .playing else { return false }
-        return await mutate { try await self.api.stop(roomId: $0, token: $1, auth: $2) }
+        return await mutate { try await self.api.stopWatchPartyPlayback(roomId: $0, token: $1, auth: $2) }
     }
 
     @discardableResult
     func setMode(_ mode: WatchPartySelectionMode) async -> Bool {
         guard capabilities?.selectionModeSwitch == true, room?.phase == .lobby else { return false }
-        return await mutate { try await self.api.setMode(roomId: $0, token: $1, mode: mode, auth: $2) }
+        return await mutate { try await self.api.setWatchPartySelectionMode(roomId: $0, token: $1, mode: mode, auth: $2) }
     }
 
     @discardableResult
     func setPolicy(_ policy: WatchPartyGuestControlPolicy) async -> Bool {
-        await mutate { try await self.api.setPolicy(roomId: $0, token: $1, policy: policy, auth: $2) }
+        await mutate { try await self.api.setWatchPartyPolicy(roomId: $0, token: $1, policy: policy, auth: $2) }
     }
 
     func endParty() async {
@@ -782,7 +780,7 @@ final class WatchPartySession {
         errorMessage = nil
         defer { if owner == engagement { isBusy = false } }
         do {
-            try await api.close(roomId: room.roomId, token: roomToken, auth: auth)
+            try await api.closeWatchPartyRoom(roomId: room.roomId, token: roomToken, auth: auth)
             guard await ownsCurrentIdentity(), owner == engagement else { return }
             terminate("This party has ended.", canRejoin: false)
         } catch { if owner == engagement { errorMessage = error.localizedDescription } }
@@ -817,27 +815,27 @@ final class WatchPartySession {
     @discardableResult
     func addSuggestion(_ suggestion: WatchPartyNewSuggestion) async -> Bool {
         await mutateSuggestions { room, token, auth in
-            _ = try await self.api.addSuggestion(roomId: room, token: token, suggestion: suggestion, auth: auth)
+            _ = try await self.api.addWatchPartySuggestion(roomId: room, token: token, suggestion: suggestion, auth: auth)
         }
     }
 
     @discardableResult
     func deleteSuggestion(id: String) async -> Bool {
         guard let suggestion = votes.rows.first(where: { $0.id == id }), canRemoveSuggestion(suggestion) else { return false }
-        return await mutateSuggestions { try await self.api.deleteSuggestion(roomId: $0, token: $1, suggestionId: id, auth: $2) }
+        return await mutateSuggestions { try await self.api.deleteWatchPartySuggestion(roomId: $0, token: $1, suggestionId: id, auth: $2) }
     }
 
     @discardableResult
     func setVote(suggestionId: String, voted: Bool) async -> Bool {
         guard votes.rows.contains(where: { $0.id == suggestionId }) else { return false }
-        return await mutateSuggestions { try await self.api.vote(roomId: $0, token: $1, suggestionId: suggestionId, voted: voted, auth: $2) }
+        return await mutateSuggestions { try await self.api.voteWatchPartySuggestion(roomId: $0, token: $1, suggestionId: suggestionId, voted: voted, auth: $2) }
     }
 
     @discardableResult
     func promoteSuggestion(id: String) async -> Bool {
         guard room?.phase == .lobby, votes.rows.contains(where: { $0.id == id }) else { return false }
         if room?.selectionMode == .vote, capabilities?.voteHostOverride != true, voteWinner?.id != id { return false }
-        return await mutate { try await self.api.promote(roomId: $0, token: $1, suggestionId: id, auth: $2) }
+        return await mutate { try await self.api.promoteWatchPartySuggestion(roomId: $0, token: $1, suggestionId: id, auth: $2) }
     }
 
     private func mutateSuggestions(_ operation: (String, String, CapturedOrdinaryRequestAuth) async throws -> Void) async -> Bool {
@@ -896,7 +894,7 @@ final class WatchPartySession {
             var cursors = Set<String>()
             repeat {
                 try Task.checkCancellation()
-                let page = try await api.suggestions(roomId: roomId, token: roomToken, cursor: cursor, auth: auth)
+                let page = try await api.watchPartySuggestions(roomId: roomId, token: roomToken, cursor: cursor, auth: auth)
                 guard await validateIdentity(), owner == engagement, isEngaged else { throw CancellationError() }
                 try Task.checkCancellation()
                 rows += page.items
@@ -918,7 +916,7 @@ final class WatchPartySession {
         isLoadingPicker = true
         defer { if pickerRequestID == requestID { isLoadingPicker = false } }
         do {
-            let result = try await api.picker(roomId: room.roomId, token: roomToken, auth: auth)
+            let result = try await api.watchPartyPicker(roomId: room.roomId, token: roomToken, auth: auth)
             guard await validateIdentity(), owner == engagement, pickerRequestID == requestID, isEngaged else { return }
             picker = result
         } catch is CancellationError {
@@ -941,7 +939,7 @@ final class WatchPartySession {
         isLoadingMemberState = true
         defer { if memberStateRequestID == requestID { isLoadingMemberState = false } }
         do {
-            let result = try await api.memberState(roomId: room.roomId, token: roomToken, contentIds: ids, auth: auth)
+            let result = try await api.watchPartyMemberState(roomId: room.roomId, token: roomToken, contentIds: ids, auth: auth)
             guard await validateIdentity(), owner == engagement, memberStateRequestID == requestID, isEngaged else { return }
             memberState = result
         } catch is CancellationError {
@@ -961,7 +959,7 @@ final class WatchPartySession {
         selectedItemTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let detail = try await self.catalog.catalogItem(id: contentId, libraryId: room.selectedLibraryId, imageSize: nil, auth: auth)
+                let detail = try await self.api.catalogItem(id: contentId, libraryId: room.selectedLibraryId, imageSize: nil, auth: auth)
                 guard await self.validateIdentity(), owner == self.engagement, self.isEngaged, !Task.isCancelled,
                       self.room?.selectedContentId == contentId, self.room?.selectedLibraryId == room.selectedLibraryId else { return }
                 self.selectedItem = WatchPartySelectedItem(detail)
@@ -1006,7 +1004,7 @@ final class WatchPartySession {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await self.api.sourceFallback(roomId: room.roomId, token: self.roomToken,
+                let response = try await self.api.watchPartySourceFallback(roomId: room.roomId, token: self.roomToken,
                     selectionRevision: context.selectionRevision, failedFileId: String(context.fileId), reason: fallback, auth: auth)
                 guard await self.validateIdentity(), owner == self.engagement, self.playbackContext == context else { return }
                 self.roomToken = response.roomAccessToken

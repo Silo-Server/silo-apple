@@ -500,9 +500,9 @@ struct WatchPartyMediaPicker: View {
             let auth = try await session.catalogAuth()
             let result: APIv2CatalogResult
             if !reset, let continuation {
-                result = try await APIv2Client().nextCatalogPage(continuation)
+                result = try await SiloAPI.shared.apiV2Client.nextCatalogPage(continuation)
             } else {
-                result = try await APIv2Client().catalogPage(query: Self.recentQuery(type: "movie"), auth: auth)
+                result = try await SiloAPI.shared.apiV2Client.catalogPage(query: Self.recentQuery(type: "movie"), auth: auth)
             }
             guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
             if reset { items = result.value.items }
@@ -529,7 +529,7 @@ struct WatchPartyMediaPicker: View {
     private func loadRecentSeries(roomId: String?) async {
         do {
             let auth = try await session.catalogAuth()
-            let result = try await APIv2Client().catalogPage(query: Self.recentQuery(type: "series"), auth: auth)
+            let result = try await SiloAPI.shared.apiV2Client.catalogPage(query: Self.recentQuery(type: "series"), auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             recentSeries = result.value.items
         } catch {
@@ -567,7 +567,7 @@ struct WatchPartyMediaPicker: View {
             catalogQuery.type = "video"
             catalogQuery.limit = 40
             catalogQuery.source = "watchlist"
-            let result = try await APIv2Client().catalogPage(query: catalogQuery, auth: auth)
+            let result = try await SiloAPI.shared.apiV2Client.catalogPage(query: catalogQuery, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             watchlistItems = result.value.items
         } catch {
@@ -598,7 +598,7 @@ struct WatchPartyMediaPicker: View {
             let auth = try await session.catalogAuth()
             let result: APIv2CatalogResult
             if !reset, let continuation {
-                result = try await APIv2Client().nextCatalogPage(continuation)
+                result = try await SiloAPI.shared.apiV2Client.nextCatalogPage(continuation)
             } else {
                 var catalogQuery = APIv2CatalogQuery()
                 catalogQuery.type = "video"
@@ -613,7 +613,7 @@ struct WatchPartyMediaPicker: View {
                         catalogQuery.q = trimmedQuery
                     }
                 }
-                result = try await APIv2Client().catalogPage(query: catalogQuery, auth: auth)
+                result = try await SiloAPI.shared.apiV2Client.catalogPage(query: catalogQuery, auth: auth)
             }
             guard !Task.isCancelled, roomId == session.room?.roomId, requestedKey == requestKey, loadID == requestID else { return }
             if reset { items = result.value.items }
@@ -905,7 +905,7 @@ private struct WatchPartyEpisodePicker: View {
         errorMessage = nil
         do {
             let auth = try await session.catalogAuth()
-            let values = try await APIv2Client().catalogSeasons(seriesId: series.contentId, imageSize: nil, auth: auth)
+            let values = try await SiloAPI.shared.apiV2Client.catalogSeasons(seriesId: series.contentId, imageSize: nil, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             seasons = try values.map { try Season(catalog: $0) }.sortedForDisplay()
             let target = seasons.first(where: { $0.seasonNumber > 0 }) ?? seasons.first
@@ -927,7 +927,7 @@ private struct WatchPartyEpisodePicker: View {
         episodes = []
         do {
             let auth = try await session.catalogAuth()
-            let values = try await APIv2Client().catalogEpisodes(seriesId: series.contentId,
+            let values = try await SiloAPI.shared.apiV2Client.catalogEpisodes(seriesId: series.contentId,
                 seasonNumber: seasonNumber, imageSize: nil, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
             episodes = try values.map { try EpisodeListItem(catalog: $0) }

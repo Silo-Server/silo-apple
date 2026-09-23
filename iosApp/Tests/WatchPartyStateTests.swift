@@ -306,9 +306,8 @@ final class WatchPartyStateTests: XCTestCase {
         await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         await tokens.setProfileId("profile-one")
         let http = HTTPClient(session: urlSession, tokenStore: tokens)
-        let api = WatchPartyAPI(http: http, tokenStore: tokens, isUpdateRequired: { false })
-        let catalog = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
-        return WatchPartySession(api: api, tokenStore: tokens, catalog: catalog,
+        let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
+        return WatchPartySession(api: api, tokenStore: tokens,
             recentStore: WatchPartyRecentStore(keychain: SharedKeychain(service: name, accessGroup: nil)))
     }
 
@@ -543,8 +542,8 @@ final class WatchPartyStateTests: XCTestCase {
         stub.reply(200, sessionCapabilities)
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         let session = WatchPartySession(
-            api: WatchPartyAPI(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokenStore: tokens,
-            catalog: APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), recentStore: store)
+            api: APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokenStore: tokens,
+            recentStore: store)
         let deactivated = await tokens.deactivateProfile(expectedAccount: durable.request.account)
         XCTAssertTrue(deactivated)
         session.leave()

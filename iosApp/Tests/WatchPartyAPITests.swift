@@ -11,7 +11,7 @@ final class WatchPartyAPITests: XCTestCase {
         stub = APIv2TestStub()
     }
 
-    private func client() async throws -> (WatchPartyAPI, TokenStore, CapturedOrdinaryRequestAuth) {
+    private func client() async throws -> (APIv2Client, TokenStore, CapturedOrdinaryRequestAuth) {
         let name = "WatchPartyAPITests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -24,7 +24,7 @@ final class WatchPartyAPITests: XCTestCase {
         await tokens.setProfileToken("profile-proof")
         let captured = await tokens.captureOrdinaryRequestAuth()
         let auth = try XCTUnwrap(captured)
-        let api = WatchPartyAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
             tokenStore: tokens, isUpdateRequired: { false })
         return (api, tokens, auth)
     }
@@ -111,7 +111,7 @@ final class WatchPartyAPITests: XCTestCase {
     func testStageCarriesCapturedProfileRoomProofAndStringIDs() async throws {
         stub.reply(200, try response())
         let (api, _, auth) = try await client()
-        _ = try await api.stage(roomId: roomId, token: "room-proof",
+        _ = try await api.stageWatchPartySelection(roomId: roomId, token: "room-proof",
             selection: WatchPartySelection(contentId: "movie:123", fileId: "9007199254740993", libraryId: "3"), auth: auth)
         let request = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(request.method, "PUT")
@@ -129,7 +129,7 @@ final class WatchPartyAPITests: XCTestCase {
         stub.reply(200, try response())
         let (api, tokens, auth) = try await client()
         stub.hold()
-        let pending = Task { try await api.room(id: roomId, token: "room-proof", auth: auth) }
+        let pending = Task { try await api.watchPartyRoom(id: roomId, token: "room-proof", auth: auth) }
         await stub.waitUntilHeld()
         await tokens.setProfileToken("replacement-proof")
         stub.release()
@@ -138,9 +138,9 @@ final class WatchPartyAPITests: XCTestCase {
             XCTFail("Old room state must not publish into a replacement profile")
         } catch HTTPError.authorityChanged { }
         do {
-            _ = try await api.start(roomId: roomId, token: "room-proof", auth: auth)
+            _ = try await api.startWatchPartyPlayback(roomId: roomId, token: "room-proof", auth: auth)
             XCTFail("An old owner must not dispatch a mutation")
-        } catch HTTPError.authorityChanged { }
+        } catch HTTPError.requestIdentityChanged { }
         XCTAssertEqual(stub.requests.count, 1)
     }
 
@@ -148,7 +148,7 @@ final class WatchPartyAPITests: XCTestCase {
         stub.reply(401, #"{"type":"https://siloserver.org/docs/api/v2/problems/authentication_required","title":"Unauthorized","status":401,"detail":"Expired","instance":"urn:test"}"#)
         let (api, _, auth) = try await client()
         do {
-            _ = try await api.start(roomId: roomId, token: "room-proof", auth: auth)
+            _ = try await api.startWatchPartyPlayback(roomId: roomId, token: "room-proof", auth: auth)
             XCTFail("Expected the first dispatch failure")
         } catch APIv2Error.problem(let problem) {
             XCTAssertEqual(problem.status, 401)
@@ -164,13 +164,13 @@ final class WatchPartyAPITests: XCTestCase {
         for payload in [try response(room: different), try response(token: "")] {
             stub.reply(200, payload)
             do {
-                _ = try await api.room(id: roomId, token: "room-proof", auth: auth)
+                _ = try await api.watchPartyRoom(id: roomId, token: "room-proof", auth: auth)
                 XCTFail("Invalid receipt accepted")
             } catch WatchPartyAPIError.invalidResponse { }
         }
         stub.reply(200, "")
         do {
-            try await api.close(roomId: roomId, token: "room-proof", auth: auth)
+            try await api.closeWatchPartyRoom(roomId: roomId, token: "room-proof", auth: auth)
             XCTFail("Close must return 204")
         } catch APIv2Error.httpStatus(200) { }
     }
@@ -178,11 +178,11 @@ final class WatchPartyAPITests: XCTestCase {
     func testMemberStateAllowsOmittedInaccessibleIDsAndBoundsRequests() async throws {
         stub.reply(200, #"{"members":[],"items":[{"content_id":"movie:1","members":[]}]}"#)
         let (api, _, auth) = try await client()
-        let result = try await api.memberState(roomId: roomId, token: "room-proof", contentIds: ["movie:1", "movie:2"], auth: auth)
+        let result = try await api.watchPartyMemberState(roomId: roomId, token: "room-proof", contentIds: ["movie:1", "movie:2"], auth: auth)
         XCTAssertEqual(result.items.map(\.contentId), ["movie:1"])
         for ids in [[], Array(repeating: "movie:1", count: 201)] {
             do {
-                _ = try await api.memberState(roomId: roomId, token: "room-proof", contentIds: ids, auth: auth)
+                _ = try await api.watchPartyMemberState(roomId: roomId, token: "room-proof", contentIds: ids, auth: auth)
                 XCTFail("Invalid bounded request was sent")
             } catch WatchPartyAPIError.invalidRequest { }
         }
@@ -193,13 +193,13 @@ final class WatchPartyAPITests: XCTestCase {
         let (api, _, auth) = try await client()
         stub.reply(201, #"{"suggestion_id":"wrong"}"#)
         do {
-            _ = try await api.addSuggestion(roomId: roomId, token: "room-proof",
+            _ = try await api.addWatchPartySuggestion(roomId: roomId, token: "room-proof",
                 suggestion: WatchPartyNewSuggestion(contentId: "movie:1", contentType: "movie", title: "Movie"), auth: auth)
             XCTFail("Mismatched suggestion receipt accepted")
         } catch WatchPartyAPIError.invalidResponse { }
         stub.reply(200, #"{"items":[],"page":{"has_more":true}}"#)
         do {
-            _ = try await api.suggestions(roomId: roomId, token: "room-proof", auth: auth)
+            _ = try await api.watchPartySuggestions(roomId: roomId, token: "room-proof", auth: auth)
             XCTFail("Incomplete suggestion page accepted")
         } catch WatchPartyAPIError.invalidResponse { }
     }
@@ -209,7 +209,7 @@ final class WatchPartyAPITests: XCTestCase {
         for proto in ["silo.room.v2", "future.protocol"] {
             stub.reply(200, #"{"ticket":"single_use-ticket","expires_in":30,"max_connection_seconds":300,"protocol":"\#(proto)"}"#)
             do {
-                let ticket = try await api.socketTicket(roomId: roomId, token: "room-proof", auth: auth)
+                let ticket = try await api.watchPartySocketTicket(roomId: roomId, token: "room-proof", auth: auth)
                 XCTAssertEqual(proto, "silo.room.v2")
                 XCTAssertEqual(ticket.protocol, proto)
             } catch WatchPartyAPIError.invalidResponse {
