@@ -277,6 +277,86 @@ final class AuthDeviceV2Tests: XCTestCase {
         XCTAssertEqual(LoginViewModel.message(for: try problem(503, "service_unavailable")), "server detail")
     }
 
+    // MARK: QR sign-in
+
+    /// The tvOS QR poll ends on a v1-only server, a 410 upgrade answer, or a
+    /// removed request, and keeps polling through transient failures.
+    func testQRPollFailuresFollowTheV2Answer() async throws {
+        let (api, tokens) = try await harness()
+        let identityValue = await tokens.refreshAccountIdentity()
+        let identity = try XCTUnwrap(identityValue)
+        func pollFailure() async -> QRLoginViewModel.PollFailure? {
+            do {
+                _ = try await api.pollDeviceLogin(deviceCode: "secret", expectedAccount: identity)
+                XCTFail("poll failure expected")
+                return nil
+            } catch {
+                return QRLoginViewModel.pollFailure(for: error)
+            }
+        }
+        func problem(_ status: Int, _ type: String) -> String {
+            #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#
+        }
+
+        // Go's plain 404 on a /api/v2 route is a v1-only server, not an expired code.
+        stub.reply(404, "404 page not found\n")
+        let legacy = await pollFailure()
+        XCTAssertEqual(legacy, .terminal(message: UpdateRequirement.serverMessage))
+        stub.reply(404, problem(404, "not_found"))
+        let removed = await pollFailure()
+        XCTAssertEqual(removed, .terminal(message: "This sign-in request has expired."))
+        stub.reply(410, problem(410, "client_upgrade_required"))
+        let upgrade = await pollFailure()
+        XCTAssertEqual(upgrade, .terminal(message: UpdateRequirement.appMessage))
+        stub.reply(503, problem(503, "service_unavailable"))
+        let unavailable = await pollFailure()
+        XCTAssertEqual(unavailable, .keepPolling)
+        stub.fail(.timedOut)
+        let offline = await pollFailure()
+        XCTAssertEqual(offline, .keepPolling)
+        XCTAssertEqual(Set(stub.requestedPaths), ["/api/v2/auth/device/poll"])
+    }
+
+    func testQRStartShowsTheUpdateMessageForAV1OnlyServer() async throws {
+        let (api, tokens) = try await harness()
+        let identityValue = await tokens.refreshAccountIdentity()
+        let identity = try XCTUnwrap(identityValue)
+        stub.reply(404, "404 page not found\n")
+        do {
+            _ = try await api.startDeviceLogin(.init(deviceName: "TV", devicePlatform: "tvos"), expectedAccount: identity)
+            XCTFail("a v1-only server cannot open a pairing request")
+        } catch {
+            XCTAssertEqual(QRLoginViewModel.startFailureMessage(for: error), UpdateRequirement.serverMessage)
+        }
+        XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/device/start"])
+    }
+
+    /// The approved poll's token pair names the account; sign-in binds it.
+    @MainActor
+    func testApprovedPollBindsTheTokenPairAccount() async throws {
+        let (api, tokens) = try await harness()
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
+        let name = "AuthDeviceV2Tests.auth.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: SharedDefaults(suite: suite, standard: suite)),
+            apiV2Client: api, httpClient: http, tokenStore: tokens)
+        let identityValue = await tokens.refreshAccountIdentity()
+        let identity = try XCTUnwrap(identityValue)
+        stub.reply(200, Self.poll_device_login_ok)
+        let poll = try await auth.pollDeviceLogin(deviceCode: "secret", expectedAccount: identity)
+        let pair = try XCTUnwrap(poll.tokens)
+        try await auth.installSession(accessToken: pair.accessToken, refreshToken: pair.refreshToken,
+            accountID: pair.user.id, expectedAccount: identity)
+        let durable = await tokens.captureDurableAccountAuth()
+        XCTAssertEqual(durable?.accountID, "1")
+        let access = await tokens.getAccessToken()
+        XCTAssertEqual(access, "acc")
+        let request = try XCTUnwrap(stub.requests.first)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
+        XCTAssertEqual(body, ["device_code": "secret"])
+    }
+
     private static let login_ok = #"""
 {
   "access_token": "acc",

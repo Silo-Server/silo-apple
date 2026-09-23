@@ -104,7 +104,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         _ = await h.store.clearTokens()
         let expected = await h.store.refreshAccountIdentity()
         try await h.auth.installSession(accessToken: "replacement", refreshToken: "replacement-refresh",
-            accountID: nil, expectedAccount: XCTUnwrap(expected))
+            accountID: "1", expectedAccount: XCTUnwrap(expected))
         h.stub.release()
         await revoke.value
         let access = await h.store.getAccessToken()
@@ -135,7 +135,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNil(access)
         let account = await h.store.refreshAccountIdentity()
         try await h.auth.installSession(accessToken: "new-login", refreshToken: "new-refresh",
-            accountID: nil, expectedAccount: XCTUnwrap(account))
+            accountID: "1", expectedAccount: XCTUnwrap(account))
         let relaunched = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
         XCTAssertEqual(relaunched, "new-login")
     }
