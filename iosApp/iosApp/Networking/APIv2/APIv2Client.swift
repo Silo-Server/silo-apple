@@ -215,7 +215,7 @@ struct APIv2Client: Sendable {
         return profile
     }
 
-    // MARK: Owner-bound reads
+    // MARK: Owner-bound calls
 
     /// A read bound to the owner current at capture: the response is
     /// discarded if the account, credential owner, or profile changed while
@@ -232,6 +232,28 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+    }
+
+    /// Create and cancel are never replayed after an ambiguous transport
+    /// failure, and, like every other v2 mutation, dispatch only under the
+    /// owner captured here.
+    func requestPost<T: Decodable, B: Encodable>(_ path: String, body: B, timeout: HTTPTimeout = .standard) async throws -> T {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(body)
+        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let response = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "POST", path: path, body: data,
+                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        guard (200..<300).contains(response.statusCode) else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 

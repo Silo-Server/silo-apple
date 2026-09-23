@@ -99,12 +99,11 @@ final class CatalogV2Tests: XCTestCase {
             $0["id"] = "profile-one"
         }
         let profile = try XCTUnwrap(String(data: profileData, encoding: .utf8))
-        let mediaRequest = #"{"id":"request-one","provider":"tmdb","media_type":"movie","tmdb_id":949,"title":"Heat","status":"pending","outcome":"cancelled","is_anime":false,"targets":[],"created_at":"2026-01-02T03:04:05.000Z","updated_at":"2026-01-02T03:04:05.000Z"}"#
         let cases: [(String, (APIv2Client) async throws -> Void, String)] = [
             ("requestGet", { _ = try await $0.requestGet("/api/v2/catalog/filters") as APIv2CatalogFilters }, filters),
             ("updateProfile", { _ = try await $0.updateProfile(id: "profile-one", patch: APIv2ProfilePatch()) }, profile),
             ("householdProfiles", { _ = try await $0.householdProfiles() }, #"{"items":[\#(profile)],"page":{"has_more":false}}"#),
-            ("cancelRequest", { _ = try await $0.cancelRequest(id: "request-one", reason: nil) }, mediaRequest),
+            ("requestPost", { _ = try await $0.requestPost("/api/v2/requests", body: ["item_id": "one"]) as APIv2Profile }, profile),
             ("listProgress", { _ = try await $0.listProgress(limit: 5) }, #"{"items":[],"page":{"has_more":false}}"#),
         ]
         for (name, call, body) in cases {
