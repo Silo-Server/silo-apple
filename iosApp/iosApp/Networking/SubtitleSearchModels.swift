@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import OSLog
 
 /// A provider search for one media file. The server derives
 /// title/year/episode/hash from the media file itself; the client only
@@ -132,6 +133,24 @@ enum SubtitleDownloadOutcome: Equatable {
     case unconfirmed
 
     static let genericFailure = "Couldn't add that subtitle. Try another result."
+    static let storedMessage =
+        "The subtitle was saved but couldn't be turned on now. It will be available the next time you play this video."
+    static let unconfirmedMessage =
+        "Silo couldn't confirm the download. If it was saved, it will be available the next time you play this video."
+
+    /// What the search menu shows; `nil` for `.added`, which closes it.
+    var message: String? {
+        switch self {
+        case .added: return nil
+        case .stored: return Self.storedMessage
+        case .failed(let message): return message
+        case .unconfirmed: return Self.unconfirmedMessage
+        }
+    }
+
+    /// Whether the menu must not send this result again while it stays open:
+    /// the server stored it, or may have.
+    var holdsResult: Bool { self == .stored || self == .unconfirmed }
 
     static func isUnconfirmed(_ error: Error) -> Bool {
         (error as? APIv2SubtitleRequestError) == .outcomeUnknownOwnerChanged
@@ -146,6 +165,87 @@ enum SubtitleDownloadOutcome: Equatable {
         default:
             return genericFailure
         }
+    }
+
+    /// What a download that threw means for the user.
+    static func forDownloadError(_ error: Error) -> SubtitleDownloadOutcome {
+        if isUnconfirmed(error) { return .unconfirmed }
+        switch error {
+        case APIv2Error.invalidSubtitleResponse:
+            // A 200 whose stored row names another file: stored, not usable here.
+            return .stored
+        default:
+            return .failed(failureMessage(for: error))
+        }
+    }
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
+        category: "Player"
+    )
+
+    /// Runs one provider download through to the live handoff. The steps are
+    /// passed in so the outcome mapping is testable without a player.
+    ///
+    /// - Parameters:
+    ///   - download: captures the owner and sends the download once.
+    ///   - relist: lists the file's stored subtitles for that owner.
+    ///   - isStillCurrent: whether the owner and media file still match the
+    ///     player after the awaits.
+    ///   - register: registers the stored row found at `position` in the
+    ///     listing; returns `false` when the player cannot take it.
+    @MainActor
+    static func resolve<Owner>(
+        download: () async throws -> (Owner, DownloadedSubtitle),
+        relist: (Owner) async throws -> [DownloadedSubtitle],
+        isStillCurrent: (Owner) async -> Bool,
+        register: (_ subtitle: DownloadedSubtitle, _ position: Int) -> Bool
+    ) async -> SubtitleDownloadOutcome {
+        let owner: Owner
+        let subtitle: DownloadedSubtitle
+        do {
+            (owner, subtitle) = try await download()
+        } catch {
+            let outcome = forDownloadError(error)
+            logger.warning(
+                "[SUB-SEARCH] download \(outcome == .unconfirmed ? "outcome unknown" : "failed", privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return outcome
+        }
+
+        // Stored on the server from here on. Anything that stops the live
+        // handoff leaves it for the next session of this file.
+        let listing: [DownloadedSubtitle]
+        do {
+            listing = try await relist(owner)
+        } catch {
+            logger.warning(
+                "[SUB-SEARCH] listing after download of subtitle id=\(subtitle.id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return .stored
+        }
+        // If playback moved to another file or owner during the awaits, the
+        // player's handoff context describes the new session; registering
+        // this file's row against it would select a wrong track.
+        guard await isStillCurrent(owner) else {
+            logger.info(
+                "[SUB-SEARCH] media file or owner changed during download of subtitle id=\(subtitle.id, privacy: .public); skipping live handoff"
+            )
+            return .stored
+        }
+        guard let position = listing.firstIndex(where: { $0.id == subtitle.id }) else {
+            logger.warning(
+                "[SUB-SEARCH] downloaded subtitle id=\(subtitle.id, privacy: .public) not in listing of \(listing.count, privacy: .public)"
+            )
+            return .stored
+        }
+        guard register(listing[position], position) else {
+            logger.warning(
+                "[SUB-SEARCH] no handoff context / unresolvable URL for subtitle id=\(subtitle.id, privacy: .public)"
+            )
+            return .stored
+        }
+        return .added
     }
 }
 

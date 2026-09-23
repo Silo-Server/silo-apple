@@ -66,4 +66,102 @@ final class SubtitleSearchModelTests: XCTestCase {
         XCTAssertEqual(SubtitleSearchScoreTier(score: 39.9), .poor)
         XCTAssertEqual(SubtitleSearchScoreTier(score: 0), .poor)
     }
+
+    // MARK: - Download outcome
+
+    private struct Refused: Error {}
+
+    private func stored(_ id: String) -> DownloadedSubtitle {
+        DownloadedSubtitle(id: id, mediaFileId: 42, provider: "opensubtitles", language: "en", format: "srt")
+    }
+
+    /// Runs `resolve` with a download that returns row "8", counting the
+    /// steps after it.
+    @MainActor
+    private func resolveStored(
+        listing: Result<[DownloadedSubtitle], Error> = .success([]),
+        stillCurrent: Bool = true,
+        registers: Bool = true
+    ) async -> (outcome: SubtitleDownloadOutcome, registered: [(String, Int)]) {
+        var registered: [(String, Int)] = []
+        let outcome = await SubtitleDownloadOutcome.resolve(
+            download: { ("owner", self.stored("8")) },
+            relist: { owner in XCTAssertEqual(owner, "owner"); return try listing.get() },
+            isStillCurrent: { _ in stillCurrent },
+            register: { subtitle, position in
+                registered.append((subtitle.id, position))
+                return registers
+            }
+        )
+        return (outcome, registered)
+    }
+
+    /// A download that threw is sorted without listing or registering
+    /// anything: only a definite refusal is `.failed`, and a 200 row the
+    /// player cannot use is still stored on the server.
+    @MainActor
+    func testThrownDownloadIsSortedWithoutRelisting() async {
+        let problem = APIv2Problem(type: "https://silo.dev/problems/not_found", title: "Not Found",
+                                   status: 404, detail: "The provider no longer has that subtitle.",
+                                   instance: nil, errors: nil)
+        let cases: [(Error, SubtitleDownloadOutcome)] = [
+            (APIv2Error.problem(problem), .failed("The provider no longer has that subtitle.")),
+            (URLError(.cannotConnectToHost), .failed(SubtitleDownloadOutcome.genericFailure)),
+            (HTTPError.requestIdentityChanged, .failed(SubtitleDownloadOutcome.genericFailure)),
+            (APIv2Error.invalidSubtitleResponse, .stored),
+            (URLError(.timedOut), .unconfirmed),
+            (APIv2Error.httpStatus(202), .unconfirmed),
+            (APIv2SubtitleRequestError.outcomeUnknownOwnerChanged, .unconfirmed),
+        ]
+        for (error, expected) in cases {
+            var laterSteps = 0
+            let outcome = await SubtitleDownloadOutcome.resolve(
+                download: { () async throws -> (String, DownloadedSubtitle) in throw error },
+                relist: { _ in laterSteps += 1; return [] },
+                isStillCurrent: { _ in laterSteps += 1; return true },
+                register: { _, _ in laterSteps += 1; return true }
+            )
+            XCTAssertEqual(outcome, expected, "\(error)")
+            XCTAssertEqual(laterSteps, 0, "\(error)")
+        }
+    }
+
+    /// Once the server has answered 200, every way the live handoff can stop
+    /// is `.stored`, never an invitation to download again.
+    @MainActor
+    func testStoredDownloadThatCannotBeAddedIsStored() async {
+        let relistFailed = await resolveStored(listing: .failure(Refused()))
+        XCTAssertEqual(relistFailed.outcome, .stored)
+        XCTAssertTrue(relistFailed.registered.isEmpty)
+
+        let moved = await resolveStored(listing: .success([stored("8")]), stillCurrent: false)
+        XCTAssertEqual(moved.outcome, .stored)
+        XCTAssertTrue(moved.registered.isEmpty)
+
+        let missing = await resolveStored(listing: .success([stored("5"), stored("6")]))
+        XCTAssertEqual(missing.outcome, .stored)
+        XCTAssertTrue(missing.registered.isEmpty)
+
+        let unregistrable = await resolveStored(listing: .success([stored("8")]), registers: false)
+        XCTAssertEqual(unregistrable.outcome, .stored)
+    }
+
+    @MainActor
+    func testStoredDownloadIsRegisteredAtItsListingPosition() async {
+        let result = await resolveStored(listing: .success([stored("5"), stored("8"), stored("9")]))
+        XCTAssertEqual(result.outcome, .added)
+        XCTAssertEqual(result.registered.map(\.0), ["8"])
+        XCTAssertEqual(result.registered.map(\.1), [1])
+    }
+
+    /// The menu keeps a result it must not send again: one the server stored
+    /// or may have stored. Only a definite failure may be picked again.
+    func testOnlyStoredOrUnconfirmedResultsAreHeld() {
+        XCTAssertTrue(SubtitleDownloadOutcome.stored.holdsResult)
+        XCTAssertTrue(SubtitleDownloadOutcome.unconfirmed.holdsResult)
+        XCTAssertFalse(SubtitleDownloadOutcome.failed("No").holdsResult)
+        XCTAssertFalse(SubtitleDownloadOutcome.added.holdsResult)
+        XCTAssertNil(SubtitleDownloadOutcome.added.message)
+        XCTAssertEqual(SubtitleDownloadOutcome.failed("No").message, "No")
+    }
 }

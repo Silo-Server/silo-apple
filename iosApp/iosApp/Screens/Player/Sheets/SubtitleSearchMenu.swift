@@ -246,30 +246,18 @@ struct SubtitleSearchMenu: View {
         }
         downloadingId = key
         Task {
-            switch await viewModel.downloadSearchedSubtitle(result) {
-            case .added:
+            let outcome = await viewModel.downloadSearchedSubtitle(result)
+            guard let message = outcome.message else {
                 // Track registered + auto-selected on the live player;
                 // collapse the whole subtitle UI down to the video.
                 onDownloaded()
-            case .stored:
-                settledDownloads[key] = Self.storedMessage
-                downloadingId = nil
-                phase = .failed(Self.storedMessage)
-            case .unconfirmed:
-                settledDownloads[key] = Self.unconfirmedMessage
-                downloadingId = nil
-                phase = .failed(Self.unconfirmedMessage)
-            case .failed(let message):
-                downloadingId = nil
-                phase = .failed(message)
+                return
             }
+            if outcome.holdsResult { settledDownloads[key] = message }
+            downloadingId = nil
+            phase = .failed(message)
         }
     }
-
-    private static let storedMessage =
-        "The subtitle was saved but couldn't be turned on now. It will be available the next time you play this video."
-    private static let unconfirmedMessage =
-        "Silo couldn't confirm the download. The subtitle may still appear in the list; if it doesn't, try again later."
 
     /// Back out of results/failure to the language list (keeps the menu up).
     private func backToLanguages() {

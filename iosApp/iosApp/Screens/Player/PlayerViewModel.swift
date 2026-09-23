@@ -5734,89 +5734,47 @@ class PlayerViewModel {
     ///
     /// Mirrors `SubtitleAIController.completePersistedHandoff` minus the
     /// job/latch/websocket machinery: the download response carries the stored
-    /// `id` but no combined index or stream URL, so we re-list to find the
-    /// track's *position* and synthesize both (see ``DownloadedSubtitle``).
+    /// `id` but no stream URL, so we re-list to find the track's display
+    /// position and synthesize a URL pinned to that `id` (see
+    /// ``DownloadedSubtitle``).
     ///
     /// The download is `non_retryable` and is sent once, for the owner
     /// captured before the first await. The outcome tells the menu whether
     /// the subtitle is stored, definitely not stored, or may be stored; the
-    /// menu never resends the last two cases' result on its own.
-    ///
-    /// Idempotency vs the server's `subtitle_ready` broadcast that follows any
-    /// download: that path is register-only (never steals selection) and
-    /// `registerCompletedAISubtitle` de-dupes on combined index, so the echo
-    /// is a harmless no-op — no ownership latch is needed here.
+    /// menu never resends the last two cases' result on its own. The server
+    /// sends no `subtitle_ready` broadcast for provider downloads, so a
+    /// subtitle that is stored but not registered here appears only the next
+    /// time the file plays. ``SubtitleDownloadOutcome/resolve`` owns the
+    /// outcome mapping.
     @MainActor
     func downloadSearchedSubtitle(_ result: SubtitleSearchResult) async -> SubtitleDownloadOutcome {
         guard let fileId = currentSelectedVersion?.fileId else {
             return .failed(SubtitleDownloadOutcome.genericFailure)
         }
-        let auth: CapturedOrdinaryRequestAuth
-        let subtitle: DownloadedSubtitle
-        do {
-            auth = try await SiloAI.shared.captureAuthority()
-            subtitle = try await SiloAI.shared.downloadSubtitle(
-                SubtitleDownloadBody(from: result, mediaFileId: fileId), auth: auth
-            )
-        } catch where SubtitleDownloadOutcome.isUnconfirmed(error) {
-            Self.logger.warning(
-                "[SUB-SEARCH] download outcome unknown: \(error.localizedDescription, privacy: .public)"
-            )
-            return .unconfirmed
-        } catch APIv2Error.invalidSubtitleResponse {
-            // A 200 whose stored row names another file: stored, not usable here.
-            Self.logger.warning("[SUB-SEARCH] download stored a subtitle this player cannot address")
-            return .stored
-        } catch {
-            Self.logger.warning(
-                "[SUB-SEARCH] download failed: \(error.localizedDescription, privacy: .public)"
-            )
-            return .failed(SubtitleDownloadOutcome.failureMessage(for: error))
-        }
-
-        // Stored on the server from here on. Anything that stops the live
-        // handoff leaves it for the next session of this file.
-        let downloaded: [DownloadedSubtitle]
-        do {
-            downloaded = try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId, auth: auth)
-        } catch {
-            Self.logger.warning(
-                "[SUB-SEARCH] listing after download of subtitle id=\(subtitle.id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
-            )
-            return .stored
-        }
-        // Revalidate after the awaits: if playback moved to a different
-        // file or owner while the download was in flight,
-        // `makeSubtitleHandoffContext` would now describe the NEW session, and
-        // registering the OLD file's listing position against it would select
-        // a wrong or invalid track.
-        guard await SiloAI.shared.matchesAuthority(auth), currentSelectedVersion?.fileId == fileId else {
-            Self.logger.info(
-                "[SUB-SEARCH] media file or owner changed during download of subtitle id=\(subtitle.id, privacy: .public); skipping live handoff"
-            )
-            return .stored
-        }
-        guard let position = downloaded.firstIndex(where: { $0.id == subtitle.id }) else {
-            Self.logger.warning(
-                "[SUB-SEARCH] downloaded subtitle id=\(subtitle.id, privacy: .public) not in listing of \(downloaded.count, privacy: .public)"
-            )
-            return .stored
-        }
-        guard let context = makeSubtitleHandoffContext(),
-              let descriptor = downloaded[position].synthesizedDescriptor(
-                  sessionId: context.sessionId,
-                  baseTrackCount: context.baseTrackCount,
-                  position: position,
-                  resolveURL: context.resolveURL
-              )
-        else {
-            Self.logger.warning(
-                "[SUB-SEARCH] no handoff context / unresolvable URL for subtitle id=\(subtitle.id, privacy: .public)"
-            )
-            return .stored
-        }
-        registerCompletedAISubtitle(descriptor, autoSelect: true)
-        return .added
+        let body = SubtitleDownloadBody(from: result, mediaFileId: fileId)
+        return await SubtitleDownloadOutcome.resolve(
+            download: {
+                let auth = try await SiloAI.shared.captureAuthority()
+                return (auth, try await SiloAI.shared.downloadSubtitle(body, auth: auth))
+            },
+            relist: { auth in try await SiloAI.shared.downloadedSubtitles(mediaFileId: fileId, auth: auth) },
+            isStillCurrent: { auth in
+                guard await SiloAI.shared.matchesAuthority(auth) else { return false }
+                return self.currentSelectedVersion?.fileId == fileId
+            },
+            register: { subtitle, position in
+                guard let context = self.makeSubtitleHandoffContext(),
+                      let descriptor = subtitle.synthesizedDescriptor(
+                          sessionId: context.sessionId,
+                          baseTrackCount: context.baseTrackCount,
+                          position: position,
+                          resolveURL: context.resolveURL
+                      )
+                else { return false }
+                self.registerCompletedAISubtitle(descriptor, autoSelect: true)
+                return true
+            }
+        )
     }
 
     /// Build the context ``SubtitleAIController`` needs to synthesize a
