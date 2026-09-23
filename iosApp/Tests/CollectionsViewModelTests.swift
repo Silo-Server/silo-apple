@@ -151,6 +151,84 @@ final class CollectionsViewModelTests: XCTestCase {
         XCTAssertTrue(model.collections.isEmpty)
     }
 
+    private let group = #"{"id":"g1","name":"G","slug":"g","default_sort_mode":"manual","sort_order":0}"#
+    private let notFound = #"{"type":"https://siloserver.org/docs/api/v2/problems/not_found","title":"Not Found","status":404,"detail":"Gone","instance":"urn:test"}"#
+
+    /// Starts a collection delete whose answer is held, dismisses its sheet,
+    /// opens a group rename with a loaded editor, then delivers `reply`.
+    private func deleteAnsweredAfterTheNextSheetOpened(_ reply: APIv2TestStub.Reply) async throws -> CollectionsViewModel {
+        stub.reply(path: "/api/v2/collections", 200, listBody(groups: group))
+        stub.reply(path: "/api/v2/collections/capabilities", 200, capabilities(groups: true))
+        let model = try await viewModel()
+        await model.loadCollections()
+        let target = try XCTUnwrap(model.collections.first)
+        let renamed = try XCTUnwrap(model.groups.first)
+
+        model.pendingGroupAction = .deleteCollection(target)
+        stub.sequence([.json(200, collection, headers: ["ETag": #""v1""#])])
+        await model.loadEditor()
+        stub.sequence([reply])
+        stub.hold()
+        let write = Task { await model.deleteCollection(id: "c1") }
+        await stub.waitUntilHeld()
+
+        model.pendingGroupAction = nil
+        model.pendingGroupAction = .rename(renamed)
+        stub.sequence([.json(200, group, headers: ["ETag": #""g-v1""#])])
+        await model.loadEditor()
+        XCTAssertFalse(model.canSubmitGroupAction, "one write at a time, even across sheets")
+
+        stub.release()
+        await write.value
+        return model
+    }
+
+    private func assertRenameSheetUntouched(_ model: CollectionsViewModel, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(model.pendingGroupAction?.id, "rename:g1", "the next sheet stays open", file: file, line: line)
+        XCTAssertNil(model.groupError, file: file, line: line)
+        XCTAssertFalse(model.editorNeedsReload, file: file, line: line)
+        XCTAssertTrue(model.canSubmitGroupAction, file: file, line: line)
+    }
+
+    func testUnknownOutcomeFromADismissedSheetRereadsTheListAndLeavesTheNextSheetAlone() async throws {
+        let listReads = { self.requests("GET", path: "/api/v2/collections").count }
+        let model = try await deleteAnsweredAfterTheNextSheetOpened(.failure(URLError(.networkConnectionLost)))
+        assertRenameSheetUntouched(model)
+        XCTAssertEqual(listReads(), 2, "the delete may have landed, so the list is read again")
+    }
+
+    func testSuccessFromADismissedSheetUpdatesTheListButKeepsTheNextSheetOpen() async throws {
+        let model = try await deleteAnsweredAfterTheNextSheetOpened(.json(204, ""))
+        assertRenameSheetUntouched(model)
+        XCTAssertTrue(model.collections.isEmpty)
+    }
+
+    func testConflictFromADismissedSheetLeavesTheNextSheetAlone() async throws {
+        let model = try await deleteAnsweredAfterTheNextSheetOpened(.json(412,
+            #"{"type":"https://siloserver.org/docs/api/v2/problems/stale_version","title":"Conflict","status":412,"detail":"Changed","instance":"urn:test"}"#))
+        assertRenameSheetUntouched(model)
+    }
+
+    func testEditThatFindsTheItemGoneClosesTheSheetAndRereadsTheList() async throws {
+        stub.reply(path: "/api/v2/collections", 200, listBody(groups: group))
+        stub.reply(path: "/api/v2/collections/capabilities", 200, capabilities(groups: true))
+        let model = try await viewModel()
+        await model.loadCollections()
+        let target = try XCTUnwrap(model.collections.first)
+
+        // Deleted on another device after this sheet read its version.
+        model.pendingGroupAction = .move(target)
+        stub.sequence([.json(200, collection, headers: ["ETag": #""v1""#]), .json(404, notFound)])
+        await model.loadEditor()
+        stub.reply(path: "/api/v2/collections", 200, #"{"items":[],"groups":[\#(group)]}"#)
+        await model.moveCollection(id: "c1", toGroupId: "g1")
+
+        XCTAssertNil(model.pendingGroupAction, "a 404 closes the sheet, as it does on Reload")
+        XCTAssertTrue(model.collections.isEmpty)
+        XCTAssertEqual(requests("GET", path: "/api/v2/collections").count, 2)
+        XCTAssertEqual(requests("PATCH", path: "/api/v2/collections/c1").count, 1)
+    }
+
     func testTransportFailuresBeforeDispatchAreDefinite() {
         XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(URLError(.notConnectedToInternet)))
         XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(HTTPError.requestIdentityChanged))

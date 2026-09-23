@@ -73,12 +73,17 @@ class CollectionsViewModel {
     // Group action sheets
     var pendingGroupAction: GroupAction? {
         didSet {
+            sheetGeneration += 1
             groupError = nil
             editorVersion = nil
             editorNeedsReload = false
             isLoadingEditor = false
         }
     }
+    /// Identifies the open sheet. Every change of `pendingGroupAction` bumps
+    /// it, so a write whose sheet was dismissed before the answer came back
+    /// can't show its outcome in, or close, the sheet opened after it.
+    private var sheetGeneration = 0
     /// Error message scoped to the currently-open group action sheet.
     /// Cleared on success, on dismissal, and when a new action starts.
     var groupError: String?
@@ -268,16 +273,16 @@ class CollectionsViewModel {
     }
 
     func deleteCollection(id: String) async {
-        guard let version = beginEdit() else { return }
+        guard let edit = beginEdit() else { return }
         defer { isSaving = false }
         do {
-            try await api.deleteCollection(version)
+            try await api.deleteCollection(edit.version)
             collections.removeAll { $0.id == id }
             rebuildSections()
             writeBackCache()
-            pendingGroupAction = nil
+            closeSheet(edit.sheet)
         } catch let err {
-            handleEditFailure(err, fallback: "Failed to delete collection")
+            await handleEditFailure(err, fallback: "Failed to delete collection", sheet: edit.sheet)
         }
     }
 
@@ -292,15 +297,18 @@ class CollectionsViewModel {
         guard !isSaving else { return }
         isSaving = true
         defer { isSaving = false }
+        let sheet = sheetGeneration
         do {
             let created = try await api.createCollectionGroup(name: trimmed)
             groups = sortGroups(groups + [created])
             rebuildSections()
             writeBackCache()
-            pendingGroupAction = nil
+            closeSheet(sheet)
         } catch let err {
-            if markGroupsUnsupported(err) { return }
-            groupError = createFailureMessage(err, fallback: "Failed to add group")
+            if markGroupsUnsupported(err, sheet: sheet) { return }
+            if sheet == sheetGeneration {
+                groupError = createFailureMessage(err, fallback: "Failed to add group")
+            }
             if Self.outcomeIsUncertain(err) { await loadCollections() }
         }
     }
@@ -311,23 +319,23 @@ class CollectionsViewModel {
             groupError = "Name is required"
             return
         }
-        guard let version = beginEdit() else { return }
+        guard let edit = beginEdit() else { return }
         defer { isSaving = false }
         do {
-            let updated = try await api.renameCollectionGroup(version, name: trimmed)
+            let updated = try await api.renameCollectionGroup(edit.version, name: trimmed)
             replaceGroup(updated)
             writeBackCache()
-            pendingGroupAction = nil
+            closeSheet(edit.sheet)
         } catch let err {
-            handleEditFailure(err, fallback: "Failed to rename group")
+            await handleEditFailure(err, fallback: "Failed to rename group", sheet: edit.sheet)
         }
     }
 
     func deleteGroup(id: String) async {
-        guard let version = beginEdit() else { return }
+        guard let edit = beginEdit() else { return }
         defer { isSaving = false }
         do {
-            try await api.deleteCollectionGroup(version)
+            try await api.deleteCollectionGroup(edit.version)
             groups.removeAll { $0.id == id }
             // Collections in the deleted group fall back to Ungrouped.
             collections = collections.map { c in
@@ -348,41 +356,59 @@ class CollectionsViewModel {
             }
             rebuildSections()
             writeBackCache()
-            pendingGroupAction = nil
+            closeSheet(edit.sheet)
         } catch let err {
-            handleEditFailure(err, fallback: "Failed to delete group")
+            await handleEditFailure(err, fallback: "Failed to delete group", sheet: edit.sheet)
         }
     }
 
     func moveCollection(id: String, toGroupId targetGroupId: String?) async {
-        guard let version = beginEdit() else { return }
+        guard let edit = beginEdit() else { return }
         defer { isSaving = false }
         do {
-            let updated = try await api.moveCollection(version, toGroupId: targetGroupId)
+            let updated = try await api.moveCollection(edit.version, toGroupId: targetGroupId)
             replaceCollection(updated)
             writeBackCache()
-            pendingGroupAction = nil
+            closeSheet(edit.sheet)
         } catch let err {
-            handleEditFailure(err, fallback: "Failed to move collection")
+            await handleEditFailure(err, fallback: "Failed to move collection", sheet: edit.sheet)
         }
     }
 
     // MARK: - Outcomes
 
-    /// The version to send, with `isSaving` set, or nil when the sheet has
-    /// no current version or a write is already running.
-    private func beginEdit() -> CollectionEditVersion? {
+    /// The version to send and the sheet sending it, with `isSaving` set, or
+    /// nil when the sheet has no current version or a write is already running.
+    private func beginEdit() -> (version: CollectionEditVersion, sheet: Int)? {
         guard canSubmitGroupAction, let version = editorVersion else { return nil }
         isSaving = true
-        return version
+        return (version, sheetGeneration)
+    }
+
+    /// Closes the sheet that started a successful write, if it is still open.
+    private func closeSheet(_ sheet: Int) {
+        if sheet == sheetGeneration { pendingGroupAction = nil }
     }
 
     /// A failed edit keeps the sheet and its draft. A stale version (412), a
     /// missing precondition (428), or an unknown outcome all require a
     /// reload before the edit can be sent again; nothing is resent here.
-    private func handleEditFailure(_ err: Error, fallback: String) {
-        if markGroupsUnsupported(err) { return }
-        switch Self.problem(err)?.status {
+    /// A 404 means the item is gone, as it does for Reload: close and re-read.
+    /// When the user dismissed the sheet mid-write, only an outcome that
+    /// leaves the list stale acts, by re-reading it.
+    private func handleEditFailure(_ err: Error, fallback: String, sheet: Int) async {
+        if markGroupsUnsupported(err, sheet: sheet) { return }
+        let status = Self.problem(err)?.status
+        if status == 404 {
+            closeSheet(sheet)
+            await loadCollections()
+            return
+        }
+        guard sheet == sheetGeneration else {
+            if Self.outcomeIsUncertain(err) { await loadCollections() }
+            return
+        }
+        switch status {
         case 412:
             editorNeedsReload = true
             groupError = "This changed on another device. Reload to see the current version; your edits are kept."
@@ -403,10 +429,12 @@ class CollectionsViewModel {
 
     /// A 501 `capability_unsupported` means this store has no groups, even
     /// if the capability read said otherwise: hide the group controls.
-    private func markGroupsUnsupported(_ err: Error) -> Bool {
+    private func markGroupsUnsupported(_ err: Error, sheet: Int) -> Bool {
         guard let problem = Self.problem(err), problem.status == 501 else { return false }
         groupSupport = .unavailable
-        groupError = problem.detail.isEmpty ? "Collection groups aren't available on this server." : problem.detail
+        if sheet == sheetGeneration {
+            groupError = problem.detail.isEmpty ? "Collection groups aren't available on this server." : problem.detail
+        }
         return true
     }
 
