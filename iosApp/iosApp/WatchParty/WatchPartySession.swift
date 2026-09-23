@@ -89,7 +89,7 @@ final class WatchPartySession {
         let owner = engagement
         guard let captured = await tokenStore.captureOrdinaryRequestAuth(), captured.profileId != nil,
               owner == engagement else { return }
-        if let recentAuth, !recentAuth.sameCredentialIdentity(as: captured) { clearRecentRoom() }
+        if let recentAuth, !recentAuth.sameCredentialIdentity(as: captured) { forgetRecentRoomInMemory() }
         if isEngaged, let auth, !auth.sameCredentialIdentity(as: captured) { leave(forgetRecent: true); return }
         await restoreRecentRoom(auth: captured, owner: owner)
         _ = await loadCapabilities(auth: captured, owner: owner)
@@ -158,7 +158,7 @@ final class WatchPartySession {
     func rejoinRecent() async -> Bool {
         guard let recentRoom, let recentAuth,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: recentAuth) != nil else {
-            clearRecentRoom()
+            forgetRecentRoomInMemory()
             errorMessage = "This recent party belongs to a different server, account, or profile."
             return false
         }
@@ -181,7 +181,7 @@ final class WatchPartySession {
             return false
         }
         if let expectedAuth, !expectedAuth.sameCredentialIdentity(as: captured) {
-            clearRecentRoom()
+            forgetRecentRoomInMemory()
             errorMessage = "This recent party belongs to a different server, account, or profile."
             return false
         }
@@ -189,7 +189,7 @@ final class WatchPartySession {
             errorMessage = "This invitation is for another server. Select that server and open the invitation again."
             return false
         }
-        if let recentAuth, !recentAuth.sameCredentialIdentity(as: captured) { clearRecentRoom() }
+        if let recentAuth, !recentAuth.sameCredentialIdentity(as: captured) { forgetRecentRoomInMemory() }
         guard await loadCapabilities(auth: captured, owner: owner), owner == engagement else { return false }
         guard capabilities?.supportsSocket == true, capabilities?.connectionReplaced == true, supportsPlayback else {
             errorMessage = "This server needs an update to support synchronized Watch Party playback safely on this profile."
@@ -258,13 +258,20 @@ final class WatchPartySession {
         (capabilities, supportsPlayback, supportsFallback) = support
     }
 
-    private func clearRecentRoom() {
+    /// The saved entry is scoped to its durable owner, so an identity mismatch
+    /// drops only this copy. A PIN profile that unlocks again has a new proof
+    /// but the same owner, and `restoreRecentRoom` reloads its entry.
+    private func forgetRecentRoomInMemory() {
         recentPersistenceTask?.cancel()
         recentPersistenceTask = nil
         recentRoom = nil
         recentAuth = nil
         lastPersistedRecent = nil
         lastRecentPersistence = .distantPast
+    }
+
+    private func clearRecentRoom() {
+        forgetRecentRoomInMemory()
         recentStore.clear()
     }
 
@@ -322,7 +329,7 @@ final class WatchPartySession {
         let owner = engagement
         let valid = await ownsCurrentIdentity()
         guard owner == engagement else { return false }
-        guard valid else { leave(); clearRecentRoom(); return false }
+        guard valid else { leave(); forgetRecentRoomInMemory(); return false }
         return true
     }
 

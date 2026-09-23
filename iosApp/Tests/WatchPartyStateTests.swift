@@ -561,6 +561,44 @@ final class WatchPartyStateTests: XCTestCase {
         XCTAssertNil(keychain.get(WatchPartyRecentStore.key))
     }
 
+    @MainActor
+    func testUnlockingAPINProfileAgainKeepsItsRestoredRecentParty() async throws {
+        let name = "WatchPartyRelockTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let keychain = SharedKeychain(service: name, accessGroup: nil)
+        let tokens = TokenStore(keychain: keychain, defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "party-server")
+        await tokens.setServerUrl("https://party.example")
+        try await tokens.installAccountSession(accessToken: "access", refreshToken: "refresh", accountID: "account-one")
+        await tokens.setProfileId("profile-one")
+        await tokens.setProfileToken("original-pin-proof")
+        let captured = await tokens.captureDurableAccountAuth()
+        let durable = try XCTUnwrap(captured)
+        let store = WatchPartyRecentStore(keychain: keychain)
+        defer { store.clear() }
+        let recent = WatchPartyRecentRoom(roomId: "room-one", code: "PARTYCODE", selectedTitle: "Movie")
+        XCTAssertTrue(store.save(recent, owner: try XCTUnwrap(WatchPartyRecentOwner(auth: durable))))
+        let stub = APIv2TestStub()
+        stub.reply(200, sessionCapabilities)
+        let session = WatchPartySession(
+            api: APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens,
+                             isUpdateRequired: { false }),
+            tokenStore: tokens, recentStore: store)
+        await session.refreshCapabilities()
+        XCTAssertEqual(session.recentRoom, recent)
+
+        let deactivated = await tokens.deactivateProfile(expectedAccount: durable.request.account)
+        XCTAssertTrue(deactivated)
+        session.leave()
+        let activated = await tokens.activateProfile(profileID: "profile-one", profileToken: "fresh-pin-proof",
+                                                     expectedAccount: durable.request.account)
+        XCTAssertTrue(activated)
+        await session.refreshCapabilities()
+        XCTAssertEqual(session.recentRoom, recent, "A fresh PIN proof is still the same owner")
+        XCTAssertNotNil(keychain.get(WatchPartyRecentStore.key))
+    }
+
 
     // MARK: - Lobby presentation policy
 
