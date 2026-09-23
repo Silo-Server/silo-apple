@@ -1551,18 +1551,7 @@ struct UpdateUserCollectionGroupBody: Encodable {
     }
 }
 
-// MARK: - Settings (generic key/value)
-
-/// Generic user-setting envelope returned by `GET /api/v1/settings/{key}`.
-struct SettingEntryResponse: Codable {
-    let key: String
-    let value: String
-}
-
-/// PUT body for `/api/v1/settings/{key}` and `/api/v1/settings/device/{key}`.
-struct SetSettingBody: Codable {
-    let value: String
-}
+// MARK: - Settings
 
 /// Server-wide overlay configuration. `defaults` is a JSON-stringified
 /// `CardOverlayPrefs` document the admin set as the baseline for users

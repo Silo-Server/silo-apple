@@ -635,12 +635,8 @@ final class AuthService: @unchecked Sendable {
         // Profiles are account-scoped and are the offline source for Who's
         // Watching. Keep that list across profile transitions; server/account
         // boundaries still clear it through `clearAllCaches()`.
-        // Overlay prefs are user-scoped on the server (not profile-scoped),
-        // so a profile switch within one account doesn't strictly require
-        // a re-fetch. We still clear: (a) freshness — a remote web edit
-        // between switches would otherwise serve stale prefs until app
-        // restart; (b) defensive — if the server ever moves overlays to
-        // a per-profile scope, this path keeps working.
+        // Overlay prefs are stored at profile scope (`ui.card_overlays`),
+        // so the next profile must re-read them.
         OverlayPrefsStore.shared.clear()
         // Profile's preferred subtitle language drives detail-page track
         // ordering; drop it so the next profile re-hydrates its own.

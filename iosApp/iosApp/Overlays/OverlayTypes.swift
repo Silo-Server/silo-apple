@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 /// Stable identifiers for every overlay the system knows about. The wire
-/// format (server `defaults.card_overlays`, user `card_overlays`) uses
+/// format (server `defaults.card_overlays`, user `ui.card_overlays`) uses
 /// these as keys, so they MUST stay in sync with
 /// `web/src/lib/overlays/types.ts` → `OverlayId`. Adding a new overlay
 /// requires updating the registry; renaming an existing one is a

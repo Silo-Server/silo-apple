@@ -25,7 +25,8 @@ struct OnboardingStep: Codable, Identifiable, Hashable {
 }
 
 struct OnboardingSettingSpec: Codable, Hashable {
-    /// "profile_field" | "setting" | "device_setting" — selects the write API.
+    /// The write API. The client saves only "profile_field"; steps naming
+    /// the retired "setting" and "device_setting" targets are dropped at load.
     let target: String
     let key: String
     let control: String
