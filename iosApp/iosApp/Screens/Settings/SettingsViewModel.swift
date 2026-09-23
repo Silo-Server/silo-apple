@@ -274,14 +274,31 @@ final class SettingsViewModel {
     static let rejectedPlaybackChangeMessage =
         "The server didn't accept a change to this device's playback settings, so it wasn't saved."
 
+    /// The held keys a "Discard Held Change" could not discard because the
+    /// server was unreachable. The footer says so only while exactly these
+    /// keys are still held.
+    private var undiscardedHeldPlaybackKeys: [SettingKey]?
+
+    /// The footer for the held playback change rows.
+    var heldPlaybackChangesMessage: String {
+        let held = PlayerSettings.shared.heldDeviceSettingKeys
+        guard !held.isEmpty, undiscardedHeldPlaybackKeys == held else {
+            return HeldSettingChange.message
+        }
+        return HeldSettingChange.discardNeedsServerMessage
+    }
+
     @MainActor
     func retryHeldPlaybackChanges() async {
+        undiscardedHeldPlaybackKeys = nil
         await PlayerSettings.shared.retryHeldDeviceSettingChanges()
     }
 
     @MainActor
     func discardHeldPlaybackChanges() async {
-        await PlayerSettings.shared.discardHeldDeviceSettingChanges()
+        let held = PlayerSettings.shared.heldDeviceSettingKeys
+        let discarded = await PlayerSettings.shared.discardHeldDeviceSettingChanges()
+        undiscardedHeldPlaybackKeys = discarded ? nil : held
         adoptPlaybackSettings()
     }
 

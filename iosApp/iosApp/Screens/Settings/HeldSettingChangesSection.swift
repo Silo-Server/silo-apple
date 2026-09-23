@@ -7,6 +7,7 @@ import SwiftUI
 struct HeldSettingChangesSection: View {
     let retry: () async -> Void
     let discard: () async -> Void
+    var message: String = HeldSettingChange.message
 
     var body: some View {
         Section {
@@ -20,7 +21,7 @@ struct HeldSettingChangesSection: View {
             Text("Not Saved")
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text(HeldSettingChange.message)
+            Text(message)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloSurfaceElevated)

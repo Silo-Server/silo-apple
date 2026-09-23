@@ -8,6 +8,7 @@ import SwiftUI
 struct TVHeldSettingChangesRows: View {
     let retry: () async -> Void
     let discard: () async -> Void
+    var message: String = HeldSettingChange.message
 
     var body: some View {
         TVSettingsSectionHeader("NOT SAVED")
@@ -38,7 +39,7 @@ struct TVHeldSettingChangesRows: View {
         }
         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
 
-        TVSettingsWarningFooter(HeldSettingChange.message)
+        TVSettingsWarningFooter(message)
     }
 }
 #endif

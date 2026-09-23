@@ -910,10 +910,28 @@ final class PlayerSettings {
 
     /// "Discard held change": forget the held device setting changes and
     /// repaint what the server holds.
+    ///
+    /// Reads the server before dropping anything. Offline, the only copy of
+    /// a held key on this device is the discarded value itself, so dropping
+    /// the hold would leave playback using that value with nothing saying it
+    /// is unsaved. The hold stays until the server can be reached. Returns
+    /// false when the discard did not happen for that reason.
+    @discardableResult
     @MainActor
-    func discardHeldDeviceSettingChanges() async {
-        flusher.discardHeldChanges()
-        await refreshFromServer()
+    func discardHeldDeviceSettingChanges() async -> Bool {
+        do {
+            let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            flusher.discardHeldChanges()
+            applyEffectiveSettings(overlayingUnsettledValues(on: response.byKey))
+            return true
+        } catch SettingsAPIError.serverUpgradeRequired {
+            // The server stores no settings for this device at all, so the
+            // local value is the only one there is.
+            flusher.discardHeldChanges()
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Send the held device setting changes again with a fresh retry budget.

@@ -796,6 +796,11 @@ extension SettingsAPIError {
 enum HeldSettingChange {
     static let message =
         "A change couldn't be saved to the server. It stays on this device until you try again or discard it."
+
+    /// Shown after "Discard Held Change" could not reach the server to find
+    /// the value to go back to.
+    static let discardNeedsServerMessage =
+        "Couldn't reach the server to discard this change. It stays on this device until the server can be reached."
 }
 
 /// The bounded backoff D4 allows for one key's latest value. After

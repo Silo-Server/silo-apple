@@ -16,7 +16,8 @@ struct TVPlaybackSettingsPane: View {
             if viewModel.hasHeldPlaybackChanges {
                 TVHeldSettingChangesRows(
                     retry: { await viewModel.retryHeldPlaybackChanges() },
-                    discard: { await viewModel.discardHeldPlaybackChanges() }
+                    discard: { await viewModel.discardHeldPlaybackChanges() },
+                    message: viewModel.heldPlaybackChangesMessage
                 )
             }
             if viewModel.playbackChangeWasRejected {

@@ -876,6 +876,35 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.transport.writes().count, 1, "discarding sends nothing")
     }
 
+    /// Offline, the only copy of a held value is the discarded one. The hold
+    /// stays until the server can say what to go back to.
+    func testDiscardingAHeldChangeOfflineKeepsItHeldUntilTheServerAnswers() async throws {
+        let harness = try PlayerSettingsHarness(retryPolicy: .init(maximumAutomaticRetries: 0))
+        let settings = harness.settings
+        harness.transport.failNextWrites(100, with: .transport(description: "offline"))
+        harness.transport.effective = [
+            .init(key: SettingKey.playerHdrEnabled.rawValue, value: .bool(true), source: .contractDefault),
+        ]
+
+        settings.setHDREnabled(false)
+        await settings.flushPendingDeviceSettings()
+        try await waitUntil("the change is held") { settings.heldDeviceSettingKeys == [.playerHdrEnabled] }
+
+        harness.transport.effectiveError = .transport(description: "offline")
+        let discardedOffline = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertFalse(discardedOffline)
+        XCTAssertFalse(settings.hdrEnabled)
+        await settings.flushPendingDeviceSettings()
+        XCTAssertEqual(settings.heldDeviceSettingKeys, [.playerHdrEnabled], "the change is still held, not silently dropped")
+
+        harness.transport.effectiveError = nil
+        let discardedOnline = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertTrue(discardedOnline)
+        XCTAssertTrue(settings.hdrEnabled, "discarding repaints the server's value")
+        try await waitUntil("the hold clears") { settings.heldDeviceSettingKeys.isEmpty }
+        XCTAssertEqual(harness.transport.writes().count, 1, "discarding sends nothing")
+    }
+
     func testLegacyCompoundQualityMigrationPreservesBothAxes() throws {
         let harness = try PlayerSettingsHarness()
         harness.defaults.set("720p-medium", forKey: "preferredQuality")
