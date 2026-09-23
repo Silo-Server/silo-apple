@@ -1308,8 +1308,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     let itemCount: Int?
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
-    /// Populated when the collection was decoded inside a
-    /// `LibraryTabGroup`. Flat-response cards leave this nil; treat as
+    /// Set from the Collections tab group that holds the card. Nil means
     /// regular.
     let kind: LibraryCollectionKind?
     /// Creator profile id, populated only for [LibraryCollectionKind.userCollections].
@@ -1371,13 +1370,12 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     }
 }
 
-/// Runtime-synthesized response from `SiloAPI.libraryCollections`.
-/// Not decoded from wire JSON directly — `LibraryCollectionsWireResponse`
-/// handles that and is mapped into this shape at the API boundary.
+/// Runtime-synthesized response from `SiloAPI.libraryCollections`, mapped
+/// from the v2 `APIv2LibraryCollectionTab` at the API boundary.
 struct LibraryCollectionsResponse {
     let collections: [LibraryCollection]
-    /// Ordered render sections. Empty when the server returned a flat
-    /// response — use [resolvedSections] to get a render-ready list that
+    /// Ordered render sections. Empty when the server has no groups
+    /// configured — use [resolvedSections] to get a render-ready list that
     /// transparently wraps the flat case.
     let sections: [LibraryCollectionSection]
 

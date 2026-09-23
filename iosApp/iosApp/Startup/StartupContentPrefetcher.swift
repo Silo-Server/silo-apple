@@ -35,7 +35,7 @@ enum StartupContentPrefetcher {
     private static var homeSectionsTask: Task<APIv2HomeSectionsRead, Error>?
     private static var recommendationsTask: Task<SectionsResponse, Error>?
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
-    private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
+    private static var librarySectionsTasks: [Int: Task<APIv2LibrarySectionsRead, Error>] = [:]
     private static var browseFirstPageTasks: [String: Task<CatalogListPage, Error>] = [:]
     #if os(tvOS)
     /// One bounded cold-start warmup for the Series library the top-level tab
@@ -555,7 +555,7 @@ enum StartupContentPrefetcher {
             isOriginator: librarySectionsTasks[libraryId] == nil
         )
         #endif
-        let task: Task<SectionsResponse, Error>
+        let task: Task<APIv2LibrarySectionsRead, Error>
         if let existing = librarySectionsTasks[libraryId] {
             task = existing
         } else {
@@ -566,8 +566,13 @@ enum StartupContentPrefetcher {
         }
 
         do {
-            let response = try await task.value
+            let read = try await task.value
+            // Sections belong to the profile they were fetched for. Never
+            // cache or show them once the session acts as someone else.
+            let isCurrentOwner = await SiloAPI.shared.isCurrentOwner(read.auth)
             try validateProfileScopedGeneration(generation)
+            guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
+            let response = read.response
             if profileScopedGeneration == generation {
                 librarySectionsTasks[libraryId] = nil
             }
