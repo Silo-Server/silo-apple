@@ -1335,16 +1335,6 @@ actor PlaybackSessionBridge {
         )
     }
 
-    /// The audiobook player's report until its sessions move to v2.
-    static func reportTerminalStart(
-        playbackAttemptId: String,
-        snapshot: ApplePlaybackV3CapabilitySnapshot,
-        terminal: PlaybackV3Terminal
-    ) async {
-        let event = terminalStartRouteEvent(playbackAttemptId: playbackAttemptId, snapshot: snapshot, terminal: terminal)
-        try? await SiloAPI.shared.reportPlaybackRouteEventV3(event)
-    }
-
     static func reportTerminalStart(
         playbackAttemptId: String,
         snapshot: ApplePlaybackV3CapabilitySnapshot,

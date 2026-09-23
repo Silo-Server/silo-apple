@@ -533,39 +533,6 @@ actor SiloAPI {
     func updateProfile(profileId: String, body: UpdateProfileBody) async throws {
         try await http.putVoid("/api/v1/profiles/\(profileId)", body: body)
     }
-
-    // --- Playback ---
-
-    // Stream probing and transcode startup can exceed the standard request timeout.
-    func startPlaybackV3(request: PlaybackV3StartRequest) async throws -> PlaybackV3DecisionResponse {
-        try await http.post("/api/v1/playback/start", body: request, timeout: .extended)
-    }
-
-    func replanPlaybackV3(
-        sessionId: String,
-        request: PlaybackV3ReplanRequest
-    ) async throws -> PlaybackV3DecisionResponse {
-        try await http.post(
-            "/api/v1/playback/\(sessionId)/replan",
-            body: request,
-            timeout: .extended
-        )
-    }
-
-    func reportPlaybackRouteEventV3(_ event: PlaybackV3RouteEvent) async throws {
-        try await http.postVoid("/api/v1/playback/route-events", body: event)
-    }
-
-    func reportPlaybackProgress(sessionId: String, report: ProgressReport) async throws {
-        try await http.postVoid(
-            "/api/v1/playback/\(sessionId)/progress",
-            body: report
-        )
-    }
-
-    func stopPlayback(sessionId: String) async throws {
-        try await http.delete("/api/v1/playback/\(sessionId)")
-    }
 }
 
 // MARK: - Supporting Types

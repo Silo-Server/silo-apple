@@ -8,6 +8,7 @@ final class AudioPlayerViewModel {
     @ObservationIgnored private let api: SiloAPI
     private struct StartedAudioSession {
         let session: PlaybackSessionResponse
+        let authority: PlaybackV2SessionAuthority
         let track: AudioPlaybackTrack
         let streamHeaders: [String: String]
         let timeline: PlaybackTimelineMapper
@@ -21,6 +22,11 @@ final class AudioPlayerViewModel {
     /// engine. Audiobooks get one session per file; crossing a part
     /// boundary retires this session and starts a fresh one.
     private var activeSession: PlaybackSessionResponse?
+    /// The owner and installation `activeSession` was started under; its
+    /// progress and stop run under them and nothing else.
+    private var activeAuthority: PlaybackV2SessionAuthority?
+    /// Sequences the session-local progress samples of each server session.
+    private var progressSequence = PlaybackProgressSequence()
     /// Converts Aether's player axis to the active file's source axis and
     /// determines whether a seek can stay within the current V3 transport.
     private var activeTimeline: PlaybackTimelineMapper?
@@ -216,6 +222,7 @@ final class AudioPlayerViewModel {
         loadGeneration += 1
         let closedContext = context
         let closedSession = activeSession
+        let closedAuthority = activeAuthority
         let position = currentTime
         let total = duration
         loadingEngineEpoch = nil
@@ -225,6 +232,7 @@ final class AudioPlayerViewModel {
         sleepTimer.cancel()
         context = nil
         activeSession = nil
+        activeAuthority = nil
         activeTrackIndex = nil
         activeTimeline = nil
         engineDuration = 0
@@ -242,8 +250,8 @@ final class AudioPlayerViewModel {
                 label: "final audiobook sync"
             )
         }
-        if let closedSession {
-            await stopPlaybackSession(closedSession, reason: "audio player closed")
+        if let closedSession, let closedAuthority {
+            await stopPlaybackSession(closedSession, authority: closedAuthority, reason: "audio player closed")
         }
     }
 
@@ -258,6 +266,7 @@ final class AudioPlayerViewModel {
         sleepTimer.cancel()
         context = nil
         activeSession = nil
+        activeAuthority = nil
         activeTrackIndex = nil
         activeTimeline = nil
         engineDuration = 0
@@ -302,6 +311,7 @@ final class AudioPlayerViewModel {
             // so the current part can remain the active truth instead of being
             // retired speculatively.
             let priorSession = activeSession
+            let priorAuthority = activeAuthority
             let started: StartedAudioSession
             do {
                 started = try await startSession(for: track, localTime: localTime)
@@ -339,6 +349,7 @@ final class AudioPlayerViewModel {
                 loadingEngineEpoch = nil
                 activeEngineEpoch = engineEpoch
                 activeSession = started.session
+                activeAuthority = started.authority
                 activeTrackIndex = started.track.index
                 activeTimeline = started.timeline
                 resolvedGlobalTime =
@@ -347,11 +358,12 @@ final class AudioPlayerViewModel {
                             forPlayerTime: started.session.position
                         )
                 didLoadNewTrack = true
-                if let priorSession,
+                if let priorSession, let priorAuthority,
                    priorSession.sessionId != started.session.sessionId {
                     Task { [weak self] in
                         await self?.stopPlaybackSession(
                             priorSession,
+                            authority: priorAuthority,
                             reason: "successor audio track committed"
                         )
                     }
@@ -366,6 +378,7 @@ final class AudioPlayerViewModel {
                 }
                 await stopPlaybackSession(
                     started.session,
+                    authority: started.authority,
                     reason: "candidate audio load did not become active"
                 )
                 // `AetherEngine.load` replaces the prior media before it probes
@@ -379,11 +392,12 @@ final class AudioPlayerViewModel {
                 // session have to be released here.
                 let candidateReplacedEngineMedia = candidateEngineEpoch != nil
                 let failureTearsDownPlayer = generation == loadGeneration
-                if let priorSession,
+                if let priorSession, let priorAuthority,
                    priorSession.sessionId != started.session.sessionId,
                    candidateReplacedEngineMedia || failureTearsDownPlayer {
                     await stopPlaybackSession(
                         priorSession,
+                        authority: priorAuthority,
                         reason: candidateReplacedEngineMedia
                             ? "audio successor load failed after replacing prior media"
                             : "audio successor load failed before touching prior media"
@@ -411,6 +425,7 @@ final class AudioPlayerViewModel {
         activeEngineEpoch = nil
         engine.stop()
         activeSession = nil
+        activeAuthority = nil
         activeTrackIndex = nil
         activeTimeline = nil
         engineDuration = 0
@@ -421,7 +436,9 @@ final class AudioPlayerViewModel {
         for track: AudioPlaybackTrack,
         localTime: Double
     ) async throws -> StartedAudioSession {
-        guard let profileId = await TokenStore.shared.getProfileId(),
+        // Every request of this session runs for the owner captured here.
+        guard let owner = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              let profileId = owner.profileId,
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
                 reason: "profile_required",
@@ -433,11 +450,13 @@ final class AudioPlayerViewModel {
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         // A start refused because the server's playback installation changed
         // runs once more with the refreshed capability and a new attempt id.
-        let (playbackAttemptId, response) = try await PlaybackV3CapabilityGate.shared.withInstallationRefresh { _ in
+        let (playbackAttemptId, authority, response) = try await PlaybackV3CapabilityGate.shared.withInstallationRefresh { capability in
+            let authority = PlaybackV2SessionAuthority(owner: owner, installationID: capability.installationID)
             let playbackAttemptId = "apple-audio:\(UUID().uuidString.lowercased())"
             // Audiobook resume is a whole-item timeline stitched across files.
             // The server keeps session-local progress for liveness, while the
-            // client owns durable resume/history through /sync/progress.
+            // client owns durable resume/history through /sync/progress, so the
+            // start sends progress_persistence "client".
             let request = PlaybackV3StartRequest(
                 protocolVersion: PlaybackProtocolV3.version,
                 clientFeatures: ApplePlaybackV3Capabilities.audiobookFeatures,
@@ -458,16 +477,9 @@ final class AudioPlayerViewModel {
                 clientCapabilities: snapshot.capabilities,
                 clientPlaybackContext: snapshot.context
             )
-            let response: PlaybackV3DecisionResponse
-            do {
-                response = try await SiloAPI.shared.startPlaybackV3(request: request)
-            } catch let error as HTTPError {
-                guard case .network = error else { throw error }
-                // Preserve the logical attempt identity across an ambiguous
-                // transport retry so the server replays instead of double-starting.
-                response = try await SiloAPI.shared.startPlaybackV3(request: request)
-            }
-            return (playbackAttemptId, response)
+            // One identical resend after a transport failure: the server
+            // replays the attempt instead of starting it twice.
+            return (playbackAttemptId, authority, try await authority.start(request))
         }
 
         switch response.validatedForApple() {
@@ -476,7 +488,8 @@ final class AudioPlayerViewModel {
                 await PlaybackSessionBridge.reportTerminalStart(
                     playbackAttemptId: playbackAttemptId,
                     snapshot: snapshot,
-                    terminal: terminal
+                    terminal: terminal,
+                    authority: authority
                 )
             }
             throw PlaybackV3TerminalFailure(
@@ -486,7 +499,7 @@ final class AudioPlayerViewModel {
             )
         case .incompatible(let allocatedSessionId):
             if let allocatedSessionId {
-                try? await SiloAPI.shared.stopPlayback(sessionId: allocatedSessionId)
+                try? await authority.stop(allocatedSessionId, finalSample: nil)
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
@@ -497,7 +510,7 @@ final class AudioPlayerViewModel {
             guard response.serverFeatures.contains(
                 PlaybackProtocolV3.headerAuthenticatedMediaFeature
             ) else {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
                     message: "This server did not honor authenticated media transport for the playback plan.",
@@ -509,13 +522,13 @@ final class AudioPlayerViewModel {
                 try ApplePlaybackV3PlanAdapter.validate(plan)
                 timeline = try PlaybackTimelineMapper(validating: plan.timeline)
             } catch {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await authority.stop(sessionId, finalSample: nil)
                 throw error
             }
             guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
             }) else {
-                try? await SiloAPI.shared.stopPlayback(sessionId: sessionId)
+                try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
                     message: "The server selected an unavailable audiobook part.",
@@ -530,6 +543,7 @@ final class AudioPlayerViewModel {
             )
             return StartedAudioSession(
                 session: session,
+                authority: authority,
                 track: effectiveTrack,
                 streamHeaders: plan.stream.headers,
                 timeline: timeline
@@ -554,10 +568,12 @@ final class AudioPlayerViewModel {
 
     private func stopPlaybackSession(
         _ session: PlaybackSessionResponse,
+        authority: PlaybackV2SessionAuthority,
         reason: String
     ) async {
+        progressSequence.forget(session.sessionId)
         do {
-            try await SiloAPI.shared.stopPlayback(sessionId: session.sessionId)
+            try await authority.stop(session.sessionId, finalSample: nil)
         } catch {
             logger.warning(
                 "stopPlayback failed for \(session.sessionId, privacy: .public) (\(reason, privacy: .public)): \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -666,19 +682,24 @@ final class AudioPlayerViewModel {
     private func syncNow() async {
         guard let context else { return }
         if let session = activeSession,
+           let authority = activeAuthority,
            let activeTrackIndex,
            let track = context.tracks.first(where: { $0.index == activeTrackIndex }) {
             do {
-                try await SiloAPI.shared.reportPlaybackProgress(
-                    sessionId: session.sessionId,
-                    report: ProgressReport(
-                        position: AudioPlaybackTimeline.localTime(for: currentTime, in: track),
-                        isPaused: !isPlaying
-                    )
+                let sample = try PlaybackSequencedSample(
+                    sequence: progressSequence.next(for: session.sessionId),
+                    position: AudioPlaybackTimeline.localTime(for: currentTime, in: track),
+                    isPaused: !isPlaying
+                )
+                _ = try await SiloAPI.shared.apiV2Client.updatePlaybackProgress(
+                    sessionID: session.sessionId,
+                    sample: sample,
+                    installationID: authority.installationID,
+                    auth: authority.owner
                 )
             } catch {
                 logger.warning(
-                    "reportPlaybackProgress failed for session \(session.sessionId, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
+                    "playback progress failed for session \(session.sessionId, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
             }
         }
