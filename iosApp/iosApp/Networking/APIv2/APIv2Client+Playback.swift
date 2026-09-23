@@ -85,6 +85,30 @@ extension APIv2Client {
         return mutation
     }
 
+    /// Mints a control ticket and builds the socket upgrade for it. Checks
+    /// `GET /api/v2/playback/sessions/control/capabilities` first, then
+    /// `POST /api/v2/playback/sessions/{session_id}/control/ws-ticket`,
+    /// answered with 200. A ticket admits one handshake, so every connect and
+    /// reconnect calls this again. Minting is `natural_idempotent`: an unused
+    /// ticket simply expires.
+    func playbackControlHandshake(sessionID: String, installationID: String,
+                                  auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackControlHandshake {
+        let suffix = try Self.playbackSessionSuffix(sessionID) + "/control/ws-ticket"
+        let capabilityRaw = try await playbackRequest(method: "GET", suffix: "/sessions/control/capabilities", auth: auth)
+        guard capabilityRaw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
+        let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlCapabilities.self,
+                                                                 from: capabilityRaw.data)
+        guard capability.servesControlHandshake else { throw PlaybackSequencedError.controlUnavailable }
+        struct Body: Encodable { let installationId: String }
+        // `playbackRequest` fences the mint to `auth`, so the ticket is handed
+        // out only while that owner is still current.
+        let raw = try await playbackRequest(method: "POST", suffix: "/sessions" + suffix,
+            body: Self.playbackBody(Body(installationId: installationID)), auth: auth)
+        guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
+        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: raw.data)
+        return try ticket.handshake(serverURL: auth.account.serverURL, sessionID: sessionID)
+    }
+
     private static func playbackBody<Body: Encodable>(_ body: Body) throws -> Data {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase

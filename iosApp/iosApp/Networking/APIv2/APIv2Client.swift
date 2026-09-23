@@ -1350,28 +1350,6 @@ struct APIv2Client: Sendable {
         }
     }
 
-    func playbackControlRequest(sessionID: String, installationID: String,
-                                auth: CapturedOrdinaryRequestAuth) async throws -> URLRequest {
-        guard UUID(uuidString: sessionID) != nil else { throw PlaybackSequencedError.invalidSession }
-        let capabilityRaw = try await playbackRequest(method: "GET", suffix: "/sessions/control/capabilities", auth: auth)
-        guard capabilityRaw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
-        let capability = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlCapabilities.self, from: capabilityRaw.data)
-        guard capability.servesControlHandshake else { throw PlaybackSequencedError.invalidResponse }
-        struct Body: Encodable { let installationId: String }
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let raw = try await playbackRequest(method: "POST", suffix: "/sessions/\(sessionID)/control/ws-ticket",
-            body: encoder.encode(Body(installationId: installationID)), auth: auth)
-        // The ticket is a delegated credential; it is handed out only to the
-        // owner that is still current after both requests.
-        guard raw.statusCode == 200,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw PlaybackSequencedError.authorityChanged
-        }
-        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: raw.data)
-        return try ticket.request(serverURL: auth.account.serverURL, sessionID: sessionID)
-    }
-
     func watchDetail(id: String, libraryId: String? = nil, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> WatchDetail {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,

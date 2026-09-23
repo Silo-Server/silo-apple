@@ -20,23 +20,39 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         }
     }
 
-    /// The control ticket is a delegated credential carried in the WebSocket
-    /// handshake, so it is only ever sent over TLS (or to loopback).
-    func testControlTicketRequestRequiresTLSExceptLoopback() throws {
-        let ticket = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackControlTicket.self, from: Data(
+    /// The ticket travels only in the handshake subprotocols. Plain-http
+    /// servers upgrade over ws like https servers upgrade over wss (D11).
+    func testControlTicketHandshakeFollowsTheServerSchemeAndCarriesOnlyTheTicket() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let ticket = try decoder.decode(APIv2PlaybackControlTicket.self, from: Data(
             #"{"ticket":"abc-123","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#.utf8))
-        let session = UUID().uuidString
+        let session = UUID().uuidString.lowercased()
 
-        let secure = try ticket.request(serverURL: "https://silo.example/base", sessionID: session)
-        XCTAssertEqual(secure.url?.scheme, "wss")
-        XCTAssertEqual(secure.url?.path, "/base/api/v2/playback/sessions/\(session)/control/ws")
-        XCTAssertEqual(secure.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "silo.playback-control.v2, silo.ticket.abc-123")
+        let secure = try ticket.handshake(serverURL: "https://silo.example/base/", sessionID: session)
+        XCTAssertEqual(secure.request.url?.absoluteString, "wss://silo.example/base/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertEqual(secure.request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"),
+                       "silo.playback-control.v2, silo.ticket.abc-123")
+        XCTAssertEqual(secure.maxConnectionSeconds, 600)
 
-        let local = try ticket.request(serverURL: "http://localhost:8096", sessionID: session)
-        XCTAssertEqual(local.url?.scheme, "ws")
+        let lan = try ticket.handshake(serverURL: "http://192.168.1.20:8096", sessionID: session)
+        XCTAssertEqual(lan.request.url?.absoluteString, "ws://192.168.1.20:8096/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertNil(lan.request.url?.query)
+        XCTAssertNil(lan.request.value(forHTTPHeaderField: "Authorization"))
 
-        XCTAssertThrowsError(try ticket.request(serverURL: "http://silo.example", sessionID: session)) { error in
-            guard case PlaybackSequencedError.controlRequiresTLS = error else { return XCTFail("Unexpected \(error)") }
+        for server in ["ftp://silo.example", "https://user:pw@silo.example", "https://silo.example?token=x"] {
+            XCTAssertThrowsError(try ticket.handshake(serverURL: server, sessionID: session), server)
+        }
+        XCTAssertThrowsError(try ticket.handshake(serverURL: "https://silo.example", sessionID: "../other"))
+        let unusable = [
+            #"{"ticket":"abc","expires_in":30,"max_connection_seconds":600,"protocol":"silo.events.v2"}"#,
+            #"{"ticket":"abc","expires_in":0,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#,
+            #"{"ticket":"a b,c","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#,
+        ]
+        for body in unusable {
+            let refused = try decoder.decode(APIv2PlaybackControlTicket.self, from: Data(body.utf8))
+            XCTAssertThrowsError(try refused.handshake(serverURL: "https://silo.example", sessionID: session), body) { error in
+                guard case PlaybackSequencedError.invalidResponse = error else { return XCTFail("Unexpected \(error)") }
+            }
         }
     }
 

@@ -367,7 +367,49 @@ final class APIv2ContractTests: XCTestCase {
         }
     }
 
-    func testPlaybackControlRequestMintsOnlyWhenTheServerServesTheHandshake() async throws {
+    /// The ticket is minted for the session's installation under the captured
+    /// profile, and the upgrade carries it only as the second subprotocol. A
+    /// plain-http LAN server gets a ws upgrade (D11).
+    func testPlaybackControlHandshakeMintsATicketForTheSessionInstallation() async throws {
+        let name = "APIv2ContractTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "server")
+        await tokens.setServerUrl("http://192.168.1.20:8096/silo")
+        await tokens.setProfileId("profile-one")
+        let stub = APIv2TestStub()
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { false })
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        let session = UUID().uuidString.lowercased()
+        let installation = UUID().uuidString.lowercased()
+        let capabilities = String(decoding: try fixture("playback_control_capabilities"), as: UTF8.self)
+        stub.sequence([
+            .json(200, capabilities),
+            .json(200, #"{"ticket":"abc-123","expires_in":30,"max_connection_seconds":14400,"protocol":"silo.playback-control.v2"}"#),
+        ])
+        let handshake = try await api.playbackControlHandshake(sessionID: session, installationID: installation, auth: auth)
+        XCTAssertEqual(stub.methods, ["GET", "POST"])
+        XCTAssertEqual(stub.requestedPaths, ["/silo/api/v2/playback/sessions/control/capabilities",
+                                             "/silo/api/v2/playback/sessions/\(session)/control/ws-ticket"])
+        let mint = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(mint.header("X-Profile-Id"), "profile-one")
+        let body = try XCTUnwrap(mint.body)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["installation_id": installation])
+
+        XCTAssertEqual(handshake.maxConnectionSeconds, 14400)
+        XCTAssertEqual(handshake.request.url?.absoluteString,
+                       "ws://192.168.1.20:8096/silo/api/v2/playback/sessions/\(session)/control/ws")
+        XCTAssertEqual(handshake.request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"),
+                       "silo.playback-control.v2, silo.ticket.abc-123")
+        XCTAssertNil(handshake.request.value(forHTTPHeaderField: "Authorization"),
+                     "the upgrade proves itself with the ticket, never the bearer token")
+    }
+
+    func testPlaybackControlHandshakeMintsOnlyWhenTheServerServesIt() async throws {
         let name = "APIv2ContractTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { UserDefaults().removePersistentDomain(forName: name) }
@@ -381,26 +423,36 @@ final class APIv2ContractTests: XCTestCase {
             tokenStore: tokens, isUpdateRequired: { false })
         let authValue = await tokens.captureOrdinaryRequestAuth()
         let auth = try XCTUnwrap(authValue)
-        let session = UUID().uuidString
-        let capabilities = String(decoding: try fixture("playback_control_capabilities"), as: UTF8.self)
-        stub.sequence([
-            .json(200, capabilities),
-            .json(200, #"{"ticket":"abc-123","expires_in":30,"max_connection_seconds":600,"protocol":"silo.playback-control.v2"}"#),
-        ])
-        let request = try await api.playbackControlRequest(sessionID: session, installationID: UUID().uuidString, auth: auth)
-        XCTAssertEqual(request.url?.path, "/api/v2/playback/sessions/\(session)/control/ws")
-        XCTAssertEqual(stub.requestedPaths, ["/api/v2/playback/sessions/control/capabilities",
-                                             "/api/v2/playback/sessions/\(session)/control/ws-ticket"])
+        let session = UUID().uuidString.lowercased()
 
-        stub.reset()
         let denied = try Support.mutatedBody(named: "playback_control_capabilities", bundleClass: Self.self) {
             $0["allowed"] = false
         }
         stub.reply(200, String(decoding: denied, as: UTF8.self))
         do {
-            _ = try await api.playbackControlRequest(sessionID: session, installationID: UUID().uuidString, auth: auth)
+            _ = try await api.playbackControlHandshake(sessionID: session, installationID: UUID().uuidString, auth: auth)
             XCTFail("a capability that does not allow this owner cannot mint a ticket")
-        } catch PlaybackSequencedError.invalidResponse { }
+        } catch PlaybackSequencedError.controlUnavailable { }
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/playback/sessions/control/capabilities"])
+
+        stub.reset()
+        let capabilities = String(decoding: try fixture("playback_control_capabilities"), as: UTF8.self)
+        stub.sequence([
+            .json(200, capabilities),
+            .json(409, #"{"type":"https://siloserver.org/problems/conflict","title":"Conflict","status":409,"detail":"The installation does not match the session; refresh capabilities."}"#),
+        ])
+        do {
+            _ = try await api.playbackControlHandshake(sessionID: session, installationID: UUID().uuidString, auth: auth)
+            XCTFail("a refused mint yields no handshake")
+        } catch APIv2Error.problem(let problem) {
+            XCTAssertEqual(problem.status, 409)
+        }
+
+        stub.reset()
+        do {
+            _ = try await api.playbackControlHandshake(sessionID: "Not-A-Session", installationID: UUID().uuidString, auth: auth)
+            XCTFail("a non-canonical session id is never spliced into the path")
+        } catch PlaybackSequencedError.invalidSession { }
+        XCTAssertTrue(stub.requestedPaths.isEmpty)
     }
 }

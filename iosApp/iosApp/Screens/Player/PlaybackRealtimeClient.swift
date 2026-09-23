@@ -4,6 +4,10 @@ import OSLog
 actor PlaybackRealtimeClient {
     typealias CommandHandler = @MainActor (PlaybackRealtimeCommandEnvelope) async throws -> Void
     typealias EventHandler = @MainActor (PlaybackRealtimeEventEnvelope) async -> Void
+    /// Mints a fresh single-use ticket for one connect of `sessionId`.
+    typealias Handshake = @Sendable (_ sessionId: String, _ authority: PlaybackV2SessionAuthority) async throws
+        -> APIv2PlaybackControlHandshake
+    typealias OwnerCheck = @Sendable (CapturedOrdinaryRequestAuth) async -> Bool
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -13,13 +17,10 @@ actor PlaybackRealtimeClient {
     private let commandHandler: CommandHandler
     private let eventHandler: EventHandler?
     private let session: URLSession
+    private let handshake: Handshake
+    private let ownerIsCurrent: OwnerCheck
     private let encoder = JSONEncoder()
-    private let reconnectDelaysNanos: [UInt64] = [
-        500_000_000,
-        1_000_000_000,
-        2_000_000_000,
-        5_000_000_000,
-    ]
+    private let reconnectDelaysNanos: [UInt64]
     /// After this many consecutive connection failures, stop reconnecting and
     /// flip `isRealtimeUnavailable` so consumers can surface a non-fatal
     /// "realtime control unavailable" notice. Local playback continues; only
@@ -29,6 +30,9 @@ actor PlaybackRealtimeClient {
     private var boundSessionId: String?
     private var generation: Int = 0
     private var socket: URLSessionWebSocketTask?
+    /// Closes the open socket when its ticket's connection lifetime runs out,
+    /// so the loop reconnects with a new ticket.
+    private var lifetimeTask: Task<Void, Never>?
     private var runTask: Task<Void, Never>?
     private var seenCommandIds = Set<String>()
     private(set) var isRealtimeConnected = false
@@ -53,15 +57,31 @@ actor PlaybackRealtimeClient {
 
     init(
         session: URLSession = .shared,
+        handshake: @escaping Handshake = { sessionId, authority in
+            try await SiloAPI.shared.apiV2Client.playbackControlHandshake(
+                sessionID: sessionId, installationID: authority.installationID, auth: authority.owner)
+        },
+        ownerIsCurrent: @escaping OwnerCheck = PlaybackRealtimeClient.isCurrentOwner,
+        reconnectDelaysNanos: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000, 5_000_000_000],
         commandHandler: @escaping CommandHandler,
         eventHandler: EventHandler? = nil
     ) {
         self.session = session
+        self.handshake = handshake
+        self.ownerIsCurrent = ownerIsCurrent
+        self.reconnectDelaysNanos = reconnectDelaysNanos
         self.commandHandler = commandHandler
         self.eventHandler = eventHandler
     }
 
-    func bind(sessionId: String) {
+    @Sendable private static func isCurrentOwner(_ owner: CapturedOrdinaryRequestAuth) async -> Bool {
+        await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
+    }
+
+    /// Connects the control socket of `sessionId` for the owner and
+    /// installation that started it. Every connect mints its own ticket
+    /// under that owner; nothing reuses a ticket or the current bearer token.
+    func bind(sessionId: String, authority: PlaybackV2SessionAuthority) {
         let normalized = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
         guard boundSessionId != normalized else { return }
@@ -77,7 +97,7 @@ actor PlaybackRealtimeClient {
 
         let currentGeneration = generation
         runTask = Task { [weak self] in
-            await self?.runConnectionLoop(sessionId: normalized, generation: currentGeneration)
+            await self?.runConnectionLoop(sessionId: normalized, authority: authority, generation: currentGeneration)
         }
     }
 
@@ -94,27 +114,49 @@ actor PlaybackRealtimeClient {
         closeSocket()
     }
 
-    private func runConnectionLoop(sessionId: String, generation: Int) async {
+    private func runConnectionLoop(
+        sessionId: String,
+        authority: PlaybackV2SessionAuthority,
+        generation: Int
+    ) async {
         var attempt = 0
         var consecutiveFailures = 0
 
         while isCurrentBinding(sessionId: sessionId, generation: generation) {
             do {
-                let request = try await makeRequest(sessionId: sessionId)
+                // The session belongs to the owner that started it; after an
+                // account or profile switch no ticket is minted for it again.
+                guard await ownerIsCurrent(authority.owner) else {
+                    throw PlaybackSequencedError.authorityChanged
+                }
+                let ticketed = try await handshake(sessionId, authority)
                 try Task.checkCancellation()
+                guard isCurrentBinding(sessionId: sessionId, generation: generation) else { break }
 
-                let socket = session.webSocketTask(with: request)
+                let socket = session.webSocketTask(with: ticketed.request)
                 self.socket = socket
                 seenCommandIds.removeAll()
                 socket.resume()
+                closeWhenLifetimeEnds(socket, afterSeconds: ticketed.maxConnectionSeconds)
 
                 try await send(makePlaybackRealtimeHello(sessionId: sessionId), on: socket)
                 attempt = 0
                 consecutiveFailures = 0
                 setRealtimeConnected(true)
                 setRealtimeUnavailable(false)
-                try await receiveLoop(on: socket, sessionId: sessionId, generation: generation)
+                try await receiveLoop(on: socket, sessionId: sessionId, authority: authority, generation: generation)
             } catch is CancellationError {
+                break
+            } catch where Self.endsControl(error) {
+                // Retrying cannot help: the owner moved on, or the server does
+                // not serve the control handshake for it.
+                Self.logger.warning(
+                    "Realtime control stopped for session \(sessionId, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+                if isCurrentBinding(sessionId: sessionId, generation: generation) {
+                    closeSocket()
+                    setRealtimeUnavailable(true)
+                }
                 break
             } catch {
                 consecutiveFailures += 1
@@ -123,11 +165,12 @@ actor PlaybackRealtimeClient {
                 )
             }
 
-            closeSocket()
-
+            // A newer bind or unbind already closed this loop's socket, and
+            // `socket` may now hold the next session's connection.
             guard isCurrentBinding(sessionId: sessionId, generation: generation) else {
                 break
             }
+            closeSocket()
 
             if consecutiveFailures >= Self.consecutiveFailureCircuitBreakerThreshold {
                 Self.logger.error(
@@ -140,6 +183,19 @@ actor PlaybackRealtimeClient {
             let delay = reconnectDelaysNanos[min(attempt, reconnectDelaysNanos.count - 1)]
             attempt += 1
             try? await Task.sleep(nanoseconds: delay)
+        }
+    }
+
+    /// Failures that no reconnect can fix: the session's owner is no longer
+    /// the current one, the server does not serve the control handshake, or
+    /// the server needs an update for v2.
+    private static func endsControl(_ error: Error) -> Bool {
+        switch error {
+        case PlaybackSequencedError.authorityChanged, PlaybackSequencedError.controlUnavailable,
+             HTTPError.authorityChanged, HTTPError.requestIdentityChanged, APIv2Error.serverUpdateRequired:
+            return true
+        default:
+            return false
         }
     }
 
@@ -215,10 +271,17 @@ actor PlaybackRealtimeClient {
     private func receiveLoop(
         on socket: URLSessionWebSocketTask,
         sessionId: String,
+        authority: PlaybackV2SessionAuthority,
         generation: Int
     ) async throws {
         while isCurrentBinding(sessionId: sessionId, generation: generation) {
             let message = try await socket.receive()
+            // Frames act on this player only while its session owner is the
+            // current one.
+            guard await ownerIsCurrent(authority.owner) else {
+                throw PlaybackSequencedError.authorityChanged
+            }
+            guard isCurrentBinding(sessionId: sessionId, generation: generation) else { return }
             guard let data = decodeInboundMessageData(message) else { continue }
             guard let inbound = parsePlaybackRealtimeInboundMessage(data) else { continue }
 
@@ -276,44 +339,6 @@ actor PlaybackRealtimeClient {
         }
     }
 
-    private func makeRequest(sessionId: String) async throws -> URLRequest {
-        let serverUrl = await SiloAPI.shared.currentServerUrl()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !serverUrl.isEmpty else {
-            throw PlaybackRealtimeTransportError.serverUrlNotConfigured
-        }
-
-        guard var components = URLComponents(string: serverUrl) else {
-            throw PlaybackRealtimeTransportError.invalidServerURL(serverUrl)
-        }
-
-        let normalizedPath = "/api/v1/playback/sessions/\(sessionId)/control/ws"
-        let basePath = components.percentEncodedPath
-        let trimmedBase = basePath.hasSuffix("/") ? String(basePath.dropLast()) : basePath
-        components.percentEncodedPath = trimmedBase + normalizedPath
-
-        switch components.scheme?.lowercased() {
-        case "https":
-            components.scheme = "wss"
-        case "http":
-            components.scheme = "ws"
-        default:
-            break
-        }
-
-        guard let url = components.url else {
-            throw PlaybackRealtimeTransportError.invalidServerURL(serverUrl)
-        }
-
-        var request = URLRequest(url: url)
-        if let token = await SiloAPI.shared.currentAccessToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        } else {
-            throw PlaybackRealtimeTransportError.missingAccessToken
-        }
-        return request
-    }
-
     private func send<T: Encodable>(
         _ envelope: T,
         on socket: URLSessionWebSocketTask
@@ -336,8 +361,19 @@ actor PlaybackRealtimeClient {
         }
     }
 
+    private func closeWhenLifetimeEnds(_ socket: URLSessionWebSocketTask, afterSeconds seconds: Int) {
+        lifetimeTask?.cancel()
+        lifetimeTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            socket.cancel(with: .normalClosure, reason: nil)
+        }
+    }
+
     private func closeSocket() {
         setRealtimeConnected(false)
+        lifetimeTask?.cancel()
+        lifetimeTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
     }
@@ -348,8 +384,5 @@ actor PlaybackRealtimeClient {
 }
 
 enum PlaybackRealtimeTransportError: Error {
-    case serverUrlNotConfigured
-    case invalidServerURL(String)
-    case missingAccessToken
     case encodingFailure
 }
