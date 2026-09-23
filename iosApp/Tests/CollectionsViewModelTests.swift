@@ -23,6 +23,10 @@ final class CollectionsViewModelTests: XCTestCase {
     }
 
     private func viewModel() async throws -> CollectionsViewModel {
+        try await viewModelAndClient().model
+    }
+
+    private func viewModelAndClient() async throws -> (model: CollectionsViewModel, http: HTTPClient) {
         let name = "CollectionsViewModelTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -32,7 +36,7 @@ final class CollectionsViewModelTests: XCTestCase {
         await tokens.setServerUrl("https://collections.example")
         await tokens.setProfileId("profile-one")
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
-        return CollectionsViewModel(api: SiloAPI(http: http, tokenStore: tokens))
+        return (CollectionsViewModel(api: SiloAPI(http: http, tokenStore: tokens)), http)
     }
 
     private func capabilities(groups: Bool) -> String {
@@ -231,11 +235,48 @@ final class CollectionsViewModelTests: XCTestCase {
 
     func testTransportFailuresBeforeDispatchAreDefinite() {
         XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(URLError(.notConnectedToInternet)))
-        XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(HTTPError.requestIdentityChanged))
+        XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(URLError(.badURL)))
+        XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(APIv2OwnerChangedBeforeDispatch()))
+        XCTAssertTrue(CollectionsViewModel.outcomeIsUncertain(HTTPError.requestIdentityChanged),
+                      "collectionRequest reports a refusal before sending as APIv2OwnerChangedBeforeDispatch")
+        XCTAssertTrue(CollectionsViewModel.outcomeIsUncertain(HTTPError.authorityChanged))
         XCTAssertFalse(CollectionsViewModel.outcomeIsUncertain(APIv2Error.httpStatus(500)))
         XCTAssertTrue(CollectionsViewModel.outcomeIsUncertain(URLError(.timedOut)))
         XCTAssertTrue(CollectionsViewModel.outcomeIsUncertain(HTTPError.network(underlying: URLError(.networkConnectionLost))))
         XCTAssertTrue(CollectionsViewModel.outcomeIsUncertain(APIv2Error.httpStatus(200)),
                       "an accepted write with an unexpected answer may have been applied")
+    }
+
+    func testCreateAnsweredAfterAnOwnerChangeIsUncertainAndRereadsTheList() async throws {
+        stub.reply(path: "/api/v2/collections/capabilities", 200, capabilities(groups: true))
+        let (model, http) = try await viewModelAndClient()
+        model.newCollectionName = "Saved"
+        stub.sequence([.json(201, collection), .json(200, listBody())])
+        stub.hold()
+        let create = Task { await model.createCollection() }
+        await stub.waitUntilHeld()
+        // An identity transition runs while the POST is at the server, so
+        // HTTPClient discards the answer: the collection may exist.
+        let transition = await http.beginIdentityTransition()
+        await http.endIdentityTransition(try XCTUnwrap(transition))
+        stub.release()
+        await create.value
+
+        XCTAssertEqual(model.createError, "Silo couldn't confirm this was created. Check the list before trying again.")
+        XCTAssertEqual(requests("POST", path: "/api/v2/collections").count, 1)
+        XCTAssertEqual(requests("GET", path: "/api/v2/collections").count, 1, "the list is read again")
+        XCTAssertEqual(model.collections.map(\.id), ["c1"])
+    }
+
+    func testCreateRefusedBeforeSendingIsADefiniteFailure() async throws {
+        let (model, http) = try await viewModelAndClient()
+        model.newCollectionName = "Saved"
+        let transition = await http.beginIdentityTransition()
+        let lease = try XCTUnwrap(transition)
+        await model.createCollection()
+        await http.endIdentityTransition(lease)
+
+        XCTAssertEqual(model.createError, APIv2OwnerChangedBeforeDispatch().errorDescription)
+        XCTAssertTrue(stub.requests.isEmpty, "nothing was sent and there is nothing to re-read")
     }
 }

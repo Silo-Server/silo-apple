@@ -214,6 +214,15 @@ actor SiloAPI {
         return try ItemDetail(catalog: item)
     }
 
+    /// The owner a write is sent for. Without one nothing is sent, which the
+    /// error says, so the write reads as a definite failure.
+    private func mutationAuth() async throws -> CapturedOrdinaryRequestAuth {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
+            throw APIv2OwnerChangedBeforeDispatch()
+        }
+        return auth
+    }
+
     private func detailReadAuth() async throws -> CapturedOrdinaryRequestAuth {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
             throw HTTPError.requestIdentityChanged
@@ -394,7 +403,7 @@ actor SiloAPI {
     /// `non_retryable`: dispatched once. A lost answer may still have created
     /// the collection, so the caller re-reads the list instead of resending.
     func createCollection(name: String) async throws -> UserCollection {
-        try await apiV2Client.createCollection(name: name, auth: try await detailReadAuth())
+        try await apiV2Client.createCollection(name: name, auth: try await mutationAuth())
     }
 
     /// The canonical collection and the version an edit of it must send.
@@ -416,7 +425,7 @@ actor SiloAPI {
 
     /// `non_retryable`, like ``createCollection(name:)``.
     func createCollectionGroup(name: String) async throws -> CollectionGroup {
-        try await apiV2Client.createCollectionGroup(name: name, auth: try await detailReadAuth())
+        try await apiV2Client.createCollectionGroup(name: name, auth: try await mutationAuth())
     }
 
     func collectionGroupEditor(id: String) async throws -> CollectionEditor<CollectionGroup> {

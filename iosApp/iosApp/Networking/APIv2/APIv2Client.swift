@@ -1,5 +1,13 @@
 import Foundation
 
+/// A v2 request was refused because its owner changed before the request
+/// reached the URL session. Nothing was sent.
+struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "The active server or profile changed before the request could start."
+    }
+}
+
 /// Errors raised by the v2 request layer.
 enum APIv2Error: LocalizedError, Sendable {
     /// The connected server is v1-only: the recorded `APIv2Probe` verdict
@@ -598,20 +606,34 @@ struct APIv2Client: Sendable {
     /// `APIv2Client+Collections.swift`. `ifMatch` is the strong tag of the
     /// editor read the write is based on. The answer must carry exactly
     /// `status`; anything else throws.
+    ///
+    /// An owner change is reported by when it was caught:
+    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
+    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
+    /// dispatch gate), and `HTTPError.requestIdentityChanged` or
+    /// `.authorityChanged` when it was sent and its answer discarded.
     func collectionRequest(_ method: String, path: String, body: Data? = nil, ifMatch: String? = nil,
                            status: Int, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
-        guard let profile = auth.profileId, !profile.isEmpty,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = Self.requestIdentity(auth, profile: profile)
-        let raw = try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, body: body,
-                    headers: ifMatch.map { ["If-Match": $0] } ?? [:], requestIdentity: identity,
-                    expectedAccount: auth.account, expectedAuth: auth)
+        let dispatch = HTTPDispatchRecord()
+        let raw: HTTPRawResponse
+        do {
+            guard let profile = auth.profileId, !profile.isEmpty,
+                  await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+                throw HTTPError.requestIdentityChanged
             }
+            let identity = Self.requestIdentity(auth, profile: profile)
+            raw = try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: method, path: path, body: body,
+                        headers: ifMatch.map { ["If-Match": $0] } ?? [:], requestIdentity: identity,
+                        expectedAccount: auth.account, expectedAuth: auth, dispatchRecord: dispatch)
+                }
+            }
+        } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
+        } catch HTTPError.authorityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
         }
         guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
         return raw

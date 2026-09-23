@@ -465,31 +465,12 @@ class CollectionsViewModel {
     }
 
     /// Whether a failed write may have been applied: it was sent and no
-    /// answer came back, or the server accepted it and the answer couldn't
-    /// be read. A problem or non-2xx status, or a request refused before it
-    /// left the device, is a definite failure.
+    /// answer came back, the server accepted it and the answer couldn't be
+    /// read, or the owner changed after it was sent. See
+    /// `APIv2MutationOutcome`.
     static func outcomeIsUncertain(_ err: Error) -> Bool {
-        switch err {
-        case APIv2Error.problem, APIv2Error.serverUpdateRequired,
-             HTTPError.requestIdentityChanged, HTTPError.serverUrlNotConfigured,
-             HTTPError.invalidURL, HTTPError.encodingFailed:
-            return false
-        case APIv2Error.httpStatus(let status):
-            return (200..<300).contains(status)
-        case HTTPError.network(let underlying):
-            return outcomeIsUncertain(underlying)
-        case let urlError as URLError:
-            return !neverSentCodes.contains(urlError.code)
-        default:
-            return true
-        }
+        APIv2MutationOutcome(err).mayHaveApplied
     }
-
-    /// Transport failures that happen before a request can reach the server.
-    private static let neverSentCodes: Set<URLError.Code> = [
-        .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
-        .badURL, .unsupportedURL, .dataNotAllowed, .internationalRoamingOff,
-    ]
 
     private func groupErrorMessage(_ err: Error, fallback: String) -> String {
         let message = err.localizedDescription

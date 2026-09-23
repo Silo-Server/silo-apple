@@ -176,8 +176,11 @@ extension APIv2Client {
     private static let deferredStatuses: Set<Int> = [401, 403, 408, 429, 503]
 
     /// URL loading errors raised before any request bytes could reach the
-    /// server: no route, no name, no connection, or no trusted TLS session.
+    /// server: no usable URL, no route, no name, no connection, or no trusted
+    /// TLS session. The one list every v2 lane uses (see
+    /// `APIv2MutationOutcome`).
     static let neverConnected: Set<URLError.Code> = [
+        .badURL, .unsupportedURL,
         .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
         .internationalRoamingOff, .dataNotAllowed, .callIsActive,
         .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed,
