@@ -1136,44 +1136,42 @@ struct APIv2Client: Sendable {
         return try response.completeItems()
     }
 
-    func refreshPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> PersonRefreshQueuedResponse {
+    /// `refreshPerson` is `non_retryable`: it is dispatched once and never
+    /// replayed after a token refresh. A 202 only means the refresh was queued;
+    /// callers observe the result by re-reading the person.
+    func refreshPerson(id: String, auth: CapturedOrdinaryRequestAuth) async throws {
         let response = try await personRequest(id: id, method: "POST", auth: auth)
         guard response.statusCode == 202 else { throw APIv2Error.httpStatus(response.statusCode) }
         struct Queued: Decodable { let status: String; let personId: String }
         let wire = try HTTPClient.makeJSONDecoder().decode(Queued.self, from: response.data)
-        guard wire.status == "queued", wire.personId == String(id) else { throw APIv2Error.incompleteCatalogRead }
-        return PersonRefreshQueuedResponse(status: wire.status, personId: id)
+        guard wire.status == "queued", wire.personId == id else { throw APIv2Error.incompleteCatalogRead }
     }
 
-    func catalogPerson(id: Int, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.Person {
+    func catalogPerson(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.Person {
         let response = try await personRequest(id: id, method: "GET", auth: auth)
         guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
         let person = try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(APIv2CatalogRead.Person.self, from: response.data)
-        guard person.id == String(id) else { throw APIv2Error.incompleteCatalogRead }
+        guard person.id == id else { throw APIv2Error.incompleteCatalogRead }
         return person
     }
 
-    private func personRequest(id: Int, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+    private func personRequest(id: String, method: String, auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
-        guard id > 0, let profile = auth.profileId, !profile.isEmpty,
+        let path = "/api/v2/catalog/people/\(try catalogPathSegment(id))" + (method == "POST" ? "/refresh" : "")
+        guard let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
             throw HTTPError.requestIdentityChanged
         }
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
-        let suffix = method == "POST" ? "/refresh" : ""
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: method, path: "/api/v2/catalog/people/\(id)\(suffix)",
+                try await http.requestData(method: method, path: path,
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         try Task.checkCancellation()
         return response
-    }
-
-    func catalogPerson(id: String) async throws -> APIv2CatalogRead.Person {
-        try await catalogRead("/api/v2/catalog/people/\(try catalogPathSegment(id))")
     }
 
     private func catalogReadScope(libraryId: String?, imageSize: String?) -> [String: String] {

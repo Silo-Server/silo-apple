@@ -137,7 +137,7 @@ extension EpisodeListItem {
 
 extension Person {
     init(catalog value: APIv2CatalogRead.Person) throws {
-        self.id = try catalogLegacyID(value.id)
+        self.id = value.id
         self.name = value.name
         self.bio = value.bio
         self.birthDate = value.birthDate

@@ -25,7 +25,7 @@ enum Route: Hashable {
         libraryId: Int? = nil,
         seriesContext: SeriesDetailContext? = nil
     )
-    case personDetail(personId: Int)
+    case personDetail(personId: String)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
     /// the server's last-used file before the profile-wide quality
     /// preference. Audio and subtitle memory ride on the server's
