@@ -10,6 +10,10 @@ enum DownloadError: LocalizedError {
     case scopeChangedDuringRegistration
     case registryChanged
     case registrationUncertain
+    case monitoringScopeChanged
+    case monitorChanged
+    case monitorRemoved
+    case monitoringUncertain
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +24,10 @@ enum DownloadError: LocalizedError {
         case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
         case .registryChanged: return "This download changed on the server. Try again."
         case .registrationUncertain: return "Silo couldn't confirm the download started. It will appear in Downloads if the server created it."
+        case .monitoringScopeChanged: return "The active profile changed before monitoring could be saved."
+        case .monitorChanged: return "Monitoring for this series changed on the server. Try again."
+        case .monitorRemoved: return "This series is no longer monitored."
+        case .monitoringUncertain: return "Silo couldn't confirm the monitoring change. Check this series again once you're back online."
         }
     }
 }
@@ -141,6 +149,8 @@ final class DownloadManager {
     private var serverDeleteTask: Task<Void, Never>?
     /// Records whose pending status event is being sent.
     private var statusReportsInFlight: Set<String> = []
+    /// The running pass over `file.pendingSubscriptionDeletes`, if any.
+    private var subscriptionDeleteTask: Task<Void, Never>?
 
     private init() {
         // Drain background-session events for the lifetime of the app.
@@ -1777,6 +1787,14 @@ final class DownloadManager {
 
     // MARK: - Series monitoring
 
+    /// Starts monitoring a series, then registers the episodes it puts in
+    /// scope. The server answers a create for a series this device already
+    /// monitors with that monitor, unchanged, so differing options are then
+    /// applied to it with a PATCH.
+    ///
+    /// `createDownloadSubscription` is `non_retryable`: it is sent once. After
+    /// an uncertain outcome the monitor list shows whether the server
+    /// created it.
     func createSubscription(
         seriesId: String,
         seriesTitle: String?,
@@ -1785,6 +1803,7 @@ final class DownloadManager {
         deleteWatched: Bool,
         maxStorageBytes: Int64
     ) async throws {
+        guard let owner = await captureScopeOwner() else { throw DownloadError.monitoringScopeChanged }
         let request = CreateSubscriptionRequest(
             seriesId: seriesId,
             mode: mode.rawValue,
@@ -1792,12 +1811,53 @@ final class DownloadManager {
             deleteWatched: deleteWatched,
             maxStorageBytes: maxStorageBytes
         )
-        let response = try await SiloAPI.shared.createSubscription(request)
-        upsertSubscription(response.subscription, seriesTitle: seriesTitle)
-        persist()
+        do {
+            let created = try await SiloAPI.shared.apiV2Client.createDownloadSubscription(request, auth: owner.auth)
+            guard isCurrent(owner) else { throw DownloadError.monitoringScopeChanged }
+            upsertSubscription(created, seriesTitle: seriesTitle)
+            persist()
+        } catch let error as DownloadError {
+            throw error
+        } catch {
+            let failure = APIv2Client.downloadRegistryFailure(error)
+            Self.logger.warning("monitor create failed (\(String(describing: failure), privacy: .public)): \(String(describing: error), privacy: .public)")
+            guard failure == .uncertain || failure == .conflict else { throw error }
+            let listed = await refreshSubscriptions(owner: owner)
+            guard isCurrent(owner) else { throw DownloadError.monitoringScopeChanged }
+            guard listed, subscription(forSeriesId: seriesId) != nil else { throw DownloadError.monitoringUncertain }
+        }
+        guard let monitor = subscription(forSeriesId: seriesId) else { throw DownloadError.monitoringUncertain }
+        if monitor.seriesTitle == nil, let seriesTitle,
+           let index = file.subscriptions.firstIndex(where: { $0.id == monitor.id }) {
+            file.subscriptions[index].seriesTitle = seriesTitle
+            persist()
+        }
+        if !Self.monitorMatches(monitor, request) {
+            try await updateSubscription(
+                id: monitor.id,
+                mode: mode,
+                seasonNumbers: request.seasonNumbers,
+                deleteWatched: deleteWatched,
+                maxStorageBytes: maxStorageBytes,
+                active: true
+            )
+            return
+        }
+        await syncSubscription(id: monitor.id, owner: owner)
         await reconcileWithServer(triggerPipeline: true)
     }
 
+    /// Whether a stored monitor already has the options a create asked for.
+    nonisolated static func monitorMatches(_ monitor: DownloadSubscription, _ request: CreateSubscriptionRequest) -> Bool {
+        guard monitor.active, monitor.mode == request.mode, monitor.deleteWatched == request.deleteWatched,
+              monitor.maxStorageBytes == request.maxStorageBytes else { return false }
+        guard request.mode == SubscriptionMode.specificSeasons.rawValue else { return true }
+        return Set(monitor.seasonNumbers ?? []) == Set(request.seasonNumbers ?? [])
+    }
+
+    /// Edits a monitor under its stored validator, then registers the
+    /// episodes its new scope adds. A stale validator is refreshed once by
+    /// `updateDownloadSubscription`; a failure that remains is surfaced.
     func updateSubscription(
         id: String,
         mode: SubscriptionMode? = nil,
@@ -1806,24 +1866,206 @@ final class DownloadManager {
         maxStorageBytes: Int64? = nil,
         active: Bool? = nil
     ) async throws {
-        let existingTitle = file.subscriptions.first(where: { $0.id == id })?.seriesTitle
-        let request = UpdateSubscriptionRequest(
+        guard let owner = await captureScopeOwner() else { throw DownloadError.monitoringScopeChanged }
+        guard let existing = file.subscriptions.first(where: { $0.id == id }) else { throw DownloadError.monitorRemoved }
+        let patch = UpdateSubscriptionRequest(
             mode: mode?.rawValue,
             seasonNumbers: seasonNumbers,
             deleteWatched: deleteWatched,
             maxStorageBytes: maxStorageBytes,
             active: active
         )
-        let response = try await SiloAPI.shared.updateSubscription(id: id, request)
-        upsertSubscription(response.subscription, seriesTitle: existingTitle)
+        let updated: ServerSubscription
+        do {
+            updated = try await SiloAPI.shared.apiV2Client.updateDownloadSubscription(
+                id: id, etag: existing.etag, patch: patch, auth: owner.auth)
+        } catch {
+            guard isCurrent(owner) else { throw DownloadError.monitoringScopeChanged }
+            throw settleFailedMonitorWrite(error, id: id)
+        }
+        guard isCurrent(owner) else { throw DownloadError.monitoringScopeChanged }
+        upsertSubscription(updated, seriesTitle: existing.seriesTitle)
         persist()
+        await syncSubscription(id: id, owner: owner)
         await reconcileWithServer(triggerPipeline: true)
     }
 
+    /// The error a failed monitor write shows. A monitor the server no longer
+    /// has is removed locally.
+    private func settleFailedMonitorWrite(_ error: Error, id: String) -> Error {
+        let status = APIv2Client.downloadStatus(of: error)
+        if status == 428 {
+            // Every write sends If-Match, so the server not seeing one is a
+            // client bug, never a condition a retry could clear.
+            Self.logger.fault("monitor write reached the server without If-Match: \(String(describing: error), privacy: .public)")
+            return error
+        }
+        Self.logger.warning("monitor write failed: \(String(describing: error), privacy: .public)")
+        switch status {
+        case 404:
+            file.subscriptions.removeAll { $0.id == id }
+            persist()
+            return DownloadError.monitorRemoved
+        case 409, 412:
+            return DownloadError.monitorChanged
+        default:
+            return APIv2Client.downloadRegistryFailure(error) == .uncertain ? DownloadError.monitoringUncertain : error
+        }
+    }
+
+    /// Stops monitoring a series. The monitor leaves the local list at once;
+    /// its DELETE is recorded with the monitor's validator first, so a
+    /// DELETE that does not land is sent again by the next sync and the
+    /// monitor list never brings the monitor back meanwhile.
     func deleteSubscription(id: String) async {
-        file.subscriptions.removeAll { $0.id == id }
+        guard let index = file.subscriptions.firstIndex(where: { $0.id == id }) else { return }
+        let removed = file.subscriptions.remove(at: index)
+        var pending = file.pendingSubscriptionDeletes ?? [:]
+        pending[id] = removed.etag ?? ""
+        file.pendingSubscriptionDeletes = pending
         persist()
-        try? await SiloAPI.shared.deleteSubscription(id: id)
+        await sendPendingSubscriptionDeletes()
+    }
+
+    /// Sends every pending monitor DELETE, one pass at a time.
+    /// `deleteDownloadSubscription` is `natural_idempotent`: a DELETE without
+    /// a definite answer stays pending for the next pass. A refusal ends it,
+    /// and the next monitor list shows the monitor again, because the server
+    /// still has it.
+    private func sendPendingSubscriptionDeletes() async {
+        if let running = subscriptionDeleteTask {
+            await running.value
+            return
+        }
+        guard file.pendingSubscriptionDeletes?.isEmpty == false, let scope = loadedScope else { return }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runSubscriptionDeletePass(scope: scope)
+            self.subscriptionDeleteTask = nil
+        }
+        subscriptionDeleteTask = task
+        await task.value
+    }
+
+    private func runSubscriptionDeletePass(scope: ScopeKey) async {
+        guard let owner = await captureScopeOwner(expecting: scope) else { return }
+        var attempted: Set<String> = []
+        while isCurrent(owner),
+              let next = (file.pendingSubscriptionDeletes ?? [:])
+                .filter({ !attempted.contains($0.key) }).min(by: { $0.key < $1.key }) {
+            let id = next.key
+            attempted.insert(id)
+            do {
+                try await SiloAPI.shared.apiV2Client.deleteDownloadSubscription(
+                    id: id, etag: next.value.isEmpty ? nil : next.value, auth: owner.auth)
+            } catch {
+                if APIv2Client.downloadStatus(of: error) == 428 {
+                    Self.logger.fault("monitor delete reached the server without If-Match: \(String(describing: error), privacy: .public)")
+                } else {
+                    Self.logger.warning("monitor delete failed: \(String(describing: error), privacy: .public)")
+                }
+                switch APIv2Client.downloadRegistryFailure(error) {
+                case .notApplied, .uncertain, .conflict:
+                    continue
+                case .rejected:
+                    break
+                }
+            }
+            guard isCurrent(owner) else { return }
+            file.pendingSubscriptionDeletes?.removeValue(forKey: id)
+            if file.pendingSubscriptionDeletes?.isEmpty == true { file.pendingSubscriptionDeletes = nil }
+            persist()
+        }
+    }
+
+    /// Replaces the local monitor list with a complete read of the server's.
+    /// Returns false when the read failed or the scope changed.
+    @discardableResult
+    private func refreshSubscriptions(owner: ScopeOwner) async -> Bool {
+        let listed: [ServerSubscription]
+        do {
+            listed = try await SiloAPI.shared.apiV2Client.listDownloadSubscriptions(auth: owner.auth)
+        } catch {
+            Self.logger.warning("monitor list read failed: \(String(describing: error), privacy: .public)")
+            return false
+        }
+        guard isCurrent(owner) else { return false }
+        let merged = Self.mergeSubscriptions(
+            local: file.subscriptions,
+            listed: listed,
+            pendingDeletes: Set((file.pendingSubscriptionDeletes ?? [:]).keys),
+            legacyRemovalDate: legacyRemovalDate
+        )
+        if merged != file.subscriptions {
+            file.subscriptions = merged
+            persist()
+        }
+        return true
+    }
+
+    /// The local monitor list after a complete read of the server's. Local
+    /// titles stay. A monitor the server no longer lists is dropped, and one
+    /// the user stopped is not brought back while its DELETE is pending. An
+    /// unknown monitor created before this version removed earlier
+    /// versions' downloads belongs to them, so it is left out and never
+    /// synced.
+    nonisolated static func mergeSubscriptions(
+        local: [DownloadSubscription],
+        listed: [ServerSubscription],
+        pendingDeletes: Set<String>,
+        legacyRemovalDate: Date?
+    ) -> [DownloadSubscription] {
+        let titles = Dictionary(local.map { ($0.id, $0.seriesTitle) }, uniquingKeysWith: { first, _ in first })
+        return listed.compactMap { monitor in
+            guard !pendingDeletes.contains(monitor.id) else { return nil }
+            if let title = titles[monitor.id] {
+                return DownloadSubscription(from: monitor, seriesTitle: title)
+            }
+            if let legacyRemovalDate, monitor.createdAt < legacyRemovalDate { return nil }
+            return DownloadSubscription(from: monitor, seriesTitle: nil)
+        }
+    }
+
+    /// Registers new in-scope episodes for every active monitor: sends the
+    /// pending monitor DELETEs, reads the monitor list, then syncs each
+    /// monitor page by page. Returns how many episodes the server registered.
+    private func syncSubscriptions(owner: ScopeOwner) async -> Int {
+        await sendPendingSubscriptionDeletes()
+        guard isCurrent(owner) else { return 0 }
+        await refreshSubscriptions(owner: owner)
+        var registered = 0
+        for id in file.subscriptions.filter(\.active).map(\.id) {
+            guard isCurrent(owner) else { break }
+            let result = await syncSubscription(id: id, owner: owner)
+            registered += result.registered
+            // Offline, rate limited or unavailable: the other monitors would
+            // meet the same answer.
+            if result.stopRun { break }
+        }
+        return registered
+    }
+
+    /// Syncs one stored monitor and applies what the sync learned about it.
+    @discardableResult
+    private func syncSubscription(id: String, owner: ScopeOwner) async -> (registered: Int, stopRun: Bool) {
+        guard let monitor = file.subscriptions.first(where: { $0.id == id }), monitor.active else { return (0, false) }
+        let outcome: DownloadSubscriptionSyncOutcome
+        do {
+            outcome = try await SiloAPI.shared.apiV2Client.syncDownloadSubscription(
+                id: id, etag: monitor.etag, auth: owner.auth)
+        } catch {
+            Self.logger.warning("monitor sync failed: \(String(describing: error), privacy: .public)")
+            return (0, APIv2Client.downloadRegistryFailure(error) == .notApplied)
+        }
+        guard isCurrent(owner) else { return (outcome.registered, true) }
+        if outcome.removed {
+            file.subscriptions.removeAll { $0.id == id }
+            persist()
+        } else if let reloaded = outcome.reloaded {
+            upsertSubscription(reloaded, seriesTitle: monitor.seriesTitle)
+            persist()
+        }
+        return (outcome.registered, false)
     }
 
     /// Subscription sync + offline progress reconciliation, run on
@@ -1831,11 +2073,10 @@ final class DownloadManager {
     /// server background worker.
     func runMonitoringAndProgressSync() async {
         guard downloadsEnabled else { return }
-        var priorRecordIds: Set<String> = []
+        let priorRecordIds = Set(file.records.keys)
         var registered = 0
-        if !file.subscriptions.isEmpty {
-            priorRecordIds = Set(file.records.keys)
-            registered = (try? await SiloAPI.shared.syncSubscriptions()) ?? 0
+        if canMonitorSeries, let owner = await captureScopeOwner() {
+            registered = await syncSubscriptions(owner: owner)
         }
         await flushProgressQueue()
         await pullProgressDeltas()
@@ -2182,6 +2423,12 @@ final class DownloadManager {
     }
 
     private func upsertSubscription(_ server: ServerSubscription, seriesTitle: String?) {
+        // A create can answer with a monitor the user stopped whose DELETE
+        // has not landed; it is wanted again, so that DELETE no longer applies.
+        if file.pendingSubscriptionDeletes?.removeValue(forKey: server.id) != nil,
+           file.pendingSubscriptionDeletes?.isEmpty == true {
+            file.pendingSubscriptionDeletes = nil
+        }
         let mirror = DownloadSubscription(from: server, seriesTitle: seriesTitle)
         if let index = file.subscriptions.firstIndex(where: { $0.id == server.id }) {
             file.subscriptions[index] = mirror

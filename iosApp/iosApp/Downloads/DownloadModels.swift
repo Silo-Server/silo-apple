@@ -411,18 +411,26 @@ struct OfflineIntegrity: Codable, Hashable, Sendable {
 
 // MARK: - Subscriptions (series monitoring)
 
-/// A series-monitoring subscription as returned by the server.
-struct ServerSubscription: Codable, Hashable, Sendable {
+/// `DownloadSubscription`: a series monitor as the v2 server returns it.
+/// Every field but `targetSeason` is required by the contract.
+struct ServerSubscription: Decodable, Hashable, Sendable {
     let id: String
     let seriesId: String
     let mode: String
     let targetSeason: Int?
-    let seasonNumbers: [Int]?
+    let seasonNumbers: [Int]
     let deleteWatched: Bool
     let maxStorageBytes: Int64
     let active: Bool
-    let createdAt: Date?
-    let updatedAt: Date?
+    let createdAt: Date
+    let updatedAt: Date
+    /// The monitor's current validator. PATCH and DELETE send it as
+    /// `If-Match`, and a sync names it in its body.
+    let etag: String
+
+    /// Whether the monitor can be stored and written: an id, a series and a
+    /// validator.
+    var isUsable: Bool { !id.isEmpty && !seriesId.isEmpty && !etag.isEmpty }
 }
 
 /// Subscription modes the client may request. Filtered against
@@ -443,7 +451,8 @@ enum SubscriptionMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
-struct CreateSubscriptionRequest: Encodable, Sendable {
+/// `DownloadSubscriptionCreateBody`.
+struct CreateSubscriptionRequest: Encodable, Hashable, Sendable {
     let seriesId: String
     let mode: String
     let seasonNumbers: [Int]?
@@ -451,21 +460,14 @@ struct CreateSubscriptionRequest: Encodable, Sendable {
     let maxStorageBytes: Int64
 }
 
-struct UpdateSubscriptionRequest: Encodable, Sendable {
+/// `DownloadSubscriptionPatchBody`. A nil field is omitted, never sent as
+/// null: the server rejects null monitor fields.
+struct UpdateSubscriptionRequest: Encodable, Hashable, Sendable {
     let mode: String?
     let seasonNumbers: [Int]?
     let deleteWatched: Bool?
     let maxStorageBytes: Int64?
     let active: Bool?
-}
-
-struct CreateSubscriptionResponse: Codable, Sendable {
-    let subscription: ServerSubscription
-    let registered: Int
-}
-
-struct SubscriptionSyncResponse: Codable, Sendable {
-    let registered: Int
 }
 
 // MARK: - Progress reconciliation
@@ -614,6 +616,9 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     var deleteWatched: Bool
     var maxStorageBytes: Int64
     var active: Bool
+    /// The monitor's validator when it was last read. Nil for a monitor
+    /// stored before validators were kept; writes read it first.
+    var etag: String?
 
     init(from server: ServerSubscription, seriesTitle: String?) {
         self.id = server.id
@@ -625,6 +630,7 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
         self.deleteWatched = server.deleteWatched
         self.maxStorageBytes = server.maxStorageBytes
         self.active = server.active
+        self.etag = server.etag
     }
 }
 
@@ -713,6 +719,10 @@ struct DownloadStoreFile: Codable, Sendable {
     /// `LegacyDownloadStorage`). The scope's first complete registry read
     /// deletes every row the store doesn't know instead of importing it.
     var legacyRowsPending: Bool? = nil
+    /// Monitors the user stopped whose server DELETE has not been confirmed,
+    /// with the validator each was last read with. The monitor list never
+    /// imports them, and a later sync sends the DELETE again.
+    var pendingSubscriptionDeletes: [String: String]? = nil
 
     static let currentVersion = 1
 
