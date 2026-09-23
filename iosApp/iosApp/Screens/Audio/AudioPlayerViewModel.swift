@@ -235,18 +235,12 @@ final class AudioPlayerViewModel {
         duration = 0
         palette = .fallback
         if let closedContext {
-            do {
-                try await SiloAPI.shared.syncProgress(
-                    mediaItemId: closedContext.contentId,
-                    position: position,
-                    duration: total,
-                    forceOverwrite: true
-                )
-            } catch {
-                logger.warning(
-                    "final audiobook sync failed for \(closedContext.contentId, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
-                )
-            }
+            await uploadBookPosition(
+                contentId: closedContext.contentId,
+                position: position,
+                duration: total,
+                label: "final audiobook sync"
+            )
         }
         if let closedSession {
             await stopPlaybackSession(closedSession, reason: "audio player closed")
@@ -684,16 +678,29 @@ final class AudioPlayerViewModel {
                 )
             }
         }
-        do {
-            try await SiloAPI.shared.syncProgress(
-                mediaItemId: context.contentId,
-                position: currentTime,
-                duration: duration,
-                forceOverwrite: true
-            )
-        } catch {
+        await uploadBookPosition(
+            contentId: context.contentId,
+            position: currentTime,
+            duration: duration,
+            label: "audiobook progress sync"
+        )
+    }
+
+    /// Uploads the whole-book position through `POST /api/v2/sync/progress`,
+    /// the only durable resume point for an audiobook. Each call is a new
+    /// write of the current position: a failed or unanswered upload is never
+    /// re-sent, and the next periodic sync or close carries a fresh value.
+    private func uploadBookPosition(contentId: String, position: Double, duration: Double, label: String) async {
+        guard let item = SyncProgressItem(
+            mediaItemId: contentId,
+            position: position,
+            duration: duration,
+            forceOverwrite: true
+        ) else { return }
+        let outcome = await SiloAPI.shared.apiV2Client.syncProgress([item])
+        if let failure = outcome.failureSummary {
             logger.warning(
-                "syncProgress failed for \(context.contentId, privacy: .public) at \(self.currentTime, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
+                "\(label, privacy: .public) failed for \(contentId, privacy: .public) at \(position, privacy: .public): \(failure, privacy: .public)"
             )
         }
     }

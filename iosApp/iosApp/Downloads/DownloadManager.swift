@@ -42,6 +42,8 @@ final class DownloadManager {
 
     private static let maxConcurrentTransfers = 3
     private static let maxRetries = 4
+    /// Bounds one flush at 10,000 queued items (100 per batch).
+    private static let maxProgressBatchesPerFlush = 100
 
     /// In-memory persisted blob. `private(set)` so the `@Observable` macro
     /// tracks reads of its derived accessors below.
@@ -90,6 +92,15 @@ final class DownloadManager {
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
     /// out of order and overwrite a newer snapshot with an older one.
     private var saveChain: Task<Void, Never>?
+    /// Offline progress entries a running flush has sent and is still
+    /// waiting on. Dispatched entries outside this set are held.
+    private var progressUploadsInFlight: Set<UUID> = []
+    /// Claimed offline progress whose batch provably never reached the
+    /// server, keyed by the scope that claimed it, when the flush lost its
+    /// scope before it could resolve them. The store file is updated too;
+    /// this set covers a load of that scope already in flight, and is applied
+    /// and cleared when the scope's store is next installed.
+    private var releasedProgressClaims: [String: Set<UUID>] = [:]
     /// Cached scope storage usage; refreshed off the MainActor (a filesystem
     /// walk) so SwiftUI bodies reading `totalBytesUsed` don't block.
     private(set) var storageBytesUsed: Int64 = 0
@@ -448,6 +459,10 @@ final class DownloadManager {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
             file = loadedFile
+            if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
+               OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
+                persist()
+            }
             scopeLoadTask = nil
             scopeLoadToken = nil
             scopeLoadServerId = ""
@@ -1546,53 +1561,112 @@ final class DownloadManager {
         entry.updatedAt = now
         file.localProgress[mediaItemId] = entry
 
-        // Collapse to the latest event per item so an offline session that
-        // ticks every few seconds doesn't grow an unbounded flush queue.
-        file.progressQueue.removeAll { $0.mediaItemId == mediaItemId }
-        file.progressQueue.append(QueuedProgress(
-            id: UUID(),
+        var queue = file.progressQueue
+        OfflineProgressQueue.record(
+            &queue,
             mediaItemId: mediaItemId,
             position: position,
             duration: duration,
-            updatedAt: now,
-            attempts: 0
-        ))
+            at: now
+        )
+        file.progressQueue = queue
         persist()
     }
 
+    /// Offline progress entries whose upload outcome is unknown. They are
+    /// never re-sent; `discardHeldProgress()` is the user's exit.
+    var heldProgressCount: Int {
+        OfflineProgressQueue.held(file.progressQueue, inFlight: progressUploadsInFlight).count
+    }
+
+    /// "Discard held change" for offline progress with an unknown outcome.
+    func discardHeldProgress() {
+        guard heldProgressCount > 0 else { return }
+        var queue = file.progressQueue
+        OfflineProgressQueue.discardHeld(&queue, inFlight: progressUploadsInFlight)
+        file.progressQueue = queue
+        persist()
+    }
+
+    /// Uploads queued offline progress through `POST /api/v2/sync/progress`
+    /// in batches of at most 100 distinct items, under the owner of the
+    /// active download scope. Each batch is claimed durably before it is
+    /// sent, so a batch whose answer never arrives, even across a crash, is
+    /// held instead of sent again (see `OfflineProgressQueue`).
     func flushProgressQueue() async {
-        guard !file.progressQueue.isEmpty else { return }
-        let batch = file.progressQueue
-        let items = batch.map {
-            SyncProgressItem(
-                mediaItemId: $0.mediaItemId,
-                position: $0.position,
-                duration: $0.duration,
-                forceOverwrite: false,
-                updatedAt: $0.updatedAt
-            )
+        let serverId = scopeServerId
+        let profileId = scopeProfileId
+        let generation = registrationScopeGeneration
+        guard !serverId.isEmpty, !profileId.isEmpty,
+              let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              auth.account.serverId == serverId, auth.profileId == profileId else { return }
+        // The scope generation advances on every scope change, including a
+        // switch away and back, so a stale flush cannot touch a newer file.
+        func scopeUnchanged() -> Bool {
+            generation == registrationScopeGeneration && serverId == scopeServerId && profileId == scopeProfileId
         }
-        do {
-            let results = try await SiloAPI.shared.syncProgressBatch(items: items)
-            let okItemIds = Set(results.filter { $0.isOK }.map { $0.mediaItemId })
-            // Match queue entries by identity, not media item — an entry
-            // appended while the POST was in flight carries a newer position
-            // the server never saw, so it must survive this batch with its
-            // full retry budget.
-            let sentEntryIds = Set(batch.map { $0.id })
-            let okEntryIds = Set(batch.filter { okItemIds.contains($0.mediaItemId) }.map { $0.id })
-            file.progressQueue.removeAll {
-                okEntryIds.contains($0.id)
-                    || ($0.attempts >= Self.maxRetries && sentEntryIds.contains($0.id))
+
+        for _ in 0..<Self.maxProgressBatchesPerFlush {
+            guard scopeUnchanged() else { return }
+            var queue = file.progressQueue
+            OfflineProgressQueue.dropUnsendable(&queue)
+            let batch = OfflineProgressQueue.nextBatch(queue)
+            guard !batch.isEmpty else {
+                if queue.count != file.progressQueue.count {
+                    file.progressQueue = queue
+                    persist()
+                }
+                return
             }
-            for index in file.progressQueue.indices
-            where sentEntryIds.contains(file.progressQueue[index].id) {
-                file.progressQueue[index].attempts += 1
-            }
+            let ids = Set(batch.map(\.id))
+            OfflineProgressQueue.claim(&queue, ids: ids)
+            file.progressQueue = queue
+            progressUploadsInFlight.formUnion(ids)
             persist()
-        } catch {
-            // Keep the queue for the next reconnect.
+            await saveChain?.value
+
+            let outcome = await SiloAPI.shared.apiV2Client.syncProgress(batch.compactMap(\.syncItem), auth: auth)
+            progressUploadsInFlight.subtract(ids)
+            guard scopeUnchanged() else {
+                // A batch that was sent stays dispatched in the old scope's
+                // file, which is the held state it belongs in. One that never
+                // reached the server (refused before dispatch, or deferred)
+                // goes back to pending there.
+                if OfflineProgressQueue.releasesClaims(outcome) {
+                    releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+                }
+                return
+            }
+            queue = file.progressQueue
+            OfflineProgressQueue.resolve(&queue, batch: batch, outcome: outcome)
+            file.progressQueue = queue
+            persist()
+            if let failure = outcome.failureSummary {
+                Self.logger.warning("offline progress upload: \(failure, privacy: .public)")
+            }
+            guard OfflineProgressQueue.flushContinues(after: outcome) else { return }
         }
+    }
+
+    /// Returns claimed entries of an inactive (or not yet reinstalled) scope
+    /// to pending: in memory when that scope is installed again, and in its
+    /// store file, ordered after every save already queued.
+    private func releaseProgressClaims(_ ids: Set<UUID>, serverId: String, profileId: String) {
+        if serverId == scopeServerId, profileId == scopeProfileId, scopeLoadTask == nil {
+            // Switched away and back: the scope's store is installed again.
+            if OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: ids) { persist() }
+            return
+        }
+        releasedProgressClaims[Self.progressClaimKey(serverId, profileId), default: []].formUnion(ids)
+        let previous = saveChain
+        saveChain = Task { @MainActor in
+            await previous?.value
+            await DownloadStore.shared.releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+        }
+    }
+
+    private static func progressClaimKey(_ serverId: String, _ profileId: String) -> String {
+        serverId + "\n" + profileId
     }
 
     func pullProgressDeltas() async {

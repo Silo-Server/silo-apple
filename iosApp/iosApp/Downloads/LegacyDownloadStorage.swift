@@ -198,7 +198,10 @@ struct LegacyDownloadStorage: Sendable {
                 position: position,
                 duration: duration,
                 updatedAt: Date(timeIntervalSinceReferenceDate: updatedAt),
-                attempts: 0
+                // Earlier versions wrote no state: their entries were never
+                // claimed for a v2 upload. A store from an interrupted removal
+                // keeps a held entry held.
+                state: (fields["state"] as? String).flatMap(QueuedProgress.State.init(rawValue:)) ?? .pending
             ))
         }
         return entries

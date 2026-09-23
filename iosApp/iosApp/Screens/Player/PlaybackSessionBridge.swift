@@ -1915,26 +1915,21 @@ actor PlaybackSessionBridge {
         duration: Double,
         forceOverwrite: Bool
     ) async -> Bool {
-        guard !contentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              position.isFinite,
-              position >= 0 else {
-            return false
-        }
-
-        do {
-            try await SiloAPI.shared.syncProgress(
-                mediaItemId: contentId,
-                position: position,
-                duration: duration.isFinite && duration > 0 ? duration : 0,
-                forceOverwrite: forceOverwrite
-            )
-            return true
-        } catch {
+        guard let item = SyncProgressItem(
+            mediaItemId: contentId,
+            position: position,
+            duration: duration,
+            forceOverwrite: forceOverwrite
+        ) else { return false }
+        // Sent once: `syncProgress` is non_retryable, so an unanswered write
+        // is reported as a failure and never re-sent.
+        let outcome = await SiloAPI.shared.apiV2Client.syncProgress([item])
+        if let failure = outcome.failureSummary {
             logger.warning(
-                "syncProgress failed for \(contentId, privacy: .public) at \(position, privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
+                "syncProgress failed for \(contentId, privacy: .public) at \(position, privacy: .public): \(failure, privacy: .public)"
             )
-            return false
         }
+        return outcome.allSucceeded
     }
 
     // MARK: - Stop Session
