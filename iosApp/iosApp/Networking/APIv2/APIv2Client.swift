@@ -1347,6 +1347,43 @@ struct APIv2Client: Sendable {
     }
     #endif
 
+    // MARK: Owner-bound raw requests
+
+    /// Captures the owner a multi-request sequence is bound to. Each
+    /// `ownedRequest` in the sequence names it, so a server, account or
+    /// profile switch refuses the remaining requests instead of sending them
+    /// to the replacement.
+    func captureRequestOwner() async throws -> CapturedOrdinaryRequestAuth {
+        try await gate()
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        return auth
+    }
+
+    /// Whether `auth` still describes the current owner.
+    func isCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
+    }
+
+    /// Sends one request with a caller-built body under `auth` and returns the
+    /// undecoded 2xx response; the caller asserts the exact status. Refused
+    /// before dispatch when `auth` is no longer the current owner, discarded
+    /// (`authorityChanged`) when the owner changed in flight. A non-2xx answer
+    /// throws `APIv2Error`. Never retried here.
+    func ownedRequest(method: String, path: String, body: Data? = nil, contentType: String = "application/json",
+                      timeout: HTTPTimeout = .standard,
+                      auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
+        try await gate()
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        return try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: method, path: path, body: body, contentType: contentType,
+                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+    }
+
     // MARK: Internals
 
     /// Refuses relative-URL (active-session) operations while the active

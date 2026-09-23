@@ -520,6 +520,10 @@ final class DiagnosticsViewModel {
             return "Consent changed; Crash Reports was reset to Ask."
         case .keptDestinationMismatch:
             return "Report kept for the server where it was captured."
+        case .keptServerRejected:
+            return "Report kept; it can't be uploaded to this server."
+        case .keptDeliveryUncertain:
+            return "Report kept; the server may already have it, so it won't be sent again."
         case .discardedInvalidLocalBundle:
             return "The invalid local report was deleted."
         }

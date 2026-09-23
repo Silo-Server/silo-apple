@@ -82,6 +82,16 @@ struct PendingReportState: Codable, Equatable {
     /// same oversized payload will always be rejected, so it is excluded from
     /// auto-upload and prompting.
     var tooLarge: Bool
+    /// The self-hosted server refused the report as invalid (400 or 422)
+    /// without a problem type that says why. Like `needsServerUpdate`, it is
+    /// kept and sendable manually but never auto-uploaded or prompted.
+    var serverRejected: Bool
+    /// A self-hosted upload request that may deliver the report was, or is
+    /// being, sent without a definite answer. Set before the first request of
+    /// an attempt leaves the device and cleared only by a definite failure;
+    /// success deletes the report. While set, the report is never sent again:
+    /// report upload, chunked create and complete are `non_retryable`.
+    var deliveryUncertain: Bool
     /// The user tapped "Don't Send" on this report's Ask-mode prompt. Unlike a
     /// permanent failure the report stays visible and sendable from settings;
     /// this only suppresses re-prompting for the report's remaining lifetime.
@@ -101,7 +111,7 @@ struct PendingReportState: Codable, Equatable {
     /// A declined prompt is not a permanent failure — the report can still be
     /// sent manually and auto-uploads under Always.
     var isPermanentFailure: Bool {
-        needsServerUpdate || tooLarge || hostedRejectionCode != nil
+        needsServerUpdate || tooLarge || serverRejected || deliveryUncertain || hostedRejectionCode != nil
     }
 
     /// The collector has accepted this hosted report and local actions should
@@ -113,6 +123,8 @@ struct PendingReportState: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case needsServerUpdate = "needs_server_update"
         case tooLarge = "too_large"
+        case serverRejected = "server_rejected"
+        case deliveryUncertain = "delivery_uncertain"
         case promptDeclined = "prompt_declined"
         case hostedEnvelopeGeneration = "hosted_envelope_generation"
         case hostedConsentRefreshRequired = "hosted_consent_refresh_required"
@@ -123,6 +135,8 @@ struct PendingReportState: Codable, Equatable {
     init(
         needsServerUpdate: Bool,
         tooLarge: Bool = false,
+        serverRejected: Bool = false,
+        deliveryUncertain: Bool = false,
         promptDeclined: Bool = false,
         hostedEnvelopeGeneration: String? = nil,
         hostedConsentRefreshRequired: Bool = false,
@@ -131,6 +145,8 @@ struct PendingReportState: Codable, Equatable {
     ) {
         self.needsServerUpdate = needsServerUpdate
         self.tooLarge = tooLarge
+        self.serverRejected = serverRejected
+        self.deliveryUncertain = deliveryUncertain
         self.promptDeclined = promptDeclined
         self.hostedEnvelopeGeneration = hostedEnvelopeGeneration
         self.hostedConsentRefreshRequired = hostedConsentRefreshRequired
@@ -142,6 +158,8 @@ struct PendingReportState: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         needsServerUpdate = try container.decodeIfPresent(Bool.self, forKey: .needsServerUpdate) ?? false
         tooLarge = try container.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
+        serverRejected = try container.decodeIfPresent(Bool.self, forKey: .serverRejected) ?? false
+        deliveryUncertain = try container.decodeIfPresent(Bool.self, forKey: .deliveryUncertain) ?? false
         promptDeclined = try container.decodeIfPresent(Bool.self, forKey: .promptDeclined) ?? false
         hostedEnvelopeGeneration = try container.decodeIfPresent(
             String.self,
@@ -757,6 +775,47 @@ final class PendingReportStore {
         var state = report.state
         state.tooLarge = true
         try? writeJSON(state, to: report.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    func markServerRejected(_ report: PendingReport) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return }
+        var state = current.state
+        state.serverRejected = true
+        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+    }
+
+    /// Records a self-hosted delivery attempt before its first request can
+    /// leave the device. Returns false, writing nothing, when an earlier
+    /// attempt still holds the claim: its outcome is unknown, so the report
+    /// must not be sent again. Throws when the claim cannot be stored, in
+    /// which case nothing may be sent.
+    func claimSelfHostedDelivery(_ report: PendingReport) throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else {
+            throw DiagnosticsStoreError.unreadableReport(report.id)
+        }
+        guard !current.state.deliveryUncertain else { return false }
+        var state = current.state
+        state.deliveryUncertain = true
+        try writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
+        return true
+    }
+
+    /// Clears the delivery claim after a definite failure: the server
+    /// answered without storing the report, or nothing was sent.
+    func releaseSelfHostedDelivery(_ report: PendingReport) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let current = loadReport(from: report.directoryURL) else { return }
+        var state = current.state
+        state.deliveryUncertain = false
+        try? writeJSON(state, to: current.directoryURL.appendingPathComponent("state.json"))
     }
 
     /// Records that the user declined this report's prompt, suppressing further

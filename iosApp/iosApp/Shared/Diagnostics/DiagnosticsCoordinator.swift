@@ -265,6 +265,12 @@ enum DiagnosticsUploadDecision: Equatable {
     case keptTooLarge
     case keptStaleConsent
     case keptDestinationMismatch
+    /// The self-hosted server refused the report as invalid without saying
+    /// why. Kept, never retried automatically.
+    case keptServerRejected
+    /// A request that may have delivered the report got no answer. Kept and
+    /// never sent again.
+    case keptDeliveryUncertain
     case discardedInvalidLocalBundle
 }
 
@@ -1039,6 +1045,11 @@ actor DiagnosticsCoordinator {
             hostedNetworkCandidates[report.id] = report.binding.binding
             return await pollHostedStatus(report)
         }
+        // An earlier attempt got no answer, so the server may already hold
+        // this report. It stays on the device until the user deletes it.
+        if destination == .selfHosted, report.state.deliveryUncertain {
+            return .keptDeliveryUncertain
+        }
         // A non-persistent capture context is nil only when the status refresh
         // failed (offline or identity mid-change) — the destination was never
         // actually checked. Returning keptDestinationMismatch here would show
@@ -1138,6 +1149,11 @@ actor DiagnosticsCoordinator {
             let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
             let destinationProfileID = await TokenStore.shared.getProfileId()
             let capturedProfileID = report.manifest.report.profileID
+            // Every upload request runs under this owner, so a switch after
+            // this point refuses the requests instead of redirecting them.
+            guard let destinationOwner = try? await api.captureOwner() else {
+                return .keptRetryable
+            }
             let bundle = try await buildBundle(for: report)
             let activeProfileID = await TokenStore.shared.getProfileId()
             guard await Self.currentAccessTokenFingerprint() != nil,
@@ -1149,19 +1165,42 @@ actor DiagnosticsCoordinator {
                   ) else {
                 return .keptRetryable
             }
+            // The upload and chunked create/complete are non_retryable. Record
+            // the attempt before the first request can leave the device, so an
+            // unanswered request, or a process that dies mid-upload, leaves
+            // the report held instead of sent again. A definite answer releases
+            // the claim; an earlier attempt still holding it blocks this one.
+            let claimed: Bool
+            do {
+                claimed = try pendingStore.claimSelfHostedDelivery(report)
+            } catch {
+                return .keptRetryable
+            }
+            guard claimed else {
+                return .keptDeliveryUncertain
+            }
             let response: DiagnosticsUploadResponse
             do {
-                response = try await api.upload(
-                    manifestData: bundle.manifestData,
-                    bundleData: bundle.bundleData
-                )
-            } catch DiagnosticsUploadError.requestBlockedByProxy {
-                // A proxy in front of the server capped the request body below
-                // the bundle size (nginx defaults to 1 MiB; bundles may be
-                // 10 MiB). Retrying the same request can never succeed, so
-                // fall back to the chunked upload, whose per-request size
-                // stays under such caps.
-                response = try await uploadChunkedFallback(report: report, bundle: bundle)
+                do {
+                    response = try await api.upload(
+                        manifestData: bundle.manifestData,
+                        bundleData: bundle.bundleData,
+                        auth: destinationOwner
+                    )
+                } catch DiagnosticsUploadError.requestBlockedByProxy {
+                    // A proxy in front of the server capped the request body
+                    // below the bundle size (nginx defaults to 1 MiB; bundles
+                    // may be 10 MiB). Retrying the same request can never
+                    // succeed, so fall back to the chunked upload, whose
+                    // per-request size stays under such caps.
+                    response = try await uploadChunkedFallback(
+                        bundle: bundle,
+                        destinationOwner: destinationOwner
+                    )
+                }
+            } catch let error as DiagnosticsUploadError where error != .deliveryUncertain {
+                pendingStore.releaseSelfHostedDelivery(report)
+                throw error
             }
             pendingStore.delete(report)
             return .uploaded(response)
@@ -1435,8 +1474,8 @@ actor DiagnosticsCoordinator {
     /// refused. Throws `DiagnosticsUploadError` for the caller's shared
     /// error mapping.
     private func uploadChunkedFallback(
-        report: PendingReport,
-        bundle: DiagnosticsBundleBuildResult
+        bundle: DiagnosticsBundleBuildResult,
+        destinationOwner: CapturedOrdinaryRequestAuth
     ) async throws -> DiagnosticsUploadResponse {
         // Chunking needs server support (upload_chunk_bytes in status). An
         // older server behind a capping proxy can't take this bundle by any
@@ -1446,25 +1485,16 @@ actor DiagnosticsCoordinator {
         guard cachedStatus?.status.supportsChunkedUpload == true else {
             throw DiagnosticsUploadError.unsupportedSchema
         }
-        // Pin the destination identity for the whole multi-request sequence.
-        // HTTPClient resolves the active server URL and auth per request, so
-        // without this a server/account/profile switch between chunk PUTs
-        // would send the remaining bundle bytes to the newly active
-        // destination. Same stable identity as the single-shot pre-POST check:
-        // server registry id + profile, token presence only (a transparent
-        // token refresh mid-upload must not abort the sequence).
-        let destinationServerRegistryID = ServerRegistry.activeServerIDSnapshot
-        let destinationProfileID = await TokenStore.shared.getProfileId()
+        // The whole multi-request sequence runs under the owner captured
+        // before the bundle was built, so a server/account/profile switch
+        // between chunk PUTs stops the upload instead of sending the rest of
+        // the bundle to the newly active destination. A transparent token
+        // refresh keeps the same owner and does not stop it.
         do {
             return try await api.uploadChunked(
                 manifestData: bundle.manifestData,
                 bundleData: bundle.bundleData,
-                destinationUnchanged: {
-                    guard await Self.currentAccessTokenFingerprint() != nil else { return false }
-                    guard ServerRegistry.activeServerIDSnapshot == destinationServerRegistryID else { return false }
-                    let activeProfileID = await TokenStore.shared.getProfileId()
-                    return activeProfileID == destinationProfileID
-                }
+                auth: destinationOwner
             )
         } catch DiagnosticsUploadError.requestBlockedByProxy {
             // Even individual chunk-sized requests are blocked: the proxy cap
@@ -2277,6 +2307,16 @@ actor DiagnosticsCoordinator {
             // here; if it does surface (fallback path itself unavailable),
             // the report is kept — a proxy config fix makes it sendable again.
             return .keptRetryable
+        case .serverRejected:
+            // Status-only fallback: without a distinct problem type the
+            // client cannot tell a stale consent from a bad archive, so it
+            // neither retries nor deletes. The user can send it manually or
+            // delete it.
+            pendingStore.markServerRejected(report)
+            return .keptServerRejected
+        case .deliveryUncertain:
+            // The delivery claim recorded before dispatch stays in place.
+            return .keptDeliveryUncertain
         case .disabled, .storageUnavailable, .quotaExceeded, .busy, .retryable, .underlying:
             return .keptRetryable
         }

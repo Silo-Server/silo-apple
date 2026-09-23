@@ -1,7 +1,8 @@
 #if os(iOS) || os(tvOS)
 import Foundation
 
-// Wire models for diagnostics (`getDiagnosticsCapabilities`).
+// Wire models for diagnostics (`getDiagnosticsCapabilities` and the report
+// upload operations).
 
 /// `GET /api/v2/diagnostics/capabilities` (`DiagnosticsCapabilities`).
 struct APIv2DiagnosticsCapabilities: Decodable, Equatable, Sendable {
@@ -45,5 +46,31 @@ struct APIv2DiagnosticsCapabilities: Decodable, Equatable, Sendable {
             return .disabled
         }
     }
+}
+
+/// `POST /api/v2/diagnostics/reports/uploads` 201 (`DiagnosticsChunkInitBody`).
+struct APIv2DiagnosticsUploadSession: Decodable, Equatable, Sendable {
+    let uploadId: String
+    let chunkBytes: Int
+    let totalChunks: Int
+    let expiresAt: String
+}
+
+/// The 201 body of a report upload and of a chunked completion
+/// (`DiagnosticsIngestResult`).
+struct APIv2DiagnosticsIngestResult: Decodable, Equatable, Sendable {
+    let reportId: String
+    let shortId: String
+
+    var response: DiagnosticsUploadResponse {
+        DiagnosticsUploadResponse(reportId: reportId, shortId: shortId)
+    }
+}
+
+/// A diagnostics upload request answered with a success status other than the
+/// documented one, or with a body that does not decode. The server may have
+/// acted on the request.
+struct APIv2DiagnosticsUnexpectedResponse: Error, Equatable {
+    let status: Int
 }
 #endif
