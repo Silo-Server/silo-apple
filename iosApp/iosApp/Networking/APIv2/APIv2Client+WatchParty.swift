@@ -14,9 +14,10 @@ enum WatchPartyAPIError: LocalizedError, Sendable {
 
 /// Watch Party rooms (`/api/v2/watch-together`). Every call runs for the
 /// server, account, and profile that opened the room, passed in as `auth`;
-/// room-scoped calls add the room's `X-Room-Token` proof. Mutations are
-/// dispatched once and never replayed after a refresh (`HTTPClient`
-/// excludes them); callers re-read the room instead.
+/// room-scoped calls add the room's `X-Room-Token` proof. The contract's
+/// `non_retryable` operations (start, selection, promote) are dispatched once
+/// and never re-sent after a 401 refresh (`HTTPClient` excludes them); callers
+/// re-read the room instead.
 extension APIv2Client {
     private static let watchPartyBase = "/api/v2/watch-together"
 
@@ -162,7 +163,9 @@ extension APIv2Client {
         let ticket = try watchPartyDecode(WatchPartySocketTicket.self, raw)
         guard ticket.protocol == "silo.room.v2", !ticket.ticket.isEmpty,
               ticket.ticket.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_").contains($0) }),
-              ticket.expiresIn > 0, ticket.maxConnectionSeconds > 0 else { throw WatchPartyAPIError.invalidResponse }
+              // The server clamps `expires_in` at 0 when the bearer is about to
+              // expire; connecting then fails and reconnects with a new ticket.
+              ticket.expiresIn >= 0, ticket.maxConnectionSeconds > 0 else { throw WatchPartyAPIError.invalidResponse }
         return ticket
     }
 

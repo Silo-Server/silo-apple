@@ -157,6 +157,25 @@ final class WatchPartyAPITests: XCTestCase {
         XCTAssertEqual(stub.requests.first?.path, "/api/v2/watch-together/rooms/\(roomId)/playback/start")
     }
 
+    func testSocketTicket401RefreshesOnceAndResends() async throws {
+        let handler = StubURLProtocol.Handler()
+        let ticketPath = "/api/v2/watch-together/rooms/\(roomId)/ws-ticket"
+        handler.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { _ in
+            .json(#"{"access_token":"access-two","refresh_token":"refresh-two","expires_in":3600}"#)
+        }
+        handler.route(StubURLProtocol.method("POST", path: ticketPath)) { request in
+            request.header("Authorization") == "Bearer access-two"
+                ? .json(#"{"ticket":"ticket","expires_in":30,"max_connection_seconds":300,"protocol":"silo.room.v2"}"#)
+                : .status(401)
+        }
+        let (_, tokens, auth) = try await client()
+        let api = APIv2Client(http: HTTPClient(session: handler.makeSession(), tokenStore: tokens),
+            tokenStore: tokens, isUpdateRequired: { false })
+        let ticket = try await api.watchPartySocketTicket(roomId: roomId, token: "room-proof", auth: auth)
+        XCTAssertEqual(ticket.ticket, "ticket")
+        XCTAssertEqual(handler.requests.map(\.path), [ticketPath, HTTPClient.refreshPath, ticketPath])
+    }
+
     func testRoomReceiptsRequireMatchingIdentityAndProof() async throws {
         let (api, _, auth) = try await client()
         var different = roomObject()
