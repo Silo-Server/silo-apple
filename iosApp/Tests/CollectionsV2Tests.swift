@@ -189,7 +189,7 @@ final class CollectionsV2Tests: XCTestCase {
         do {
             try await api.deleteCollection(editor.version)
             XCTFail("a version captured for another owner cannot be sent")
-        } catch HTTPError.requestIdentityChanged { }
+        } catch is APIv2OwnerChangedBeforeDispatch { }
         XCTAssertEqual(stub.requests.count, 1, "nothing left the device")
 
         let currentAuthValue = await tokens.captureOrdinaryRequestAuth()
