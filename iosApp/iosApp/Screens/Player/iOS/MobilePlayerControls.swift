@@ -72,9 +72,7 @@ struct MobilePlayerControls: View {
                 }
                 .transition(.opacity)
             }
-            if viewModel.showIntroSkip {
-                introSkipPill
-            }
+            introSkipPill
             if viewModel.showCreditsSkip {
                 creditsSkipPill
             }
@@ -84,6 +82,9 @@ struct MobilePlayerControls: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: showsStats)
+        // Fades in, and out when its timer runs out. Tap takes it down at once
+        // (see `PlayerViewModel.selectIntroSkipPrompt`).
+        .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tracks:
@@ -745,61 +746,46 @@ struct MobilePlayerControls: View {
 
     // MARK: - Intro skip
 
-    /// One prominent pill that covers both intro states: "Skip Intro" while
-    /// the range is active, "Skip Intro · N" with a cancel circle beside it
-    /// once the auto-skip countdown is armed.
+    /// The intro-skip pill: "Skip Intro" for `ask`, and a small "Intro
+    /// skipped" caption over "Watch Intro" for `always`'s undo. The same state
+    /// machine and copy as the TV, web and Android pills, with pointer rules: a
+    /// tap is Select, and a tap elsewhere is not a dismissal.
+    @ViewBuilder
     private var introSkipPill: some View {
-        VStack {
-            Spacer()
-            HStack {
+        if let pill = viewModel.introSkipPrompt.pill {
+            VStack(alignment: .trailing, spacing: 4) {
                 Spacer()
-                HStack(spacing: 10) {
-                    if viewModel.introAutoSkipCountdownSeconds != nil {
-                        Button {
-                            viewModel.cancelIntroAutoSkip()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
-                        }
-                        .buttonStyle(MobilePlayerGlassButtonStyle())
-                        .accessibilityLabel("Cancel Auto-Skip Intro")
-                    }
-
-                    Button {
-                        viewModel.skipIntro()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "forward.end.fill")
-                            Text("Skip Intro")
-                            if let countdown = viewModel.introAutoSkipCountdownSeconds {
-                                Text("· \(countdown)")
-                                    .opacity(0.55)
-                                    .monospacedDigit()
-                            }
-                        }
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
-                        .padding(.horizontal, 16)
-                        .frame(height: SiloTheme.topBarIconHitSize)
-                    }
-                    // White prominent glass with a dark glyph, matching the
-                    // play/pause disc — accent-tinted prominent reads as an
-                    // app-colored web button over video.
-                    .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
-                    .accessibilityLabel(
-                        viewModel.introAutoSkipCountdownSeconds == nil ? "Skip Intro" : "Skip Intro Now"
-                    )
+                if let caption = pill.kind.caption {
+                    Text(caption)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                        .padding(.trailing, 12)
+                        .accessibilityHidden(true)
                 }
+                Button {
+                    viewModel.selectIntroSkipPrompt()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
+                        Text(pill.kind.actionTitle)
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: SiloTheme.topBarIconHitSize)
+                }
+                .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
+                .accessibilityLabel(pill.kind.accessibilityLabel)
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, 24)
             // Clear the bottom stack while the controls are up; hug the
             // bottom edge when the pill is floating alone.
             .padding(.bottom, viewModel.showControls ? 88 : 24)
+            .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
+            .transition(.opacity)
         }
-        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
-        .transition(.opacity)
     }
 
     private var creditsSkipPill: some View {
@@ -843,6 +829,32 @@ struct MobilePlayerControls: View {
     private enum PlayerSheet: Identifiable {
         case tracks, aiSubtitles, subtitleSearch, settings
         var id: Self { self }
+    }
+}
+
+/// The intro pill's capsule: a dark scrim with the timer's fill creeping
+/// behind the label, brighter while pressed.
+private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
+    let pill: IntroSkipPrompt.Pill
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: SiloTheme.topBarIconHitSize)
+            .background {
+                ZStack {
+                    Capsule().fill(Color.black.opacity(0.65))
+                    IntroSkipPillProgress(
+                        pill: pill,
+                        color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
+                    )
+                }
+                .clipShape(Capsule())
+            }
+            .overlay {
+                Capsule().strokeBorder(Color.white.opacity(0.2), lineWidth: 1)
+            }
+            .contentShape(Capsule())
+            .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
     }
 }
 

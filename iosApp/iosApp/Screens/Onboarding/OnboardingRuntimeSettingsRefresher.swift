@@ -40,8 +40,10 @@ final class OnboardingRuntimeSettingsRefresher: OnboardingRuntimeSettingsRefresh
         case "subtitle_language":
             ProfilePrefsStore.shared.setPreferredSubtitleLanguage(value)
         case "auto_skip_intro":
+            // The server mirrors the tour's boolean onto the mode that
+            // superseded it; `never` is not reachable from the tour.
             if let enabled = Self.boolean(value) {
-                PlayerSettings.shared.autoSkipIntro = enabled
+                PlayerSettings.shared.introSkipMode = IntroSkipMode(legacyAutoSkip: enabled)
             }
         case "auto_skip_credits":
             if let enabled = Self.boolean(value) {

@@ -968,9 +968,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
                 value: .null,
                 source: .contractDefault
             ),
-            .playbackAutoSkipIntro: .init(
-                key: SettingKey.playbackAutoSkipIntro.rawValue,
-                value: .bool(false),
+            .playbackIntroSkipMode: .init(
+                key: SettingKey.playbackIntroSkipMode.rawValue,
+                value: .string("ask"),
                 source: .contractDefault
             ),
         ]
@@ -980,7 +980,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
             legacySnapshot: [
                 .playbackPreferredQuality: .string("720p"),
                 .playbackMaxBitrateKbps: .int(3_000),
-                .playbackAutoSkipIntro: .bool(true),
+                .playbackIntroSkipMode: .string("always"),
             ],
             effectiveByKey: effectiveByKey
         )
@@ -989,7 +989,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
         XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
         XCTAssertEqual(harness.settings.preferredQuality, "720p-medium")
-        XCTAssertTrue(harness.settings.autoSkipIntro)
+        XCTAssertEqual(harness.settings.introSkipMode, .always)
     }
 
     func testMigrationPreservesAudioLanguageSuggestions() async throws {
@@ -1095,7 +1095,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         harness.settings.setPreferredQuality("1080p-medium")
         harness.settings.setAudioLanguage("ja")
-        harness.settings.setAutoSkipIntro(true)
+        harness.settings.setIntroSkipMode(.never)
         harness.settings.setAutoSkipCredits(true)
         harness.settings.setAutoPlayNextEpisode(false)
         harness.settings.setNextUpPromptSeconds(45)
@@ -1119,7 +1119,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(byKey[.playbackPreferredQuality]?.value, .string("1080p"))
         XCTAssertEqual(byKey[.playbackMaxBitrateKbps]?.value, .int(12_000))
         XCTAssertEqual(byKey[.playbackAudioLanguage]?.value, .string("ja"))
-        XCTAssertEqual(byKey[.playbackAutoSkipIntro]?.value, .bool(true))
+        XCTAssertEqual(byKey[.playbackIntroSkipMode]?.value, .string("never"))
         XCTAssertEqual(byKey[.playbackAutoSkipCredits]?.value, .bool(true))
         XCTAssertEqual(byKey[.playbackAutoPlayNext]?.value, .bool(false))
         XCTAssertEqual(byKey[.playbackNextUpPromptSeconds]?.value, .int(45))
@@ -1251,18 +1251,18 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testDefaultSourcedValuesAreAdoptedLikeAnyOtherResolution() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.settings.setAutoSkipIntro(true)
+        harness.settings.setAutoSkipCredits(true)
         await harness.settings.flushPendingDeviceSettings()
-        XCTAssertTrue(harness.settings.autoSkipIntro)
+        XCTAssertTrue(harness.settings.autoSkipCredits)
 
         // Nobody has stored this key anywhere, so the server resolves it to the
         // contract default and says so.
         harness.transport.effective = [
-            .init(key: SettingKey.playbackAutoSkipIntro.rawValue, value: .bool(false), source: .contractDefault)
+            .init(key: SettingKey.playbackAutoSkipCredits.rawValue, value: .bool(false), source: .contractDefault)
         ]
         await harness.settings.refreshFromServer()
 
-        XCTAssertFalse(harness.settings.autoSkipIntro,
+        XCTAssertFalse(harness.settings.autoSkipCredits,
                        "a resolved default is an answer, not a missing one")
     }
 
@@ -1316,7 +1316,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
             .playbackPreferredQuality: .string("1080p"),
             .playbackMaxBitrateKbps: .int(6_500),
             .playbackAudioLanguage: .string("fr-CA"),
-            .playbackAutoSkipIntro: .bool(true),
+            .playbackIntroSkipMode: .string("never"),
             .playbackAutoSkipCredits: .bool(true),
             .playbackAutoPlayNext: .bool(false),
             .playbackNextUpPromptSeconds: .int(75),
@@ -1345,7 +1345,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.preferredQualityResolution, "1080p")
         XCTAssertEqual(harness.settings.maxBitrateKbps, 6_500)
         XCTAssertEqual(harness.settings.audioLanguage, "fr-CA")
-        XCTAssertTrue(harness.settings.autoSkipIntro)
+        XCTAssertEqual(harness.settings.introSkipMode, .never)
         XCTAssertTrue(harness.settings.autoSkipCredits)
         XCTAssertFalse(harness.settings.autoPlayNextEpisode)
         XCTAssertEqual(harness.settings.nextUpPromptSeconds, 75)
@@ -1423,7 +1423,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
         let harness = try PlayerSettingsHarness()
         harness.settings.setPreferredQuality("720p-medium")
-        harness.settings.setAutoSkipIntro(true)
+        harness.settings.setIntroSkipMode(.always)
         harness.settings.setHDREnabled(false)
         var appearance = SubtitleAppearance.default
         appearance.fontSize = .xlarge
@@ -1439,7 +1439,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertEqual(harness.settings.preferredQualityResolution, "auto")
         XCTAssertNil(harness.settings.maxBitrateKbps)
-        XCTAssertFalse(harness.settings.autoSkipIntro)
+        XCTAssertEqual(harness.settings.introSkipMode, .ask)
         XCTAssertTrue(harness.settings.hdrEnabled)
         XCTAssertEqual(harness.settings.subtitleAppearance, .default)
         XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
@@ -1457,7 +1457,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testAnUnavailableRefreshKeepsCachedValues() async throws {
         let harness = try PlayerSettingsHarness()
         harness.settings.setPreferredQuality("720p-medium")
-        harness.settings.setAutoSkipIntro(true)
+        harness.settings.setIntroSkipMode(.always)
         harness.transport.effectiveError = .transport(description: "offline")
 
         let result = await harness.settings.refreshFromServer()
@@ -1465,7 +1465,49 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(result, .unavailable)
         XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
         XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
-        XCTAssertTrue(harness.settings.autoSkipIntro)
+        XCTAssertEqual(harness.settings.introSkipMode, .always)
+    }
+
+    // MARK: - Intro skip mode
+
+    func testTheModeIsReadFromTheEnumNotTheDeprecatedBoolean() async throws {
+        let harness = try PlayerSettingsHarness()
+        // The server still resolves the boolean as the lossy mirror of the
+        // enum; `never` reads back as false there and must not become `ask`.
+        harness.transport.effective = [
+            .init(key: SettingKey.playbackIntroSkipMode.rawValue, value: .string("never"), source: .contractDefault),
+            .init(key: SettingKey.playbackAutoSkipIntro.rawValue, value: .bool(false), source: .contractDefault),
+        ]
+
+        let result = await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(result, .refreshed)
+        XCTAssertEqual(harness.settings.introSkipMode, .never)
+        XCTAssertEqual(harness.transport.effectiveCalls().count, 1)
+        XCTAssertTrue(harness.transport.effectiveCalls()[0].contains(.playbackIntroSkipMode))
+        XCTAssertFalse(harness.transport.effectiveCalls()[0].contains(.playbackAutoSkipIntro))
+    }
+
+    func testSettingTheModeNeverWritesTheDeprecatedBoolean() async throws {
+        let harness = try PlayerSettingsHarness()
+
+        harness.settings.setIntroSkipMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+
+        // The server mirrors the pair, and false -> ask would undo the never.
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playbackIntroSkipMode])
+        XCTAssertEqual(harness.transport.writes().first?.value, .string("never"))
+        XCTAssertFalse(harness.settings.autoSkipIntro)
+    }
+
+    func testTheLegacySnapshotCarriesTheCachedModeAsTheEnum() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.settings.setIntroSkipMode(.always)
+
+        let snapshot = harness.settings.legacySnapshot()
+
+        XCTAssertEqual(snapshot[.playbackIntroSkipMode], .string("always"))
+        XCTAssertNil(snapshot[.playbackAutoSkipIntro], "the boolean is the server's mirror, never migrated")
     }
 
     // MARK: - Playback speed alignment

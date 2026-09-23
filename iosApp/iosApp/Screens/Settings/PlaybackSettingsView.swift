@@ -246,15 +246,25 @@ struct PlaybackSettingsView: View {
             .pickerStyle(.navigationLink)
             #endif
 
-            Toggle("Skip Intros", isOn: Binding(
-                get: { viewModel.skipIntros },
-                set: { enabled in
-                    viewModel.skipIntros = enabled
-                    Task { await viewModel.setSkipIntros(enabled) }
+            // Three-way, not a switch: the boolean this replaced could not
+            // say "never". Labels and semantics are fixed by the contract.
+            Picker("Skip Intros", selection: Binding(
+                get: { viewModel.introSkipMode },
+                set: { mode in
+                    viewModel.introSkipMode = mode
+                    Task { await viewModel.setIntroSkipMode(mode) }
                 }
-            ))
+            )) {
+                ForEach(IntroSkipMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            #if os(macOS)
+            .pickerStyle(.menu)
+            #else
+            .pickerStyle(.navigationLink)
+            #endif
 
             Toggle("Skip Credits", isOn: Binding(
                 get: { viewModel.skipCredits },
