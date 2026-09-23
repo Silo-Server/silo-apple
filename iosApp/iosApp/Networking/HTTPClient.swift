@@ -82,13 +82,13 @@ struct HTTPIdentityTransitionLease: Hashable, Sendable {
 ///   in-flight `Task`; retry the original request once with the refreshed
 ///   token. Semantics mirror `AuthInterceptorImpl.kt` in the shared Kotlin
 ///   module, which used a `Mutex` + double-check for the same purpose.
-/// - Serialize bodies and decode responses via snake_case-aware JSON
-///   coders. The decoder uses `.convertFromSnakeCase` and the encoder uses
-///   `.convertToSnakeCase`, so Swift models can use plain camelCase
-///   properties without any `CodingKeys` boilerplate. Only add an explicit
-///   `CodingKeys` entry when the wire field name is NOT a clean snake_case
-///   of the Swift property (e.g. server sends `title` where Swift has
-///   `name`). Explicit `CodingKeys` override the strategy per-field.
+/// - Decode responses with `.convertFromSnakeCase`, so Swift models can use
+///   plain camelCase properties without any `CodingKeys` boilerplate. The
+///   `.convertToSnakeCase` encoder is used only for the token-refresh request
+///   body. Only add an explicit `CodingKeys` entry when the wire field name
+///   is NOT a clean snake_case of the Swift property (e.g. server sends
+///   `title` where Swift has `name`). Explicit `CodingKeys` override the
+///   strategy per-field.
 actor HTTPClient {
     static let shared = HTTPClient()
 
@@ -1106,18 +1106,23 @@ actor HTTPClient {
     /// (``ConnectionMonitor/healthPath``). `path` is the route relative to the
     /// server URL, so a server mounted under a base path still passes.
     ///
-    /// Only requests built here are checked. Token refresh uses the constant
-    /// ``refreshPath``; other origins (the hosted diagnostics service) and
-    /// server-minted absolute media URLs never come through this client's
-    /// request builder, so they need no exemption.
+    /// The DEBUG assertion in ``buildRequest(serverUrl:method:path:query:)``
+    /// covers only requests this client builds. Token refresh builds its URL
+    /// from the constant ``refreshPath``. Other code joins routes onto the
+    /// server URL itself and is not checked here: `TopShelfHTTPClient`,
+    /// `PairingDeviceAPI`, `APIv2Client.downloadFileURL`, the playback control
+    /// socket handshake and `ApplePushDisplayMetadata`. Requests to other
+    /// origins (the hosted diagnostics service) and server-minted absolute
+    /// media URLs are not checked either. `scripts/ci/check-no-api-v1.sh`
+    /// guards every app source against literal v1 route strings.
     static func isSiloServerPath(_ path: String) -> Bool {
         let normalizedPath = path.hasPrefix("/") ? path : "/" + path
         return normalizedPath == "/api/v2" || normalizedPath.hasPrefix("/api/v2/")
             || normalizedPath == ConnectionMonitor.healthPath
     }
 
-    /// The funnel every request to the active or a candidate Silo server
-    /// passes through.
+    /// Builds every request this client sends to the active or a candidate
+    /// Silo server, except token refresh.
     private func buildRequest(
         serverUrl: String,
         method: String,
@@ -1276,10 +1281,10 @@ actor HTTPClient {
     /// network.
     ///
     /// Network diagnostics are instrumented here rather than at any caller.
-    /// There are dozens of call sites above this (`get`, `post`, `requestData`,
-    /// the raw and multipart variants, the 401 retries), and instrumenting them
-    /// individually would produce a ring full of near-duplicate lines with
-    /// inconsistent outcome vocabulary. Every exit below is classified exactly
+    /// There are dozens of call sites above this (`get`, the
+    /// `getUnauthenticated…` reads, `getWithBearer`, `requestData`, the 401
+    /// retries), and instrumenting them individually would produce a ring
+    /// full of near-duplicate lines with inconsistent outcome vocabulary. Every exit below is classified exactly
     /// once, so "one request, one line" holds by construction.
     ///
     /// Token refresh is the sole request shape that does not pass through here —
