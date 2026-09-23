@@ -8,6 +8,8 @@ enum DownloadError: LocalizedError {
     case emptyRegistrationResponse
     case registrationAlreadyInFlight
     case scopeChangedDuringRegistration
+    case registryChanged
+    case registrationUncertain
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,8 @@ enum DownloadError: LocalizedError {
         case .emptyRegistrationResponse: return "The server didn't create a download."
         case .registrationAlreadyInFlight: return "This download is already being prepared."
         case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
+        case .registryChanged: return "This download changed on the server. Try again."
+        case .registrationUncertain: return "Silo couldn't confirm the download started. It will appear in Downloads if the server created it."
         }
     }
 }
@@ -58,6 +62,12 @@ final class DownloadManager {
 
     private(set) var scopeServerId: String = ""
     private(set) var scopeProfileId: String = ""
+    /// The scope `file` was loaded for. While a scope switch waits on its
+    /// load, `scopeServerId`/`scopeProfileId` already name the new scope but
+    /// `file` still holds the old one, so saves and registry owners go by
+    /// this instead.
+    private var fileServerId = ""
+    private var fileProfileId = ""
 
     /// Coalesces the several legitimate app-lifecycle callers that can all ask
     /// for the same scope at launch. Without this, a late disk read can replace
@@ -127,9 +137,10 @@ final class DownloadManager {
     /// it again; until then nothing tells the earlier version's server rows
     /// from new ones, so reconcile imports no unknown row.
     private var legacyRemovalIncomplete = false
-    /// Registry rows whose DELETE is in flight, so a reconcile that overlaps
-    /// the first one doesn't send it twice.
-    private var serverDeletesInFlight: Set<String> = []
+    /// The running pass over `file.pendingServerDeletes`, if any.
+    private var serverDeleteTask: Task<Void, Never>?
+    /// Records whose pending status event is being sent.
+    private var statusReportsInFlight: Set<String> = []
 
     private init() {
         // Drain background-session events for the lifetime of the app.
@@ -375,10 +386,7 @@ final class DownloadManager {
                 )
             }
         }
-        let serverIds = ids
-        Task {
-            for id in serverIds { try? await SiloAPI.shared.deleteDownloadRow(id: id) }
-        }
+        queueServerDeletes(removedIds)
         processQueue()
         refreshStorageUsage()
     }
@@ -421,7 +429,9 @@ final class DownloadManager {
             releaseHeldSessionEvents()
             return false
         }
-        if serverId == scopeServerId, profileId == scopeProfileId, !file.records.isEmpty || file.capability != nil {
+        if serverId == scopeServerId, profileId == scopeProfileId,
+           fileServerId == serverId, fileProfileId == profileId,
+           !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
             return true
         }
@@ -459,6 +469,8 @@ final class DownloadManager {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
             file = loadedFile
+            fileServerId = serverId
+            fileProfileId = profileId
             if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
                OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
@@ -541,6 +553,8 @@ final class DownloadManager {
         scopeServerId = ""
         scopeProfileId = ""
         file = .empty
+        fileServerId = ""
+        fileProfileId = ""
         rateSamples.removeAll()
         transferRates.removeAll()
     }
@@ -564,15 +578,18 @@ final class DownloadManager {
 
     // MARK: - Capability
 
+    /// On failure the cached capability stays, so an unreachable or
+    /// update-required server keeps completed downloads visible and playable.
     func refreshCapability() async {
-        guard !scopeServerId.isEmpty else { return }
+        guard let owner = await captureScopeOwner() else { return }
         do {
-            let capability = try await SiloAPI.shared.downloadCapability()
+            let capability = try await SiloAPI.shared.apiV2Client.downloadCapability(auth: owner.auth)
+            guard isCurrent(owner) else { return }
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
         } catch {
-            Self.logger.debug("capability refresh failed: \(String(describing: error), privacy: .public)")
+            Self.logger.warning("capability refresh failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -648,8 +665,6 @@ final class DownloadManager {
         }
         let registrationToken = UUID()
         let capturedScopeGeneration = registrationScopeGeneration
-        let capturedServerId = scopeServerId
-        let capturedProfileId = scopeProfileId
         pendingRegistrationTokens[registrationContentId] = registrationToken
         pendingRegistrationContentIds.insert(registrationContentId)
         defer {
@@ -659,42 +674,137 @@ final class DownloadManager {
             )
         }
 
-        // Series/season batches are original-quality only per the server
-        // contract; single items may use any advertised public quality preset.
-        let isBatch = series || seasonNumber != nil
-        let quality = isBatch
-            ? DownloadFormat.original.rawValue
-            : resolvedDownloadQuality(requestedQuality)
-
-        let request = CreateDownloadRequest(
-            contentId: contentId,
-            episodeId: episodeId,
-            fileId: fileId,
-            quality: quality,
-            series: series ? true : nil,
-            seasonNumber: seasonNumber,
-            caps: DownloadCaps.current()
-        )
-        let rows = try await SiloAPI.shared.createDownload(request)
-        guard capturedScopeGeneration == registrationScopeGeneration,
-              capturedServerId == scopeServerId,
-              capturedProfileId == scopeProfileId else {
+        guard let owner = await captureScopeOwner(), owner.generation == capturedScopeGeneration else {
             throw DownloadError.scopeChangedDuringRegistration
         }
-        guard !rows.isEmpty else { throw DownloadError.emptyRegistrationResponse }
-        for row in rows {
+        let isBatch = series || seasonNumber != nil
+        do {
+            if isBatch {
+                // Series/season batches are original-quality only per the
+                // server contract.
+                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber, owner: owner)
+            } else {
+                let request = APIv2DownloadCreateRequest.single(
+                    contentId: contentId,
+                    episodeId: episodeId,
+                    mediaFileId: fileId.map(String.init),
+                    quality: resolvedDownloadQuality(requestedQuality),
+                    caps: DownloadCaps.current(),
+                    expected: createGuard(forLeafId: registrationContentId)
+                )
+                let created = try await SiloAPI.shared.apiV2Client.createDownloads(request, auth: owner.auth)
+                guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
+                applyCreatedEntries(
+                    created.items,
+                    displayTitle: displayTitle,
+                    displaySubtitle: displaySubtitle,
+                    type: type,
+                    seriesId: seriesId,
+                    posterThumbhash: posterThumbhash
+                )
+            }
+        } catch let error as DownloadError {
+            // A scope change or an all-skipped batch: nothing to reconcile.
+            throw error
+        } catch {
+            try await settleFailedCreate(error, leafId: isBatch ? nil : registrationContentId, owner: owner)
+        }
+    }
+
+    /// Registers a series or season one server page at a time. Every page
+    /// repeats the same client-chosen batch id, and each page's entries are
+    /// stored as soon as it arrives.
+    private func createSeriesPages(seriesId: String, seasonNumber: Int?, owner: ScopeOwner) async throws {
+        let request = APIv2DownloadCreateRequest.seriesPage(
+            seriesId: seriesId,
+            seasonNumber: seasonNumber,
+            batchId: UUID().uuidString.lowercased(),
+            caps: DownloadCaps.current()
+        )
+        var cursor: String?
+        var cursors: Set<String> = []
+        var registered = 0
+        for _ in 0..<APIv2Client.downloadRegistryMaxPages {
+            let page = try await SiloAPI.shared.apiV2Client.createDownloads(request, cursor: cursor, auth: owner.auth)
+            guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
+            applyCreatedEntries(page.items, displayTitle: nil, displaySubtitle: nil, type: nil,
+                seriesId: seriesId, posterThumbhash: nil)
+            registered += page.items.count
+            guard page.page.hasMore else {
+                if registered == 0 { throw DownloadError.emptyRegistrationResponse }
+                return
+            }
+            guard let next = page.page.nextCursor, cursors.insert(next).inserted else {
+                throw DownloadRegistryError.unexpectedReceipt
+            }
+            cursor = next
+        }
+        throw DownloadRegistryError.unexpectedReceipt
+    }
+
+    /// What the registry should hold for an item, according to the local
+    /// record. A stale guard gets a 409, which reads the registry again.
+    private func createGuard(forLeafId leafId: String) -> APIv2DownloadCreateRequest.Guard {
+        guard let record = record(forContentId: leafId),
+              let revision = record.revision, revision >= 1 else { return .absent }
+        return .entry(id: record.id, revision: revision)
+    }
+
+    private func applyCreatedEntries(
+        _ entries: [APIv2DownloadEntry],
+        displayTitle: String?,
+        displaySubtitle: String?,
+        type: String?,
+        seriesId: String?,
+        posterThumbhash: String?
+    ) {
+        // An entry the create reused is wanted again, so an earlier local
+        // delete of it no longer applies.
+        if var pending = file.pendingServerDeletes, !pending.isDisjoint(with: entries.map(\.id)) {
+            pending.subtract(entries.map(\.id))
+            file.pendingServerDeletes = pending.isEmpty ? nil : pending
+        }
+        for entry in entries {
             upsertRow(
-                row,
-                displayTitle: rows.count == 1 ? displayTitle : nil,
-                displaySubtitle: rows.count == 1 ? displaySubtitle : nil,
+                entry,
+                displayTitle: entries.count == 1 ? displayTitle : nil,
+                displaySubtitle: entries.count == 1 ? displaySubtitle : nil,
                 type: type,
                 seriesId: seriesId,
-                posterThumbhash: rows.count == 1 ? posterThumbhash : nil
+                posterThumbhash: entries.count == 1 ? posterThumbhash : nil
             )
         }
         persist()
         processQueue()
         ensurePolling()
+    }
+
+    /// Decides what a failed create means for the user. `createDownloads` is
+    /// never sent again on its own: a conflict or an uncertain outcome reads
+    /// the registry instead, and when that read shows a live entry for the
+    /// item, the download goes ahead from it.
+    private func settleFailedCreate(_ error: Error, leafId: String?, owner: ScopeOwner) async throws {
+        let failure = APIv2Client.downloadRegistryFailure(error)
+        Self.logger.warning("download create failed (\(String(describing: failure), privacy: .public)): \(String(describing: error), privacy: .public)")
+        guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
+        switch failure {
+        case .rejected, .notApplied:
+            throw error
+        case .conflict, .uncertain:
+            await reconcileWithServer(triggerPipeline: true)
+            // A pending DELETE of this item's entry, or of one left by an
+            // earlier version, makes the create conflict. Send it, even when
+            // the read failed, and wait for it so a retry does not meet the
+            // same entry again.
+            sendPendingServerDeletes()
+            await serverDeleteTask?.value
+            guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
+            if let leafId, let record = record(forContentId: leafId),
+               record.localStatus != .failed, record.localStatus != .revoked {
+                return
+            }
+            throw failure == .conflict ? DownloadError.registryChanged : DownloadError.registrationUncertain
+        }
     }
 
     private func invalidatePendingRegistrations() {
@@ -887,9 +997,10 @@ final class DownloadManager {
         let taskId = sessionDelegate.start(request: request)
         record.taskIdentifier = taskId
         record.localStatus = .downloading
+        record.pendingStatusEvent = Self.statusEvent(.downloading, for: record)
         file.records[recordId] = record
         persist()
-        Task { try? await SiloAPI.shared.patchDownloadStatus(id: recordId, status: "downloading") }
+        reportPendingStatusEvents()
     }
 
     private func persistManifest(_ manifest: OfflineManifest, recordId: String) async {
@@ -910,7 +1021,6 @@ final class DownloadManager {
         record.deliveryFormat = manifest.deliveryFormat
         record.targetBitrateKbps = manifest.targetBitrateKbps
         record.revision = manifest.revision ?? record.revision
-        record.mediaFileId = manifest.mediaFileId
         record.container = manifest.container
         record.posterThumbhash = record.posterThumbhash ?? manifest.posterThumbhash
         record.stableIdentity = manifest.stableIdentity
@@ -1151,13 +1261,13 @@ final class DownloadManager {
             record.fileSize = fileSizeOnDisk(destination)
         }
         record.bytesDownloaded = record.fileSize
+        record.pendingStatusEvent = Self.statusEvent(.completed, for: record)
         file.records[record.id] = record
         persist()
         #if os(iOS)
         DownloadNotifier.downloadCompleted(record)
         #endif
-        let id = record.id
-        Task { try? await SiloAPI.shared.patchDownloadStatus(id: id, status: "completed") }
+        reportPendingStatusEvents()
         processQueue()
         refreshStorageUsage()
         Task { await self.enforceRetention() }
@@ -1238,9 +1348,10 @@ final class DownloadManager {
                   record.taskIdentifier == nil,
                   record.localStatus == .downloading || record.localStatus == .fetchingAssets else { return }
             if refreshToken {
-                // Force HTTPClient's single-flight 401 refresh so the next
-                // background request carries a fresh token.
-                _ = try? await SiloAPI.shared.listDownloads()
+                // Any authenticated v2 read runs HTTPClient's single-flight
+                // 401 refresh, so the next background request carries a
+                // fresh token.
+                await self.refreshCapability()
             }
             if let resumeData {
                 let taskId = self.sessionDelegate.resume(data: resumeData)
@@ -1276,20 +1387,21 @@ final class DownloadManager {
 
     // MARK: - Reconcile with server
 
+    /// Mirrors this device's registry into the store. Runs only on a
+    /// complete read, because an entry missing from it counts as removed on
+    /// the server.
     func reconcileWithServer(triggerPipeline: Bool) async {
-        guard !scopeServerId.isEmpty, downloadsEnabled else { return }
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
-        let listed: [ServerDownloadRow]
+        guard downloadsEnabled, let owner = await captureScopeOwner() else { return }
+        let listed: [APIv2DownloadEntry]
         do {
-            listed = try await SiloAPI.shared.listDownloads()
+            listed = try await SiloAPI.shared.apiV2Client.listDownloads(auth: owner.auth)
         } catch {
+            Self.logger.warning("download registry read failed: \(String(describing: error), privacy: .public)")
             return
         }
-        // The legacy classification below must judge this scope's rows only.
-        guard scopeServerId == serverId, scopeProfileId == profileId else { return }
-        // A complete read that no longer lists a row confirms its DELETE. The
-        // others stay hidden until theirs lands.
+        guard isCurrent(owner) else { return }
+        // A complete read that no longer lists a locally deleted entry
+        // confirms its DELETE. The others stay hidden until theirs lands.
         let pendingDeletes = (file.pendingServerDeletes ?? []).intersection(listed.map(\.id))
         file.pendingServerDeletes = pendingDeletes.isEmpty ? nil : pendingDeletes
         let rows = listed.filter { !pendingDeletes.contains($0.id) }
@@ -1327,6 +1439,7 @@ final class DownloadManager {
         }
 
         // Pick up rows registered out-of-band (e.g. subscription sync).
+        var legacyRowIds: [String] = []
         if legacyRemovalIncomplete {
             Self.logger.warning("Not importing unknown server downloads: removing earlier versions' downloads did not finish")
         } else {
@@ -1339,12 +1452,14 @@ final class DownloadManager {
             }
             if !unknownRows.legacy.isEmpty {
                 Self.logger.notice("Deleting \(unknownRows.legacy.count, privacy: .public) server downloads registered by an earlier version")
-                file.pendingServerDeletes = (file.pendingServerDeletes ?? []).union(unknownRows.legacy.map(\.id))
+                legacyRowIds = unknownRows.legacy.map(\.id)
             }
             file.legacyRowsPending = nil
         }
         persist()
-        sendPendingServerDeletes()
+        // Also sends the DELETEs still pending from an earlier pass.
+        queueServerDeletes(legacyRowIds)
+        reportPendingStatusEvents()
 
         await reconnectActiveTasks()
         if triggerPipeline {
@@ -1364,39 +1479,196 @@ final class DownloadManager {
     /// unknown rows are imported. No server timestamp is compared with the
     /// device clock.
     nonisolated static func partitionUnknownRows(
-        _ rows: [ServerDownloadRow],
+        _ rows: [APIv2DownloadEntry],
         legacyRowsPending: Bool
-    ) -> (imported: [ServerDownloadRow], legacy: [ServerDownloadRow]) {
+    ) -> (imported: [APIv2DownloadEntry], legacy: [APIv2DownloadEntry]) {
         legacyRowsPending ? ([], rows) : (rows, [])
     }
 
-    /// Sends the DELETE of every row in `pendingServerDeletes`, so the
-    /// removed downloads stop counting against the device's quota. The ids
-    /// persist first; a failed DELETE is retried by the next reconcile, and a
-    /// row a complete read no longer lists is dropped from the set there.
-    private func sendPendingServerDeletes() {
-        let pending = (file.pendingServerDeletes ?? []).subtracting(serverDeletesInFlight).sorted()
-        guard !pending.isEmpty else { return }
-        serverDeletesInFlight.formUnion(pending)
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
-        Task { @MainActor [weak self] in
-            for id in pending {
-                // The request goes to whichever account is active; stop if
-                // that is no longer the one that listed these rows.
-                guard let self, self.scopeServerId == serverId, self.scopeProfileId == profileId else { break }
-                do {
-                    try await SiloAPI.shared.deleteDownloadRow(id: id)
-                } catch {
-                    continue
-                }
-                guard self.scopeServerId == serverId, self.scopeProfileId == profileId else { break }
-                self.file.pendingServerDeletes?.remove(id)
-                if self.file.pendingServerDeletes?.isEmpty == true { self.file.pendingServerDeletes = nil }
-                self.persist()
-            }
-            self?.serverDeletesInFlight.subtract(pending)
+    // MARK: - Registry writes
+
+    /// The request owner of the active download scope, captured before a
+    /// registry call so its answer is applied only to that scope.
+    private struct ScopeOwner {
+        let scope: ScopeKey
+        let auth: CapturedOrdinaryRequestAuth
+
+        var generation: UInt64 { scope.generation }
+    }
+
+    /// One activation of a download scope. The generation advances on every
+    /// scope change, so a switch away and back gives a different key.
+    private struct ScopeKey: Equatable {
+        let serverId: String
+        let profileId: String
+        let generation: UInt64
+    }
+
+    /// The active scope, or nil when there is none or its store has not
+    /// loaded into `file` yet.
+    private var loadedScope: ScopeKey? {
+        guard !scopeServerId.isEmpty, !scopeProfileId.isEmpty,
+              fileServerId == scopeServerId, fileProfileId == scopeProfileId else { return nil }
+        return ScopeKey(serverId: scopeServerId, profileId: scopeProfileId, generation: registrationScopeGeneration)
+    }
+
+    /// Captures the request owner of `expected`, or of the active scope when
+    /// nil. Background work passes the scope it was started under, captured
+    /// synchronously, so it never pairs a newer scope's auth with a store
+    /// it did not read.
+    private func captureScopeOwner(expecting expected: ScopeKey? = nil) async -> ScopeOwner? {
+        guard let scope = loadedScope, expected == nil || expected == scope,
+              let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              auth.account.serverId == scope.serverId, auth.profileId == scope.profileId else { return nil }
+        let owner = ScopeOwner(scope: scope, auth: auth)
+        return isCurrent(owner) ? owner : nil
+    }
+
+    /// Whether the scope `owner` was captured for is still active and its
+    /// store is the one in `file`.
+    private func isCurrent(_ owner: ScopeOwner) -> Bool {
+        loadedScope == owner.scope
+    }
+
+    /// Records that these registry entries must be deleted on the server,
+    /// then sends every pending DELETE, including ones an earlier pass could
+    /// not send. The record persists first, so an entry whose DELETE never
+    /// lands is not imported again by a later reconcile. Every complete
+    /// reconcile calls this, with or without new ids.
+    private func queueServerDeletes(_ ids: [String]) {
+        var pending = file.pendingServerDeletes ?? []
+        if !pending.isSuperset(of: ids) {
+            pending.formUnion(ids)
+            file.pendingServerDeletes = pending
+            persist()
         }
+        sendPendingServerDeletes()
+    }
+
+    /// Sends the DELETE for every pending entry, one pass at a time.
+    /// `deleteDownload` is `natural_idempotent`, so an entry without a
+    /// definite answer stays pending and a later pass sends it again; a 204
+    /// or a 404 ends it. The pass stops when the active owner changes.
+    private func sendPendingServerDeletes() {
+        guard serverDeleteTask == nil, file.pendingServerDeletes?.isEmpty == false,
+              let scope = loadedScope else { return }
+        serverDeleteTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runServerDeletePass(scope: scope)
+            self.serverDeleteTask = nil
+        }
+    }
+
+    private func runServerDeletePass(scope: ScopeKey) async {
+        guard let owner = await captureScopeOwner(expecting: scope) else { return }
+        var attempted: Set<String> = []
+        while isCurrent(owner),
+              let id = (file.pendingServerDeletes ?? []).subtracting(attempted).sorted().first {
+            attempted.insert(id)
+            do {
+                try await SiloAPI.shared.apiV2Client.deleteDownload(id: id, auth: owner.auth)
+            } catch where Self.isNotFound(error) {
+                // Already gone.
+            } catch {
+                Self.logger.warning("download delete failed; kept for the next reconcile: \(String(describing: error), privacy: .public)")
+                continue
+            }
+            guard isCurrent(owner) else { return }
+            file.pendingServerDeletes?.remove(id)
+            if file.pendingServerDeletes?.isEmpty == true { file.pendingServerDeletes = nil }
+            persist()
+        }
+    }
+
+    nonisolated private static func isNotFound(_ error: Error) -> Bool {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.status == 404
+        case APIv2Error.httpStatus(let status): return status == 404
+        default: return false
+        }
+    }
+
+    /// A status event for the record's current revision, stamped now, or nil
+    /// when the record has no revision an event could name.
+    private static func statusEvent(_ status: DownloadStatusEvent.Status, for record: DownloadRecord) -> DownloadStatusEvent? {
+        guard let revision = record.revision, revision >= 1 else { return nil }
+        return DownloadStatusEvent(status: status, updatedAt: Date(), revision: revision)
+    }
+
+    /// What an answer to a status report means for the stored event.
+    enum StatusReportResolution: Equatable {
+        /// The server holds the event, or would refuse it again: drop it.
+        case settled
+        /// The entry moved to a newer revision, so the event describes bytes
+        /// that were replaced: drop it and read the registry.
+        case reconcile
+        /// No definite answer: keep the event and send the same one later.
+        case retryLater
+    }
+
+    nonisolated static func statusReportResolution(_ error: Error?) -> StatusReportResolution {
+        guard let error else { return .settled }
+        switch APIv2Client.downloadRegistryFailure(error) {
+        case .conflict: return .reconcile
+        case .rejected: return .settled
+        case .notApplied, .uncertain: return .retryLater
+        }
+    }
+
+    /// Sends every unanswered status event of the active scope. Reconcile
+    /// calls this too, so an event kept for later goes out again on the next
+    /// foreground.
+    private func reportPendingStatusEvents() {
+        let ids = file.records.values
+            .filter { $0.pendingStatusEvent != nil && !statusReportsInFlight.contains($0.id) }
+            .map(\.id)
+        guard !ids.isEmpty, let scope = loadedScope else { return }
+        statusReportsInFlight.formUnion(ids)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let superseded = await self.sendStatusEvents(ids: ids, scope: scope)
+            self.statusReportsInFlight.subtract(ids)
+            // A newer event recorded while its predecessor was in flight.
+            if superseded { self.reportPendingStatusEvents() }
+        }
+    }
+
+    /// Returns whether any record got a newer event while its report was in
+    /// flight.
+    private func sendStatusEvents(ids: [String], scope: ScopeKey) async -> Bool {
+        guard let owner = await captureScopeOwner(expecting: scope) else { return false }
+        var superseded = false
+        var needsReconcile = false
+        for id in ids {
+            guard isCurrent(owner), let event = file.records[id]?.pendingStatusEvent else { continue }
+            var failure: Error?
+            do {
+                _ = try await SiloAPI.shared.apiV2Client.reportDownloadStatus(id: id, event: event, auth: owner.auth)
+            } catch {
+                failure = error
+                Self.logger.warning("download status report failed: \(String(describing: error), privacy: .public)")
+            }
+            guard isCurrent(owner), var record = file.records[id] else { continue }
+            guard record.pendingStatusEvent == event else {
+                superseded = true
+                continue
+            }
+            switch Self.statusReportResolution(failure) {
+            case .settled:
+                record.pendingStatusEvent = nil
+            case .reconcile:
+                record.pendingStatusEvent = nil
+                needsReconcile = true
+            case .retryLater:
+                continue
+            }
+            file.records[id] = record
+            persist()
+        }
+        if needsReconcile, isCurrent(owner) {
+            await reconcileWithServer(triggerPipeline: true)
+        }
+        return superseded
     }
 
     /// After a relaunch the background session may have lost in-flight
@@ -1701,7 +1973,7 @@ final class DownloadManager {
     // MARK: - Helpers
 
     private func upsertRow(
-        _ row: ServerDownloadRow,
+        _ row: APIv2DownloadEntry,
         displayTitle: String?,
         displaySubtitle: String?,
         type: String?,
@@ -1726,7 +1998,7 @@ final class DownloadManager {
         file.records[row.id] = record
     }
 
-    private func mergeExistingRecord(_ existing: DownloadRecord, with row: ServerDownloadRow) -> DownloadRecord {
+    private func mergeExistingRecord(_ existing: DownloadRecord, with row: APIv2DownloadEntry) -> DownloadRecord {
         var record = existing
         if shouldReplaceLocalAssets(record, with: row) {
             discardLocalAssets(for: record)
@@ -1736,16 +2008,11 @@ final class DownloadManager {
         return record
     }
 
-    private func shouldReplaceLocalAssets(_ record: DownloadRecord, with row: ServerDownloadRow) -> Bool {
-        if let currentRevision = record.revision,
-           let serverRevision = row.revision,
-           serverRevision > currentRevision {
-            return true
+    private func shouldReplaceLocalAssets(_ record: DownloadRecord, with row: APIv2DownloadEntry) -> Bool {
+        if let currentRevision = record.revision {
+            return row.revision > currentRevision
         }
-        if record.revision == nil {
-            return record.mediaFileId != row.mediaFileId || record.format != row.quality
-        }
-        return false
+        return record.mediaFileId != row.mediaFileId || record.format != row.quality
     }
 
     private func discardLocalAssets(for record: DownloadRecord) {
@@ -1777,26 +2044,28 @@ final class DownloadManager {
         record.lastError = nil
         record.retryCount = 0
         record.taskIdentifier = nil
+        // An unsent event describes the replaced bytes.
+        record.pendingStatusEvent = nil
     }
 
-    private func applyServerRow(_ row: ServerDownloadRow, to record: inout DownloadRecord) {
+    private func applyServerRow(_ row: APIv2DownloadEntry, to record: inout DownloadRecord) {
         record.contentId = row.contentId
         record.mediaFileId = row.mediaFileId
         record.format = row.quality
         record.effectiveQuality = row.effectiveQuality
         record.deliveryFormat = row.deliveryFormat
         record.targetBitrateKbps = row.targetBitrateKbps
-        record.revision = row.revision ?? record.revision
+        record.revision = row.revision
         record.serverStatus = row.status
-        if let size = row.fileSize, size > 0, record.fileSize <= 0 {
-            record.fileSize = size
+        if row.fileSize > 0, record.fileSize <= 0 {
+            record.fileSize = row.fileSize
         }
         if let completedAt = row.completedAt {
             record.downloadedAt = completedAt
         }
     }
 
-    private func makeRecord(from row: ServerDownloadRow, type: String?) -> DownloadRecord {
+    private func makeRecord(from row: APIv2DownloadEntry, type: String?) -> DownloadRecord {
         DownloadRecord(
             id: row.id,
             contentId: row.contentId,
@@ -1810,7 +2079,7 @@ final class DownloadManager {
             revision: row.revision,
             serverStatus: row.status,
             localStatus: Self.mapInitialStatus(row.status),
-            fileSize: row.fileSize ?? 0,
+            fileSize: row.fileSize,
             bytesDownloaded: 0,
             mediaFilename: nil,
             manifestFilename: nil,
@@ -1825,7 +2094,7 @@ final class DownloadManager {
             posterThumbhash: nil,
             container: nil,
             stableIdentity: nil,
-            registeredAt: row.createdAt ?? Date(),
+            registeredAt: row.createdAt,
             downloadedAt: row.completedAt,
             lastError: nil,
             retryCount: 0,
@@ -1927,12 +2196,14 @@ final class DownloadManager {
         return Int64(values?.fileSize ?? 0)
     }
 
+    /// Saves `file` to the store of the scope it was loaded for, which lags
+    /// the active scope while a switch waits on its load.
     private func persist() {
-        guard !scopeServerId.isEmpty, !scopeProfileId.isEmpty else { return }
+        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return }
         lastProgressPersist = Date()
         let snapshot = file
-        let serverId = scopeServerId
-        let profileId = scopeProfileId
+        let serverId = fileServerId
+        let profileId = fileProfileId
         // Chain each save after the previous so writes land in call order.
         let previous = saveChain
         saveChain = Task { @MainActor in
