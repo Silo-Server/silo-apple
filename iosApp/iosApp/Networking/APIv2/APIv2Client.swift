@@ -1365,22 +1365,35 @@ struct APIv2Client: Sendable {
     }
 
     /// Sends one request with a caller-built body under `auth` and returns the
-    /// undecoded 2xx response; the caller asserts the exact status. Refused
-    /// before dispatch when `auth` is no longer the current owner, discarded
-    /// (`authorityChanged`) when the owner changed in flight. A non-2xx answer
-    /// throws `APIv2Error`. Never retried here.
+    /// undecoded 2xx response; the caller asserts the exact status. A non-2xx
+    /// answer throws `APIv2Error`. Never retried here.
+    ///
+    /// An owner change is reported by when it was caught:
+    /// `APIv2OwnerChangedBeforeDispatch` when the request never reached the
+    /// URL session (this guard, the fence's entry check, or `HTTPClient`'s
+    /// dispatch gate and owner checks), and `HTTPError.requestIdentityChanged`
+    /// or `.authorityChanged` when the request was sent and its outcome
+    /// discarded.
     func ownedRequest(method: String, path: String, body: Data? = nil, contentType: String = "application/json",
                       timeout: HTTPTimeout = .standard,
                       auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
-        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        return try await tokenStore.withOwnerFence(auth) {
-            try await mapErrors {
-                try await http.requestData(method: method, path: path, body: body, contentType: contentType,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+        let dispatch = HTTPDispatchRecord()
+        do {
+            guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+            let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+            return try await tokenStore.withOwnerFence(auth) {
+                try await mapErrors {
+                    try await http.requestData(method: method, path: path, body: body, contentType: contentType,
+                        headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
+                        requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
+                        dispatchRecord: dispatch)
+                }
             }
+        } catch HTTPError.requestIdentityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
+        } catch HTTPError.authorityChanged where !dispatch.didDispatch {
+            throw APIv2OwnerChangedBeforeDispatch()
         }
     }
 

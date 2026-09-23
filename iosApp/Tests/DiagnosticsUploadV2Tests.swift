@@ -62,7 +62,10 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
             HTTPError.network(underlying: URLError(.networkConnectionLost))), .deliveryUncertain)
         XCTAssertEqual(DiagnosticsAPI.nonRetryableFailure(
             HTTPError.network(underlying: URLError(.timedOut))), .deliveryUncertain)
+        // `ownedRequest` only lets the owner-change errors through once the
+        // request was sent; a refusal before that has its own error.
         XCTAssertEqual(DiagnosticsAPI.nonRetryableFailure(HTTPError.authorityChanged), .deliveryUncertain)
+        XCTAssertEqual(DiagnosticsAPI.nonRetryableFailure(HTTPError.requestIdentityChanged), .deliveryUncertain)
         XCTAssertEqual(DiagnosticsAPI.nonRetryableFailure(
             APIv2DiagnosticsUnexpectedResponse(status: 200)), .deliveryUncertain)
     }
@@ -117,7 +120,19 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
 
     // MARK: - Single-shot upload
 
-    private func makeAPI() async throws -> (DiagnosticsAPI, CapturedOrdinaryRequestAuth) {
+    /// `beforeCapture` runs inside `HTTPClient` for every request, after the
+    /// owner checks in `DiagnosticsAPI` and before the request is sent. It
+    /// gets the 1-based request number.
+    private func makeAPI(
+        beforeCapture: (@Sendable (Int, TokenStore) async -> Void)? = nil
+    ) async throws -> (DiagnosticsAPI, CapturedOrdinaryRequestAuth) {
+        let (api, owner, _) = try await makeHarness(beforeCapture: beforeCapture)
+        return (api, owner)
+    }
+
+    private func makeHarness(
+        beforeCapture: (@Sendable (Int, TokenStore) async -> Void)? = nil
+    ) async throws -> (DiagnosticsAPI, CapturedOrdinaryRequestAuth, HTTPClient) {
         let name = "DiagnosticsUploadV2Tests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         let keychain = SharedKeychain(service: name, accessGroup: nil)
@@ -145,10 +160,12 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
         await tokens.setProfileId("7")
         self.tokens = tokens
         stub.tokens = tokens
-        let client = APIv2Client(http: HTTPClient(session: stub.handler.makeSession(), tokenStore: tokens),
-            tokenStore: tokens, isUpdateRequired: { false })
+        let counter = RequestCounter()
+        let http = HTTPClient(session: stub.handler.makeSession(), tokenStore: tokens,
+            requestCaptureBarrier: { await beforeCapture?(await counter.next(), tokens) })
+        let client = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let api = DiagnosticsAPI(client: client)
-        return (api, try await api.captureOwner())
+        return (api, try await api.captureOwner(), http)
     }
 
     func testUploadSendsManifestThenBundleAsMultipart() async throws {
@@ -212,6 +229,56 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
             XCTAssertEqual(error, .retryable(DiagnosticsAPI.destinationChanged))
         }
         XCTAssertTrue(stub.handler.requests.isEmpty)
+    }
+
+    func testUploadRefusedInsideTheClientAfterAnOwnerChangeIsNotUncertain() async throws {
+        // The switch lands after DiagnosticsAPI's own owner check passed, and
+        // HTTPClient refuses the request before sending it. Nothing reached
+        // the server, so the claim must be released, not held as uncertain.
+        stub.reset(chunkBytes: 4)
+        let (api, owner) = try await makeAPI(beforeCapture: { _, tokens in await tokens.setProfileId("8") })
+
+        do {
+            _ = try await api.upload(manifestData: Data("{}".utf8), bundleData: Data("b".utf8), auth: owner)
+            XCTFail("a replaced owner must not upload")
+        } catch let error as DiagnosticsUploadError {
+            XCTAssertEqual(error, .retryable(DiagnosticsAPI.destinationChanged))
+        }
+        XCTAssertTrue(stub.handler.requests.isEmpty)
+    }
+
+    func testUploadRefusedByTheDispatchGateIsNotUncertain() async throws {
+        // During an identity transition TokenStore can still report the old
+        // owner, so every owner check passes and only HTTPClient's dispatch
+        // gate refuses the request.
+        stub.reset(chunkBytes: 4)
+        let (api, owner, http) = try await makeHarness()
+        let transition = await http.beginIdentityTransition()
+        let lease = try XCTUnwrap(transition)
+
+        do {
+            _ = try await api.upload(manifestData: Data("{}".utf8), bundleData: Data("b".utf8), auth: owner)
+            XCTFail("a gated request must not upload")
+        } catch let error as DiagnosticsUploadError {
+            XCTAssertEqual(error, .retryable(DiagnosticsAPI.destinationChanged))
+        }
+        await http.endIdentityTransition(lease)
+        XCTAssertTrue(stub.handler.requests.isEmpty)
+    }
+
+    func testUploadDiscardedAfterSendingIsUncertain() async throws {
+        // The owner changes while the upload is at the server: the answer is
+        // discarded, and the report may be stored there.
+        stub.reset(chunkBytes: 4, switchProfileDuringUpload: true)
+        let (api, owner) = try await makeAPI()
+
+        do {
+            _ = try await api.upload(manifestData: Data("{}".utf8), bundleData: Data("b".utf8), auth: owner)
+            XCTFail("a discarded answer must not succeed")
+        } catch let error as DiagnosticsUploadError {
+            XCTAssertEqual(error, .deliveryUncertain)
+        }
+        XCTAssertEqual(stub.handler.requests.count, 1)
     }
 
     // MARK: - Chunked upload
@@ -313,6 +380,26 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
         XCTAssertEqual(stub.handler.requests.filter { $0.path.hasSuffix("/complete") }.count, 1)
     }
 
+    func testCompleteRefusedBeforeDispatchIsNotUncertainAndSkipsTheAbort() async throws {
+        // Requests 1-4 are create and three chunks; the owner changes as the
+        // complete (request 5) is about to leave.
+        stub.reset(chunkBytes: 4)
+        let (api, owner) = try await makeAPI(beforeCapture: { request, tokens in
+            if request == 5 { await tokens.setProfileId("8") }
+        })
+
+        do {
+            _ = try await api.uploadChunked(manifestData: Data("{}".utf8), bundleData: Data("0123456789".utf8),
+                                            auth: owner)
+            XCTFail("a replaced owner must not complete")
+        } catch let error as DiagnosticsUploadError {
+            XCTAssertEqual(error, .retryable(DiagnosticsAPI.destinationChanged))
+        }
+
+        XCTAssertFalse(stub.handler.requests.contains { $0.path.hasSuffix("/complete") })
+        XCTAssertFalse(stub.state().aborted, "abort would target the new owner and must be skipped")
+    }
+
     func testAnsweredCompleteFailureAbortsTheSession() async throws {
         stub.reset(chunkBytes: 4, complete: .json(
             #"{"type":"https://siloserver.org/docs/api/v2/problems/malformed_request","title":"Malformed request","status":400,"detail":"archive mismatch"}"#,
@@ -328,6 +415,15 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
         }
 
         XCTAssertTrue(stub.state().aborted)
+    }
+}
+
+private actor RequestCounter {
+    private var count = 0
+
+    func next() -> Int {
+        count += 1
+        return count
     }
 }
 
@@ -352,6 +448,7 @@ private final class DiagnosticsUploadStub: @unchecked Sendable {
         chunkBytes: Int,
         failChunkIndex: Int? = nil,
         switchProfileAfterChunk: Int? = nil,
+        switchProfileDuringUpload: Bool = false,
         upload: StubURLProtocol.Response? = nil,
         uploadFailure: URLError? = nil,
         complete: StubURLProtocol.Response? = nil,
@@ -359,7 +456,10 @@ private final class DiagnosticsUploadStub: @unchecked Sendable {
     ) {
         lock.withLock { current = State(chunkBytes: chunkBytes) }
         handler.reset()
-        handler.route(StubURLProtocol.method("POST", path: reportsPath)) { _ in
+        handler.route(StubURLProtocol.method("POST", path: reportsPath)) { [self] _ in
+            if switchProfileDuringUpload, let tokens {
+                await tokens.setProfileId("switched")
+            }
             if let uploadFailure { throw uploadFailure }
             return upload ?? .json(#"{"report_id":"report-1","short_id":"SILO-SINGLE"}"#, status: 201)
         }

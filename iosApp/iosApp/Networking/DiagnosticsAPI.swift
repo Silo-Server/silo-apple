@@ -85,7 +85,7 @@ enum DiagnosticsUploadError: Error, Equatable {
 /// - An HTTP answer is definite and maps through `mapUploadError`.
 /// - No answer on a `non_retryable` request (report upload, chunked create,
 ///   complete) is `.deliveryUncertain`, unless the transport failed before
-///   connecting.
+///   connecting or the owner changed before the request was sent.
 /// - A chunk failure is definite for the whole upload: nothing is ingested
 ///   without `complete`.
 actor DiagnosticsAPI {
@@ -189,8 +189,9 @@ actor DiagnosticsAPI {
         do {
             return try await client.completeDiagnosticsUpload(uploadID: session.uploadId, auth: auth)
         } catch {
+            // An owner change skips the abort for the same reason as above.
             let failure = Self.nonRetryableFailure(error)
-            if failure != .deliveryUncertain {
+            if failure != .deliveryUncertain, !Self.isOwnerChange(error) {
                 await abort(session, auth: auth)
             }
             throw failure
@@ -218,7 +219,7 @@ actor DiagnosticsAPI {
         switch error {
         case DiagnosticsUploadError.retryable(let code):
             return code == destinationChanged
-        case HTTPError.authorityChanged, HTTPError.requestIdentityChanged:
+        case is APIv2OwnerChangedBeforeDispatch, HTTPError.authorityChanged, HTTPError.requestIdentityChanged:
             return true
         default:
             return false
@@ -226,12 +227,16 @@ actor DiagnosticsAPI {
     }
 
     /// A failed `non_retryable` request. An HTTP answer is definite; so is a
-    /// transport failure that happened before a connection existed. Anything
-    /// else (a lost connection, a timeout, a response discarded because the
-    /// owner changed in flight, an unexpected 2xx) may have been processed.
+    /// refusal before the request was sent, and a transport failure that
+    /// happened before a connection existed. Anything else (a lost
+    /// connection, a timeout, a response discarded because the owner changed
+    /// in flight, an unexpected 2xx) may have been processed.
     static func nonRetryableFailure(_ error: Error) -> DiagnosticsUploadError {
         if let uploadError = error as? DiagnosticsUploadError {
             return uploadError
+        }
+        if error is APIv2OwnerChangedBeforeDispatch {
+            return .retryable(destinationChanged)
         }
         if let apiError = error as? APIv2Error {
             return mapUploadError(apiError)
