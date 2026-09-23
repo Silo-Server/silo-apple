@@ -8,7 +8,7 @@ Every operation is profile scoped. A call needs a selected profile, sends `X-Pro
 
 ## Capability
 
-`GET /api/v2/requests/status` returns `FeatureStatus`. Entry points show only when `requests_enabled` is true, `allowed` is true, and `state` is `available`. A blocked account gets `requests_enabled: true` with `allowed: false`, so its entry points stay hidden. A server without the requests service omits `allowed`; the client reads that as not allowed. A failed probe keeps the previous value.
+`GET /api/v2/requests/status` returns `FeatureStatus`. Entry points show only when `requests_enabled` is true, `allowed` is true, and `state` is `available`. A blocked account gets `requests_enabled: true` with `allowed: false`, so its entry points stay hidden. The contract requires `allowed`; a response without it reads as not allowed. A failed probe keeps the previous value.
 
 ## Reads
 

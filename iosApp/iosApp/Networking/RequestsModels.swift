@@ -75,8 +75,8 @@ enum RequestAvailability: String, Codable, Hashable {
 // MARK: - Feature status
 
 /// `GET /api/v2/requests/status` — drives every entry point's visibility.
-/// `allowed` is optional because a server without the requests service
-/// omits it; a missing value means "not allowed".
+/// The contract requires `allowed`; it decodes as optional so a response
+/// that omits it fails closed ("not allowed") instead of failing to decode.
 struct RequestsFeatureStatus: Decodable {
     let requestsEnabled: Bool
     let state: String

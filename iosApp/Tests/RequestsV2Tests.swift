@@ -65,8 +65,12 @@ final class RequestsV2Tests: XCTestCase {
             (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":true}"#, true),
             // A blocked account: the domain is on, this viewer may not use it.
             (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":false}"#, false),
-            // No requests service: the server omits `allowed`.
-            (#"{"requests_enabled":false,"rating_restrictions_enforced":false,"revision":"r","state":"not_configured"}"#, false),
+            (#"{"requests_enabled":false,"rating_restrictions_enforced":false,"revision":"r","state":"not_configured","allowed":false}"#, false),
+            // Allowed, but the domain is not available.
+            (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"disabled","allowed":true}"#, false),
+            // The contract requires `allowed`; a response without it fails
+            // closed even when everything else says available.
+            (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available"}"#, false),
         ]
         for (body, expected) in cases {
             stub.reply(200, body)
