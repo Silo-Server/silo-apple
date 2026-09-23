@@ -74,6 +74,17 @@ actor SiloAPI {
 
     // --- Auth ---
 
+    /// `GET /api/v2/account/me`. The v2 read also binds the verified account
+    /// ID to a session installed without one (`APIv2Client.currentUser`).
+    func currentUser() async throws -> UserInfo {
+        let account = try await apiV2Client.currentUser()
+        return UserInfo(
+            id: account.id,
+            username: account.username,
+            isAdmin: account.role == .admin
+        )
+    }
+
     // --- Onboarding tour (profile-scoped) ---
 
     func onboardingFlow(surface: String) async throws -> OnboardingFlow {
@@ -89,15 +100,6 @@ actor SiloAPI {
 
     func postOnboardingProgress(_ request: OnboardingProgressRequest) async throws {
         try await http.postVoid("/api/v1/onboarding/progress", body: request)
-    }
-
-    func currentUser() async throws -> UserInfo {
-        let user: AuthUser = try await http.get("/api/v1/auth/me")
-        return UserInfo(
-            id: String(user.id),
-            username: user.username,
-            isAdmin: user.role == "admin"
-        )
     }
 
     // --- User settings ---

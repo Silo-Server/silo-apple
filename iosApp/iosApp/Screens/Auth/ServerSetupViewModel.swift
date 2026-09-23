@@ -27,7 +27,7 @@ class ServerSetupViewModel {
     var error: String?
 
     /// Probes one candidate URL and commits it on success.
-    typealias ServerCheck = @Sendable (String) async throws -> SetupStatus
+    typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
 
     private let checkServer: ServerCheck
     private static let logger = Logger(

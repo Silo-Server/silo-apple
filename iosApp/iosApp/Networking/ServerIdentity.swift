@@ -10,6 +10,7 @@ import Foundation
 enum ServerIdentity {
     static let identityPath = "/api/v2/system/identity"
     static let connectionsPath = "/api/v2/system/connections"
+    static let brandingPath = "/api/v2/theme/branding"
 
     /// Probe timeout. A TV probing several candidate addresses in sequence
     /// must fail fast on the ones it cannot reach.
@@ -156,33 +157,20 @@ struct ServerIdentityResolver {
         self.httpClient = httpClient
     }
 
-    /// The display name a server advertises. Branding owns the native
-    /// product identity; health remains a compatibility fallback when
-    /// branding is blank or the endpoint returns 404. Other failures leave the
-    /// previously stored identity unchanged.
+    /// The display name a server advertises through its public branding
+    /// (`GET /api/v2/theme/branding`). A blank name or any failure returns
+    /// nil, which leaves the previously stored name unchanged. A v1-only
+    /// server has no v2 branding; it is update-required anyway, so there is
+    /// no fallback to another endpoint.
     func fetchServerName(serverURL: String) async -> String? {
-        do {
-            let branding: ServerBrandingStatus = try await httpClient.getUnauthenticated(
-                serverURL: serverURL,
-                path: "/api/v1/theme/branding",
-                quietStatuses: [404]
-            )
-            if let name = ServerIdentity.usable(branding.serverName) {
-                return name
-            }
-        } catch HTTPError.http(let statusCode, _) where statusCode == 404 {
-            // Older servers do not expose native branding.
-        } catch {
+        guard let branding: ServerBrandingStatus = try? await httpClient.getUnauthenticated(
+            serverURL: serverURL,
+            path: ServerIdentity.brandingPath,
+            quietStatuses: [404]
+        ) else {
             return nil
         }
-
-        if let health: HealthStatus = try? await httpClient.getUnauthenticated(
-            serverURL: serverURL,
-            path: "/api/v1/health"
-        ) {
-            return ServerIdentity.usable(health.serverName)
-        }
-        return nil
+        return ServerIdentity.usable(branding.serverName)
     }
 
     /// The deployment identity at `serverURL`, or nil when the address is

@@ -51,23 +51,44 @@ final class RestoredSessionValidatorTests: XCTestCase {
 
         XCTAssertEqual(result, .valid)
         XCTAssertEqual(accountProbeCount, 1)
+        let recheckCount = await harness.contractRecheckCount()
+        XCTAssertEqual(recheckCount, 0, "a v2 verdict needs no re-probe")
     }
 
-    func testSuccessfulAccountProbeAcceptsRenamedUsernameSession() async {
-        let harness = ValidationHarness(
-            identity: expected,
-            account: UserInfo(id: "42", username: "renamed-user", isAdmin: false)
-        )
+    /// The server was updated in place while the recovery screen showed the
+    /// update copy: the setup read now succeeds, the re-probe answers v2, and
+    /// the account read goes ahead instead of repeating "still needs to be
+    /// updated".
+    func testUpdateRequiredVerdictIsRecheckedBeforeAccountRead() async {
+        let harness = ValidationHarness(identity: expected, updateRequired: true, recheckAnswersV2: true)
 
         let result = await makeValidator(harness).validate(expected: expected)
+        let recheckCount = await harness.contractRecheckCount()
+        let accountProbeCount = await harness.accountProbeCount()
 
         XCTAssertEqual(result, .valid)
+        XCTAssertEqual(recheckCount, 1)
+        XCTAssertEqual(accountProbeCount, 1)
+    }
+
+    func testUpdateRequiredVerdictThatSurvivesRecheckSkipsAccountRead() async {
+        let harness = ValidationHarness(identity: expected, updateRequired: true, recheckAnswersV2: false)
+
+        let result = await makeValidator(harness).validate(expected: expected)
+        let recheckCount = await harness.contractRecheckCount()
+        let accountProbeCount = await harness.accountProbeCount()
+        let hasAccessToken = await harness.hasAccessToken(serverID: expected.serverId)
+
+        XCTAssertEqual(result, .serverRecovery(.serverUpdateRequired))
+        XCTAssertEqual(recheckCount, 1)
+        XCTAssertEqual(accountProbeCount, 0)
+        XCTAssertTrue(hasAccessToken)
     }
 
     func testServerThatNeedsSetupEntersRecoveryWithoutAccountProbe() async {
         let harness = ValidationHarness(
             identity: expected,
-            setupStatus: SetupStatus(needsSetup: true)
+            setupStatus: APIv2SetupStatus(needsSetup: true)
         )
 
         let result = await makeValidator(harness).validate(expected: expected)
@@ -82,7 +103,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
     func testSetupNotFoundEntersNonDestructiveServerRecovery() async {
         let harness = ValidationHarness(
             identity: expected,
-            setupFailure: .http(statusCode: 404, body: nil)
+            setupFailure: APIv2Error.httpStatus(404)
         )
 
         let result = await makeValidator(harness).validate(expected: expected)
@@ -95,8 +116,8 @@ final class RestoredSessionValidatorTests: XCTestCase {
     func testMalformedSetupResponseEntersNonDestructiveServerRecovery() async {
         let harness = ValidationHarness(
             identity: expected,
-            setupFailure: .decodingFailed(
-                type: "SetupStatus",
+            setupFailure: HTTPError.decodingFailed(
+                type: "APIv2SetupStatus",
                 underlying: NSError(domain: "RestoredSessionValidatorTests", code: 1)
             )
         )
@@ -109,12 +130,12 @@ final class RestoredSessionValidatorTests: XCTestCase {
     }
 
     func testTransientSetupFailuresRemainIndeterminateAndPreserveToken() async {
-        let failures: [HTTPError] = [
-            .network(underlying: URLError(.cannotFindHost)),
-            .http(statusCode: 408, body: nil),
-            .http(statusCode: 429, body: nil),
-            .http(statusCode: 500, body: nil),
-            .http(statusCode: 503, body: nil),
+        let failures: [Error] = [
+            HTTPError.network(underlying: URLError(.cannotFindHost)),
+            APIv2Error.httpStatus(408),
+            APIv2Error.httpStatus(429),
+            APIv2Error.httpStatus(500),
+            APIv2Error.httpStatus(503),
         ]
 
         for failure in failures {
@@ -144,7 +165,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
         )
         let harness = ValidationHarness(
             identity: expected,
-            accountFailure: .http(statusCode: 401, body: nil),
+            accountFailure: APIv2Error.httpStatus(401),
             identityAfterAccountFailure: replacementIdentity,
             hasAccessTokenAfterAccountFailure: false
         )
@@ -157,7 +178,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
     func testTransientAccountFailureKeepsRestoredSession() async {
         let harness = ValidationHarness(
             identity: expected,
-            accountFailure: .http(statusCode: 503, body: nil)
+            accountFailure: APIv2Error.httpStatus(503)
         )
 
         let result = await makeValidator(harness).validate(expected: expected)
@@ -170,7 +191,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
     func testAccountUnauthorizedWithTokenStillPresentIsIndeterminate() async {
         let harness = ValidationHarness(
             identity: expected,
-            accountFailure: .http(statusCode: 401, body: nil)
+            accountFailure: APIv2Error.httpStatus(401)
         )
 
         let result = await makeValidator(harness).validate(expected: expected)
@@ -198,61 +219,148 @@ final class RestoredSessionValidatorTests: XCTestCase {
         XCTAssertEqual(accountProbeCount, 0)
     }
 
-    /// A version mismatch on cold launch shows the update copy, not "We can't
-    /// verify this server", and keeps the session. The setup check runs
-    /// through the real request layers against the stub: v2 setup, or a plain
-    /// `HTTPClient` request standing in for today's v1 setup call.
-    func testVersionMismatchEntersUpdateRecoveryAndKeepsSession() async {
+    /// Cold-launch validation through the production composition
+    /// (`RestoredSessionValidator.live(client:tokenStore:)`): v2 setup, then
+    /// the v2 account read, against stubbed replies and a real token store.
+    /// A version mismatch shows the update copy, a 404 keeps the recovery
+    /// screen, and only a refresh the server rejects signs the user out.
+    func testV2RepliesKeepRecoveryUpdateAndLoginOutcomes() async throws {
+        let setupPath = "/api/v2/system/setup"
+        let accountPath = "/api/v2/account/me"
+        let setupOK = StubURLProtocol.Response.json(#"{"needs_setup":false,"wizard_completed":true}"#)
+        let account = StubURLProtocol.Response.json(
+            #"{"id":"42","username":"alice","email":"","role":"user","permissions":[],"download_allowed":true}"#)
         let legacyNotFound = StubURLProtocol.Response.text(
             UpdateRequirementTests.legacyNotFound, status: 404, contentType: "text/plain; charset=utf-8")
-        let upgradeProblem = StubURLProtocol.Response.json(
-            UpdateRequirementTests.upgradeProblem, status: 410, headers: ["Content-Type": "application/problem+json"])
-        let cases: [(String, Bool, StubURLProtocol.Response, RestoredSessionValidationResult)] = [
-            ("v2 setup, legacy 404", true, legacyNotFound, .serverRecovery(.serverUpdateRequired)),
-            ("v2 setup, 410 upgrade", true, upgradeProblem, .serverRecovery(.appUpdateRequired)),
-            ("HTTPClient setup, 410 upgrade", false, upgradeProblem, .serverRecovery(.appUpdateRequired)),
-            ("HTTPClient setup, legacy 404", false, legacyNotFound, .serverRecovery(.serverNotRecognized)),
+        let proxyNotFound = StubURLProtocol.Response.text("<h1>Not Found</h1>", status: 404, contentType: "text/html")
+        let upgrade = Self.problem(status: 410, body: UpdateRequirementTests.upgradeProblem)
+        let notFound = Self.problem(status: 404, type: "not_found")
+        let unavailable = Self.problem(status: 503, type: "service_unavailable")
+        let unauthorized = Self.problem(status: 401, type: "invalid_token")
+
+        struct Case {
+            let name: String
+            let setup: StubURLProtocol.Response
+            var account: StubURLProtocol.Response? = nil
+            var refresh: StubURLProtocol.Response? = nil
+            let expected: RestoredSessionValidationResult
+            var keepsToken = true
+            var paths: [String]
+        }
+        let cases = [
+            Case(name: "valid", setup: setupOK, account: account, expected: .valid,
+                 paths: [setupPath, accountPath]),
+            Case(name: "setup legacy 404", setup: legacyNotFound, expected: .serverRecovery(.serverUpdateRequired),
+                 paths: [setupPath]),
+            Case(name: "setup 410 upgrade", setup: upgrade, expected: .serverRecovery(.appUpdateRequired),
+                 paths: [setupPath]),
+            Case(name: "setup problem 404", setup: notFound, expected: .serverRecovery(.serverNotRecognized),
+                 paths: [setupPath]),
+            Case(name: "setup proxy 404", setup: proxyNotFound, expected: .serverRecovery(.serverNotRecognized),
+                 paths: [setupPath]),
+            Case(name: "account legacy 404", setup: setupOK, account: legacyNotFound,
+                 expected: .serverRecovery(.serverUpdateRequired), paths: [setupPath, accountPath]),
+            Case(name: "account 410 upgrade", setup: setupOK, account: upgrade,
+                 expected: .serverRecovery(.appUpdateRequired), paths: [setupPath, accountPath]),
+            Case(name: "account problem 404", setup: setupOK, account: notFound,
+                 expected: .serverRecovery(.serverNotRecognized), paths: [setupPath, accountPath]),
+            Case(name: "account 503", setup: setupOK, account: unavailable, expected: .indeterminate,
+                 paths: [setupPath, accountPath]),
+            Case(name: "revoked: 401, refresh rejected", setup: setupOK, account: unauthorized,
+                 refresh: Self.problem(status: 401, type: "session_expired"), expected: .needsLogin,
+                 keepsToken: false, paths: [setupPath, accountPath, HTTPClient.refreshPath]),
+            Case(name: "401, refresh unavailable", setup: setupOK, account: unauthorized, refresh: unavailable,
+                 expected: .indeterminate, paths: [setupPath, accountPath, HTTPClient.refreshPath]),
         ]
-        for (name, v2Setup, response, expectedResult) in cases {
-            let handler = StubURLProtocol.Handler()
-            handler.route(StubURLProtocol.any) { _ in response }
-            let http = HTTPClient(session: handler.makeSession())
-            let harness = ValidationHarness(identity: expected)
-            let validator = RestoredSessionValidator(
-                setupProbe: { url in
-                    if v2Setup {
-                        let status = try await APIv2Client(http: http, isUpdateRequired: { false })
-                            .setupStatus(serverURL: url)
-                        return SetupStatus(needsSetup: status.needsSetup)
-                    }
-                    return try await http.getUnauthenticated(serverURL: url, path: UpdateRequirementTests.httpLayerPath)
-                },
-                accountProbe: { try await harness.probeAccount() },
-                identityReader: { await harness.currentIdentity() },
-                accessTokenReader: { serverID in await harness.hasAccessToken(serverID: serverID) }
-            )
 
-            let result = await validator.validate(expected: expected)
-            let hasAccessToken = await harness.hasAccessToken(serverID: expected.serverId)
-            let accountProbeCount = await harness.accountProbeCount()
+        for c in cases {
+            let stub = StubURLProtocol.Handler()
+            stub.route(StubURLProtocol.method("GET", path: setupPath)) { _ in c.setup }
+            if let reply = c.account {
+                stub.route(StubURLProtocol.method("GET", path: accountPath)) { _ in reply }
+            }
+            if let reply = c.refresh {
+                stub.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { _ in reply }
+            }
+            let tokens = try await makeTokenStore()
+            let validator = RestoredSessionValidator.live(client: APIv2Client(
+                http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+                tokenStore: tokens, isUpdateRequired: { false }), tokenStore: tokens,
+                isServerUpdateRequired: { false }, contractRecheck: {})
+            let identity = await tokens.refreshAccountIdentity()
+            let restored = try XCTUnwrap(identity, c.name)
 
-            XCTAssertEqual(result, expectedResult, name)
-            XCTAssertTrue(hasAccessToken, name)
-            XCTAssertEqual(accountProbeCount, 0, name)
+            let result = await validator.validate(expected: restored)
+            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
+
+            XCTAssertEqual(result, c.expected, c.name)
+            XCTAssertEqual(hasAccessToken, c.keepsToken, c.name)
+            XCTAssertEqual(stub.requests.map(\.path), c.paths, c.name)
         }
     }
 
-    func testAccountUpgradeProblemEntersUpdateRecoveryAndKeepsSession() async {
-        let harness = ValidationHarness(
-            identity: expected,
-            accountFailure: .http(statusCode: 410, body: UpdateRequirementTests.upgradeProblem)
-        )
+    /// A v1-only verdict that a re-probe confirms refuses the account read
+    /// before it leaves the device and reads as update-required, never as a
+    /// sign-out. One the re-probe clears lets the gated account read through
+    /// the same client.
+    func testUpdateRequiredVerdictGatesAccountReadUntilRecheckClearsIt() async throws {
+        for recheckAnswersV2 in [false, true] {
+            let stub = StubURLProtocol.Handler()
+            stub.route(StubURLProtocol.method("GET", path: "/api/v2/system/setup")) { _ in
+                .json(#"{"needs_setup":false,"wizard_completed":true}"#)
+            }
+            stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+                .json(#"{"id":"42","username":"alice","email":"","role":"user","permissions":[],"download_allowed":true}"#)
+            }
+            let tokens = try await makeTokenStore()
+            let verdict = VerdictBox(updateRequired: true)
+            let validator = RestoredSessionValidator.live(
+                client: APIv2Client(
+                    http: HTTPClient(session: stub.makeSession(), tokenStore: tokens),
+                    tokenStore: tokens, isUpdateRequired: { await verdict.updateRequired }),
+                tokenStore: tokens,
+                isServerUpdateRequired: { await verdict.updateRequired },
+                contractRecheck: { if recheckAnswersV2 { await verdict.set(updateRequired: false) } })
+            let identity = await tokens.refreshAccountIdentity()
+            let restored = try XCTUnwrap(identity)
 
-        let result = await makeValidator(harness).validate(expected: expected)
-        let hasAccessToken = await harness.hasAccessToken(serverID: expected.serverId)
+            let result = await validator.validate(expected: restored)
+            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
 
-        XCTAssertEqual(result, .serverRecovery(.appUpdateRequired))
-        XCTAssertTrue(hasAccessToken)
+            let name = recheckAnswersV2 ? "re-probe answers v2" : "re-probe still v1-only"
+            XCTAssertEqual(result, recheckAnswersV2 ? .valid : .serverRecovery(.serverUpdateRequired), name)
+            XCTAssertTrue(hasAccessToken, name)
+            XCTAssertEqual(
+                stub.requests.map(\.path),
+                recheckAnswersV2 ? ["/api/v2/system/setup", "/api/v2/account/me"] : ["/api/v2/system/setup"],
+                name)
+        }
+    }
+
+    private static func problem(status: Int, type: String) -> StubURLProtocol.Response {
+        problem(status: status, body: """
+        {"type":"https://siloserver.org/docs/api/v2/problems/\(type)","title":"\(type)","status":\(status),"detail":""}
+        """)
+    }
+
+    private static func problem(status: Int, body: String) -> StubURLProtocol.Response {
+        .json(body, status: status, headers: ["Content-Type": "application/problem+json"])
+    }
+
+    private func makeTokenStore() async throws -> TokenStore {
+        let name = "RestoredSessionValidatorTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        addTeardownBlock {
+            _ = await tokens.clearTokens()
+            UserDefaults().removePersistentDomain(forName: name)
+        }
+        await tokens.switchActiveServer(serverId: expected.serverId)
+        await tokens.setServerUrl(expected.serverURL)
+        let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        XCTAssertTrue(saved)
+        return tokens
     }
 
     func testConfirmedForgetCompletesAndRoutesOutsideTheRecoveryViewLifetime() async throws {
@@ -283,9 +391,19 @@ final class RestoredSessionValidatorTests: XCTestCase {
             setupProbe: { serverURL in try await harness.probeSetup(serverURL: serverURL) },
             accountProbe: { try await harness.probeAccount() },
             identityReader: { await harness.currentIdentity() },
-            accessTokenReader: { serverID in await harness.hasAccessToken(serverID: serverID) }
+            accessTokenReader: { serverID in await harness.hasAccessToken(serverID: serverID) },
+            isServerUpdateRequired: { await harness.isServerUpdateRequired() },
+            contractRecheck: { await harness.recheckContract() }
         )
     }
+}
+
+private actor VerdictBox {
+    private(set) var updateRequired: Bool
+
+    init(updateRequired: Bool) { self.updateRequired = updateRequired }
+
+    func set(updateRequired: Bool) { self.updateRequired = updateRequired }
 }
 
 private actor ServerRemovalGate {
@@ -312,54 +430,66 @@ private actor ServerRemovalGate {
 
 private actor ValidationHarness {
     private var identity: RefreshAccountIdentity?
-    private let setupStatus: SetupStatus
-    private let setupFailure: HTTPError?
+    private let setupStatus: APIv2SetupStatus
+    private let setupFailure: Error?
     private let setupCancellation: Bool
-    private let accountFailure: HTTPError?
-    private let account: UserInfo
+    private let accountFailure: Error?
     private let identityAfterSetup: RefreshAccountIdentity?
     private let identityAfterAccountFailure: RefreshAccountIdentity?
     private let hasAccessTokenAfterAccountFailure: Bool
     private var accessTokenPresent = true
     private var accountProbes = 0
+    private var updateRequired: Bool
+    private let recheckAnswersV2: Bool
+    private var contractRechecks = 0
 
     init(
         identity: RefreshAccountIdentity,
-        setupStatus: SetupStatus = SetupStatus(needsSetup: false),
-        setupFailure: HTTPError? = nil,
+        setupStatus: APIv2SetupStatus = APIv2SetupStatus(needsSetup: false),
+        setupFailure: Error? = nil,
         setupCancellation: Bool = false,
-        accountFailure: HTTPError? = nil,
-        account: UserInfo = UserInfo(id: "42", username: "original-user", isAdmin: false),
+        accountFailure: Error? = nil,
         identityAfterSetup: RefreshAccountIdentity? = nil,
         identityAfterAccountFailure: RefreshAccountIdentity? = nil,
-        hasAccessTokenAfterAccountFailure: Bool = true
+        hasAccessTokenAfterAccountFailure: Bool = true,
+        updateRequired: Bool = false,
+        recheckAnswersV2: Bool = false
     ) {
         self.identity = identity
         self.setupStatus = setupStatus
         self.setupFailure = setupFailure
         self.setupCancellation = setupCancellation
         self.accountFailure = accountFailure
-        self.account = account
         self.identityAfterSetup = identityAfterSetup
         self.identityAfterAccountFailure = identityAfterAccountFailure
         self.hasAccessTokenAfterAccountFailure = hasAccessTokenAfterAccountFailure
+        self.updateRequired = updateRequired
+        self.recheckAnswersV2 = recheckAnswersV2
     }
 
-    func probeSetup(serverURL: String) throws -> SetupStatus {
+    func isServerUpdateRequired() -> Bool { updateRequired }
+
+    func recheckContract() {
+        contractRechecks += 1
+        if recheckAnswersV2 { updateRequired = false }
+    }
+
+    func contractRecheckCount() -> Int { contractRechecks }
+
+    func probeSetup(serverURL: String) throws -> APIv2SetupStatus {
         if setupCancellation { throw CancellationError() }
         if let setupFailure { throw setupFailure }
         if let identityAfterSetup { identity = identityAfterSetup }
         return setupStatus
     }
 
-    func probeAccount() throws -> UserInfo {
+    func probeAccount() throws {
         accountProbes += 1
         if let accountFailure {
             if let identityAfterAccountFailure { identity = identityAfterAccountFailure }
             accessTokenPresent = hasAccessTokenAfterAccountFailure
             throw accountFailure
         }
-        return account
     }
 
     func currentIdentity() -> RefreshAccountIdentity? { identity }

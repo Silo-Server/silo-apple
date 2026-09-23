@@ -15,6 +15,7 @@ final class AuthService: @unchecked Sendable {
     private let launchPreferences: ProfileLaunchPreferences
     private let restoredSessionValidator: RestoredSessionValidator
     private let contractProbe: APIv2Probe
+    private let apiV2Client: APIv2Client
     private let httpClient: HTTPClient
     private let tokenStore: TokenStore
     private let sessionPersistence: AccountSessionPersistence
@@ -46,6 +47,7 @@ final class AuthService: @unchecked Sendable {
         launchPreferences: ProfileLaunchPreferences = .shared,
         restoredSessionValidator: RestoredSessionValidator = .live,
         contractProbe: APIv2Probe = APIv2Probe(),
+        apiV2Client: APIv2Client = SiloAPI.shared.apiV2Client,
         httpClient: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
         sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain()),
@@ -62,6 +64,7 @@ final class AuthService: @unchecked Sendable {
         self.launchPreferences = launchPreferences
         self.restoredSessionValidator = restoredSessionValidator
         self.contractProbe = contractProbe
+        self.apiV2Client = apiV2Client
         self.httpClient = httpClient
         self.tokenStore = tokenStore
         self.sessionPersistence = sessionPersistence
@@ -112,16 +115,16 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Server Check
 
     /// Probe a candidate server: set it as the active server URL,
-    /// identify it via native branding (with a legacy health fallback),
-    /// register the entry, and
+    /// identify it via native branding, register the entry, and
     /// return the setup status so the caller can decide between initial
     /// setup and login.
     ///
     /// Candidate probes use their explicit URL and no active credentials.
     /// Global registry/default/token routing changes only after setup status
     /// succeeds. If both optional identity probes fail, the display name
-    /// falls back to the URL.
-    func checkServer(url: String) async throws -> SetupStatus {
+    /// falls back to the URL. A v1-only server fails the setup read with
+    /// `APIv2Error.serverUpdateRequired`, so it is never committed.
+    func checkServer(url: String) async throws -> APIv2SetupStatus {
         let normalized = ServerRegistry.normalize(url: url)
         let id = ServerRegistry.serverId(for: normalized)
 
@@ -136,10 +139,7 @@ final class AuthService: @unchecked Sendable {
         try Task.checkCancellation()
 
         // Commit only after the candidate proves it can serve setup status.
-        let status: SetupStatus = try await httpClient.getUnauthenticated(
-            serverURL: normalized,
-            path: "/api/v1/auth/setup"
-        )
+        let status = try await apiV2Client.setupStatus(serverURL: normalized)
         try Task.checkCancellation()
 
         // Success: upsert the registry entry and make it active.
@@ -186,6 +186,15 @@ final class AuthService: @unchecked Sendable {
             return
         }
         serverRegistry.updateFetchedName(for: serverId, fetchedName: name)
+    }
+
+    /// Re-runs the contract probe for the active server and records the
+    /// verdict under the usual generation and active-server rules. The
+    /// restored-session validator calls this when a v2 read succeeds while
+    /// the verdict still says v1-only, so an in-place upgrade clears it.
+    func recheckActiveServerContract() async {
+        guard let server = serverRegistry.activeServer else { return }
+        await recordContractVerdict(serverId: server.id, serverURL: server.url)
     }
 
     /// Learns (or re-learns) the deployment identity behind a saved server so
