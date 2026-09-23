@@ -486,6 +486,36 @@ final class SeekIntervalPreferencesTests: XCTestCase {
         XCTAssertEqual(store.pair(for: .videoPlayer), SeekIntervalSurface.videoPlayer.legacy)
     }
 
+    func testASwitchStopsUsingThePreviousProfilesIntervalsBeforeARefresh() async {
+        let profileB = HTTPRequestIdentity(
+            serverId: "server-1",
+            serverURL: "https://silo.example",
+            profileId: "profile-b",
+            clientFamily: "ios"
+        )
+        let store = makeStore()
+        identity = profileB
+        transport.effective = ["player.video_skip_back_seconds": 15]
+        await store.refresh()
+        identity = Self.profileA
+        transport.effective = ["player.video_skip_back_seconds": 5]
+        await store.refresh()
+        XCTAssertEqual(store.seconds(.backward, for: .videoPlayer), 5)
+
+        // Switched, no refresh yet: B's cached answer, not A's live one.
+        identity = profileB
+        XCTAssertEqual(store.seconds(.backward, for: .videoPlayer), 15)
+
+        // A profile with no cached answer gets the legacy interval.
+        identity = HTTPRequestIdentity(
+            serverId: "server-1",
+            serverURL: "https://silo.example",
+            profileId: "profile-c",
+            clientFamily: "ios"
+        )
+        XCTAssertEqual(store.pair(for: .videoPlayer), SeekIntervalSurface.videoPlayer.legacy)
+    }
+
     func testWithoutAnActiveProfileNothingIsRead() async {
         identity = nil
         let store = makeStore()

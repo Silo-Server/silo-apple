@@ -171,7 +171,17 @@ final class SeekIntervalPreferences {
 
     /// The pair a surface should use right now.
     func pair(for surface: SeekIntervalSurface) -> SeekIntervalPair {
-        values?[surface.media] ?? surface.legacy
+        currentValues()?[surface.media] ?? surface.legacy
+    }
+
+    /// `values` belongs to the identity it was loaded for. After a profile or
+    /// server switch, and until a refresh adopts the new identity, use that
+    /// identity's cached answer (or the legacy intervals), never the previous
+    /// profile's. Reads only; `refresh()` owns the switch itself.
+    private func currentValues() -> SeekIntervalValues? {
+        let key = requestIdentity().map(Self.cacheKey(for:))
+        guard key != loadedCacheKey else { return values }
+        return key.flatMap(cachedValues(for:))
     }
 
     func seconds(_ direction: SeekDirection, for surface: SeekIntervalSurface) -> Int {
@@ -396,17 +406,20 @@ final class SeekIntervalPreferences {
         latestWriteGeneration = [:]
         confirmed = [:]
         let previous = values
-        values = key
-            .flatMap { defaults.data(forKey: $0) }
-            .flatMap { try? JSONDecoder().decode(Cache.self, from: $0) }
-            .map(\.values)
-            .map(Self.validated)
+        values = key.flatMap(cachedValues(for:))
         if let values {
             for key in SeekIntervalContract.keys {
                 confirmed[key] = Self.value(for: key, in: values)
             }
         }
         if previous != values { notifyObservers() }
+    }
+
+    private func cachedValues(for key: String) -> SeekIntervalValues? {
+        defaults.data(forKey: key)
+            .flatMap { try? JSONDecoder().decode(Cache.self, from: $0) }
+            .map(\.values)
+            .map(Self.validated)
     }
 
     private func isCurrent(_ context: OperationContext) -> Bool {

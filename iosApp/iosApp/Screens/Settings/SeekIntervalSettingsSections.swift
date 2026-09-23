@@ -16,6 +16,9 @@ struct SeekIntervalSettingsSections: View {
                 surface: .videoPlayer,
                 footer: "Used by the on-screen skip buttons, double-tap, arrow keys, and remote clicks."
             )
+            // On one child: some SwiftUI releases apply a Group's modifiers to
+            // every child, which would refresh once per section.
+            .task { await store.refresh() }
             section(
                 title: "Audiobooks",
                 media: .audiobook,
@@ -23,7 +26,6 @@ struct SeekIntervalSettingsSections: View {
                 footer: "Used by the audiobook player's skip buttons."
             )
         }
-        .task { await store.refresh() }
     }
 
     private func section(
