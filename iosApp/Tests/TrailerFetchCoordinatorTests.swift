@@ -433,26 +433,38 @@ final class TrailerFetchCoordinatorTests: XCTestCase {
     }
 
     func testA429GetsItsOwnCopy() async {
-        let script = Script()
-        script.requestError = HTTPError.http(statusCode: 429, body: nil)
+        // The v2 client reports a 429 as a problem document, or as a bare
+        // status when the body is not one.
+        let failures: [Error] = [
+            APIv2Error.problem(APIv2Problem(
+                type: "https://siloserver.org/docs/api/v2/problems/rate_limited", title: "Too Many Requests",
+                status: 429, detail: "Slow down.", instance: nil, errors: nil)),
+            APIv2Error.httpStatus(429),
+        ]
+        for failure in failures {
+            let script = Script()
+            script.requestError = failure
 
-        let coordinator = makeCoordinator(script)
-        coordinator.start(baseline: trailerTestDetail())
+            let coordinator = makeCoordinator(script)
+            coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: true) }
-        XCTAssertTrue(reached, "expected rate-limited .requestFailed, got \(coordinator.phase)")
-        XCTAssertEqual(coordinator.statusMessage, "Please wait a moment and try again")
+            let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: true) }
+            XCTAssertTrue(reached, "expected rate-limited .requestFailed for \(failure), got \(coordinator.phase)")
+            XCTAssertEqual(coordinator.statusMessage, "Please wait a moment and try again")
+        }
     }
 
     func testANon429HTTPFailureUsesTheGenericCopy() async {
-        let script = Script()
-        script.requestError = HTTPError.http(statusCode: 503, body: nil)
+        for failure: Error in [APIv2Error.httpStatus(503), APIv2Error.httpStatus(409)] {
+            let script = Script()
+            script.requestError = failure
 
-        let coordinator = makeCoordinator(script)
-        coordinator.start(baseline: trailerTestDetail())
+            let coordinator = makeCoordinator(script)
+            coordinator.start(baseline: trailerTestDetail())
 
-        let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: false) }
-        XCTAssertTrue(reached, "expected .requestFailed(false), got \(coordinator.phase)")
+            let reached = await waitUntil { coordinator.phase == .requestFailed(rateLimited: false) }
+            XCTAssertTrue(reached, "expected .requestFailed(false) for \(failure), got \(coordinator.phase)")
+        }
     }
 
     // MARK: - Exhaustion

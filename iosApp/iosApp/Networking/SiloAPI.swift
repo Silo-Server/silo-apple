@@ -163,12 +163,13 @@ actor SiloAPI {
         filter: String,
         timezone: String
     ) async throws -> CalendarResponse {
-        try await http.get("/api/v1/calendar", query: [
-            "start": start,
-            "end": end,
-            "filter": filter,
-            "timezone": timezone,
-        ])
+        let auth = try await detailReadAuth()
+        let response = try await apiV2Client.calendar(
+            start: start, end: end, filter: filter, timezone: timezone, auth: auth
+        )
+        // The week is cached per profile; never hand one profile's week to the next.
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return response
     }
 
     // --- Catalog ---
@@ -212,12 +213,17 @@ actor SiloAPI {
         return auth
     }
 
-    func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> CatalogFilters {
-        var query: [String: String] = [:]
-        if let libraryId { query["library_id"] = String(libraryId) }
-        // include_technical unlocks the resolution / audio / subtitle facets.
-        if includeTechnical { query["include_technical"] = "true" }
-        return try await http.get("/api/v1/catalog/filters", query: query)
+    /// Facet vocabulary for one library (or all of them). Without
+    /// `includeTechnical` the server skips the file-derived resolution /
+    /// audio / subtitle facets. Facets follow the profile's library access,
+    /// so the read is refused if the owner changed while it was in flight.
+    func catalogFilters(libraryId: Int?, includeTechnical: Bool = true) async throws -> APIv2CatalogFilters {
+        let auth = try await detailReadAuth()
+        let filters = try await apiV2Client.catalogFilters(
+            libraryId: libraryId.map(String.init), includeTechnical: includeTechnical, auth: auth
+        )
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return filters
     }
 
     func seasons(seriesId: String, libraryId: Int? = nil) async throws -> SeasonsResponse {
@@ -265,13 +271,16 @@ actor SiloAPI {
     /// `{"status":"queued"}` when a refresh started, `200` +
     /// `{"status":"cooldown","next_allowed_at":…}` when the item was checked
     /// too recently, and `200` + `{"status":"disabled"}` when remote videos
-    /// are switched off for every library holding the item. Only `429`
-    /// (per-user rate limit) and the usual transport failures throw.
+    /// are switched off for every library holding the item. Problems (`409`,
+    /// `429` rate limit, …) and transport failures throw.
+    ///
+    /// The route is `non_retryable`: it is dispatched once, never replayed
+    /// after a token refresh, and a lost answer is reported rather than retried.
     ///
     /// There is no job id: observe completion by re-fetching item detail
     /// until `videos` / `extras` change — see ``TrailerFetchCoordinator``.
     func requestTrailersRefresh(contentId: String) async throws -> TrailerRefreshResponse {
-        try await http.post("/api/v1/items/\(contentId)/trailers/refresh")
+        try await apiV2Client.refreshTrailers(id: contentId, auth: try await detailReadAuth())
     }
 
     func personCatalogItems(

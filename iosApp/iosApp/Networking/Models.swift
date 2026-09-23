@@ -108,25 +108,6 @@ struct MediaItemUserState: Codable, Hashable {
     }
 }
 
-/// Distinct filter values for a library. Returned by `/api/v1/catalog/filters`.
-/// The server does NOT return counts — consumers render plain labels.
-struct CatalogFilters: Codable, Hashable {
-    let genres: [String]
-    let studios: [String]
-    let networks: [String]
-    let countries: [String]
-    let contentRatings: [String]
-    let resolutions: [String]?
-    let audioLanguages: [String]?
-    let subtitleLanguages: [String]?
-    let originalLanguages: [String]?
-    /// Audiobook-native facets. Always returned by the server; optional here
-    /// so older servers still decode.
-    let authors: [String]?
-    let narrators: [String]?
-    let series: [String]?
-}
-
 struct CatalogResponse: Codable {
     let total: Int?
     let totalExact: Bool?
@@ -558,20 +539,6 @@ struct ItemExtra: Codable, Hashable, Identifiable {
         durationSeconds = try c.decodeIfPresent(Int.self, forKey: .durationSeconds)
         fileId = try c.decodeIfPresent(Int.self, forKey: .fileId)
     }
-}
-
-/// Outcome of `POST /api/v1/items/{id}/trailers/refresh`.
-///
-/// `status` is `queued` (HTTP 202 — a refresh started), `cooldown` (200 — the
-/// item was checked recently, `nextAllowedAt` says when it can be retried),
-/// or `disabled` (200 — every library containing the item has remote videos
-/// turned off). Only `queued` is worth polling for; the other two are
-/// rendered states rather than errors.
-struct TrailerRefreshResponse: Codable, Hashable {
-    let status: String
-    /// RFC-3339 on the wire; parsed by the shared decoder's custom ISO-8601
-    /// strategy (fractional seconds tolerated).
-    let nextAllowedAt: Date?
 }
 
 struct AudiobookDetail: Codable, Hashable {

@@ -176,6 +176,20 @@ struct APIv2CatalogTechnicalFilters: Codable {
     let subtitleLanguages: [String]
 }
 
+/// Outcome of `POST /api/v2/catalog/items/{id}/trailers/refresh`.
+///
+/// `status` is `queued` (HTTP 202 — a refresh started), `cooldown` (200 — the
+/// item was checked recently, `nextAllowedAt` says when it can be retried),
+/// or `disabled` (200 — every library containing the item has remote videos
+/// turned off). Only `queued` is worth polling for; the other two are
+/// rendered states rather than errors.
+struct TrailerRefreshResponse: Codable, Hashable {
+    let status: String
+    /// RFC-3339 on the wire; parsed by the shared decoder's custom ISO-8601
+    /// strategy (fractional seconds tolerated).
+    let nextAllowedAt: Date?
+}
+
 /// Strict library-tab shape. IDs stay strings; unknown group kinds are retained
 /// for the consumer to handle explicitly rather than treating them as personal.
 struct APIv2LibraryCollectionTab: Decodable {
