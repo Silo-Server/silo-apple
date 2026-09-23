@@ -32,6 +32,9 @@ final class ProfilePrefsEditor {
         /// failure because retrying cannot help and the user needs to be told
         /// something actionable rather than shown an error they can't act on.
         case serverUpgradeRequired
+        /// A change ran out of automatic retries and is held on this device
+        /// until the user retries or discards it (``hasHeldChanges``).
+        case held
     }
 
     // MARK: - Editor fields
@@ -135,7 +138,7 @@ final class ProfilePrefsEditor {
         let profileId: String?
     }
 
-    private struct MetadataWrite {
+    private struct MetadataWrite: Equatable {
         let language: String?
         let profileId: String?
     }
@@ -171,6 +174,19 @@ final class ProfilePrefsEditor {
     private var pendingSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
     private var activeSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
 
+    /// Subtitle values that ran out of automatic retries (owner decision D4).
+    /// A held value is not sent again until the user retries it, edits that
+    /// control, or discards it.
+    private var heldSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
+    /// The metadata language write that ran out of automatic retries.
+    private var heldMetadataWrite: MetadataWrite?
+
+    /// True while any change is held for the profile this editor shows.
+    var hasHeldChanges: Bool {
+        heldSubtitleEditorValues.keys.contains { $0.profileId == boundProfileId }
+            || (heldMetadataWrite.map { $0.profileId == boundProfileId } ?? false)
+    }
+
     /// Coalescing for the metadata language: it has a side effect the others
     /// don't (flushing cached translations), so overlapping writes are folded
     /// into one rather than each invalidating the cache.
@@ -203,6 +219,7 @@ final class ProfilePrefsEditor {
             let (preferences, byKey) = try await writer.load()
             serverUpgradeRequired = false
             apply(preferences)
+            showHeldValues()
             resolvedSources = byKey.compactMapValues { $0.source }
             adoptLanguageSuggestions(from: byKey)
         } catch SettingsAPIError.serverUpgradeRequired {
@@ -220,6 +237,60 @@ final class ProfilePrefsEditor {
         showForcedSubtitles = preferences.showForcedSubtitles ? "on" : "off"
         preferredMetadataLanguage = preferences.metadataLanguage ?? PlaybackPrefSentinel.none
         captureBaseline()
+    }
+
+    /// Keep showing the user's held choices over the server's answer, which
+    /// does not have them. The baseline stays at the server's value, so the
+    /// fields read as unsaved edits; the held record keeps them from being
+    /// sent again on their own.
+    @MainActor
+    private func showHeldValues() {
+        for (identity, value) in heldSubtitleEditorValues where identity.profileId == boundProfileId {
+            setEditorValue(value, for: identity.key)
+        }
+        if let held = heldMetadataWrite, held.profileId == boundProfileId {
+            preferredMetadataLanguage = held.language ?? PlaybackPrefSentinel.none
+        }
+    }
+
+    @MainActor
+    private func setEditorValue(_ value: String, for key: SettingKey) {
+        if key == ProfileSettingKeys.subtitleLanguage {
+            subtitleLanguage = value
+        } else if key == ProfileSettingKeys.subtitleMode {
+            subtitleMode = value
+        } else if key == ProfileSettingKeys.showForcedSubtitles {
+            showForcedSubtitles = value
+        }
+    }
+
+    // MARK: - Held changes
+
+    /// "Try Again": send every held change once more with a fresh retry
+    /// budget.
+    @MainActor
+    func retryHeldChanges() async {
+        for (identity, value) in heldSubtitleEditorValues where pendingSubtitleEditorValues[identity] == nil {
+            pendingSubtitleEditorValues[identity] = value
+        }
+        heldSubtitleEditorValues.removeAll()
+        let heldMetadata = heldMetadataWrite
+        heldMetadataWrite = nil
+        saveState = nil
+        await saveSubtitlePrefs()
+        if let heldMetadata {
+            await saveMetadataLanguage(retrying: heldMetadata)
+        }
+    }
+
+    /// "Discard Held Change": stop trying to send the held changes and repaint
+    /// what the server holds. Nothing is sent.
+    @MainActor
+    func discardHeldChanges() async {
+        heldSubtitleEditorValues.removeAll()
+        heldMetadataWrite = nil
+        saveState = nil
+        await load()
     }
 
     /// Record the fields as they now stand, so the next save can tell a user
@@ -327,7 +398,10 @@ final class ProfilePrefsEditor {
                         try await writer.write(
                             write.key,
                             value: write.value,
-                            profileId: write.profileId
+                            profileId: write.profileId,
+                            isLatest: { [weak self] in
+                                self?.isLatestSubtitleWrite(write, identity: identity) ?? false
+                            }
                         )
                         failures.removeValue(forKey: identity)
                         let stillEditingWrittenProfile = boundProfileId == write.profileId
@@ -347,6 +421,14 @@ final class ProfilePrefsEditor {
                         } else if stillEditingWrittenProfile {
                             resolvedSources[write.key] = .scope(.profile)
                         }
+                    } catch is ProfileSettingsWriter.Superseded {
+                        // A newer edit of this control replaced the value
+                        // while it waited for a retry; that edit is queued
+                        // and its own write reports.
+                        failures.removeValue(forKey: identity)
+                    } catch is ProfileSettingsWriter.HeldChange {
+                        failures.removeValue(forKey: identity)
+                        heldSubtitleEditorValues[identity] = write.editorValue
                     } catch {
                         if Self.isServerUpgradeRequired(error) {
                             serverUpgradeRequired = true
@@ -402,11 +484,22 @@ final class ProfilePrefsEditor {
         let firstFailure = Self.subtitleKeys.lazy.compactMap { key in
             failures.first(where: { $0.key.key == key })?.value
         }.first
-        if let firstFailure {
+        if hasHeldChanges {
+            saveState = .held
+        } else if let firstFailure {
             saveState = Self.saveState(for: firstFailure)
         } else {
             saveState = .saved
         }
+    }
+
+    /// Whether `write` is still the value to retry: no newer value is queued
+    /// for its key and profile, and the control still shows it when its
+    /// profile is the one on screen.
+    @MainActor
+    private func isLatestSubtitleWrite(_ write: SubtitleWrite, identity: SubtitleWriteIdentity) -> Bool {
+        guard pendingSubtitleEditorValues[identity] == nil else { return false }
+        return boundProfileId != write.profileId || currentEditorValue(for: write.key) == write.editorValue
     }
 
     @MainActor
@@ -418,10 +511,21 @@ final class ProfilePrefsEditor {
         // currently bound profile has a fresh edit. Keep both identities.
         for key in Self.subtitleKeys {
             let identity = SubtitleWriteIdentity(key: key, profileId: boundProfileId)
-            if queued[identity] == nil,
-               let current = currentEditorValue(for: key),
-               current != savedBaselineValue(for: key) {
+            guard queued[identity] == nil, let current = currentEditorValue(for: key) else { continue }
+            if let held = heldSubtitleEditorValues[identity] {
+                // A held value is only sent again on request. Any other value
+                // in the control is a new edit, sent even when it matches the
+                // baseline: the held one may have reached the server.
+                if current != held { queued[identity] = current }
+            } else if current != savedBaselineValue(for: key) {
                 queued[identity] = current
+            }
+        }
+        for (identity, value) in queued {
+            if heldSubtitleEditorValues[identity] == value {
+                queued.removeValue(forKey: identity)
+            } else {
+                heldSubtitleEditorValues.removeValue(forKey: identity)
             }
         }
 
@@ -487,6 +591,10 @@ final class ProfilePrefsEditor {
                 }
             } else if let active = activeSubtitleEditorValues[identity] {
                 if active != current {
+                    pendingSubtitleEditorValues[identity] = current
+                }
+            } else if let held = heldSubtitleEditorValues[identity] {
+                if held != current {
                     pendingSubtitleEditorValues[identity] = current
                 }
             } else if current != savedBaselineValue(for: key) {
@@ -573,6 +681,16 @@ final class ProfilePrefsEditor {
         }
         let language = Self.outboundLanguage(preferredMetadataLanguage)
         let write = MetadataWrite(language: language, profileId: boundProfileId)
+        var replacesHeldWrite = false
+        if let held = heldMetadataWrite, held.profileId == write.profileId {
+            // The control still shows the held value, so there is nothing new
+            // to send: a held change goes out again only on request.
+            guard held != write else { return }
+            // Any other value is a new edit. It is sent even when it matches
+            // the baseline, because the held one may have reached the server.
+            heldMetadataWrite = nil
+            replacesHeldWrite = true
+        }
         // The displayed value may have returned to the saved baseline while
         // an older, different PUT is still suspended. Queue that revert before
         // consulting the baseline or the older value would win on the server.
@@ -580,7 +698,22 @@ final class ProfilePrefsEditor {
             pendingMetadataWrite = write
             return
         }
-        guard preferredMetadataLanguage != savedBaseline.metadataLanguage else { return }
+        guard replacesHeldWrite || preferredMetadataLanguage != savedBaseline.metadataLanguage else { return }
+        await drainMetadataWrites(startingWith: write)
+    }
+
+    /// Send a held metadata language again (``retryHeldChanges()``).
+    @MainActor
+    private func saveMetadataLanguage(retrying write: MetadataWrite) async {
+        if isSavingMetadataLanguage {
+            pendingMetadataWrite = write
+            return
+        }
+        await drainMetadataWrites(startingWith: write)
+    }
+
+    @MainActor
+    private func drainMetadataWrites(startingWith write: MetadataWrite) async {
         pendingMetadataWrite = write
 
         isSavingMetadataLanguage = true
@@ -599,7 +732,13 @@ final class ProfilePrefsEditor {
             try await writer.write(
                 ProfileSettingKeys.metadataLanguage,
                 value: ProfileSettingsWriter.languageValue(write.language),
-                profileId: write.profileId
+                profileId: write.profileId,
+                isLatest: { [weak self] in
+                    guard let self else { return false }
+                    return self.pendingMetadataWrite == nil
+                        && self.boundProfileId == write.profileId
+                        && Self.outboundLanguage(self.preferredMetadataLanguage) == write.language
+                }
             )
             ResponseCache.shared.invalidateAllItemMetadata()
             #if os(tvOS)
@@ -617,6 +756,16 @@ final class ProfilePrefsEditor {
                 value: preferredMetadataLanguage
             )
             saveState = .saved
+        } catch is ProfileSettingsWriter.Superseded {
+            // The newer value queued in `pendingMetadataWrite` reports.
+            if pendingMetadataWrite == nil { saveState = nil }
+        } catch is ProfileSettingsWriter.HeldChange {
+            heldMetadataWrite = write
+            if boundProfileId == write.profileId {
+                saveState = .held
+            } else if pendingMetadataWrite == nil {
+                saveState = nil
+            }
         } catch {
             if Self.isServerUpgradeRequired(error) {
                 serverUpgradeRequired = true
@@ -659,9 +808,13 @@ final class ProfilePrefsEditor {
             return .failed("Choose a profile first.")
         case .invalidValue(let message):
             return .failed(message.isEmpty ? "That value isn't allowed." : message)
-        case .unknownSetting, .clientLocalSetting, .scopeNotAllowed:
+        case .unknownSetting, .scopeNotAllowed:
             return .failed("This server can't store that preference.")
-        case .mutationIdConflict, .noValueAtScope, .server, .transport:
+        case .ownerChanged:
+            return .failed("The profile changed before this could be saved.")
+        case .server(let status, _, _) where settingsError.writeFailure == .release:
+            return .failed("The server didn't accept this change (HTTP \(status)).")
+        case .noValueAtScope, .server, .transport:
             return .failed("Couldn't reach the server.")
         }
     }

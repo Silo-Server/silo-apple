@@ -16,6 +16,15 @@ struct PlaybackSettingsView: View {
             )
             .settingsPageHeaderRow()
 
+            if viewModel.hasHeldPlaybackChanges {
+                HeldSettingChangesSection(
+                    retry: { await viewModel.retryHeldPlaybackChanges() },
+                    discard: { await viewModel.discardHeldPlaybackChanges() }
+                )
+            }
+            if viewModel.playbackChangeWasRejected {
+                rejectedChangeSection
+            }
             streamingSection
             behaviorSection
             resetSection
@@ -257,6 +266,23 @@ struct PlaybackSettingsView: View {
             .tint(.siloAccent)
         } header: {
             Text("Episodes")
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloSurfaceElevated)
+    }
+
+    // MARK: - Refused change
+
+    private var rejectedChangeSection: some View {
+        Section {
+            Button("OK") {
+                Task { await viewModel.acknowledgeRejectedPlaybackChange() }
+            }
+        } header: {
+            Text("Not Saved")
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            Text(SettingsViewModel.rejectedPlaybackChangeMessage)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloSurfaceElevated)

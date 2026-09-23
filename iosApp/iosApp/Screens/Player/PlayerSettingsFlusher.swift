@@ -3,7 +3,7 @@
 //  Silo (iOS + tvOS + macOS)
 //
 //  Debounced writer for the player's device-scoped settings, speaking the
-//  canonical settings API (`PUT`/`DELETE /api/v1/settings/values/{key}` at
+//  canonical settings API (`PUT`/`DELETE /api/v2/settings/values/{key}` at
 //  scope `profile_device`).
 //
 //  Failure handling is the point of this type, not an afterthought. The
@@ -11,15 +11,20 @@
 //  nothing: a write that failed mid-drain sat in the queue until the *next*
 //  user edit happened to trigger another flush, so one server hiccup made a
 //  setting look non-persistent until the user toggled something unrelated.
-//  Here a transient failure is retried on a capped backoff carrying the SAME
-//  mutation id — an idempotent replay rather than a second write — and only a
-//  response that proves retrying is pointless drops the op.
 //
-//  Semantics deliberately match Android's `ServerSettingsFlusher`
-//  (android-shared/.../common/settings/ServerSettingsFlusher.kt): same 750 ms
-//  debounce, same "one mutation id per logical write, held across retries",
-//  same transient/permanent split. A user with both clients should see a
-//  setting land the same way on each.
+//  The writes are `natural_idempotent`: each one names the desired value of
+//  one row, so sending it again converges instead of applying twice. There
+//  is no mutation id. Owner decision D4 sets the rules: one pending value per
+//  key (a newer edit replaces an older one), only that latest value is
+//  retried, on a bounded backoff, while its (server, profile, device)
+//  partition is still the active one. When the bound runs out the key is
+//  *held*: it stays on this device and in the journal, is not sent again, and
+//  the settings screens offer "Discard held change" (or a retry). A response
+//  that proves retrying is pointless drops the op.
+//
+//  The debounce and the transient/permanent split match Android's
+//  `ServerSettingsFlusher` (android-shared/.../common/settings/
+//  ServerSettingsFlusher.kt): same 750 ms debounce, same retry schedule.
 //
 
 import Foundation
@@ -37,12 +42,7 @@ import AppKit
 /// is baked in at `profile_device`, the only scope this client writes.
 protocol PlayerSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws
     func deleteValue(key: SettingKey, profileId: String?) async throws
 }
 
@@ -58,19 +58,8 @@ final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
         try await api.getEffectiveValues(keys: keys)
     }
 
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws {
-        _ = try await api.putValue(
-            key: key,
-            scope: .profileDevice,
-            value: value,
-            mutationId: mutationId,
-            profileId: profileId
-        )
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
+        try await api.putValue(key: key, scope: .profileDevice, value: value, profileId: profileId)
     }
 
     func deleteValue(key: SettingKey, profileId: String?) async throws {
@@ -78,13 +67,12 @@ final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
     }
 }
 
-/// One queued device-scoped write.
+/// One queued device-scoped write: the latest desired state of one key.
 ///
 /// `Codable` because the queue outlives the process — see
-/// ``PlayerSettingsWriteJournal``. The mutation id is part of what is
-/// persisted: a write restored after a relaunch is the *same* logical write,
-/// so replaying it under its original id is what stops a crash mid-request
-/// from applying twice.
+/// ``PlayerSettingsWriteJournal``. Entries written by earlier builds also
+/// carry a `mutationId`; it is ignored, because v2 writes are naturally
+/// idempotent and replay nothing.
 struct PendingSettingWrite: Equatable, Codable {
     enum Operation: Equatable, Codable {
         case set(SettingJSONValue)
@@ -92,14 +80,6 @@ struct PendingSettingWrite: Equatable, Codable {
     }
 
     let operation: Operation
-
-    /// One id per logical write, held across every retry of that write.
-    ///
-    /// The server replays the receipt it recorded for a repeated id instead of
-    /// applying the write again, so a retry after a dropped response cannot
-    /// double-apply. Minting a fresh id per retry defeats that, and defeats the
-    /// 409 that catches genuinely different content reusing an id.
-    let mutationId: String
 
     /// The (server, profile, device) identity this operation belongs to.
     /// Nil is retained for in-memory/test journals with no scoped identity;
@@ -112,25 +92,50 @@ struct PendingSettingWrite: Equatable, Codable {
     /// X-Profile-Id from a newer session after the user switches profiles.
     let profileId: String?
 
+    /// Sends of this value that failed in a way a retry could fix. Past the
+    /// retry policy's bound the write is held.
+    var failedAttempts: Int
+
+    /// Out of automatic retries: kept on this device and in the journal, but
+    /// not sent again until the user retries it, replaces it with a new edit,
+    /// or discards it.
+    var isHeld: Bool
+
     init(
         operation: Operation,
-        mutationId: String,
         scopeIdentifier: String? = nil,
-        profileId: String? = nil
+        profileId: String? = nil,
+        failedAttempts: Int = 0,
+        isHeld: Bool = false
     ) {
         self.operation = operation
-        self.mutationId = mutationId
         self.scopeIdentifier = scopeIdentifier
         self.profileId = profileId
+        self.failedAttempts = failedAttempts
+        self.isHeld = isHeld
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case operation, scopeIdentifier, profileId, failedAttempts, isHeld
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        operation = try container.decode(Operation.self, forKey: .operation)
+        scopeIdentifier = try container.decodeIfPresent(String.self, forKey: .scopeIdentifier)
+        profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+        failedAttempts = try container.decodeIfPresent(Int.self, forKey: .failedAttempts) ?? 0
+        isHeld = try container.decodeIfPresent(Bool.self, forKey: .isHeld) ?? false
     }
 
     func bound(to scopeIdentifier: String?, profileId: String?) -> PendingSettingWrite {
         guard self.scopeIdentifier == nil || self.profileId == nil else { return self }
         return PendingSettingWrite(
             operation: operation,
-            mutationId: mutationId,
             scopeIdentifier: self.scopeIdentifier ?? scopeIdentifier,
-            profileId: self.profileId ?? profileId
+            profileId: self.profileId ?? profileId,
+            failedAttempts: failedAttempts,
+            isHeld: isHeld
         )
     }
 }
@@ -156,8 +161,9 @@ protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
     func load() -> [SettingKey: PendingSettingWrite]
     func save(_ pending: [SettingKey: PendingSettingWrite])
     /// Remove one acknowledged operation from the partition it was captured
-    /// from. Matching both the operation and mutation id prevents a late
-    /// response from erasing a newer write to the same key.
+    /// from. Matching the operation prevents a late response from erasing a
+    /// newer, different write to the same key; a newer write of the same
+    /// value is already true on the server.
     func retire(_ key: SettingKey, matching write: PendingSettingWrite)
 }
 
@@ -250,8 +256,7 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
             var stored = try SettingsWireCoding.makeDecoder()
                 .decode([String: PendingSettingWrite].self, from: data)
             guard let persisted = stored[key.rawValue],
-                  persisted.operation == write.operation,
-                  persisted.mutationId == write.mutationId else {
+                  persisted.operation == write.operation else {
                 return
             }
             stored.removeValue(forKey: key.rawValue)
@@ -288,34 +293,26 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// request.
     static let defaultDebounce: Duration = .milliseconds(750)
 
-    /// The automatic-retry schedule for a transient failure.
+    /// The automatic-retry schedule for a transient failure (D4's bound).
     ///
-    /// Bounded on purpose: after `maximumAutomaticRetries` the op stays queued
-    /// but stops its own timer, so a server that is down for an hour is not
-    /// polled forever by every client's settings queue. The next enqueue or
-    /// ``flushNow()`` — app foreground, player exit, settings screen open —
-    /// picks it up again with its mutation id intact.
-    struct RetryPolicy: Sendable {
-        var maximumAutomaticRetries: Int = 5
-        var base: Duration = .seconds(1)
-        var maximum: Duration = .seconds(60)
-
-        static let `default` = RetryPolicy()
-
-        func delay(forAttempt attempt: Int) -> Duration {
-            let shift = min(max(attempt - 1, 0), 6)
-            return min(base * (1 << shift), maximum)
-        }
-    }
+    /// Bounded on purpose: after `maximumAutomaticRetries` failed retries of a
+    /// key's latest value the key is held rather than polled forever, so a
+    /// server that is down for an hour is not hammered by every client's
+    /// settings queue, and the user decides what happens to the change.
+    typealias RetryPolicy = SettingWriteRetryPolicy
 
     /// What to do with an op after one attempt.
     private enum FlushOutcome {
-        /// Applied, or refused in a way retrying cannot fix. Drop it.
+        /// Applied, or already true. Drop it.
         case settled
+        /// Refused in a way retrying cannot fix. Drop it and tell the
+        /// settings screen once.
+        case rejected
         /// The active partition changed before the request could be sent. Its
         /// original journal still owns it; do not retire an unattempted op.
         case leftInOriginalJournal
-        /// Transient — keep the op and retry it on the backoff schedule.
+        /// Transient — keep the op and retry it on the backoff schedule, or
+        /// hold it once the schedule is spent.
         case retryWithBackoff
         /// A precondition is not met yet (no profile selected, server predates
         /// the canonical API). Keep the op, but do not spin a timer against a
@@ -334,6 +331,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private let journal: PlayerSettingsWriteJournal?
 
     private let lock = NSLock()
+    /// The latest op per key for the active partition, held ones included.
     private var pending: [SettingKey: PendingSettingWrite] = [:]
     /// Ops a drain has taken out of `pending` but has not yet heard back on.
     /// Only the journal reads this — it has to describe them too, or a process
@@ -349,12 +347,15 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Mirrors debounceGeneration for the retry timer: a waking task retires
     /// its own registration before it starts a drain.
     private var retryGeneration: UInt64 = 0
-    private var retryAttempts = 0
     /// Scope represented by the in-memory queue. A scope transition drops the
     /// local view and restores that partition's journal instead.
     private var activeJournalScope: String?
     private var isDraining = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    private var heldKeysObserver: (@Sendable ([SettingKey]) -> Void)?
+    private var reportedHeldKeys: [SettingKey] = []
+    private var rejectionObserver: (@Sendable (SettingKey) -> Void)?
 
     private var lifecycleObservers: [NSObjectProtocol] = []
 
@@ -369,8 +370,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         self.debounce = debounce
         self.retryPolicy = retryPolicy
         self.journal = journal
-        // Anything the last run left queued is replayed by the first flush,
-        // carrying the mutation ids it was persisted with.
+        // Anything the last run left queued is replayed by the first flush;
+        // anything it left held stays held.
         if let journal {
             activeJournalScope = journal.scopeIdentifier
             pending = journal.load()
@@ -428,7 +429,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private func observe(_ name: Notification.Name) {
         lifecycleObservers.append(
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
-                guard let self, self.hasPendingWrites else { return }
+                guard let self, self.hasSendableWrites else { return }
                 Task { await self.flushHoldingTheProcessOpen() }
             }
         )
@@ -475,7 +476,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// that only just became current is picked up rather than stranded.
     ///
     /// An op already queued in memory wins: it is at least as new as the disk
-    /// copy, and it carries the mutation id the server will see.
+    /// copy.
     func restorePendingWrites() {
         guard let journal else { return }
         let scopeIdentifier = journal.scopeIdentifier
@@ -494,6 +495,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         }
         persistLocked()
         lock.unlock()
+        publishHeldKeys()
     }
 
     /// Switch the in-memory view to another journal partition. The previous
@@ -512,21 +514,107 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         retryTask?.cancel()
         retryTask = nil
         retryGeneration &+= 1
-        retryAttempts = 0
     }
 
+    /// True while anything is owed to the server, held changes included.
     var hasPendingWrites: Bool {
         lock.lock()
         defer { lock.unlock() }
         return !pending.isEmpty || !inFlight.isEmpty || isDraining
     }
 
-    /// The mutation id currently attached to this key's queued write, if any.
-    /// Exposed so a test can prove a retry reuses it.
-    func mutationId(for key: SettingKey) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return pending[key]?.mutationId
+    /// True while a flush has something to send: held changes do not count.
+    private var hasSendableWrites: Bool {
+        lock.withLock { pending.values.contains { !$0.isHeld } || !inFlight.isEmpty || isDraining }
+    }
+
+    // MARK: - Held changes
+
+    /// Keys whose latest change ran out of automatic retries, in player order.
+    var heldKeys: [SettingKey] {
+        lock.withLock { Self.orderedKeys(in: pending.filter { $0.value.isHeld }) }
+    }
+
+    /// Called with ``heldKeys`` whenever that list changes, on no particular
+    /// thread.
+    func observeHeldKeys(_ observer: @escaping @Sendable ([SettingKey]) -> Void) {
+        lock.withLock {
+            heldKeysObserver = observer
+            reportedHeldKeys = []
+        }
+        publishHeldKeys()
+    }
+
+    /// Called once for each change the server definitively refused, on no
+    /// particular thread. The change has already been dropped.
+    func observeRejections(_ observer: @escaping @Sendable (SettingKey) -> Void) {
+        lock.withLock { rejectionObserver = observer }
+    }
+
+    /// Values this device has not yet got onto the server — queued, in flight
+    /// or held — for the active partition. A refresh paints these over the
+    /// server's answer, which does not have them yet. Clears are not listed:
+    /// the value a clear exposes is only known once it lands.
+    func unsettledValues() -> [SettingKey: SettingJSONValue] {
+        lock.withLock {
+            var values: [SettingKey: SettingJSONValue] = [:]
+            for (key, write) in inFlight where write.scopeIdentifier == activeJournalScope {
+                if case .set(let value) = write.operation { values[key] = value }
+            }
+            for (key, write) in pending {
+                if case .set(let value) = write.operation {
+                    values[key] = value
+                } else {
+                    values.removeValue(forKey: key)
+                }
+            }
+            return values
+        }
+    }
+
+    /// Keys with any change still owed to the server, clears included.
+    var unsettledKeys: Set<SettingKey> {
+        lock.withLock {
+            Set(pending.keys).union(inFlight.filter { $0.value.scopeIdentifier == activeJournalScope }.keys)
+        }
+    }
+
+    /// "Discard held change": forget every held change for the active
+    /// partition, here and in the journal. Nothing is sent; the caller
+    /// re-reads the server to repaint what it holds.
+    func discardHeldChanges() {
+        lock.withLock {
+            pending = pending.filter { !$0.value.isHeld }
+            persistLocked()
+        }
+        publishHeldKeys()
+    }
+
+    /// Send every held change again with a fresh retry budget, and wait for
+    /// the attempt.
+    func retryHeldChanges() async {
+        lock.withLock {
+            for (key, write) in pending where write.isHeld {
+                pending[key] = PendingSettingWrite(
+                    operation: write.operation,
+                    scopeIdentifier: write.scopeIdentifier,
+                    profileId: write.profileId
+                )
+            }
+            persistLocked()
+        }
+        publishHeldKeys()
+        await flushNow()
+    }
+
+    private func publishHeldKeys() {
+        let (observer, keys) = lock.withLock { () -> ((@Sendable ([SettingKey]) -> Void)?, [SettingKey]) in
+            let keys = Self.orderedKeys(in: pending.filter { $0.value.isHeld })
+            guard keys != reportedHeldKeys else { return (nil, keys) }
+            reportedHeldKeys = keys
+            return (heldKeysObserver, keys)
+        }
+        observer?(keys)
     }
 
     // MARK: - Queueing
@@ -534,15 +622,14 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Queue one device-scoped write, restarting the debounce window.
     func enqueue(_ key: SettingKey, value: SettingJSONValue) {
         schedule(key) { existing, scopeIdentifier, profileId in
-            // Re-enqueueing the identical value keeps the pending op *and* its
-            // mutation id: it is the same logical write, and the server treats
-            // a replayed id carrying identical content as already done.
-            if case .set(let queued) = existing?.operation, queued == value {
+            // The identical value already queued is the same desired state, so
+            // the pending op (and its retry count) stands. A held one does
+            // not: setting it again is the user asking for another try.
+            if case .set(let queued) = existing?.operation, queued == value, existing?.isHeld == false {
                 return existing
             }
             return PendingSettingWrite(
                 operation: .set(value),
-                mutationId: newSettingMutationId(),
                 scopeIdentifier: scopeIdentifier,
                 profileId: profileId
             )
@@ -552,12 +639,11 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Queue clearing this device's value, so the setting inherits again.
     func enqueueDelete(_ key: SettingKey) {
         schedule(key) { existing, scopeIdentifier, profileId in
-            if case .delete = existing?.operation {
+            if case .delete = existing?.operation, existing?.isHeld == false {
                 return existing
             }
             return PendingSettingWrite(
                 operation: .delete,
-                mutationId: newSettingMutationId(),
                 scopeIdentifier: scopeIdentifier,
                 profileId: profileId
             )
@@ -573,9 +659,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         transitionScopeIfNeededLocked(to: scopeIdentifier)
         pending[key] = next(pending[key], scopeIdentifier, journal?.profileId)
         persistLocked()
-        // Fresh user activity re-arms the retry budget: whatever made the last
-        // attempt fail may well be gone by now.
-        retryAttempts = 0
+        // The debounced drain below sends every queued op, so a pending retry
+        // timer would only duplicate it.
         retryTask?.cancel()
         retryTask = nil
         retryGeneration &+= 1
@@ -589,6 +674,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             await self?.flushAfterDebounce(generation: generation)
         }
         lock.unlock()
+        publishHeldKeys()
     }
 
     // MARK: - Draining
@@ -622,8 +708,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         await flushNow()
     }
 
-    /// Cancel any pending debounce, send every queued op, and return once each
-    /// has been acknowledged or has failed.
+    /// Cancel any pending debounce, send every queued op that is not held,
+    /// and return once each has been acknowledged or has failed.
     ///
     /// Re-entrant calls coalesce: a second caller waits for the drain already
     /// running rather than issuing the same writes twice.
@@ -634,7 +720,6 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             retryTask?.cancel()
             retryTask = nil
             retryGeneration &+= 1
-            retryAttempts = 0
             return claimDrainLocked()
         }
 
@@ -649,9 +734,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         // so an op enqueued before this call was almost certainly included in
         // it. The exception is one enqueued in the instant that drain was
         // finishing, so take one more pass if anything is left. A duplicate
-        // send would be harmless anyway: the mutation id makes it a replay.
+        // send would be harmless anyway: the write names a desired value.
         let needsAnotherPass = lock.withLock {
-            !pending.isEmpty && claimDrainLocked()
+            pending.values.contains { !$0.isHeld } && claimDrainLocked()
         }
         if needsAnotherPass {
             await drain()
@@ -722,12 +807,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         // already replaced. The `pending[key] == nil` guard below cannot catch
         // that — the very pass that sent the newer op already cleared it.
         var retryable: [SettingKey: PendingSettingWrite] = [:]
-        var wantsBackoff = false
+        var rejected: [SettingKey] = []
 
         while true {
             let snapshot = lock.withLock {
-                let snapshot = pending
-                pending = [:]
+                // Held ops stay where they are: they are owed, not sendable.
+                let snapshot = pending.filter { !$0.value.isHeld }
+                pending = pending.filter { $0.value.isHeld }
                 // Moved, not dropped: the journal has to keep describing an op that
                 // is out of `pending` but not yet acknowledged, or a process death
                 // mid-request would lose it on both sides.
@@ -748,14 +834,19 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                         inFlight.removeValue(forKey: key)
                     }
                     switch outcome {
-                    case .settled:
+                    case .settled, .rejected:
                         retryable.removeValue(forKey: key)
                         journal?.retire(key, matching: write)
                     case .leftInOriginalJournal:
                         retryable.removeValue(forKey: key)
                     case .retryWithBackoff:
-                        retryable[key] = write
-                        wantsBackoff = true
+                        var failed = write
+                        failed.failedAttempts += 1
+                        if failed.failedAttempts > retryPolicy.maximumAutomaticRetries {
+                            failed.isHeld = true
+                            log(key, "out of automatic retries", kept: true)
+                        }
+                        retryable[key] = failed
                     case .retryOnNextTrigger:
                         retryable[key] = write
                     }
@@ -764,15 +855,19 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     // still owed.
                     persistLocked(alsoOwed: retryable)
                 }
+                if case .rejected = outcome {
+                    rejected.append(key)
+                }
             }
         }
 
-        let resumed = lock.withLock {
+        typealias Completion = ([CheckedContinuation<Void, Never>], (@Sendable (SettingKey) -> Void)?)
+        let (resumed, rejectionObserver) = lock.withLock { () -> Completion in
             let currentScopeIdentifier = journal?.scopeIdentifier
             for (key, write) in retryable
                 where write.scopeIdentifier == currentScopeIdentifier && pending[key] == nil {
                 // A newer op enqueued during the drain wins over the failed one:
-                // it is newer content, with its own id.
+                // it is newer content.
                 pending[key] = write
             }
             inFlight.removeAll()
@@ -781,24 +876,27 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             let resumed = waiters
             waiters.removeAll()
 
-            var scheduledAttempt: Int?
-            if pending.isEmpty {
-                retryAttempts = 0
-            } else if wantsBackoff, retryAttempts < retryPolicy.maximumAutomaticRetries {
-                retryAttempts += 1
-                scheduledAttempt = retryAttempts
+            // One timer for everything still retrying, paced by the op that
+            // has failed least: an op further along its schedule is simply
+            // sent a little early, which a desired-state write tolerates.
+            // Ops waiting on a condition get no timer, and held ops wait for
+            // the user.
+            let retrying = retryable.compactMap { key, write -> Int? in
+                guard pending[key] == write, !write.isHeld, write.failedAttempts > 0 else { return nil }
+                return write.failedAttempts
             }
-            // Out of automatic retries, or nothing worth a timer: the ops stay
-            // queued and the next enqueue or flushNow tries again with the same
-            // mutation ids.
-            if let scheduledAttempt {
-                scheduleRetryLocked(attempt: scheduledAttempt)
+            if let attempt = retrying.min() {
+                scheduleRetryLocked(attempt: attempt)
             }
-            return resumed
+            return (resumed, self.rejectionObserver)
         }
 
         for continuation in resumed {
             continuation.resume()
+        }
+        publishHeldKeys()
+        for key in rejected {
+            rejectionObserver?(key)
         }
     }
 
@@ -844,18 +942,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         do {
             switch write.operation {
             case .set(let value):
-                try await transport.putValue(
-                    key: key,
-                    value: value,
-                    mutationId: write.mutationId,
-                    profileId: write.profileId
-                )
+                try await transport.putValue(key: key, value: value, profileId: write.profileId)
             case .delete:
                 try await transport.deleteValue(key: key, profileId: write.profileId)
             }
             return .settled
         } catch let error as SettingsAPIError {
-            return outcome(for: error, key: key, operation: write.operation)
+            return outcome(for: error, key: key, write: write)
         } catch is CancellationError {
             // A cancelled flush must not lose the write: it goes back on the
             // queue and the next trigger replays it.
@@ -869,57 +962,61 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private func outcome(
         for error: SettingsAPIError,
         key: SettingKey,
-        operation: PendingSettingWrite.Operation
+        write: PendingSettingWrite
     ) -> FlushOutcome {
-        switch error {
-        case .noValueAtScope:
-            // Nothing stored at this scope, so the clear is already true: an
-            // earlier attempt landed even if its response did not.
-            if case .delete = operation { return .settled }
-            log(key, "no value at scope", kept: false)
-            return .settled
-
-        case .profileRequired:
-            // No profile selected yet. Only a user action fixes that, so hold
-            // the user's choice rather than dropping it — but do not spin a
-            // timer at it.
-            log(key, "no profile selected", kept: true)
-            return .retryOnNextTrigger
-
-        case .serverUpgradeRequired:
-            if case .delete = operation {
+        if case .delete = write.operation {
+            switch error {
+            case .noValueAtScope:
+                // Nothing stored at this scope, so the clear is already true: an
+                // earlier attempt landed even if its response did not.
+                return .settled
+            case .serverUpgradeRequired:
                 // A server with no canonical settings API cannot hold a row at
                 // this scope. Locally resetting is therefore final; retaining
                 // the DELETE would let it erase a future value after upgrade.
                 log(key, "server predates canonical settings; reset locally", kept: false)
                 return .settled
+            default:
+                break
             }
-            log(key, "server does not serve the canonical settings API", kept: true)
-            return .retryOnNextTrigger
+        }
 
-        case .unknownSetting, .clientLocalSetting, .scopeNotAllowed, .invalidValue, .mutationIdConflict:
-            // The contract refused the write, so retrying would fail
-            // identically forever. Drop it — loudly, because each of these is a
-            // client bug rather than a server condition.
-            log(key, "contract refused the write: \(error)", kept: false)
-            return .settled
-
-        case .server(let status, _, _):
+        switch error.writeFailure {
+        case .retry:
             // Retrying can help: the request never arrived, the server fell
             // over, throttled us, timed out, or the session token was mid
             // refresh.
-            let transient = status >= 500 || status == 408 || status == 429 || status == 401
-            log(key, "server returned \(status)", kept: transient)
-            return transient ? .retryWithBackoff : .settled
-
-        case .transport(let description):
-            log(key, "transport failure: \(description)", kept: true)
+            log(key, "transient failure: \(error)", kept: true)
             return .retryWithBackoff
+        case .release:
+            // The contract or the server refused the write, so sending the
+            // same value would fail identically forever. Drop it — loudly,
+            // because most of these are a client bug rather than a server
+            // condition — and tell the settings screen once.
+            log(key, "refused: \(error)", kept: false)
+            return .rejected
+        case .ownerChanged:
+            // The write belongs to the owner that queued it. While that is
+            // still the active partition it waits for the next trigger;
+            // otherwise that partition's journal keeps it.
+            if let journal, write.scopeIdentifier != journal.scopeIdentifier {
+                log(key, "owner changed before the write landed; owed by its own partition", kept: true)
+                return .leftInOriginalJournal
+            }
+            log(key, "owner changed before the write landed", kept: true)
+            return .retryOnNextTrigger
+        case .waitForCondition:
+            // No profile selected yet, or the server does not serve the
+            // canonical settings API. Only a user action or a reconnect fixes
+            // that, so hold the user's choice rather than dropping it — but do
+            // not spin a timer at it.
+            log(key, "not sent: \(error)", kept: true)
+            return .retryOnNextTrigger
         }
     }
 
     private func log(_ key: SettingKey, _ detail: String, kept: Bool) {
-        let disposition = kept ? "kept queued for retry" : "dropped"
+        let disposition = kept ? "kept" : "dropped"
         Self.logger.warning(
             "\(key.rawValue, privacy: .public): \(detail, privacy: .public); \(disposition, privacy: .public)"
         )

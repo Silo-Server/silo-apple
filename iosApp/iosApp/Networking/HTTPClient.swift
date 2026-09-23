@@ -505,9 +505,8 @@ actor HTTPClient {
     /// Exists for endpoints the shared coders cannot serve. The canonical
     /// settings API is the motivating case: its values are opaque JSON whose
     /// object keys must survive verbatim, so it codes with its own
-    /// strategy-free coders; it also sends a per-request header
-    /// (`X-Silo-Mutation-Id`) and reads a response header
-    /// (`X-Silo-Idempotent-Replay`) that a decoded body cannot carry.
+    /// strategy-free coders. Other callers need a per-request header or a
+    /// response header that a decoded body cannot carry.
     ///
     /// `headers` are applied after the auth/profile/device headers, so a
     /// caller can address a profile other than the session default. Everything

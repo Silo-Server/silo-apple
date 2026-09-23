@@ -144,8 +144,15 @@ struct TVGeneralSettingsPane: View {
             }
 
             if let message = preferences.syncErrorMessage,
-               message != preferences.capabilityMessage {
+               message != preferences.capabilityMessage,
+               message != HeldSettingChange.message {
                 TVSettingsFooter(message)
+            }
+            if preferences.hasHeldChanges {
+                TVHeldSettingChangesRows(
+                    retry: { preferences.retryHeldChanges() },
+                    discard: { await preferences.discardHeldChanges() }
+                )
             }
         }
         .fullScreenCover(item: $activePicker) { picker in

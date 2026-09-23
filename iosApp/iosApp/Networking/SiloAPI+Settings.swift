@@ -3,7 +3,8 @@ import Foundation
 // MARK: - Canonical settings API
 
 /// The typed settings endpoints: the v2 contract capabilities and effective
-/// reads (`APIv2Client+Settings.swift`), and the `/settings/values/*` writes.
+/// reads, and the `/settings/values/*` writes. All of them go through the
+/// shared ``APIv2Client`` (`APIv2Client+Settings.swift`).
 ///
 /// Values are typed JSON, the scope is explicit and validated against the
 /// manifest, and a key that is not in the manifest cannot be named because
@@ -98,15 +99,14 @@ extension SiloAPI {
 
     // MARK: Write
 
-    /// Write one typed value at one scope.
+    /// Write one typed value at one scope and return the stored row.
     ///
-    /// `mutationId` (sent as `X-Silo-Mutation-Id`) makes retries safe: create
-    /// it once per logical write with ``newSettingMutationId()`` and reuse it
-    /// for every retry of *that* write. A retry the server already applied
-    /// replays the recorded receipt rather than re-applying — the returned
-    /// receipt has `isIdempotentReplay == true` — while reusing an id for
-    /// different content fails with ``SettingsAPIError/mutationIdConflict``.
-    /// Generating a fresh id per retry defeats both.
+    /// The write names the desired state of the row, so repeating it is safe
+    /// (the contract marks it `natural_idempotent`) but not free: every
+    /// accepted attempt advances the row's revision. There is no mutation id
+    /// and no replayed receipt. `profileId`, when given, must be the session's
+    /// selected profile: a write captured for one profile is refused rather
+    /// than sent for another.
     ///
     /// A value that exceeds a policy restriction is stored, not rejected: the
     /// restriction filters what the preference does at resolution time, so a
@@ -118,32 +118,16 @@ extension SiloAPI {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> SettingValueWriteReceipt {
-        let trimmedMutationId = mutationId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMutationId.isEmpty else {
-            throw SettingsAPIError.invalidValue(message: "Mutation ID must not be blank.")
-        }
-        var headers = try await profileHeaders(explicit: profileId)
-        headers["X-Silo-Mutation-Id"] = trimmedMutationId
-
+    ) async throws -> StoredSettingValue {
         do {
-            let body = try SettingsWireCoding.makeEncoder().encode(SettingValueWriteRequest(value: value))
-            let response = try await http.requestData(
-                method: "PUT",
-                path: "/api/v1/settings/values/\(key.rawValue)",
-                query: scope.queryItems,
-                body: body,
-                headers: headers,
-                requestIdentity: requestIdentity
-            )
-            let stored = try SettingsWireCoding.makeDecoder()
-                .decode(StoredSettingValue.self, from: response.data)
-            return SettingValueWriteReceipt(
-                value: stored,
-                isIdempotentReplay: response.header("X-Silo-Idempotent-Replay") == "true"
+            return try await apiV2Client.updateSettingValue(
+                key: key,
+                scope: scope,
+                value: value,
+                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
+                expectedIdentity: requestIdentity
             )
         } catch {
             throw SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)
@@ -153,54 +137,29 @@ extension SiloAPI {
     /// Atomically add or remove one semantic shortcut from `nav.shortcuts`.
     ///
     /// Unlike a whole-value PUT, this operation is safe when multiple clients
-    /// edit different shortcuts from stale effective snapshots. The mutation
-    /// id still belongs to one exact `{item, present}` operation and must be
-    /// reused when its response is ambiguous.
+    /// edit different shortcuts from stale effective snapshots.
     @discardableResult
     func putNavigationShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> SettingValueWriteReceipt {
+    ) async throws -> StoredSettingValue {
         guard item.isContractValid else {
             throw SettingsAPIError.invalidValue(message: "Shortcut item is invalid.")
         }
         if case .builtin = item {
             throw SettingsAPIError.invalidValue(message: "Built-in destinations cannot be shortcuts.")
         }
-        let trimmedMutationId = mutationId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMutationId.isEmpty else {
-            throw SettingsAPIError.invalidValue(message: "Mutation ID must not be blank.")
-        }
-
-        var headers = try await profileHeaders(explicit: profileId)
-        headers["X-Silo-Mutation-Id"] = trimmedMutationId
-
         do {
-            let body = try SettingsWireCoding.makeEncoder().encode(
-                NavigationShortcutItemWriteRequest(item: item, present: present)
-            )
-            let response = try await http.requestData(
-                method: "PUT",
-                path: "/api/v1/settings/values/\(SettingKey.navShortcuts.rawValue)/item",
-                body: body,
-                headers: headers,
-                requestIdentity: requestIdentity
-            )
-            let stored = try SettingsWireCoding.makeDecoder()
-                .decode(StoredSettingValue.self, from: response.data)
-            return SettingValueWriteReceipt(
-                value: stored,
-                isIdempotentReplay: response.header("X-Silo-Idempotent-Replay") == "true"
+            return try await apiV2Client.updateNavigationShortcut(
+                item,
+                present: present,
+                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
+                expectedIdentity: requestIdentity
             )
         } catch {
-            throw SettingsAPIError.from(
-                error,
-                key: SettingKey.navShortcuts.rawValue,
-                scope: .profile
-            )
+            throw SettingsAPIError.from(error, key: SettingKey.navShortcuts.rawValue, scope: .profile)
         }
     }
 
@@ -215,37 +174,28 @@ extension SiloAPI {
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws {
-        let headers = try await profileHeaders(explicit: profileId)
         do {
-            _ = try await http.requestData(
-                method: "DELETE",
-                path: "/api/v1/settings/values/\(key.rawValue)",
-                query: scope.queryItems,
-                headers: headers,
-                quietStatuses: [404],
-                requestIdentity: requestIdentity
+            try await apiV2Client.deleteSettingValue(
+                key: key,
+                scope: scope,
+                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
+                expectedIdentity: requestIdentity
             )
         } catch {
             throw SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)
         }
     }
 
-    // MARK: Headers
+    // MARK: Profile
 
-    /// The `X-Profile-Id` header every `/settings/values/*` route needs.
+    /// The profile a write acts for: the caller's captured profile, or the
+    /// session's when the caller did not capture one.
     ///
-    /// `HTTPClient` already attaches the session's profile to every request,
-    /// but only when one is selected. Each of these routes sits behind the
-    /// server's `RequireProfile` middleware, and `profile_device`,
-    /// `profile_library` and `profile_series` additionally take their profile
-    /// half from this header rather than the query — so a call made before
-    /// profile selection reaches the server without it and comes back as an
-    /// opaque 400. Resolving it here fails locally with a named error instead.
-    ///
-    /// Setting the header explicitly also lets a caller act for a profile
-    /// other than the session's, which is how a household parent edits a
-    /// child's settings.
-    private func profileHeaders(explicit profileId: String?) async throws -> [String: String] {
+    /// Every `/settings/values/*` route requires `X-Profile-Id`, so a call
+    /// made before profile selection fails locally with a named error instead
+    /// of the server's 422. The v2 client then refuses the write when the
+    /// session's profile is no longer this one.
+    private func writeProfile(explicit profileId: String?) async throws -> String {
         var resolved = profileId?.trimmingCharacters(in: .whitespacesAndNewlines)
         if resolved == nil || resolved?.isEmpty == true {
             resolved = await currentProfileId()
@@ -253,11 +203,6 @@ extension SiloAPI {
         guard let profile = resolved, !profile.isEmpty else {
             throw SettingsAPIError.profileRequired
         }
-        return ["X-Profile-Id": profile]
+        return profile
     }
-}
-
-private struct NavigationShortcutItemWriteRequest: Encodable {
-    let item: PrimaryMenuItem
-    let present: Bool
 }

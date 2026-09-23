@@ -308,12 +308,19 @@ struct InterfaceCustomizationView: View {
             }
 
             if let message = preferences.syncErrorMessage,
-               message != preferences.capabilityMessage {
+               message != preferences.capabilityMessage,
+               message != HeldSettingChange.message {
                 Section {
                     Label(message, systemImage: "icloud.slash")
                         .font(.footnote)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
+            }
+            if preferences.hasHeldChanges {
+                HeldSettingChangesSection(
+                    retry: { preferences.retryHeldChanges() },
+                    discard: { await preferences.discardHeldChanges() }
+                )
             }
         }
         .siloGroupedListStyle()
