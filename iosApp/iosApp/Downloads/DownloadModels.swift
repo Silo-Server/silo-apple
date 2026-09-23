@@ -470,22 +470,6 @@ struct UpdateSubscriptionRequest: Encodable, Hashable, Sendable {
     let active: Bool?
 }
 
-// MARK: - Progress reconciliation
-
-/// `GET /api/v1/progress?since={cursor}` delta response. §5.2.
-struct ProgressPullResponse: Codable, Sendable {
-    let progress: [ProgressPullItem]
-    let nextCursor: String?
-}
-
-struct ProgressPullItem: Codable, Sendable {
-    let mediaItemId: String
-    let positionSeconds: Double
-    let durationSeconds: Double
-    let completed: Bool
-    let updatedAt: Date?
-}
-
 // MARK: - Local persistence types
 
 /// Client-side lifecycle of a managed download, layered on top of the
@@ -693,8 +677,9 @@ struct QueuedProgress: Codable, Identifiable, Sendable {
 }
 
 /// Last-known resume point for a downloaded item, updated by offline
-/// playback and by pulled server deltas. Drives offline resume.
-struct LocalProgressEntry: Codable, Sendable {
+/// playback and by each complete `GET /api/v2/progress` read. Drives offline
+/// resume, `isWatched` and `delete_watched`.
+struct LocalProgressEntry: Codable, Equatable, Sendable {
     var position: Double
     var duration: Double
     var completed: Bool
@@ -709,7 +694,6 @@ struct DownloadStoreFile: Codable, Sendable {
     var capability: DownloadCapability?
     var capabilityFetchedAt: Date?
     var progressQueue: [QueuedProgress]
-    var progressCursor: String?
     var localProgress: [String: LocalProgressEntry]
     /// Registry entries this device deleted locally whose server DELETE has
     /// not been confirmed. Reconcile never imports them and retries the
@@ -740,7 +724,6 @@ struct DownloadStoreFile: Codable, Sendable {
         capability: nil,
         capabilityFetchedAt: nil,
         progressQueue: [],
-        progressCursor: nil,
         localProgress: [:]
     )
 }

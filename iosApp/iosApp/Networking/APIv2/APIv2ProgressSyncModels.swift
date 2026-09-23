@@ -1,6 +1,7 @@
 import Foundation
 
-// Wire models for `POST /api/v2/sync/progress` (syncProgress).
+// Wire models for `POST /api/v2/sync/progress` (syncProgress), and the error
+// a `listProgress` read throws when it cannot stand for the whole set.
 
 /// One progress write. Positions cross the wire as whole milliseconds; the
 /// app keeps seconds everywhere else, so the conversion happens only here.
@@ -177,5 +178,16 @@ extension ProgressSyncOutcome {
         case .uncertain(let error):
             return "outcome unknown, not resent: \(MediaLogRedactor.sanitize(error))"
         }
+    }
+}
+
+/// A `listProgress` read that cannot stand for the whole set.
+enum ProgressReadError: LocalizedError, Equatable {
+    /// The read ended early, repeated a cursor or an item, or ran past the
+    /// page bound.
+    case incompleteRead
+
+    var errorDescription: String? {
+        "The server returned incomplete watch progress."
     }
 }

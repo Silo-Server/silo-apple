@@ -56,12 +56,12 @@ final class LegacyDownloadStorageTests: XCTestCase {
         // A download saved after the removal must survive every later launch.
         let fresh = makeStore()
         var file = DownloadStoreFile.empty
-        file.progressCursor = "after-upgrade"
+        file.pendingServerDeletes = ["after-upgrade"]
         await fresh.save(file, serverId: "server", profileId: "profile")
         let stateOnRelaunch = await fresh.legacyStorageState()
         XCTAssertEqual(stateOnRelaunch, .removed(noticePending: true))
         let reloaded = await fresh.load(serverId: "server", profileId: "profile")
-        XCTAssertEqual(reloaded.progressCursor, "after-upgrade")
+        XCTAssertEqual(reloaded.pendingServerDeletes, ["after-upgrade"])
     }
 
     func testRemovalWithoutDownloadsNeedsNoNotice() throws {
@@ -266,10 +266,10 @@ final class LegacyDownloadStorageTests: XCTestCase {
 
         // The empty registry now saves normally and leaves the original alone.
         var file = DownloadStoreFile.empty
-        file.progressCursor = "new"
+        file.pendingServerDeletes = ["new"]
         await store.save(file, serverId: "server", profileId: "profile")
-        let cursor = await store.load(serverId: "server", profileId: "profile").progressCursor
-        XCTAssertEqual(cursor, "new")
+        let pending = await store.load(serverId: "server", profileId: "profile").pendingServerDeletes
+        XCTAssertEqual(pending, ["new"])
         XCTAssertEqual(try Data(contentsOf: quarantinedURL), garbage)
     }
 

@@ -1341,7 +1341,8 @@ final class DownloadManager {
         reportPendingStatusEvents()
         processQueue()
         refreshStorageUsage()
-        Task { await self.enforceRetention() }
+        // `delete_watched` waits for the next monitoring run, which removes a
+        // watched episode right after it reads the watch state in full.
     }
 
     private func handleMediaFailure(taskId: Int, statusCode: Int?, resumeData: Data?, message: String) {
@@ -2169,10 +2170,14 @@ final class DownloadManager {
             registered = await syncSubscriptions(owner: owner)
         }
         await flushProgressQueue()
-        await pullProgressDeltas()
+        let watchStateRead = await refreshWatchState()
         await reconcileWithServer(triggerPipeline: true)
         notifyMonitoringBatch(registered: registered, priorRecordIds: priorRecordIds)
-        await enforceRetention()
+        // `delete_watched` acts only on watch state this run read in full:
+        // a read that failed or stopped early can never remove a file.
+        if let watchStateRead, isCurrent(watchStateRead) {
+            enforceRetention()
+        }
     }
 
     /// One notification per sync batch when monitoring registered new
@@ -2196,23 +2201,28 @@ final class DownloadManager {
 
     /// Client-enforced `delete_watched`: remove completed downloads whose
     /// series is monitored with retention enabled and whose progress is
-    /// completed. The server never deletes on-device files.
-    private func enforceRetention() async {
+    /// completed. The server never deletes on-device files. Run it only
+    /// after a complete watch-state read.
+    private func enforceRetention() {
+        for id in Self.watchedDownloadIds(in: file) {
+            deleteDownload(id: id)
+        }
+    }
+
+    /// The completed downloads `delete_watched` removes from `file`.
+    nonisolated static func watchedDownloadIds(in file: DownloadStoreFile) -> [String] {
         let retentionSeries = Set(
             file.subscriptions.filter { $0.deleteWatched }.map { $0.seriesId }
         )
-        guard !retentionSeries.isEmpty else { return }
-        let toDelete = file.records.values.filter { record in
+        guard !retentionSeries.isEmpty else { return [] }
+        return file.records.values.filter { record in
             // Progress is keyed by the leaf item id (the episode), which for an
             // episode download is `episodeId`, not the series `contentId`.
             let leafId = record.episodeId ?? record.contentId
             return record.localStatus == .completed
                 && record.seriesId.map(retentionSeries.contains) == true
                 && file.localProgress[leafId]?.completed == true
-        }
-        for record in toDelete {
-            deleteDownload(id: record.id)
-        }
+        }.map(\.id)
     }
 
     // MARK: - Offline progress
@@ -2338,33 +2348,69 @@ final class DownloadManager {
         serverId + "\n" + profileId
     }
 
-    func pullProgressDeltas() async {
+    // MARK: - Watch state
+
+    /// Re-reads the profile's whole watch progress through
+    /// `GET /api/v2/progress` and merges it into `localProgress`, which drives
+    /// `isWatched`, offline resume and `delete_watched`. v2 has no delta read,
+    /// so every run reads the full set; a read that fails or stops early
+    /// changes nothing and is tried again on the next run.
+    ///
+    /// Returns the owner the read was applied under, or nil when nothing was
+    /// applied.
+    private func refreshWatchState() async -> ScopeOwner? {
+        guard let owner = await captureScopeOwner() else { return nil }
+        let startedAt = Date()
+        let entries: [APIv2ProgressEntry]
         do {
-            let response = try await SiloAPI.shared.pullProgressDeltas(since: file.progressCursor)
-            for item in response.progress {
-                let serverTime = item.updatedAt ?? Date()
-                var entry = file.localProgress[item.mediaItemId]
-                    ?? LocalProgressEntry(
-                        position: item.positionSeconds,
-                        duration: item.durationSeconds,
-                        completed: item.completed,
-                        updatedAt: serverTime
-                    )
-                if serverTime >= entry.updatedAt {
-                    entry.position = item.positionSeconds
-                    if item.durationSeconds > 0 { entry.duration = item.durationSeconds }
-                    entry.completed = entry.completed || item.completed
-                    entry.updatedAt = serverTime
-                    file.localProgress[item.mediaItemId] = entry
-                }
-            }
-            if let cursor = response.nextCursor, !cursor.isEmpty {
-                file.progressCursor = cursor
-            }
-            persist()
+            entries = try await SiloAPI.shared.apiV2Client.listAllProgress(auth: owner.auth)
         } catch {
-            // Non-fatal; retry next foreground.
+            Self.logger.warning("watch state read failed: \(String(describing: error), privacy: .public)")
+            return nil
         }
+        guard isCurrent(owner) else { return nil }
+        let merged = Self.mergeProgress(
+            file.localProgress,
+            read: entries,
+            readStartedAt: startedAt,
+            queuedItemIds: Set(file.progressQueue.map(\.mediaItemId))
+        )
+        if merged != file.localProgress {
+            file.localProgress = merged
+            persist()
+        }
+        return owner
+    }
+
+    /// Merges a complete progress read into the local entries: for each item
+    /// the side with the later `updated_at` wins whole, `completed` included,
+    /// so an unwatch on another device reaches this one. An entry the read
+    /// does not hold has no progress on the server (cleared, or marked
+    /// unwatched) and is dropped, unless this device wrote it during the read
+    /// or still has it queued for upload.
+    nonisolated static func mergeProgress(
+        _ local: [String: LocalProgressEntry],
+        read: [APIv2ProgressEntry],
+        readStartedAt: Date,
+        queuedItemIds: Set<String>
+    ) -> [String: LocalProgressEntry] {
+        var merged = local.filter { id, entry in
+            queuedItemIds.contains(id) || entry.updatedAt >= readStartedAt
+        }
+        for item in read {
+            if let existing = local[item.mediaItemId], existing.updatedAt > item.updatedAt {
+                merged[item.mediaItemId] = existing
+                continue
+            }
+            let duration = item.durationSeconds > 0 ? item.durationSeconds : (local[item.mediaItemId]?.duration ?? 0)
+            merged[item.mediaItemId] = LocalProgressEntry(
+                position: item.positionSeconds,
+                duration: duration,
+                completed: item.completed,
+                updatedAt: item.updatedAt
+            )
+        }
+        return merged
     }
 
     // MARK: - Helpers
