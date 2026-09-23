@@ -251,12 +251,12 @@ actor ApplePushRegistrar {
         do {
             receipt = try await api.registerApplePush(command.intent.body, installationKey: command.installationKey,
                 generation: command.generation, auth: owner.request)
-        } catch let error where Self.refusalReason(error) != nil {
-            let reason = Self.refusalReason(error) ?? "refused"
-            record(.refused(reason: reason), for: command, serverID: serverID)
-            Self.logger.error("Apple push registration refused: generation=\(command.generation, privacy: .public) reason=\(reason, privacy: .public) error=\(String(describing: error), privacy: .public)")
-            return .refused(reason: reason)
         } catch {
+            if let reason = Self.refusalReason(error) {
+                record(.refused(reason: reason), for: command, serverID: serverID)
+                Self.logger.error("Apple push registration refused: generation=\(command.generation, privacy: .public) reason=\(reason, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                return .refused(reason: reason)
+            }
             Self.logger.info("Apple push registration outcome unknown; keeping generation \(command.generation, privacy: .public) for exact replay: \(String(describing: error), privacy: .public)")
             return .uncertain
         }
@@ -415,11 +415,8 @@ final class ApplePushRegistrationCoordinator {
             return
         }
         let result = await registrar.register(makeRegistrationRequest(deviceToken: lastDeviceToken), owner: owner)
-        switch result {
-        case .notSent(let reason):
+        if case .notSent(let reason) = result {
             Self.logger.info("Apple push registration not sent: \(reason, privacy: .public)")
-        default:
-            break
         }
     }
 
