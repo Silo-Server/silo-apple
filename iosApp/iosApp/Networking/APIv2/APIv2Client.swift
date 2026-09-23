@@ -1257,26 +1257,36 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder().decode(APIv2DevicePoll.self, from: response.data).validated()
     }
 
-    func deviceLookup(code: String, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity) async throws -> DeviceLookupResponse {
+    /// The approving side of a SiloRemote handoff reads and decides under
+    /// the caller's captured owner: `expectedAuth`, when given, refuses the
+    /// dispatch once the credential or profile behind it has changed.
+    func deviceLookup(code: String, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity,
+                      expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws -> DeviceLookupResponse {
         try await gate()
         let response = try await mapErrors {
-            try await http.requestData(method: "GET", path: "/api/v2/auth/device", query: ["code": code], requestIdentity: identity, expectedAccount: expectedAccount)
+            try await http.requestData(method: "GET", path: "/api/v2/auth/device", query: ["code": code], requestIdentity: identity,
+                expectedAccount: expectedAccount, expectedAuth: expectedAuth)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         return try HTTPClient.makeJSONDecoder().decode(APIv2DeviceLookup.self, from: response.data).presentation
     }
 
-    func decideDeviceLogin(code: String, approveHandoff: Bool, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity) async throws {
+    /// `approve-handoff` and `deny` are `domain_identity`: the code names the
+    /// request, so the usual refresh and resend is safe.
+    func decideDeviceLogin(code: String, approveHandoff: Bool, identity: HTTPRequestIdentity, expectedAccount: RefreshAccountIdentity,
+                           expectedAuth: CapturedOrdinaryRequestAuth? = nil) async throws {
         try await gate()
         let body = try JSONSerialization.data(withJSONObject: ["code": code])
         let path = approveHandoff ? "/api/v2/auth/device/approve-handoff" : "/api/v2/auth/device/deny"
         let response = try await mapErrors {
-            try await http.requestData(method: "POST", path: path, body: body, requestIdentity: identity, expectedAccount: expectedAccount)
+            try await http.requestData(method: "POST", path: path, body: body, requestIdentity: identity,
+                expectedAccount: expectedAccount, expectedAuth: expectedAuth)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
+        guard response.statusCode == 200 else { throw APIv2Error.incompleteAuthResponse }
         let value = try HTTPClient.makeJSONDecoder().decode(APIv2DeviceDecision.self, from: response.data)
-        guard response.statusCode == 200, value.status == (approveHandoff ? "approved" : "denied") else { throw APIv2Error.incompleteAuthResponse }
+        guard value.status == (approveHandoff ? "approved" : "denied") else { throw APIv2Error.incompleteAuthResponse }
     }
 
     /// Ends the login session that `expectedAccount` currently holds. The

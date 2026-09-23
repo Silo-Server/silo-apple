@@ -306,9 +306,16 @@ final class SiloControlClient {
         guard await waitForVersionNegotiation() == 2 else {
             throw SiloControlHandoffError.updateRequired
         }
-        guard await TokenStore.shared.getAccessToken() != nil else {
+        // The server-side approval runs under the owner captured here: the
+        // same account, credential and profile the offer names.
+        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(), auth.accessToken != nil,
+              ServerRegistry.serverIdsMatch(auth.account.serverId, server.id),
+              auth.profileId == profileId else {
             throw SiloControlHandoffError.identityChanged
         }
+        let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
+            profileId: profileId, clientFamily: AppleDeviceIdentity.current.clientFamily)
+        let api = SiloAPI.shared.apiV2Client
 
         let requestId = UUID().uuidString
         pendingHandoffRequestId = requestId
@@ -348,34 +355,40 @@ final class SiloControlClient {
         do {
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
 
-            let lookup: DeviceLookupResponse = try await HTTPClient.shared.get(
-                "/api/v1/auth/device",
-                query: ["code": challenge.userCode]
-            )
-            guard lookup.matchCode == challenge.matchCode,
-                  lookup.clientPurpose == "remote_playback",
-                  lookup.temporary == true else {
+            let lookup = try await api.deviceLookup(code: challenge.userCode, identity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
+            guard Self.isRemotePlaybackHandoff(lookup, answering: challenge) else {
                 throw SiloControlHandoffError.invalidResponse
             }
 
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
-            try await HTTPClient.shared.postVoid(
-                "/api/v1/auth/device/approve-handoff",
-                body: DeviceApproveRequest(code: challenge.userCode)
-            )
+            try await api.decideDeviceLogin(code: challenge.userCode, approveHandoff: true, identity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
 
             let ready = try await waitForHandoffReady(requestId: requestId)
+            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+                throw SiloControlHandoffError.identityChanged
+            }
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
             resetPendingHandoff()
             return ready
         } catch {
-            try? await HTTPClient.shared.postVoid(
-                "/api/v1/auth/device/deny",
-                body: DeviceApproveRequest(code: challenge.userCode)
-            )
+            // Best effort: a deny that fails (or is refused because the owner
+            // changed) leaves the request to expire on the server.
+            try? await api.decideDeviceLogin(code: challenge.userCode, approveHandoff: false, identity: identity,
+                expectedAccount: auth.account, expectedAuth: auth)
             resetPendingHandoff()
             throw error
         }
+    }
+
+    /// The TV's challenge is only approvable when the server describes the
+    /// same request: its match code, opened for remote playback, and ending
+    /// in a temporary session rather than a full sign-in.
+    static func isRemotePlaybackHandoff(_ lookup: DeviceLookupResponse, answering challenge: SiloControlHandoffChallenge) -> Bool {
+        lookup.matchCode == challenge.matchCode
+            && lookup.clientPurpose == "remote_playback"
+            && lookup.temporary == true
     }
 
     private func waitForVersionNegotiation() async -> Int? {
