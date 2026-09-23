@@ -13,13 +13,14 @@ enum UpdateRequirement: Equatable, Sendable {
     /// probe verdict refused the call (`APIv2Error.serverUpdateRequired`).
     case server
     /// The server no longer accepts this version of the app: HTTP 410 with
-    /// the `client_upgrade_required` problem type.
+    /// the `client_upgrade_required` problem type or v1 error code.
     case app
 
     static let serverMessage = "This server needs to be updated before this version of Silo can use it."
     static let appMessage = "Update Silo to keep using this server."
 
-    /// The final segment of the problem `type` URI the server sends.
+    /// The final segment of the problem `type` URI, and the `error` code of
+    /// the v1 error envelope.
     static let clientUpgradeRequiredProblem = "client_upgrade_required"
 
     var message: String {
@@ -52,11 +53,15 @@ enum UpdateRequirement: Equatable, Sendable {
         problem.status == 410 && problem.identifier == clientUpgradeRequiredProblem
     }
 
+    /// Accepts both shapes the server documents for the v1 retirement
+    /// tombstone: a problem document, or the v1 error envelope
+    /// (`{"error":"client_upgrade_required",...}`).
     static func isClientUpgradeRequired(statusCode: Int, body: String?) -> Bool {
-        guard statusCode == 410, let data = body?.data(using: .utf8),
-              let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) else {
-            return false
+        guard statusCode == 410 else { return false }
+        if let data = body?.data(using: .utf8),
+           let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) {
+            return isClientUpgradeRequired(problem)
         }
-        return isClientUpgradeRequired(problem)
+        return HTTPError.http(statusCode: statusCode, body: body).serverErrorCode == clientUpgradeRequiredProblem
     }
 }

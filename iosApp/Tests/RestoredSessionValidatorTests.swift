@@ -200,9 +200,8 @@ final class RestoredSessionValidatorTests: XCTestCase {
 
     /// A version mismatch on cold launch shows the update copy, not "We can't
     /// verify this server", and keeps the session. The setup check runs
-    /// through the real request layers against the stub: v2 setup for the
-    /// legacy 404 (a v1-only server's answer to a v2 route), both layers for
-    /// the 410 problem.
+    /// through the real request layers against the stub: v2 setup, or a plain
+    /// `HTTPClient` request standing in for today's v1 setup call.
     func testVersionMismatchEntersUpdateRecoveryAndKeepsSession() async {
         let legacyNotFound = StubURLProtocol.Response.text(
             UpdateRequirementTests.legacyNotFound, status: 404, contentType: "text/plain; charset=utf-8")
@@ -211,8 +210,8 @@ final class RestoredSessionValidatorTests: XCTestCase {
         let cases: [(String, Bool, StubURLProtocol.Response, RestoredSessionValidationResult)] = [
             ("v2 setup, legacy 404", true, legacyNotFound, .serverRecovery(.serverUpdateRequired)),
             ("v2 setup, 410 upgrade", true, upgradeProblem, .serverRecovery(.appUpdateRequired)),
-            ("v1 setup, 410 upgrade", false, upgradeProblem, .serverRecovery(.appUpdateRequired)),
-            ("v1 setup, legacy 404", false, legacyNotFound, .serverRecovery(.serverNotRecognized)),
+            ("HTTPClient setup, 410 upgrade", false, upgradeProblem, .serverRecovery(.appUpdateRequired)),
+            ("HTTPClient setup, legacy 404", false, legacyNotFound, .serverRecovery(.serverNotRecognized)),
         ]
         for (name, v2Setup, response, expectedResult) in cases {
             let handler = StubURLProtocol.Handler()
@@ -226,7 +225,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
                             .setupStatus(serverURL: url)
                         return SetupStatus(needsSetup: status.needsSetup)
                     }
-                    return try await http.getUnauthenticated(serverURL: url, path: "/api/v1/auth/setup")
+                    return try await http.getUnauthenticated(serverURL: url, path: UpdateRequirementTests.httpLayerPath)
                 },
                 accountProbe: { try await harness.probeAccount() },
                 identityReader: { await harness.currentIdentity() },

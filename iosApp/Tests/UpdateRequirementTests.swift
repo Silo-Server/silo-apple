@@ -15,6 +15,9 @@ final class UpdateRequirementTests: XCTestCase {
      "title":"Playback session ended","status":410,"detail":"Playback session has ended."}
     """
     static let legacyNotFound = "404 page not found\n"
+    /// Any route the `HTTPClient` layer requests: its classification depends
+    /// only on the reply, never on the path.
+    static let httpLayerPath = "/probe"
 
     private func problem(_ json: String) throws -> APIv2Problem {
         try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(json.utf8))
@@ -30,6 +33,8 @@ final class UpdateRequirementTests: XCTestCase {
             ("v2 bare 404", APIv2Error.httpStatus(404), nil),
             ("v1 upgrade problem", HTTPError.http(statusCode: 410, body: Self.upgradeProblem), .app),
             ("v1 other 410 problem", HTTPError.http(statusCode: 410, body: Self.sessionEndedProblem), nil),
+            ("v1 upgrade envelope", HTTPError.http(statusCode: 410,
+                body: #"{"error":"client_upgrade_required","message":"Update"}"#), .app),
             ("v1 410 envelope", HTTPError.http(statusCode: 410, body: #"{"error":"expired","message":"gone"}"#), nil),
             ("v1 bare 410", HTTPError.http(statusCode: 410, body: nil), nil),
             ("upgrade problem on another status", HTTPError.http(statusCode: 400, body: Self.upgradeProblem), nil),
@@ -71,19 +76,28 @@ final class UpdateRequirementTests: XCTestCase {
             XCTFail("expected the 404 to surface")
         } catch APIv2Error.httpStatus(404) {}
 
-        XCTAssertFalse(stub.requestedPaths.contains { $0.hasPrefix("/api/v1") }, "no v1 fallback")
+        XCTAssertEqual(stub.requestedPaths, Array(repeating: "/api/v2/system/setup", count: 3), "no fallback")
     }
 
-    func testV1UpgradeProblemExplainsItself() async throws {
-        let stub = APIv2TestStub(fallback: .json(410, Self.upgradeProblem))
-        do {
-            let _: SetupStatus = try await HTTPClient(session: stub.makeSession())
-                .getUnauthenticated(serverURL: "https://new.example", path: "/api/v1/auth/setup")
-            XCTFail("expected the 410 to surface")
-        } catch {
-            XCTAssertEqual(UpdateRequirement(error), .app)
-            XCTAssertEqual(error.localizedDescription, UpdateRequirement.appMessage)
-            XCTAssertEqual(ErrorState(error).message, UpdateRequirement.appMessage)
+    /// The `HTTPClient` layer explains an upgrade 410 in either body shape
+    /// the server documents for the v1 tombstone.
+    func testHTTPClientUpgradeReplyExplainsItself() async throws {
+        let replies: [(String, APIv2TestStub.Reply)] = [
+            ("problem document", .json(410, Self.upgradeProblem)),
+            ("v1 envelope", .response(.json(#"{"error":"client_upgrade_required","message":"Upgrade required"}"#,
+                status: 410))),
+        ]
+        for (name, reply) in replies {
+            let stub = APIv2TestStub(fallback: reply)
+            do {
+                let _: SetupStatus = try await HTTPClient(session: stub.makeSession())
+                    .getUnauthenticated(serverURL: "https://new.example", path: Self.httpLayerPath)
+                XCTFail("expected the 410 to surface: \(name)")
+            } catch {
+                XCTAssertEqual(UpdateRequirement(error), .app, name)
+                XCTAssertEqual(error.localizedDescription, UpdateRequirement.appMessage, name)
+                XCTAssertEqual(ErrorState(error).message, UpdateRequirement.appMessage, name)
+            }
         }
     }
 
@@ -101,8 +115,8 @@ final class UpdateRequirementTests: XCTestCase {
         let stub = APIv2TestStub(fallback: .json(410, Self.upgradeProblem))
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         do {
-            let _: AuthUser = try await http.get("/api/v1/auth/me")
-            XCTFail("expected the v1 410 to surface")
+            let _: AuthUser = try await http.get(Self.httpLayerPath)
+            XCTFail("expected the HTTPClient 410 to surface")
         } catch {
             XCTAssertEqual(UpdateRequirement(error), .app)
         }
@@ -113,7 +127,7 @@ final class UpdateRequirementTests: XCTestCase {
             XCTAssertEqual(UpdateRequirement(error), .app)
         }
 
-        XCTAssertEqual(stub.requestedPaths, ["/api/v1/auth/me", "/api/v2/account/me"], "no refresh attempt")
+        XCTAssertEqual(stub.requestedPaths, [Self.httpLayerPath, "/api/v2/account/me"], "no refresh attempt")
         let access = await tokens.getAccessToken()
         let refresh = await tokens.getRefreshToken()
         XCTAssertEqual(access, "access")
@@ -147,9 +161,8 @@ final class UpdateRequirementTests: XCTestCase {
     }
 
     /// Runs the add-server flow against one stubbed reply per candidate
-    /// scheme. The check goes through the real request layers: v2 setup for
-    /// the legacy 404 (a v1-only server's answer to a v2 route) and v1 setup
-    /// for the rest.
+    /// scheme. The check goes through the real request layers: v2 setup, or
+    /// a plain `HTTPClient` request standing in for today's v1 setup call.
     @MainActor
     private func connect(v2Setup: Bool, replies: [String: CandidateReply]) async -> String? {
         let handler = StubURLProtocol.Handler()
@@ -172,7 +185,7 @@ final class UpdateRequirementTests: XCTestCase {
                 let status = try await APIv2Client(http: http, isUpdateRequired: { false }).setupStatus(serverURL: url)
                 return SetupStatus(needsSetup: status.needsSetup)
             }
-            return try await http.getUnauthenticated(serverURL: url, path: "/api/v1/auth/setup")
+            return try await http.getUnauthenticated(serverURL: url, path: Self.httpLayerPath)
         })
         viewModel.host = "silo.example"
         await viewModel.connect(router: AppRouter())
@@ -186,9 +199,9 @@ final class UpdateRequirementTests: XCTestCase {
             ("v1-only server", true, ["https:0": .legacyNotFound, "http:0": .legacyNotFound, "http:8090": .legacyNotFound],
              UpdateRequirement.serverMessage),
             ("v1-only behind one scheme", true, ["http:0": .legacyNotFound], UpdateRequirement.serverMessage),
-            ("app too old (v1 layer)", false, ["https:0": .upgradeProblem], UpdateRequirement.appMessage),
+            ("app too old (HTTPClient layer)", false, ["https:0": .upgradeProblem], UpdateRequirement.appMessage),
             ("app too old (v2 layer)", true, ["https:0": .upgradeProblem], UpdateRequirement.appMessage),
-            ("v1 route legacy 404", false, ["https:0": .legacyNotFound], unreachable),
+            ("HTTPClient layer legacy 404", false, ["https:0": .legacyNotFound], unreachable),
             ("proxy 404", true, ["https:0": .htmlNotFound], unreachable),
             ("nothing answers", true, [:], unreachable),
         ]
