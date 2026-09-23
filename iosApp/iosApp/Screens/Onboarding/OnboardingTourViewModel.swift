@@ -58,7 +58,9 @@ private enum OnboardingTourError: LocalizedError {
 /// write is sent once, under the tag of the state read or receipt it follows.
 /// A failed, refused (412/428/409) or unanswered write leaves no tag, so the
 /// next write the user starts reads the state again first. If that read
-/// shows the tour already finished elsewhere, the tour closes instead.
+/// shows the tour already finished elsewhere, the tour closes instead. A
+/// tour the server has replaced (409, or a re-read naming another tour)
+/// closes too, because none of its progress can be saved.
 @Observable
 @MainActor
 class OnboardingTourViewModel {
@@ -184,15 +186,7 @@ class OnboardingTourViewModel {
 
         let next = currentIndex + 1
         guard next < steps.count else {
-            let lastStep = steps.indices.contains(currentIndex) ? steps[currentIndex].id : nil
-            do {
-                if try await sendProgress(lastStep: lastStep, completed: true, skipped: false) == .saved {
-                    completionRoute = currentStepRoute
-                }
-                finished = true
-            } catch {
-                report(error)
-            }
+            await close(skipped: false, route: currentStepRoute)
             return
         }
         let stepId = steps[next].id
@@ -201,6 +195,8 @@ class OnboardingTourViewModel {
             case .saved: currentIndex = next
             case .finishedElsewhere: finished = true
             }
+        } catch where Self.isTourNoLongerCurrent(error) {
+            closeReplacedTour(error)
         } catch {
             report(error)
         }
@@ -219,23 +215,57 @@ class OnboardingTourViewModel {
     private func end(
         skipped: Bool,
         route: String?,
-        persistCurrentDefault: Bool = true
+        persistCurrentDefault: Bool = true,
+        leaveOnFailure: Bool = false
     ) async {
         guard !isSaving else { return }
         isSaving = true
         error = nil
         defer { isSaving = false }
+        if !skipped, persistCurrentDefault {
+            do {
+                try await persistDefaultForCurrentStepIfNeeded()
+            } catch {
+                report(error)
+                return
+            }
+        }
+        await close(skipped: skipped, route: route, leaveOnFailure: leaveOnFailure)
+    }
+
+    /// Records the finish or skip and closes the tour. A finish opens its
+    /// route whether this write saved it or a re-read shows it already
+    /// landed; only the write is suppressed then, not the navigation.
+    /// `leaveOnFailure` closes without a route when progress cannot be saved.
+    private func close(skipped: Bool, route: String?, leaveOnFailure: Bool = false) async {
         let lastStep = steps.indices.contains(currentIndex) ? steps[currentIndex].id : nil
         do {
-            if !skipped, persistCurrentDefault {
-                try await persistDefaultForCurrentStepIfNeeded()
-            }
-            if try await sendProgress(lastStep: lastStep, completed: !skipped, skipped: skipped) == .saved {
-                completionRoute = skipped ? nil : route
-            }
+            _ = try await sendProgress(lastStep: lastStep, completed: !skipped, skipped: skipped)
+            completionRoute = skipped ? nil : route
             finished = true
+        } catch where Self.isTourNoLongerCurrent(error) {
+            closeReplacedTour(error)
         } catch {
             report(error)
+            if leaveOnFailure { finished = true }
+        }
+    }
+
+    /// The server replaced the tour this view shows, so no progress for it
+    /// can be saved. Close it; the gate reads the new tour on its next check.
+    private func closeReplacedTour(_ error: Error) {
+        Self.logger.error("Onboarding tour is no longer current: \(String(describing: error), privacy: .public)")
+        finished = true
+    }
+
+    /// A re-read naming another tour, or the server's 409 for a write to a
+    /// tour that is no longer current.
+    private static func isTourNoLongerCurrent(_ error: Error) -> Bool {
+        switch error {
+        case OnboardingProgressError.tourChanged: return true
+        case APIv2Error.problem(let problem): return problem.status == 409
+        case APIv2Error.httpStatus(let status): return status == 409
+        default: return false
         }
     }
 
@@ -275,11 +305,14 @@ class OnboardingTourViewModel {
         self.error = error.localizedDescription
     }
 
+    /// Leaves the tour even when its progress cannot be saved: the user
+    /// asked to go on, and the gate reads the state again on its next check.
     func continueWithoutSaving() async {
         await end(
             skipped: false,
             route: currentStepRoute,
-            persistCurrentDefault: false
+            persistCurrentDefault: false,
+            leaveOnFailure: true
         )
     }
 

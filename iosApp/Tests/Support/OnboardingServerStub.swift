@@ -6,7 +6,8 @@ import XCTest
 /// profile's tour state with a revision, the `ETag` rule (`"r<revision>"`),
 /// If-Match checks (428 missing, 412 stale), and switches for a failed
 /// state read, a write that never arrives, and a write whose reply is lost
-/// after the server applied it. Applied writes are recorded in `events`.
+/// after the server applied it. A write naming a tour other than the
+/// current one gets 409. Applied writes are recorded in `events`.
 final class OnboardingServerStub: @unchecked Sendable {
     let handler = StubURLProtocol.Handler()
     private let lock = NSLock()
@@ -19,7 +20,9 @@ final class OnboardingServerStub: @unchecked Sendable {
     private var dropNextReply = false
     private var weakTag = false
     private var recorded: [String] = []
+    private var currentTourId = "tour"
 
+    /// The tour the scenario starts with.
     let tourId = "tour"
 
     init() {
@@ -31,7 +34,7 @@ final class OnboardingServerStub: @unchecked Sendable {
         }
         handler.route(StubURLProtocol.method("GET", path: "/api/v2/onboarding/flow")) { [self] _ in
             lock.withLock {
-                .json(#"{"version":1,"tour_id":"\#(tourId)","steps":\#(flowSteps)}"#)
+                .json(#"{"version":1,"tour_id":"\#(currentTourId)","steps":\#(flowSteps)}"#)
             }
         }
         handler.route(StubURLProtocol.method("PUT", path: "/api/v2/onboarding/progress")) { [self] request in
@@ -55,6 +58,10 @@ final class OnboardingServerStub: @unchecked Sendable {
             revision += 1
         }
     }
+    /// The server moves to a new tour; writes for the old one get 409.
+    func replaceTour() {
+        lock.withLock { currentTourId = "tour-next" }
+    }
     func failStateReads(with response: StubURLProtocol.Response?) { lock.withLock { stateFailure = response } }
     func failNextWrite(_ code: URLError.Code = .notConnectedToInternet) { lock.withLock { writeFailure = code } }
     func dropNextWriteReply() { lock.withLock { dropNextReply = true } }
@@ -75,7 +82,7 @@ final class OnboardingServerStub: @unchecked Sendable {
     private var tag: String { weakTag ? #"W/"r\#(revision)""# : #""r\#(revision)""# }
 
     private func stateResponse() throws -> StubURLProtocol.Response {
-        var body: [String: Any] = ["tour_id": tourId, "done": done]
+        var body: [String: Any] = ["tour_id": currentTourId, "done": done]
         if let lastStep { body["last_step"] = lastStep }
         let data = try JSONSerialization.data(withJSONObject: body)
         return StubURLProtocol.Response(
@@ -93,12 +100,16 @@ final class OnboardingServerStub: @unchecked Sendable {
         guard let ifMatch = request.header("if-match") else {
             return Self.problem(428, "precondition_required")
         }
-        guard ifMatch == tag else {
-            return Self.problem(412, "precondition_failed", headers: ["ETag": tag])
-        }
         let body = try XCTUnwrap(
             JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: Any]
         )
+        // The server refuses a replaced tour before it checks the tag.
+        guard body["tour_id"] as? String == currentTourId else {
+            return Self.problem(409, "conflict")
+        }
+        guard ifMatch == tag else {
+            return Self.problem(412, "precondition_failed", headers: ["ETag": tag])
+        }
         let completed = body["completed"] as? Bool ?? false
         let skipped = body["skipped"] as? Bool ?? false
         let step = body["last_step"] as? String

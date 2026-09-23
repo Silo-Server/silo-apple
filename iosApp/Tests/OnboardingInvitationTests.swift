@@ -247,6 +247,90 @@ final class OnboardingInvitationTests: XCTestCase {
         XCTAssertEqual(server.requestLines.filter { $0.hasPrefix("PUT") }.count, 1, "only the refused write was sent")
     }
 
+    @MainActor
+    func testFinishWhoseReplyWasLostOpensTheChosenRouteOnRetry() async throws {
+        server.setFlow(steps: Self.steps([Self.welcomeStep(id: "welcome"), Self.featureStep(id: "search", route: "search")]))
+        let model = try await makeModel()
+        await model.load(resumeStepId: "search")
+        server.dropNextWriteReply()
+
+        await model.finish(route: "search")
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.finished)
+
+        await model.finish(route: "search")
+
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(model.completionRoute, "search", "the finish landed; its navigation still applies")
+        XCTAssertEqual(server.events, ["progress:search:completed"])
+        XCTAssertEqual(server.requestLines.filter { $0.hasPrefix("PUT") }.count, 1)
+    }
+
+    @MainActor
+    func testLastStepWhoseReplyWasLostOpensItsRouteOnRetry() async throws {
+        server.setFlow(steps: Self.steps([Self.featureStep(id: "search", route: "search")]))
+        let model = try await makeModel()
+        await model.load()
+        server.dropNextWriteReply()
+
+        await model.advance()
+        XCTAssertFalse(model.finished)
+        await model.advance()
+
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(model.completionRoute, "search")
+        XCTAssertEqual(server.requestLines.filter { $0.hasPrefix("PUT") }.count, 1)
+    }
+
+    @MainActor
+    func testWriteForAReplacedTourClosesTheTour() async throws {
+        server.setFlow(steps: Self.steps([Self.welcomeStep(id: "welcome"), Self.featureStep(id: "search", route: "search")]))
+        let model = try await makeModel()
+        await model.load()
+        server.replaceTour()
+
+        await model.advance()
+
+        XCTAssertTrue(model.finished, "a 409 means no progress for this tour can be saved")
+        XCTAssertNil(model.completionRoute)
+        XCTAssertEqual(server.events, [])
+        XCTAssertEqual(server.requestLines.filter { $0.hasPrefix("PUT") }.count, 1)
+    }
+
+    @MainActor
+    func testReadShowingAReplacedTourClosesTheTourWithoutWriting() async throws {
+        server.setFlow(steps: Self.steps([Self.welcomeStep(id: "welcome"), Self.welcomeStep(id: "features")]))
+        let model = try await makeModel()
+        await model.load()
+        server.failNextWrite()
+        await model.advance()
+        XCTAssertFalse(model.finished)
+        server.replaceTour()
+
+        await model.skip()
+
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(server.events, [])
+        XCTAssertEqual(Array(server.requestLines.suffix(2)), [
+            "PUT /api/v2/onboarding/progress",
+            "GET /api/v2/onboarding/state",
+        ])
+    }
+
+    @MainActor
+    func testContinueWithoutSavingClosesTheTourWhenProgressCannotBeSaved() async throws {
+        server.setFlow(steps: Self.steps([Self.featureStep(id: "search", route: "search")]))
+        let model = try await makeModel()
+        await model.load()
+        server.failNextWrite()
+
+        await model.continueWithoutSaving()
+
+        XCTAssertTrue(model.finished)
+        XCTAssertNil(model.completionRoute, "an unsaved finish does not navigate")
+        XCTAssertEqual(server.events, [])
+    }
+
     // MARK: Gate
 
     @MainActor
@@ -319,6 +403,57 @@ final class OnboardingInvitationTests: XCTestCase {
         XCTAssertNil(UnrenderableOnboardingTourSuppression.pendingTourId(serverId: serverId, profileId: "profile-1"))
     }
 
+    @MainActor
+    func testGateLegacyInviteSkipWritesUnderTheReadTagAndClearsTheMarker() async throws {
+        let serverId = seedLegacyInviteMarker(userId: "user-a")
+        let gate = try await makeGate(serverId: serverId)
+
+        await gate.check(profileId: "profile-1")
+
+        XCTAssertFalse(gate.showTour)
+        XCTAssertEqual(server.events, ["progress:none:skipped"])
+        XCTAssertEqual(server.requests.last?.header("if-match"), #""r1""#)
+        XCTAssertNil(LegacyInviteTourSuppression.pendingUserId(for: serverId))
+    }
+
+    @MainActor
+    func testGateLegacyInviteSkipOfAFinishedTourWritesNothing() async throws {
+        let serverId = seedLegacyInviteMarker(userId: "user-a")
+        server.setState(lastStep: nil, done: true)
+        let gate = try await makeGate(serverId: serverId)
+
+        await gate.check(profileId: "profile-1")
+
+        XCTAssertFalse(gate.showTour)
+        XCTAssertEqual(server.requestLines, ["GET /api/v2/onboarding/state"])
+        XCTAssertNil(LegacyInviteTourSuppression.pendingUserId(for: serverId))
+    }
+
+    @MainActor
+    func testGateLegacyInviteSkipKeepsTheTourClosedAndTheMarkerWhenTheReadFails() async throws {
+        let serverId = seedLegacyInviteMarker(userId: "user-a")
+        server.failStateReads(with: OnboardingServerStub.problem(503, "unavailable"))
+        let gate = try await makeGate(serverId: serverId)
+
+        await gate.check(profileId: "profile-1")
+
+        XCTAssertFalse(gate.showTour)
+        XCTAssertEqual(server.requestLines, ["GET /api/v2/onboarding/state"])
+        XCTAssertEqual(LegacyInviteTourSuppression.pendingUserId(for: serverId), "user-a")
+    }
+
+    @MainActor
+    func testGateDropsALegacyInviteMarkerForAnotherAccountAndChecksNormally() async throws {
+        let serverId = seedLegacyInviteMarker(userId: "user-b")
+        let gate = try await makeGate(serverId: serverId)
+
+        await gate.check(profileId: "profile-1")
+
+        XCTAssertTrue(gate.showTour)
+        XCTAssertEqual(server.requestLines, ["GET /api/v2/onboarding/state"])
+        XCTAssertNil(LegacyInviteTourSuppression.pendingUserId(for: serverId))
+    }
+
     // MARK: Helpers
 
     @MainActor
@@ -361,6 +496,18 @@ final class OnboardingInvitationTests: XCTestCase {
         )
     }
 
+    /// Seeds an older build's invite-skip record for a fresh server id and
+    /// removes it after the test.
+    private func seedLegacyInviteMarker(userId: String) -> String {
+        let serverId = "onboarding-gate-\(UUID().uuidString)"
+        let record = try! JSONSerialization.data(withJSONObject: ["serverId": serverId, "userId": userId])
+        SharedDefaults.shared.set(record, forKey: "onboardingTourSuppressedAccount.v2")
+        addTeardownBlock {
+            LegacyInviteTourSuppression.clear(serverId: serverId, userId: userId)
+        }
+        return serverId
+    }
+
     private static func steps(_ steps: [String]) -> String {
         "[\(steps.joined(separator: ","))]"
     }
@@ -371,6 +518,10 @@ final class OnboardingInvitationTests: XCTestCase {
 
     private static func welcomeStep(id: String) -> String {
         #"{"id":"\#(id)","kind":"welcome","title":"\#(id)"}"#
+    }
+
+    private static func featureStep(id: String, route: String) -> String {
+        #"{"id":"\#(id)","kind":"feature_card","title":"\#(id)","route":"\#(route)"}"#
     }
 
     private static func settingStep(
