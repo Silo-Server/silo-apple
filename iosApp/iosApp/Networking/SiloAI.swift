@@ -9,33 +9,45 @@ import Foundation
 /// ``HTTPClient/shared``; snake_case auto-converts both ways, so the wire
 /// shapes in ``AIModels`` stay camelCase.
 ///
-/// All paths are on the native API (`/api/v1/...`). The Jellyfin-compat
+/// Metadata AI goes through ``APIv2Client``; the subtitle paths are still on
+/// the native `/api/v1` API. The Jellyfin-compat
 /// API does not mirror the AI trigger/status/job endpoints; the Apple
 /// clients use the native API exclusively.
 actor SiloAI {
     static let shared = SiloAI()
 
     private let http: HTTPClient
+    private let v2: APIv2Client
 
-    init(http: HTTPClient = .shared) {
+    init(http: HTTPClient = .shared, v2: APIv2Client = SiloAPI.shared.apiV2Client) {
         self.http = http
+        self.v2 = v2
     }
 
     // MARK: - Metadata
 
-    /// Server-wide metadata-translation capability + the on-view mode.
+    /// The profile's metadata-translation capability + the on-view mode.
     func metadataAIStatus() async throws -> MetadataAIStatus {
-        try await http.get("/api/v1/metadata/ai/status")
+        try await v2.metadataAIStatus()
     }
 
-    /// Kick off an on-demand description translation for `contentId`.
-    /// Returns `202` with no body; observe completion by re-fetching the
-    /// item detail until `pendingTranslationLanguage` clears.
-    func translateDescription(contentId: String, targetLanguage: String) async throws {
-        try await http.postVoid(
-            "/api/v1/items/\(contentId)/translate-description",
-            body: TranslateDescriptionBody(targetLanguage: targetLanguage)
-        )
+    /// The owner a description translation runs for. Capture it before the
+    /// first await and pass it to ``translateDescription(contentId:targetLanguage:auth:)``.
+    func captureAuthority() async throws -> CapturedOrdinaryRequestAuth {
+        try await v2.captureAIAuthority()
+    }
+
+    func matchesAuthority(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
+        await v2.matchesAIAuthority(auth)
+    }
+
+    /// Queue an on-demand description translation for `contentId`. The 202
+    /// job may be a recently failed one the server reused; observe
+    /// completion by re-fetching the item detail until
+    /// `pendingTranslationLanguage` clears.
+    func translateDescription(contentId: String, targetLanguage: String,
+                              auth: CapturedOrdinaryRequestAuth) async throws -> APIv2MetadataTranslationJob {
+        try await v2.translateDescription(contentID: contentId, language: targetLanguage, auth: auth)
     }
 
     // MARK: - Subtitles

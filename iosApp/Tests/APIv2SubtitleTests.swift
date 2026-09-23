@@ -45,7 +45,7 @@ final class APIv2SubtitleTests: XCTestCase {
             job["id"] = id; job["kind"] = "translate"; job["source_index"] = 0
             object["job"] = job; object["live_delivery_attached"] = false
             stub.reply(202, String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
-            let auth = try await api.subtitleCreateAuthority()
+            let auth = try await api.captureAIAuthority()
             if id.isEmpty {
                 do { _ = try await api.createSubtitle(body, auth: auth); XCTFail("Accepted empty job ID") }
                 catch APIv2Error.invalidSubtitleResponse { }
