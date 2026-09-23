@@ -142,7 +142,7 @@ enum PersonalStateSync {
                 try await api.setWatchedState(id: contentId, included: included, auth: owner)
             }
         } catch {
-            let delivery = classify(error)
+            let delivery = MutationDelivery(error)
             logger.error("""
                 \(target.rawValue, privacy: .public) \(included ? "set" : "clear", privacy: .public) \
                 \(delivery.rawValue, privacy: .public): \(String(describing: error), privacy: .private)
@@ -168,7 +168,7 @@ enum PersonalStateSync {
             case .inFlight: return .skipped
             }
         }
-        return classify(error) == .ownerChanged ? .skipped : .failed(UpdateRequirement(error))
+        return MutationDelivery(error) == .ownerChanged ? .skipped : .failed(UpdateRequirement(error))
     }
 
     static func outcome(_ operation: () async throws -> Void) async -> PersonalStateOutcome {
@@ -178,12 +178,6 @@ enum PersonalStateSync {
         } catch {
             return outcome(for: error)
         }
-    }
-
-    typealias Delivery = MutationDelivery
-
-    static func classify(_ error: Error) -> Delivery {
-        MutationDelivery(error)
     }
 
     /// Drops every cached read that can show an item's personal flags.
