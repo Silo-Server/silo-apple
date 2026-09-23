@@ -532,7 +532,12 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Keys whose latest change ran out of automatic retries, in player order.
     var heldKeys: [SettingKey] {
-        lock.withLock { Self.orderedKeys(in: pending.filter { $0.value.isHeld }) }
+        lock.withLock { heldKeysLocked() }
+    }
+
+    /// Caller must hold `lock`.
+    private func heldKeysLocked() -> [SettingKey] {
+        Self.orderedKeys(in: pending.filter { $0.value.isHeld })
     }
 
     /// Called with ``heldKeys`` whenever that list changes, on no particular
@@ -609,7 +614,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     private func publishHeldKeys() {
         let (observer, keys) = lock.withLock { () -> ((@Sendable ([SettingKey]) -> Void)?, [SettingKey]) in
-            let keys = Self.orderedKeys(in: pending.filter { $0.value.isHeld })
+            let keys = heldKeysLocked()
             guard keys != reportedHeldKeys else { return (nil, keys) }
             reportedHeldKeys = keys
             return (heldKeysObserver, keys)

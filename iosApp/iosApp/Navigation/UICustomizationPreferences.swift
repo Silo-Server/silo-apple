@@ -1179,7 +1179,7 @@ final class UICustomizationPreferences {
                     let held = recordRetryableFailure(&current.retry)
                     pendingSyncWrites[key.rawValue] = current
                     saveCache(for: context.cacheKey)
-                    setSyncError(held ? Self.heldChangeMessage : Self.message(for: error), for: key)
+                    setSyncError(held ? HeldSettingChange.message : Self.message(for: error), for: key)
                     if !held { scheduleOutboxRetry(context: context) }
                 case .release:
                     // A definite refusal: sending the same value again cannot
@@ -1247,7 +1247,7 @@ final class UICustomizationPreferences {
                     pendingShortcutOperations[identity] = current
                     saveCache(for: context.cacheKey)
                     if held {
-                        shortcutSyncErrorsByIdentity[identity] = Self.heldChangeMessage
+                        shortcutSyncErrorsByIdentity[identity] = HeldSettingChange.message
                     } else {
                         scheduleOutboxRetry(context: context)
                     }
@@ -1435,7 +1435,7 @@ final class UICustomizationPreferences {
                         pendingDeletes[identity] = current
                         saveCache(for: context.cacheKey)
                         if held {
-                            message = Self.heldChangeMessage
+                            message = HeldSettingChange.message
                         } else {
                             scheduleOutboxRetry(context: context)
                         }
@@ -1996,8 +1996,6 @@ final class UICustomizationPreferences {
         }
         return normalized
     }
-
-    private static var heldChangeMessage: String { HeldSettingChange.message }
 
     private static func message(for error: Error) -> String {
         let mapped = SettingsAPIError.from(error)
