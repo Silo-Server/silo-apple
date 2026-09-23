@@ -240,7 +240,7 @@ class OnboardingTourViewModel {
 
     private func writeSetting(spec: OnboardingSettingSpec, value: String) async throws {
         switch spec.target {
-        case "profile_field":
+        case Self.supportedSettingTarget:
             guard let profileId = activeProfileId() else {
                 throw OnboardingTourError.missingProfile
             }
