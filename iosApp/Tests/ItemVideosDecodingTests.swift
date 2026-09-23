@@ -3,11 +3,12 @@
 //  SiloTests
 //
 //  Decoding contract for the trailers payload: `videos[]` / `extras[]` on
-//  item detail and the `POST /items/{id}/trailers/refresh` response. Every
-//  case runs canned server-shaped JSON through the REAL shared decoder
-//  (`HTTPClient.makeJSONDecoder`), so a drift in either the key strategy or
-//  the date strategy fails here rather than silently emptying the rail on a
-//  device.
+//  item detail and the `POST /api/v2/catalog/items/{id}/trailers/refresh`
+//  response. Item detail starts from the vendored server fixture for
+//  `GET /api/v2/catalog/items/{id}` and runs through the same decode and
+//  `ItemDetail(catalog:)` projection as `SiloAPI.itemDetail`, so a drift in
+//  the wire model or the projection fails here rather than silently
+//  emptying the rail on a device.
 //
 
 import XCTest
@@ -16,63 +17,64 @@ import Foundation
 
 final class ItemVideosDecodingTests: XCTestCase {
 
-    private func decodeDetail(_ json: String) throws -> ItemDetail {
-        try HTTPClient.makeJSONDecoder().decode(ItemDetail.self, from: Data(json.utf8))
+    /// The server fixture with `members` replacing its top-level members.
+    private func detail(setting members: [String: Any] = [:]) throws -> ItemDetail {
+        let body = try APIv2FixtureTestSupport.mutatedBody(named: "get_catalog_item_ok", bundleClass: Self.self) {
+            $0.merge(members) { $1 }
+        }
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.CatalogItemDetail.self, from: body)
+        return try ItemDetail(catalog: wire)
     }
 
     // MARK: - videos[] / extras[]
 
-    func testFullVideosAndExtrasArraysDecode() throws {
-        let detail = try decodeDetail("""
-        {
-          "content_id": "movie:1",
-          "type": "movie",
-          "title": "Arrival",
-          "videos": [
-            {
-              "kind": "trailer",
-              "site": "youtube",
-              "site_key": "tFMo3UJ4B4g",
-              "name": "Official Trailer",
-              "language": "en",
-              "is_official": true
-            },
-            {
-              "kind": "featurette",
-              "site": "youtube",
-              "site_key": "abc123",
-              "is_official": false
-            }
-          ],
-          "extras": [
-            {
-              "content_id": "extra:9",
-              "kind": "behind_the_scenes",
-              "title": "Making Of",
-              "duration_seconds": 412,
-              "file_id": 77
-            },
-            {
-              "content_id": "extra:10",
-              "kind": "deleted_scene"
-            }
-          ]
-        }
-        """)
+    func testServerFixtureWithoutTrailerFieldsProjects() throws {
+        // Both fields are optional on the server, and every episode payload
+        // (plus every item with nothing scanned) omits them entirely.
+        let detail = try detail()
+        XCTAssertEqual(detail.contentId, "movie:heat-1995")
+        XCTAssertEqual(detail.title, "Heat")
+        XCTAssertEqual(detail.year, 1995)
+        XCTAssertNil(detail.videos)
+        XCTAssertNil(detail.extras)
+    }
+
+    func testFullVideosAndExtrasArraysProject() throws {
+        let detail = try detail(setting: [
+            "videos": [
+                [
+                    "kind": "trailer",
+                    "site": "youtube",
+                    "site_key": "tFMo3UJ4B4g",
+                    "name": "Official Trailer",
+                    "language": "en",
+                    "is_official": true,
+                ],
+                ["kind": "featurette", "site": "youtube", "site_key": "abc123", "is_official": false],
+            ],
+            "extras": [
+                [
+                    "content_id": "extra:9",
+                    "kind": "behind_the_scenes",
+                    "title": "Making Of",
+                    "duration_seconds": 412,
+                    "file_id": 77,
+                ],
+                ["content_id": "extra:10", "kind": "deleted_scene"],
+            ],
+        ])
 
         XCTAssertEqual(detail.videos?.count, 2)
         let first = try XCTUnwrap(detail.videos?.first)
         XCTAssertEqual(first.kind, "trailer")
         XCTAssertEqual(first.site, "youtube")
-        // The whole point of the snake_case strategy: `site_key` lands on
-        // `siteKey` with no CodingKeys boilerplate.
         XCTAssertEqual(first.siteKey, "tFMo3UJ4B4g")
         XCTAssertEqual(first.name, "Official Trailer")
         XCTAssertEqual(first.language, "en")
         XCTAssertTrue(first.isOfficial)
 
         let second = try XCTUnwrap(detail.videos?.last)
-        // `omitempty` on the server: absent name/language must be nil, not "".
+        // Optional on the server: absent name/language must be nil, not "".
         XCTAssertNil(second.name)
         XCTAssertNil(second.language)
         XCTAssertFalse(second.isOfficial)
@@ -92,88 +94,32 @@ final class ItemVideosDecodingTests: XCTestCase {
         XCTAssertNil(bare.fileId)
     }
 
-    func testUnknownKindDecodesVerbatimRatherThanFailing() throws {
+    func testUnknownKindProjectsVerbatimRatherThanFailing() throws {
         // The kind vocabulary is server-owned and can grow. A value this
         // client has never heard of must ride along as a string (the rail
-        // labels it generically) instead of failing the whole detail decode.
-        let detail = try decodeDetail("""
-        {
-          "content_id": "movie:1",
-          "type": "movie",
-          "title": "Arrival",
-          "videos": [
-            {"kind": "opening_credits", "site": "youtube", "site_key": "k1", "is_official": true}
-          ],
-          "extras": [
-            {"content_id": "extra:1", "kind": "interview"}
-          ]
-        }
-        """)
+        // labels it generically) instead of failing the whole detail read.
+        let detail = try detail(setting: [
+            "videos": [["kind": "opening_credits", "site": "youtube", "site_key": "k1", "is_official": true]],
+            "extras": [["content_id": "extra:1", "kind": "interview"]],
+        ])
 
         XCTAssertEqual(detail.videos?.first?.kind, "opening_credits")
         XCTAssertEqual(detail.extras?.first?.kind, "interview")
     }
 
-    func testMissingIsOfficialDefaultsToFalse() throws {
-        let detail = try decodeDetail("""
-        {
-          "content_id": "movie:1",
-          "type": "movie",
-          "title": "Arrival",
-          "videos": [{"kind": "trailer", "site": "youtube", "site_key": "k1"}]
-        }
-        """)
-
-        XCTAssertEqual(detail.videos?.first?.isOfficial, false)
+    /// `is_official` is required in the v2 schema, so a video without it is
+    /// a malformed read, not a silently unofficial trailer.
+    func testVideoWithoutIsOfficialFailsTheRead() {
+        XCTAssertThrowsError(try detail(setting: [
+            "videos": [["kind": "trailer", "site": "youtube", "site_key": "k1"]],
+        ]))
     }
 
-    func testAbsentArraysDecodeAsNil() throws {
-        // Both fields are `omitempty` server-side, and every episode payload
-        // (plus every item with nothing scanned) omits them entirely.
-        let detail = try decodeDetail("""
-        {
-          "content_id": "episode:1",
-          "type": "episode",
-          "title": "Pilot"
-        }
-        """)
-
-        XCTAssertNil(detail.videos)
-        XCTAssertNil(detail.extras)
-    }
-
-    func testEmptyArraysDecodeAsEmptyNotNil() throws {
-        let detail = try decodeDetail("""
-        {
-          "content_id": "movie:1",
-          "type": "movie",
-          "title": "Arrival",
-          "videos": [],
-          "extras": []
-        }
-        """)
+    func testEmptyArraysProjectAsEmptyNotNil() throws {
+        let detail = try detail(setting: ["videos": [Any](), "extras": [Any]()])
 
         XCTAssertEqual(detail.videos?.count, 0)
         XCTAssertEqual(detail.extras?.count, 0)
-    }
-
-    func testDetailWithoutTrailerFieldsStillDecodesEverythingElse() throws {
-        // Guards the memberwise-initializer / decoding change from breaking
-        // the fields the rest of the detail page depends on.
-        let detail = try decodeDetail("""
-        {
-          "content_id": "movie:1",
-          "type": "movie",
-          "title": "Arrival",
-          "year": 2016,
-          "overview": "Linguist meets heptapods.",
-          "poster_url": "/img/p.jpg"
-        }
-        """)
-
-        XCTAssertEqual(detail.title, "Arrival")
-        XCTAssertEqual(detail.year, 2016)
-        XCTAssertEqual(detail.posterUrl, "/img/p.jpg")
     }
 
     // MARK: - Refresh response
@@ -185,8 +131,12 @@ final class ItemVideosDecodingTests: XCTestCase {
         )
     }
 
-    func testQueuedRefreshResponseDecodes() throws {
-        let response = try decodeRefresh(#"{"status": "queued"}"#)
+    func testQueuedRefreshFixtureDecodes() throws {
+        let response = try APIv2FixtureTestSupport.decode(
+            TrailerRefreshResponse.self,
+            named: "refresh_catalog_item_trailers_ok",
+            bundleClass: Self.self
+        )
         XCTAssertEqual(response.status, "queued")
         XCTAssertNil(response.nextAllowedAt)
     }

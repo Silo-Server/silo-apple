@@ -125,6 +125,27 @@
       "body_file": "get_catalog_filters_ok.json"
     },
     {
+      "name": "get_catalog_item_ok",
+      "operation_id": "getCatalogItem",
+      "scenario": "The detail page of a movie with the viewer's state, versions, and cast.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/catalog/items/movie:heat-1995?image_size=large&library_id=1",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/CatalogItemDetail",
+      "body_file": "get_catalog_item_ok.json"
+    },
+    {
       "name": "get_catalog_search_capabilities_ok",
       "operation_id": "getCatalogSearchCapabilities",
       "scenario": "Search exposes its ranked result window and fixed session lifetime.",
@@ -164,6 +185,61 @@
       "response_media_type": "application/json",
       "schema": "#/components/schemas/Account",
       "body_file": "get_current_user_ok.json"
+    },
+    {
+      "name": "get_device_login_capability_ok",
+      "operation_id": "getDeviceLoginCapability",
+      "scenario": "Device pairing support before login.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/auth/device/capability"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DeviceLoginCapability",
+      "body_file": "get_device_login_capability_ok.json"
+    },
+    {
+      "name": "get_device_login_ok",
+      "operation_id": "getDeviceLogin",
+      "scenario": "A browser looks a pairing request up by its user code before deciding.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/auth/device?code=ABCD-1234"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DeviceLogin",
+      "body_file": "get_device_login_ok.json"
+    },
+    {
+      "name": "get_image_capabilities_ok",
+      "operation_id": "getImageCapabilities",
+      "scenario": "Image discovery advertises the supported season-list artwork parameter.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/images/capabilities",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/ImageCapabilities",
+      "body_file": "get_image_capabilities_ok.json"
     },
     {
       "name": "get_metadata_ai_capability_ok",
@@ -287,6 +363,24 @@
       "body_file": "list_progress_profile_header_required.json"
     },
     {
+      "name": "login_ok",
+      "operation_id": "login",
+      "scenario": "A password login: the token pair with the account in the getCurrentUser shape; never cached.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/login",
+        "body": "{\"username\":\"laura\",\"password\":\"pw\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/TokenPair",
+      "body_file": "login_ok.json"
+    },
+    {
       "name": "not_acceptable",
       "operation_id": "getSystemInfo",
       "scenario": "An Accept header that admits no JSON representation.",
@@ -322,6 +416,27 @@
       "response_media_type": "application/problem+json",
       "schema": "#/components/schemas/Problem",
       "body_file": "not_found.json"
+    },
+    {
+      "name": "notification_apple_push_display",
+      "operation_id": "getNotificationApplePushDisplay",
+      "scenario": "Compact display metadata for an acting-profile delivery.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/notifications/push/apple/display/01JZ8T7QK3VX2W4M5N6P7R8S9T",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/NotificationPushDisplay",
+      "body_file": "notification_apple_push_display.json"
     },
     {
       "name": "playback_capability_available",
@@ -498,6 +613,24 @@
       "body_file": "playback_stop_completed.json"
     },
     {
+      "name": "poll_device_login_ok",
+      "operation_id": "pollDeviceLogin",
+      "scenario": "The device polls an approved request and collects its token pair under tokens.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/device/poll",
+        "body": "{\"device_code\":\"dev-approved\"}"
+      },
+      "expected_status": 200,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DeviceLoginPoll",
+      "body_file": "poll_device_login_ok.json"
+    },
+    {
       "name": "profile_verification_required",
       "operation_id": null,
       "scenario": "A profile-scoped operation called for a PIN-locked profile without X-Profile-Token; clients start PIN entry on this type.",
@@ -540,6 +673,49 @@
       "response_media_type": "application/problem+json",
       "schema": "#/components/schemas/Problem",
       "body_file": "rate_limited.json"
+    },
+    {
+      "name": "refresh_catalog_item_trailers_ok",
+      "operation_id": "refreshCatalogItemTrailers",
+      "scenario": "A trailer fetch queued for a movie: 202 with the queued status.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/catalog/items/movie:heat-1995/trailers/refresh",
+        "headers": {
+          "Authorization": "Bearer tok-member",
+          "X-Profile-Id": "p-owner"
+        }
+      },
+      "expected_status": 202,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/TrailerRefresh",
+      "body_file": "refresh_catalog_item_trailers_ok.json"
+    },
+    {
+      "name": "start_device_login_ok",
+      "operation_id": "startDeviceLogin",
+      "scenario": "A device opens a pairing request: the codes it shows and polls with, and the request's expiry.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v2/auth/device/start",
+        "headers": {
+          "X-Forwarded-Host": "silo.example.test",
+          "X-Forwarded-Proto": "https"
+        },
+        "body": "{\"device_name\":\"Living room TV\",\"device_platform\":\"tvos\"}"
+      },
+      "expected_status": 201,
+      "response_headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json"
+      },
+      "response_media_type": "application/json",
+      "schema": "#/components/schemas/DeviceLoginStart",
+      "body_file": "start_device_login_ok.json"
     },
     {
       "name": "subtitle_ai_job_opaque_id",

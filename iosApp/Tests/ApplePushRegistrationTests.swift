@@ -97,18 +97,9 @@ final class ApplePushRegistrationTests: XCTestCase {
                 headers: ["Content-Type": "application/problem+json"]
             )
         }
-        // Body of the server fixture contracts/api/v2/fixtures/notification_apple_push_display.json.
+        let display = APIv2FixtureTestSupport.text(named: "notification_apple_push_display", bundleClass: Self.self)
         stub.route({ $0.path == displayPath && $0.headers["authorization"] == "Bearer access" }) { _ in
-            .json("""
-            {
-              "delivery_id": "01JZ8T7QK3VX2W4M5N6P7R8S9T",
-              "title": "Your request was approved",
-              "body": "Your media request was approved.",
-              "thread_id": "request:request-1",
-              "category": "request_approved",
-              "url": "/notifications"
-            }
-            """)
+            .json(display)
         }
         let state = ApplePushDisplayAuthState(
             serverURL: "https://silo.example.test",

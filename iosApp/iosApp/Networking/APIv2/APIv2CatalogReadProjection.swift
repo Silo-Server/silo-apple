@@ -220,7 +220,6 @@ extension FileVersion {
         self.presentationPartTotal = try value.presentationPartTotal.map { try catalogLegacyInt($0) }
         self.editionRaw = value.editionRaw
         self.editionKey = value.editionKey
-        self.edition = nil
         self.effectiveAudioTrackIndex = try value.effectiveAudioTrackIndex.map { try catalogLegacyInt($0) }
         self.effectiveAudioLanguage = value.effectiveAudioLanguage
     }
@@ -250,7 +249,6 @@ extension FileVersion {
         self.presentationPartTotal = try value.presentationPartTotal.map { try catalogLegacyInt($0) }
         self.editionRaw = value.editionRaw
         self.editionKey = value.editionKey
-        self.edition = nil
         self.effectiveAudioTrackIndex = try value.effectiveAudioTrackIndex.map { try catalogLegacyInt($0) }
         self.effectiveAudioLanguage = value.effectiveAudioLanguage
     }

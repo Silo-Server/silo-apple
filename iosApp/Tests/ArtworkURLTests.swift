@@ -194,10 +194,12 @@ final class ArtworkURLTests: XCTestCase {
         XCTAssertEqual(ImageSizeSelection.queryEntries(capability: probe.capability, prefersLargeImages: true), ["image_size": "large"])
         probe.reset()
         XCTAssertNil(probe.capability)
+        // A v1-era document (`schema_version`, no `state`) is not a v2
+        // capability, so the new probe stays empty and sends no parameter.
         stub.reply(200, #"{"schema_version":1,"param":"image_size","sizes":["large"],"widths":{},"original_max_width_px":1920}"#)
         await probe.refresh()
-        XCTAssertNil(probe.capability?.storageBackend)
-        XCTAssertNil(probe.capability?.delivery)
-        XCTAssertEqual(ImageSizeSelection.queryEntries(capability: probe.capability, prefersLargeImages: true), ["image_size": "large"])
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/images/capabilities")
+        XCTAssertNil(probe.capability)
+        XCTAssertTrue(ImageSizeSelection.queryEntries(capability: probe.capability, prefersLargeImages: true).isEmpty)
     }
 }
