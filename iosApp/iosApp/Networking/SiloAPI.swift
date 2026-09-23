@@ -318,22 +318,19 @@ actor SiloAPI {
 
     // --- Personal data ---
 
-    // These build their own query rather than routing through
-    // `catalogPage(_:)`, so each merges the image-size entry itself.
-    // They back real poster grids on TV.
-
-    func favorites(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/favorites", query: await withImageSize([
-            "offset": String(offset),
-            "limit": String(limit),
-        ]))
+    /// The acting profile's whole favorites list, read page by page from
+    /// `/api/v2/favorites`. The screens filter it locally by media type.
+    func favorites() async throws -> CatalogResponse {
+        try await apiV2Client.personalListItems(
+            kind: .favorites, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth()
+        )
     }
 
-    func watchlist(offset: Int, limit: Int) async throws -> CatalogResponse {
-        try await http.get("/api/v1/watchlist", query: await withImageSize([
-            "offset": String(offset),
-            "limit": String(limit),
-        ]))
+    /// The acting profile's whole watchlist from `/api/v2/watchlist`.
+    func watchlist() async throws -> CatalogResponse {
+        try await apiV2Client.personalListItems(
+            kind: .watchlist, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth()
+        )
     }
 
     /// Server returns 204 when the item is a favorite and 404 otherwise.

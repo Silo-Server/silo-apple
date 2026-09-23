@@ -18,6 +18,8 @@ enum APIv2Error: LocalizedError, Sendable {
     case invalidCatalogContinuation
     case invalidPersonalListQuery
     case invalidPersonalListContinuation
+    /// A favorites or watchlist read ran past its page budget.
+    case incompletePersonalList
     case incompleteCatalogRead
     case unsupportedCatalogReadValue
     /// A settings write answered with a row other than the one it addressed.
@@ -37,6 +39,8 @@ enum APIv2Error: LocalizedError, Sendable {
             return "The personal list request is not valid."
         case .invalidPersonalListContinuation:
             return "The personal list could not be continued. Reload to start again."
+        case .incompletePersonalList:
+            return "The list could not be loaded completely. Reload to try again."
         case .unsupportedCatalogReadValue:
             return "This item uses a value this client cannot support. Please update the client."
         case .incompleteCatalogRead:
