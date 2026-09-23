@@ -26,6 +26,10 @@ struct LegacyDownloadStorage: Sendable {
 
     private struct Marker: Codable {
         var noticePending: Bool
+        /// When the removal ran. The server still lists the download rows
+        /// earlier versions registered for this device; rows created before
+        /// this date belong to the removed storage.
+        var removedAt: Date?
     }
 
     let root: URL
@@ -40,18 +44,21 @@ struct LegacyDownloadStorage: Sendable {
     func state() -> State {
         guard FileManager.default.fileExists(atPath: markerURL.path) else { return .removalNeeded }
         // A marker that exists but can't be read still means the removal ran.
-        guard let data = try? Data(contentsOf: markerURL),
-              let marker = try? JSONDecoder().decode(Marker.self, from: data) else {
-            return .removed(noticePending: false)
-        }
+        guard let marker = readMarker() else { return .removed(noticePending: false) }
         return .removed(noticePending: marker.noticePending)
+    }
+
+    /// When the removal ran, or nil when it hasn't or the marker can't be
+    /// read. Without a date nothing on the server is treated as removed.
+    func removalDate() -> Date? {
+        readMarker()?.removedAt
     }
 
     /// Deletes everything under `root` and writes the marker. Returns true
     /// when the removed storage held at least one download, which is the
     /// only case worth a notice.
     @discardableResult
-    func remove() throws -> Bool {
+    func remove(at date: Date = Date()) throws -> Bool {
         let fileManager = FileManager.default
         // A run interrupted after its move but before its marker leaves the
         // downloads in a moved-aside tree; count them so the notice survives.
@@ -69,7 +76,7 @@ struct LegacyDownloadStorage: Sendable {
             }
         }
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        try write(Marker(noticePending: hadDownloads))
+        try write(Marker(noticePending: hadDownloads, removedAt: date))
         deleteRemovedTrees()
         return hadDownloads
     }
@@ -78,7 +85,7 @@ struct LegacyDownloadStorage: Sendable {
     func acknowledgeNotice() {
         guard state() == .removed(noticePending: true) else { return }
         do {
-            try write(Marker(noticePending: false))
+            try write(Marker(noticePending: false, removedAt: removalDate()))
         } catch {
             Self.logger.error("Could not record the legacy downloads notice: \(String(describing: error), privacy: .public)")
         }
@@ -96,6 +103,11 @@ struct LegacyDownloadStorage: Sendable {
     }
 
     // MARK: - Helpers
+
+    private func readMarker() -> Marker? {
+        guard let data = try? Data(contentsOf: markerURL) else { return nil }
+        return try? JSONDecoder().decode(Marker.self, from: data)
+    }
 
     private func write(_ marker: Marker) throws {
         let data = try JSONEncoder().encode(marker)

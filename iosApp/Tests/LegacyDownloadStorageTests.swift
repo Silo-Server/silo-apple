@@ -106,6 +106,60 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(state, .removed(noticePending: false))
     }
 
+    func testRemovalDateSurvivesTheNoticeAcknowledgement() throws {
+        _ = try writeScope(server: "server", profile: "profile", storeJSON: #"{"records":{"d1":{}}}"#)
+        let removedAt = Date(timeIntervalSince1970: 1_790_000_000)
+        let legacy = LegacyDownloadStorage(root: root)
+        XCTAssertNil(legacy.removalDate())
+
+        XCTAssertTrue(try legacy.remove(at: removedAt))
+        legacy.acknowledgeNotice()
+
+        XCTAssertEqual(legacy.state(), .removed(noticePending: false))
+        XCTAssertEqual(legacy.removalDate(), removedAt)
+    }
+
+    // MARK: - Server rows
+
+    func testReconcileDropsServerRowsRegisteredBeforeTheRemoval() throws {
+        // The server keeps listing what earlier versions registered for this
+        // device, in every state those versions left behind.
+        let rows = try decodeRows("""
+        [
+          {"id": "old-completed", "content_id": "m1", "status": "completed", "created_at": "2026-09-01T10:00:00Z"},
+          {"id": "old-downloading", "content_id": "m2", "status": "downloading", "created_at": "2026-09-01T10:00:00Z"},
+          {"id": "old-ready", "content_id": "m3", "status": "ready", "created_at": "2026-09-01T10:00:00Z"},
+          {"id": "old-preparing", "content_id": "m4", "status": "preparing", "created_at": "2026-09-01T10:00:00Z"},
+          {"id": "new-ready", "content_id": "m5", "status": "ready", "created_at": "2026-09-23T10:00:01Z"}
+        ]
+        """)
+        let removedAt = ISO8601DateFormatter().date(from: "2026-09-23T10:00:00Z")!
+
+        let split = DownloadManager.partitionUnknownRows(rows, legacyRemovalDate: removedAt)
+
+        XCTAssertEqual(split.legacy.map(\.id), ["old-completed", "old-downloading", "old-ready", "old-preparing"])
+        XCTAssertEqual(split.imported.map(\.id), ["new-ready"])
+    }
+
+    func testReconcileImportsEveryRowWhenNoRemovalDateIsKnown() throws {
+        let rows = try decodeRows("""
+        [{"id": "d1", "content_id": "m1", "status": "ready", "created_at": "2026-09-01T10:00:00Z"}]
+        """)
+        let split = DownloadManager.partitionUnknownRows(rows, legacyRemovalDate: nil)
+        XCTAssertEqual(split.imported.map(\.id), ["d1"])
+        XCTAssertTrue(split.legacy.isEmpty)
+    }
+
+    func testImportedRowsInDeviceReportedStatesCanStillDownload() {
+        // A row this device reported as downloading or completed, but whose
+        // local record is gone, must not sit in `.registering`: nothing
+        // moves a record out of that state.
+        XCTAssertEqual(DownloadManager.mapInitialStatus("completed"), .queued)
+        XCTAssertEqual(DownloadManager.mapInitialStatus("downloading"), .queued)
+        XCTAssertEqual(DownloadManager.mapInitialStatus("ready"), .queued)
+        XCTAssertEqual(DownloadManager.mapInitialStatus("preparing"), .preparing)
+    }
+
     // MARK: - Store load
 
     func testUndecodableStoreIsQuarantinedInsteadOfOverwritten() async throws {
@@ -150,6 +204,13 @@ final class LegacyDownloadStorageTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func decodeRows(_ json: String) throws -> [ServerDownloadRow] {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([ServerDownloadRow].self, from: Data(json.utf8))
+    }
 
     private func makeStore() -> DownloadStore {
         let root: URL = self.root

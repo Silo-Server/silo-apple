@@ -112,6 +112,12 @@ final class DownloadManager {
     /// True until the user dismisses the notice that this version removed
     /// downloads saved by an earlier one.
     private(set) var legacyDownloadsNoticePending = false
+    /// When that removal ran. Server rows created before it belong to the
+    /// removed storage, so reconcile deletes them instead of importing them.
+    private var legacyRemovalDate: Date?
+    /// Server rows from the removed storage whose DELETE is in flight, so a
+    /// reconcile that overlaps the first one doesn't send it twice.
+    private var legacyRowDeletes: Set<String> = []
 
     private init() {
         // Drain background-session events for the lifetime of the app.
@@ -469,6 +475,7 @@ final class DownloadManager {
             await sessionDelegate.cancelAllTasks()
             legacyDownloadsNoticePending = await store.removeLegacyStorage()
         }
+        legacyRemovalDate = await store.legacyRemovalDate()
     }
 
     func acknowledgeLegacyDownloadsNotice() {
@@ -1294,15 +1301,65 @@ final class DownloadManager {
         }
 
         // Pick up rows registered out-of-band (e.g. subscription sync).
-        for row in rows where file.records[row.id] == nil {
+        let unknownRows = Self.partitionUnknownRows(
+            rows.filter { file.records[$0.id] == nil },
+            legacyRemovalDate: legacyRemovalDate
+        )
+        for row in unknownRows.imported {
             file.records[row.id] = makeRecord(from: row, type: row.episodeId != nil ? "episode" : nil)
         }
         persist()
+        deleteLegacyServerRows(ids: unknownRows.legacy.map(\.id))
 
         await reconnectActiveTasks()
         if triggerPipeline {
             processQueue()
             ensurePolling()
+        }
+    }
+
+    /// Splits server rows the store doesn't know into rows to import and rows
+    /// an earlier version registered. The store only holds downloads made
+    /// after the removal of earlier versions' storage, so an unknown row
+    /// created before that removal is one of the removed downloads: importing
+    /// it would bring it back as a download nobody asked for. A row without a
+    /// creation date is imported, since nothing shows it is old.
+    nonisolated static func partitionUnknownRows(
+        _ rows: [ServerDownloadRow],
+        legacyRemovalDate: Date?
+    ) -> (imported: [ServerDownloadRow], legacy: [ServerDownloadRow]) {
+        guard let legacyRemovalDate else { return (rows, []) }
+        var imported: [ServerDownloadRow] = []
+        var legacy: [ServerDownloadRow] = []
+        for row in rows {
+            if let createdAt = row.createdAt, createdAt < legacyRemovalDate {
+                legacy.append(row)
+            } else {
+                imported.append(row)
+            }
+        }
+        return (imported, legacy)
+    }
+
+    /// Delete the server rows of downloads the removal deleted locally, so
+    /// they stop counting against the device's quota. A failed DELETE is
+    /// retried by the next reconcile, which still sees the row as old; a 404
+    /// means it is already gone.
+    private func deleteLegacyServerRows(ids: [String]) {
+        let pending = ids.filter { !legacyRowDeletes.contains($0) }
+        guard !pending.isEmpty else { return }
+        legacyRowDeletes.formUnion(pending)
+        let serverId = scopeServerId
+        let profileId = scopeProfileId
+        Self.logger.notice("Deleting \(pending.count, privacy: .public) server downloads registered by an earlier version")
+        Task { @MainActor [weak self] in
+            for id in pending {
+                // The request goes to whichever account is active; stop if
+                // that is no longer the one that listed these rows.
+                guard let self, self.scopeServerId == serverId, self.scopeProfileId == profileId else { break }
+                try? await SiloAPI.shared.deleteDownloadRow(id: id)
+            }
+            self?.legacyRowDeletes.subtract(pending)
         }
     }
 
@@ -1559,7 +1616,7 @@ final class DownloadManager {
         if let existing = file.records[row.id] {
             var merged = mergeExistingRecord(existing, with: row)
             if existing.localStatus == .failed || existing.localStatus == .revoked {
-                merged.localStatus = mapInitialStatus(row.status)
+                merged.localStatus = Self.mapInitialStatus(row.status)
                 merged.lastError = nil
                 merged.retryCount = 0
             }
@@ -1620,7 +1677,7 @@ final class DownloadManager {
         record.container = nil
         record.stableIdentity = nil
         record.bytesDownloaded = 0
-        record.localStatus = mapInitialStatus(status)
+        record.localStatus = Self.mapInitialStatus(status)
         record.downloadedAt = nil
         record.lastError = nil
         record.retryCount = 0
@@ -1657,7 +1714,7 @@ final class DownloadManager {
             targetBitrateKbps: row.targetBitrateKbps,
             revision: row.revision,
             serverStatus: row.status,
-            localStatus: mapInitialStatus(row.status),
+            localStatus: Self.mapInitialStatus(row.status),
             fileSize: row.fileSize ?? 0,
             bytesDownloaded: 0,
             mediaFilename: nil,
@@ -1681,9 +1738,12 @@ final class DownloadManager {
         )
     }
 
-    private func mapInitialStatus(_ serverStatus: String) -> LocalDownloadStatus {
+    nonisolated static func mapInitialStatus(_ serverStatus: String) -> LocalDownloadStatus {
         switch serverStatus {
-        case "ready": return .queued
+        // `downloading` and `completed` only record what a device reported;
+        // the server file is still fetchable, so a record without local
+        // media downloads it like a `ready` row.
+        case "ready", "downloading", "completed": return .queued
         case "preparing": return .preparing
         case "revoked": return .revoked
         case "failed": return .failed

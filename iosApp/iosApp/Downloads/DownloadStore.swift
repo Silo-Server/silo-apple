@@ -107,6 +107,11 @@ actor DownloadStore {
         }
     }
 
+    /// When the removal ran; see `LegacyDownloadStorage.removalDate()`.
+    func legacyRemovalDate() -> Date? {
+        LegacyDownloadStorage(root: rootDirectory()).removalDate()
+    }
+
     func acknowledgeLegacyRemovalNotice() {
         LegacyDownloadStorage(root: rootDirectory()).acknowledgeNotice()
     }
