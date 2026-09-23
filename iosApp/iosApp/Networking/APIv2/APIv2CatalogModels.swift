@@ -132,6 +132,71 @@ enum APIv2CatalogOperation: String {
     case query
 }
 
+extension APIv2CatalogQuery {
+    /// `GET /api/v2/catalog` caps the `groups` parameter at this many
+    /// characters; a larger filter set goes in a `POST /catalog/query` body.
+    static let maxGetGroupsLength = 32768
+
+    /// GET while the encoded groups fit the query-string limit, POST above it.
+    /// An invalid query stays on GET so the request itself reports the error.
+    var preferredOperation: APIv2CatalogOperation {
+        let groupsLength = (try? getParameters())?["groups"]?.utf8.count ?? 0
+        return groupsLength > Self.maxGetGroupsLength ? .query : .get
+    }
+
+    /// The watch history, most recent first.
+    static func history(limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = "history"
+        query.limit = limit
+        return query
+    }
+
+    /// A person's credits, newest first, optionally narrowed to one media type.
+    static func personCredits(personId: Int, type: String?, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = "person"
+        query.personId = String(personId)
+        query.type = type
+        query.sort = "year"
+        query.order = "desc"
+        query.limit = limit
+        return query
+    }
+
+    /// The items of a curated library collection or a user collection.
+    static func collectionItems(kind: LibraryCollectionKind, collectionId: String, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = kind.catalogSource
+        query.collectionId = collectionId
+        query.limit = limit
+        return query
+    }
+
+    /// Free-text search across the catalog, optionally narrowed to one media type.
+    static func search(_ text: String, type: String?, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.q = text
+        query.type = type
+        query.limit = limit
+        return query
+    }
+}
+
+/// One page of a catalog list for a screen: the cards and totals it shows,
+/// plus the continuation for the next page (`nil` on the last one). The
+/// continuation keeps the original query and owner, so a screen pages by
+/// handing it back rather than rebuilding the request.
+struct CatalogListPage {
+    let response: CatalogResponse
+    let continuation: APIv2CatalogContinuation?
+
+    init(_ result: APIv2CatalogResult) {
+        response = CatalogResponse(catalogPage: result.value)
+        continuation = result.continuation
+    }
+}
+
 struct APIv2CatalogContinuation {
     let query: APIv2CatalogQuery
     let operation: APIv2CatalogOperation

@@ -63,7 +63,12 @@ class SearchViewModel {
 
     private var searchTask: Task<Void, Never>?
     private let pageSize = 60
-    private var offset = 0
+    /// Where the next page of the current results starts; `nil` after the
+    /// last page. A new search replaces it.
+    private var continuation: APIv2CatalogContinuation?
+    /// Bumped by every new search so a load-more for the previous results
+    /// cannot append to (or hand its continuation to) the new ones.
+    private var generation = 0
 
     /// Debounced search triggered on query change.
     func onQueryChanged() {
@@ -104,30 +109,29 @@ class SearchViewModel {
             return
         }
 
-        if !reset, !hasMore {
+        let nextPage = reset ? nil : continuation
+        if !reset, nextPage == nil {
             return
         }
-
-        let requestOffset = reset ? 0 : offset
+        if reset { generation += 1 }
+        let myGeneration = generation
 
         isSearching = true
         error = nil
 
         do {
-            var searchQuery: [String: String] = [
-                "source": "query",
-                "q": trimmed,
-                "limit": String(pageSize),
-                "offset": String(requestOffset),
-            ]
-            if let mediaType = selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled) {
-                searchQuery["type"] = mediaType
+            let page: CatalogListPage
+            if let nextPage {
+                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+            } else {
+                page = try await SiloAPI.shared.catalogPage(.search(
+                    trimmed,
+                    type: selectedMediaType.queryValue(audiobooksEnabled: audiobooksEnabled),
+                    limit: pageSize
+                ))
             }
-
-            let response: CatalogResponse = try await SiloAPI.shared.catalog(
-                query: searchQuery
-            )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, myGeneration == generation else { return }
+            let response = page.response
 
             if reset {
                 results = response.items
@@ -136,17 +140,18 @@ class SearchViewModel {
                 results.append(contentsOf: response.items.filter { !existingIds.contains($0.contentId) })
             }
 
-            offset = requestOffset + response.items.count
+            continuation = page.continuation
             total = response.total ?? results.count
-            hasMore = response.hasMore ?? false
+            hasMore = page.continuation != nil
             hasSearched = true
         } catch let err {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, myGeneration == generation else { return }
             self.error = ErrorState(err)
             if reset {
                 results = []
                 total = 0
                 hasMore = false
+                continuation = nil
                 hasSearched = true
             }
         }
@@ -154,12 +159,13 @@ class SearchViewModel {
     }
 
     private func resetState() {
+        generation += 1
         results = []
         isSearching = false
         error = nil
         hasSearched = false
         hasMore = false
         total = 0
-        offset = 0
+        continuation = nil
     }
 }

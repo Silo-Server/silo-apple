@@ -174,27 +174,25 @@ actor SiloAPI {
 
     // --- Catalog ---
 
-    /// Every catalog-shaped list (browse, search, person credits,
-    /// collection items, section paging) funnels through here, so the
-    /// image-size entry only has to be merged in once.
-    func catalog(query: [String: String]) async throws -> CatalogResponse {
-        try await http.get("/api/v1/catalog", query: await withImageSize(query))
+    /// Every catalog-shaped list (browse, search, history, person credits,
+    /// collection items) pages through here. The first page captures the
+    /// acting owner and the image size; `nextCatalogPage` reuses both from
+    /// the continuation, so every page of one list matches the first. Large
+    /// filter sets go through `POST /catalog/query` instead of a GET that
+    /// the server would refuse.
+    func catalogPage(_ query: APIv2CatalogQuery) async throws -> CatalogListPage {
+        var query = query
+        if query.imageSize == nil { query.imageSize = await imageSizeQuery["image_size"] }
+        let auth = try await detailReadAuth()
+        return CatalogListPage(try await apiV2Client.catalogPage(
+            query: query, operation: query.preferredOperation, auth: auth
+        ))
     }
 
-    func historyCatalog(
-        offset: Int,
-        limit: Int,
-        snapshot: String? = nil,
-        includeTotal: Bool = true
-    ) async throws -> CatalogResponse {
-        var query: [String: String] = [
-            "source": "history",
-            "offset": String(offset),
-            "limit": String(limit),
-        ]
-        if let snapshot { query["snapshot"] = snapshot }
-        if !includeTotal { query["include_total"] = "false" }
-        return try await catalog(query: query)
+    /// The page after `continuation`, read for the owner and query of the
+    /// first page. A changed owner throws instead of returning their cards.
+    func nextCatalogPage(_ continuation: APIv2CatalogContinuation) async throws -> CatalogListPage {
+        CatalogListPage(try await apiV2Client.nextCatalogPage(continuation))
     }
 
     func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {
@@ -283,26 +281,6 @@ actor SiloAPI {
         try await apiV2Client.refreshTrailers(id: contentId, auth: try await detailReadAuth())
     }
 
-    func personCatalogItems(
-        personId: Int,
-        type: String?,
-        offset: Int,
-        limit: Int,
-        snapshot: String? = nil
-    ) async throws -> CatalogResponse {
-        var query: [String: String] = [
-            "source": "person",
-            "person_id": String(personId),
-            "offset": String(offset),
-            "limit": String(limit),
-            "sort": "year",
-            "order": "desc",
-        ]
-        if let type { query["type"] = type }
-        if let snapshot { query["snapshot_at"] = snapshot }
-        return try await catalog(query: query)
-    }
-
     // --- Libraries ---
 
     func libraries() async throws -> LibrariesResponse {
@@ -317,71 +295,11 @@ actor SiloAPI {
         return LibraryCollectionsResponse(collections: wire.collections, sections: wire.sections)
     }
 
-    func libraryCollectionItems(
-        libraryId: Int,
-        collectionId: String,
-        offset: Int = 0,
-        limit: Int = 60,
-        snapshot: String? = nil,
-        includeTotal: Bool = false
-    ) async throws -> CatalogResponse {
-        try await catalogCollectionItems(
-            kind: .regular,
-            collectionId: collectionId,
-            offset: offset,
-            limit: limit,
-            snapshot: snapshot,
-            includeTotal: includeTotal
-        )
-    }
-
-    /// User-collection items resolved through the unified catalog endpoint.
-    /// The raw `/api/v1/collections/{id}/items` route returns un-hydrated
-    /// join records; only the catalog resolver re-hydrates them into the
-    /// `CatalogResponse` shape that views expect.
-    func userCollectionItems(
-        collectionId: String,
-        offset: Int = 0,
-        limit: Int = 60,
-        snapshot: String? = nil,
-        includeTotal: Bool = false
-    ) async throws -> CatalogResponse {
-        try await catalogCollectionItems(
-            kind: .userCollections,
-            collectionId: collectionId,
-            offset: offset,
-            limit: limit,
-            snapshot: snapshot,
-            includeTotal: includeTotal
-        )
-    }
-
-    private func catalogCollectionItems(
-        kind: LibraryCollectionKind,
-        collectionId: String,
-        offset: Int,
-        limit: Int,
-        snapshot: String?,
-        includeTotal: Bool
-    ) async throws -> CatalogResponse {
-        var query: [String: String] = [
-            "source": kind.catalogSource,
-            "collection_id": collectionId,
-            "offset": String(offset),
-            "limit": String(limit),
-        ]
-        if let snapshot { query["snapshot"] = snapshot }
-        if !includeTotal { query["include_total"] = "false" }
-        return try await catalog(query: query)
-    }
-
     // --- Personal data ---
 
-    // These three build their own query rather than routing through
-    // `catalog(query:)`, so each merges the image-size entry itself.
-    // They back real poster grids on TV, and `historyCatalog` — the
-    // entry point the history screen actually uses — is already covered
-    // by `catalog(query:)`.
+    // These build their own query rather than routing through
+    // `catalogPage(_:)`, so each merges the image-size entry itself.
+    // They back real poster grids on TV.
 
     func favorites(offset: Int, limit: Int) async throws -> CatalogResponse {
         try await http.get("/api/v1/favorites", query: await withImageSize([

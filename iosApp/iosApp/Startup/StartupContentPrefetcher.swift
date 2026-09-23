@@ -36,7 +36,7 @@ enum StartupContentPrefetcher {
     private static var recommendationsTask: Task<SectionsResponse, Error>?
     private static var userLibrariesTask: Task<LibrariesResponse, Error>?
     private static var librarySectionsTasks: [Int: Task<SectionsResponse, Error>] = [:]
-    private static var browseFirstPageTasks: [String: Task<CatalogResponse, Error>] = [:]
+    private static var browseFirstPageTasks: [String: Task<CatalogListPage, Error>] = [:]
     #if os(tvOS)
     /// One bounded cold-start warmup for the Series library the top-level tab
     /// will actually open. This is separate from `librarySectionsTasks`: the
@@ -594,10 +594,12 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// Page 1 of a browse grid. The page carries the continuation the grid
+    /// uses for page 2, so the prefetch and the live grid share one query.
     static func fetchBrowseFirstPage(
         libraryId: Int?,
         state: CatalogFilterState = .none
-    ) async throws -> CatalogResponse {
+    ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
         let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
         // Verbose for the same reason as `library_sections`, and the cache key
@@ -609,29 +611,28 @@ enum StartupContentPrefetcher {
             isOriginator: browseFirstPageTasks[key] == nil
         )
         #endif
-        let task: Task<CatalogResponse, Error>
+        let task: Task<CatalogListPage, Error>
         if let existing = browseFirstPageTasks[key] {
             task = existing
         } else {
             task = Task {
                 // iOS omits `type` (library_id already scopes the page); the
-                // builder is the single source of the wire format shared with
-                // BrowseViewModel so prefetch and live fetch hit the same key.
+                // builder is the single source of the wire format, and later
+                // pages follow this page's continuation.
                 let query = CatalogQueryBuilder.build(
                     state,
                     libraryId: libraryId,
                     mediaType: .movie,
-                    offset: 0,
                     limit: browsePageSize,
                     includeType: false
                 )
-                return try await SiloAPI.shared.catalog(query: query)
+                return try await SiloAPI.shared.catalogPage(query)
             }
             browseFirstPageTasks[key] = task
         }
 
         do {
-            let response = try await task.value
+            let page = try await task.value
             try validateProfileScopedGeneration(generation)
             if profileScopedGeneration == generation {
                 browseFirstPageTasks[key] = nil
@@ -639,9 +640,9 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: key)
-            prefetchBrowseArtwork(for: response)
-            return response
+            ResponseCache.shared.set(page.response, for: key)
+            prefetchBrowseArtwork(for: page.response)
+            return page
         } catch {
             if profileScopedGeneration == generation {
                 browseFirstPageTasks[key] = nil

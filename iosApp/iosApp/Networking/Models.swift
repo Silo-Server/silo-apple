@@ -113,9 +113,18 @@ struct CatalogResponse: Codable {
     let totalExact: Bool?
     let hasMore: Bool?
     let items: [BrowseItem]
-    let source: String?
-    let title: String?
-    let snapshot: String?
+
+    init(items: [BrowseItem], total: Int?, totalExact: Bool?, hasMore: Bool?) {
+        self.items = items
+        self.total = total
+        self.totalExact = totalExact
+        self.hasMore = hasMore
+    }
+
+    /// One v2 catalog page as the card grids show it.
+    init(catalogPage page: APIv2CatalogPage) {
+        self.init(items: page.items, total: page.total, totalExact: page.totalExact, hasMore: page.page.hasMore)
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -123,9 +132,6 @@ struct CatalogResponse: Codable {
         totalExact = try c.decodeIfPresent(Bool.self, forKey: .totalExact)
         hasMore = try c.decodeIfPresent(Bool.self, forKey: .hasMore)
         items = try c.decodeIfPresent([BrowseItem].self, forKey: .items) ?? []
-        source = try c.decodeIfPresent(String.self, forKey: .source)
-        title = try c.decodeIfPresent(String.self, forKey: .title)
-        snapshot = try c.decodeIfPresent(String.self, forKey: .snapshot)
     }
 }
 
@@ -1286,7 +1292,7 @@ enum LibraryCollectionKind: String, Codable, Hashable {
     case userCollections = "user_collections"
 
     /// Value to pass as the `source` query parameter when resolving
-    /// collection items through the unified `/api/v1/catalog` endpoint.
+    /// collection items through the unified `/api/v2/catalog` endpoint.
     var catalogSource: String {
         switch self {
         case .regular: return "library_collection"

@@ -1,146 +1,156 @@
 import XCTest
 @testable import Silo
 
-/// Verifies the exact catalog wire format produced by `CatalogQueryBuilder`
-/// against what `silo-server/internal/catalog/catalog_parser.go` parses.
-/// This is the one place a silent mismatch would produce "green build, wrong
-/// server results", so it gets focused coverage.
+/// Verifies the v2 catalog query `CatalogQueryBuilder` produces: the GET
+/// parameters and the JSON rule groups the server's query executor reads.
+/// A string where the server expects a boolean or a number fails the whole
+/// query, so rule value types get focused coverage.
 final class CatalogQueryBuilderTests: XCTestCase {
 
     private func build(_ state: CatalogFilterState,
                        libraryId: Int? = 1,
                        mediaType: BrowseMediaType = .movie,
-                       includeType: Bool = false) -> [String: String] {
-        CatalogQueryBuilder.build(state, libraryId: libraryId, mediaType: mediaType,
-                                  offset: 0, limit: 60, includeType: includeType)
+                       includeType: Bool = false) throws -> [String: String] {
+        try CatalogQueryBuilder.build(state, libraryId: libraryId, mediaType: mediaType,
+                                      limit: 60, includeType: includeType).getParameters()
     }
 
-    func testDefaultStateBaseParams() {
-        let q = build(.none, libraryId: 5)
+    /// The `groups` parameter decoded back into JSON objects.
+    private func groups(_ state: CatalogFilterState,
+                        mediaType: BrowseMediaType = .movie) throws -> [[String: Any]] {
+        let parameters = try build(state, mediaType: mediaType)
+        let data = Data(try XCTUnwrap(parameters["groups"]).utf8)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+    }
+
+    private func rules(_ group: [String: Any]) throws -> [[String: Any]] {
+        try XCTUnwrap(group["rules"] as? [[String: Any]])
+    }
+
+    func testDefaultStateBaseParams() throws {
+        let q = try build(.none, libraryId: 5)
         XCTAssertEqual(q["source"], "query")
         XCTAssertEqual(q["sort"], "title")
-        XCTAssertEqual(q["order"], "asc")
         XCTAssertEqual(q["match"], "all")
         XCTAssertEqual(q["library_id"], "5")
-        XCTAssertEqual(q["offset"], "0")
         XCTAssertEqual(q["limit"], "60")
         XCTAssertNil(q["type"], "iOS omits the media-scope param")
-        XCTAssertNil(q["groups[0][match]"], "no facets → no groups")
+        XCTAssertNil(q["groups"], "no facets → no groups")
+        for key in ["offset", "order", "snapshot_at", "include_total"] {
+            XCTAssertNil(q[key], "\(key) is v1 paging")
+        }
     }
 
-    func testAddedAtSortFixesPhantom() {
+    func testAddedAtSortIsSignedDescending() throws {
         var s = CatalogFilterState(); s.sort = .addedAt
-        let q = build(s)
-        XCTAssertEqual(q["sort"], "added_at", "must be canonical, not the old 'added' phantom")
-        XCTAssertEqual(q["order"], "desc", "added_at default order")
+        XCTAssertEqual(try build(s)["sort"], "-added_at", "added_at defaults to newest first")
     }
 
-    func testSortOrderFlip() {
+    func testSortOrderFlip() throws {
         var s = CatalogFilterState(); s.sort = .title; s.order = .desc
-        XCTAssertEqual(build(s)["order"], "desc")
+        XCTAssertEqual(try build(s)["sort"], "-title")
     }
 
-    func testTypeParamGatedByIncludeType() {
-        XCTAssertEqual(build(.none, mediaType: .series, includeType: true)["type"], "series")
-        XCTAssertNil(build(.none, mediaType: .audiobook, includeType: true)["type"],
+    func testTypeParamGatedByIncludeType() throws {
+        XCTAssertEqual(try build(.none, mediaType: .series, includeType: true)["type"], "series")
+        XCTAssertNil(try build(.none, mediaType: .audiobook, includeType: true)["type"],
                      "audiobook scope omits type even when requested")
-        XCTAssertNil(build(.none, mediaType: .series, includeType: false)["type"])
+        XCTAssertNil(try build(.none, mediaType: .series, includeType: false)["type"])
     }
 
-    func testMixedLibraryTypeScope() {
-        XCTAssertNil(build(.none, mediaType: .mixed, includeType: true)["type"],
+    func testMixedLibraryTypeScope() throws {
+        XCTAssertNil(try build(.none, mediaType: .mixed, includeType: true)["type"],
                      "mixed browses merged — no library-derived scope")
 
         // The user-chosen Type facet is a grouped filter, even when includeType
         // is false (the iOS path), and wins over the library-derived scope.
         var s = CatalogFilterState(); s.mediaScope = "series"
-        let q = build(s, mediaType: .mixed, includeType: false)
-        XCTAssertNil(q["type"], "Type facet must not become unconditional media_scope")
-        XCTAssertEqual(q["groups[0][match]"], "all")
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "type")
-        XCTAssertEqual(q["groups[0][rules][0][op]"], "is")
-        XCTAssertEqual(q["groups[0][rules][0][value]"], "series")
-
-        let includeTypeQuery = build(s, mediaType: .mixed, includeType: true)
-        XCTAssertNil(includeTypeQuery["type"], "mixed library Type facet stays matchable")
+        XCTAssertNil(try build(s, mediaType: .mixed, includeType: false)["type"],
+                     "Type facet must not become unconditional media_scope")
+        XCTAssertNil(try build(s, mediaType: .mixed, includeType: true)["type"],
+                     "mixed library Type facet stays matchable")
+        let group = try XCTUnwrap(try groups(s, mediaType: .mixed).first)
+        XCTAssertEqual(group["match"] as? String, "all")
+        let rule = try XCTUnwrap(try rules(group).first)
+        XCTAssertEqual(rule["field"] as? String, "type")
+        XCTAssertEqual(rule["op"] as? String, "is")
+        XCTAssertEqual(rule["value"] as? String, "series")
     }
 
-    func testMixedTypeFacetParticipatesInMatchAny() {
+    func testMixedTypeFacetParticipatesInMatchAny() throws {
         var s = CatalogFilterState()
         s.matchAll = false
         s.mediaScope = "movie"
         s.genres = ["Drama"]
 
-        let q = build(s, mediaType: .mixed)
-        XCTAssertEqual(q["match"], "any")
-        XCTAssertNil(q["type"])
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "type")
-        XCTAssertEqual(q["groups[0][rules][0][value]"], "movie")
-        XCTAssertEqual(q["groups[1][rules][0][field]"], "genre")
-        XCTAssertEqual(q["groups[1][rules][0][value]"], "Drama")
+        XCTAssertEqual(try build(s, mediaType: .mixed)["match"], "any")
+        let all = try groups(s, mediaType: .mixed)
+        XCTAssertEqual(try rules(all[0]).first?["field"] as? String, "type")
+        XCTAssertEqual(try rules(all[0]).first?["value"] as? String, "movie")
+        XCTAssertEqual(try rules(all[1]).first?["field"] as? String, "genre")
+        XCTAssertEqual(try rules(all[1]).first?["value"] as? String, "Drama")
     }
 
-    func testMultiGenreBecomesOneAnyGroup() {
+    func testMultiGenreBecomesOneAnyGroup() throws {
         var s = CatalogFilterState(); s.genres = ["Drama", "Action"]
-        let q = build(s)
-        XCTAssertEqual(q["groups[0][match]"], "any")
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "genre")
-        XCTAssertEqual(q["groups[0][rules][0][op]"], "contains")
-        // Values are emitted sorted for a stable key.
-        XCTAssertEqual(q["groups[0][rules][0][value]"], "Action")
-        XCTAssertEqual(q["groups[0][rules][1][value]"], "Drama")
+        let group = try XCTUnwrap(try groups(s).first)
+        XCTAssertEqual(group["match"] as? String, "any")
+        let genreRules = try rules(group)
+        XCTAssertEqual(genreRules.map { $0["field"] as? String }, ["genre", "genre"])
+        XCTAssertEqual(genreRules.map { $0["op"] as? String }, ["contains", "contains"])
+        // Values are emitted sorted for a stable query.
+        XCTAssertEqual(genreRules.map { $0["value"] as? String }, ["Action", "Drama"])
     }
 
-    func testDecadeLowersToYearBetween() {
+    func testDecadeLowersToNumericYearBetween() throws {
         var s = CatalogFilterState(); s.decades = [2010]
-        let q = build(s)
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "year")
-        XCTAssertEqual(q["groups[0][rules][0][op]"], "between")
-        XCTAssertEqual(q["groups[0][rules][0][value][0]"], "2010")
-        XCTAssertEqual(q["groups[0][rules][0][value][1]"], "2019")
+        let rule = try XCTUnwrap(try rules(try XCTUnwrap(try groups(s).first)).first)
+        XCTAssertEqual(rule["field"] as? String, "year")
+        XCTAssertEqual(rule["op"] as? String, "between")
+        XCTAssertEqual(rule["value"] as? [Int], [2010, 2019])
     }
 
-    func testWatchStatusUnwatchedIsWatchedFalse() {
+    func testWatchStatusUnwatchedIsBooleanFalse() throws {
         var s = CatalogFilterState(); s.watchStatus = .unwatched
-        let q = build(s)
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "watched")
-        XCTAssertEqual(q["groups[0][rules][0][op]"], "is")
-        XCTAssertEqual(q["groups[0][rules][0][value]"], "false")
+        let rule = try XCTUnwrap(try rules(try XCTUnwrap(try groups(s).first)).first)
+        XCTAssertEqual(rule["field"] as? String, "watched")
+        XCTAssertEqual(rule["op"] as? String, "is")
+        XCTAssertEqual(rule["value"] as? Bool, false)
+        XCTAssertTrue(rule["value"].map { CFGetTypeID($0 as CFTypeRef) == CFBooleanGetTypeID() } ?? false,
+                      "the server rejects a string where it expects a boolean")
     }
 
-    func testHDRBooleanRule() {
-        var s = CatalogFilterState(); s.hdr = true
-        let q = build(s)
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "hdr")
-        XCTAssertEqual(q["groups[0][rules][0][op]"], "is")
-        XCTAssertEqual(q["groups[0][rules][0][value]"], "true")
-    }
-
-    func testDynamicRangeValuesShareOneAnyGroup() {
+    func testDynamicRangeValuesShareOneAnyGroupOfBooleans() throws {
         var s = CatalogFilterState()
         s.hdr = true
         s.dolbyVision = true
 
-        let q = build(s)
-        XCTAssertEqual(q["groups[0][match]"], "any")
-        XCTAssertEqual(q["groups[0][rules][0][field]"], "hdr")
-        XCTAssertEqual(q["groups[0][rules][0][op]"], "is")
-        XCTAssertEqual(q["groups[0][rules][0][value]"], "true")
-        XCTAssertEqual(q["groups[0][rules][1][field]"], "dolby_vision")
-        XCTAssertEqual(q["groups[0][rules][1][op]"], "is")
-        XCTAssertEqual(q["groups[0][rules][1][value]"], "true")
-        XCTAssertNil(q["groups[1][match]"])
+        let all = try groups(s)
+        XCTAssertEqual(all.count, 1)
+        XCTAssertEqual(all[0]["match"] as? String, "any")
+        let flagRules = try rules(all[0])
+        XCTAssertEqual(flagRules.map { $0["field"] as? String }, ["hdr", "dolby_vision"])
+        XCTAssertEqual(flagRules.map { $0["op"] as? String }, ["is", "is"])
+        for rule in flagRules {
+            XCTAssertTrue(rule["value"].map { CFGetTypeID($0 as CFTypeRef) == CFBooleanGetTypeID() } ?? false)
+            XCTAssertEqual(rule["value"] as? Bool, true)
+        }
     }
 
-    func testMatchAnyTopLevel() {
+    func testMatchAnyTopLevel() throws {
         var s = CatalogFilterState(); s.matchAll = false
-        XCTAssertEqual(build(s)["match"], "any")
+        XCTAssertEqual(try build(s)["match"], "any")
     }
 
-    func testIncludeTotalFalseEmitsFlag() {
-        let q = CatalogQueryBuilder.build(.none, libraryId: 1, mediaType: .movie,
-                                          offset: 0, limit: 1, includeTotal: false, includeType: false)
-        XCTAssertEqual(q["include_total"], "false")
+    func testOversizedFiltersSwitchToThePOSTQuery() {
+        var s = CatalogFilterState()
+        XCTAssertEqual(CatalogQueryBuilder.build(s, libraryId: 1, mediaType: .movie, limit: 60).preferredOperation, .get)
+        // Thousands of selected studios exceed the GET `groups` limit.
+        s.studios = Set((0..<2000).map { "Studio number \($0)" })
+        let query = CatalogQueryBuilder.build(s, libraryId: 1, mediaType: .movie, limit: 60)
+        XCTAssertGreaterThan(try XCTUnwrap(try query.getParameters()["groups"]).utf8.count,
+                             APIv2CatalogQuery.maxGetGroupsLength)
+        XCTAssertEqual(query.preferredOperation, .query)
     }
 
     func testCacheKeyFragmentIsSetOrderIndependent() {
