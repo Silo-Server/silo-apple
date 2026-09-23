@@ -39,10 +39,10 @@ struct APIv2MetadataTranslationJob: Decodable {
 
 // MARK: Onboarding
 
-/// One displayed onboarding flow: the owner that read it, the state's entity
-/// tag, and the flow. A progress write is accepted only for this session.
+/// One onboarding state read: the owner that read it, the state's strong
+/// entity tag, the state, and the flow when one was requested. A progress
+/// write is sent only under this owner and tag.
 struct APIv2OnboardingSession: Sendable {
-    let id: UUID
     let auth: CapturedOrdinaryRequestAuth
     let tag: String
     let state: OnboardingState
