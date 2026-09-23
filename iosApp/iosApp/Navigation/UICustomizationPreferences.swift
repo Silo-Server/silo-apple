@@ -344,14 +344,12 @@ protocol UICustomizationTransport: AnyObject, Sendable {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws
     func putValue(
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws
     func deleteValue(
@@ -371,7 +369,6 @@ extension UICustomizationTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         throw URLError(.unsupportedURL)
@@ -412,33 +409,18 @@ final class SiloUICustomizationTransport: UICustomizationTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
-        _ = try await api.putNavigationShortcutItem(
-            item,
-            present: present,
-            mutationId: mutationId,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
+        try await api.putNavigationShortcutItem(item, present: present, requestIdentity: requestIdentity)
     }
 
     func putValue(
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
-        _ = try await api.putValue(
-            key: key,
-            scope: scope,
-            value: value,
-            mutationId: mutationId,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
+        try await api.putValue(key: key, scope: scope, value: value, requestIdentity: requestIdentity)
     }
 
     func deleteValue(
@@ -446,12 +428,7 @@ final class SiloUICustomizationTransport: UICustomizationTransport {
         scope: SettingScopeIdentity,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
-        try await api.deleteValue(
-            key: key,
-            scope: scope,
-            profileId: requestIdentity.profileId,
-            requestIdentity: requestIdentity
-        )
+        try await api.deleteValue(key: key, scope: scope, requestIdentity: requestIdentity)
     }
 }
 
@@ -548,18 +525,62 @@ final class UICustomizationPreferences {
     @ObservationIgnored private var pendingShortcutPlacementBlockedIds: Set<String> = []
     @ObservationIgnored private var pendingDeletes: [String: PendingDelete] = [:]
     @ObservationIgnored private var nextShortcutOperationSequence: UInt64 = 0
+    @ObservationIgnored private let writeRetryPolicy: SettingWriteRetryPolicy
+    @ObservationIgnored private var outboxRetryTask: Task<Void, Never>?
+
+    /// True while a change ran out of automatic retries and waits for
+    /// "Try Again" or "Discard Held Change" (owner decision D4).
+    private(set) var hasHeldChanges = false
 
     private struct OperationContext {
         let cacheKey: String
         let requestIdentity: HTTPRequestIdentity
     }
 
+    /// Outbox bookkeeping shared by every pending write (owner decision D4).
+    /// The operation id is local: it tells a late response apart from a newer
+    /// edit of the same key and never leaves the device. Caches written by
+    /// earlier builds stored it as `mutationId`.
+    private struct OutboxRetryState: Codable, Equatable {
+        /// Failed sends of this exact operation that a retry could fix.
+        var failedAttempts = 0
+        /// Out of automatic retries: kept and shown locally, not sent until
+        /// the user retries or discards it.
+        var isHeld = false
+    }
+
     private struct PendingSyncWrite: Codable {
         let value: SettingJSONValue
-        /// The settings API requires one stable idempotency key for the whole
-        /// lifetime of a retry. A new user edit replaces this record and gets
-        /// a new mutation id; connectivity retries reuse the existing one.
-        let mutationId: String
+        /// A new user edit replaces this record with a new id; a retry of the
+        /// same value keeps it.
+        let operationId: String
+        var retry = OutboxRetryState()
+
+        private enum CodingKeys: String, CodingKey {
+            case value, operationId, retry
+            case legacyMutationId = "mutationId"
+        }
+
+        init(value: SettingJSONValue, operationId: String = UUID().uuidString) {
+            self.value = value
+            self.operationId = operationId
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            value = try container.decode(SettingJSONValue.self, forKey: .value)
+            operationId = try container.decodeIfPresent(String.self, forKey: .operationId)
+                ?? container.decodeIfPresent(String.self, forKey: .legacyMutationId)
+                ?? UUID().uuidString
+            retry = try container.decodeIfPresent(OutboxRetryState.self, forKey: .retry) ?? OutboxRetryState()
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(value, forKey: .value)
+            try container.encode(operationId, forKey: .operationId)
+            try container.encode(retry, forKey: .retry)
+        }
     }
 
     private struct PendingShortcutOperation: Codable {
@@ -580,10 +601,12 @@ final class UICustomizationPreferences {
         /// Original catalog position used to restore a definitively rejected
         /// removal without replacing unrelated optimistic shortcut edits.
         let shortcutIndex: Int?
-        /// Stable for every retry of this exact desired-presence operation.
-        let mutationId: String
+        /// Local identity of this exact desired-presence operation, stable
+        /// across its retries. Never sent.
+        let operationId: String
         /// Preserves user intent order across identities after a restart.
         let sequence: UInt64
+        var retry = OutboxRetryState()
 
         private enum CodingKeys: String, CodingKey {
             case item
@@ -592,8 +615,10 @@ final class UICustomizationPreferences {
             case primaryMenuIndex
             case primaryMenuPredecessorId
             case shortcutIndex
-            case mutationId
+            case operationId
+            case legacyMutationId = "mutationId"
             case sequence
+            case retry
         }
 
         init(
@@ -603,8 +628,9 @@ final class UICustomizationPreferences {
             primaryMenuIndex: Int?,
             primaryMenuPredecessorId: String?,
             shortcutIndex: Int?,
-            mutationId: String,
-            sequence: UInt64
+            operationId: String = UUID().uuidString,
+            sequence: UInt64,
+            retry: OutboxRetryState = OutboxRetryState()
         ) {
             self.item = item
             self.present = present
@@ -612,8 +638,9 @@ final class UICustomizationPreferences {
             self.primaryMenuIndex = primaryMenuIndex
             self.primaryMenuPredecessorId = primaryMenuPredecessorId
             self.shortcutIndex = shortcutIndex
-            self.mutationId = mutationId
+            self.operationId = operationId
             self.sequence = sequence
+            self.retry = retry
         }
 
         init(from decoder: Decoder) throws {
@@ -634,8 +661,23 @@ final class UICustomizationPreferences {
                 forKey: .primaryMenuPredecessorId
             )
             shortcutIndex = try container.decodeIfPresent(Int.self, forKey: .shortcutIndex)
-            mutationId = try container.decode(String.self, forKey: .mutationId)
+            operationId = try container.decodeIfPresent(String.self, forKey: .operationId)
+                ?? container.decode(String.self, forKey: .legacyMutationId)
             sequence = try container.decodeIfPresent(UInt64.self, forKey: .sequence) ?? 0
+            retry = try container.decodeIfPresent(OutboxRetryState.self, forKey: .retry) ?? OutboxRetryState()
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(item, forKey: .item)
+            try container.encode(present, forKey: .present)
+            try container.encode(updatesPrimaryMenu, forKey: .updatesPrimaryMenu)
+            try container.encodeIfPresent(primaryMenuIndex, forKey: .primaryMenuIndex)
+            try container.encodeIfPresent(primaryMenuPredecessorId, forKey: .primaryMenuPredecessorId)
+            try container.encodeIfPresent(shortcutIndex, forKey: .shortcutIndex)
+            try container.encode(operationId, forKey: .operationId)
+            try container.encode(sequence, forKey: .sequence)
+            try container.encode(retry, forKey: .retry)
         }
 
         func supersedingPrimaryMenuPlacement() -> Self {
@@ -646,8 +688,9 @@ final class UICustomizationPreferences {
                 primaryMenuIndex: primaryMenuIndex,
                 primaryMenuPredecessorId: primaryMenuPredecessorId,
                 shortcutIndex: shortcutIndex,
-                mutationId: mutationId,
-                sequence: sequence
+                operationId: operationId,
+                sequence: sequence,
+                retry: retry
             )
         }
     }
@@ -657,13 +700,15 @@ final class UICustomizationPreferences {
         /// A local operation identity prevents an older queued DELETE from
         /// clearing a newer same-scope reset that still needs to be replayed.
         let operationId: String
+        var retry = OutboxRetryState()
 
         private enum CodingKeys: String, CodingKey {
             case scope
             case operationId
+            case retry
         }
 
-        init(scope: SettingScope, operationId: String = newSettingMutationId()) {
+        init(scope: SettingScope, operationId: String = UUID().uuidString) {
             self.scope = scope
             self.operationId = operationId
         }
@@ -672,7 +717,8 @@ final class UICustomizationPreferences {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             scope = try container.decode(SettingScope.self, forKey: .scope)
             operationId = try container.decodeIfPresent(String.self, forKey: .operationId)
-                ?? newSettingMutationId()
+                ?? UUID().uuidString
+            retry = try container.decodeIfPresent(OutboxRetryState.self, forKey: .retry) ?? OutboxRetryState()
         }
 
         var scopeIdentity: SettingScopeIdentity? {
@@ -702,12 +748,14 @@ final class UICustomizationPreferences {
         transport: UICustomizationTransport = SiloUICustomizationTransport(),
         cacheKey: @escaping @MainActor () -> String? = UICustomizationPreferences.activeCacheKey,
         requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = UICustomizationPreferences.activeRequestIdentity,
-        initialCapabilityState: UICustomizationCapabilityState = .checking
+        initialCapabilityState: UICustomizationCapabilityState = .checking,
+        writeRetryPolicy: SettingWriteRetryPolicy = .default
     ) {
         self.defaults = defaults
         self.transport = transport
         self.cacheKey = cacheKey
         self.requestIdentity = requestIdentity
+        self.writeRetryPolicy = writeRetryPolicy
         capabilityState = initialCapabilityState
         loadCache(for: cacheKey())
     }
@@ -784,7 +832,8 @@ final class UICustomizationPreferences {
                   capturedIdentity(for: targetCacheKey) == identity else { return }
             let values = response.byKey
             var decodedEveryValue = true
-            for key in Self.keys {
+            let heldKeys = heldOutboxKeys
+            for key in Self.keys where !heldKeys.contains(key) {
                 guard let row = values[key] else {
                     setSyncError(Self.missingEffectiveValueMessage, for: key)
                     decodedEveryValue = false
@@ -952,7 +1001,6 @@ final class UICustomizationPreferences {
                 return updatedMenu?[index - 1].id
             },
             shortcutIndex: currentShortcuts.firstIndex(where: { $0.id == item.id }),
-            mutationId: newSettingMutationId(),
             sequence: nextShortcutOperationSequence
         )
         pendingShortcutOperations[item.id] = operation
@@ -1080,10 +1128,7 @@ final class UICustomizationPreferences {
             setSyncError(Self.message(for: error), for: key)
             return false
         }
-        let pendingWrite = PendingSyncWrite(
-            value: encodedValue,
-            mutationId: newSettingMutationId()
-        )
+        let pendingWrite = PendingSyncWrite(value: encodedValue)
         pendingSyncWrites[key.rawValue] = pendingWrite
         saveCache(for: context.cacheKey)
         enqueuePersist(
@@ -1115,21 +1160,40 @@ final class UICustomizationPreferences {
                     key: key,
                     scope: scope,
                     value: write.value,
-                    mutationId: write.mutationId,
                     requestIdentity: context.requestIdentity
                 )
                 guard contextIsCurrent(context) else { return }
-                if pendingSyncWrites[key.rawValue]?.mutationId == write.mutationId {
+                if pendingSyncWrites[key.rawValue]?.operationId == write.operationId {
                     pendingSyncWrites.removeValue(forKey: key.rawValue)
                     saveCache(for: context.cacheKey)
                 }
                 setSyncError(nil, for: key)
             } catch {
                 guard contextIsCurrent(context) else { return }
-                // Keep the optimistic cache. A later refresh or another edit
-                // retries against the server without making the app unusable
-                // while offline.
-                setSyncError(Self.message(for: error), for: key)
+                // Only the key's latest operation decides anything: an older
+                // one was replaced by a newer edit, which reports for itself.
+                guard var current = pendingSyncWrites[key.rawValue],
+                      current.operationId == write.operationId else { return }
+                switch SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope).writeFailure {
+                case .retry:
+                    let held = recordRetryableFailure(&current.retry)
+                    pendingSyncWrites[key.rawValue] = current
+                    saveCache(for: context.cacheKey)
+                    setSyncError(held ? HeldSettingChange.message : Self.message(for: error), for: key)
+                    if !held { scheduleOutboxRetry(context: context) }
+                case .release:
+                    // A definite refusal: sending the same value again cannot
+                    // land. Release it; the next refresh repaints the server's
+                    // value.
+                    pendingSyncWrites.removeValue(forKey: key.rawValue)
+                    saveCache(for: context.cacheKey)
+                    setSyncError(Self.message(for: error), for: key)
+                case .ownerChanged, .waitForCondition:
+                    // Keep the optimistic cache. A later refresh or another
+                    // edit retries against the server without making the app
+                    // unusable while offline.
+                    setSyncError(Self.message(for: error), for: key)
+                }
             }
         }
         saveTail = save
@@ -1152,13 +1216,12 @@ final class UICustomizationPreferences {
                 try await transport.putShortcutItem(
                     operation.item,
                     present: operation.present,
-                    mutationId: operation.mutationId,
                     requestIdentity: context.requestIdentity
                 )
                 guard contextIsCurrent(context) else { return }
                 let identity = operation.item.id
                 if let currentOperation = pendingShortcutOperations[identity],
-                   currentOperation.mutationId == operation.mutationId {
+                   currentOperation.operationId == operation.operationId {
                     pendingShortcutOperations.removeValue(forKey: identity)
                     shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
                     reconcilePendingShortcutPlacementError()
@@ -1174,11 +1237,21 @@ final class UICustomizationPreferences {
             } catch {
                 guard contextIsCurrent(context) else { return }
                 let identity = operation.item.id
-                guard pendingShortcutOperations[identity]?.mutationId == operation.mutationId else {
+                guard var current = pendingShortcutOperations[identity],
+                      current.operationId == operation.operationId else {
                     return
                 }
                 shortcutSyncErrorsByIdentity[identity] = Self.shortcutMessage(for: error)
-                if Self.isDefinitiveShortcutRejection(error) {
+                if SettingsAPIError.from(error).writeFailure == .retry {
+                    let held = recordRetryableFailure(&current.retry)
+                    pendingShortcutOperations[identity] = current
+                    saveCache(for: context.cacheKey)
+                    if held {
+                        shortcutSyncErrorsByIdentity[identity] = HeldSettingChange.message
+                    } else {
+                        scheduleOutboxRetry(context: context)
+                    }
+                } else if Self.isDefinitiveShortcutRejection(error) {
                     // The server proved this operation can never land as
                     // authored. Quarantine it from the durable outbox so a
                     // refresh can adopt the authoritative shortcut document
@@ -1341,7 +1414,8 @@ final class UICustomizationPreferences {
                 )
             } catch {
                 guard contextIsCurrent(context) else { return }
-                if case .noValueAtScope = SettingsAPIError.from(error) {
+                let mapped = SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)
+                if case .noValueAtScope = mapped {
                     await finishAcceptedDelete(
                         key: key,
                         scope: scope,
@@ -1350,10 +1424,28 @@ final class UICustomizationPreferences {
                     )
                 } else {
                     let identity = Self.deleteIdentity(key: key, scope: scope.scope)
-                    guard pendingDeletes[identity]?.operationId == pendingDelete.operationId else {
+                    guard var current = pendingDeletes[identity],
+                          current.operationId == pendingDelete.operationId else {
                         return
                     }
-                    setSyncError("Could not reset this setting to its inherited value.", for: key)
+                    var message = "Could not reset this setting to its inherited value."
+                    switch mapped.writeFailure {
+                    case .retry:
+                        let held = recordRetryableFailure(&current.retry)
+                        pendingDeletes[identity] = current
+                        saveCache(for: context.cacheKey)
+                        if held {
+                            message = HeldSettingChange.message
+                        } else {
+                            scheduleOutboxRetry(context: context)
+                        }
+                    case .release:
+                        pendingDeletes.removeValue(forKey: identity)
+                        saveCache(for: context.cacheKey)
+                    case .ownerChanged, .waitForCondition:
+                        break
+                    }
+                    setSyncError(message, for: key)
                 }
             }
         }
@@ -1464,21 +1556,57 @@ final class UICustomizationPreferences {
             cacheKey: targetCacheKey,
             requestIdentity: requestIdentity
         )
+        // Held changes are not sent again on their own (owner decision D4).
+        guard enqueueOutbox(context: context, where: { _, retry in !retry.isHeld }) else { return true }
+        let replayTail = saveTail
+        await replayTail?.value
+        // An accepted shortcut may enqueue its dependent family-menu write.
+        // Capture the new tail after the shortcut completes so refresh does
+        // not return early with half of the compound pin still pending.
+        await saveTail?.value
+        guard refreshSequence == sequence,
+              localMutationRevision == mutationRevision,
+              cacheKey() == targetCacheKey,
+              capturedIdentity(for: targetCacheKey) == requestIdentity else { return false }
+        return pendingSyncWrites.values.allSatisfy(\.retry.isHeld)
+            && pendingShortcutOperations.values.allSatisfy(\.retry.isHeld)
+            && pendingDeletes.values.allSatisfy(\.retry.isHeld)
+    }
+
+    /// One outbox entry: a value write by key, a shortcut operation by item
+    /// identity, or a delete by `key|scope`.
+    private enum OutboxEntry: Hashable {
+        case value(String)
+        case shortcut(String)
+        case delete(String)
+    }
+
+    /// Queue every outbox entry `include` accepts, deletes first, then
+    /// shortcuts in authored order, then value writes. Returns whether
+    /// anything was queued.
+    @discardableResult
+    private func enqueueOutbox(
+        context: OperationContext,
+        where include: (OutboxEntry, OutboxRetryState) -> Bool
+    ) -> Bool {
         let deletes = pendingDeletes.sorted(by: { $0.key < $1.key })
-        let pendingShortcuts = pendingShortcutOperations.values.sorted {
-            if $0.sequence == $1.sequence { return $0.item.id < $1.item.id }
-            return $0.sequence < $1.sequence
+            .filter { include(.delete($0.key), $0.value.retry) }
+        let pendingShortcuts = pendingShortcutOperations
+            .filter { include(.shortcut($0.key), $0.value.retry) }
+            .values
+            .sorted {
+                if $0.sequence == $1.sequence { return $0.item.id < $1.item.id }
+                return $0.sequence < $1.sequence
+            }
+        let pending = Self.keys.compactMap { key -> (SettingKey, SettingScopeIdentity, PendingSyncWrite)? in
+            guard let write = pendingSyncWrites[key.rawValue], include(.value(key.rawValue), write.retry),
+                  let scope = Self.writeScope(for: key) else { return nil }
+            return (key, scope, write)
         }
-        let pending = Self.keys.compactMap { key -> (SettingKey, PendingSyncWrite)? in
-            guard let write = pendingSyncWrites[key.rawValue],
-                  Self.writeScope(for: key) != nil else { return nil }
-            return (key, write)
-        }
-        guard !deletes.isEmpty || !pendingShortcuts.isEmpty || !pending.isEmpty else { return true }
+        guard !deletes.isEmpty || !pendingShortcuts.isEmpty || !pending.isEmpty else { return false }
 
         for (identity, delete) in deletes {
-            guard let keyRaw = identity.split(separator: "|", maxSplits: 1).first,
-                  let key = SettingKey(rawValue: String(keyRaw)),
+            guard let key = Self.deleteKey(identity),
                   let scope = delete.scopeIdentity else { continue }
             enqueueDelete(
                 key: key,
@@ -1493,8 +1621,7 @@ final class UICustomizationPreferences {
                 context: context
             )
         }
-        for (key, write) in pending {
-            guard let scope = Self.writeScope(for: key) else { continue }
+        for (key, scope, write) in pending {
             enqueuePersist(
                 key: key,
                 scope: scope,
@@ -1502,19 +1629,109 @@ final class UICustomizationPreferences {
                 context: context
             )
         }
-        let replayTail = saveTail
-        await replayTail?.value
-        // An accepted shortcut may enqueue its dependent family-menu write.
-        // Capture the new tail after the shortcut completes so refresh does
-        // not return early with half of the compound pin still pending.
-        await saveTail?.value
-        guard refreshSequence == sequence,
-              localMutationRevision == mutationRevision,
-              cacheKey() == targetCacheKey,
-              capturedIdentity(for: targetCacheKey) == requestIdentity else { return false }
-        return pendingSyncWrites.isEmpty
-            && pendingShortcutOperations.isEmpty
-            && pendingDeletes.isEmpty
+        return true
+    }
+
+    // MARK: - Held changes
+
+    /// Records one failed send that a retry could fix and returns whether the
+    /// change is now held (the retry bound ran out).
+    private func recordRetryableFailure(_ state: inout OutboxRetryState) -> Bool {
+        state.failedAttempts += 1
+        if state.failedAttempts > writeRetryPolicy.maximumAutomaticRetries {
+            state.isHeld = true
+        }
+        return state.isHeld
+    }
+
+    /// One timer for every change still retrying, paced by the one that has
+    /// failed least. It re-queues only changes that already failed: anything
+    /// newer is queued by its own edit.
+    private func scheduleOutboxRetry(context: OperationContext) {
+        let retrying = pendingSyncWrites.values.map(\.retry)
+            + pendingShortcutOperations.values.map(\.retry)
+            + pendingDeletes.values.map(\.retry)
+        guard let attempt = retrying
+            .filter({ !$0.isHeld && $0.failedAttempts > 0 })
+            .map(\.failedAttempts)
+            .min() else { return }
+        outboxRetryTask?.cancel()
+        let delay = writeRetryPolicy.delay(forAttempt: attempt)
+        outboxRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.contextIsCurrent(context) else { return }
+            self.outboxRetryTask = nil
+            self.enqueueOutbox(context: context, where: { _, retry in !retry.isHeld && retry.failedAttempts > 0 })
+        }
+    }
+
+    /// "Try Again": send every held change once more with a fresh retry
+    /// budget.
+    func retryHeldChanges() {
+        guard let context = operationContext() else { return }
+        var released = Set<OutboxEntry>()
+        for (key, var write) in pendingSyncWrites where write.retry.isHeld {
+            write.retry = OutboxRetryState()
+            pendingSyncWrites[key] = write
+            released.insert(.value(key))
+            if let settingKey = SettingKey(rawValue: key) { setSyncError(nil, for: settingKey) }
+        }
+        for (identity, var operation) in pendingShortcutOperations where operation.retry.isHeld {
+            operation.retry = OutboxRetryState()
+            pendingShortcutOperations[identity] = operation
+            released.insert(.shortcut(identity))
+            shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
+        }
+        for (identity, var delete) in pendingDeletes where delete.retry.isHeld {
+            delete.retry = OutboxRetryState()
+            pendingDeletes[identity] = delete
+            released.insert(.delete(identity))
+            if let key = Self.deleteKey(identity) { setSyncError(nil, for: key) }
+        }
+        saveCache(for: context.cacheKey)
+        updateSyncErrorMessage()
+        enqueueOutbox(context: context, where: { entry, _ in released.contains(entry) })
+    }
+
+    /// "Discard Held Change": forget every held change and repaint what the
+    /// server holds. Nothing is sent.
+    func discardHeldChanges() async {
+        guard let targetCacheKey = cacheKey() else { return }
+        for (key, write) in pendingSyncWrites where write.retry.isHeld {
+            pendingSyncWrites.removeValue(forKey: key)
+            if let settingKey = SettingKey(rawValue: key) { setSyncError(nil, for: settingKey) }
+        }
+        for (identity, operation) in pendingShortcutOperations where operation.retry.isHeld {
+            pendingShortcutOperations.removeValue(forKey: identity)
+            shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
+            // Undo the optimistic pin or unpin now, so the menu is right even
+            // when the refresh below cannot reach the server.
+            rollbackRejectedShortcut(operation)
+        }
+        for (identity, delete) in pendingDeletes where delete.retry.isHeld {
+            pendingDeletes.removeValue(forKey: identity)
+            if let key = Self.deleteKey(identity) { setSyncError(nil, for: key) }
+        }
+        reconcilePendingShortcutPlacementError()
+        saveCache(for: targetCacheKey)
+        updateSyncErrorMessage()
+        await refresh()
+    }
+
+    /// Keys whose effective value a refresh must not paint over, because a
+    /// held change for them is still shown locally.
+    private var heldOutboxKeys: Set<SettingKey> {
+        var keys = Set<SettingKey>()
+        for (key, write) in pendingSyncWrites where write.retry.isHeld {
+            if let settingKey = SettingKey(rawValue: key) { keys.insert(settingKey) }
+        }
+        if pendingShortcutOperations.values.contains(where: \.retry.isHeld) {
+            keys.insert(.navShortcuts)
+        }
+        for (identity, delete) in pendingDeletes where delete.retry.isHeld {
+            if let key = Self.deleteKey(identity) { keys.insert(key) }
+        }
+        return keys
     }
 
     private func completeSave() {
@@ -1523,6 +1740,7 @@ final class UICustomizationPreferences {
     }
 
     private func loadCache(for key: String?) {
+        defer { updateHeldState() }
         if loadedCacheKey != key {
             if loadedCacheKey != nil {
                 capabilityState = .checking
@@ -1568,7 +1786,15 @@ final class UICustomizationPreferences {
         reconcilePendingShortcutPlacementError()
     }
 
+    private func updateHeldState() {
+        let held = pendingSyncWrites.values.contains(where: \.retry.isHeld)
+            || pendingShortcutOperations.values.contains(where: \.retry.isHeld)
+            || pendingDeletes.values.contains(where: \.retry.isHeld)
+        if hasHeldChanges != held { hasHeldChanges = held }
+    }
+
     private func saveCache(for key: String?) {
+        updateHeldState()
         guard let key,
               let data = try? SettingsWireCoding.makeEncoder().encode(Cache(
                 primaryMenu: storedPrimaryMenu,
@@ -1677,6 +1903,10 @@ final class UICustomizationPreferences {
         "\(key.rawValue)|\(scope.rawValue)"
     }
 
+    private static func deleteKey(_ identity: String) -> SettingKey? {
+        identity.split(separator: "|", maxSplits: 1).first.flatMap { SettingKey(rawValue: String($0)) }
+    }
+
     private static let keys: [SettingKey] = [
         .navPrimaryMenu,
         .navShortcuts,
@@ -1712,14 +1942,14 @@ final class UICustomizationPreferences {
             guard (persistedIdentity == canonicalIdentity
                     || persistedIdentity == operation.item.legacyUnstructuredId),
                   operation.item.isContractValid,
-                  !operation.mutationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  !operation.operationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { continue }
             if case .builtin = operation.item { continue }
 
             if let existing = migrated[canonicalIdentity] {
                 let existingWins = existing.sequence > operation.sequence
                     || (existing.sequence == operation.sequence
-                        && existing.mutationId >= operation.mutationId)
+                        && existing.operationId >= operation.operationId)
                 if existingWins { continue }
             }
             migrated[canonicalIdentity] = operation
@@ -1768,13 +1998,14 @@ final class UICustomizationPreferences {
     }
 
     private static func message(for error: Error) -> String {
-        switch SettingsAPIError.from(error) {
+        let mapped = SettingsAPIError.from(error)
+        switch mapped {
         case .serverUpgradeRequired, .unknownSetting:
             return "Update this Silo server to sync interface preferences."
-        case .transport:
-            return "Saved on this device. Sync will resume when the server is reachable."
         default:
-            return "Saved on this device, but the server did not accept the change."
+            return mapped.writeFailure == .release
+                ? "The server didn't accept this change, so it wasn't saved."
+                : "Saved on this device. Sync will resume when the server is reachable."
         }
     }
 
@@ -1784,21 +2015,17 @@ final class UICustomizationPreferences {
             return "This profile already has 256 navigation shortcuts. Unpin one and try again."
         case .invalidValue:
             return "The server rejected this shortcut. Check the selection and try again."
-        case .mutationIdConflict:
-            return "Another device changed this shortcut. The menu was refreshed; try again."
         default:
             return Self.message(for: error)
         }
     }
 
+    /// The server proved the shortcut operation can never land as authored.
+    /// A key the server does not know means it needs an update, which is not
+    /// a verdict on this operation.
     private static func isDefinitiveShortcutRejection(_ error: Error) -> Bool {
-        switch SettingsAPIError.from(error) {
-        case .transport, .serverUpgradeRequired, .profileRequired,
-             .unknownSetting, .server:
-            return false
-        case .clientLocalSetting, .scopeNotAllowed, .invalidValue,
-             .mutationIdConflict, .noValueAtScope:
-            return true
-        }
+        let mapped = SettingsAPIError.from(error)
+        if case .unknownSetting = mapped { return false }
+        return mapped.writeFailure == .release
     }
 }

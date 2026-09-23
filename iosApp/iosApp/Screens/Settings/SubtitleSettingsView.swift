@@ -25,6 +25,12 @@ struct SubtitleSettingsView: View {
             if AICapabilities.shared.metadataEnabled {
                 metadataLanguageSection
             }
+            if viewModel.prefs.hasHeldChanges {
+                HeldSettingChangesSection(
+                    retry: { await viewModel.prefs.retryHeldChanges() },
+                    discard: { await viewModel.prefs.discardHeldChanges() }
+                )
+            }
             appearanceSection
         }
         .settingsListChrome()
@@ -393,6 +399,9 @@ struct SubtitleSettingsView: View {
         case .serverUpgradeRequired:
             Text(ProfilePrefsEditor.serverUpgradeMessage)
                 .foregroundStyle(Color.siloError)
+        case .held:
+            Text("Not saved. Try again or discard the change below.")
+                .foregroundStyle(Color.siloWarning)
         }
     }
 }

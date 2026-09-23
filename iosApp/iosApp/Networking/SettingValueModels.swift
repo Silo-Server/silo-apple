@@ -5,9 +5,10 @@
 //  Wire types for the canonical settings API — the typed
 //  `/settings/values/*` routes:
 //
-//    GET    /api/v2/settings/values/effective       — batched resolution
-//    PUT    /api/v1/settings/values/{key}           — write one scope
-//    DELETE /api/v1/settings/values/{key}           — clear one scope
+//    GET    /api/v2/settings/values/effective            — batched resolution
+//    PUT    /api/v2/settings/values/{key}                — write one scope
+//    PUT    /api/v2/settings/values/nav.shortcuts/item   — add or remove a shortcut
+//    DELETE /api/v2/settings/values/{key}                — clear one scope
 //
 //  The v2 capability document lives in APIv2SettingsModels.swift.
 //
@@ -58,9 +59,8 @@ enum SettingsWireCoding {
     static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         // Stable ordering keeps a re-encoded value byte-comparable, which is
-        // what lets a caller diff "what I sent" against "what came back" and
-        // what makes the server's mutation-id request hash stable across
-        // retries of the same logical write.
+        // what lets a caller diff "what I sent" against "what came back", and
+        // makes a retry of the same value send the same bytes.
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
@@ -429,19 +429,20 @@ enum SettingScopeIdentity: Hashable, Sendable {
 
 // MARK: - Responses
 
-/// One explicitly stored value, as returned by a write.
-struct StoredSettingValue: Codable, Hashable, Sendable {
+/// One explicitly stored value, as returned by a write (`SettingValue` in
+/// the v2 contract).
+struct StoredSettingValue: Decodable, Hashable, Sendable {
     let key: String
     let scope: SettingScope
     let profileId: String?
     let clientFamily: String?
     let deviceId: String?
-    let libraryId: Int?
+    /// The library of a `profile_library` row, as the wire's opaque string id.
+    let libraryId: String?
     let seriesId: String?
     let value: SettingJSONValue
-    /// Increments on every write to this row. A replayed mutation receipt
-    /// carries `0`: the receipt records what was written, not the row's
-    /// current state.
+    /// Increments on every write to this row, including a repeated write of
+    /// the same value.
     let revision: Int
     let updatedAt: String?
 
@@ -647,18 +648,10 @@ enum SettingsCapabilitiesResult: Equatable, Sendable {
     }
 }
 
-/// The outcome of one write.
-struct SettingValueWriteReceipt: Equatable, Sendable {
-    let value: StoredSettingValue
-    /// True when the server replayed a receipt it had already recorded for
-    /// this mutation id instead of applying the write again. The value is what
-    /// was written then, so `revision` is not meaningful on a replay.
-    let isIdempotentReplay: Bool
-}
-
 // MARK: - Request body
 
-/// `PUT /settings/values/{key}` takes `{"value": …}`.
+/// `PUT /api/v2/settings/values/{key}` takes `{"value": …}` and nothing else:
+/// the body schema is closed, so a `mutation_id` member is a 422.
 struct SettingValueWriteRequest: Encodable, Sendable {
     let value: SettingJSONValue
 
@@ -677,81 +670,66 @@ enum SettingsAPIError: Error, Equatable, Sendable {
     /// A profile-scoped call was made with no profile selected. Caught before
     /// the request so the UI gets this instead of the server's generic 400.
     case profileRequired
-    /// The key is not in the server's contract.
+    /// The key is not in the server's contract, or the server never stores
+    /// it (a device-local key). v2 answers both as a 422 at `path.key`.
     case unknownSetting(key: String)
-    /// The key is device-local and is never stored by the server.
-    case clientLocalSetting(key: String)
     /// The contract does not allow this key at this scope.
     case scopeNotAllowed(key: String, scope: SettingScope)
     /// The value failed the contract's schema.
     case invalidValue(message: String)
-    /// This mutation id was already used for a *different* write. Retrying
-    /// with a fresh id is wrong: work out which write actually landed first.
-    case mutationIdConflict
     /// Nothing is stored at the addressed scope.
     case noValueAtScope
-    /// Any other HTTP failure, with the server's error envelope when present.
+    /// The server, account or profile that captured the request is no longer
+    /// current. The request was refused before it left, or its answer was
+    /// discarded; nothing was applied for the replacement owner.
+    case ownerChanged
+    /// Any other HTTP failure, with the problem type when there was one.
     case server(status: Int, code: String?, message: String?)
     /// The request never reached the server, or the response did not parse.
     case transport(description: String)
 
-    /// Maps a transport error onto the contract's vocabulary.
+    /// Maps an error from the settings calls onto the contract's vocabulary.
     ///
-    /// A 404 is the interesting one, and the distinction is the *envelope*,
-    /// not the status. Silo's own handlers always answer with
-    /// `{"error":…,"message":…}`, so a 404 carrying one came from a route that
-    /// exists — "unknown key", "nothing stored here", or some code this build
-    /// has not learned yet. A 404 with no envelope is chi's router saying the
-    /// route is not mounted at all, which on these paths means one thing: the
-    /// server predates the canonical settings API. Treating every 404 as
-    /// "upgrade your server" would tell a user to upgrade because they asked
-    /// for a key that does not exist.
+    /// Every settings route is `/api/v2`, so a failure arrives as an
+    /// `APIv2Error`: a v1-only server as `serverUpdateRequired` (the probe
+    /// verdict or the legacy listener's plain 404), and a refused request as
+    /// a problem document whose `errors` name the rejected member.
     static func from(_ error: Error, key: String? = nil, scope: SettingScope? = nil) -> SettingsAPIError {
         if let settingsError = error as? SettingsAPIError {
             return settingsError
         }
         if let v2Error = error as? APIv2Error {
-            return from(v2Error, key: key)
+            return from(v2Error, key: key, scope: scope)
         }
         guard let httpError = error as? HTTPError else {
             return .transport(description: String(describing: error))
         }
-        guard case .http(let status, _) = httpError else {
-            return .transport(description: httpError.description)
-        }
-        let code = httpError.serverErrorCode
-        let message = httpError.errorDescription
-        switch (status, code) {
-        case (404, "unknown_setting"):
-            return .unknownSetting(key: key ?? "")
-        case (404, "not_found"):
-            return .noValueAtScope
-        case (404, nil):
-            return .serverUpgradeRequired
-        case (400, "client_local_setting"):
-            return .clientLocalSetting(key: key ?? "")
-        case (400, "scope_not_allowed"):
-            return .scopeNotAllowed(key: key ?? "", scope: scope ?? .other(""))
-        case (400, "invalid_value"):
-            return .invalidValue(message: message ?? "")
-        case (409, "mutation_id_conflict"):
-            return .mutationIdConflict
+        switch httpError {
+        case .requestIdentityChanged, .authorityChanged:
+            return .ownerChanged
+        case .http(let status, _):
+            return .server(status: status, code: nil, message: httpError.errorDescription)
         default:
-            return .server(status: status, code: code, message: message)
+            return .transport(description: httpError.description)
         }
     }
 
-    /// The v2 reads. A v1-only server surfaces as `serverUpdateRequired`
-    /// (the probe verdict or the legacy listener's plain 404), and a key
-    /// missing from the server's contract is a 422 at `query.keys` rather
-    /// than v1's 404 `unknown_setting`.
-    private static func from(_ error: APIv2Error, key: String?) -> SettingsAPIError {
+    private static func from(_ error: APIv2Error, key: String?, scope: SettingScope?) -> SettingsAPIError {
         switch error {
         case .serverUpdateRequired:
             return .serverUpgradeRequired
         case .problem(let problem):
-            if problem.status == 422, problem.errors?.contains(where: { $0.location == "query.keys" }) == true {
-                return .unknownSetting(key: key ?? "")
+            for rejected in problem.status == 422 ? problem.errors ?? [] : [] {
+                switch rejected.location {
+                case "path.key", "query.keys":
+                    return .unknownSetting(key: key ?? "")
+                case "query.scope":
+                    return .scopeNotAllowed(key: key ?? "", scope: scope ?? .other(""))
+                case "body.value", "body.item":
+                    return .invalidValue(message: rejected.detail)
+                default:
+                    continue
+                }
             }
             return .server(
                 status: problem.status,
@@ -766,14 +744,84 @@ enum SettingsAPIError: Error, Equatable, Sendable {
     }
 }
 
-// MARK: - Idempotency
+// MARK: - Write failures
 
-/// A fresh idempotency key for one settings write.
+/// What a failed settings value write means for the change it carried.
 ///
-/// Generate one per logical write and hold it across retries: the server
-/// replays the recorded receipt for a repeated id with identical content, and
-/// rejects the id with 409 `mutation_id_conflict` when it was used for
-/// different content. Generating a new id per retry would defeat both.
-func newSettingMutationId() -> String {
-    UUID().uuidString
+/// Every value write is `natural_idempotent`: it names the desired state of
+/// one row, so sending the same value again converges on the same row. Owner
+/// decision D4 therefore allows exactly one kind of replay. Each surface keeps
+/// one pending change per key (a newer local value replaces an older one) and
+/// retries only that latest value, on a bounded backoff, while the owner that
+/// captured it is still current. When the bound runs out the surface holds
+/// that one key and offers "Discard held change"; a held change is not sent
+/// again until the user asks. No request carries a mutation id.
+enum SettingWriteFailure: Equatable, Sendable {
+    /// The write may have been lost in flight, or the server refused it for
+    /// a reason that can pass (5xx, 408, 429, a 409 compare-and-set conflict,
+    /// or a 401 that outlived the token refresh). Retry the latest value
+    /// within the bound, then hold it.
+    case retry
+    /// A definite answer that sending the same value again cannot change:
+    /// release the change, surface the error once and log the cause.
+    case release
+    /// The owner that captured the change is gone. The change still belongs
+    /// to that owner and is never sent on behalf of another.
+    case ownerChanged
+    /// The write was not sent: no profile is selected, or the server cannot
+    /// serve settings at all. Keep the change, but without a timer: only a
+    /// user action or a reconnect can change the condition.
+    case waitForCondition
+}
+
+extension SettingsAPIError {
+    var writeFailure: SettingWriteFailure {
+        switch self {
+        case .transport:
+            return .retry
+        case .server(let status, _, _):
+            return status >= 500 || [401, 408, 409, 429].contains(status) ? .retry : .release
+        case .ownerChanged:
+            return .ownerChanged
+        case .profileRequired, .serverUpgradeRequired:
+            return .waitForCondition
+        case .unknownSetting, .scopeNotAllowed, .invalidValue, .noValueAtScope:
+            return .release
+        }
+    }
+}
+
+/// What every settings screen says about a held change, next to "Try Again"
+/// and "Discard Held Change".
+enum HeldSettingChange {
+    static let message =
+        "A change couldn't be saved to the server. It stays on this device until you try again or discard it."
+
+    /// Shown after "Discard Held Change" could not reach the server to find
+    /// the value to go back to.
+    static let discardNeedsServerMessage =
+        "Couldn't reach the server to discard this change. It stays on this device until the server can be reached."
+}
+
+/// The bounded backoff D4 allows for one key's latest value. After
+/// `maximumAutomaticRetries` failed retries the key is held.
+struct SettingWriteRetryPolicy: Sendable {
+    var maximumAutomaticRetries: Int = 5
+    var base: Duration = .seconds(1)
+    var maximum: Duration = .seconds(60)
+
+    static let `default` = SettingWriteRetryPolicy()
+
+    /// For a write the user is watching ("Saving…"): three retries over about
+    /// seven seconds, then the key is held.
+    static let interactive = SettingWriteRetryPolicy(
+        maximumAutomaticRetries: 3,
+        base: .seconds(1),
+        maximum: .seconds(4)
+    )
+
+    func delay(forAttempt attempt: Int) -> Duration {
+        let shift = min(max(attempt - 1, 0), 6)
+        return min(base * (1 << shift), maximum)
+    }
 }

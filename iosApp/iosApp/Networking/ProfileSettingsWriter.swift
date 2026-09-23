@@ -32,12 +32,7 @@ import OSLog
 /// above them.
 protocol ProfileSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -52,19 +47,8 @@ final class SiloProfileSettingsTransport: ProfileSettingsTransport {
         try await api.getEffectiveValues(keys: keys)
     }
 
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws {
-        _ = try await api.putValue(
-            key: key,
-            scope: .profile,
-            value: value,
-            mutationId: mutationId,
-            profileId: profileId
-        )
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
+        try await api.putValue(key: key, scope: .profile, value: value, profileId: profileId)
     }
 }
 
@@ -120,7 +104,24 @@ struct ProfilePreferences: Equatable, Sendable {
 /// toggle) rather than a slider or a stepper, so there is no stream of
 /// intermediate values worth coalescing, and the screens show a per-write
 /// "Saving… / Saved" state that a debounce would make dishonest.
+///
+/// A write that fails in a way a retry could fix is retried here, on a short
+/// bounded backoff, for as long as it is still the latest value for its key
+/// (owner decision D4). The write names a desired value (`natural_idempotent`),
+/// so a retry after a lost response converges instead of applying twice.
+/// When the bound runs out the write throws ``HeldChange`` and the editor
+/// holds that key until the user retries or discards it.
 final class ProfileSettingsWriter: @unchecked Sendable {
+
+    /// The latest value for a key ran out of automatic retries. It may or may
+    /// not have reached the server.
+    struct HeldChange: Error, Equatable {
+        let cause: SettingsAPIError
+    }
+
+    /// A newer local value for the key replaced this one while it waited to
+    /// be retried. That value's own write supersedes this one.
+    struct Superseded: Error, Equatable {}
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -128,22 +129,17 @@ final class ProfileSettingsWriter: @unchecked Sendable {
     )
 
     private let transport: ProfileSettingsTransport
+    private let retryPolicy: SettingWriteRetryPolicy
+    private let sleep: @Sendable (Duration) async throws -> Void
 
-    /// The mutation id in flight per key and profile, so a retry of the *same*
-    /// logical write replays the server's receipt instead of applying twice.
-    private struct MutationIdentity: Hashable {
-        let key: SettingKey
-        let profileId: String?
-    }
-
-    private let lock = NSLock()
-    private var inFlight: [MutationIdentity: (
-        value: SettingJSONValue,
-        mutationId: String
-    )] = [:]
-
-    init(transport: ProfileSettingsTransport) {
+    init(
+        transport: ProfileSettingsTransport,
+        retryPolicy: SettingWriteRetryPolicy = .interactive,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
         self.transport = transport
+        self.retryPolicy = retryPolicy
+        self.sleep = sleep
     }
 
     convenience init() {
@@ -180,42 +176,50 @@ final class ProfileSettingsWriter: @unchecked Sendable {
 
     // MARK: - Write
 
-    /// Write one profile-scoped value, holding its mutation id across retries.
+    /// Write one profile-scoped value, retrying it within the bound while
+    /// `isLatest` says it is still the value the user wants.
     ///
-    /// Throws ``SettingsAPIError`` so a caller can distinguish "this server is
-    /// too old" and "no profile selected" from a value the contract refused.
+    /// Throws ``SettingsAPIError`` for a failure retrying cannot fix (so a
+    /// caller can tell "this server is too old" and "no profile selected" from
+    /// a value the contract refused), ``HeldChange`` once the bound runs out,
+    /// and ``Superseded`` when `isLatest` turns false between attempts.
     func write(
         _ key: SettingKey,
         value: SettingJSONValue,
-        profileId: String? = nil
+        profileId: String? = nil,
+        isLatest: @escaping @MainActor () -> Bool = { true }
     ) async throws {
-        let mutationId = mutationId(for: key, value: value, profileId: profileId)
-        do {
-            try await transport.putValue(
-                key: key,
-                value: value,
-                mutationId: mutationId,
-                profileId: profileId
-            )
-            clearInFlight(key, profileId: profileId, matching: mutationId)
-        } catch {
-            let mapped = SettingsAPIError.from(error, key: key.rawValue, scope: .profile)
-            switch mapped {
-            case .unknownSetting, .clientLocalSetting, .scopeNotAllowed, .invalidValue, .mutationIdConflict:
-                // The contract refused it, so the id is spent: a retry of this
-                // exact content would fail identically, and reusing the id for
-                // corrected content is the 409 case. Drop it so the next
-                // attempt is a genuinely new write.
-                clearInFlight(key, profileId: profileId, matching: mutationId)
-                Self.logger.warning(
-                    "\(key.rawValue, privacy: .public): contract refused the profile write: \(String(describing: mapped), privacy: .public)"
-                )
-            case .serverUpgradeRequired, .profileRequired, .noValueAtScope, .server, .transport:
-                // Retryable in principle: keep the id so a repeat of the same
-                // logical write replays rather than double-applies.
-                break
+        var failedAttempts = 0
+        while true {
+            let failure: SettingsAPIError
+            do {
+                try await transport.putValue(key: key, value: value, profileId: profileId)
+                return
+            } catch {
+                failure = SettingsAPIError.from(error, key: key.rawValue, scope: .profile)
             }
-            throw mapped
+            guard failure.writeFailure == .retry else {
+                if failure.writeFailure == .release {
+                    Self.logger.warning(
+                        "\(key.rawValue, privacy: .public): the server refused the profile write: \(String(describing: failure), privacy: .public)"
+                    )
+                }
+                throw failure
+            }
+            failedAttempts += 1
+            guard failedAttempts <= retryPolicy.maximumAutomaticRetries else {
+                Self.logger.warning(
+                    "\(key.rawValue, privacy: .public): held after \(failedAttempts) failed attempts: \(String(describing: failure), privacy: .public)"
+                )
+                throw HeldChange(cause: failure)
+            }
+            do {
+                try await sleep(retryPolicy.delay(forAttempt: failedAttempts))
+            } catch {
+                // Cancelled while waiting: the change is still owed.
+                throw failure
+            }
+            guard await isLatest() else { throw Superseded() }
         }
     }
 
@@ -226,40 +230,5 @@ final class ProfileSettingsWriter: @unchecked Sendable {
             return .null
         }
         return .string(code)
-    }
-
-    // MARK: - Mutation ids
-
-    /// The id for this write: reused when the same content is being retried,
-    /// fresh when the content changed.
-    private func mutationId(
-        for key: SettingKey,
-        value: SettingJSONValue,
-        profileId: String?
-    ) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        let identity = MutationIdentity(key: key, profileId: profileId)
-        if let existing = inFlight[identity], existing.value == value {
-            return existing.mutationId
-        }
-        let minted = newSettingMutationId()
-        inFlight[identity] = (value, minted)
-        return minted
-    }
-
-    /// Retire an id once its write settled, but only if a newer write has not
-    /// already claimed the key for this profile.
-    private func clearInFlight(
-        _ key: SettingKey,
-        profileId: String?,
-        matching mutationId: String
-    ) {
-        lock.lock()
-        let identity = MutationIdentity(key: key, profileId: profileId)
-        if inFlight[identity]?.mutationId == mutationId {
-            inFlight.removeValue(forKey: identity)
-        }
-        lock.unlock()
     }
 }

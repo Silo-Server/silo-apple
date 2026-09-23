@@ -312,7 +312,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
     func testSubtitlePrefsAreWrittenAtProfileScope() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleLanguage = "ja"
         editor.subtitleMode = SubtitleMode.always.rawValue
@@ -332,7 +332,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// `invalid_value`.
     func testNoLanguagePreferenceIsSentAsNullNotAnEmptyString() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleLanguage = PlaybackPrefSentinel.none
         editor.preferredMetadataLanguage = PlaybackPrefSentinel.none
@@ -349,7 +349,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
     func testMetadataLanguageIsWrittenAtProfileScope() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.preferredMetadataLanguage = "de"
         await editor.saveMetadataLanguage()
@@ -365,7 +365,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// so the shadowing is real on existing installs.
     func testProfileScopeNeverWritesTheAudioLanguage() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleLanguage = "fr"
         await editor.saveSubtitlePrefs()
@@ -381,7 +381,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
     func testEveryProfileKeyIsReadInOneBatch() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
 
@@ -403,7 +403,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             .init(key: SettingKey.catalogMetadataLanguage.rawValue, value: .string("it"),
                   source: .scope(.profile), scope: .profile),
         ]
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
 
@@ -422,7 +422,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             .init(key: SettingKey.playbackShowForcedSubtitles.rawValue, value: .bool(false),
                   source: .scope(.profile), scope: .profile),
         ]
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
 
@@ -439,7 +439,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             .init(key: SettingKey.catalogMetadataLanguage.rawValue, value: .null,
                   source: .contractDefault),
         ]
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
 
@@ -454,7 +454,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testAnOldServerSurfacesAsUpgradeRequiredOnRead() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.failReadsWith = .serverUpgradeRequired
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
 
@@ -464,7 +464,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testAnOldServerReadDisablesSubsequentProfileSaveAttempts() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.failReadsWith = .serverUpgradeRequired
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         await editor.load()
         editor.subtitleLanguage = "en"
@@ -479,7 +479,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testAnOldServerSurfacesAsUpgradeRequiredOnWrite() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.failWritesWith = .serverUpgradeRequired
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleLanguage = "en"
         await editor.saveSubtitlePrefs()
@@ -501,7 +501,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         transport.failWritesWith = .serverUpgradeRequired
         await transport.writeGate.block(.string("en"))
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleLanguage = "en"
         let firstSave = Task { await editor.saveSubtitlePrefs() }
@@ -537,7 +537,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let transport = FakeProfileSettingsTransport()
         transport.failWritesWith = .serverUpgradeRequired
         await transport.writeGate.block(.string("en"))
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.preferredMetadataLanguage = "en"
         let firstSave = Task { await editor.saveMetadataLanguage() }
@@ -574,7 +574,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// the server having wiped their settings.
     func testATransientReadFailureLeavesTheEditorAlone() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.subtitleLanguage = "ko"
         editor.showForcedSubtitles = "off"
 
@@ -586,37 +586,192 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertFalse(editor.serverUpgradeRequired)
     }
 
-    // MARK: - Idempotency
+    // MARK: - Bounded retry and held changes (owner decision D4)
 
-    /// One mutation id per logical write, reused across retries so the server
-    /// replays its receipt rather than applying twice.
-    func testRetryingTheSameWriteReusesItsMutationId() async throws {
+    /// A write that may have been lost is retried as the same desired value
+    /// within the bound, then held: not sent again until the user asks.
+    func testATransientFailureIsRetriedWithinTheBoundThenHeld() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
 
         editor.subtitleMode = SubtitleMode.always.rawValue
         transport.failWritesWith = .server(status: 503, code: nil, message: nil)
         await editor.saveSubtitlePrefs()
 
+        var modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
+        XCTAssertEqual(modeWrites.map(\.value), Array(repeating: .string("always"), count: 4),
+                       "one attempt plus three bounded retries of the same value")
+        XCTAssertEqual(editor.saveState, .held)
+        XCTAssertTrue(editor.hasHeldChanges)
+
+        // A later save for any reason must not send the held value on its own.
         transport.failWritesWith = nil
         await editor.saveSubtitlePrefs()
+        XCTAssertEqual(transport.writes().filter { $0.key == .playbackSubtitleMode }.count, 4)
 
-        let modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
-        // Two attempts: the failed one and the retry. A count of one means the
-        // failed language write earlier in the batch aborted the remaining
-        // independent keys, which is
-        // the regression this test exists to catch — so it is asserted, not
-        // skipped. XCTSkipUnless would report that exact failure as a *skip*,
-        // which CI counts as a pass.
-        XCTAssertEqual(modeWrites.count, 2,
-                       "a failed write must not abort the independent keys after it")
-        XCTAssertEqual(modeWrites.first?.mutationId, modeWrites.last?.mutationId,
-                       "a retry of the same content must replay its id, not mint a new one")
+        // "Try Again" sends it with a fresh budget.
+        await editor.retryHeldChanges()
+        modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
+        XCTAssertEqual(modeWrites.count, 5)
+        XCTAssertEqual(editor.saveState, .saved)
+        XCTAssertFalse(editor.hasHeldChanges)
     }
 
-    func testChangingTheValueMintsAFreshMutationId() async throws {
+    func testDiscardingAHeldChangeRepaintsTheServerValueWithoutWriting() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+
+        editor.subtitleLanguage = "ja"
+        transport.failWritesWith = .transport(description: "offline")
+        await editor.saveSubtitlePrefs()
+        XCTAssertTrue(editor.hasHeldChanges)
+
+        // A reload while held keeps showing the user's unsaved choice.
+        await editor.load()
+        XCTAssertEqual(editor.subtitleLanguage, "ja")
+        await editor.saveSubtitlePrefs()
+        let attempts = transport.writes().count
+
+        await editor.discardHeldChanges()
+        XCTAssertFalse(editor.hasHeldChanges)
+        XCTAssertEqual(editor.subtitleLanguage, "en", "discarding shows what the server holds")
+        XCTAssertNil(editor.saveState)
+        await editor.saveSubtitlePrefs()
+        XCTAssertEqual(transport.writes().count, attempts, "discarding sends nothing")
+    }
+
+    /// Offline, the reload after a discard fails and leaves the fields alone.
+    /// The discarded value must not stay on screen as an unsaved edit that
+    /// the next change to any other control sends along with it.
+    func testDiscardingAHeldChangeOfflineDoesNotSendItWithTheNextEdit() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        transport.effective = [
+            .init(
+                key: SettingKey.playbackSubtitleLanguage.rawValue,
+                value: .string("en"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+            .init(
+                key: SettingKey.catalogMetadataLanguage.rawValue,
+                value: .string("de"),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+        await editor.load()
+
+        transport.failWritesWith = .transport(description: "offline")
+        transport.failReadsWith = .transport(description: "offline")
+        editor.subtitleLanguage = "ja"
+        await editor.saveSubtitlePrefs()
+        editor.preferredMetadataLanguage = "ko"
+        await editor.saveMetadataLanguage()
+        XCTAssertTrue(editor.hasHeldChanges)
+        let heldAttempts = transport.writes().count
+
+        await editor.discardHeldChanges()
+        XCTAssertFalse(editor.hasHeldChanges)
+        XCTAssertEqual(editor.subtitleLanguage, "en", "the discarded control shows the last server value")
+        XCTAssertEqual(editor.preferredMetadataLanguage, "de")
+
+        transport.failWritesWith = nil
+        editor.subtitleMode = SubtitleMode.always.rawValue
+        await editor.saveSubtitlePrefs()
+        await editor.saveMetadataLanguage()
+
+        let sent = transport.writes().dropFirst(heldAttempts)
+        XCTAssertEqual(sent.map(\.key), [.playbackSubtitleMode], "only the new edit is sent")
+        XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    func testANewEditReplacesAHeldValue() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+
+        editor.preferredMetadataLanguage = "ja"
+        transport.failWritesWith = .transport(description: "offline")
+        await editor.saveMetadataLanguage()
+        XCTAssertEqual(editor.saveState, .held)
+
+        transport.failWritesWith = nil
+        editor.preferredMetadataLanguage = "ko"
+        await editor.saveMetadataLanguage()
+
+        let values = transport.writes().filter { $0.key == .catalogMetadataLanguage }.map(\.value)
+        XCTAssertEqual(values.last, .string("ko"))
+        XCTAssertFalse(values.dropLast().contains(.string("ko")))
+        XCTAssertEqual(editor.saveState, .saved)
+        XCTAssertFalse(editor.hasHeldChanges)
+    }
+
+    /// A refusal retrying cannot change is reported, not retried.
+    func testARefusedWriteIsNotRetried() async throws {
+        let transport = FakeProfileSettingsTransport()
+        transport.failWritesWith = .invalidValue(message: "not a language tag")
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+        editor.seed(from: nil)
+
+        editor.subtitleLanguage = "not a tag"
+        await editor.saveSubtitlePrefs()
+
+        XCTAssertEqual(transport.writes().count, 1)
+        XCTAssertEqual(editor.saveState, .failed("not a language tag"))
+        XCTAssertFalse(editor.hasHeldChanges)
+    }
+
+    /// A value the server refused is released: the control goes back to the
+    /// saved value, and the next edit of a sibling control does not send the
+    /// refused value again.
+    func testARefusedSubtitleWriteIsNotSentAgainWithTheNextEdit() async throws {
+        let refusals: [SettingsAPIError] = [
+            .invalidValue(message: "not a language tag"),
+            .server(status: 403, code: "forbidden", message: nil),
+        ]
+        for refusal in refusals {
+            let transport = FakeProfileSettingsTransport()
+            transport.failWritesByKey[.playbackSubtitleLanguage] = refusal
+            let editor = ProfilePrefsEditor(writer: Self.writer(transport))
+            editor.seed(from: nil)
+
+            editor.subtitleLanguage = "not a tag"
+            await editor.saveSubtitlePrefs()
+            guard case .failed = editor.saveState else {
+                return XCTFail("the refusal must be reported: \(refusal)")
+            }
+            XCTAssertEqual(editor.subtitleLanguage, PlaybackPrefSentinel.none, "\(refusal)")
+
+            editor.subtitleMode = SubtitleMode.always.rawValue
+            await editor.saveSubtitlePrefs()
+
+            XCTAssertEqual(
+                transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count,
+                1,
+                "a refused value is not re-sent: \(refusal)"
+            )
+            XCTAssertEqual(
+                transport.writes().filter { $0.key == .playbackSubtitleMode }.map(\.value),
+                [.string("always")]
+            )
+            XCTAssertEqual(editor.saveState, .saved)
+        }
+    }
+
+    func testEachEditProducesItsOwnWrite() async throws {
+        let transport = FakeProfileSettingsTransport()
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleMode = SubtitleMode.always.rawValue
         await editor.saveSubtitlePrefs()
@@ -624,42 +779,13 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.saveSubtitlePrefs()
 
         let modeWrites = transport.writes().filter { $0.key == .playbackSubtitleMode }
-        XCTAssertEqual(modeWrites.count, 2, "each edit must produce its own write")
-        // Different content under a reused id is a 409 by design.
-        XCTAssertNotEqual(modeWrites.first?.mutationId, modeWrites.last?.mutationId)
-    }
-
-    func testSameValueForAnotherProfileMintsAFreshMutationId() async throws {
-        let transport = FakeProfileSettingsTransport()
-        transport.failWritesWith = .server(status: 503, code: nil, message: nil)
-        let writer = ProfileSettingsWriter(transport: transport)
-
-        for profileId in ["profile-1", "profile-2"] {
-            do {
-                try await writer.write(
-                    .playbackSubtitleMode,
-                    value: .string(SubtitleMode.always.rawValue),
-                    profileId: profileId
-                )
-                XCTFail("the fake was expected to fail the write")
-            } catch {
-                // Retryable by design: the writer retains each logical id.
-            }
-        }
-
-        let writes = transport.writes().filter { $0.key == .playbackSubtitleMode }
-        XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-2"])
-        XCTAssertNotEqual(
-            writes.first?.mutationId,
-            writes.last?.mutationId,
-            "mutation identity includes the profile, not only key and value"
-        )
+        XCTAssertEqual(modeWrites.map(\.value), [.string("always"), .string("off")])
     }
 
     func testQueuedSubtitleEditsKeepTheProfileThatOwnedEachEdit() async throws {
         let transport = FakeProfileSettingsTransport()
         await transport.writeGate.block(.string("ja"))
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.bindProfile(id: "profile-1")
         editor.seed(from: nil)
 
@@ -685,7 +811,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             .transport(description: "response lost"),
             for: .playbackSubtitleLanguage
         )
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.bindProfile(id: "profile-1")
         editor.seed(from: nil)
 
@@ -702,18 +828,17 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
 
         let writes = transport.writes().filter { $0.key == .playbackSubtitleLanguage }
         XCTAssertEqual(writes.map(\.value), [.string("ja"), .string("ja"), .string("ko")])
-        XCTAssertEqual(writes.map(\.profileId), ["profile-1", "profile-1", "profile-2"])
         XCTAssertEqual(
-            writes[0].mutationId,
-            writes[1].mutationId,
-            "the previous profile's ambiguous write must retry with its original identity"
+            writes.map(\.profileId),
+            ["profile-1", "profile-1", "profile-2"],
+            "the previous profile's ambiguous write is retried for that profile before the new edit"
         )
     }
 
     func testQueuedMetadataEditsKeepTheProfileThatOwnedEachEdit() async throws {
         let transport = FakeProfileSettingsTransport()
         await transport.writeGate.block(.string("ja"))
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.bindProfile(id: "profile-1")
         editor.seed(from: nil)
 
@@ -742,7 +867,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             let transport = FakeProfileSettingsTransport()
             await transport.writeGate.block(.string("ja"))
             transport.failWritesWith = outcome
-            let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+            let editor = ProfilePrefsEditor(writer: Self.writer(transport))
             editor.bindProfile(id: "profile-1")
             editor.seed(from: nil)
 
@@ -773,7 +898,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// whole household — with the user having touched nothing.
     func testOpeningTheScreenDoesNotPromoteADeviceOverrideToTheProfile() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         // The profile's own language is "ja"; this device has a profile_device
         // row of "en", which is what the effective endpoint resolves.
@@ -814,7 +939,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// after a load": a control the user actually touches still saves.
     func testAnEditAfterALoadStillSaves() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         transport.effective = [
             .init(
@@ -838,15 +963,16 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(editor.saveState, .saved)
     }
 
-    /// A write that failed is still owed, so the next save must retry it rather
-    /// than treat the field as already persisted.
+    /// A write that was not sent because a precondition failed is still owed,
+    /// so the next save must retry it rather than treat the field as already
+    /// persisted.
     func testAFailedWriteIsRetriedByTheNextSave() async throws {
         let transport = FakeProfileSettingsTransport()
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.seed(from: nil)
         editor.subtitleLanguage = "ko"
-        transport.failWritesWith = .server(status: 503, code: nil, message: nil)
+        transport.failWritesWith = .profileRequired
         await editor.saveSubtitlePrefs()
         XCTAssertEqual(transport.writes().filter { $0.key == .playbackSubtitleLanguage }.count, 1)
 
@@ -862,7 +988,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testOverlappingEditsToOneProfileKeyLandNewestLast() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.writeDelays[.string("ja")] = .milliseconds(100)
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
 
         editor.subtitleLanguage = "ja"
         let firstSave = Task { @MainActor in await editor.saveSubtitlePrefs() }
@@ -893,7 +1019,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             .transport(description: "response lost"),
             for: .playbackSubtitleLanguage
         )
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
         editor.subtitleLanguage = "ja"
@@ -926,11 +1052,11 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testSuccessfulLanguageWriteUpdatesThePreferenceStoreWhenASiblingFails() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.failWritesByKey[.playbackSubtitleMode] = .server(
-            status: 503,
-            code: "unavailable",
+            status: 403,
+            code: "forbidden",
             message: nil
         )
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         ProfilePrefsStore.shared.clear()
         defer { ProfilePrefsStore.shared.clear() }
 
@@ -958,7 +1084,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
                 scope: .profileDevice
             ),
         ]
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         await editor.load()
 
         editor.subtitleLanguage = "ja"
@@ -990,7 +1116,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
                 scope: .profileDevice
             ),
         ]
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         await editor.load()
         transport.effectiveDelay = .milliseconds(100)
 
@@ -1025,7 +1151,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testMetadataEditRevertedDuringWriteStillLandsNewestValue() async throws {
         let transport = FakeProfileSettingsTransport()
         transport.writeDelays[.string("ja")] = .milliseconds(100)
-        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(transport: transport))
+        let editor = ProfilePrefsEditor(writer: Self.writer(transport))
         editor.seed(from: nil)
 
         editor.preferredMetadataLanguage = "ja"
@@ -1048,6 +1174,14 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         )
         XCTAssertEqual(editor.preferredMetadataLanguage, PlaybackPrefSentinel.none)
         XCTAssertEqual(editor.saveState, .saved)
+    }
+
+    /// A writer whose bounded retries run without real delays.
+    private static func writer(_ transport: ProfileSettingsTransport) -> ProfileSettingsWriter {
+        ProfileSettingsWriter(
+            transport: transport,
+            retryPolicy: .init(maximumAutomaticRetries: 3, base: .milliseconds(1), maximum: .milliseconds(1))
+        )
     }
 
     private func waitUntil(
@@ -1074,7 +1208,6 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
     struct Write: Equatable {
         let key: SettingKey
         let value: SettingJSONValue
-        let mutationId: String
         let profileId: String?
     }
 
@@ -1139,19 +1272,9 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
-    func putValue(
-        key: SettingKey,
-        value: SettingJSONValue,
-        mutationId: String,
-        profileId: String?
-    ) async throws {
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
         lock.lock()
-        let write = Write(
-            key: key,
-            value: value,
-            mutationId: mutationId,
-            profileId: profileId
-        )
+        let write = Write(key: key, value: value, profileId: profileId)
         recordedWrites.append(write)
         let failure = failWritesByKey[key] ?? failWritesWith
         let delay = writeDelays[value]

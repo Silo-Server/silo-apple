@@ -72,6 +72,12 @@ struct TVSubtitleSettingsPane: View {
             }
         }
         prefSaveFooter
+        if viewModel.prefs.hasHeldChanges {
+            TVHeldSettingChangesRows(
+                retry: { await viewModel.prefs.retryHeldChanges() },
+                discard: { await viewModel.prefs.discardHeldChanges() }
+            )
+        }
     }
 
     @ViewBuilder
@@ -223,6 +229,9 @@ struct TVSubtitleSettingsPane: View {
                 TVSettingsWarningFooter("Couldn't save: \(err)")
             case .serverUpgradeRequired:
                 TVSettingsWarningFooter(ProfilePrefsEditor.serverUpgradeMessage)
+            case .held:
+                // TVHeldSettingChangesRows below carries the message.
+                EmptyView()
             }
         }
     }

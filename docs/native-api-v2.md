@@ -46,9 +46,10 @@ transient dispatch checks serve different purposes: a process restart alone
 must not erase an unresolved durable target barrier, while a different login
 or profile cannot take ownership of an old command.
 
-Recovery is operation-specific. Canonical settings use typed single-dispatch
-contracts and hold uncertain writes; they do not invent an idempotency or
-revision-precondition contract. Playback can resolve an exact retained command
+Recovery is operation-specific. Canonical settings value writes are
+`natural_idempotent`: a 401 refreshes the session once and re-sends the same
+desired value under the same captured owner. They hold uncertain writes and do
+not invent an idempotency or revision-precondition contract. Playback can resolve an exact retained command
 where its accepted protocol explicitly supports that resolution. Neither path
 may convert old queued intent bytes, infer new authorization or rebase an
 unresolved operation onto a new owner.

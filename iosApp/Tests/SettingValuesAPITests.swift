@@ -376,115 +376,6 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertFalse(capabilities.supportsUICustomization(clientFamily: "tv"))
     }
 
-    // MARK: - Error mapping
-
-    func testBare404MapsToServerUpgradeRequired() {
-        // The router's own 404: the route does not exist, so the server
-        // predates the canonical settings API entirely.
-        XCTAssertEqual(
-            SettingsAPIError.from(HTTPError.http(statusCode: 404, body: nil)),
-            .serverUpgradeRequired
-        )
-        XCTAssertEqual(
-            SettingsAPIError.from(HTTPError.http(statusCode: 404, body: "404 page not found")),
-            .serverUpgradeRequired
-        )
-    }
-
-    func test404WithASiloEnvelopeIsNotAnUpgradePrompt() {
-        // A contract-aware 404 means the key or the row is missing, which is a
-        // normal answer — telling the user to upgrade their server for it
-        // would be wrong.
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 404,
-                    body: #"{"error":"unknown_setting","message":"No setting named x exists"}"#
-                ),
-                key: "playback.nope"
-            ),
-            .unknownSetting(key: "playback.nope")
-        )
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 404,
-                    body: #"{"error":"not_found","message":"No value is set at this scope"}"#
-                )
-            ),
-            .noValueAtScope
-        )
-    }
-
-    func test404WithAnUnrecognizedSiloEnvelopeIsNotAnUpgradePromptEither() {
-        // The envelope is the signal, not the status: any Silo handler answered,
-        // so the route exists and the server is not too old — even when this
-        // build does not know the code yet. Telling the user to upgrade here
-        // would be actively misleading.
-        if case .server(let status, let code, _) = SettingsAPIError.from(
-            HTTPError.http(
-                statusCode: 404,
-                body: #"{"error":"profile_not_found","message":"No such profile"}"#
-            )
-        ) {
-            XCTAssertEqual(status, 404)
-            XCTAssertEqual(code, "profile_not_found")
-        } else {
-            XCTFail("an enveloped 404 must not map to .serverUpgradeRequired")
-        }
-    }
-
-    func testMutationIdConflictIsItsOwnCase() {
-        // Reusing an id for different content must not look like a generic
-        // 409 — a caller that retries with a fresh id would double-apply.
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 409,
-                    body: #"{"error":"mutation_id_conflict","message":"This mutation id was used for a different write"}"#
-                )
-            ),
-            .mutationIdConflict
-        )
-    }
-
-    func testContractErrorsMapToNamedCases() {
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 400,
-                    body: #"{"error":"scope_not_allowed","message":"x cannot be set at profile_series"}"#
-                ),
-                key: "playback.preferred_quality",
-                scope: .profileSeries
-            ),
-            .scopeNotAllowed(key: "playback.preferred_quality", scope: .profileSeries)
-        )
-        XCTAssertEqual(
-            SettingsAPIError.from(
-                HTTPError.http(
-                    statusCode: 400,
-                    body: #"{"error":"client_local_setting","message":"device-local"}"#
-                ),
-                key: "downloads.wifi_only"
-            ),
-            .clientLocalSetting(key: "downloads.wifi_only")
-        )
-        if case .invalidValue = SettingsAPIError.from(
-            HTTPError.http(statusCode: 400, body: #"{"error":"invalid_value","message":"not in enum"}"#)
-        ) {} else {
-            XCTFail("invalid_value must map to .invalidValue")
-        }
-        if case .server(let status, let code, _) = SettingsAPIError.from(
-            HTTPError.http(statusCode: 500, body: #"{"error":"internal_error","message":"boom"}"#)
-        ) {
-            XCTAssertEqual(status, 500)
-            XCTAssertEqual(code, "internal_error")
-        } else {
-            XCTFail("an unrecognized failure must stay a generic server error")
-        }
-    }
-
     // MARK: - Requests over the wire
 
     func testGetContractCapabilitiesReportsUpgradeRequiredOnAV1OnlyServer() async throws {
@@ -571,60 +462,6 @@ final class SettingValuesAPITests: XCTestCase {
         guard case .available = await api.getContractCapabilities(requestIdentity: current) else {
             return XCTFail("the current identity must be accepted")
         }
-    }
-
-    func testPutValueSendsScopeIdentityMutationIdAndProfileHeader() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-        let mutationId = newSettingMutationId()
-
-        let receipt = try await api.putValue(
-            key: .playbackSubtitleAppearance,
-            scope: .profileDevice,
-            value: ["fontSize": "large", "backgroundOpacity": 75],
-            mutationId: mutationId
-        )
-
-        XCTAssertFalse(receipt.isIdempotentReplay)
-        XCTAssertEqual(receipt.value.settingKey, .playbackSubtitleAppearance)
-
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.method, "PUT")
-        XCTAssertEqual(recorded.path, "/api/v1/settings/values/playback.subtitle_appearance")
-        XCTAssertEqual(recorded.query["scope"], "profile_device")
-        XCTAssertEqual(recorded.header("X-Silo-Mutation-Id"), mutationId)
-        // The trap this guards: scope=profile_device is rejected without the
-        // profile header, which the client previously never sent.
-        XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
-        XCTAssertEqual(recorded.header("X-Silo-Device-Id")?.isEmpty, false)
-        XCTAssertEqual(
-            recorded.header("X-Silo-Client-Family"),
-            AppleDeviceIdentity.current.clientFamily
-        )
-        // And the body must carry the value's keys verbatim.
-        let body = String(data: recorded.body ?? Data(), encoding: .utf8) ?? ""
-        XCTAssertTrue(body.contains("\"fontSize\""), "body must keep camelCase value keys: \(body)")
-        XCTAssertFalse(body.contains("font_size"))
-    }
-
-    func testPutValueExplicitProfileOverridesTheCurrentSessionHeader() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI(profileId: "new-session-profile")
-
-        _ = try await api.putValue(
-            key: .playerHdrEnabled,
-            scope: .profileDevice,
-            value: false,
-            mutationId: newSettingMutationId(),
-            profileId: "profile-captured-with-write"
-        )
-
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(
-            recorded.header("X-Profile-Id"),
-            "profile-captured-with-write",
-            "the queued profile must override a newer session header"
-        )
     }
 
     func testCapturedSettingsRequestRefusesToFollowANewActiveIdentity() async throws {
@@ -2425,105 +2262,6 @@ final class SettingValuesAPITests: XCTestCase {
         XCTAssertEqual(serverBRefresh, "decoy-token")
     }
 
-    func testPutNavigationShortcutItemSendsAtomicBodyMutationAndProfileHeaders() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-        let mutationId = newSettingMutationId()
-        let item = PrimaryMenuItem.section(
-            libraryId: 7,
-            sectionId: "recently-added",
-            label: "Recently Added"
-        )
-
-        let receipt = try await api.putNavigationShortcutItem(
-            item,
-            present: true,
-            mutationId: mutationId
-        )
-
-        XCTAssertEqual(receipt.value.settingKey, .navShortcuts)
-        XCTAssertEqual(
-            try receipt.value.value.decoded(as: NavigationShortcutsPreference.self),
-            NavigationShortcutsPreference(items: [item])
-        )
-
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.method, "PUT")
-        XCTAssertEqual(recorded.path, "/api/v1/settings/values/nav.shortcuts/item")
-        XCTAssertTrue(recorded.query.isEmpty)
-        XCTAssertEqual(recorded.header("X-Silo-Mutation-Id"), mutationId)
-        XCTAssertEqual(recorded.header("X-Profile-Id"), Self.stubProfileId)
-
-        let body = try XCTUnwrap(recorded.body)
-        let object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: body) as? [String: Any]
-        )
-        XCTAssertEqual(object["present"] as? Bool, true)
-        let encodedItem = try XCTUnwrap(object["item"] as? [String: Any])
-        XCTAssertEqual(encodedItem["type"] as? String, "section")
-        XCTAssertEqual(encodedItem["library_id"] as? Int, 7)
-        XCTAssertEqual(encodedItem["section_id"] as? String, "recently-added")
-        XCTAssertEqual(encodedItem["label"] as? String, "Recently Added")
-    }
-
-    func testPutNavigationShortcutItemRejectsBuiltinsBeforeSending() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-
-        do {
-            _ = try await api.putNavigationShortcutItem(
-                .builtin(.home),
-                present: true,
-                mutationId: newSettingMutationId()
-            )
-            XCTFail("built-in destinations are not valid nav.shortcuts items")
-        } catch let error as SettingsAPIError {
-            guard case .invalidValue = error else {
-                return XCTFail("expected a local invalid-value error, got \(error)")
-            }
-        }
-
-        XCTAssertNil(SettingsStubProtocol.state().lastRequest)
-    }
-
-    func testPutValueSurfacesAnIdempotentReplay() async throws {
-        SettingsStubProtocol.reset(mode: .idempotentReplay)
-        let api = await makeStubbedAPI()
-
-        let receipt = try await api.putValue(
-            key: .playbackPreferredQuality,
-            scope: .profile,
-            value: "2160p",
-            mutationId: "11111111-1111-1111-1111-111111111111"
-        )
-        XCTAssertTrue(receipt.isIdempotentReplay, "a replayed receipt must be distinguishable")
-        XCTAssertEqual(receipt.value.value, .string("2160p"))
-    }
-
-    func testPutValueRejectsABlankMutationIdBeforeSendingARequest() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-
-        do {
-            _ = try await api.putValue(
-                key: .playbackPreferredQuality,
-                scope: .profile,
-                value: "1080p",
-                mutationId: "  \n\t"
-            )
-            XCTFail("a blank mutation id must not silently disable idempotency")
-        } catch let error as SettingsAPIError {
-            guard case .invalidValue = error else {
-                return XCTFail("expected a local invalid-value error, got \(error)")
-            }
-        }
-
-        XCTAssertNil(
-            SettingsStubProtocol.state().lastRequest,
-            "local mutation-id validation must run before any network activity"
-        )
-    }
-
     func testGetEffectiveValuesSendsRepeatedQueryParams() async throws {
         SettingsStubProtocol.reset(mode: .normal)
         let api = await makeStubbedAPI()
@@ -2613,25 +2351,6 @@ final class SettingValuesAPITests: XCTestCase {
         let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
         XCTAssertEqual(recorded.queryItems, [], "no keys means every remote definition, not keys=")
         XCTAssertNil(recorded.query["profile_id"], "the household-parent override is never sent")
-    }
-
-    func testDeleteValueSendsTheScopeAndMapsAMissingRow() async throws {
-        SettingsStubProtocol.reset(mode: .normal)
-        let api = await makeStubbedAPI()
-
-        try await api.deleteValue(key: .playbackSubtitleLanguage, scope: .profileLibrary(libraryId: 7))
-        let recorded = try XCTUnwrap(SettingsStubProtocol.state().lastRequest)
-        XCTAssertEqual(recorded.method, "DELETE")
-        XCTAssertEqual(recorded.query["scope"], "profile_library")
-        XCTAssertEqual(recorded.query["library_id"], "7")
-
-        SettingsStubProtocol.reset(mode: .nothingStored)
-        do {
-            try await api.deleteValue(key: .playbackSubtitleLanguage, scope: .profile)
-            XCTFail("clearing an unset scope must surface as .noValueAtScope")
-        } catch let error as SettingsAPIError {
-            XCTAssertEqual(error, .noValueAtScope)
-        }
     }
 
     func testProfileScopedCallWithoutAProfileFailsLocally() async throws {
@@ -2788,10 +2507,6 @@ final class SettingsStubProtocol: URLProtocol {
         case serverTooOld
         /// A server with the canonical routes but an older manifest revision.
         case olderContractRevision
-        /// A write whose mutation id the server already applied.
-        case idempotentReplay
-        /// A delete addressing a scope with no stored value.
-        case nothingStored
         /// Two expired scoped requests race one rotating account refresh.
         case concurrentScopedRefresh
         /// A scoped request owns refresh while an ordinary 401 joins it.
@@ -3078,37 +2793,6 @@ final class SettingsStubProtocol: URLProtocol {
                  "revision":\(responseRevision)}
                 """)
             }
-        case ("PUT", "/api/v1/settings/values/nav.shortcuts/item"):
-            let value = Self.shortcutValueFromMutationBody(recorded.body) ?? #"{"items":[]}"#
-            let replay = mode == .idempotentReplay
-            respond(
-                status: 200,
-                body: """
-                {"key":"nav.shortcuts","scope":"profile",
-                 "value":\(value),"revision":\(replay ? 0 : 3)}
-                """,
-                contentType: "application/json",
-                headers: replay ? ["X-Silo-Idempotent-Replay": "true"] : [:]
-            )
-        case ("PUT", let path) where path.hasPrefix("/api/v1/settings/values/"):
-            let key = String(path.dropFirst("/api/v1/settings/values/".count))
-            let value = Self.valueFromWriteBody(recorded.body) ?? "null"
-            let replay = mode == .idempotentReplay
-            respond(
-                status: 200,
-                body: """
-                {"key":"\(key)","scope":"\(recorded.query["scope"] ?? "")",
-                 "value":\(value),"revision":\(replay ? 0 : 3)}
-                """,
-                contentType: "application/json",
-                headers: replay ? ["X-Silo-Idempotent-Replay": "true"] : [:]
-            )
-        case ("DELETE", let path) where path.hasPrefix("/api/v1/settings/values/"):
-            if mode == .nothingStored {
-                respond(status: 404, body: #"{"error":"not_found","message":"No value is set at this scope"}"#)
-            } else {
-                respond(status: 204, body: "")
-            }
         default:
             respond(status: 404, body: #"{"error":"not_found","message":"unstubbed route"}"#)
         }
@@ -3269,35 +2953,6 @@ final class SettingsStubProtocol: URLProtocol {
         {"type":"https://siloserver.org/docs/api/v2/problems/internal_error","title":"Internal error",
          "status":\(status),"detail":"An unexpected error occurred."}
         """
-    }
-
-    /// Pull the raw `value` back out of a `{"value": …}` body without
-    /// re-encoding it, so a test can assert the stub echoed exactly what the
-    /// client sent.
-    private static func valueFromWriteBody(_ body: Data?) -> String? {
-        guard let body,
-              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let value = object["value"]
-        else { return nil }
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: value,
-            options: [.fragmentsAllowed, .sortedKeys]
-        ) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func shortcutValueFromMutationBody(_ body: Data?) -> String? {
-        guard let body,
-              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let item = object["item"] as? [String: Any],
-              let present = object["present"] as? Bool
-        else { return nil }
-        let value: [String: Any] = ["items": present ? [item] : []]
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: value,
-            options: [.sortedKeys]
-        ) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     private static func lowercasedHeaders(_ headers: [String: String]) -> [String: String] {

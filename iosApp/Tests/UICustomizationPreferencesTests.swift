@@ -1182,7 +1182,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         let operation = try XCTUnwrap(snapshot.shortcutOperations.first)
         XCTAssertEqual(snapshot.shortcutOperations.count, 1)
         XCTAssertEqual(operation.item.id, "collection|0|0#|13#featured:2026")
-        XCTAssertEqual(operation.mutationId, "legacy-collection-mutation")
+        XCTAssertTrue(operation.present, "the cache written with a mutation id still replays")
         XCTAssertEqual(preferences.shortcuts.items.map(\.id), [operation.item.id])
     }
 
@@ -2438,9 +2438,9 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(snapshot.shortcutOperations.map(\.present), [true, true])
         XCTAssertEqual(snapshot.shortcutOperations.count, 2)
         XCTAssertEqual(
-            Set(snapshot.shortcutOperations.map(\.mutationId)).count,
-            1,
-            "an ambiguous atomic operation must retain its idempotency key across restart"
+            Set(snapshot.shortcutOperations.map(\.item.id)),
+            ["library:7"],
+            "an ambiguous atomic operation is retried as the same desired state after restart"
         )
         XCTAssertEqual(restarted.shortcuts.items.map(\.id), ["library:7"])
         XCTAssertNil(restarted.syncErrorMessage)
@@ -2496,7 +2496,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.shortcutOperations.count, 2)
-        XCTAssertEqual(Set(snapshot.shortcutOperations.map(\.mutationId)).count, 1)
+        XCTAssertEqual(Set(snapshot.shortcutOperations.map(\.item.id)), ["library:7"])
         XCTAssertTrue(preferences.isLibraryPinned(library.id))
         XCTAssertNil(preferences.syncErrorMessage)
     }
@@ -2602,7 +2602,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let firstSnapshot = await transport.snapshot()
         XCTAssertEqual(firstSnapshot.shortcutOperations.map(\.present), [true, false])
-        XCTAssertEqual(Set(firstSnapshot.shortcutOperations.map(\.mutationId)).count, 2)
         XCTAssertTrue(firstSnapshot.storedShortcuts.isEmpty)
         XCTAssertEqual(
             firstSnapshot.genericPutCount,
@@ -2668,15 +2667,121 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.events, ["put-failed", "put-succeeded", "effective"])
-        XCTAssertEqual(snapshot.mutationIds.count, 2)
         XCTAssertEqual(
-            Set(snapshot.mutationIds).count,
-            1,
-            "a connectivity retry must reuse the original idempotency key"
+            snapshot.writtenValues,
+            Array(repeating: try SettingJSONValue.encoding(desired), count: 2),
+            "a connectivity retry sends the same desired value again"
         )
         XCTAssertEqual(snapshot.storedPresentation, desired)
         XCTAssertEqual(restarted.cardPresentation, desired)
         XCTAssertNil(restarted.syncErrorMessage)
+    }
+
+    /// Owner decision D4: a value write is retried on a bounded backoff, then
+    /// held. A held change stays on screen, is not replayed by a refresh, and
+    /// goes away only through "Discard Held Change" or "Try Again".
+    func testWriteIsHeldAfterItsRetryBoundAndCanBeDiscarded() async throws {
+        let suiteName = "ui-customization-held-suite-\(UUID().uuidString)"
+        let standardName = "ui-customization-held-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+            UserDefaults().removePersistentDomain(forName: standardName)
+        }
+
+        let defaults = SharedDefaults(suite: suite, standard: standard)
+        let transport = RecoveringWriteProbe()
+        let cacheKey = "silo.uiCustomization.server.profile.mobile"
+        let preferences = UICustomizationPreferences(
+            defaults: defaults,
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported,
+            writeRetryPolicy: .init(maximumAutomaticRetries: 2, base: .milliseconds(5), maximum: .milliseconds(5))
+        )
+        let desired = CardPresentationPreset.artworkOnly.presentation
+
+        preferences.setCardPresentation(desired)
+        await transport.waitForPutAttempts(3)
+        for _ in 0..<200 where !preferences.hasHeldChanges {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(preferences.hasHeldChanges, "the change is held once the bound runs out")
+        XCTAssertEqual(preferences.syncErrorMessage, HeldSettingChange.message)
+        try await Task.sleep(for: .milliseconds(50))
+        let heldEvents = await transport.snapshot().events
+        XCTAssertEqual(heldEvents, ["put-failed", "put-failed", "put-failed"], "no retry after the bound")
+
+        // Online again: a refresh reads the other keys but neither replays
+        // the held change nor paints the server's older value over it.
+        await transport.setOnline()
+        await preferences.refresh()
+        var snapshot = await transport.snapshot()
+        XCTAssertEqual(snapshot.events, ["put-failed", "put-failed", "put-failed", "effective"])
+        XCTAssertEqual(preferences.cardPresentation, desired)
+        XCTAssertTrue(preferences.hasHeldChanges)
+
+        // The hold survives a restart.
+        let restarted = UICustomizationPreferences(
+            defaults: defaults,
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported
+        )
+        XCTAssertTrue(restarted.hasHeldChanges)
+
+        await restarted.discardHeldChanges()
+        snapshot = await transport.snapshot()
+        XCTAssertFalse(restarted.hasHeldChanges)
+        XCTAssertEqual(restarted.cardPresentation, .standard, "discarding repaints what the server holds")
+        XCTAssertEqual(snapshot.storedPresentation, .standard, "discarding sends nothing")
+        XCTAssertNil(restarted.syncErrorMessage)
+    }
+
+    func testTryAgainSendsAHeldChangeWithAFreshBudget() async throws {
+        let suiteName = "ui-customization-held-retry-suite-\(UUID().uuidString)"
+        let standardName = "ui-customization-held-retry-standard-\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let standard = try XCTUnwrap(UserDefaults(suiteName: standardName))
+        defer {
+            UserDefaults().removePersistentDomain(forName: suiteName)
+            UserDefaults().removePersistentDomain(forName: standardName)
+        }
+
+        let transport = RecoveringWriteProbe()
+        let cacheKey = "silo.uiCustomization.server.profile.mobile"
+        let preferences = UICustomizationPreferences(
+            defaults: SharedDefaults(suite: suite, standard: standard),
+            transport: transport,
+            cacheKey: { cacheKey },
+            requestIdentity: { testRequestIdentity(for: cacheKey) },
+            initialCapabilityState: .supported,
+            writeRetryPolicy: .init(maximumAutomaticRetries: 0)
+        )
+        let desired = CardPresentationPreset.artworkOnly.presentation
+
+        preferences.setCardPresentation(desired)
+        await transport.waitForPutAttempts(1)
+        for _ in 0..<200 where !preferences.hasHeldChanges {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(preferences.hasHeldChanges)
+
+        await transport.setOnline()
+        preferences.retryHeldChanges()
+        await transport.waitForPutAttempts(2)
+        for _ in 0..<200 where preferences.hasHeldChanges {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        let snapshot = await transport.snapshot()
+        XCTAssertEqual(snapshot.events, ["put-failed", "put-succeeded"])
+        XCTAssertEqual(snapshot.storedPresentation, desired)
+        XCTAssertFalse(preferences.hasHeldChanges)
+        XCTAssertNil(preferences.syncErrorMessage)
     }
 
     func testUnavailableOrOldCapabilitiesDoNotDrainRevisionFiveOutbox() async throws {
@@ -3573,7 +3678,6 @@ private final class UICustomizationTransportStub: CurrentCapabilitiesTransport, 
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {}
 }
@@ -3606,7 +3710,6 @@ private actor CapabilityGateProbe: UICustomizationTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         putAttempts += 1
@@ -3650,7 +3753,6 @@ private actor MutableEffectiveValuesProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {}
 
@@ -3705,7 +3807,6 @@ private actor DeviceOverrideDeleteProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {}
 
@@ -3808,7 +3909,6 @@ private actor RecoveringDeleteProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {}
 
@@ -3872,7 +3972,6 @@ private actor OrderedWriteProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         inFlight += 1
@@ -3956,7 +4055,6 @@ private actor AcceptedMenuCrashProbe: CurrentCapabilitiesTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         storedShortcuts.removeAll { $0.id == item.id }
@@ -3967,7 +4065,6 @@ private actor AcceptedMenuCrashProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         guard key == .navPrimaryMenu else { return }
@@ -4043,7 +4140,6 @@ private actor SelectiveFailureWriteProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         keys.append(key)
@@ -4057,7 +4153,6 @@ private actor SelectiveFailureWriteProbe: CurrentCapabilitiesTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         keys.append(.navShortcuts)
@@ -4160,7 +4255,6 @@ private actor ShortcutOrderingProbe: CurrentCapabilitiesTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         shortcutAttempts.append(.init(item: item, present: present))
@@ -4187,7 +4281,6 @@ private actor ShortcutOrderingProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         defer { completeWrite() }
@@ -4265,7 +4358,6 @@ private actor DefinitiveShortcutRejectionProbe: CurrentCapabilitiesTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         shortcutWriteAttempts += 1
@@ -4280,7 +4372,6 @@ private actor DefinitiveShortcutRejectionProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         if key == .navPrimaryMenu {
@@ -4316,7 +4407,7 @@ private actor RecoveringWriteProbe: CurrentCapabilitiesTransport {
     private var putAttempts = 0
     private var putWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var events: [String] = []
-    private var mutationIds: [String] = []
+    private var writtenValues: [SettingJSONValue] = []
     private var storedPresentation = CardPresentationPreference.standard
 
     func effectiveValues(
@@ -4343,11 +4434,10 @@ private actor RecoveringWriteProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         putAttempts += 1
-        mutationIds.append(mutationId)
+        writtenValues.append(value)
         let ready = putWaiters.filter { putAttempts >= $0.0 }
         putWaiters.removeAll { putAttempts >= $0.0 }
         ready.forEach { $0.1.resume() }
@@ -4375,10 +4465,10 @@ private actor RecoveringWriteProbe: CurrentCapabilitiesTransport {
 
     func snapshot() -> (
         events: [String],
-        mutationIds: [String],
+        writtenValues: [SettingJSONValue],
         storedPresentation: CardPresentationPreference
     ) {
-        (events, mutationIds, storedPresentation)
+        (events, writtenValues, storedPresentation)
     }
 }
 
@@ -4386,7 +4476,6 @@ private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
     struct Operation: Sendable {
         let item: PrimaryMenuItem
         let present: Bool
-        let mutationId: String
     }
 
     private var isOnline = false
@@ -4438,10 +4527,9 @@ private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
-        shortcutOperations.append(.init(item: item, present: present, mutationId: mutationId))
+        shortcutOperations.append(.init(item: item, present: present))
         resumeShortcutWaiters()
         guard isOnline else {
             events.append("shortcut-failed")
@@ -4458,7 +4546,6 @@ private actor RecoveringShortcutProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         genericPutCount += 1
@@ -4514,7 +4601,6 @@ private actor BlockingShortcutProbe: CurrentCapabilitiesTransport {
     struct Operation: Sendable {
         let item: PrimaryMenuItem
         let present: Bool
-        let mutationId: String
     }
 
     private var shortcutOperations: [Operation] = []
@@ -4551,10 +4637,9 @@ private actor BlockingShortcutProbe: CurrentCapabilitiesTransport {
     func putShortcutItem(
         _ item: PrimaryMenuItem,
         present: Bool,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
-        shortcutOperations.append(.init(item: item, present: present, mutationId: mutationId))
+        shortcutOperations.append(.init(item: item, present: present))
         let ordinal = shortcutOperations.count
         resumeStartedWaiters()
         if ordinal == 1, !firstOperationReleased {
@@ -4576,7 +4661,6 @@ private actor BlockingShortcutProbe: CurrentCapabilitiesTransport {
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
-        mutationId: String,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
         genericPutCount += 1

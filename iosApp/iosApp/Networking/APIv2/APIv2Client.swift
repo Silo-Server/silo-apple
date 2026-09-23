@@ -20,6 +20,9 @@ enum APIv2Error: LocalizedError, Sendable {
     case invalidPersonalListContinuation
     case incompleteCatalogRead
     case unsupportedCatalogReadValue
+    /// A settings write answered with a row other than the one it addressed.
+    /// The server did something, but not provably what was asked.
+    case unexpectedSettingReceipt
     /// The server answered with an `application/problem+json` document.
     case problem(APIv2Problem)
     /// A non-2xx status whose body was not a problem document.
@@ -38,6 +41,8 @@ enum APIv2Error: LocalizedError, Sendable {
             return "This item uses a value this client cannot support. Please update the client."
         case .incompleteCatalogRead:
             return "The server returned an incomplete catalog list. Reload to try again."
+        case .unexpectedSettingReceipt:
+            return "The server's reply to a settings change did not match the change."
         case .invalidCatalogQuery:
             return "The catalog query is not valid."
         case .invalidCatalogContinuation:
@@ -248,17 +253,7 @@ struct APIv2Client: Sendable {
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
         if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        // The captured account URL is normalized; a caller's identity may carry
-        // the registry spelling, which HTTPClient normalizes the same way.
-        if let expectedIdentity {
-            let normalizedExpected = HTTPRequestIdentity(
-                serverId: expectedIdentity.serverId,
-                serverURL: ServerRegistry.normalize(url: expectedIdentity.serverURL),
-                profileId: expectedIdentity.profileId,
-                clientFamily: expectedIdentity.clientFamily
-            )
-            if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
-        }
+        try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: path, repeatedQuery: query,
@@ -270,37 +265,43 @@ struct APIv2Client: Sendable {
         return response.data
     }
 
-    func dispatchSettingCommand(_ command: SettingsMutationCommand, auth: CapturedOrdinaryRequestAuth) async throws {
+    /// The settings value writes (`APIv2Client+Settings.swift`), under the same
+    /// owner rules as `settingsRead`. `profileID` must be the profile the
+    /// captured session has selected: the household-parent `profile_id` query
+    /// override is never sent, so a write captured for one profile cannot land
+    /// on another. The status and receipt checks belong to each operation.
+    func settingsWrite(_ method: String, path: String, query: [String: String], body: Data?,
+                       profileID: String, expectedIdentity: HTTPRequestIdentity? = nil,
+                       quietStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
         try await gate()
-        let shortcut = command.key == SettingKey.navShortcuts.rawValue
-            && command.path == "/api/v2/settings/values/nav.shortcuts/item" && command.method == "PUT"
-        guard ["PUT", "DELETE"].contains(command.method),
-              shortcut || command.path == "/api/v2/settings/values/\(command.key)",
-              auth.profileId == command.authority.profileID,
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let identity = HTTPRequestIdentity(serverId: command.authority.serverID, serverURL: command.authority.origin,
-            profileId: command.authority.profileID, clientFamily: command.authority.clientFamily)
-        let response = try await tokenStore.withOwnerFence(auth) {
+        guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
+        guard let profile = auth.profileId else { throw SettingsAPIError.profileRequired }
+        guard profile == profileID else { throw HTTPError.requestIdentityChanged }
+        let identity = Self.requestIdentity(auth, profile: profile)
+        try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
+        return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: command.method, path: command.path, query: command.query,
-                    body: command.body, headers: ["X-Silo-Device-Id": command.authority.deviceID],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                try await http.requestData(method: method, path: path, query: query, body: body,
+                    quietStatuses: quietStatuses, requestIdentity: identity,
+                    expectedAccount: auth.account, expectedAuth: auth)
             }
         }
-        if command.method == "DELETE" {
-            guard response.statusCode == 204 else { throw SettingsMutationHold.uncertain }
-        } else {
-            let receipt = try SettingsWireCoding.makeDecoder().decode(StoredSettingValue.self, from: response.data)
-            guard response.statusCode == 200, receipt.key == command.key,
-                  receipt.scope.rawValue == (shortcut ? "profile" : command.query["scope"]), receipt.revision > 0,
-                  receipt.profileId == command.authority.profileID,
-                  (receipt.scope != .profileDevice || receipt.deviceId == command.authority.deviceID),
-                  (receipt.scope != .profileClient || receipt.clientFamily == command.authority.clientFamily) else {
-                throw SettingsMutationHold.uncertain
-            }
-        }
+    }
+
+    /// Refuses a settings request whose caller pinned an identity that is no
+    /// longer the captured one. The captured account URL is normalized; a
+    /// caller's identity may carry the registry spelling, which HTTPClient
+    /// normalizes the same way.
+    private static func requireSettingsIdentity(_ expected: HTTPRequestIdentity?,
+                                                matches identity: HTTPRequestIdentity?) throws {
+        guard let expected else { return }
+        let normalizedExpected = HTTPRequestIdentity(
+            serverId: expected.serverId,
+            serverURL: ServerRegistry.normalize(url: expected.serverURL),
+            profileId: expected.profileId,
+            clientFamily: expected.clientFamily
+        )
+        if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
 
     func metadataAIStatus() async throws -> MetadataAIStatus {
