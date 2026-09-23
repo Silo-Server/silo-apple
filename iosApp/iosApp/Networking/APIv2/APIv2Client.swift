@@ -80,8 +80,10 @@ enum APIv2Error: LocalizedError, Sendable {
 /// `HTTPClient` performs one more pre-dispatch check against `expectedAuth`
 /// immediately before the bytes leave the device.
 struct APIv2Client: Sendable {
-    private let http: HTTPClient
-    private let tokenStore: TokenStore
+    // Internal, not private, so the per-domain `APIv2Client+<Domain>.swift`
+    // extensions build on the same transport, fences and error mapping.
+    let http: HTTPClient
+    let tokenStore: TokenStore
     /// Whether the connected server was found to be v1-only. Read once per
     /// call so the update-server state set by the probe blocks pilot traffic.
     private let isUpdateRequired: @Sendable () async -> Bool
@@ -1475,11 +1477,11 @@ struct APIv2Client: Sendable {
 
     /// Refuses relative-URL (active-session) operations while the active
     /// server is known to be v1-only. Explicit-URL candidate probes skip this.
-    private func gate() async throws {
+    func gate() async throws {
         if await isUpdateRequired() { throw APIv2Error.serverUpdateRequired }
     }
 
-    private static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
+    static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
         HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
             profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
     }
@@ -1492,7 +1494,7 @@ struct APIv2Client: Sendable {
         return tag
     }
 
-    private func mapErrors<T>(_ operation: () async throws -> T) async throws -> T {
+    func mapErrors<T>(_ operation: () async throws -> T) async throws -> T {
         do {
             return try await operation()
         } catch HTTPError.http(let statusCode, let body) {

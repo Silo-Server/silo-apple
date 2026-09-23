@@ -93,17 +93,6 @@ extension SiloAPI {
 
     // MARK: - Progress reconciliation
 
-    /// Flush a batch of queued offline progress events. Returns per-item
-    /// results so the caller can drop acked items from its queue.
-    func syncProgressBatch(items: [SyncProgressItem]) async throws -> [SyncProgressResult] {
-        guard !items.isEmpty else { return [] }
-        let response: SyncProgressResultsResponse = try await http.post(
-            "/api/v1/sync/progress",
-            body: SyncProgressRequest(items: items)
-        )
-        return response.results
-    }
-
     /// Pull watch-state changes made on any device after `cursor`,
     /// server-ordered. Pass `nil` for the initial pull.
     func pullProgressDeltas(since cursor: String?) async throws -> ProgressPullResponse {
@@ -137,17 +126,4 @@ struct CreateDownloadResponse: Decodable, Sendable {
         let single = try ServerDownloadRow(from: decoder)
         self.downloads = [single]
     }
-}
-
-/// Per-item result envelope from `POST /api/v1/sync/progress` (§5.1).
-struct SyncProgressResultsResponse: Codable, Sendable {
-    let results: [SyncProgressResult]
-}
-
-struct SyncProgressResult: Codable, Sendable {
-    let mediaItemId: String
-    let status: String
-    let error: String?
-
-    var isOK: Bool { status == "ok" }
 }

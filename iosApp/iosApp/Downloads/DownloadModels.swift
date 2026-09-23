@@ -722,16 +722,62 @@ struct DownloadSubscription: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-/// A watch-progress event queued while offline, flushed via
-/// `POST /api/v1/sync/progress` on reconnect. `updatedAt` becomes the
-/// last-write-wins event time (§5.1).
+/// A watch-progress event queued while offline, uploaded through
+/// `POST /api/v2/sync/progress` on reconnect. `updatedAt` becomes the
+/// last-write-wins event time.
 struct QueuedProgress: Codable, Identifiable, Sendable {
+    enum State: String, Codable, Sendable {
+        /// Not sent yet; the next flush uploads it.
+        case pending
+        /// Handed to the transport. Once its flush has ended without an
+        /// answer (or the app stopped mid-flight), the outcome is unknown and
+        /// the entry is held: never sent again, only superseded by a newer
+        /// event for the same item or discarded.
+        case dispatched
+    }
+
     let id: UUID
     let mediaItemId: String
     let position: Double
     let duration: Double
     let updatedAt: Date
-    var attempts: Int
+    var state: State
+
+    init(id: UUID, mediaItemId: String, position: Double, duration: Double, updatedAt: Date, state: State = .pending) {
+        self.id = id
+        self.mediaItemId = mediaItemId
+        self.position = position
+        self.duration = duration
+        self.updatedAt = updatedAt
+        self.state = state
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, mediaItemId, position, duration, updatedAt, state
+    }
+
+    /// Entries written before `state` existed were never claimed for a v2
+    /// upload, so they decode as pending.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        mediaItemId = try values.decode(String.self, forKey: .mediaItemId)
+        position = try values.decode(Double.self, forKey: .position)
+        duration = try values.decode(Double.self, forKey: .duration)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        state = try values.decodeIfPresent(State.self, forKey: .state) ?? .pending
+    }
+
+    /// The wire item, or nil when the entry cannot be sent.
+    var syncItem: SyncProgressItem? {
+        SyncProgressItem(
+            mediaItemId: mediaItemId,
+            position: position,
+            duration: duration,
+            forceOverwrite: false,
+            updatedAt: updatedAt
+        )
+    }
 }
 
 /// Last-known resume point for a downloaded item, updated by offline

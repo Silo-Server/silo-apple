@@ -14,6 +14,12 @@ struct DownloadsSettingsView: View {
         return available.isEmpty ? [.original] : available
     }
 
+    private var heldProgressFooter: String {
+        let count = manager.heldProgressCount
+        let subject = count == 1 ? "1 offline watch position" : "\(count) offline watch positions"
+        return "\(subject) may not have reached the server. Silo won't send them again. Playing the download again replaces them."
+    }
+
     var body: some View {
         Form {
             SettingsPageHeader(
@@ -85,6 +91,19 @@ struct DownloadsSettingsView: View {
                 }
             }
             .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+
+            if manager.heldProgressCount > 0 {
+                Section {
+                    Button("Discard held change", role: .destructive) {
+                        manager.discardHeldProgress()
+                    }
+                } header: {
+                    Text("Offline Progress")
+                } footer: {
+                    Text(heldProgressFooter)
+                }
+                .listRowBackground(Color.siloSurfaceElevated.opacity(0.92))
+            }
         }
         .navigationTitle("")
         .task {

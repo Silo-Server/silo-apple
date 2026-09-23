@@ -567,25 +567,6 @@ actor SiloAPI {
         )
     }
 
-    func syncProgress(
-        mediaItemId: String,
-        position: Double,
-        duration: Double,
-        forceOverwrite: Bool = false
-    ) async throws {
-        try await http.postVoid(
-            "/api/v1/sync/progress",
-            body: SyncProgressRequest(items: [
-                SyncProgressItem(
-                    mediaItemId: mediaItemId,
-                    position: position,
-                    duration: duration,
-                    forceOverwrite: forceOverwrite
-                )
-            ])
-        )
-    }
-
     func stopPlayback(sessionId: String) async throws {
         try await http.delete("/api/v1/playback/\(sessionId)")
     }
